@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -28,6 +29,13 @@ public static class DatabaseExtensions
             return;
         }
 
+        // EF Core refuses migrations under NativeAOT ("Design-time DbContext operations are not supported"), compiled
+        // model or not; a NativeAOT build never gets here (Program stops it first, NL-708)
+        if (!RuntimeFeature.IsDynamicCodeSupported)
+            throw new PlatformNotSupportedException(
+                "EF Core migrations cannot run in a NativeAOT build (NL-708); apply them with the JIT build or an SQL "
+              + "script (dotnet ef migrations script --idempotent).");
+
         try
         {
             var context = scope.ServiceProvider.GetRequiredService<NLightningDbContext>();
@@ -45,11 +53,33 @@ public static class DatabaseExtensions
             {
                 logger.LogInformation("Database is up to date, no migrations needed");
             }
+
+            await EnableSnapshotReadsAsync(context, logger);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "An error occurred while applying database migrations");
             throw;
+        }
+    }
+
+    /// <summary>
+    /// SQL Server only: allows SNAPSHOT isolation, which the channel loads read under (NL-810); without it they read
+    /// query by query and may see a save half-way. Refused (no ALTER DATABASE permission) is logged, not fatal.
+    /// </summary>
+    private static async Task EnableSnapshotReadsAsync(NLightningDbContext context, ILogger logger)
+    {
+        if (!context.Database.IsSqlServer())
+            return;
+
+        try
+        {
+            await context.EnableSqlServerSnapshotIsolationAsync();
+        }
+        catch (Exception e)
+        {
+            logger.LogWarning(e, "Could not allow snapshot isolation on the SQL Server database; channel loads will "
+                               + "read without a snapshot (run ALTER DATABASE ... SET ALLOW_SNAPSHOT_ISOLATION ON)");
         }
     }
 }

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using NBitcoin;
 
 namespace NLightning.Integration.Tests.Docker.Mock;
@@ -71,5 +72,11 @@ public class FakeSecureKeyManager : ISecureKeyManager
     public CompactPubKey GetNodePubKey()
     {
         return _nodeKey.PrivateKey.PubKey.ToBytes();
+    }
+
+    public void ComputeNodeSharedSecret(ReadOnlySpan<byte> publicKey, Span<byte> sharedSecret)
+    {
+        var sharedPubKey = new PubKey(publicKey.ToArray()).GetSharedPubkey(_nodeKey.PrivateKey);
+        SHA256.HashData(sharedPubKey.Compress().ToBytes(), sharedSecret);
     }
 }

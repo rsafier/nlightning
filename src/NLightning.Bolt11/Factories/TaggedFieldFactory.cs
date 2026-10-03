@@ -36,6 +36,7 @@ internal static class TaggedFieldFactory
             TaggedFieldTypes.Description => DescriptionTaggedField.FromBitReader(bitReader, length),
             TaggedFieldTypes.PaymentSecret => PaymentSecretTaggedField.FromBitReader(bitReader, length),
             TaggedFieldTypes.PayeePubKey => PayeePubKeyTaggedField.FromBitReader(bitReader, length),
+            TaggedFieldTypes.BlindedPaymentPath => BlindedPaymentPathTaggedField.FromBitReader(bitReader, length),
             TaggedFieldTypes.DescriptionHash => DescriptionHashTaggedField.FromBitReader(bitReader, length),
             TaggedFieldTypes.MinFinalCltvExpiry => MinFinalCltvExpiryTaggedField.FromBitReader(bitReader, length),
             TaggedFieldTypes.Metadata => MetadataTaggedField.FromBitReader(bitReader, length),

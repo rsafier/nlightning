@@ -75,13 +75,18 @@ public class LightningMoneyTests
     }
 
     [Fact]
-    public void Given_NegativeSatoshi_When_Set_Then_ThrowsArgumentOutOfRangeException()
+    public void Given_NegativeLongAmountAndUnit_When_Constructed_Then_ThrowsArgumentOutOfRangeException()
     {
         // Given
-        var lightningMoney = new LightningMoney(1000);
+        const long amount = -1;
+        const LightningMoneyUnit unit = LightningMoneyUnit.Satoshi;
 
-        // When & Then
-        Assert.Throws<ArgumentOutOfRangeException>(() => lightningMoney.Satoshi = -1);
+        // When
+        var exception = Record.Exception(() => new LightningMoney(amount, unit));
+
+        // Then: rejected by the guard before the ulong cast, not as a wrapped value
+        var outOfRange = Assert.IsType<ArgumentOutOfRangeException>(exception);
+        Assert.Equal(nameof(amount), outOfRange.ParamName);
     }
 
     #endregion
@@ -89,14 +94,13 @@ public class LightningMoneyTests
     #region Public Properties
 
     [Fact]
-    public void Given_ValidLightningMoney_When_SatoshiSet_Then_PropertiesAreSetCorrectly()
+    public void Given_ValidSatoshiAmount_When_ConstructedFromSatoshiUnit_Then_SatoshiReadsBack()
     {
         // Given
-        var lightningMoney = new LightningMoney(1000);
         const long satoshi = 1;
 
         // When
-        lightningMoney.Satoshi = satoshi;
+        var lightningMoney = new LightningMoney(satoshi, LightningMoneyUnit.Satoshi);
 
         // Then
         Assert.Equal(satoshi, lightningMoney.Satoshi);
@@ -255,16 +259,15 @@ public class LightningMoneyTests
     #region Static Fields
 
     [Fact]
-    public void Given_ZeroMilliSatoshi_When_IsZeroCalled_Then_ReturnsTrue()
+    public void Given_Zero_When_AccessedTwice_Then_ReturnsTheSameInstance()
     {
-        // Given
-        var lightningMoney = LightningMoney.Zero;
-
-        // When
-        var isZero = lightningMoney.IsZero;
+        // Given / When
+        var zero1 = LightningMoney.Zero;
+        var zero2 = LightningMoney.Zero;
 
         // Then
-        Assert.True(isZero);
+        Assert.Same(zero1, zero2);
+        Assert.True(zero1.IsZero);
     }
 
     #endregion
@@ -425,7 +428,9 @@ public class LightningMoneyTests
         var result = LightningMoney.Bits(bits);
 
         // Then
-        Assert.Equal(1_500_000_000UL, result.MilliSatoshi);
+        // 1 bit = 100 sat = 100_000 msat
+        Assert.Equal(150_000UL, result.MilliSatoshi);
+        Assert.Equal(150L, result.Satoshi);
     }
 
     [Fact]
@@ -468,6 +473,20 @@ public class LightningMoneyTests
     }
 
     [Fact]
+    public void Given_NegativeSatoshi_When_SatoshisCalledWithLong_Then_ThrowsArgumentOutOfRangeException()
+    {
+        // Given
+        const long satoshis = -1;
+
+        // When
+        var exception = Record.Exception(() => LightningMoney.Satoshis(satoshis));
+
+        // Then: rejected by the guard before the ulong cast, not as a wrapped value
+        var outOfRange = Assert.IsType<ArgumentOutOfRangeException>(exception);
+        Assert.Equal("sats", outOfRange.ParamName);
+    }
+
+    [Fact]
     public void Given_LightningMoney_When_SatoshisCalledWithULong_Then_ReturnsCorrectValue()
     {
         // Given
@@ -491,6 +510,20 @@ public class LightningMoneyTests
 
         // Then
         Assert.Equal(1_000UL, result.MilliSatoshi);
+    }
+
+    [Fact]
+    public void Given_NegativeMilliSatoshi_When_MilliSatoshisCalledWithLong_Then_ThrowsArgumentOutOfRangeException()
+    {
+        // Given
+        const long milliSatoshis = -1;
+
+        // When
+        var exception = Record.Exception(() => LightningMoney.MilliSatoshis(milliSatoshis));
+
+        // Then: -1 used to wrap silently into ~1.8e19 msat
+        var outOfRange = Assert.IsType<ArgumentOutOfRangeException>(exception);
+        Assert.Equal("sats", outOfRange.ParamName);
     }
 
     [Fact]

@@ -10,7 +10,7 @@ public sealed class GetAddressPrinter : IPrinter<GetAddressIpcResponse>
         if (item.AddressP2Tr is not null)
             Console.WriteLine("  P2TR: {0}", item.AddressP2Tr);
 
-        if (item.AddressP2Wsh is not null)
-            Console.WriteLine("  P2WSH: {0}", item.AddressP2Wsh);
+        if (item.AddressP2Wpkh is not null)
+            Console.WriteLine("  P2WPKH: {0}", item.AddressP2Wpkh);
     }
 }

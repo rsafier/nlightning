@@ -8,11 +8,22 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Protocol.ValueObjects;
 using Exceptions;
 using Interfaces;
 
 public class OpenChannel2MessageTypeSerializer : IMessageTypeSerializer<OpenChannel2Message>
 {
+    /// <summary>
+    /// The <c>opening_tlvs</c> types this node understands. BOLT 1: an unknown even type MUST fail the stream.
+    /// </summary>
+    private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
+        new HashSet<BigSize>
+        {
+            TlvConstants.UpfrontShutdownScript, TlvConstants.ChannelType, TlvConstants.RequireConfirmedInputs,
+            TlvConstants.LiquidityAds
+        };
+
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
     private readonly ITlvStreamSerializer _tlvStreamSerializer;
@@ -60,8 +71,8 @@ public class OpenChannel2MessageTypeSerializer : IMessageTypeSerializer<OpenChan
             if (stream.Position >= stream.Length)
                 return new OpenChannel2Message(payload);
 
-            var extension = await _tlvStreamSerializer.DeserializeAsync(stream);
-            if (extension is null)
+            var extension = await _tlvStreamSerializer.DeserializeStrictAsync(stream, s_knownExtensionTypes);
+            if (!extension.Any())
                 return new OpenChannel2Message(payload);
 
             UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null;
@@ -92,8 +103,17 @@ public class OpenChannel2MessageTypeSerializer : IMessageTypeSerializer<OpenChan
                 requireConfirmedInputsTlv = tlvConverter.ConvertFromBase(baseRequireConfirmedInputsTlv!);
             }
 
+            RequestFundingTlv? requestFundingTlv = null;
+            if (extension.TryGetTlv(TlvConstants.LiquidityAds, out var baseLiquidityAdsTlv))
+            {
+                var tlvConverter = _tlvConverterFactory.GetConverter<RequestFundingTlv>()
+                                ?? throw new SerializationException(
+                                       $"No serializer found for tlv type {nameof(RequestFundingTlv)}");
+                requestFundingTlv = tlvConverter.ConvertFromBase(baseLiquidityAdsTlv!);
+            }
+
             return new OpenChannel2Message(payload, upfrontShutdownScriptTlv, channelTypeTlv,
-                                           requireConfirmedInputsTlv);
+                                           requireConfirmedInputsTlv, requestFundingTlv);
         }
         catch (SerializationException e)
         {

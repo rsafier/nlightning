@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    nltg-cluster: the Kubernetes test harness's command line (list and reap run namespaces). Test tooling, not product
+    code; the logic lives in NLightning.Testing.Cluster (Run/ClusterCli.cs). scripts/run-cluster.sh builds and calls it.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>nltg-cluster</AssemblyName>
+    <RootNamespace>NLightning.Testing.Cluster.Cli</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Platforms>AnyCPU</Platforms>
+    <Deterministic>true</Deterministic>
+    <IsPackable>false</IsPackable>
+    <Configurations>Debug;Release;Debug.Native;Release.Native</Configurations>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(Configuration.Contains('Debug'))">
+    <DefineConstants>DEBUG;$(DefineConstants)</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(Configuration.Contains('Release'))">
+    <Optimize Condition=" '$(Optimize)' == '' ">true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NLightning.Testing.Cluster\NLightning.Testing.Cluster.csproj"/>
+  </ItemGroup>
+
+</Project>

@@ -10,5 +10,5 @@ using Domain.Bitcoin.Enums;
 [MessagePackObject]
 public sealed class GetAddressIpcRequest
 {
-    [Key(0)] public AddressType AddressType { get; set; } = AddressType.P2Wpkh;
+    [Key(0)] public AddressType AddressType { get; set; } = AddressType.P2Tr;
 }

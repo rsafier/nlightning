@@ -10,6 +10,19 @@ public interface IFeeService
     Task<LightningMoney> GetFeeRatePerKwAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Gets the fee rate in sat/kw to confirm within <paramref name="confirmationTarget"/> blocks (BOLT 5 plan OG12,
+    /// O6-T1, NL-296): the deadline-driven sweeps, claims and penalties ask for the target their deadline leaves.
+    /// </summary>
+    /// <remarks>
+    /// A source without per-target estimates answers the node-wide rate (<see cref="GetFeeRatePerKwAsync(CancellationToken)"/>),
+    /// which is also this default implementation. Never 0.
+    /// </remarks>
+    /// <param name="confirmationTarget">The number of blocks to confirm within (at least 1).</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    Task<LightningMoney> GetFeeRatePerKwAsync(uint confirmationTarget, CancellationToken cancellationToken = default) =>
+        GetFeeRatePerKwAsync(cancellationToken);
+
+    /// <summary>
     /// Gets the current cached fee rate without checking API
     /// </summary>
     LightningMoney GetCachedFeeRatePerKw();

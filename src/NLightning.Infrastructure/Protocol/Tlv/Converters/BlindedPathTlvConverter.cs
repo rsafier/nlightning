@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 
 namespace NLightning.Infrastructure.Protocol.Tlv.Converters;
 
+using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
@@ -23,12 +24,21 @@ public class BlindedPathTlvConverter : ITlvConverter<BlindedPathTlv>
             throw new InvalidCastException("Invalid TLV type");
         }
 
-        if (baseTlv.Length == 0)
+        // BOLT 2: blinded_path carries a single `point` (33-byte compressed public key).
+        if (baseTlv.Length != CryptoConstants.CompactPubkeyLen
+         || baseTlv.Value.Length != CryptoConstants.CompactPubkeyLen)
         {
             throw new InvalidCastException("Invalid length");
         }
 
-        return new BlindedPathTlv(new CompactPubKey(baseTlv.Value));
+        try
+        {
+            return new BlindedPathTlv(new CompactPubKey(baseTlv.Value.ToArray()));
+        }
+        catch (ArgumentException e)
+        {
+            throw new InvalidCastException("Invalid path key", e);
+        }
     }
 
     [ExcludeFromCodeCoverage]

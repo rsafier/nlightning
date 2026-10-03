@@ -25,7 +25,8 @@ public class AcceptChannel2Payload(
     CompactPubKey paymentCompactBasepoint,
     CompactPubKey revocationCompactBasepoint,
     ChannelId channelId,
-    ushort toSelfDelay) : IChannelMessagePayload
+    ushort toSelfDelay,
+    CompactPubKey secondPerCommitmentCompactPoint) : IChannelMessagePayload
 {
     /// <summary>
     /// The temporary_channel_id is used to identify this channel on a per-peer basis until the funding transaction
@@ -101,4 +102,10 @@ public class AcceptChannel2Payload(
     /// first_per_commitment_point is the per-commitment point used for the first commitment transaction
     /// </summary>
     public CompactPubKey FirstPerCommitmentCompactPoint { get; } = firstPerCommitmentCompactPoint;
+
+    /// <summary>
+    /// second_per_commitment_point is the per-commitment point of the accepter's second commitment transaction (BOLT 2
+    /// sends it here as well as in <c>channel_ready</c>).
+    /// </summary>
+    public CompactPubKey SecondPerCommitmentCompactPoint { get; } = secondPerCommitmentCompactPoint;
 }

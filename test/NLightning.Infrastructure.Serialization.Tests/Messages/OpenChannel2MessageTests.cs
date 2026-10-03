@@ -234,7 +234,7 @@ public class OpenChannel2MessageTests
             Convert.FromHexString("03a92b07cbae641dcfd482825233aecc2d5012913b48040131db3222670c2bffcd");
         var channelFlags = new ChannelFlags();
         var upfrontShutdownScriptTlv = new UpfrontShutdownScriptTlv(scriptPubKey);
-        var channelTypeTlv = new ChannelTypeTlv([0x02, 0x01]);
+        var channelTypeTlv = new ChannelTypeTlv([0x01, 0x02]);
         var requireConfirmedInputsTlv = new RequireConfirmedInputsTlv();
 
         var message = new OpenChannel2Message(

@@ -1,670 +1,149 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NBitcoin;
+using NBitcoin.Crypto;
 using NLightning.Tests.Utils.Vectors;
 
 #pragma warning disable CS8625 // Cannot convert null literal to non-nullable reference type.
 
 namespace NLightning.Integration.Tests.BOLT3;
 
+using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Transactions.Enums;
-using Domain.Bitcoin.Transactions.Factories;
+using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
-using Domain.Channels.Enums;
-using Domain.Channels.Models;
-using Domain.Channels.ValueObjects;
-using Domain.Crypto.ValueObjects;
-using Domain.Enums;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Money;
 using Domain.Node.Options;
-using Domain.Protocol.Models;
 using Infrastructure.Bitcoin.Builders;
+using Infrastructure.Bitcoin.Crypto.Functions;
 using Infrastructure.Bitcoin.Services;
-using Infrastructure.Bitcoin.Signers;
-using Infrastructure.Crypto.Hashes;
 using Infrastructure.Protocol.Services;
-using Mocks;
+using Vectors;
 
 public class Bolt3IntegrationTests
 {
-    private static readonly Sha256 s_sha256 = new();
-
-    private readonly CompactPubKey _emptyCompactPubKey =
-        new([
-            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00
-        ]);
-
-    private readonly CommitmentNumber _commitmentNumber = new(Bolt3AppendixCVectors.NodeAPaymentBasepoint.ToBytes(),
-                                                              Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes(),
-                                                              s_sha256,
-                                                              Bolt3AppendixCVectors.CommitmentNumber);
-
-    private readonly FundingOutputInfo _fundingOutputInfo = new(Bolt3AppendixBVectors.FundingSatoshis,
-                                                                Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
-                                                                Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes())
-    {
-        TransactionId = Bolt3AppendixBVectors.ExpectedTxId.ToBytes(),
-        Index = 0
-    };
-
-    private Htlc? _offeredHtlc2;
-    private Htlc? _offeredHtlc3;
-    private Htlc? _offeredHtlc5;
-    private Htlc? _offeredHtlc6;
-    private Htlc? _receivedHtlc0;
-    private Htlc? _receivedHtlc1;
-    private Htlc? _receivedHtlc4;
-
     #region Appendix B Vectors
 
     [Fact]
     public void Given_Bolt3Specifications_When_CreatingFundingTransaction_Then_ShouldBeEqualToTestVector()
     {
-        // // Given
-        // var nodeOptions = Options.Create(new NodeOptions
-        // {
-        //     HasAnchorOutputs = false
-        // });
-        //
-        // var feeServiceMock = new Mock<IFeeService>();
-        // feeServiceMock
-        //    .Setup(x => x.GetCachedFeeRatePerKw())
-        //    .Returns(new LightningMoney(15000, LightningMoneyUnit.Satoshi));
-        // var fundingTransactionFactory =
-        //     new FundingTransactionFactory(feeServiceMock.Object, nodeOptions, _lightningSigner);
-        //
-        // var fundingInputCoin = new Coin(AppendixBVectors.InputTx, AppendixBVectors.InputIndex);
-        //
-        // // When
-        // var fundingTransaction = fundingTransactionFactory
-        //    .CreateFundingTransaction(Bolt3AppendixBVectors.LocalPubKey, Bolt3AppendixBVectors.RemotePubKey,
-        //                              Bolt3AppendixBVectors.FundingSatoshis, Bolt3AppendixBVectors.ChangeScript.PaymentScript,
-        //                              Bolt3AppendixBVectors.ChangeScript, [fundingInputCoin],
-        //                              new BitcoinSecret(Bolt3AppendixBVectors.InputSigningPrivKey, Network.Main));
-        // var finalFundingTx = fundingTransaction.GetSignedTransaction();
-        //
-        // // Then
-        // Assert.Equal(Bolt3AppendixBVectors.ExpectedTx.ToBytes(), finalFundingTx.ToBytes());
-        // Assert.True(fundingTransaction.IsValid);
+        // Given - BOLT 3 Appendix B: 50 BTC P2PKH coinbase input, 10M sat funding, feerate 15000 sat/kw.
+        // The builder is handed the spec fee; the Then block re-derives it from the signed tx weight.
+        // AddressType has no P2PKH member and the builder does not use it, so the UTXO is tagged P2Wpkh. The input is
+        // signed by hand below (legacy sighash, no low-R grinding): the wallet signing path is not covered here.
+        var feeRatePerKw = LightningMoney.Satoshis(15_000);
+        var nodeOptions = Options.Create(new NodeOptions());
+        var builder = new FundingTransactionBuilder(nodeOptions, new Mock<IServiceProvider>().Object,
+                                                    new Mock<ILogger<FundingTransactionBuilder>>().Object);
+        var inputTxOut = Bolt3AppendixBVectors.InputTx.Outputs[Bolt3AppendixBVectors.InputIndex];
+        var utxo = new UtxoModel(Bolt3AppendixBVectors.InputTxId.ToBytes(), Bolt3AppendixBVectors.InputIndex,
+                                 LightningMoney.Satoshis(inputTxOut.Value.Satoshi), 0, 0, false, AddressType.P2Wpkh);
+        var changeAddress = Bolt3AppendixBVectors.ChangeScript.GetDestinationAddress(Network.Main)!.ToString();
+        var fundingOutputInfo = new FundingOutputInfo(Bolt3AppendixBVectors.FundingSatoshis,
+                                                      Bolt3AppendixBVectors.LocalPubKey.ToBytes(),
+                                                      Bolt3AppendixBVectors.RemotePubKey.ToBytes());
+        var fundingTransactionModel =
+            new FundingTransactionModel([utxo], fundingOutputInfo, LightningMoney.Satoshis(13_920))
+            {
+                ChangeAddress = new WalletAddressModel(AddressType.P2Wpkh, 0, true, changeAddress)
+            };
+
+        // When
+        var unsignedTransaction = builder.Build(fundingTransactionModel);
+        var fundingTx = Transaction.Load(unsignedTransaction.Transaction.RawTxBytes, Network.Main);
+        // Sign the P2PKH input without low-R grinding, as the spec vector was generated
+        var inputKey = Bolt3AppendixBVectors.InputSigningPrivKey;
+        var sigHash = fundingTx.GetSignatureHash(inputTxOut.ScriptPubKey, 0, SigHash.All, inputTxOut,
+                                                 HashVersion.Original);
+        var inputSignature = inputKey.Sign(sigHash, new SigningOptions(SigHash.All, false));
+        fundingTx.Inputs[0].ScriptSig =
+            PayToPubkeyHashTemplate.Instance.GenerateScriptSig(inputSignature, inputKey.PubKey);
+
+        // Then
+        // fee = feerate_per_kw * weight / 1000, computed as in FundingTransactionModelFactory (msat = weight * sat/kw)
+        var weight = (ulong)(fundingTx.GetSerializedSize(TransactionOptions.None) * 3 + fundingTx.GetSerializedSize());
+        Assert.Equal(928UL, weight);
+        Assert.Equal(LightningMoney.Satoshis(13_920), LightningMoney.MilliSatoshis(weight * (ulong)feeRatePerKw.Satoshi));
+        Assert.Equal(LightningMoney.Satoshis(fundingTx.Outputs[1].Value.Satoshi),
+                     Bolt3AppendixBVectors.ExpectedChangeSatoshis);
+        Assert.Equal(Bolt3AppendixBVectors.ExpectedTx.ToHex(), fundingTx.ToHex());
+        Assert.Equal(Bolt3AppendixBVectors.ExpectedTxId, fundingTx.GetHash());
+        Assert.Equal((ushort)0, unsignedTransaction.FundingOutputIndex);
     }
 
     #endregion
 
-    #region Appendix C Vectors
+    #region Appendix C and F Vectors
+
+    // The Appendix C commitment and HTLC vectors are in Bolt3CommitmentVectorTests and Bolt3HtlcTxVectorTests, and the
+    // Appendix F (anchors) vectors in Bolt3AnchorVectorTests. All are built from the spec's balances and HTLC set.
+
+    #endregion
+
+    #region Appendix C HTLC Transaction Vectors
 
     [Fact]
-    public void Given_Bolt3Specifications_When_CreatingCommitmentTransaction_Then_ShouldBeEqualToTestVector()
+    public void Given_Bolt3Specifications_When_CreatingHtlcTransactionsFor5HtlcsUntrimmed_Then_ShouldBeEqualToTestVector()
     {
-        // Given
-        var nodeOptions = new NodeOptions
-        {
-            HasAnchorOutputs = false
-        };
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(15_000), false);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
+        // Given - "commitment tx with all five HTLCs untrimmed (minimum feerate)": feerate 0, to_self_delay 144
+        Transaction[] expectedHtlcTxs =
+        [
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc0SuccessTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc2TimeoutTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc1SuccessTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc3TimeoutTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc4SuccessTx
+        ];
+        var vector = Bolt3SpecVectors.GetAppendixC("commitment tx with all five HTLCs untrimmed (minimum feerate)");
+        var harness = new Bolt3VectorHarness(vector, false);
 
         // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature0.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature0.ToCompact(), signature);
-    }
-
-    [Fact]
-    public void
-        Given_Bolt3Specifications_When_CreatingCommitmentTransactionWith5HTLCsUntrimmed_Then_ShouldBeEqualToTestVector()
-    {
-        // Given
-        var nodeOptions = new NodeOptions
+        var (commitment, htlcModels) = harness.BuildHtlcModels();
+        var signedHtlcTxs = htlcModels.Select((model, i) =>
         {
-            HasAnchorOutputs = false
-        };
-        GenerateHtlcs();
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Zero, true);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature1.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature1.ToCompact(), signature);
-    }
-
-    [Fact]
-    public void
-        Given_Bolt3Specifications_When_CreatingCommitmentTransactionWith7OutputsUntrimmed_Then_ShouldBeEqualToTestVector()
-    {
-        // Given
-        var nodeOptions = new NodeOptions
-        {
-            HasAnchorOutputs = false
-        };
-        GenerateHtlcs();
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(647), true);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature2.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature2.ToCompact(), signature);
-    }
-
-    [Fact]
-    public void
-        Given_Bolt3Specifications_When_CreatingCommitmentTransactionWith6OutputsUntrimmed_Then_ShouldBeEqualToTestVector()
-    {
-        // Given
-        var nodeOptions = new NodeOptions
-        {
-            HasAnchorOutputs = false,
-            DustLimitAmount = LightningMoney.Satoshis(546)
-        };
-        GenerateHtlcs();
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(648), true);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature3.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature3.ToCompact(), signature);
-    }
-
-    [Fact]
-    public void
-        Given_Bolt3Specifications_When_CreatingCommitmentTransactionWith6OutputsUntrimmedMaxFeeRate_Then_ShouldBeEqualToTestVector()
-    {
-        // Given
-        var nodeOptions = new NodeOptions
-        {
-            HasAnchorOutputs = false,
-            DustLimitAmount = LightningMoney.Satoshis(546)
-        };
-        GenerateHtlcs();
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(2_069), true);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature4.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature4.ToCompact(), signature);
-    }
-
-    [Fact]
-    public void
-        Given_Bolt3Specifications_When_CreatingCommitmentTransactionWith5OutputsUntrimmedMinFeeRate_Then_ShouldBeEqualToTestVector()
-    {
-        // Given
-        var nodeOptions = new NodeOptions
-        {
-            HasAnchorOutputs = false,
-            DustLimitAmount = LightningMoney.Satoshis(546)
-        };
-        GenerateHtlcs();
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(2_070), true);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature5.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature5.ToCompact(), signature);
-    }
-
-    [Fact]
-    public void
-        Given_Bolt3Specifications_When_CreatingCommitmentTransactionWith5OutputsUntrimmedMaxFeeRate_Then_ShouldBeEqualToTestVector()
-    {
-        // Given
-        var nodeOptions = new NodeOptions
-        {
-            HasAnchorOutputs = false,
-            DustLimitAmount = LightningMoney.Satoshis(546)
-        };
-        GenerateHtlcs();
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(2_194), true);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature6.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature6.ToCompact(), signature);
-    }
-
-    [Fact]
-    public void
-        Given_Bolt3Specifications_When_CreatingCommitmentTransactionWith4OutputsUntrimmedMinFeeRate_Then_ShouldBeEqualToTestVector()
-    {
-        // Given
-        var nodeOptions = new NodeOptions
-        {
-            HasAnchorOutputs = false,
-            DustLimitAmount = LightningMoney.Satoshis(546)
-        };
-        GenerateHtlcs();
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(2_195), true);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature7.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature7.ToCompact(), signature);
-    }
-
-    [Fact]
-    public void
-        Given_Bolt3Specifications_When_CreatingCommitmentTransactionWith4OutputsUntrimmedMaxFeeRate_Then_ShouldBeEqualToTestVector()
-    {
-        // Given
-        var nodeOptions = new NodeOptions
-        {
-            HasAnchorOutputs = false,
-            DustLimitAmount = LightningMoney.Satoshis(546)
-        };
-        GenerateHtlcs();
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(3_702), true);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature8.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature8.ToCompact(), signature);
-    }
-
-    [Fact]
-    public void
-        Given_Bolt3Specifications_When_CreatingCommitmentTransactionWith3OutputsUntrimmedMinFeeRate_Then_ShouldBeEqualToTestVector()
-    {
-        // Given
-        var nodeOptions = new NodeOptions
-        {
-            HasAnchorOutputs = false,
-            DustLimitAmount = LightningMoney.Satoshis(546)
-        };
-        GenerateHtlcs();
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(3_703), true);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature9.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature9.ToCompact(), signature);
-    }
-
-    [Fact]
-    public void
-        Given_Bolt3Specifications_When_CreatingCommitmentTransactionWith3OutputsUntrimmedMaxFeeRate_Then_ShouldBeEqualToTestVector()
-    {
-        // Given
-        var nodeOptions = new NodeOptions
-        {
-            HasAnchorOutputs = false,
-            DustLimitAmount = LightningMoney.Satoshis(546)
-        };
-        GenerateHtlcs();
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(4_914), true);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature10.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature10.ToCompact(), signature);
-    }
-
-    [Fact]
-    public void
-        Given_Bolt3Specifications_When_CreatingCommitmentTransactionWith2OutputsUntrimmedMinFeeRate_Then_ShouldBeEqualToTestVector()
-    {
-        // Given
-        var nodeOptions = new NodeOptions
-        {
-            HasAnchorOutputs = false,
-            DustLimitAmount = LightningMoney.Satoshis(546)
-        };
-        GenerateHtlcs();
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(4_915), true);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature11.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature11.ToCompact(), signature);
-    }
-
-    [Fact]
-    public void
-        Given_Bolt3Specifications_When_CreatingCommitmentTransactionWith2OutputsUntrimmedMaxFeeRate_Then_ShouldBeEqualToTestVector()
-    {
-        // Given
-        var nodeOptions = new NodeOptions
-        {
-            HasAnchorOutputs = false,
-            DustLimitAmount = LightningMoney.Satoshis(546)
-        };
-        GenerateHtlcs();
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(9_651_180), true);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature12.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature12.ToCompact(), signature);
-    }
-
-    [Fact]
-    public void
-        Given_Bolt3Specifications_When_CreatingCommitmentTransactionWith1OutputsUntrimmedMinFeeRate_Then_ShouldBeEqualToTestVector()
-    {
-        // Given
-        var nodeOptions = new NodeOptions
-        {
-            HasAnchorOutputs = false,
-            DustLimitAmount = LightningMoney.Satoshis(546)
-        };
-        GenerateHtlcs();
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(9_651_181), true);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature13.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature13.ToCompact(), signature);
-    }
-
-    [Fact]
-    public void
-        Given_Bolt3Specifications_When_CreatingCommitmentTransactionWithFeeGreaterThanFunderAmount_Then_ShouldBeEqualToTestVector()
-    {
-        // Given
-        var nodeOptions = new NodeOptions
-        {
-            HasAnchorOutputs = false,
-            DustLimitAmount = LightningMoney.Satoshis(546)
-        };
-        GenerateHtlcs();
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(9_651_936), true);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature14.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature14.ToCompact(), signature);
-    }
-
-    [Fact]
-    public void
-        Given_Bolt3Specifications_When_CreatingCommitmentTransactionWith2SimilarOfferedHtlc_Then_ShouldBeEqualToTestVector()
-    {
-        // Given
-        var nodeOptions = new NodeOptions
-        {
-            HasAnchorOutputs = false,
-            DustLimitAmount = LightningMoney.Satoshis(546)
-        };
-        GenerateHtlcs();
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var bolt3CommitmentKeyDerivationService = new Bolt3TestCommitmentKeyDerivationService();
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(bolt3CommitmentKeyDerivationService,
-                                                  testLightningSigner);
-        List<Htlc> offeredHtlcs = [_offeredHtlc5!.Value, _offeredHtlc6!.Value];
-        List<Htlc> receivedHtlcs = [_receivedHtlc1!.Value];
-        var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(253), true, offeredHtlcs,
-                                          receivedHtlcs);
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // When
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, Bolt3AppendixCVectors.NodeBSignature15.ToCompact(),
-                                             unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Then
-        Assert.Null(exception);
-        Assert.Equal(Bolt3AppendixCVectors.NodeASignature15.ToCompact(), signature);
-    }
-
-    private static Bolt3TestLightningSigner GetTestLightningSigner(NodeOptions nodeOptions)
-    {
-        var logger = new Mock<ILogger<LocalLightningSigner>>();
-        var bolt3LightningSigner = new Bolt3TestLightningSigner(nodeOptions, logger.Object);
-        bolt3LightningSigner.RegisterChannel(ChannelId.Zero,
-                                             new ChannelSigningInfo(Bolt3AppendixBVectors.ExpectedTxId.ToBytes(),
-                                                                    Bolt3AppendixBVectors.InputIndex,
-                                                                    Bolt3AppendixBVectors.FundingSatoshis,
-                                                                    Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
-                                                                    Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes(),
-                                                                    0));
-        return bolt3LightningSigner;
-    }
-
-    private ChannelModel GetTestChannelModel(NodeOptions nodeOptions, LightningMoney feeRatePerKw, bool addHtlcs,
-                                             List<Htlc>? overrideOfferedHtlcs = null,
-                                             List<Htlc>? overrideReceivedHtlcs = null)
-    {
-        var channelConfig = new ChannelConfig(LightningMoney.Zero, feeRatePerKw, LightningMoney.Zero,
-                                              nodeOptions.DustLimitAmount, 0, LightningMoney.Zero, 0, false,
-                                              nodeOptions.DustLimitAmount, nodeOptions.ToSelfDelay, FeatureSupport.No);
-        var localKeySet = new ChannelKeySetModel(0, Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
-                                                 _emptyCompactPubKey,
-                                                 Bolt3AppendixCVectors.NodeAPaymentBasepoint.ToBytes(),
-                                                 _emptyCompactPubKey, _emptyCompactPubKey, _emptyCompactPubKey);
-        var remoteKeySet = new ChannelKeySetModel(0, _emptyCompactPubKey, _emptyCompactPubKey,
-                                                  Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes(),
-                                                  _emptyCompactPubKey, _emptyCompactPubKey, _emptyCompactPubKey);
-
-        var offeredHtlcs = addHtlcs
-                               ? overrideOfferedHtlcs ?? [_offeredHtlc2!.Value, _offeredHtlc3!.Value]
+            var built = harness.HtlcBuilder.Build(model);
+            var remoteSignature = new ECDSASignature(Convert.FromHexString(vector.HtlcTxs[i].RemoteSigHex));
+            var localSignature = Bolt3VectorHarness.SignLocalHtlc(built);
+            var preimage = model.Type == HtlcTransactionType.Success
+                               ? Bolt3VectorHarness.Preimages[model.SpentOutput.Htlc.Id]
                                : null;
-        var receivedHtlcs = addHtlcs
-                                ? overrideReceivedHtlcs ??
-                                [
-                                    _receivedHtlc0!.Value, _receivedHtlc1!.Value, _receivedHtlc4!.Value
-                                ]
-                                : null;
+            return harness.HtlcBuilder.AddWitness(model, built, remoteSignature.ToCompact(),
+                                                  localSignature.ToCompact(), preimage);
+        }).ToList();
 
-        return new ChannelModel(channelConfig, ChannelId.Zero, _commitmentNumber, _fundingOutputInfo, true, null, null,
-                                Bolt3AppendixCVectors.Tx0ToLocalMsat, localKeySet, 1, 0,
-                                Bolt3AppendixCVectors.ToRemoteMsat, remoteKeySet, 1,
-                                Bolt3AppendixBVectors.RemotePubKey.ToBytes(), 0, ChannelState.V1Opening,
-                                ChannelVersion.V1, offeredHtlcs, null, null, null, receivedHtlcs);
+        // Then
+        Assert.Equal(Bolt3AppendixCVectors.ExpectedCommitTx1.GetHash().ToBytes(), (byte[])commitment.Transaction.TxId);
+        Assert.Equal(expectedHtlcTxs.Length, signedHtlcTxs.Count);
+        for (var i = 0; i < expectedHtlcTxs.Length; i++)
+            Assert.Equal(expectedHtlcTxs[i].ToHex(), Convert.ToHexString(signedHtlcTxs[i].RawTxBytes).ToLowerInvariant());
+    }
+
+    [Fact]
+    public void Given_Bolt3HtlcTransactionVectors_When_Inspected_Then_TheySpendTheMatchingCommitmentOutputs()
+    {
+        // Given - guards the vector data the NL-056 test consumes
+        Transaction[] htlcTxs =
+        [
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc0SuccessTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc2TimeoutTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc1SuccessTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc3TimeoutTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc4SuccessTx
+        ];
+        var commitTx = Bolt3AppendixCVectors.ExpectedCommitTx1;
+
+        // When / Then - feerate 0: each HTLC tx spends output i in full, with the BOLT 3 version and sequence
+        for (var i = 0; i < htlcTxs.Length; i++)
+        {
+            var htlcTx = htlcTxs[i];
+            Assert.Equal(2U, htlcTx.Version);
+            Assert.Single(htlcTx.Inputs);
+            Assert.Equal(commitTx.GetHash(), htlcTx.Inputs[0].PrevOut.Hash);
+            Assert.Equal((uint)i, htlcTx.Inputs[0].PrevOut.N);
+            Assert.Equal(0U, (uint)htlcTx.Inputs[0].Sequence);
+            Assert.Equal(commitTx.Outputs[i].Value, htlcTx.Outputs[0].Value);
+        }
     }
 
     #endregion
@@ -677,7 +156,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_GeneratingFromSeed0FinalNode_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
 
         // When
         var result = keyDerivationService.GeneratePerCommitmentSecret(Bolt3AppendixDVectors.Seed0FinalNode,
@@ -691,7 +170,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_GeneratingFromSeedFFFinalNode_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
 
         // When
         var result = keyDerivationService.GeneratePerCommitmentSecret(Bolt3AppendixDVectors.SeedFfFinalNode,
@@ -705,7 +184,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_GeneratingFromSeedFFAlternateBits1_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
 
         // When
         var result = keyDerivationService.GeneratePerCommitmentSecret(Bolt3AppendixDVectors.SeedFfAlternateBits1,
@@ -719,7 +198,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_GeneratingFromSeedFFAlternateBits2_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
 
         // When
         var result = keyDerivationService.GeneratePerCommitmentSecret(Bolt3AppendixDVectors.SeedFfAlternateBits2,
@@ -733,7 +212,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_GeneratingFromSeed01LastNonTrivialNode_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
 
         // When
         var result = keyDerivationService.GeneratePerCommitmentSecret(Bolt3AppendixDVectors.Seed01LastNonTrivialNode,
@@ -1061,7 +540,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_StoringAndDeriving48Secrets_Then_ShouldWorkCorrectly()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
         using var storage = new SecretStorageService();
 
         // Insert secrets with different number of trailing zeros
@@ -1098,7 +577,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_DerivingPubKey_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
         var basepoint = Convert.FromHexString("036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2");
         var perCommitmentPoint =
             Convert.FromHexString("025f7117a78150fe2ef97db7cfc83bd57b2e2c0d0dd25eaf467a4a1c2a45ce1486");
@@ -1116,7 +595,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_DerivingPrivateKey_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
         var baseSecretBytes = Convert.FromHexString("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
         // var basepointSecret = new Key(baseSecretBytes);
         var perCommitmentPoint =
@@ -1135,7 +614,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_DerivingRevocationPubKey_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
         var revocationBasepoint =
             Convert.FromHexString("036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2");
         var perCommitmentPoint =
@@ -1154,7 +633,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_DerivingRevocationPrivKey_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
         var baseSecretBytes = Convert.FromHexString("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
         // var revocationBasepointSecret = new Key(baseSecretBytes);
         var perCommitmentSecretBytes = Convert
@@ -1171,23 +650,4 @@ public class Bolt3IntegrationTests
     }
 
     #endregion
-
-    private void GenerateHtlcs()
-    {
-        _offeredHtlc2 = new Htlc(LightningMoney.Satoshis(2_000), null, HtlcDirection.Outgoing, 502, 2, 0,
-                                 Bolt3AppendixCVectors.Htlc2PaymentHash, HtlcState.Offered);
-        _offeredHtlc3 = new Htlc(LightningMoney.Satoshis(3_000), null, HtlcDirection.Outgoing, 503, 3, 0,
-                                 Bolt3AppendixCVectors.Htlc3PaymentHash, HtlcState.Offered);
-        _offeredHtlc5 = new Htlc(LightningMoney.Satoshis(5_000), null, HtlcDirection.Outgoing, 506, 5, 0,
-                                 Bolt3AppendixCVectors.Htlc5PaymentHash, HtlcState.Offered);
-        _offeredHtlc6 = new Htlc(LightningMoney.MilliSatoshis(5_000_001), null!, HtlcDirection.Outgoing, 505, 6, 0,
-                                 Bolt3AppendixCVectors.Htlc6PaymentHash, HtlcState.Offered);
-
-        _receivedHtlc0 = new Htlc(LightningMoney.Satoshis(1_000), null, HtlcDirection.Incoming, 500, 0, 0,
-                                  Bolt3AppendixCVectors.Htlc0PaymentHash, HtlcState.Offered);
-        _receivedHtlc1 = new Htlc(LightningMoney.Satoshis(2_000), null, HtlcDirection.Incoming, 501, 1, 0,
-                                  Bolt3AppendixCVectors.Htlc1PaymentHash, HtlcState.Offered);
-        _receivedHtlc4 = new Htlc(LightningMoney.Satoshis(4_000), null, HtlcDirection.Incoming, 504, 4, 0,
-                                  Bolt3AppendixCVectors.Htlc4PaymentHash, HtlcState.Offered);
-    }
 }

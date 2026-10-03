@@ -1,37 +1,38 @@
+using System.Security.Cryptography;
 using NBitcoin;
-using NBitcoin.Secp256k1;
 
 namespace NLightning.Infrastructure.Bitcoin.Services;
 
-using Crypto.Contexts;
 using Domain.Crypto.Constants;
+using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Interfaces;
 using Infrastructure.Crypto.Hashes;
 
 public class KeyDerivationService : IKeyDerivationService
 {
+    private readonly ISecp256K1Math _secp256K1Math;
+
+    public KeyDerivationService(ISecp256K1Math secp256K1Math)
+    {
+        _secp256K1Math = secp256K1Math;
+    }
+
     /// <summary>
     /// Derives a public key using the formula: basepoint + SHA256(per_commitment_point || basepoint) * G
     /// </summary>
     public CompactPubKey DerivePublicKey(CompactPubKey compactBasepoint, CompactPubKey compactPerCommitmentPoint)
     {
-        var basePoint = new PubKey(compactBasepoint);
-        var percCommitmentPoint = new PubKey(compactPerCommitmentPoint);
-
         // Calculate SHA256(per_commitment_point || basepoint)
         Span<byte> hashBytes = stackalloc byte[CryptoConstants.Sha256HashLen];
-        ComputeSha256(percCommitmentPoint, basePoint, hashBytes);
-
-        // Create a private key from the hash (this represents the scalar value)
-        var hashPrivateKey = new Key(hashBytes.ToArray());
+        ComputeSha256(compactPerCommitmentPoint, compactBasepoint, hashBytes);
 
         // Get the EC point representation of hash*G
-        var hashPoint = hashPrivateKey.PubKey;
+        using var hashPrivateKey = new Key(hashBytes.ToArray());
+        CompactPubKey hashPoint = hashPrivateKey.PubKey.ToBytes();
 
-        // Add the base point to the hash point (EC point addition)
-        // NBitcoin doesn't have direct point addition, so we use a trick with BIP32 derivation
-        return AddPubKeys(basePoint, hashPoint);
+        // basepoint + hash*G
+        return _secp256K1Math.AddPubKeys(compactBasepoint, hashPoint);
     }
 
     /// <summary>
@@ -39,17 +40,13 @@ public class KeyDerivationService : IKeyDerivationService
     /// </summary>
     public PrivKey DerivePrivateKey(PrivKey basepointSecretPriv, CompactPubKey compactPerCommitmentPoint)
     {
-        var basepointSecret = new Key(basepointSecretPriv);
-        var perCommitmentPoint = new PubKey(compactPerCommitmentPoint);
+        using var basepointSecret = new Key(basepointSecretPriv);
+        CompactPubKey basepoint = basepointSecret.PubKey.ToBytes();
 
-        Span<byte> hashBytes = stackalloc byte[CryptoConstants.Sha256HashLen];
-        ComputeSha256(perCommitmentPoint, basepointSecret.PubKey, hashBytes);
+        var hashBytes = new byte[CryptoConstants.Sha256HashLen];
+        ComputeSha256(compactPerCommitmentPoint, basepoint, hashBytes);
 
-        // Create a private key from the hash
-        var hashPrivateKey = new Key(hashBytes.ToArray());
-
-        // Combine the two private keys
-        return AddPrivateKeys(basepointSecret, hashPrivateKey).ToBytes();
+        return _secp256K1Math.AddPrivKeys(basepointSecretPriv, hashBytes);
     }
 
     /// <summary>
@@ -58,24 +55,19 @@ public class KeyDerivationService : IKeyDerivationService
     public CompactPubKey DeriveRevocationPubKey(CompactPubKey compactRevocationBasepoint,
                                                 CompactPubKey compactPerCommitmentPoint)
     {
-        var revocationBasepoint = new PubKey(compactRevocationBasepoint);
-        var perCommitmentPoint = new PubKey(compactPerCommitmentPoint);
-
         Span<byte> hash1 = stackalloc byte[CryptoConstants.Sha256HashLen];
         Span<byte> hash2 = stackalloc byte[CryptoConstants.Sha256HashLen];
-        ComputeSha256(revocationBasepoint, perCommitmentPoint, hash1);
-        ComputeSha256(perCommitmentPoint, revocationBasepoint, hash2);
+        ComputeSha256(compactRevocationBasepoint, compactPerCommitmentPoint, hash1);
+        ComputeSha256(compactPerCommitmentPoint, compactRevocationBasepoint, hash2);
 
         // Calculate revocation_basepoint * SHA256(revocation_basepoint || per_commitment_point)
-        var term1PrivKey = new Key(hash1.ToArray());
-        var term1 = MultiplyPubKey(revocationBasepoint, term1PrivKey.ToBytes());
+        var term1 = _secp256K1Math.MultiplyPubKey(compactRevocationBasepoint, hash1);
 
         // Calculate per_commitment_point * SHA256(per_commitment_point || revocation_basepoint)
-        var term2PrivKey = new Key(hash2.ToArray());
-        var term2 = MultiplyPubKey(perCommitmentPoint, term2PrivKey.ToBytes());
+        var term2 = _secp256K1Math.MultiplyPubKey(compactPerCommitmentPoint, hash2);
 
         // Add the two terms
-        return AddPubKeys(term1, term2);
+        return _secp256K1Math.AddPubKeys(term1, term2);
     }
 
     /// <summary>
@@ -83,25 +75,39 @@ public class KeyDerivationService : IKeyDerivationService
     /// </summary>
     public PrivKey DeriveRevocationPrivKey(PrivKey revocationBasepointSecretPriv, PrivKey perCommitmentSecretPriv)
     {
-        var revocationBasepointSecret = new Key(revocationBasepointSecretPriv);
-        var perCommitmentSecret = new Key(perCommitmentSecretPriv);
+        using var revocationBasepointSecret = new Key(revocationBasepointSecretPriv);
+        using var perCommitmentSecret = new Key(perCommitmentSecretPriv);
 
-        var revocationBasepoint = revocationBasepointSecret.PubKey;
-        var perCommitmentPoint = perCommitmentSecret.PubKey;
+        CompactPubKey revocationBasepoint = revocationBasepointSecret.PubKey.ToBytes();
+        CompactPubKey perCommitmentPoint = perCommitmentSecret.PubKey.ToBytes();
 
         Span<byte> hash1 = stackalloc byte[CryptoConstants.Sha256HashLen];
         Span<byte> hash2 = stackalloc byte[CryptoConstants.Sha256HashLen];
         ComputeSha256(revocationBasepoint, perCommitmentPoint, hash1);
         ComputeSha256(perCommitmentPoint, revocationBasepoint, hash2);
 
-        // Calculate revocation_basepoint_secret * SHA256(revocation_basepoint || per_commitment_point)
-        var term1 = MultiplyPrivateKey(revocationBasepointSecret, hash1.ToArray());
+        // Both terms are secret: either one, together with public data, reveals the corresponding base secret.
+        byte[]? term1 = null;
+        byte[]? term2 = null;
+        try
+        {
+            // Calculate revocation_basepoint_secret * SHA256(revocation_basepoint || per_commitment_point)
+            term1 = _secp256K1Math.MultiplyPrivKey(revocationBasepointSecretPriv, hash1);
 
-        // Calculate per_commitment_secret * SHA256(per_commitment_point || revocation_basepoint)
-        var term2 = MultiplyPrivateKey(perCommitmentSecret, hash2.ToArray());
+            // Calculate per_commitment_secret * SHA256(per_commitment_point || revocation_basepoint)
+            term2 = _secp256K1Math.MultiplyPrivKey(perCommitmentSecretPriv, hash2);
 
-        // Add the two terms
-        return AddPrivateKeys(term1, term2).ToBytes();
+            // Add the two terms
+            return _secp256K1Math.AddPrivKeys(term1, term2);
+        }
+        finally
+        {
+            if (term1 is not null)
+                CryptographicOperations.ZeroMemory(term1);
+
+            if (term2 is not null)
+                CryptographicOperations.ZeroMemory(term2);
+        }
     }
 
     /// <summary>
@@ -133,93 +139,11 @@ public class KeyDerivationService : IKeyDerivationService
     /// <summary>
     /// Helper method to calculate SHA256(point1 || point2)
     /// </summary>
-    private static void ComputeSha256(PubKey point1, PubKey point2, Span<byte> buffer)
+    private static void ComputeSha256(ReadOnlySpan<byte> point1, ReadOnlySpan<byte> point2, Span<byte> buffer)
     {
         using var sha256 = new Sha256();
-        sha256.AppendData(point1.ToBytes());
-        sha256.AppendData(point2.ToBytes());
+        sha256.AppendData(point1);
+        sha256.AppendData(point2);
         sha256.GetHashAndReset(buffer);
-    }
-
-    /// <summary>
-    /// Adds two public keys (EC point addition)
-    /// </summary>
-    private static CompactPubKey AddPubKeys(PubKey pubKey1, PubKey pubKey2)
-    {
-        // Create ECPubKey objects
-        if (!ECPubKey.TryCreate(pubKey1.ToBytes(), NLightningCryptoContext.Instance, out _, out var ecPubKey1))
-            throw new ArgumentException("Invalid public key", nameof(pubKey1));
-
-        if (!ECPubKey.TryCreate(pubKey2.ToBytes(), NLightningCryptoContext.Instance, out _, out var ecPubKey2))
-            throw new ArgumentException("Invalid public key", nameof(pubKey2));
-
-        // Use TryCombine to add the pubkeys
-        if (!ECPubKey.TryCombine(NLightningCryptoContext.Instance, [ecPubKey1, ecPubKey2], out var combinedPubKey))
-            throw new InvalidOperationException("Failed to combine public keys");
-
-        // Create a new PubKey from the combined ECPubKey
-        return new PubKey(combinedPubKey!.ToBytes()).ToBytes();
-    }
-
-    /// <summary>
-    /// Multiplies a public key by a scalar
-    /// </summary>
-    private static PubKey MultiplyPubKey(PubKey pubKey, byte[] scalar)
-    {
-        ArgumentNullException.ThrowIfNull(pubKey);
-        if (scalar is not { Length: 32 })
-            throw new ArgumentException("Scalar must be 32 bytes", nameof(scalar));
-
-        // Convert PubKey to ECPubKey
-        if (!ECPubKey.TryCreate(pubKey.ToBytes(), NLightningCryptoContext.Instance, out var compressed, out var ecPubKey))
-            throw new ArgumentException("Invalid public key", nameof(pubKey));
-
-        // Multiply using TweakMul
-        var multipliedPubKey = ecPubKey.TweakMul(scalar);
-
-        // Create a new PubKey from the result
-        return new PubKey(multipliedPubKey.ToBytes(compressed));
-    }
-
-    /// <summary>
-    /// Adds two private keys (modular addition in the EC field)
-    /// </summary>
-    private Key AddPrivateKeys(Key key1, Key key2)
-    {
-        ArgumentNullException.ThrowIfNull(key1);
-        ArgumentNullException.ThrowIfNull(key2);
-
-        // Extract the bytes from the second key
-        var key2Bytes = key2.ToBytes();
-
-        // Create a temporary ECPrivKey from the first key's bytes
-        if (!NLightningCryptoContext.Instance.TryCreateECPrivKey(key1.ToBytes(), out var ecKey1))
-            throw new InvalidOperationException("Invalid first private key");
-
-        // Add the second key to the first using TweakAdd
-        var resultKey = ecKey1.TweakAdd(key2Bytes);
-
-        // Create a new Key with the result
-        return new Key(resultKey.sec.ToBytes());
-    }
-
-    /// <summary>
-    /// Multiplies a private key by a scalar
-    /// </summary>
-    private static Key MultiplyPrivateKey(Key key, byte[] scalar)
-    {
-        ArgumentNullException.ThrowIfNull(key);
-        if (scalar is not { Length: 32 })
-            throw new ArgumentException("Scalar must be 32 bytes", nameof(scalar));
-
-        // Create a temporary ECPrivKey from the key's bytes
-        if (!NLightningCryptoContext.Instance.TryCreateECPrivKey(key.ToBytes(), out var ecKey))
-            throw new InvalidOperationException("Invalid private key");
-
-        // Multiply using TweakMul
-        var multipliedKey = ecKey.TweakMul(scalar);
-
-        // Create a new Key with the result
-        return new Key(multipliedKey.sec.ToBytes());
     }
 }

@@ -7,12 +7,19 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Protocol.ValueObjects;
 using Domain.Serialization.Interfaces;
 using Exceptions;
 using Interfaces;
 
 public class AcceptChannel1MessageTypeSerializer : IMessageTypeSerializer<AcceptChannel1Message>
 {
+    /// <summary>
+    /// The <c>accept_channel_tlvs</c> types this node understands. BOLT 1: an unknown even type MUST fail the stream.
+    /// </summary>
+    private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
+        new HashSet<BigSize> { TlvConstants.UpfrontShutdownScript, TlvConstants.ChannelType };
+
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
     private readonly ITlvStreamSerializer _tlvStreamSerializer;
@@ -56,11 +63,12 @@ public class AcceptChannel1MessageTypeSerializer : IMessageTypeSerializer<Accept
             var payload = await payloadSerializer.DeserializeAsync(stream)
                        ?? throw new SerializationException("Error serializing payload");
 
-            // Deserialize extension
+            // Deserialize extension if available. A missing channel_type is not a wire error: BOLT 2 says to fail
+            // the channel, which the channel-open validator does.
             if (stream.Position >= stream.Length)
-                throw new SerializationException("Required extension is missing");
+                return new AcceptChannel1Message(payload, null);
 
-            var extension = await _tlvStreamSerializer.DeserializeAsync(stream) ?? throw new SerializationException("Required extension is missing");
+            var extension = await _tlvStreamSerializer.DeserializeStrictAsync(stream, s_knownExtensionTypes);
             UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null;
             if (extension.TryGetTlv(TlvConstants.UpfrontShutdownScript, out var baseUpfrontShutdownTlv))
             {
@@ -70,13 +78,14 @@ public class AcceptChannel1MessageTypeSerializer : IMessageTypeSerializer<Accept
                 upfrontShutdownScriptTlv = tlvConverter.ConvertFromBase(baseUpfrontShutdownTlv!);
             }
 
-            if (!extension.TryGetTlv(TlvConstants.ChannelType, out var baseChannelTypeTlv))
-                throw new SerializationException("Required extension is missing");
-
-            var channelTypeTlvConverter =
-                _tlvConverterFactory.GetConverter<ChannelTypeTlv>()
-             ?? throw new SerializationException($"No serializer found for tlv type {nameof(ChannelTypeTlv)}");
-            var channelTypeTlv = channelTypeTlvConverter.ConvertFromBase(baseChannelTypeTlv!);
+            ChannelTypeTlv? channelTypeTlv = null;
+            if (extension.TryGetTlv(TlvConstants.ChannelType, out var baseChannelTypeTlv))
+            {
+                var channelTypeTlvConverter =
+                    _tlvConverterFactory.GetConverter<ChannelTypeTlv>()
+                 ?? throw new SerializationException($"No serializer found for tlv type {nameof(ChannelTypeTlv)}");
+                channelTypeTlv = channelTypeTlvConverter.ConvertFromBase(baseChannelTypeTlv!);
+            }
 
             return new AcceptChannel1Message(payload, channelTypeTlv, upfrontShutdownScriptTlv);
         }

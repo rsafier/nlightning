@@ -24,10 +24,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="MessagePack" Version="3.1.4"/>
+    <PackageReference Include="MessagePack" Version="3.1.10"/>
     <PackageReference Include="NBitcoin" Version="9.0.5"/>
     <PackageReference Include="NBitcoin.Secp256k1" Version="3.2.0"/>
     <PackageReference Include="NetMQ" Version="4.0.2.2"/>
+    <!-- Pin: NetMQ 4.0.2.2 pulls System.Security.Cryptography.Xml 8.0.2 (NU1903, NL-170). -->
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.12"/>
   </ItemGroup>
 
   <ItemGroup>

@@ -37,6 +37,20 @@ public class PingMessageTests
     }
 
     [Fact]
+    public async Task Given_PingWithIgnoredBytes_When_DeserializeAsync_Then_IgnoredBytesAreConsumed()
+    {
+        // Arrange
+        var stream = new MemoryStream(Convert.FromHexString("00030002aabb"));
+
+        // Act
+        var pingMessage = await _pingMessageTypeSerializer.DeserializeAsync(stream);
+
+        // Assert
+        Assert.Equal(stream.Length, stream.Position);
+        Assert.Equal(Convert.FromHexString("aabb"), pingMessage.Payload.Ignored);
+    }
+
+    [Fact]
     public async Task Given_ValidPayload_When_SerializeAsync_Then_WritesCorrectDataToStream()
     {
         // Arrange

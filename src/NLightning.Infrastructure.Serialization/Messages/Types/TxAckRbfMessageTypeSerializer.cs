@@ -8,11 +8,22 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Protocol.ValueObjects;
 using Exceptions;
 using Interfaces;
 
 public class TxAckRbfMessageTypeSerializer : IMessageTypeSerializer<TxAckRbfMessage>
 {
+    /// <summary>
+    /// The <c>tx_ack_rbf_tlvs</c> types this node understands. BOLT 1: an unknown even type MUST fail the stream.
+    /// </summary>
+    private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
+        new HashSet<BigSize>
+        {
+            TlvConstants.FundingOutputContribution, TlvConstants.RequireConfirmedInputs,
+            TlvConstants.LiquidityAds
+        };
+
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
     private readonly ITlvStreamSerializer _tlvStreamSerializer;
@@ -60,8 +71,8 @@ public class TxAckRbfMessageTypeSerializer : IMessageTypeSerializer<TxAckRbfMess
             if (stream.Position >= stream.Length)
                 return new TxAckRbfMessage(payload);
 
-            var extension = await _tlvStreamSerializer.DeserializeAsync(stream);
-            if (extension is null)
+            var extension = await _tlvStreamSerializer.DeserializeStrictAsync(stream, s_knownExtensionTypes);
+            if (!extension.Any())
                 return new TxAckRbfMessage(payload);
 
             FundingOutputContributionTlv? fundingOutputContributionTlv = null;
@@ -83,7 +94,17 @@ public class TxAckRbfMessageTypeSerializer : IMessageTypeSerializer<TxAckRbfMess
                 requireConfirmedInputsTlv = tlvConverter.ConvertFromBase(baserequireConfirmedInputsTlv!);
             }
 
-            return new TxAckRbfMessage(payload, fundingOutputContributionTlv, requireConfirmedInputsTlv);
+            ProvideFundingTlv? provideFundingTlv = null;
+            if (extension.TryGetTlv(TlvConstants.LiquidityAds, out var baseLiquidityAdsTlv))
+            {
+                var tlvConverter = _tlvConverterFactory.GetConverter<ProvideFundingTlv>()
+                                ?? throw new SerializationException(
+                                       $"No serializer found for tlv type {nameof(ProvideFundingTlv)}");
+                provideFundingTlv = tlvConverter.ConvertFromBase(baseLiquidityAdsTlv!);
+            }
+
+            return new TxAckRbfMessage(payload, fundingOutputContributionTlv, requireConfirmedInputsTlv,
+                                       provideFundingTlv);
         }
         catch (SerializationException e)
         {

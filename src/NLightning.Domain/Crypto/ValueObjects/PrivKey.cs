@@ -1,6 +1,9 @@
+using System.Security.Cryptography;
+
 namespace NLightning.Domain.Crypto.ValueObjects;
 
 using Constants;
+using Utils.Extensions;
 
 public readonly record struct PrivKey
 {
@@ -16,10 +19,28 @@ public readonly record struct PrivKey
     public PrivKey(byte[] value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        if (value is null || value.Length != CryptoConstants.PrivkeyLen)
+        if (value.Length != CryptoConstants.PrivkeyLen)
             throw new ArgumentException($"Private key must be {CryptoConstants.PrivkeyLen} bytes long.", nameof(value));
 
         Value = value;
+    }
+
+    /// <summary>
+    /// Compares the key bytes in constant time.
+    /// </summary>
+    public bool Equals(PrivKey other)
+    {
+        // ReSharper disable ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
+        if (Value is null || other.Value is null)
+            return Value is null && other.Value is null;
+        // ReSharper restore ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
+
+        return CryptographicOperations.FixedTimeEquals(Value, other.Value);
+    }
+
+    public override int GetHashCode()
+    {
+        return Value.GetByteArrayHashCode();
     }
 
     public static implicit operator PrivKey(byte[] bytes) => new(bytes);

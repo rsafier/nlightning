@@ -1,0 +1,298 @@
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace NLightning.Application.Tests.Channels.Memory;
+
+using Domain.Channels.Enums;
+using Domain.Channels.Events;
+using Domain.Channels.Models;
+using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
+using Domain.Money;
+using Infrastructure.Repositories.Memory;
+
+/// <summary>
+/// NL-392: temporary channels of failed or abandoned opens leave <see cref="ChannelMemoryRepository"/>.
+/// </summary>
+public class ChannelMemoryRepositoryTests
+{
+    private static readonly CompactPubKey s_peerA = CreatePubKey(1);
+    private static readonly CompactPubKey s_peerB = CreatePubKey(2);
+
+    [Fact]
+    public void Given_TemporaryChannelsOfTwoPeers_When_RemoveTemporaryChannels_Then_OnlyThatPeersAreRemoved()
+    {
+        // Arrange
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance);
+        var a1 = CreateTemporaryChannel(s_peerA, 1);
+        var a2 = CreateTemporaryChannel(s_peerA, 2);
+        var b1 = CreateTemporaryChannel(s_peerB, 3);
+        repository.AddTemporaryChannel(s_peerA, a1);
+        repository.AddTemporaryChannel(s_peerA, a2);
+        repository.AddTemporaryChannel(s_peerB, b1);
+
+        // Act
+        var removed = repository.RemoveTemporaryChannels(s_peerA);
+
+        // Assert
+        Assert.Equal(2, removed.Count);
+        Assert.Contains(a1.ChannelId, removed);
+        Assert.Contains(a2.ChannelId, removed);
+        Assert.False(repository.TryGetTemporaryChannel(s_peerA, a1.ChannelId, out _));
+        Assert.False(repository.TryGetTemporaryChannelState(s_peerA, a2.ChannelId, out _));
+        Assert.True(repository.TryGetTemporaryChannel(s_peerB, b1.ChannelId, out _));
+    }
+
+    [Fact]
+    public void Given_ATemporaryChannelOlderThanTheTimeout_When_Looked_Up_Then_ItIsGone()
+    {
+        // Arrange
+        var clock = new ManualClock();
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance, clock)
+        {
+            TemporaryChannelTimeout = TimeSpan.FromMinutes(10)
+        };
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddTemporaryChannel(s_peerA, channel);
+
+        // Act
+        clock.Advance(TimeSpan.FromMinutes(9));
+        var foundBefore = repository.TryGetTemporaryChannelState(s_peerA, channel.ChannelId, out var stateBefore);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        var foundAfter = repository.TryGetTemporaryChannel(s_peerA, channel.ChannelId, out _);
+
+        // Assert
+        Assert.True(foundBefore);
+        Assert.Equal(ChannelState.V1Opening, stateBefore);
+        Assert.False(foundAfter);
+        Assert.False(repository.TryGetTemporaryChannelState(s_peerA, channel.ChannelId, out _));
+        Assert.Empty(repository.RemoveTemporaryChannels(s_peerA));
+    }
+
+    [Fact]
+    public void Given_AnExpiredTemporaryChannel_When_AnotherOpenStarts_Then_TheExpiredOneIsDropped()
+    {
+        // Arrange (an abandoned open nobody looks up again must not stay in memory)
+        var clock = new ManualClock();
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance, clock);
+        var abandoned = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddTemporaryChannel(s_peerA, abandoned);
+        clock.Advance(ChannelMemoryRepository.DefaultTemporaryChannelTimeout);
+
+        // Act
+        repository.AddTemporaryChannel(s_peerB, CreateTemporaryChannel(s_peerB, 2));
+        clock.Advance(-ChannelMemoryRepository.DefaultTemporaryChannelTimeout);
+
+        // Assert: gone although the clock went back below the timeout
+        Assert.False(repository.TryGetTemporaryChannel(s_peerA, abandoned.ChannelId, out _));
+        Assert.Empty(repository.RemoveTemporaryChannels(s_peerA));
+    }
+
+    [Fact]
+    public void Given_ARemovedTemporaryChannel_When_TheSameIdIsAddedAgain_Then_ItGetsAFreshTimeout()
+    {
+        // Arrange
+        var clock = new ManualClock();
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance, clock);
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddTemporaryChannel(s_peerA, channel);
+        clock.Advance(TimeSpan.FromMinutes(9));
+        Assert.True(repository.TryRemoveTemporaryChannel(s_peerA, channel.ChannelId));
+
+        // Act
+        repository.AddTemporaryChannel(s_peerA, channel);
+        clock.Advance(TimeSpan.FromMinutes(5));
+
+        // Assert
+        Assert.True(repository.TryGetTemporaryChannel(s_peerA, channel.ChannelId, out _));
+    }
+
+    [Fact]
+    public void Given_ADisconnectDuringAnInFlightAccept_When_TheHandlerUpgrades_Then_TheChannelIsStillUpgraded()
+    {
+        // Arrange (RemoveTemporaryChannels runs outside the channel lock while accept_channel's handler holds its own
+        // reference to the temporary channel)
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance);
+        var temporary = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddTemporaryChannel(s_peerA, temporary);
+        Assert.True(repository.TryGetTemporaryChannel(s_peerA, temporary.ChannelId, out var heldByHandler));
+        ChannelUpgradedEventArgs? upgraded = null;
+        repository.OnChannelUpgraded += (_, args) => upgraded = args;
+
+        // Act
+        repository.RemoveTemporaryChannels(s_peerA);
+        var funded = CreateTemporaryChannel(heldByHandler.RemoteNodeId, 9);
+        repository.UpgradeChannel(temporary.ChannelId, funded);
+
+        // Assert
+        Assert.True(repository.TryGetChannel(funded.ChannelId, out _));
+        Assert.NotNull(upgraded);
+        Assert.Equal(temporary.ChannelId, upgraded.OldChannelId);
+        Assert.Equal(funded.ChannelId, upgraded.NewChannelId);
+    }
+
+    [Fact]
+    public void Given_AnExpiryDuringAnInFlightAccept_When_TheHandlerUpgrades_Then_TheChannelIsStillUpgraded()
+    {
+        // Arrange (another open's AddTemporaryChannel prunes expired entries outside the lock)
+        var clock = new ManualClock();
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance, clock);
+        var temporary = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddTemporaryChannel(s_peerA, temporary);
+        clock.Advance(ChannelMemoryRepository.DefaultTemporaryChannelTimeout);
+        repository.AddTemporaryChannel(s_peerB, CreateTemporaryChannel(s_peerB, 2));
+        var raised = false;
+        repository.OnChannelUpgraded += (_, _) => raised = true;
+
+        // Act
+        var funded = CreateTemporaryChannel(s_peerA, 9);
+        repository.UpgradeChannel(temporary.ChannelId, funded);
+
+        // Assert
+        Assert.True(raised);
+        Assert.True(repository.TryGetChannel(funded.ChannelId, out _));
+        Assert.False(repository.TryGetTemporaryChannel(s_peerA, temporary.ChannelId, out _));
+    }
+
+    [Fact]
+    public void Given_AChannelTurningOpen_When_Updated_Then_OnChannelOpenedIsRaisedOnce()
+    {
+        // Arrange - NL-054: the application notification that both channel_ready messages were exchanged
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance);
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddChannel(channel);
+        var opened = 0;
+        repository.OnChannelOpened += (_, args) =>
+        {
+            Assert.Equal(channel.ChannelId, args.Channel.ChannelId);
+            Assert.Equal(ChannelState.Open, args.Channel.State);
+            opened++;
+        };
+
+        // Act
+        channel.UpdateState(ChannelState.Open);
+        repository.UpdateChannel(channel);
+        repository.UpdateChannel(channel); // staying Open is not another open
+
+        // Assert
+        Assert.Equal(1, opened);
+    }
+
+    [Fact]
+    public void Given_AnAlreadyOpenChannel_When_AddedAndUpdated_Then_OnChannelOpenedIsNotRaised()
+    {
+        // Arrange - a channel loaded at startup is already usable; nothing became ready
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance);
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        channel.UpdateState(ChannelState.Open);
+        var raised = false;
+        repository.OnChannelOpened += (_, _) => raised = true;
+
+        // Act
+        repository.AddChannel(channel);
+        repository.UpdateChannel(channel);
+
+        // Assert
+        Assert.False(raised);
+    }
+
+    [Fact]
+    public void Given_AMutatedChannelWithoutUpdateChannel_When_TheGuardIsOff_Then_LookupsStayQuiet()
+    {
+        // Arrange - the shared mutable model is the repository's design (NL-138): callers may forget UpdateChannel
+        // and the repository does not police it in production
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance);
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddChannel(channel);
+
+        // Act
+        channel.UpdateState(ChannelState.Open);
+
+        // Assert
+        Assert.True(repository.TryGetChannel(channel.ChannelId, out var found));
+        Assert.Equal(ChannelState.Open, found.State);
+    }
+
+    [Fact]
+    public void Given_AMutatedChannelWithoutUpdateChannel_When_TheGuardIsOn_Then_TheNextLookupThrows()
+    {
+        // Arrange - NL-138: a mutation that skips UpdateChannel never raises OnChannelUpdated
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance)
+        {
+            DetectUnpublishedMutations = true
+        };
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddChannel(channel);
+        channel.UpdateState(ChannelState.Open);
+
+        // Act
+        var caught = Assert.Throws<InvalidOperationException>(() => repository.TryGetChannel(channel.ChannelId, out _));
+
+        // Assert
+        Assert.Contains("UpdateChannel", caught.Message);
+        Assert.Contains("OnChannelUpdated", caught.Message);
+    }
+
+    [Fact]
+    public void Given_AMutatedChannelPublishedWithUpdateChannel_When_TheGuardIsOn_Then_LookupsStayQuiet()
+    {
+        // Arrange
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance)
+        {
+            DetectUnpublishedMutations = true
+        };
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddChannel(channel);
+        channel.UpdateState(ChannelState.Open);
+
+        // Act
+        repository.UpdateChannel(channel);
+
+        // Assert
+        Assert.True(repository.TryGetChannel(channel.ChannelId, out var found));
+        Assert.Equal(ChannelState.Open, found.State);
+    }
+
+    [Fact]
+    public void Given_AMutationOnATemporaryChannel_When_TheGuardIsOn_Then_TryGetChannelStillThrows()
+    {
+        // Arrange - the guard watches the registered channels only: temporary channels have no published state
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance)
+        {
+            DetectUnpublishedMutations = true
+        };
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddTemporaryChannel(s_peerA, channel);
+
+        // Act
+        Assert.True(repository.TryGetTemporaryChannel(s_peerA, channel.ChannelId, out _));
+
+        // Assert: the registered-channel lookup of an unknown id stays a plain miss
+        Assert.False(repository.TryGetChannel(channel.ChannelId, out _));
+    }
+
+    private static ChannelModel CreateTemporaryChannel(CompactPubKey peer, byte seed)
+    {
+        var channelId = new ChannelId(Enumerable.Repeat(seed, 32).ToArray());
+        var keySet = new ChannelKeySetModel(0, peer, peer, peer, peer, peer, peer);
+        return new ChannelModel(new ChannelParams(), channelId, null, null, true, null, null,
+                                LightningMoney.Satoshis(100_000), keySet, 0, 0, LightningMoney.Zero, null, 0, peer, 0,
+                                ChannelState.V1Opening, ChannelVersion.V1);
+    }
+
+    private static CompactPubKey CreatePubKey(byte seed)
+    {
+        var bytes = new byte[33];
+        bytes[0] = 0x02;
+        bytes[32] = seed;
+        return new CompactPubKey(bytes);
+    }
+
+    private sealed class ManualClock : TimeProvider
+    {
+        private DateTimeOffset _now = new(2026, 9, 26, 0, 0, 0, TimeSpan.Zero);
+
+        public override DateTimeOffset GetUtcNow() => _now;
+
+        public void Advance(TimeSpan by) => _now += by;
+    }
+}

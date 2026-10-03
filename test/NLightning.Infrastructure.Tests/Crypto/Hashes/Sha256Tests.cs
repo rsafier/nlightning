@@ -24,6 +24,25 @@ public class Sha256Tests
         }
     }
 
+    [Fact]
+    public void Given_ADisposedSha256_When_DisposedAgainFromManyThreads_Then_TheStateIsFreedOnce()
+    {
+        // Arrange: a second free of the libsodium state crashed the process (NL-560)
+        var sha256 = new Sha256();
+        sha256.AppendData("nltg"u8);
+        sha256.Dispose();
+
+        // Act
+        Parallel.For(0, 16, _ => sha256.Dispose());
+
+        // Assert: reaching this line is the proof; a new instance still hashes
+        using var fresh = new Sha256();
+        Span<byte> result = stackalloc byte[32];
+        fresh.GetHashAndReset(result);
+        Assert.Equal(Convert.FromHexString("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+                     result.ToArray());
+    }
+
     private class TestVector(int len)
     {
         public int Len { get; } = len;

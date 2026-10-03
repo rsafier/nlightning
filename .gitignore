@@ -272,6 +272,8 @@ Generated_Code/
 # because we have git ;-)
 _UpgradeReport_Files/
 Backup*/
+# ...but not the static channel backup code (src/NLightning.Application/Channels/Backup, its tests)
+!**/Channels/Backup/
 UpgradeLog*.XML
 UpgradeLog*.htm
 ServiceFabricBackup/
@@ -514,3 +516,6 @@ fee_estimation_cache.bin
 # Node modules and generated files
 **/node_modules/
 **/wwwroot/blazorSodium.bundle.*
+
+# Claude Code agent worktrees
+.claude/worktrees/

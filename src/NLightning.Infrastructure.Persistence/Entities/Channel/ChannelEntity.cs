@@ -70,6 +70,20 @@ public class ChannelEntity
     public required ulong RemoteRevocationNumber { get; set; }
 
     /// <summary>
+    /// The number of our current commitment (the one the peer signed for us).
+    /// </summary>
+    /// <remarks>
+    /// Persisted on its own: it runs one ahead of <see cref="LocalRevocationNumber"/> between receiving a
+    /// commitment_signed and sending the revoke_and_ack for the previous commitment.
+    /// </remarks>
+    public required ulong LocalCommitmentNumber { get; set; }
+
+    /// <summary>
+    /// The number of the peer's current commitment (the one we signed for them).
+    /// </summary>
+    public required ulong RemoteCommitmentNumber { get; set; }
+
+    /// <summary>
     /// The last signature sent to the remote node, stored as a byte array.
     /// </summary>
     public byte[]? LastSentSignature { get; set; }
@@ -91,17 +105,148 @@ public class ChannelEntity
     public required byte Version { get; set; }
 
     /// <summary>
-    /// The current balance of the local node in satoshis.
+    /// The current (gross) balance of the local node in millisatoshis (NL-191: whole satoshis lost the msat part).
     /// </summary>
-    public required decimal LocalBalanceSatoshis { get; set; }
+    public required long LocalBalanceMsat { get; set; }
 
     /// <summary>
-    /// The current balance of the remote node in satoshis.
+    /// The current (gross) balance of the remote node in millisatoshis.
     /// </summary>
-    public required decimal RemoteBalanceSatoshis { get; set; }
+    public required long RemoteBalanceMsat { get; set; }
 
-    public AddressType? ChangeAddressType { get; set; }
+    /// <summary>
+    /// The real short channel id (block height, tx index, output index of the funding output), once the funding
+    /// transaction is confirmed (NL-225).
+    /// </summary>
+    public ShortChannelId? ShortChannelId { get; set; }
+
+    /// <summary>
+    /// The scid alias the peer asked us to use for this channel (BOLT 2 channel_ready short_channel_id TLV), if any.
+    /// </summary>
+    public ShortChannelId? RemoteAlias { get; set; }
+
+    /// <summary>
+    /// The peer's per-commitment point for its next commitment (<c>RemoteCommitmentNumber + 1</c>), from
+    /// <c>channel_ready</c> or the last <c>revoke_and_ack</c> (NL-232). The point of its current commitment is on the
+    /// remote current <see cref="CommitmentEntity"/>.
+    /// </summary>
+    public CompactPubKey? RemoteNextPerCommitmentPoint { get; set; }
+
+    /// <summary>
+    /// The wire bytes of the updates and <c>commitment_signed</c> we sent last, kept until the peer revokes and
+    /// retransmitted verbatim on reestablish (plan decision D4).
+    /// </summary>
+    public byte[]? SentCommitDiff { get; set; }
+
+    /// <summary>
+    /// <c>LastSentCommitmentMessage</c>: which of <c>commitment_signed</c>/<c>revoke_and_ack</c> we sent last.
+    /// </summary>
+    public byte LastSentOrder { get; set; }
+
+    /// <summary>
+    /// The <c>error</c> message we sent when we failed the channel (re-sent on reconnection).
+    /// </summary>
+    public byte[]? ErrorSent { get; set; }
+
+    /// <summary>
+    /// True once <c>channel_reestablish</c> proved that we lost data: never sign or broadcast our commitment again.
+    /// </summary>
+    public bool DataLossDetected { get; set; }
+
+    /// <summary>
+    /// The <c>max_dust_htlc_exposure_msat</c> policy the commitment snapshot runs under (<c>CommitmentParams</c>), or
+    /// null when the check is off. Written with the snapshot by <c>ChannelStateDbRepository</c> and passed back on
+    /// reload (NL-242).
+    /// </summary>
+    public ulong? MaxDustHtlcExposureMsat { get; set; }
+
+    /// <summary>
+    /// The first revoked peer commitment number the revocation log (<see cref="RevokedCommitmentEntity"/>) covers, or
+    /// null when it covers every one (channels created after migration <c>AddOnchainResolution</c>). The migration sets
+    /// it to <c>RemoteCommitmentNumber</c> for channels that already had revoked commitments, whose HTLC sets were not
+    /// kept (BOLT 5 plan §8 risk 5). Never written by <c>ChannelDbRepository.UpdateAsync</c>.
+    /// </summary>
+    public ulong? RevocationLogFromNumber { get; set; }
+
+    /// <summary>
+    /// The script of the <c>shutdown</c> we sent (persisted before it is sent, re-sent on reconnection), or null
+    /// (migration <c>AddShutdownState</c>, BOLT2 plan N10).
+    /// </summary>
+    public byte[]? LocalShutdownScript { get; set; }
+
+    /// <summary>The script of the peer's <c>shutdown</c>, or null.</summary>
+    public byte[]? RemoteShutdownScript { get; set; }
+
+    /// <summary>
+    /// The peer's next HTLC id when our <c>shutdown</c> was persisted: incoming HTLCs from this id on were added after
+    /// it and are failed back (NL-279, B2-SHUT-S08). Null before our <c>shutdown</c> (migration
+    /// <c>AddShutdownHtlcBoundaryAndAddressReservation</c>).
+    /// </summary>
+    public ulong? FirstRemoteHtlcIdAfterLocalShutdown { get; set; }
+
+    /// <summary>The txid of the agreed mutual close transaction, or null.</summary>
+    public TxId? ClosingTxId { get; set; }
+
+    /// <summary>The fully signed mutual close transaction (persisted before it is broadcast), or null.</summary>
+    public byte[]? ClosingTransaction { get; set; }
+
+    /// <summary>The protocol the mutual close was agreed with (<c>MutualCloseProtocol</c>: 1 legacy, 2 simple), or null
+    /// (migration <c>AddMutualCloseTerms</c>, NL-610).</summary>
+    public byte? CloseProtocol { get; set; }
+
+    /// <summary>For a simple close, whether we were the closer (we paid the fee), or null (NL-610).</summary>
+    public bool? LocalIsCloser { get; set; }
+
+    /// <summary>
+    /// The peer's <c>announcement_signatures</c> node signature for the channel's current short channel id, or null
+    /// (migration <c>AddGossipGraph</c>, BOLT 7 plan G1).
+    /// </summary>
+    public byte[]? RemoteAnnouncementNodeSig { get; set; }
+
+    /// <summary>The peer's <c>announcement_signatures</c> bitcoin signature, or null (with the node signature).</summary>
+    public byte[]? RemoteAnnouncementBitcoinSig { get; set; }
+
+    /// <summary>
+    /// When we sent our <c>announcement_signatures</c>, UTC ticks (<c>UtcTicksConverter</c>), or null while we have not.
+    /// </summary>
+    public DateTimeOffset? LocalAnnouncementSigsSentAt { get; set; }
+
+    /// <summary>
+    /// True for a channel opened with <c>open_channel2</c>/<c>accept_channel2</c> (migration <c>AddSpliceFundings</c>,
+    /// splicing plan wave DF); written only through <c>IChannelFundingDbRepository</c>.
+    /// </summary>
+    public bool IsDualFunded { get; set; }
+
+    /// <summary>Our contribution to a dual-funded channel's funding output, in satoshis (null for a v1 channel).</summary>
+    public long? LocalFundingContributionSatoshis { get; set; }
+
+    /// <summary>The peer's contribution to a dual-funded channel's funding output, in satoshis.</summary>
+    public long? RemoteFundingContributionSatoshis { get; set; }
+
+    /// <summary>
+    /// The amount the opener pushed to the other side at the open, in msat (NL-605, migration AddAccountingEvents): set
+    /// once by the open flow through <c>ChannelFundingDbRepository.SetPushAmountAsync</c>; null for channels opened
+    /// before it was recorded.
+    /// </summary>
+    public long? PushAmountMsat { get; set; }
+
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1, migration <c>AddAccountingFinancial</c>; at most 256 UTF-8 bytes), or null.
+    /// </summary>
+    public string? Label { get; set; }
+
+    /// <summary>
+    /// The operator's tags as one canonical <c>k=v</c> list (NL-602 A3-T1, at most 1 KiB), or null.
+    /// </summary>
+    public string? Tags { get; set; }
+
+    /// <summary>
+    /// The (Index, IsChange, AddressType) foreign key to the change address used by the funding transaction, if
+    /// there's one (NL-134: the IsChange and AddressType legs used to exist only as EF shadow properties).
+    /// </summary>
     public uint? ChangeAddressIndex { get; set; }
+    public bool? ChangeAddressIsChange { get; set; }
+    public AddressType? ChangeAddressAddressType { get; set; }
 
     /// <summary>
     /// The change address used by the funding transaction, if there's one
@@ -125,6 +270,11 @@ public class ChannelEntity
     /// Each HTLC represents a conditional payment in the channel.
     /// </summary>
     public virtual ICollection<HtlcEntity>? Htlcs { get; set; }
+
+    /// <summary>
+    /// The scid aliases we generated for this channel and sent to the peer in channel_ready.
+    /// </summary>
+    public virtual ICollection<ChannelLocalAliasEntity>? LocalAliases { get; set; }
 
     /// <summary>
     /// A collection of transactions that are monitored for a specific channel,

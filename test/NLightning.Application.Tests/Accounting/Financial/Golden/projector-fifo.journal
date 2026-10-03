@@ -1,0 +1,159 @@
+; NLightning accounting export, financial book (hledger journal, amounts in millisatoshi, costs in USD)
+commodity 1. msat
+commodity 1.00 USD
+account assets:lightning:channels
+account assets:onchain:clearing
+account assets:onchain:wallet
+account equity:opening-balances
+account equity:transfers:in
+account equity:transfers:out
+account equity:transfers:rebalance
+account expenses:fees:close
+account expenses:fees:funding
+account expenses:fees:routing
+account expenses:fees:withdraw
+account expenses:payments
+account income:gains:realized
+account income:routing
+account income:sales
+
+P 2026-01-01 00:00:00 msat 0.0000004 USD
+P 2026-01-10 00:00:00 msat 0.0000005 USD
+P 2026-01-20 00:00:00 msat 0.0000006 USD
+P 2026-02-01 00:00:00 msat 0.0000003 USD
+P 2026-02-10 00:00:00 msat 0.0000007 USD
+P 2026-02-15 00:00:00 msat 0.0000007 USD
+P 2026-02-20 00:00:00 msat 0.0000008 USD
+P 2026-03-01 00:00:00 msat 0.0000009 USD
+P 2026-03-10 00:00:00 msat 0.000001 USD
+
+2026-01-01 OpeningBalance
+    ; key: open:wallet
+    ; seq: 1
+    ; time: 2026-01-01T00:00:00.000Z
+    ; class Default
+    assets:onchain:wallet                             1000000000 msat @@ 400 USD
+    equity:opening-balances                          -1000000000 msat @@ 400 USD
+
+2026-01-10 WalletReceived
+    ; key: wallet:0000000000000000000000000000000000000000000000000000000000000001:0:in
+    ; seq: 3
+    ; time: 2026-01-10T00:00:00.000Z
+    ; class Default
+    assets:onchain:wallet                             1000000000 msat @@ 500 USD
+    equity:transfers:in                              -1000000000 msat @@ 500 USD
+
+2026-01-20 WalletOutputSpent
+    ; key: wallet:0000000000000000000000000000000000000000000000000000000000000002:0:spent
+    ; seq: 4
+    ; time: 2026-01-20T00:00:00.000Z
+    ; class Default
+    assets:onchain:wallet                            -1000000000 msat @@ 400 USD
+    assets:onchain:clearing                           1000000000 msat @@ 400 USD
+
+2026-01-20 ChannelFunded
+    ; key: chan:0000000000000000000000000000000000000000000000000000000000000003:funded
+    ; seq: 5
+    ; time: 2026-01-20T00:00:00.000Z
+    ; class Default
+    assets:lightning:channels                          899000000 msat @@ 359.6 USD
+    expenses:fees:funding                                1000000 msat @@ 0.6 USD
+    assets:onchain:clearing                           -900000000 msat @@ 360 USD
+    income:gains:realized                                   -0.2 USD
+
+2026-01-20 WalletReceived
+    ; key: wallet:0000000000000000000000000000000000000000000000000000000000000004:1:in
+    ; seq: 6
+    ; time: 2026-01-20T00:00:00.000Z
+    ; class Default
+    assets:onchain:wallet                              100000000 msat @@ 40 USD
+    assets:onchain:clearing                           -100000000 msat @@ 40 USD
+
+2026-02-01 InvoiceSettled: consulting
+    ; key: inv:0000000000000000000000000000000000000000000000000000000000000005:settled
+    ; seq: 7
+    ; time: 2026-02-01T00:00:00.000Z
+    ; class Default
+    assets:lightning:channels                          200000000 msat @@ 60 USD
+    income:sales                                      -200000000 msat @@ 60 USD
+
+2026-02-10 PaymentSucceeded
+    ; key: pay:0000000000000000000000000000000000000000000000000000000000000006:succeeded
+    ; seq: 8
+    ; time: 2026-02-10T00:00:00.000Z
+    ; class Default
+    assets:lightning:channels                         -300100000 msat @@ 120.04 USD
+    expenses:payments                                  300000000 msat @@ 210 USD
+    expenses:fees:routing                                 100000 msat @@ 0.07 USD
+    income:gains:realized                                 -90.03 USD
+
+2026-02-15 ForwardSettled
+    ; key: fwd:0000000000000000000000000000000000000000000000000000000000000007:settled
+    ; seq: 9
+    ; time: 2026-02-15T00:00:00.000Z
+    ; class Default
+    assets:lightning:channels                              50000 msat @@ 0.035 USD
+    income:routing                                        -50000 msat @@ 0.035 USD
+
+2026-02-20 PaymentSucceeded
+    ; key: pay:0000000000000000000000000000000000000000000000000000000000000008:succeeded
+    ; seq: 10
+    ; time: 2026-02-20T00:00:00.000Z
+    ; class Default
+    assets:lightning:channels                          -10020000 msat @@ 4.008 USD
+    equity:transfers:rebalance                          10000000 msat @@ 4 USD
+    expenses:fees:routing                                  20000 msat @@ 0.016 USD
+    income:gains:realized                                 -0.008 USD
+
+2026-02-20 InvoiceSettled
+    ; key: inv:0000000000000000000000000000000000000000000000000000000000000009:settled
+    ; seq: 11
+    ; time: 2026-02-20T00:00:00.000Z
+    ; class Default
+    assets:lightning:channels                           10000000 msat @@ 4 USD
+    equity:transfers:rebalance                         -10000000 msat @@ 4 USD
+
+2026-03-01 ChannelClosedMutual
+    ; key: chan:000000000000000000000000000000000000000000000000000000000000000a:closed
+    ; seq: 12
+    ; time: 2026-03-01T00:00:00.000Z
+    ; class Default
+    assets:lightning:channels                         -798930000 msat @@ 299.587 USD
+    expenses:fees:close                                   300000 msat @@ 0.27 USD
+    assets:onchain:clearing                            798630000 msat @@ 299.467 USD
+    income:gains:realized                                  -0.15 USD
+
+2026-03-01 WalletReceived
+    ; key: wallet:000000000000000000000000000000000000000000000000000000000000000b:1:in
+    ; seq: 13
+    ; time: 2026-03-01T00:00:00.000Z
+    ; class Default
+    assets:onchain:wallet                              798630000 msat @@ 299.467 USD
+    assets:onchain:clearing                           -798630000 msat @@ 299.467 USD
+
+2026-03-10 WalletOutputSpent
+    ; key: wallet:000000000000000000000000000000000000000000000000000000000000000c:0:spent
+    ; seq: 14
+    ; time: 2026-03-10T00:00:00.000Z
+    ; class Default
+    assets:onchain:wallet                            -1000000000 msat @@ 430.142 USD
+    assets:onchain:clearing                           1000000000 msat @@ 430.142 USD
+
+2026-03-10 WalletSent
+    ; key: wsend:000000000000000000000000000000000000000000000000000000000000000d
+    ; seq: 15
+    ; time: 2026-03-10T00:00:00.000Z
+    ; class Default
+    equity:transfers:out                               500000000 msat @@ 500 USD
+    expenses:fees:withdraw                                200000 msat @@ 0.2 USD
+    assets:onchain:clearing                           -500200000 msat @@ 200.08 USD
+    income:gains:realized                                -300.12 USD
+
+2026-03-10 WalletReceived
+    ; key: wallet:000000000000000000000000000000000000000000000000000000000000000e:1:in
+    ; seq: 16
+    ; time: 2026-03-10T00:00:00.000Z
+    ; class Default
+    assets:onchain:wallet                              499800000 msat @@ 230.062 USD
+    assets:onchain:clearing                           -499800000 msat @@ 230.062 USD
+

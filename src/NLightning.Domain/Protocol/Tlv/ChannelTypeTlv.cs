@@ -21,6 +21,18 @@ public class ChannelTypeTlv : BaseTlv
     /// </summary>
     public FeatureSet Features { get; }
 
+    /// <summary>
+    /// Creates the TLV from a channel type feature set, encoding it big-endian as BOLT 2 requires.
+    /// </summary>
+    /// <exception cref="ArgumentException">The feature set is empty.</exception>
+    public ChannelTypeTlv(FeatureSet channelType)
+        : this(channelType.GetWireBytes() ?? throw new ArgumentException("Channel type is empty", nameof(channelType)))
+    {
+    }
+
+    /// <summary>
+    /// Creates the TLV from the big-endian wire bytes of a channel type.
+    /// </summary>
     public ChannelTypeTlv(byte[] channelType) : base(TlvConstants.ChannelType)
     {
         ChannelType = channelType;

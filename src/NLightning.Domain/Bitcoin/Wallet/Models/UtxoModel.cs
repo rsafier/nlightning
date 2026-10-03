@@ -15,6 +15,7 @@ public sealed class UtxoModel
     public bool IsAddressChange { get; private set; }
     public AddressType AddressType { get; private set; }
     public ChannelId? LockedToChannelId { get; set; }
+    public TxId? UsedInTransactionId { get; set; }
 
     public WalletAddressModel? WalletAddress { get; private set; }
 
@@ -38,6 +39,15 @@ public sealed class UtxoModel
         BlockHeight = blockHeight;
         SetWalletAddress(walletAddress);
     }
+
+    /// <summary>
+    /// Whether this output backs the anchors reserve (NL-379) at <paramref name="currentBlockHeight"/>: the fee input
+    /// selector can spend it (mined, with a known P2WPKH or P2TR address) and it is confirmed by the wallet's
+    /// three-block rule. Locks and reservations are not checked here.
+    /// </summary>
+    public bool BacksAnchorReserve(uint currentBlockHeight) =>
+        BlockHeight != 0 && BlockHeight + 3 <= currentBlockHeight && WalletAddress is not null
+     && AddressType is (AddressType.P2Wpkh or AddressType.P2Tr);
 
     public void SetWalletAddress(WalletAddressModel walletAddress)
     {

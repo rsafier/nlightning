@@ -1,5 +1,14 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
+  <!--
+    NativeAOT (NL-338): EF Core runs under NativeAOT only with a compiled model and precompiled queries (NL-708), and
+    the AOT daemon stops before it opens the database, so the trim/AOT analyzer warnings of this EF code are expected
+    in a PublishAot build. They are silenced there only, so the AOT build's warning list stays meaningful.
+  -->
+  <PropertyGroup Condition="'$(PublishAot)' == 'true'">
+    <NoWarn>$(NoWarn);IL2026;IL2087;IL2091;IL3050</NoWarn>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\NLightning.Domain\NLightning.Domain.csproj"/>
     <ProjectReference Include="..\NLightning.Infrastructure.Persistence\NLightning.Infrastructure.Persistence.csproj"/>

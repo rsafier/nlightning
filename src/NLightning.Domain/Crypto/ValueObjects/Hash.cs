@@ -10,7 +10,8 @@ public readonly struct Hash : IEquatable<Hash>
 
     public Hash(byte[] value)
     {
-        if (value.Length < CryptoConstants.Sha256HashLen)
+        ArgumentNullException.ThrowIfNull(value);
+        if (value.Length != CryptoConstants.Sha256HashLen)
             throw new ArgumentOutOfRangeException(nameof(value), value.Length,
                                                   $"Hash must have {CryptoConstants.Sha256HashLen} bytes.");
 

@@ -1,0 +1,752 @@
+namespace NLightning.Domain.Tests.Channels.Validators;
+
+using Domain.Channels.Constants;
+using Domain.Channels.Validators;
+using Domain.Channels.Validators.Parameters;
+using Domain.Enums;
+using Domain.Exceptions;
+using Domain.Money;
+using Domain.Node;
+using Domain.Node.Options;
+using Domain.Protocol.Tlv;
+
+public class ChannelOpenValidatorTests
+{
+    private static readonly LightningMoney s_feeRatePerKw = LightningMoney.Satoshis(10_000);
+    private static readonly LightningMoney s_channelReserve = LightningMoney.Satoshis(1_000);
+
+    private readonly ChannelOpenValidator _validator = new(new NodeOptions());
+
+    [Fact]
+    public void Given_NoChannelTypeTlv_When_PerformMandatoryChecks_Then_ThrowsChannelErrorException()
+    {
+        // Arrange (BOLT 2: a missing channel_type fails the channel)
+        var validator = new ChannelOpenValidator(new NodeOptions());
+        var parameters = new ChannelOpenMandatoryValidationParameters
+        {
+            ChannelTypeTlv = null,
+            CurrentFeeRatePerKw = LightningMoney.Satoshis(1),
+            NegotiatedFeatures = new FeatureOptions(),
+            DustLimitAmount = ChannelConstants.MinDustLimitAmount,
+            ChannelReserveAmount = ChannelConstants.MinDustLimitAmount
+        };
+
+        // Act
+        var exception =
+            Assert.Throws<ChannelErrorException>(() => validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Contains("ChannelTypeTlv", exception.Message);
+    }
+
+    [Fact]
+    public void Given_PushAmountEqualToFundingAmount_When_PerformingMandatoryChecks_Then_ThrowsFunderCannotPayFee()
+    {
+        // Arrange
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var parameters = CreateParameters(fundingAmount, LightningMoney.Satoshis(100_000), FeatureSupport.No);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("Funder amount is too small to cover fees", exception.Message);
+    }
+
+    [Fact]
+    public void Given_FunderAmountEqualToFee_When_PerformingMandatoryChecks_Then_DoesNotThrow()
+    {
+        // Arrange
+        // 724 * 10000 / 1000 = 7240 sat fee left to the funder
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var parameters = CreateParameters(fundingAmount, LightningMoney.Satoshis(92_760), FeatureSupport.No);
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_AnchorsAndFunderAmountBelowFeePlusAnchors_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange
+        // 1124 * 10000 / 1000 = 11240 sat fee + 2 * 330 sat anchors = 11900 sat
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var parameters = CreateParameters(fundingAmount, LightningMoney.Satoshis(88_101), FeatureSupport.Optional);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("Funder amount is too small to cover fees", exception.Message);
+    }
+
+    [Fact]
+    public void Given_PeerFeeRateHigherThanOurs_When_PerformingMandatoryChecks_Then_UsesPeerFeeRateForFeeCheck()
+    {
+        // Arrange
+        // At our 10000 sat/kw the funder's 7240 sat would cover 724 weight, but the peer's 20000 sat/kw needs 14480
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var parameters = CreateParameters(fundingAmount, LightningMoney.Satoshis(92_760), FeatureSupport.No);
+        parameters = new ChannelOpenMandatoryValidationParameters
+        {
+            ChannelTypeTlv = parameters.ChannelTypeTlv,
+            CurrentFeeRatePerKw = parameters.CurrentFeeRatePerKw,
+            NegotiatedFeatures = parameters.NegotiatedFeatures,
+            FundingAmount = parameters.FundingAmount,
+            PushAmount = parameters.PushAmount,
+            FeeRatePerKw = LightningMoney.Satoshis(20_000),
+            ToSelfDelay = parameters.ToSelfDelay,
+            MaxAcceptedHtlcs = parameters.MaxAcceptedHtlcs,
+            DustLimitAmount = parameters.DustLimitAmount,
+            ChannelReserveAmount = parameters.ChannelReserveAmount
+        };
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("Funder amount is too small to cover fees", exception.Message);
+    }
+
+    [Fact]
+    public void Given_PushAmountOneMsatAboveFundingAmount_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var pushAmount = LightningMoney.MilliSatoshis(100_000_001UL);
+        var parameters = CreateParameters(fundingAmount, pushAmount, FeatureSupport.No);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("Push amount is too large", exception.Message);
+    }
+
+    [Fact]
+    public void Given_AnchorsAndFundingBelowAnchorFeePlusReserve_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange
+        // 1124 * 10000 / 1000 = 11240 sat fee + 2 * 330 sat anchors + 1000 sat reserve = 12900 sat
+        var parameters = CreateParameters(LightningMoney.Satoshis(12_899), null, FeatureSupport.Optional);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("too small to cover fees", exception.Message);
+    }
+
+    [Fact]
+    public void Given_AnchorsAndFundingEqualToAnchorFeePlusReserve_When_PerformingMandatoryChecks_Then_DoesNotThrow()
+    {
+        // Arrange
+        var parameters = CreateParameters(LightningMoney.Satoshis(12_900), null, FeatureSupport.Optional);
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_NoAnchorsAndFundingCoveringNoAnchorFee_When_PerformingMandatoryChecks_Then_DoesNotThrow()
+    {
+        // Arrange
+        // 724 * 10000 / 1000 = 7240 sat fee + 1000 sat reserve = 8240 sat
+        var parameters = CreateParameters(LightningMoney.Satoshis(8_240), null, FeatureSupport.No);
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_NoAnchorsAndFundingBelowNoAnchorFeePlusReserve_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange
+        var parameters = CreateParameters(LightningMoney.Satoshis(8_239), null, FeatureSupport.No);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("too small to cover fees", exception.Message);
+    }
+
+    [Theory]
+    [InlineData(FeatureSupport.No)]
+    [InlineData(FeatureSupport.Optional)]
+    public void Given_FundingJustBelowLargeChannelAmount_When_PerformingMandatoryChecks_Then_DoesNotThrow(
+        FeatureSupport largeChannels)
+    {
+        // Arrange
+        // BOLT 2: without option_support_large_channel, funding_satoshis MUST be less than 2^24
+        var fundingAmount = LightningMoney.Satoshis(16_777_215);
+        var parameters = CreateParameters(fundingAmount, null, FeatureSupport.No, largeChannels);
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_LargeFundingAndWumboNotNegotiated_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange
+        var parameters = CreateParameters(ChannelConstants.LargeChannelAmount, null, FeatureSupport.No,
+                                          FeatureSupport.No);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("large channels", exception.Message);
+    }
+
+    [Theory]
+    [InlineData(FeatureSupport.Optional)]
+    [InlineData(FeatureSupport.Compulsory)]
+    public void Given_LargeFundingAndWumboNegotiated_When_PerformingMandatoryChecks_Then_DoesNotThrow(
+        FeatureSupport largeChannels)
+    {
+        // Arrange
+        var parameters = CreateParameters(LightningMoney.Satoshis(50_000_000), null, FeatureSupport.No,
+                                          largeChannels);
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Theory]
+    [InlineData(40)] // zero_fee_commitments
+    [InlineData(20)] // the retired option_anchor_outputs
+    [InlineData(13)] // an odd bit is never part of a defined channel type
+    public void Given_ChannelTypeWithUnsupportedBit_When_PerformingMandatoryChecks_Then_Throws(int bit)
+    {
+        // Arrange: BOLT 2: fail the channel if the channel_type is not suitable
+        var channelType = FeatureSet.NewBasicChannelType();
+        channelType.SetFeature(bit, true);
+        var parameters = CreateParameters(LightningMoney.Satoshis(100_000), null, FeatureSupport.Optional);
+        parameters = CopyWithChannelType(parameters, new ChannelTypeTlv(channelType));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("Unsupported channel type bit", exception.Message);
+    }
+
+    [Fact]
+    public void Given_ChannelTypeWithScidAliasNotNegotiated_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange
+        var channelType = FeatureSet.NewBasicChannelType();
+        channelType.SetFeature(Feature.OptionScidAlias, true);
+        var parameters = CopyWithChannelType(CreateParameters(LightningMoney.Satoshis(100_000), null,
+                                                              FeatureSupport.No),
+                                             new ChannelTypeTlv(channelType));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("Scid alias", exception.Message);
+    }
+
+    [Fact]
+    public void Given_ChannelTypeWithScidAliasNegotiated_When_PerformingMandatoryChecks_Then_DoesNotThrow()
+    {
+        // Arrange
+        var channelType = FeatureSet.NewBasicChannelType();
+        channelType.SetFeature(Feature.OptionScidAlias, true);
+        var parameters = CreateParameters(LightningMoney.Satoshis(100_000), null, FeatureSupport.No);
+        parameters = new ChannelOpenMandatoryValidationParameters
+        {
+            ChannelTypeTlv = new ChannelTypeTlv(channelType),
+            CurrentFeeRatePerKw = parameters.CurrentFeeRatePerKw,
+            NegotiatedFeatures = new FeatureOptions { ScidAlias = FeatureSupport.Optional },
+            FundingAmount = parameters.FundingAmount,
+            ToSelfDelay = parameters.ToSelfDelay,
+            MaxAcceptedHtlcs = parameters.MaxAcceptedHtlcs,
+            DustLimitAmount = parameters.DustLimitAmount,
+            ChannelReserveAmount = parameters.ChannelReserveAmount
+        };
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    private static ChannelOpenMandatoryValidationParameters CopyWithChannelType(
+        ChannelOpenMandatoryValidationParameters parameters, ChannelTypeTlv channelTypeTlv)
+    {
+        return new ChannelOpenMandatoryValidationParameters
+        {
+            ChannelTypeTlv = channelTypeTlv,
+            CurrentFeeRatePerKw = parameters.CurrentFeeRatePerKw,
+            NegotiatedFeatures = parameters.NegotiatedFeatures,
+            FundingAmount = parameters.FundingAmount,
+            PushAmount = parameters.PushAmount,
+            ToSelfDelay = parameters.ToSelfDelay,
+            MaxAcceptedHtlcs = parameters.MaxAcceptedHtlcs,
+            DustLimitAmount = parameters.DustLimitAmount,
+            ChannelReserveAmount = parameters.ChannelReserveAmount
+        };
+    }
+
+    [Fact]
+    public void Given_BothInitialOutputsAtOrBelowReserve_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange - NL-220: 724 * 10000 / 1000 = 7240 sat fee; funding 9240, push 1000 leaves the funder 1000 sat.
+        // Both outputs equal the 1000 sat reserve ("less than or equal" in BOLT 2).
+        var parameters = CreateParameters(LightningMoney.Satoshis(9_240), LightningMoney.Satoshis(1_000),
+                                          FeatureSupport.No);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("at or below the channel reserve", exception.Message);
+    }
+
+    [Fact]
+    public void Given_FundeeOutputAboveReserve_When_PerformingMandatoryChecks_Then_DoesNotThrow()
+    {
+        // Arrange - funder output 999 sat (below the reserve) but the fundee output 1001 sat is above it
+        var parameters = CreateParameters(LightningMoney.Satoshis(9_240), LightningMoney.Satoshis(1_001),
+                                          FeatureSupport.No);
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_AnchorsAndBothInitialOutputsBelowReserve_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange - 11240 sat fee + 660 sat anchors: funding 13_400, push 700 leaves the funder 800 sat
+        var parameters = CreateParameters(LightningMoney.Satoshis(13_400), LightningMoney.Satoshis(700),
+                                          FeatureSupport.Optional);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("at or below the channel reserve", exception.Message);
+    }
+
+    [Theory]
+    [InlineData(253)]
+    [InlineData(1_000)]
+    [InlineData(2_500)]
+    public void Given_PeerFeerateFarBelowOurEstimate_When_PerformingMandatoryChecks_Then_Accepted(long feeratePerKw)
+    {
+        // Arrange (NL-289: CLN opens at its own estimate, 253 sat/kw on an idle chain, while ours is 10,000)
+        var parameters = WithFeeRate(CreateParameters(LightningMoney.Satoshis(500_000), null, FeatureSupport.No),
+                                     LightningMoney.Satoshis(feeratePerKw));
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_PeerFeerateBelowRelayFloor_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange (BOLT 2: too small for timely processing; BOLT 3's floor is 253 sat/kw)
+        var parameters = WithFeeRate(CreateParameters(LightningMoney.Satoshis(500_000), null, FeatureSupport.No),
+                                     LightningMoney.Satoshis(252));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("Fee rate per kw is too small", exception.Message);
+    }
+
+    [Fact]
+    public void Given_PeerFeerateAboveMaximum_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange (BOLT 2: unreasonably large)
+        var parameters = WithFeeRate(CreateParameters(LightningMoney.Satoshis(16_000_000), null, FeatureSupport.No),
+                                     ChannelConstants.MaxFeePerKw + LightningMoney.Satoshis(1));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("Fee rate per kw is too large", exception.Message);
+    }
+
+    [Fact]
+    public void Given_PeerFeerateAtMaximum_When_PerformingMandatoryChecks_Then_Accepted()
+    {
+        // Arrange: 100,000 sat/kw costs the funder 72,400 sat on a legacy commitment
+        var parameters = WithFeeRate(CreateParameters(LightningMoney.Satoshis(1_000_000), null, FeatureSupport.No),
+                                     ChannelConstants.MaxFeePerKw);
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Theory]
+    [InlineData((ushort)720)] // Eclair's default
+    [InlineData(NodeOptions.DefaultMaxAcceptedToSelfDelay)] // LND's largest
+    public void Given_APeerDelayUpToMaxAcceptedToSelfDelay_When_PerformingMandatoryChecks_Then_DoesNotThrow(
+        ushort toSelfDelay)
+    {
+        // Arrange (NL-550: the limit no longer follows our own ToSelfDelay of 144)
+        var parameters = CreateParameters(LightningMoney.Satoshis(100_000), null, FeatureSupport.No,
+                                          toSelfDelay: toSelfDelay);
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_APeerDelayAboveMaxAcceptedToSelfDelay_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange
+        var parameters = CreateParameters(LightningMoney.Satoshis(100_000), null, FeatureSupport.No,
+                                          toSelfDelay: NodeOptions.DefaultMaxAcceptedToSelfDelay + 1);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("To self delay is too large: 2017", exception.Message);
+    }
+
+    [Fact]
+    public void Given_AConfiguredMaxAcceptedToSelfDelay_When_ThePeerAsksForMore_Then_ItIsRefusedWhateverOurOwnDelay()
+    {
+        // Arrange (our own delay above the limit changes nothing: the two are independent)
+        var validator = new ChannelOpenValidator(new NodeOptions { ToSelfDelay = 1000, MaxAcceptedToSelfDelay = 500 });
+        var accepted = CreateParameters(LightningMoney.Satoshis(100_000), null, FeatureSupport.No, toSelfDelay: 500);
+        var refused = CreateParameters(LightningMoney.Satoshis(100_000), null, FeatureSupport.No, toSelfDelay: 501);
+
+        // Act
+        var acceptedException = Record.Exception(() => validator.PerformMandatoryChecks(accepted, out _));
+        var refusedException = Record.Exception(() => validator.PerformMandatoryChecks(refused, out _));
+
+        // Assert
+        Assert.Null(acceptedException);
+        Assert.IsType<ChannelErrorException>(refusedException);
+    }
+
+    [Theory]
+    [InlineData(45)] // Eclair's default
+    [InlineData(10)] // LDK's default
+    [InlineData(1)] // the floor itself
+    public void Given_APeerInFlightLimitAtOrAboveTheFloor_When_PerformingOptionalChecks_Then_DoesNotThrow(
+        int percent)
+    {
+        // Arrange (NL-552: the old rule wanted 64 % of the channel)
+        var fundingAmount = LightningMoney.Satoshis(500_000);
+        var parameters = CreateOptionalParameters(fundingAmount,
+                                                  LightningMoney.Satoshis(500_000L * percent / 100));
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_APeerInFlightLimitBelowTheFloor_When_PerformingOptionalChecks_Then_Throws()
+    {
+        // Arrange: 4,999 sat is below 1 % of 500,000 sat
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(500_000), LightningMoney.Satoshis(4_999));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Contains("Max htlc value in flight is too small", exception.Message);
+    }
+
+    [Fact]
+    public void Given_AFloorOfZero_When_CheckingAnyInFlightLimit_Then_DoesNotThrow()
+    {
+        // Arrange
+        var validator = new ChannelOpenValidator(new NodeOptions { MinAcceptedMaxHtlcValueInFlightPercent = 0 });
+
+        // Act
+        var exception = Record.Exception(() => validator.CheckMaxHtlcValueInFlight(LightningMoney.Satoshis(500_000),
+                                                                                   LightningMoney.Zero));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_AConfiguredFloor_When_CheckingAnInFlightLimitJustBelowIt_Then_Throws()
+    {
+        // Arrange: 20 % of 1,000,000 sat is 200,000,000 msat
+        var validator = new ChannelOpenValidator(new NodeOptions { MinAcceptedMaxHtlcValueInFlightPercent = 20 });
+
+        // Act
+        var exception = Record.Exception(() => validator.CheckMaxHtlcValueInFlight(
+                                             LightningMoney.Satoshis(1_000_000),
+                                             LightningMoney.MilliSatoshis(199_999_999UL)));
+        var atTheFloor = Record.Exception(() => validator.CheckMaxHtlcValueInFlight(
+                                              LightningMoney.Satoshis(1_000_000),
+                                              LightningMoney.MilliSatoshis(200_000_000UL)));
+
+        // Assert
+        Assert.IsType<ChannelErrorException>(exception);
+        Assert.Null(atTheFloor);
+    }
+
+    [Theory]
+    [InlineData(50_000, 1_000)] // LDK's minimum reserve on a small channel (NL-562: the live Mutinynet refusal)
+    [InlineData(20_000, 1_000)] // the 1,000 sat cap on our smallest channel
+    [InlineData(100_000, 10_000)] // 10 % of the channel
+    [InlineData(1_000_000, 10_000)] // LND's and CLN's 1 %
+    [InlineData(1_000_000, 100_000)] // 10 % of a larger channel
+    public void Given_APeerReserveAtOrBelowTheCap_When_PerformingOptionalChecks_Then_DoesNotThrow(
+        long channelSat, long reserveSat)
+    {
+        // Arrange
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(channelSat),
+                                                  LightningMoney.Satoshis(channelSat),
+                                                  channelReserve: LightningMoney.Satoshis(reserveSat));
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Theory]
+    [InlineData(50_000, 5_001)] // above 10 % and above 1,000 sat
+    [InlineData(20_000, 2_001)]
+    [InlineData(1_000_000, 100_001)]
+    public void Given_APeerReserveAboveTheCap_When_PerformingOptionalChecks_Then_ThrowsInSatoshis(long channelSat,
+        long reserveSat)
+    {
+        // Arrange
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(channelSat),
+                                                  LightningMoney.Satoshis(channelSat),
+                                                  channelReserve: LightningMoney.Satoshis(reserveSat));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Contains($"Channel reserve amount is too large: {reserveSat} sat", exception.Message);
+    }
+
+    [Fact]
+    public void Given_APercentOfZero_When_APeerAsksForTheMinimumReserveCap_Then_OnlyTheCapIsAccepted()
+    {
+        // Arrange: with 0 % only the 1,000 sat cap remains
+        var validator = new ChannelOpenValidator(new NodeOptions { MaxAcceptedChannelReservePercent = 0 });
+        var atCap = CreateOptionalParameters(LightningMoney.Satoshis(1_000_000), LightningMoney.Satoshis(1_000_000),
+                                             channelReserve: LightningMoney.Satoshis(1_000));
+        var aboveCap = CreateOptionalParameters(LightningMoney.Satoshis(1_000_000),
+                                                LightningMoney.Satoshis(1_000_000),
+                                                channelReserve: LightningMoney.Satoshis(1_001));
+
+        // Act
+        var atCapException = Record.Exception(() => validator.PerformOptionalChecks(atCap));
+        var aboveCapException = Record.Exception(() => validator.PerformOptionalChecks(aboveCap));
+
+        // Assert
+        Assert.Null(atCapException);
+        Assert.IsType<ChannelErrorException>(aboveCapException);
+    }
+
+    [Theory]
+    [InlineData(0UL)] // CLN's default
+    [InlineData(1UL)] // LDK's and Eclair's default
+    [InlineData(1_000UL)] // LND's default
+    [InlineData(1_000_000UL)] // 1,000 sat, what some routing nodes ask
+    [InlineData(49_999_999UL)] // just below the channel
+    public void Given_APeerHtlcMinimumBelowTheChannel_When_PerformingOptionalChecks_Then_DoesNotThrow(
+        ulong htlcMinimumMsat)
+    {
+        // Arrange (NL-562: no longer 1.2 x our own minimum)
+        var validator = new ChannelOpenValidator(new NodeOptions { HtlcMinimumAmount = LightningMoney.MilliSatoshis(1) });
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(50_000), LightningMoney.Satoshis(50_000),
+                                                  htlcMinimum: LightningMoney.MilliSatoshis(htlcMinimumMsat));
+
+        // Act
+        var exception = Record.Exception(() => validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_APeerHtlcMinimumOfTheWholeChannel_When_PerformingOptionalChecks_Then_Throws()
+    {
+        // Arrange (LDK's rule: a minimum of the channel or more leaves it unusable)
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(50_000), LightningMoney.Satoshis(50_000),
+                                                  htlcMinimum: LightningMoney.Satoshis(50_000));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Contains("Htlc minimum amount is too large: 50000000 msat", exception.Message);
+    }
+
+    [Theory]
+    [InlineData(483)] // LND's and CLN's default
+    [InlineData(50)] // LDK's default
+    [InlineData(30)] // Eclair's default
+    [InlineData(ChannelOpenValidator.MinAcceptedMaxAcceptedHtlcs)]
+    public void Given_OurMaxAcceptedHtlcsRaisedToLnds_When_APeerOffersItsDefault_Then_DoesNotThrow(int peerMax)
+    {
+        // Arrange (NL-562: 0.8 x our 483 refused Eclair's 30 and LDK's 50)
+        var validator = new ChannelOpenValidator(new NodeOptions { MaxAcceptedHtlcs = 483 });
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(500_000), LightningMoney.Satoshis(500_000),
+                                                  maxAcceptedHtlcs: (ushort)peerMax);
+
+        // Act
+        var exception = Record.Exception(() => validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_APeerMaxAcceptedHtlcsBelowTheFloor_When_PerformingOptionalChecks_Then_Throws()
+    {
+        // Arrange
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(500_000), LightningMoney.Satoshis(500_000),
+                                                  maxAcceptedHtlcs: ChannelOpenValidator.MinAcceptedMaxAcceptedHtlcs - 1);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Contains("Max accepted htlcs is too small: 3 < 4", exception.Message);
+    }
+
+    [Theory]
+    [InlineData(354)] // LND's and LDK's default
+    [InlineData(546)] // CLN's and Eclair's default
+    public void Given_APeerDustLimitOfAnImplementationsDefault_When_PerformingOptionalChecks_Then_DoesNotThrow(
+        long dustSat)
+    {
+        // Arrange
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(500_000), LightningMoney.Satoshis(500_000),
+                                                  dustLimit: LightningMoney.Satoshis(dustSat));
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_APeerDustLimitAboveOurRule_When_PerformingOptionalChecks_Then_ThrowsInSatoshis()
+    {
+        // Arrange: 1.75 x our 354 sat is 619.5 sat
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(500_000), LightningMoney.Satoshis(500_000),
+                                                  dustLimit: LightningMoney.Satoshis(620));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Contains("Dust limit amount is too large: 620 sat", exception.Message);
+    }
+
+    private static ChannelOpenOptionalValidationParameters CreateOptionalParameters(
+        LightningMoney fundingAmount, LightningMoney maxHtlcValueInFlight, LightningMoney? channelReserve = null,
+        LightningMoney? htlcMinimum = null, ushort maxAcceptedHtlcs = 30, LightningMoney? dustLimit = null)
+    {
+        return new ChannelOpenOptionalValidationParameters
+        {
+            FundingAmount = fundingAmount,
+            MaxHtlcValueInFlight = maxHtlcValueInFlight,
+            HtlcMinimumAmount = htlcMinimum ?? LightningMoney.Satoshis(1),
+            ChannelReserveAmount = channelReserve ?? LightningMoney.Satoshis(5_000),
+            ChannelAmount = fundingAmount,
+            MaxAcceptedHtlcs = maxAcceptedHtlcs,
+            DustLimitAmount = dustLimit ?? LightningMoney.Satoshis(354),
+            ToSelfDelay = 144
+        };
+    }
+
+    private static ChannelOpenMandatoryValidationParameters WithFeeRate(
+        ChannelOpenMandatoryValidationParameters parameters, LightningMoney feeRatePerKw)
+    {
+        return new ChannelOpenMandatoryValidationParameters
+        {
+            ChannelTypeTlv = parameters.ChannelTypeTlv,
+            CurrentFeeRatePerKw = parameters.CurrentFeeRatePerKw,
+            NegotiatedFeatures = parameters.NegotiatedFeatures,
+            FundingAmount = parameters.FundingAmount,
+            PushAmount = parameters.PushAmount,
+            FeeRatePerKw = feeRatePerKw,
+            ToSelfDelay = parameters.ToSelfDelay,
+            MaxAcceptedHtlcs = parameters.MaxAcceptedHtlcs,
+            DustLimitAmount = parameters.DustLimitAmount,
+            ChannelReserveAmount = parameters.ChannelReserveAmount
+        };
+    }
+
+    private static ChannelOpenMandatoryValidationParameters CreateParameters(
+        LightningMoney fundingAmount, LightningMoney? pushAmount, FeatureSupport optionAnchors,
+        FeatureSupport largeChannels = FeatureSupport.Optional, ushort toSelfDelay = 144)
+    {
+        return new ChannelOpenMandatoryValidationParameters
+        {
+            // option_static_remotekey (bit 12) compulsory
+            ChannelTypeTlv = new ChannelTypeTlv([0x10, 0x00]),
+            CurrentFeeRatePerKw = s_feeRatePerKw,
+            NegotiatedFeatures = new FeatureOptions { OptionAnchors = optionAnchors, LargeChannels = largeChannels },
+            FundingAmount = fundingAmount,
+            PushAmount = pushAmount,
+            ToSelfDelay = toSelfDelay,
+            MaxAcceptedHtlcs = 30,
+            DustLimitAmount = LightningMoney.Satoshis(354),
+            ChannelReserveAmount = s_channelReserve
+        };
+    }
+}

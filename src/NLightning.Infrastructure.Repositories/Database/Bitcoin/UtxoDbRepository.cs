@@ -21,6 +21,20 @@ public class UtxoDbRepository(NLightningDbContext context)
 
     public void Spend(UtxoModel utxoModel)
     {
+        // If the utxo was added in this same unit of work and not saved yet, just cancel the pending insert
+        var trackedEntity = DbSet.Local.FirstOrDefault(e => e.TransactionId.Equals(utxoModel.TxId)
+                                                         && e.Index == utxoModel.Index);
+        if (trackedEntity is not null)
+        {
+            var entry = DbSet.Entry(trackedEntity);
+            if (entry.State == EntityState.Added)
+                entry.State = EntityState.Detached;
+            else
+                DbSet.Remove(trackedEntity);
+
+            return;
+        }
+
         var utxoEntity = MapDomainToEntity(utxoModel);
         Delete(utxoEntity);
     }
@@ -47,7 +61,7 @@ public class UtxoDbRepository(NLightningDbContext context)
         Expression<Func<UtxoEntity, object>>? include = includeWalletAddress
                                                             ? entity => entity.WalletAddress!
                                                             : null;
-        var utxoEntity = await GetByIdAsync(new { txId, index }, true, include);
+        var utxoEntity = await GetByIdAsync((txId, index), true, include);
         return utxoEntity is null
                    ? null
                    : MapEntityToModel(utxoEntity);
@@ -63,7 +77,9 @@ public class UtxoDbRepository(NLightningDbContext context)
             BlockHeight = model.BlockHeight,
             AddressIndex = model.AddressIndex,
             IsAddressChange = model.IsAddressChange,
-            AddressType = model.AddressType
+            AddressType = model.AddressType,
+            LockedToChannelId = model.LockedToChannelId,
+            UsedInTransactionId = model.UsedInTransactionId
         };
     }
 
@@ -71,7 +87,11 @@ public class UtxoDbRepository(NLightningDbContext context)
     {
         var utxoModel = new UtxoModel(entity.TransactionId, entity.Index, LightningMoney.Satoshis(entity.AmountSats),
                                       entity.BlockHeight, entity.AddressIndex, entity.IsAddressChange,
-                                      entity.AddressType);
+                                      entity.AddressType)
+        {
+            LockedToChannelId = entity.LockedToChannelId,
+            UsedInTransactionId = entity.UsedInTransactionId
+        };
 
         if (entity.WalletAddress is null)
             return utxoModel;

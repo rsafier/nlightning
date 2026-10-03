@@ -1,9 +1,12 @@
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Protocol.Tlv;
+using Exceptions;
 using Helpers;
 using Serialization.Messages.Types;
 
@@ -14,7 +17,9 @@ public class CommitmentSignedMessageTests
     public CommitmentSignedMessageTests()
     {
         _commitmentSignedMessageTypeSerializer =
-            new CommitmentSignedMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
+            new CommitmentSignedMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
+                                                  SerializerHelper.TlvConverterFactory,
+                                                  SerializerHelper.TlvStreamSerializer);
     }
 
     [Fact]
@@ -67,5 +72,71 @@ public class CommitmentSignedMessageTests
 
         // Assert
         Assert.Equal(expectedBytes, result);
+    }
+
+    // channel_id (zero), signature, num_htlcs = 0
+    private const string EmptyPayloadHex =
+        "0000000000000000000000000000000000000000000000000000000000000000"
+      + "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320"
+      + "0000";
+
+    private const string FundingTxIdHex = "0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20";
+
+    [Fact]
+    public async Task Given_FundingTxidTlv_When_Serialize_Then_WritesTlvType1()
+    {
+        // Arrange
+        var message = new CommitmentSignedMessage(
+            new CommitmentSignedPayload(ChannelId.Zero, [], Convert.FromHexString(EmptyPayloadHex[64..192])),
+            new FundingTxIdTlv(Convert.FromHexString(FundingTxIdHex)));
+        var stream = new MemoryStream();
+
+        // Act
+        await _commitmentSignedMessageTypeSerializer.SerializeAsync(message, stream);
+
+        // Assert
+        Assert.Equal(Convert.FromHexString(EmptyPayloadHex + "0120" + FundingTxIdHex), stream.ToArray());
+    }
+
+    [Fact]
+    public async Task Given_FundingTxidTlv_When_RoundTrip_Then_Equal()
+    {
+        // Arrange
+        var stream = new MemoryStream(Convert.FromHexString(EmptyPayloadHex + "0120" + FundingTxIdHex));
+
+        // Act
+        var message = await _commitmentSignedMessageTypeSerializer.DeserializeAsync(stream);
+        var output = new MemoryStream();
+        await _commitmentSignedMessageTypeSerializer.SerializeAsync(message, output);
+
+        // Assert
+        Assert.NotNull(message.FundingTxIdTlv);
+        Assert.Equal(new TxId(Convert.FromHexString(FundingTxIdHex)), message.FundingTxIdTlv.FundingTxId);
+        Assert.Equal(Convert.FromHexString(EmptyPayloadHex + "0120" + FundingTxIdHex), output.ToArray());
+    }
+
+    [Fact]
+    public async Task Given_NoTlv_When_Deserialize_Then_FundingTxidIsNull()
+    {
+        // Arrange
+        var stream = new MemoryStream(Convert.FromHexString(EmptyPayloadHex));
+
+        // Act
+        var message = await _commitmentSignedMessageTypeSerializer.DeserializeAsync(stream);
+
+        // Assert
+        Assert.Null(message.FundingTxIdTlv);
+        Assert.Equal(0, message.Payload.NumHtlcs);
+    }
+
+    [Fact]
+    public async Task Given_FundingTxidWithWrongLength_When_Deserialize_Then_ThrowsMessageSerializationException()
+    {
+        // Arrange
+        var stream = new MemoryStream(Convert.FromHexString(EmptyPayloadHex + "011F" + FundingTxIdHex[..62]));
+
+        // Act & Assert
+        await Assert.ThrowsAsync<MessageSerializationException>(() => _commitmentSignedMessageTypeSerializer
+                                                                   .DeserializeAsync(stream));
     }
 }

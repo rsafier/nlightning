@@ -8,11 +8,19 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Protocol.ValueObjects;
 using Exceptions;
 using Interfaces;
 
 public class ChannelReestablishMessageTypeSerializer : IMessageTypeSerializer<ChannelReestablishMessage>
 {
+    /// <summary>
+    /// The <c>channel_reestablish_tlvs</c> types this node understands: 1 (<c>next_funding</c>) and 5
+    /// (<c>my_current_funding_locked</c>, SP-RE-02). BOLT 1: an unknown even type MUST fail the stream.
+    /// </summary>
+    private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
+        new HashSet<BigSize> { TlvConstants.NextFunding, TlvConstants.MyCurrentFundingLocked };
+
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
     private readonly ITlvStreamSerializer _tlvStreamSerializer;
@@ -60,8 +68,8 @@ public class ChannelReestablishMessageTypeSerializer : IMessageTypeSerializer<Ch
             if (stream.Position >= stream.Length)
                 return new ChannelReestablishMessage(payload);
 
-            var extension = await _tlvStreamSerializer.DeserializeAsync(stream);
-            if (extension is null)
+            var extension = await _tlvStreamSerializer.DeserializeStrictAsync(stream, s_knownExtensionTypes);
+            if (!extension.Any())
                 return new ChannelReestablishMessage(payload);
 
             NextFundingTlv? nextFundingTlv = null;
@@ -73,7 +81,16 @@ public class ChannelReestablishMessageTypeSerializer : IMessageTypeSerializer<Ch
                 nextFundingTlv = tlvConverter.ConvertFromBase(baseNextFundingTlv!);
             }
 
-            return new ChannelReestablishMessage(payload, nextFundingTlv);
+            MyCurrentFundingLockedTlv? myCurrentFundingLockedTlv = null;
+            if (extension.TryGetTlv(TlvConstants.MyCurrentFundingLocked, out var baseMyCurrentFundingLockedTlv))
+            {
+                var tlvConverter = _tlvConverterFactory.GetConverter<MyCurrentFundingLockedTlv>()
+                                ?? throw new SerializationException(
+                                       $"No serializer found for tlv type {nameof(MyCurrentFundingLockedTlv)}");
+                myCurrentFundingLockedTlv = tlvConverter.ConvertFromBase(baseMyCurrentFundingLockedTlv!);
+            }
+
+            return new ChannelReestablishMessage(payload, nextFundingTlv, myCurrentFundingLockedTlv);
         }
         catch (SerializationException e)
         {

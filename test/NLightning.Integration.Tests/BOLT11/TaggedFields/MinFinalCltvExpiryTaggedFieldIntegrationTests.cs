@@ -35,6 +35,8 @@ public class MinFinalCltvExpiryTaggedFieldIntegrationTests
 
         var parsed = MinFinalCltvExpiryTaggedField.FromBitReader(reader, length);
 
+        Assert.NotNull(parsed);
+
         Assert.Equal(KnownCltvExpiry, parsed.Value);
     }
 
@@ -46,6 +48,8 @@ public class MinFinalCltvExpiryTaggedFieldIntegrationTests
         reader.SkipBits(fieldOffsetBits);
 
         var parsed = MinFinalCltvExpiryTaggedField.FromBitReader(reader, length);
+
+        Assert.NotNull(parsed);
 
         Assert.Equal(KnownCltvExpiry, parsed.Value);
     }
@@ -59,6 +63,8 @@ public class MinFinalCltvExpiryTaggedFieldIntegrationTests
 
         var parsed = MinFinalCltvExpiryTaggedField.FromBitReader(reader, length);
 
+        Assert.NotNull(parsed);
+
         Assert.Equal(KnownCltvExpiry, parsed.Value);
     }
 
@@ -70,6 +76,8 @@ public class MinFinalCltvExpiryTaggedFieldIntegrationTests
         reader.SkipBits(fieldOffsetBits);
 
         var parsed = MinFinalCltvExpiryTaggedField.FromBitReader(reader, length);
+
+        Assert.NotNull(parsed);
 
         Assert.Equal(KnownCltvExpiry, parsed.Value);
     }
@@ -83,6 +91,8 @@ public class MinFinalCltvExpiryTaggedFieldIntegrationTests
 
         var parsed = MinFinalCltvExpiryTaggedField.FromBitReader(reader, length);
 
+        Assert.NotNull(parsed);
+
         Assert.Equal(KnownCltvExpiry, parsed.Value);
     }
 
@@ -94,6 +104,8 @@ public class MinFinalCltvExpiryTaggedFieldIntegrationTests
         reader.SkipBits(fieldOffsetBits);
 
         var parsed = MinFinalCltvExpiryTaggedField.FromBitReader(reader, length);
+
+        Assert.NotNull(parsed);
 
         Assert.Equal(KnownCltvExpiry, parsed.Value);
     }

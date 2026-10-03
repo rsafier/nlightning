@@ -1,0 +1,581 @@
+using System.Text;
+using Microsoft.Extensions.Configuration;
+
+namespace NLightning.Domain.Tests.Node.Options;
+
+using Domain.Node.Options;
+using Domain.Protocol.ValueObjects;
+
+public class NodeOptionsTests
+{
+    [Theory]
+    [InlineData("mainnet")]
+    [InlineData("testnet")]
+    [InlineData("signet")]
+    [InlineData("regtest")]
+    [InlineData("Regtest")]
+    public void Given_AnyNetwork_When_EnableHtlcsUnset_Then_HtlcsEnabled(string network)
+    {
+        // Arrange (BOLT 5 plan O6-T4: the mainnet gate is open, unset means on everywhere)
+        var options = new NodeOptions { BitcoinNetwork = new BitcoinNetwork(network) };
+
+        // Assert
+        Assert.Null(options.EnableHtlcs);
+        Assert.True(options.HtlcsEnabled);
+    }
+
+    [Fact]
+    public void Given_DefaultOptions_When_Read_Then_TheAcceptedOpenLimitsAreLndLikeAndValid()
+    {
+        // Arrange (NL-550, NL-552)
+        var options = new NodeOptions();
+
+        // Assert
+        Assert.Equal((ushort)2016, options.MaxAcceptedToSelfDelay);
+        Assert.Equal(1U, options.MinAcceptedMaxHtlcValueInFlightPercent);
+        Assert.Equal(10U, options.MaxAcceptedChannelReservePercent);
+        Assert.Equal(275U, options.MinCommitmentFeeRatePerKw);
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_AReserveCapAbove100Percent_When_Validated_Then_ItIsAnError()
+    {
+        // Arrange (NL-562)
+        var options = new NodeOptions { MaxAcceptedChannelReservePercent = 101 };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains(nameof(NodeOptions.MaxAcceptedChannelReservePercent)));
+    }
+
+    [Fact]
+    public void Given_ACommitmentFeerateFloorBelow253_When_Validated_Then_ItIsAnError()
+    {
+        // Arrange (NL-564: BOLT 3's floor stays the lowest)
+        var options = new NodeOptions { MinCommitmentFeeRatePerKw = 252 };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains(nameof(NodeOptions.MinCommitmentFeeRatePerKw)));
+    }
+
+    [Theory]
+    [InlineData(250, 275)] // 1 sat/vB, floored at 253 by the fee service, raised to our floor (NL-564)
+    [InlineData(253, 275)]
+    [InlineData(275, 275)]
+    [InlineData(2_500, 2_500)] // an estimate above the floor is used as is
+    public void Given_AnEstimate_When_GettingTheCommitmentFeerate_Then_ItIsAtLeastTheFloor(long estimate,
+        uint expected)
+    {
+        // Arrange
+        var options = new NodeOptions();
+
+        // Act
+        var feerate = options.GetCommitmentFeeRatePerKw(estimate);
+
+        // Assert
+        Assert.Equal(expected, feerate);
+    }
+
+    [Fact]
+    public void Given_TheFloorSetTo253_When_GettingTheCommitmentFeerate_Then_TheEstimateIsUsed()
+    {
+        // Arrange
+        var options = new NodeOptions { MinCommitmentFeeRatePerKw = 253 };
+
+        // Act
+        var feerate = options.GetCommitmentFeeRatePerKw(253);
+
+        // Assert
+        Assert.Equal(253U, feerate);
+    }
+
+    [Fact]
+    public void Given_AZeroMaxAcceptedToSelfDelay_When_Validated_Then_ItIsAnError()
+    {
+        // Arrange
+        var options = new NodeOptions { MaxAcceptedToSelfDelay = 0 };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains(nameof(NodeOptions.MaxAcceptedToSelfDelay)));
+    }
+
+    [Fact]
+    public void Given_AnInFlightFloorAbove100Percent_When_Validated_Then_ItIsAnError()
+    {
+        // Arrange
+        var options = new NodeOptions { MinAcceptedMaxHtlcValueInFlightPercent = 101 };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains(nameof(NodeOptions.MinAcceptedMaxHtlcValueInFlightPercent)));
+    }
+
+    [Fact]
+    public void Given_DefaultOptions_When_Read_Then_MainnetWithHtlcsEnabled()
+    {
+        // Arrange
+        var options = new NodeOptions();
+
+        // Assert
+        Assert.Equal("mainnet", options.BitcoinNetwork.Name);
+        Assert.True(options.HtlcsEnabled);
+    }
+
+    [Theory]
+    [InlineData("mainnet")]
+    [InlineData("testnet")]
+    [InlineData("signet")]
+    [InlineData("regtest")]
+    public void Given_EnableHtlcsFalse_When_Read_Then_HtlcsDisabledOnEveryNetwork(string network)
+    {
+        // Arrange
+        var options = new NodeOptions { BitcoinNetwork = new BitcoinNetwork(network), EnableHtlcs = false };
+
+        // Assert
+        Assert.False(options.HtlcsEnabled);
+    }
+
+    [Theory]
+    [InlineData("mainnet", true)]
+    [InlineData("regtest", false)]
+    public void Given_EnableHtlcsSet_When_Read_Then_ExplicitValueWins(string network, bool enable)
+    {
+        // Arrange
+        var options = new NodeOptions { BitcoinNetwork = new BitcoinNetwork(network), EnableHtlcs = enable };
+
+        // Assert
+        Assert.Equal(enable, options.HtlcsEnabled);
+    }
+
+    [Fact]
+    public void Given_EnableHtlcsFalseAndNetworkSetAfterBinding_When_Read_Then_StillDisabled()
+    {
+        // Arrange (the daemon sets the network in PostConfigure, after binding)
+        var options = new NodeOptions
+        {
+            EnableHtlcs = false,
+            // Act
+            BitcoinNetwork = BitcoinNetwork.Regtest
+        };
+
+        // Assert
+        Assert.False(options.HtlcsEnabled);
+    }
+
+    [Fact]
+    public void Given_DefaultOptions_When_GetValidationErrors_Then_NoErrors()
+    {
+        // Arrange
+        var options = new NodeOptions();
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Empty(errors);
+        Assert.Equal(TimeSpan.FromSeconds(5), options.ReconnectInitialDelay);
+        Assert.Equal(TimeSpan.FromMinutes(10), options.ReconnectMaxDelay);
+    }
+
+    [Fact]
+    public void Given_NonPositiveReconnectDelay_When_GetValidationErrors_Then_Error()
+    {
+        // Arrange
+        var options = new NodeOptions { ReconnectInitialDelay = TimeSpan.Zero };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains(nameof(NodeOptions.ReconnectInitialDelay)));
+    }
+
+    [Fact]
+    public void Given_CustomSignetOnRegtest_When_GetValidationErrors_Then_Error()
+    {
+        // Arrange
+        var options = new NodeOptions
+        {
+            BitcoinNetwork = BitcoinNetwork.Regtest,
+            CustomSignet = new CustomSignetOptions { Name = "mutinynet" }
+        };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains("CustomSignet"));
+    }
+
+    [Fact]
+    public void Given_NodeSectionWithCustomSignet_When_Bound_Then_CustomSignetIsReadAndValid()
+    {
+        // Arrange
+        var configuration = new ConfigurationBuilder()
+                           .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(
+                                                               """{ "Node": { "CustomSignet": { "Name": "mutinynet" } } }""")))
+                           .Build();
+        var options = new NodeOptions { BitcoinNetwork = BitcoinNetwork.Signet };
+
+        // Act
+        configuration.GetSection("Node").Bind(options);
+
+        // Assert
+        Assert.Equal("mutinynet", options.CustomSignet?.Name);
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_MaxReconnectDelayBelowInitial_When_GetValidationErrors_Then_Error()
+    {
+        // Arrange
+        var options = new NodeOptions
+        {
+            ReconnectInitialDelay = TimeSpan.FromSeconds(30),
+            ReconnectMaxDelay = TimeSpan.FromSeconds(10)
+        };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains(nameof(NodeOptions.ReconnectMaxDelay)));
+    }
+
+    [Fact]
+    public void Given_ReestablishTimeouts_When_GetValidationErrors_Then_OnlyANegativeOrTooLargeOneIsAnError()
+    {
+        // Arrange (NL-796: 60 s by default, zero turns the deadline off; NL-891: at most a timer's limit)
+        var defaults = new NodeOptions();
+        var off = new NodeOptions { ReestablishTimeout = TimeSpan.Zero };
+        var negative = new NodeOptions { ReestablishTimeout = TimeSpan.FromSeconds(-1) };
+        var largest = new NodeOptions { ReestablishTimeout = NodeOptions.MaxReestablishTimeout };
+        var tooLarge = new NodeOptions { ReestablishTimeout = TimeSpan.FromDays(60) };
+
+        // Act
+        var defaultErrors = defaults.GetValidationErrors();
+        var offErrors = off.GetValidationErrors();
+        var negativeErrors = negative.GetValidationErrors();
+        var largestErrors = largest.GetValidationErrors();
+        var tooLargeErrors = tooLarge.GetValidationErrors();
+
+        // Assert
+        Assert.Equal(TimeSpan.FromSeconds(60), defaults.ReestablishTimeout);
+        Assert.Empty(defaultErrors);
+        Assert.Empty(offErrors);
+        Assert.Contains(negativeErrors, e => e.Contains(nameof(NodeOptions.ReestablishTimeout)));
+        Assert.Empty(largestErrors);
+        Assert.Contains(tooLargeErrors, e => e.Contains(nameof(NodeOptions.ReestablishTimeout)));
+    }
+
+    [Theory]
+    [InlineData("regtest", 15)]
+    [InlineData("mainnet", 60)]
+    [InlineData("testnet", 60)]
+    [InlineData("testnet4", 60)]
+    [InlineData("signet", 60)]
+    [InlineData("mutinynet", 60)]
+    public void Given_NoPingInterval_When_GetEffectivePingInterval_Then_TheNetworkDefault(string network,
+        int expectedSeconds)
+    {
+        // Arrange (NL-806: 15 s on regtest, 60 s elsewhere)
+        var options = new NodeOptions { BitcoinNetwork = BitcoinNetwork.Resolve(network) };
+
+        // Act
+        var interval = options.GetEffectivePingInterval();
+
+        // Assert
+        Assert.Null(options.PingInterval);
+        Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), interval);
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_APingInterval_When_GetEffectivePingInterval_Then_ItWinsOnEveryNetwork()
+    {
+        // Arrange
+        var mainnet = new NodeOptions { PingInterval = TimeSpan.FromSeconds(20) };
+        var regtest = new NodeOptions
+        {
+            BitcoinNetwork = BitcoinNetwork.Regtest,
+            PingInterval = TimeSpan.FromMinutes(2)
+        };
+
+        // Act & Assert
+        Assert.Equal(TimeSpan.FromSeconds(20), mainnet.GetEffectivePingInterval());
+        Assert.Equal(TimeSpan.FromMinutes(2), regtest.GetEffectivePingInterval());
+    }
+
+    [Theory]
+    [InlineData("mainnet", 0, false)]
+    [InlineData("mainnet", -1, false)]
+    [InlineData("mainnet", 4.999, false)]
+    [InlineData("mainnet", 5, true)]
+    [InlineData("mainnet", 15, true)]
+    [InlineData("regtest", 0, false)]
+    [InlineData("regtest", -15, false)]
+    [InlineData("regtest", 4, false)]
+    [InlineData("regtest", 5, true)]
+    [InlineData("regtest", 15, true)]
+    [InlineData("signet", 4, false)]
+    [InlineData("signet", 30, true)]
+    public void Given_PingIntervals_When_GetValidationErrors_Then_OnlyOneUnderFiveSecondsIsAnErrorOnAnyNetwork(
+        string network, double seconds, bool valid)
+    {
+        // Arrange (NL-806, owner decision 2026-10-03: BOLT 1 has no ping-rate rule since PR #918, so there is no
+        // 30 s floor; zero, negative and under 5 s are refused on every network, regtest included)
+        var options = new NodeOptions
+        {
+            BitcoinNetwork = BitcoinNetwork.Resolve(network),
+            PingInterval = TimeSpan.FromSeconds(seconds)
+        };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        if (valid)
+            Assert.Empty(errors);
+        else
+            Assert.Contains(errors, e => e.Contains(nameof(NodeOptions.PingInterval)));
+    }
+
+    [Fact]
+    public void Given_APingIntervalAboveATimersLimit_When_GetValidationErrors_Then_AnError()
+    {
+        // Arrange
+        var largest = new NodeOptions { PingInterval = NodeOptions.MaxPingInterval };
+        var tooLarge = new NodeOptions { PingInterval = TimeSpan.FromDays(60) };
+
+        // Act & Assert
+        Assert.Empty(largest.GetValidationErrors());
+        Assert.Contains(tooLarge.GetValidationErrors(), e => e.Contains(nameof(NodeOptions.PingInterval)));
+    }
+
+    [Fact]
+    public void Given_NodeSectionJsonWithAPingInterval_When_Bound_Then_ItIsRead()
+    {
+        // Arrange
+        var configuration = new ConfigurationBuilder()
+                           .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(
+                                                               """{ "Node": { "PingInterval": "00:00:45" } }""")))
+                           .Build();
+        var unset = new ConfigurationBuilder()
+                   .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes("""{ "Node": { "Daemon": false } }""")))
+                   .Build();
+
+        // Act
+        var bound = configuration.GetSection("Node").Get<NodeOptions>()!;
+        var unsetBound = unset.GetSection("Node").Get<NodeOptions>()!;
+
+        // Assert
+        Assert.Equal(TimeSpan.FromSeconds(45), bound.PingInterval);
+        Assert.Null(unsetBound.PingInterval);
+    }
+
+    [Fact]
+    public void Given_InvalidRoutingOptions_When_GetValidationErrors_Then_RoutingErrorsIncluded()
+    {
+        // Arrange
+        var options = new NodeOptions { Routing = new RoutingOptions { CltvExpiryDelta = 33 } };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains(nameof(RoutingOptions.CltvExpiryDelta)));
+    }
+
+    [Fact]
+    public void Given_NodeSectionJson_When_Bound_Then_HtlcReconnectAndRoutingValuesAreRead()
+    {
+        // Arrange (the shape of ~/.nltg/<network>/appsettings.json)
+        const string json = """
+                            {
+                              "Node": {
+                                "EnableHtlcs": false,
+                                "ReconnectInitialDelay": "00:00:01",
+                                "ReconnectMaxDelay": "00:00:30",
+                                "Routing": {
+                                  "FeeBaseMsat": 2000,
+                                  "FeeProportionalMillionths": 500,
+                                  "CltvExpiryDelta": 40,
+                                  "MaxCltvExpiryDistance": 1008,
+                                  "ExpiryTooSoonBlocks": 12,
+                                  "InvoiceMinFinalCltvExpiry": 36,
+                                  "InvoiceExpirySeconds": 600,
+                                  "HtlcMinimumMsat": 1,
+                                  "HtlcMaximumMsat": 1000000000
+                                }
+                              }
+                            }
+                            """;
+        using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+        var configuration = new ConfigurationBuilder().AddJsonStream(stream).Build();
+
+        // Act
+        var options = configuration.GetSection("Node").Get<NodeOptions>();
+
+        // Assert
+        Assert.NotNull(options);
+        Assert.False(options.EnableHtlcs);
+        Assert.False(options.HtlcsEnabled);
+        Assert.Equal(TimeSpan.FromSeconds(1), options.ReconnectInitialDelay);
+        Assert.Equal(TimeSpan.FromSeconds(30), options.ReconnectMaxDelay);
+        Assert.Equal(2_000U, options.Routing.FeeBaseMsat);
+        Assert.Equal(500U, options.Routing.FeeProportionalMillionths);
+        Assert.Equal((ushort)40, options.Routing.CltvExpiryDelta);
+        Assert.Equal(1_008U, options.Routing.MaxCltvExpiryDistance);
+        Assert.Equal((ushort)12, options.Routing.ExpiryTooSoonBlocks);
+        Assert.Equal((ushort)36, options.Routing.InvoiceMinFinalCltvExpiry);
+        Assert.Equal(600U, options.Routing.InvoiceExpirySeconds);
+        Assert.Equal(1UL, options.Routing.HtlcMinimumMsat);
+        Assert.Equal(1_000_000_000UL, options.Routing.HtlcMaximumMsat);
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_EnvironmentStyleKeys_When_Bound_Then_NestedRoutingValuesAreRead()
+    {
+        // Arrange (NLTG_Node__Routing__CltvExpiryDelta etc. arrive as "Node:Routing:CltvExpiryDelta")
+        var configuration = new ConfigurationBuilder()
+                           .AddInMemoryCollection(new Dictionary<string, string?>
+                           {
+                               ["Node:EnableHtlcs"] = "true",
+                               ["Node:Routing:CltvExpiryDelta"] = "33",
+                               ["Node:Routing:FeeBaseMsat"] = "1000"
+                           })
+                           .Build();
+
+        // Act
+        var options = configuration.GetSection("Node").Get<NodeOptions>();
+
+        // Assert
+        Assert.NotNull(options);
+        Assert.True(options.HtlcsEnabled);
+        Assert.Equal((ushort)33, options.Routing.CltvExpiryDelta);
+        Assert.Contains(options.GetValidationErrors(), e => e.Contains(nameof(RoutingOptions.CltvExpiryDelta)));
+    }
+
+    [Fact]
+    public void Given_FeeBaseAboveU32_When_Bound_Then_BindingFails()
+    {
+        // Arrange (fee_base_msat is a u32 in channel_update and BOLT 11 route hints)
+        var configuration = new ConfigurationBuilder()
+                           .AddInMemoryCollection(new Dictionary<string, string?>
+                           {
+                               ["Node:Routing:FeeBaseMsat"] = "4294967296"
+                           })
+                           .Build();
+
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(() => configuration.GetSection("Node").Get<NodeOptions>());
+    }
+
+    [Fact]
+    public void Given_FeeBaseAtU32Max_When_Bound_Then_Accepted()
+    {
+        // Arrange
+        var configuration = new ConfigurationBuilder()
+                           .AddInMemoryCollection(new Dictionary<string, string?>
+                           {
+                               ["Node:Routing:FeeBaseMsat"] = "4294967295"
+                           })
+                           .Build();
+
+        // Act
+        var options = configuration.GetSection("Node").Get<NodeOptions>();
+
+        // Assert
+        Assert.NotNull(options);
+        Assert.Equal(uint.MaxValue, options.Routing.FeeBaseMsat);
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_NodeSectionWithoutNewKeys_When_Bound_Then_DefaultsApply()
+    {
+        // Arrange
+        var configuration = new ConfigurationBuilder()
+                           .AddInMemoryCollection(new Dictionary<string, string?>
+                           {
+                               ["Node:ToSelfDelay"] = "144"
+                           })
+                           .Build();
+
+        // Act
+        var options = configuration.GetSection("Node").Get<NodeOptions>();
+
+        // Assert
+        Assert.NotNull(options);
+        Assert.Null(options.EnableHtlcs);
+        Assert.True(options.HtlcsEnabled);
+        Assert.Equal(TimeSpan.FromSeconds(5), options.ReconnectInitialDelay);
+        Assert.Equal((ushort)40, options.Routing.CltvExpiryDelta);
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Theory]
+    [InlineData("3399ff", new byte[] { 0x33, 0x99, 0xFF })]
+    [InlineData("#FF0000", new byte[] { 0xFF, 0x00, 0x00 })]
+    [InlineData(" 00a1b2 ", new byte[] { 0x00, 0xA1, 0xB2 })]
+    public void Given_AColor_When_Read_Then_ItIsTheRgbBytes(string color, byte[] expected)
+    {
+        // Arrange
+        var options = new NodeOptions { Color = color };
+
+        // Act / Assert
+        Assert.Equal(expected, options.GetColorBytes());
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("12345")]
+    [InlineData("1234567")]
+    [InlineData("zz99ff")]
+    public void Given_ABadColor_When_Validated_Then_ItIsAnError(string color)
+    {
+        // Arrange
+        var options = new NodeOptions { Color = color };
+
+        // Act / Assert
+        Assert.Throws<FormatException>(() => options.GetColorBytes());
+        Assert.Contains(options.GetValidationErrors(), e => e.Contains("Node:Color"));
+    }
+
+    [Fact]
+    public void Given_AnAliasOfMoreThan32Utf8Bytes_When_Validated_Then_ItIsAnError()
+    {
+        // Arrange: 11 three-byte characters are 33 bytes (BOLT 7: alias is 32 bytes)
+        var options = new NodeOptions { Alias = new string('\u20AC', 11) };
+        var fits = new NodeOptions { Alias = new string('\u20AC', 10) + "ab" };
+
+        // Act / Assert
+        Assert.Contains(options.GetValidationErrors(), e => e.Contains(nameof(NodeOptions.Alias)));
+        Assert.Empty(fits.GetValidationErrors());
+        Assert.Equal(32, Encoding.UTF8.GetByteCount(fits.Alias));
+    }
+
+    [Fact]
+    public void Given_Defaults_When_Read_Then_EmptyAliasAndLndColor()
+    {
+        // Arrange
+        var options = new NodeOptions();
+
+        // Act / Assert
+        Assert.Equal(string.Empty, options.Alias);
+        Assert.Equal(NodeOptions.DefaultColor, options.Color);
+    }
+}

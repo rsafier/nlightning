@@ -137,6 +137,14 @@ public enum Feature
     OptionOnionMessages = 39,
 
     /// <summary>
+    /// 40 is for the compulsory bit, 41 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Zero-fee commitment and HTLC transactions (not supported; known so dependencies can be validated).
+    /// </remarks>
+    ZeroFeeCommitments = 41,
+
+    /// <summary>
     /// 42 is for the compulsory bit, 43 is for the optional bit.
     /// </summary>
     /// <remarks>
@@ -177,10 +185,36 @@ public enum Feature
     OptionZeroconf = 51,
 
     /// <summary>
+    /// 56 is for the compulsory bit, 57 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Trampoline routing (BOLT 4 "Trampoline Payments", BOLTs PR 836): the node relays payments to the next trampoline
+    /// node named in a <c>trampoline_onion_packet</c> and finds the route itself. Contexts I, N and 9 (and the BOLT 12
+    /// invoice features). Not supported yet (NL-875; experimental, see <c>FeatureOptions.ExperimentalFeatures</c>).
+    /// </remarks>
+    OptionTrampolineRouting = 57,
+
+    /// <summary>
     /// 60 is for the compulsory bit, 61 is for the optional bit.
     /// </summary>
     /// <remarks>
     /// This feature is optional and is used to indicate that the node supports simple close.
     /// </remarks>
-    OptionSimpleClose = 61
+    OptionSimpleClose = 61,
+
+    /// <summary>
+    /// 62 is for the compulsory bit, 63 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Channel splicing (not supported; known so dependencies can be validated).
+    /// </remarks>
+    OptionSplice = 63,
+
+    /// <summary>
+    /// 66 is for the compulsory bit, 67 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Only accepts onion messages from peers with a channel (not supported; known so dependencies can be validated).
+    /// </remarks>
+    OptionOnionMessagesOnlyChannels = 67
 }

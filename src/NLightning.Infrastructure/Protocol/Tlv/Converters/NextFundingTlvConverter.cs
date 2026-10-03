@@ -20,12 +20,12 @@ public class NextFundingTlvConverter : ITlvConverter<NextFundingTlv>
             throw new InvalidCastException("Invalid TLV type");
         }
 
-        if (baseTlv.Length != 32)
+        if (baseTlv.Length != NextFundingTlv.ValueLength)
         {
             throw new InvalidCastException("Invalid length");
         }
 
-        return new NextFundingTlv(baseTlv.Value);
+        return new NextFundingTlv(baseTlv.Value[..32], baseTlv.Value[32]);
     }
 
     [ExcludeFromCodeCoverage]

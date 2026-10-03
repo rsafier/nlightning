@@ -8,6 +8,7 @@ using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Infrastructure.Transport.Interfaces;
+using Infrastructure.Transport.Tor;
 using Interfaces;
 
 public sealed class NodeInfoQueryService : INodeInfoQueryService
@@ -16,10 +17,13 @@ public sealed class NodeInfoQueryService : INodeInfoQueryService
     private readonly ISecureKeyManager _secureKeyManager;
     private readonly IServiceProvider _services;
     private readonly ITcpService _tcpService;
+    private readonly ITorOnionService? _torOnionService;
 
     public NodeInfoQueryService(IOptions<NodeOptions> nodeOptions, ISecureKeyManager secureKeyManager,
-                                IServiceProvider services, ITcpService tcpService)
+                                IServiceProvider services, ITcpService tcpService,
+                                ITorOnionService? torOnionService = null)
     {
+        _torOnionService = torOnionService;
         _nodeOptions = nodeOptions.Value;
         _secureKeyManager = secureKeyManager;
         _services = services;
@@ -45,7 +49,7 @@ public sealed class NodeInfoQueryService : INodeInfoQueryService
                 {
                     bestHeight = state.LastProcessedHeight;
                     bestHashHex = state.LastProcessedBlockHash.ToString();
-                    bestTime = state.LastProcessedAt;
+                    bestTime = AsUtc(state.LastProcessedAt);
                 }
             }
             catch
@@ -66,7 +70,21 @@ public sealed class NodeInfoQueryService : INodeInfoQueryService
             BestBlockHeight = bestHeight,
             BestBlockTime = bestTime,
             Implementation = "NLightning",
-            Version = typeof(NodeInfoQueryService).Assembly.GetName().Version?.ToString()
+            Version = typeof(NodeInfoQueryService).Assembly.GetName().Version?.ToString(),
+            TorMode = _nodeOptions.Tor.Mode.ToString(),
+            OnionAddress = _torOnionService?.OnionHost is { } onionHost
+                               ? $"{pubKeyString}@{onionHost}:{_torOnionService.OnionPort}"
+                               : null
         };
     }
+
+    /// <summary>
+    /// The stored processing time as a UTC instant (NL-885): it is written as <see cref="DateTime.UtcNow"/>, and the
+    /// database hands it back without a kind, which the implicit conversion to <see cref="DateTimeOffset"/> took as
+    /// local time (a UTC wall time with the local offset attached).
+    /// </summary>
+    internal static DateTimeOffset AsUtc(DateTime time) =>
+        time.Kind == DateTimeKind.Local
+            ? new DateTimeOffset(time.ToUniversalTime(), TimeSpan.Zero)
+            : new DateTimeOffset(DateTime.SpecifyKind(time, DateTimeKind.Utc), TimeSpan.Zero);
 }

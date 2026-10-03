@@ -22,6 +22,13 @@ public class ClosingSignedMessageTests
                                                    SerializerHelper.TlvStreamSerializer);
     }
 
+    private const string Signature =
+        "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320";
+
+    // channel_id (zero), fee_satoshis = 2, signature, no TLV stream
+    private const string NoFeeRangeHex =
+        "0000000000000000000000000000000000000000000000000000000000000000" + "0000000000000002" + Signature;
+
     #region Deserialize
 
     [Fact]
@@ -48,6 +55,7 @@ public class ClosingSignedMessageTests
         Assert.Equal(expectedFeeSatoshis, message.Payload.FeeAmount);
         Assert.Equal(expectedSignatureBytes, message.Payload.Signature);
         Assert.NotNull(message.Extension);
+        Assert.NotNull(message.FeeRangeTlv);
         Assert.Equal(expectedMinFee, message.FeeRangeTlv.MinFeeAmount);
         Assert.Equal(expectedMaxFee, message.FeeRangeTlv.MaxFeeAmount);
     }
@@ -64,9 +72,53 @@ public class ClosingSignedMessageTests
                                                                    .DeserializeAsync(invalidStream));
     }
 
+    [Fact]
+    public async Task Given_NoFeeRange_When_Deserialize_Then_Ok()
+    {
+        // Arrange
+        var stream = new MemoryStream(Convert.FromHexString(NoFeeRangeHex));
+
+        // Act
+        var message = await _closingSignedMessageTypeSerializer.DeserializeAsync(stream);
+
+        // Assert
+        Assert.Null(message.FeeRangeTlv);
+        Assert.Null(message.Extension);
+        Assert.Equal(LightningMoney.Satoshis(2), message.Payload.FeeAmount);
+        Assert.Equal(stream.Length, stream.Position);
+    }
+
+    [Fact]
+    public async Task Given_OnlyUnknownOddTlv_When_Deserialize_Then_FeeRangeIsNull()
+    {
+        // Arrange
+        var stream = new MemoryStream(Convert.FromHexString(NoFeeRangeHex + "03012A"));
+
+        // Act
+        var message = await _closingSignedMessageTypeSerializer.DeserializeAsync(stream);
+
+        // Assert
+        Assert.Null(message.FeeRangeTlv);
+    }
+
     #endregion
 
     #region Serialize
+
+    [Fact]
+    public async Task Given_NoFeeRange_When_SerializeAsync_Then_WritesNoTlvStream()
+    {
+        // Arrange
+        var message = new ClosingSignedMessage(new ClosingSignedPayload(ChannelId.Zero, LightningMoney.Satoshis(2),
+                                                                        Convert.FromHexString(Signature)));
+        var stream = new MemoryStream();
+
+        // Act
+        await _closingSignedMessageTypeSerializer.SerializeAsync(message, stream);
+
+        // Assert
+        Assert.Equal(Convert.FromHexString(NoFeeRangeHex), stream.ToArray());
+    }
 
     [Fact]
     public async Task Given_ValidPayload_When_SerializeAsync_Then_WritesCorrectDataToStream()

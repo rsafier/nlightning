@@ -5,6 +5,7 @@ namespace NLightning.Bolt11.Models.TaggedFields;
 using Domain.Protocol.ValueObjects;
 using Domain.Utils;
 using Enums;
+using Infrastructure.Bitcoin.Networks;
 using Interfaces;
 
 /// <summary>
@@ -23,9 +24,9 @@ internal sealed class FallbackAddressTaggedField : ITaggedField
     public short Length { get; }
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="DescriptionTaggedField"/> class.
+    /// Initializes a new instance of the <see cref="FallbackAddressTaggedField"/> class.
     /// </summary>
-    /// <param name="value">The Description</param>
+    /// <param name="value">The fallback address</param>
     internal FallbackAddressTaggedField(BitcoinAddress value)
     {
         Value = value;
@@ -33,6 +34,12 @@ internal sealed class FallbackAddressTaggedField : ITaggedField
 
         switch (value)
         {
+            case TaprootAddress taprootAddress:
+                // P2TR (witness version 1)
+                data.Add(1);
+                data.AddRange(taprootAddress.PubKey.ToBytes());
+                Length = 53;
+                break;
             case BitcoinPubKeyAddress pubKeyAddress:
                 // P2PKH
                 data.Add(17);
@@ -84,7 +91,10 @@ internal sealed class FallbackAddressTaggedField : ITaggedField
     /// <param name="bitReader">The BitReader to read from</param>
     /// <param name="length">The length of the field</param>
     /// <param name="bitcoinNetwork">The network type</param>
-    /// <returns>The FallbackAddressTaggedField, or null if the version is unknown (per BOLT 11, unknown versions should be skipped)</returns>
+    /// <returns>
+    /// The FallbackAddressTaggedField, or null if the version is unknown or the program length is invalid (per
+    /// BOLT 11, unknown versions should be skipped)
+    /// </returns>
     /// <exception cref="ArgumentException">Thrown when the network is invalid</exception>
     internal static FallbackAddressTaggedField? FromBitReader(BitReader bitReader, short length,
                                                               BitcoinNetwork bitcoinNetwork)
@@ -100,23 +110,25 @@ internal sealed class FallbackAddressTaggedField : ITaggedField
         if (newLength * 5 % 8 != 0 && data[^1] == 0)
             data = data[..^1];
 
-        var network = Network.GetNetwork(bitcoinNetwork) ??
-                      throw new ArgumentException("Network is unknown or invalid.", nameof(bitcoinNetwork));
+        var network = bitcoinNetwork.ToNBitcoinNetwork();
 
         // Per BOLT 11: "MUST skip over `f` fields that use an unknown `version`"
-        // Supported versions: 0 (P2WPKH/P2WSH), 17 (P2PKH), 18 (P2SH)
-        // Unknown versions (1-16 for future witness versions, 19-31 reserved) should be skipped
+        // Supported versions: 0 (P2WPKH/P2WSH), 1 (P2TR), 17 (P2PKH), 18 (P2SH)
+        // Unknown versions (2-16 future witness versions, 19-31 reserved) and known versions with an invalid
+        // program length should be skipped
         BitcoinAddress? address = addressType switch
         {
             // Witness P2WPKH
             0 when data.Length == 20 => new WitKeyId(data).GetAddress(network),
             // Witness P2WSH
             0 when data.Length == 32 => new WitScriptId(data).GetAddress(network),
+            // Witness P2TR
+            1 when data.Length == 32 => new TaprootPubKey(data).GetAddress(network),
             // P2PKH
             17 => new KeyId(data).GetAddress(network),
             // P2SH
             18 => new ScriptId(data).GetAddress(network),
-            // Unknown version - skip per BOLT 11 spec
+            // Unknown version or invalid program length - skip per BOLT 11 spec
             _ => null
         };
 

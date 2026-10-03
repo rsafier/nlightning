@@ -1,0 +1,4 @@
+<Project>
+    <!-- Tools build like the src projects (target frameworks, LangVersion, nullable); see src/Directory.Build.props -->
+    <Import Project="../src/Directory.Build.props"/>
+</Project>

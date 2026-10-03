@@ -33,7 +33,10 @@ public class PongPayloadSerializer : IPayloadSerializer<PongPayload>
                 throw new SerializationException(
                     $"Invalid Ignored data for {nameof(PongPayload)}. Expected {bytesLength} bytes.");
 
-            return new PongPayload(bytesLength);
+            var ignored = new byte[bytesLength];
+            await stream.ReadExactlyAsync(ignored);
+
+            return new PongPayload(bytesLength) { Ignored = ignored };
         }
         catch (Exception e)
         {

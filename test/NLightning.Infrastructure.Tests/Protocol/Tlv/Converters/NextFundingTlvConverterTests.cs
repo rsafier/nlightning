@@ -12,8 +12,8 @@ public class NextFundingTlvConverterTests
     {
         // Arrange
         var nextFundingTxId = uint256.Zero.ToBytes();
-        var expectedBaseTlv = new BaseTlv(0, nextFundingTxId);
-        var expectedNextFundingTlv = new NextFundingTlv(nextFundingTxId);
+        var expectedBaseTlv = new BaseTlv(1, [.. nextFundingTxId, 0x01]);
+        var expectedNextFundingTlv = new NextFundingTlv(nextFundingTxId, 0x01);
         var converter = new NextFundingTlvConverter();
 
         // Act

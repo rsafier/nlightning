@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Changed
+
+- `ICryptoProvider.DeriveKeyFromPasswordUsingArgon2I` takes the password as raw bytes. The libsodium backend
+  used to pass the UTF-16 char count as the byte length, so non-ASCII passwords were truncated and did not match the
+  native backend. `Argon2Id.DeriveKeyFromPasswordAndSalt(string, ...)` now hashes the full UTF-8 encoding on every
+  backend, and `Argon2Id.DeriveKeyFromPasswordBytesAndSalt` takes raw bytes;
+
 ## v2.0.0
 
 Peer service improvements, warning message propagation, `ChannelIdFactory` extension, and transport hardening.

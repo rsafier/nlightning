@@ -1,8 +1,8 @@
 #if CRYPTO_NATIVE
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using System.Text;
 using Konscious.Security.Cryptography;
+using Org.BouncyCastle.Crypto.Engines;
 using Org.BouncyCastle.Crypto.Parameters;
 
 namespace NLightning.Infrastructure.Crypto.Providers.Native;
@@ -15,6 +15,11 @@ using Interfaces;
 internal sealed partial class NativeCryptoProvider : ICryptoProvider
 {
     private readonly IncrementalHash _sha256 = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+    /// <summary>
+    /// Guard so a persistent mlock failure (RLIMIT_MEMLOCK on Linux) is reported once, not per locked allocation.
+    /// </summary>
+    private static int s_memoryLockWarningLogged;
 
     public void Sha256Init(IntPtr state)
     {
@@ -89,8 +94,22 @@ internal sealed partial class NativeCryptoProvider : ICryptoProvider
             return VirtualLock(addr, len) ? 0 : Marshal.GetLastWin32Error();
         }
 
-        // TODO: Log somewhere that Memory lock is not available on this platform.
-        // but return success so the process can continue
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) || RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            if (len == 0)
+                return 0;
+
+            // mlock(2) operates on whole pages (macOS refuses an unaligned address, Linux rounds), so pin the pages
+            // that hold the range. mlock can fail for a non-root process over RLIMIT_MEMLOCK: that only means the
+            // pages may be swapped out, so fail-soft (log once, keep going unlocked) instead of failing the caller.
+            var (pageStart, pageLength) = PageAlign(addr, len);
+            if (UnixMlock(pageStart, pageLength) != 0)
+                WarnMemoryLockUnavailable(Marshal.GetLastPInvokeError());
+
+            return 0;
+        }
+
+        // Other platforms: memory locking is not available, but return success so the process can continue.
         return 0;
     }
 
@@ -99,12 +118,17 @@ internal sealed partial class NativeCryptoProvider : ICryptoProvider
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             _ = VirtualUnlock(addr, len);
+            return;
         }
-        // else
-        // {
-        // TODO: Log somewhere that Memory unlock is not available on this platform.
-        // but don't fail so the process can continue
-        // }
+
+        if ((RuntimeInformation.IsOSPlatform(OSPlatform.Linux) || RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            && len > 0)
+        {
+            // Best effort: the memory is wiped and freed right after, and a failed lock above left nothing locked
+            var (pageStart, pageLength) = PageAlign(addr, len);
+            _ = UnixMunlock(pageStart, pageLength);
+        }
+        // Other platforms: memory unlocking is not available, but don't fail so the process can continue
     }
 
     public int AeadXChaCha20Poly1305IetfEncrypt(ReadOnlySpan<byte> key, ReadOnlySpan<byte> nonce,
@@ -208,18 +232,70 @@ internal sealed partial class NativeCryptoProvider : ICryptoProvider
         }
     }
 
-    public int DeriveKeyFromPasswordUsingArgon2I(Span<byte> key, string password, ReadOnlySpan<byte> salt,
+    public int StreamChaCha20IetfXor(ReadOnlySpan<byte> key, ReadOnlySpan<byte> nonce, ReadOnlySpan<byte> input,
+                                     Span<byte> output)
+    {
+        if (key.Length != CryptoConstants.PrivkeyLen)
+            throw new ArgumentException($"Key must be {CryptoConstants.PrivkeyLen} bytes.", nameof(key));
+
+        if (nonce.Length != CryptoConstants.Chacha20Poly1305NonceLen)
+            throw new ArgumentException($"Nonce must be {CryptoConstants.Chacha20Poly1305NonceLen} bytes.",
+                                        nameof(nonce));
+
+        if (output.Length != input.Length)
+            throw new ArgumentException("Output must be the same length as input.", nameof(output));
+
+        if (input.IsEmpty)
+            return 0;
+
+        var keyBytes = key.ToArray();
+        var inputBytes = input.ToArray();
+        var outputBytes = new byte[input.Length];
+        try
+        {
+            // ChaCha7539Engine is the RFC 7539/8439 IETF variant (96-bit nonce) and starts at block counter 0
+            var engine = new ChaCha7539Engine();
+            engine.Init(true, new ParametersWithIV(new KeyParameter(keyBytes), nonce.ToArray()));
+            engine.ProcessBytes(inputBytes, 0, inputBytes.Length, outputBytes, 0);
+            outputBytes.CopyTo(output);
+
+            return 0;
+        }
+        catch (Exception e)
+        {
+            throw new CryptographicException("ChaCha20 stream failed.", e);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(keyBytes);
+            CryptographicOperations.ZeroMemory(inputBytes);
+            CryptographicOperations.ZeroMemory(outputBytes);
+        }
+    }
+
+    public int DeriveKeyFromPasswordUsingArgon2I(Span<byte> key, ReadOnlySpan<byte> password, ReadOnlySpan<byte> salt,
                                                  ulong opsLimit, ulong memLimit)
     {
-        using var argon2 = new Argon2id(Encoding.UTF8.GetBytes(password));
-        argon2.Salt = salt.ToArray();
-        argon2.Iterations = (int)opsLimit;
-        argon2.MemorySize = (int)(memLimit / 1024); // memLimit is in bytes, MemorySize is in KB
-        argon2.DegreeOfParallelism = 1;
+        var passwordBytes = password.ToArray();
+        byte[]? derived = null;
+        try
+        {
+            using var argon2 = new Argon2id(passwordBytes);
+            argon2.Salt = salt.ToArray();
+            argon2.Iterations = (int)opsLimit;
+            argon2.MemorySize = (int)(memLimit / 1024); // memLimit is in bytes, MemorySize is in KB
+            argon2.DegreeOfParallelism = 1;
 
-        var derived = argon2.GetBytes(key.Length);
-        derived.CopyTo(key);
-        return 0;
+            derived = argon2.GetBytes(key.Length);
+            derived.CopyTo(key);
+            return 0;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(passwordBytes);
+            if (derived is not null)
+                CryptographicOperations.ZeroMemory(derived);
+        }
     }
 
     public void RandomBytes(Span<byte> buffer)
@@ -249,6 +325,31 @@ internal sealed partial class NativeCryptoProvider : ICryptoProvider
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool VirtualUnlock(IntPtr lpAddress, ulong dwSize);
+
+    // P/Invoke for the Unix mlock(2)/munlock(2) of MemoryLock/MemoryUnlock
+    [LibraryImport("libc", EntryPoint = "mlock", SetLastError = true)]
+    private static partial int UnixMlock(IntPtr addr, nuint length);
+
+    [LibraryImport("libc", EntryPoint = "munlock", SetLastError = true)]
+    private static partial int UnixMunlock(IntPtr addr, nuint length);
+
+    private static void WarnMemoryLockUnavailable(int errno)
+    {
+        if (Interlocked.Exchange(ref s_memoryLockWarningLogged, 1) != 0)
+            return;
+
+        Console.Error.WriteLine(
+            "Failed to lock secrets in memory with mlock(2) (errno {0}); they may be swapped to disk. " +
+            "Consider raising RLIMIT_MEMLOCK (ulimit -l).", errno);
+    }
+
+    private static (IntPtr Start, nuint Length) PageAlign(IntPtr addr, ulong len)
+    {
+        var pageMask = (ulong)Environment.SystemPageSize - 1;
+        var start = (ulong)addr & ~pageMask;
+        var end = ((ulong)addr + len + pageMask) & ~pageMask;
+        return ((IntPtr)start, (nuint)(end - start));
+    }
 
     public void Dispose()
     {

@@ -1,7 +1,9 @@
 namespace NLightning.Domain.Protocol.Messages;
 
 using Constants;
+using Models;
 using Payloads;
+using Tlv;
 
 /// <summary>
 /// Represents a commitment_signed message.
@@ -10,12 +12,28 @@ using Payloads;
 /// The commitment_signed message is sent when a node has changes to the remote commitment
 /// The message type is 132.
 /// </remarks>
-/// <param name="payload"></param>
-public sealed class CommitmentSignedMessage(CommitmentSignedPayload payload)
-    : BaseChannelMessage(MessageTypes.CommitmentSigned, payload)
+public sealed class CommitmentSignedMessage : BaseChannelMessage
 {
     /// <summary>
     /// The payload of the message.
     /// </summary>
     public new CommitmentSignedPayload Payload { get => (CommitmentSignedPayload)base.Payload; }
+
+    /// <summary>
+    /// BOLT 2 <c>commitment_signed_tlvs</c> type 1: the funding transaction spent by this commitment. A sender MUST set
+    /// it; a received message may omit it (older peers).
+    /// </summary>
+    public FundingTxIdTlv? FundingTxIdTlv { get; }
+
+    public CommitmentSignedMessage(CommitmentSignedPayload payload, FundingTxIdTlv? fundingTxIdTlv = null)
+        : base(MessageTypes.CommitmentSigned, payload)
+    {
+        FundingTxIdTlv = fundingTxIdTlv;
+
+        if (FundingTxIdTlv is not null)
+        {
+            Extension = new TlvStream();
+            Extension.Add(FundingTxIdTlv);
+        }
+    }
 }

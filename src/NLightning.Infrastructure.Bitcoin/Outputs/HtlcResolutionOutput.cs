@@ -6,15 +6,14 @@ using Domain.Money;
 
 public class HtlcResolutionOutput : BaseOutput
 {
-    public override ScriptType ScriptType => ScriptType.P2WSH;
-
     public PubKey RevocationPubKey { get; }
     public PubKey LocalDelayedPubKey { get; }
     public ulong ToSelfDelay { get; }
 
     public HtlcResolutionOutput(LightningMoney amount, PubKey localDelayedPubKey, PubKey revocationPubKey,
                                 ulong toSelfDelay)
-        : base(amount, GenerateHtlcOutputScript(revocationPubKey, localDelayedPubKey, toSelfDelay))
+        : base(amount, GenerateHtlcOutputScript(localDelayedPubKey, revocationPubKey, toSelfDelay),
+               ScriptType.P2WSH)
     {
         RevocationPubKey = revocationPubKey;
         LocalDelayedPubKey = localDelayedPubKey;

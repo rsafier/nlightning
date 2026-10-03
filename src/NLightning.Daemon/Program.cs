@@ -1,9 +1,9 @@
+using System.Runtime.CompilerServices;
 using MessagePack;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using NBitcoin;
 using NLightning.Daemon.Contracts.Helpers;
 using NLightning.Daemon.Contracts.Utilities;
 using NLightning.Daemon.Extensions;
@@ -29,6 +29,13 @@ try
         Log.Logger.Error("An unhandled exception occurred: {exception}", exception);
     };
 
+    // Check if help is requested (before reading the config, which creates the config dir)
+    if (CommandLineHelper.IsHelpRequested(args))
+    {
+        DaemonUtils.ShowUsage();
+        return 0;
+    }
+
     // Read the configuration file to check for daemon setting
     var (initialConfig, network, configPath) = NodeConfigurationExtensions.ReadInitialConfiguration(args);
 
@@ -49,22 +56,40 @@ try
         return 0;
     }
 
-    // Check if help is requested
-    if (CommandLineHelper.IsHelpRequested(args))
+    // Bind and validate the configuration, then exit (NL-338): no key, bitcoind or database needed
+    if (DaemonUtils.IsCheckConfigRequested(args))
     {
-        DaemonUtils.ShowUsage();
-        return 0;
+        var failures = ConfigurationCheck.Run(initialConfig, network);
+        foreach (var failure in failures)
+            Console.Error.WriteLine(failure);
+
+        Console.WriteLine(failures.Count == 0 ? "Configuration OK" : $"Configuration invalid: {failures.Count} error(s)");
+        return failures.Count == 0 ? 0 : 1;
     }
 
-    string? password = null;
-
-    // Try to get password from args or prompt
-    if (args.Contains("--password"))
+    // A NativeAOT build cannot run the node yet (NL-708): it has EF Core's compiled model, but EF refuses every LINQ
+    // query that was not precompiled when dynamic code is not supported, and our repositories' queries cannot be
+    // precompiled yet. Stop before the password prompt; the commands above work
+    if (!RuntimeFeature.IsDynamicCodeSupported)
     {
-        var idx = Array.IndexOf(args, "--password");
-        if (idx >= 0 && idx + 1 < args.Length)
-            password = args[idx + 1];
+        Log.Error("This NativeAOT build of nltg cannot run the node yet: its database layer (EF Core) needs precompiled "
+                + "queries (NL-708). Use the JIT build to run the node; --help, --status, --stop and --check-config "
+                + "work in this build.");
+        return 1;
     }
+
+    SensitiveLoggingUtils.WarnIfSensitiveQueryLoggingEnabled(initialConfig, Log.Logger);
+
+    // The database may sit outside the configuration directory (a Database:ConnectionString with a path), whose
+    // warning does not cover it (NL-439)
+    FilePermissionUtils.WarnIfDatabaseAccessibleByOthers(initialConfig["Database:Provider"],
+                                                         initialConfig["Database:ConnectionString"], Log.Logger);
+
+    // Get the password from --password-file, --password-stdin, --password or NLTG_PASSWORD, or prompt for it
+    var password = PasswordUtils.ResolvePassword(args, PasswordUtils.OpenStdinReader(), Log.Logger);
+
+    // Don't leak the password to anything else that reads our environment
+    Environment.SetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable, null);
 
     if (string.IsNullOrWhiteSpace(password))
     {
@@ -89,9 +114,13 @@ try
             var walletLogger = loggerFactory.CreateLogger<BitcoinChainService>();
 
             // Bind options from initialConfig
-            var bitcoinOptions = initialConfig.GetSection("Bitcoin").Get<BitcoinOptions>()
+            var bitcoinOptions = initialConfig.GetSection(BitcoinOptions.SectionName).Get<BitcoinOptions>()
                               ?? throw new InvalidOperationException(
                                      "Bitcoin configuration section is missing or invalid.");
+            var bitcoinErrors = bitcoinOptions.GetValidationErrors();
+            if (bitcoinErrors.Count > 0)
+                throw new InvalidOperationException(string.Join(" ", bitcoinErrors));
+
             var nodeOptions = initialConfig.GetSection("Node").Get<NodeOptions>()
                            ?? throw new InvalidOperationException("Node configuration section is missing or invalid.");
 
@@ -102,15 +131,16 @@ try
 
             var heightOfBirth = await bitcoinChainService.GetCurrentBlockHeightAsync();
 
-            // Creates new key
-            var key = new Key();
-            keyManager = new SecureKeyManager(key.ToBytes(), new BitcoinNetwork(network), keyFilePath, heightOfBirth);
+            // Creates a new key: a BIP32 master key with the node key on its own path (version 3 key file, NL-159)
+            keyManager = SecureKeyManager.CreateNew(new BitcoinNetwork(network), keyFilePath, heightOfBirth);
             keyManager.SaveToFile(password);
             Console.WriteLine($"New key created and saved to {keyFilePath}");
         }
         catch (Exception e)
         {
-            Log.Logger.Error(e, "An error occurred while creating new key.");
+            // The birth height comes from bitcoind (NL-153: the service itself constructs without it)
+            Log.Logger.Error(e, "An error occurred while creating new key; a new key needs a reachable bitcoind for "
+                              + "its birth height.");
             return 1;
         }
     }
@@ -122,7 +152,7 @@ try
     }
 
     // Start as a daemon if requested
-    if (DaemonUtils.StartDaemonIfRequested(args, initialConfig, pidFilePath, Log.Logger))
+    if (DaemonUtils.StartDaemonIfRequested(args, initialConfig, pidFilePath, Log.Logger, password))
     {
         // The parent process exits immediately after starting the daemon
         return 0;
@@ -134,7 +164,7 @@ try
     Log.Information("Starting NLTG...");
 
     // Create and run host
-    var host = Host.CreateDefaultBuilder(args)
+    var host = Host.CreateDefaultBuilder(DaemonUtils.NormalizeArgs(args))
                    .ConfigureNltg(initialConfig)
                    .ConfigureNltgServices(keyManager, configPath)
                    .Build();

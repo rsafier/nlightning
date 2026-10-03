@@ -2,8 +2,11 @@ namespace NLightning.Domain.Node.Interfaces;
 
 using Crypto.ValueObjects;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
 using Events;
 using Exceptions;
+using Gossip.Addresses;
+using LiquidityAds.Models;
 using Options;
 
 /// <summary>
@@ -17,9 +20,33 @@ public interface IPeerService : IDisposable
     CompactPubKey PeerPubKey { get; }
 
     /// <summary>
-    /// Gets the feature options for the peer.
+    /// Gets the feature options negotiated between us and the peer (a feature is set only when both sides support
+    /// it). Before the peer's <c>init</c> was accepted this is the default.
     /// </summary>
     FeatureOptions Features { get; }
+
+    /// <summary>
+    /// Gets the feature options the peer advertised in its <c>init</c>, before they were negotiated with ours, so a
+    /// consumer can react to what the peer offers regardless of our own advertisement (e.g. BOLT 1 lets a node send
+    /// <c>peer_storage</c> to any peer that offers <c>option_provide_storage</c>, whether or not it stores blobs
+    /// itself, NL-433). Before the peer's <c>init</c> was accepted this is the default.
+    /// </summary>
+    FeatureOptions PeerFeatures { get; }
+
+    /// <summary>
+    /// When the last message of any type was received from the peer (UTC), or null before the first one.
+    /// </summary>
+    DateTimeOffset? LastMessageReceivedAt { get; }
+
+    /// <summary>
+    /// Sends a <c>ping</c> (or joins the one in flight) and waits for its <c>pong</c> (BOLT 2: before
+    /// <c>commitment_signed</c> when nothing was received recently). A timeout closes the connection (BOLT 1 MAY;
+    /// the channels are not failed).
+    /// </summary>
+    /// <param name="timeout">How long to wait for the pong.</param>
+    /// <param name="cancellationToken">Stops waiting.</param>
+    /// <returns>True when the pong arrived in time; false on a timeout or before the init exchange finished.</returns>
+    Task<bool> PingAsync(TimeSpan timeout, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Event raised when the peer is disconnected.
@@ -41,8 +68,40 @@ public interface IPeerService : IDisposable
     /// </summary>
     event EventHandler<Exception>? OnExceptionRaised;
 
-    public string? PreferredHost { get; }
-    public ushort? PreferredPort { get; }
+    /// <summary>
+    /// Occurs when the peer sends a <c>channel_update</c> (BOLT 7). The sender is this service, so the handler knows
+    /// which peer sent it. Nothing is checked here (signature, chain, channel): that is the subscriber's job.
+    /// </summary>
+    /// <remarks>
+    /// Updates that arrive before anyone subscribed are kept (a few) and handed to the first subscriber.
+    /// </remarks>
+    event EventHandler<ChannelUpdateMessage>? OnChannelUpdateReceived;
+
+    /// <summary>
+    /// The address the peer says it sees us at (its init <c>remote_addr</c>, BOLT 1), or null when it sent none or one
+    /// that does not decode (logged and dropped, NL-344). Only a hint for our own announced addresses (NL-009); never
+    /// the peer's address.
+    /// </summary>
+    AddressDescriptor? ObservedAddress { get; }
+
+    /// <summary>
+    /// The rates the peer sells inbound liquidity at (its init <c>option_will_fund</c>, liquidity ads, NL-850), or null
+    /// when it sent none, sent rates that do not decode (dropped, never fatal: the record is odd), or its init was not
+    /// accepted yet.
+    /// </summary>
+    WillFundRates? LiquidityRates { get; }
+
+    /// <summary>
+    /// Completes once the peer's <c>init</c> was received and accepted (ours is sent before the service is handed
+    /// out), so both ends consider the connection established (BOLT 1).
+    /// </summary>
+    /// <param name="cancellationToken">Stops waiting.</param>
+    /// <returns>A task that completes when the init exchange is done.</returns>
+    /// <exception cref="ConnectionException">
+    /// The connection closed before the peer's init was accepted (no init within the network timeout, an invalid or
+    /// incompatible init, or the peer hung up).
+    /// </exception>
+    Task WaitForInitAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Disconnects from the peer.
@@ -58,9 +117,46 @@ public interface IPeerService : IDisposable
     Task SendMessageAsync(IChannelMessage replyMessage);
 
     /// <summary>
+    /// Sends a BOLT 7 gossip message (types 256-265, e.g. a <c>channel_update</c> for a channel with this peer).
+    /// </summary>
+    /// <param name="message">The gossip message.</param>
+    /// <returns>A task that represents the asynchronous operation.</returns>
+    /// <exception cref="ArgumentException"><paramref name="message"/> is not a gossip message.</exception>
+    Task SendGossipMessageAsync(IMessage message);
+
+    /// <summary>
+    /// Sends a BOLT 1 peer storage message (<c>peer_storage</c> or <c>peer_storage_retrieval</c>).
+    /// </summary>
+    /// <param name="message">The peer storage message.</param>
+    /// <returns>A task that represents the asynchronous operation.</returns>
+    /// <exception cref="ArgumentException"><paramref name="message"/> is not a peer storage message.</exception>
+    Task SendPeerStorageMessageAsync(IMessage message);
+
+    /// <summary>
+    /// Sends a BOLT 4 <c>onion_message</c> (type 513) to the peer, which must have negotiated
+    /// <c>option_onion_messages</c>.
+    /// </summary>
+    /// <param name="message">The onion message.</param>
+    /// <param name="cancellationToken">Stops the send.</param>
+    /// <returns>A task that represents the asynchronous operation.</returns>
+    /// <exception cref="NotSupportedException">The connection does not implement onion messages (the default).
+    /// </exception>
+    Task SendOnionMessageAsync(OnionMessageMessage message, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This peer connection does not send onion messages");
+
+    /// <summary>
     /// Sends a warning message to the peer.
     /// </summary>
     /// <param name="we">The warning exception containing the warning message to be sent to the peer.</param>
     /// <returns>A task that represents the asynchronous operation.</returns>
     Task SendWarningAsync(WarningException we);
+
+    /// <summary>
+    /// Sends an `error` message and keeps the connection (BOLT 1: the sender of an `error` fails the channel(s) it
+    /// names and MAY close the connection; e.g. a failed channel's stored error re-sent on reconnection, BOLT 2).
+    /// </summary>
+    /// <param name="errorMessage">The error; it should name a channel (an all-zero channel_id fails every channel).
+    /// </param>
+    /// <returns>A task that represents the asynchronous operation.</returns>
+    Task SendErrorAsync(ErrorMessage errorMessage);
 }

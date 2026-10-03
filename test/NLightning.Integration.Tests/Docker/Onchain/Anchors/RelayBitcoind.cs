@@ -1,0 +1,308 @@
+using System.Globalization;
+using NBitcoin;
+using NBitcoin.RPC;
+using Newtonsoft.Json.Linq;
+using NLightning.Testing.Lnd;
+using Network = NBitcoin.Network;
+
+namespace NLightning.Integration.Tests.Docker.Onchain.Anchors;
+
+using Cluster;
+using Fixtures;
+using Fixtures.Lnd;
+using Testing.Cluster.Kube;
+using Testing.Cluster.Nodes.BitcoinCore;
+using Testing.Cluster.Run;
+using Utils;
+
+/// <summary>
+/// A second bitcoind for the package relay proof (NL-380): a pod next to the miner in the network's run namespace; it
+/// syncs from the miner (<c>-connect</c>, its only peer) and relays to it, but keeps a mempool of only
+/// <see cref="MaxMempoolMb"/> MB. <see cref="FillMempoolAsync"/> fills that mempool with large transactions until
+/// bitcoind trims it, which raises its dynamic minimum feerate (<c>mempoolminfee</c>) above a low commitment's feerate
+/// while <c>minrelaytxfee</c> stays at 1 sat/vB: exactly the "fee spike after the last update_fee" case of BOLT 5
+/// B5-FAIL-06, where the commitment alone is refused and only a parent+child package (<c>submitpackage</c>, Bitcoin
+/// Core 28+) gets it in.
+/// </summary>
+/// <remarks>
+/// <para>Why not raise <c>-minrelaytxfee</c>: since Bitcoin Core 28 a non-TRUC (version 2) transaction must pay
+/// <c>minrelaytxfee</c> on its own even inside a package (<c>validation.cpp</c> PreChecks, "min relay fee not met"), and
+/// Lightning commitments are version 2, so a commitment below <c>minrelaytxfee</c> can never enter a mempool. Only the
+/// dynamic minimum (a full mempool) is bypassed by package feerates. Bitcoin Core 29 has no static
+/// <c>-mempoolminfee</c> option, hence the fill.</para>
+/// <para>The shared miner keeps its 300 MB mempool: its minimum stays at 1 sat/vB, so the fill transactions it gets
+/// from the relay are mined over the next blocks (<see cref="DisposeAsync"/> mines them out) and never change what the
+/// other proofs see.</para>
+/// <para>On the cluster (test harness phase 6; the only backend of the LND network since NL-820): a bitcoind pod
+/// <see cref="ClusterNodeName"/> of the harness (<c>BitcoinCoreNode</c>, the version table's image, an
+/// <c>emptyDir</c>) in the network's run namespace, connected to the miner's Service, reached by its pod IP from the
+/// host (<see cref="ClusterChainEndpoint.HostFor"/>) and taken out of the run again on disposal.</para>
+/// </remarks>
+internal sealed class RelayBitcoind : IAsyncDisposable
+{
+    /// <summary>The relay's node (StatefulSet and Service) name in the cluster backend's run namespace.</summary>
+    public const string ClusterNodeName = "relay";
+
+    /// <summary>The smallest <c>-maxmempool</c> bitcoind accepts (the default of <c>-blocksonly</c>).</summary>
+    public const int MaxMempoolMb = 5;
+
+    private const string RpcUser = "nltg";
+    private const string RpcPassword = "nltg";
+    private const string WalletName = "relay";
+
+    /// <summary>Outputs per fill transaction: about 93 kvB, below the 100 kvB standardness limit.</summary>
+    private const int FillOutputs = 3_000;
+
+    private static readonly TimeSpan s_readyTimeout = TimeSpan.FromMinutes(2);
+    private static readonly Money s_fillFunding = Money.Coins(0.02m);
+
+    private readonly ClusterLndBackend _cluster;
+    private readonly LightningRegtestNetworkFixture _fixture;
+    private readonly List<uint256> _fillTxIds = [];
+
+    private RegtestBitcoinEndpoint? _endpoint;
+
+    private RelayBitcoind(LightningRegtestNetworkFixture fixture)
+    {
+        _fixture = fixture;
+        _cluster = fixture.Cluster;
+    }
+
+    public RegtestBitcoinEndpoint Endpoint =>
+        _endpoint ?? throw new InvalidOperationException("The relay bitcoind is not running");
+
+    public RPCClient Rpc => Endpoint.Rpc;
+
+    /// <summary>
+    /// Starts the relay next to the miner (a pod in its run namespace), waits until it has the miner's tip, and gives
+    /// its wallet <paramref name="walletFunding"/> from the miner (so <see cref="NLightningTestNode.FundWalletAsync"/>
+    /// and the node's funding mining work through it).
+    /// </summary>
+    public static async Task<RelayBitcoind> StartAsync(LightningRegtestNetworkFixture fixture, Money walletFunding,
+                                                       CancellationToken ct)
+    {
+        var relay = new RelayBitcoind(fixture);
+        try
+        {
+            await relay.StartPodAsync(ct);
+
+            var address = await relay.Rpc.GetNewAddressAsync(ct);
+            await fixture.Bitcoin.SendToAddressAsync(address, walletFunding, cancellationToken: ct);
+            await fixture.Bitcoin.GenerateToAddressAsync(1, await fixture.Bitcoin.GetNewAddressAsync(ct), ct);
+            await relay.WaitSyncedAsync(ct);
+            await Poll.UntilAsync(async () => await relay.Rpc.GetBalanceAsync(0, false) >= walletFunding,
+                                  s_readyTimeout, "the relay wallet funded", ct);
+            return relay;
+        }
+        catch
+        {
+            await relay.DisposeAsync();
+            throw;
+        }
+    }
+
+    /// <summary>Waits until the relay's tip is the miner's.</summary>
+    public async Task WaitSyncedAsync(CancellationToken ct) =>
+        await Poll.UntilAsync(async () => await Rpc.GetBestBlockHashAsync(ct)
+                                       == await _fixture.Bitcoin.GetBestBlockHashAsync(ct),
+                              s_readyTimeout, "the relay bitcoind at the miner's tip", ct);
+
+    /// <summary>The relay's current dynamic minimum mempool feerate (<c>getmempoolinfo.mempoolminfee</c>) in sat/vB.</summary>
+    public async Task<decimal> GetMempoolMinFeeSatPerVByteAsync(CancellationToken ct) =>
+        BtcPerKvbToSatPerVByte((await GetMempoolInfoAsync(ct))["mempoolminfee"]!);
+
+    /// <summary>The relay's static <c>minrelaytxfee</c> in sat/vB.</summary>
+    public async Task<decimal> GetMinRelayFeeSatPerVByteAsync(CancellationToken ct) =>
+        BtcPerKvbToSatPerVByte((await GetMempoolInfoAsync(ct))["minrelaytxfee"]!);
+
+    public async Task<bool> IsInMempoolAsync(uint256 txId, CancellationToken ct) =>
+        (await Rpc.GetRawMempoolAsync(ct)).Contains(txId);
+
+    /// <summary>
+    /// The relay's mempool transaction that spends <paramref name="outPoint"/>, or null.
+    /// </summary>
+    public async Task<Transaction?> FindMempoolSpenderAsync(OutPoint outPoint, CancellationToken ct)
+    {
+        foreach (var txId in await Rpc.GetRawMempoolAsync(ct))
+        {
+            if (_fillTxIds.Contains(txId))
+                continue;
+
+            Transaction tx;
+            try
+            {
+                tx = await Rpc.GetRawTransactionAsync(txId, true, ct);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                continue; // evicted or mined meanwhile
+            }
+
+            if (tx.Inputs.Any(i => i.PrevOut == outPoint))
+                return tx;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Sends fill transactions of <paramref name="fillRateSatPerVByte"/> (about 93 kvB each, one wallet-free coin
+    /// from the miner each) to the relay until its <c>mempoolminfee</c> exceeds <paramref name="targetSatPerVByte"/>;
+    /// returns the minimum reached. Mines one block (the fill coins), so call it after the channel is open.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The minimum did not rise within <paramref name="maxFills"/>.</exception>
+    public async Task<decimal> FillMempoolAsync(decimal fillRateSatPerVByte, decimal targetSatPerVByte,
+                                                int maxFills, IEnumerable<LndNodeConnection> lndNodes,
+                                                IEnumerable<NLightningTestNode> nodes, CancellationToken ct)
+    {
+        // One confirmed coin per fill transaction, from the miner's wallet to keys of this test
+        var coins = new List<(Key Key, Coin Coin)>();
+        var fundings = new List<(Key Key, uint256 TxId)>();
+        for (var i = 0; i < maxFills; i++)
+        {
+            var key = new Key();
+            var address = key.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+            fundings.Add((key, await _fixture.Bitcoin.SendToAddressAsync(address, s_fillFunding,
+                                                                          cancellationToken: ct)));
+        }
+
+        await ChainSync.MineAndWaitAsync(_fixture, 1, lndNodes, nodes, ct);
+        await WaitSyncedAsync(ct);
+        foreach (var (key, txId) in fundings)
+        {
+            var funding = await _fixture.Bitcoin.GetRawTransactionAsync(txId, true, ct);
+            var script = key.PubKey.GetScriptPubKey(ScriptPubKeyType.Segwit);
+            var vout = funding.Outputs.FindIndex(o => o.ScriptPubKey == script);
+            coins.Add((key, new Coin(funding, (uint)vout)));
+        }
+
+        var minFee = await GetMempoolMinFeeSatPerVByteAsync(ct);
+        var sent = 0;
+        foreach (var (key, coin) in coins)
+        {
+            if (minFee > targetSatPerVByte)
+                break;
+
+            var fill = BuildFill(key, coin, fillRateSatPerVByte);
+            try
+            {
+                await Rpc.SendRawTransactionAsync(fill, ct);
+                _fillTxIds.Add(fill.GetHash());
+                sent++;
+            }
+            catch (RPCException e)
+            {
+                // The one that made bitcoind trim may itself be evicted ("mempool full")
+                Console.WriteLine($"Relay refused fill {sent + 1}: {e.Message}");
+                _fillTxIds.Add(fill.GetHash());
+            }
+
+            minFee = await GetMempoolMinFeeSatPerVByteAsync(ct);
+        }
+
+        var info = await GetMempoolInfoAsync(ct);
+        Console.WriteLine($"Relay mempool after {sent} fills of {fillRateSatPerVByte} sat/vB: {info["size"]} txs, "
+                        + $"{info["usage"]} bytes of {info["maxmempool"]}, mempoolminfee {minFee} sat/vB");
+        return minFee > targetSatPerVByte
+                   ? minFee
+                   : throw new InvalidOperationException(
+                         $"The relay's mempool minimum stayed at {minFee} sat/vB after {sent} fills");
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        // A failed test's namespace dump (ClusterDiagnostics) has the relay pod's log and state: it runs after the test,
+        // before this disposal
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+            await _cluster.Run.RemoveNodeAsync(ClusterNodeName, timeout.Token);
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"Could not remove the relay pod: {e.Message}");
+        }
+
+        await MineOutFillsAsync();
+    }
+
+    /// <summary>
+    /// The relay: a bitcoind pod in the network's run namespace (<c>-connect</c> to the miner's Service,
+    /// <see cref="MaxMempoolMb"/>), its wallet created by the deployment, RPC and ZMQ at its pod IP from the host
+    /// (Service name in the cluster).
+    /// </summary>
+    private async Task StartPodAsync(CancellationToken ct)
+    {
+        var cluster = _cluster;
+        var miner = cluster.Network.Chain.Node.Name;
+        var options = new BitcoinCoreOptions
+        {
+            Name = ClusterNodeName,
+            RpcUser = RpcUser,
+            RpcPassword = RpcPassword,
+            Wallet = WalletName,
+            Storage = NodeStorage.Ephemeral,
+            ExtraArgs = [$"-connect={miner}:{BitcoinCorePorts.P2p}", $"-maxmempool={MaxMempoolMb}"]
+        };
+        Console.WriteLine($"Relay bitcoind: pod {ClusterNodeName} in {cluster.Run.Namespace}, image {options.Image}, "
+                        + $"miner at {miner}:{BitcoinCorePorts.P2p}");
+        var node = await BitcoinCoreNode.DeployAsync(cluster.Run, options, s_readyTimeout, ct);
+        var host = ClusterChainEndpoint.HostFor(node.Handle,
+                                                KubeClientFactory.DetectSource() == KubeConfigSource.InCluster);
+        var rpc = new RPCClient($"{RpcUser}:{RpcPassword}", $"http://{host}:{BitcoinCorePorts.Rpc}", Network.RegTest)
+                     .SetWalletContext(WalletName);
+        _endpoint = new RegtestBitcoinEndpoint(rpc, host, BitcoinCorePorts.ZmqRawBlock, BitcoinCorePorts.ZmqRawTx);
+        await WaitSyncedAsync(ct);
+    }
+
+    private static decimal BtcPerKvbToSatPerVByte(JToken value) =>
+        decimal.Parse(value.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture) * 100_000m;
+
+    private static Transaction BuildFill(Key key, Coin coin, decimal rateSatPerVByte)
+    {
+        var script = key.PubKey.GetScriptPubKey(ScriptPubKeyType.Segwit);
+        var perOutput = Money.Satoshis(1_000);
+        for (var pass = 0; pass < 2; pass++)
+        {
+            var tx = Network.RegTest.CreateTransaction();
+            tx.Inputs.Add(new TxIn(coin.Outpoint));
+            for (var i = 0; i < FillOutputs; i++)
+                tx.Outputs.Add(new TxOut(perOutput, script));
+            tx.Sign(key.GetBitcoinSecret(Network.RegTest), coin);
+            if (pass == 1)
+                return tx;
+
+            // The size does not depend on the output values: fix them so the fee pays the rate
+            var fee = (long)Math.Ceiling(rateSatPerVByte * tx.GetVirtualSize());
+            perOutput = Money.Satoshis((coin.Amount.Satoshi - fee) / FillOutputs);
+        }
+
+        throw new InvalidOperationException("unreachable");
+    }
+
+    private async Task<JObject> GetMempoolInfoAsync(CancellationToken ct) =>
+        (JObject)(await Rpc.SendCommandAsync("getmempoolinfo", ct)).Result;
+
+    /// <summary>Mines on the miner until none of the fill transactions is left in its mempool (at most 10 blocks).</summary>
+    private async Task MineOutFillsAsync()
+    {
+        if (_fillTxIds.Count == 0)
+            return;
+
+        try
+        {
+            for (var i = 0; i < 10; i++)
+            {
+                var mempool = await _fixture.Bitcoin.GetRawMempoolAsync();
+                if (!mempool.Any(_fillTxIds.Contains))
+                    return;
+
+                await _fixture.Bitcoin.GenerateToAddressAsync(1, await _fixture.Bitcoin.GetNewAddressAsync());
+            }
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"Could not mine the fill transactions out: {e.Message}");
+        }
+    }
+}

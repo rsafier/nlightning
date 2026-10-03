@@ -3,8 +3,10 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace NLightning.Infrastructure.Persistence.EntityConfiguration.Channel;
 
+using Domain.Accounting.Constants;
 using Domain.Bitcoin.Transactions.Constants;
 using Domain.Channels.Constants;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.Constants;
 using Entities.Channel;
 using Enums;
@@ -27,10 +29,12 @@ public static class ChannelEntityConfiguration
             entity.Property(e => e.RemoteNextHtlcId).IsRequired();
             entity.Property(e => e.LocalRevocationNumber).IsRequired();
             entity.Property(e => e.RemoteRevocationNumber).IsRequired();
+            entity.Property(e => e.LocalCommitmentNumber).IsRequired();
+            entity.Property(e => e.RemoteCommitmentNumber).IsRequired();
             entity.Property(e => e.State).IsRequired();
             entity.Property(e => e.Version).IsRequired();
-            entity.Property(e => e.LocalBalanceSatoshis).IsRequired();
-            entity.Property(e => e.RemoteBalanceSatoshis).IsRequired();
+            entity.Property(e => e.LocalBalanceMsat).IsRequired();
+            entity.Property(e => e.RemoteBalanceMsat).IsRequired();
             entity.Property(e => e.ChannelId)
                   .HasConversion<ChannelIdConverter>()
                   .IsRequired();
@@ -44,6 +48,67 @@ public static class ChannelEntityConfiguration
             // Nullable properties
             entity.Property(e => e.LastSentSignature).IsRequired(false);
             entity.Property(e => e.LastReceivedSignature).IsRequired(false);
+            entity.Property(e => e.RemoteAlias)
+                  .HasConversion<ShortChannelIdConverter>()
+                  .IsRequired(false);
+            entity.Property(e => e.ShortChannelId)
+                  .HasConversion<ShortChannelIdConverter>()
+                  .IsRequired(false);
+
+            // Commitment state (migration AddCommitmentState)
+            entity.Property(e => e.RemoteNextPerCommitmentPoint)
+                  .HasConversion<CompactPubKeyConverter>()
+                  .IsRequired(false);
+            entity.Property(e => e.SentCommitDiff).IsRequired(false);
+            entity.Property(e => e.LastSentOrder).IsRequired();
+            entity.Property(e => e.ErrorSent).IsRequired(false);
+            entity.Property(e => e.DataLossDetected).IsRequired();
+
+            // Dust exposure policy of the snapshot (migration AddInvoicesPaymentsAndCircuits, NL-242)
+            entity.Property(e => e.MaxDustHtlcExposureMsat).IsRequired(false);
+            entity.Property(e => e.RevocationLogFromNumber).IsRequired(false);
+
+            // Mutual close (migration AddShutdownState, BOLT2 plan N10)
+            entity.Property(e => e.LocalShutdownScript).IsRequired(false);
+            entity.Property(e => e.RemoteShutdownScript).IsRequired(false);
+            // NL-279 (migration AddShutdownHtlcBoundaryAndAddressReservation)
+            entity.Property(e => e.FirstRemoteHtlcIdAfterLocalShutdown).IsRequired(false);
+            entity.Property(e => e.ClosingTxId)
+                  .HasConversion<TxIdConverter>()
+                  .IsRequired(false);
+            entity.Property(e => e.ClosingTransaction).IsRequired(false);
+            // NL-610 (migration AddMutualCloseTerms)
+            entity.Property(e => e.CloseProtocol).IsRequired(false);
+            entity.Property(e => e.LocalIsCloser).IsRequired(false);
+            entity.Property(e => e.RemoteAnnouncementNodeSig).IsRequired(false);
+            entity.Property(e => e.RemoteAnnouncementBitcoinSig).IsRequired(false);
+            entity.Property(e => e.LocalAnnouncementSigsSentAt)
+                  .HasConversion<UtcTicksConverter>()
+                  .IsRequired(false);
+
+            // Dual funding (migration AddSpliceFundings, splicing plan wave DF)
+            entity.Property(e => e.IsDualFunded).IsRequired();
+            entity.Property(e => e.LocalFundingContributionSatoshis).IsRequired(false);
+            entity.Property(e => e.RemoteFundingContributionSatoshis).IsRequired(false);
+            entity.Property(e => e.PushAmountMsat).IsRequired(false);
+            entity.Property(e => e.Label)
+                  .HasMaxLength(AccountingSchemaLimits.LabelMaxBytes)
+                  .IsRequired(false);
+            entity.Property(e => e.Tags)
+                  .HasMaxLength(AccountingSchemaLimits.TagsMaxBytes)
+                  .IsRequired(false);
+
+            // Configure the relationship with the funding change address (optional, many-to-one from the wallet
+            // address keyed by (Index, IsChange, AddressType)). Configured explicitly (NL-134): the IsChange and
+            // AddressType foreign key legs used to be created by convention as shadow properties.
+            entity.HasOne(e => e.ChangeAddress)
+                  .WithMany()
+                  .HasForeignKey(e => new
+                  {
+                      e.ChangeAddressIndex,
+                      e.ChangeAddressIsChange,
+                      e.ChangeAddressAddressType
+                  });
 
             // Configure the relationship with ChannelConfig (1:1)
             entity.HasOne(e => e.Config)
@@ -55,6 +120,12 @@ public static class ChannelEntityConfiguration
             entity.HasMany(e => e.Htlcs)
                   .WithOne()
                   .HasForeignKey(h => h.ChannelId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            // Configure the relationship with the local scid aliases (1:many)
+            entity.HasMany(e => e.LocalAliases)
+                  .WithOne()
+                  .HasForeignKey(a => a.ChannelId)
                   .OnDelete(DeleteBehavior.Cascade);
 
             // Configure the relationship with KeySets (1:many)
@@ -76,12 +147,24 @@ public static class ChannelEntityConfiguration
 
     private static void OptimizeConfigurationForSqlServer(EntityTypeBuilder<ChannelEntity> entity)
     {
-        entity.Property(e => e.LocalBalanceSatoshis).HasColumnType("bigint");
-        entity.Property(e => e.RemoteBalanceSatoshis).HasColumnType("bigint");
         entity.Property(e => e.ChannelId).HasColumnType($"varbinary({ChannelConstants.ChannelIdLength})");
         entity.Property(e => e.FundingTxId).HasColumnType($"varbinary({TransactionConstants.TxIdLength})");
-        entity.Property(e => e.RemoteNodeId).HasColumnType($"varbinary({TransactionConstants.TxIdLength})");
+        entity.Property(e => e.RemoteNodeId).HasColumnType($"varbinary({CryptoConstants.CompactPubkeyLen})");
         entity.Property(e => e.LastSentSignature).HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
         entity.Property(e => e.LastReceivedSignature).HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
+        entity.Property(e => e.RemoteAlias).HasColumnType($"varbinary({ShortChannelId.Length})");
+        entity.Property(e => e.ShortChannelId).HasColumnType($"varbinary({ShortChannelId.Length})");
+        entity.Property(e => e.RemoteNextPerCommitmentPoint)
+              .HasColumnType($"varbinary({CryptoConstants.CompactPubkeyLen})");
+        entity.Property(e => e.SentCommitDiff).HasColumnType("varbinary(max)");
+        entity.Property(e => e.ErrorSent).HasColumnType("varbinary(max)");
+        entity.Property(e => e.LocalShutdownScript).HasColumnType("varbinary(max)");
+        entity.Property(e => e.RemoteShutdownScript).HasColumnType("varbinary(max)");
+        entity.Property(e => e.ClosingTxId).HasColumnType($"varbinary({TransactionConstants.TxIdLength})");
+        entity.Property(e => e.ClosingTransaction).HasColumnType("varbinary(max)");
+        entity.Property(e => e.RemoteAnnouncementNodeSig)
+              .HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
+        entity.Property(e => e.RemoteAnnouncementBitcoinSig)
+              .HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
     }
 }

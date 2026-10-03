@@ -24,7 +24,10 @@ public class AnchorOutputInfo : IOutputInfo
     public OutputType OutputType { get; }
 
     /// <summary>
-    /// Gets the funding public key used for the anchor.
+    /// Gets the key the anchor is keyed to: its owner's funding public key with <c>option_anchors</c>; with
+    /// <c>option_simple_taproot</c> the anchor's taproot internal key, the holder's <c>local_delayedpubkey</c> for
+    /// to_local_anchor and the other side's <c>remotepubkey</c> for to_remote_anchor (the funding keys are never
+    /// revealed under MuSig2).
     /// </summary>
     public CompactPubKey FundingPubKey { get; }
 

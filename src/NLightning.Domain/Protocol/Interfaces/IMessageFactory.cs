@@ -3,13 +3,21 @@ namespace NLightning.Domain.Protocol.Interfaces;
 using Bitcoin.ValueObjects;
 using Channels.ValueObjects;
 using Crypto.ValueObjects;
+using Gossip.Addresses;
+using LiquidityAds.Models;
 using Messages;
 using Money;
 using Tlv;
 
 public interface IMessageFactory
 {
-    InitMessage CreateInitMessage();
+    /// <summary>
+    /// Creates an init message. <paramref name="remoteAddress"/> is the BOLT 1 <c>remote_addr</c> TLV: the address
+    /// descriptor of the connection's remote endpoint, which the receiver of an IP connection SHOULD send (NL-009);
+    /// null sends no <c>remote_addr</c>. When we sell liquidity (<c>Node:LiquidityAds:FundingRates</c>, NL-850) our
+    /// <c>option_will_fund</c> rates go with it.
+    /// </summary>
+    InitMessage CreateInitMessage(AddressDescriptor? remoteAddress = null);
     WarningMessage CreateWarningMessage(string message, ChannelId? channelId);
     WarningMessage CreateWarningMessage(byte[] data, ChannelId? channelId);
     StfuMessage CreateStfuMessage(ChannelId channelId, bool initiator);
@@ -29,12 +37,16 @@ public interface IMessageFactory
     TxCompleteMessage CreateTxCompleteMessage(ChannelId channelId);
     TxSignaturesMessage CreateTxSignaturesMessage(ChannelId channelId, byte[] txId, List<Witness> witnesses);
 
+    /// <summary>A <c>tx_init_rbf</c>; <paramref name="requestFunding"/> is our liquidity ads request (NL-850), null
+    /// for none.</summary>
     TxInitRbfMessage CreateTxInitRbfMessage(ChannelId channelId, uint locktime, uint feerate,
                                             long fundingOutputContrubution,
-                                            bool requireConfirmedInputs);
+                                            bool requireConfirmedInputs, RequestFunding? requestFunding = null);
 
+    /// <summary>A <c>tx_ack_rbf</c>; <paramref name="willFund"/> is our liquidity ads answer (NL-850), null for
+    /// none.</summary>
     TxAckRbfMessage CreateTxAckRbfMessage(ChannelId channelId, long fundingOutputContrubution,
-                                          bool requireConfirmedInputs);
+                                          bool requireConfirmedInputs, WillFund? willFund = null);
 
     TxAbortMessage CreateTxAbortMessage(ChannelId channelId, byte[] data);
 
@@ -43,49 +55,66 @@ public interface IMessageFactory
 
     ShutdownMessage CreateShutdownMessage(ChannelId channelId, BitcoinScript scriptPubkey);
 
-    ClosingSignedMessage CreateClosingSignedMessage(ChannelId channelId, ulong feeSatoshis, CompactSignature signature,
-                                                    ulong minFeeSatoshis, ulong maxFeeSatoshis);
-
+    /// <summary>
+    /// Creates an open_channel whose dust limit, reserve, htlc minimum, max accepted HTLCs, max in flight and
+    /// to_self_delay are taken from <paramref name="localParams"/> (the values we announce).
+    /// </summary>
     OpenChannel1Message CreateOpenChannel1Message(ChannelId temporaryChannelId, LightningMoney fundingAmount,
                                                   CompactPubKey fundingPubKey, LightningMoney pushAmount,
-                                                  LightningMoney channelReserveAmount, LightningMoney feeRatePerKw,
-                                                  ushort maxAcceptedHtlcs, CompactPubKey revocationBasepoint,
+                                                  ChannelParty localParams, LightningMoney feeRatePerKw,
+                                                  CompactPubKey revocationBasepoint,
                                                   CompactPubKey paymentBasepoint, CompactPubKey delayedPaymentBasepoint,
                                                   CompactPubKey htlcBasepoint, CompactPubKey firstPerCommitmentPoint,
                                                   ChannelFlags channelFlags,
                                                   ChannelTypeTlv channelTypeTlv,
                                                   UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv);
 
+    /// <summary>
+    /// Creates an <c>open_channel2</c> (BOLT 2 "Channel Establishment v2") announcing <paramref name="localParams"/>
+    /// (dust limit, htlc minimum, max accepted HTLCs, max in flight, to_self_delay; v2 has no reserve field).
+    /// </summary>
     OpenChannel2Message CreateOpenChannel2Message(ChannelId temporaryChannelId, uint fundingFeeRatePerKw,
-                                                  uint commitmentFeeRatePerKw, ulong fundingSatoshis,
-                                                  CompactPubKey fundingPubKey,
-                                                  CompactPubKey revocationBasepoint, CompactPubKey paymentBasepoint,
+                                                  uint commitmentFeeRatePerKw, LightningMoney fundingAmount,
+                                                  ChannelParty localParams, uint locktime,
+                                                  CompactPubKey fundingPubKey, CompactPubKey revocationBasepoint,
+                                                  CompactPubKey paymentBasepoint,
                                                   CompactPubKey delayedPaymentBasepoint, CompactPubKey htlcBasepoint,
                                                   CompactPubKey firstPerCommitmentPoint,
-                                                  CompactPubKey secondPerCommitmentPoint,
-                                                  ChannelFlags channelFlags, BitcoinScript? shutdownScriptPubkey = null,
-                                                  byte[]? channelType = null, bool requireConfirmedInputs = false);
+                                                  CompactPubKey secondPerCommitmentPoint, ChannelFlags channelFlags,
+                                                  ChannelTypeTlv channelTypeTlv,
+                                                  UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null,
+                                                  bool requireConfirmedInputs = false,
+                                                  RequestFunding? requestFunding = null);
 
-    AcceptChannel1Message CreateAcceptChannel1Message(LightningMoney channelReserveAmount,
-                                                      ChannelTypeTlv channelTypeTlv,
+    /// <summary>
+    /// Creates an accept_channel whose dust limit, reserve, htlc minimum, max accepted HTLCs, max in flight and
+    /// to_self_delay are taken from <paramref name="localParams"/> (the values we announce, never the opener's).
+    /// </summary>
+    AcceptChannel1Message CreateAcceptChannel1Message(ChannelParty localParams, ChannelTypeTlv channelTypeTlv,
                                                       CompactPubKey delayedPaymentBasepoint,
                                                       CompactPubKey firstPerCommitmentPoint,
                                                       CompactPubKey fundingPubKey, CompactPubKey htlcBasepoint,
-                                                      ushort maxAcceptedHtlcs, LightningMoney maxHtlcValueInFlight,
                                                       uint minimumDepth, CompactPubKey paymentBasepoint,
                                                       CompactPubKey revocationBasepoint, ChannelId temporaryChannelId,
-                                                      ushort toSelfDelay,
                                                       UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv);
 
-    AcceptChannel2Message CreateAcceptChannel2Message(ChannelId temporaryChannelId, LightningMoney fundingSatoshis,
+    /// <summary>
+    /// Creates an <c>accept_channel2</c> echoing the opener's <paramref name="temporaryChannelId"/> and
+    /// <paramref name="channelTypeTlv"/>, with <paramref name="fundingAmount"/> as our contribution (zero for none) and
+    /// the values of <paramref name="localParams"/>.
+    /// </summary>
+    AcceptChannel2Message CreateAcceptChannel2Message(ChannelId temporaryChannelId, LightningMoney fundingAmount,
+                                                      ChannelParty localParams, uint minimumDepth,
                                                       CompactPubKey fundingPubKey, CompactPubKey revocationBasepoint,
                                                       CompactPubKey paymentBasepoint,
                                                       CompactPubKey delayedPaymentBasepoint,
                                                       CompactPubKey htlcBasepoint,
                                                       CompactPubKey firstPerCommitmentPoint,
-                                                      LightningMoney maxHtlcValueInFlight,
-                                                      BitcoinScript? shutdownScriptPubkey = null,
-                                                      byte[]? channelType = null, bool requireConfirmedInputs = false);
+                                                      CompactPubKey secondPerCommitmentPoint,
+                                                      ChannelTypeTlv channelTypeTlv,
+                                                      UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null,
+                                                      bool requireConfirmedInputs = false,
+                                                      WillFund? willFund = null);
 
     FundingCreatedMessage CreateFundingCreatedMessage(ChannelId temporaryChannelId, TxId fundingTxId,
                                                       ushort fundingOutputIndex, CompactSignature signature);
@@ -94,15 +123,29 @@ public interface IMessageFactory
 
     UpdateAddHtlcMessage CreateUpdateAddHtlcMessage(ChannelId channelId, ulong id, ulong amountMsat,
                                                     ReadOnlyMemory<byte> paymentHash, uint cltvExpiry,
-                                                    ReadOnlyMemory<byte>? onionRoutingPacket = null);
+                                                    ReadOnlyMemory<byte> onionRoutingPacket);
 
+    /// <summary>
+    /// An <c>update_fulfill_htlc</c>, with the <c>attribution_data</c> TLV (1) when <paramref name="attributionData"/>
+    /// is not empty and the <c>fulfillment_payload</c> TLV (3) when <paramref name="fulfillmentPayload"/> is not empty.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="attributionData"/> is neither empty nor 920 bytes.</exception>
     UpdateFulfillHtlcMessage CreateUpdateFulfillHtlcMessage(ChannelId channelId, ulong id,
-                                                            ReadOnlyMemory<byte> preimage);
+                                                            ReadOnlyMemory<byte> preimage,
+                                                            ReadOnlyMemory<byte> attributionData = default,
+                                                            ReadOnlyMemory<byte> fulfillmentPayload = default);
 
-    UpdateFailHtlcMessage CreateUpdateFailHtlcMessage(ChannelId channelId, ulong id, ReadOnlyMemory<byte> reason);
+    /// <summary>
+    /// An <c>update_fail_htlc</c>, with the <c>attribution_data</c> TLV (1) when <paramref name="attributionData"/> is
+    /// not empty.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="attributionData"/> is neither empty nor 920 bytes.</exception>
+    UpdateFailHtlcMessage CreateUpdateFailHtlcMessage(ChannelId channelId, ulong id, ReadOnlyMemory<byte> reason,
+                                                      ReadOnlyMemory<byte> attributionData = default);
 
     CommitmentSignedMessage CreateCommitmentSignedMessage(ChannelId channelId, CompactSignature signature,
-                                                          IEnumerable<CompactSignature> htlcSignatures);
+                                                          IEnumerable<CompactSignature> htlcSignatures,
+                                                          TxId fundingTxId);
 
     RevokeAndAckMessage CreateRevokeAndAckMessage(ChannelId channelId, ReadOnlyMemory<byte> perCommitmentSecret,
                                                   CompactPubKey nextPerCommitmentPoint);
@@ -117,4 +160,43 @@ public interface IMessageFactory
                                                               ulong nextRevocationNumber,
                                                               ReadOnlyMemory<byte> yourLastPerCommitmentSecret,
                                                               CompactPubKey myCurrentPerCommitmentPoint);
+
+    /// <summary>
+    /// An <c>announcement_signatures</c> (BOLT 7, type 259) for <paramref name="channelId"/>: our node-key and
+    /// funding-key signatures of the channel's <c>channel_announcement</c> hash.
+    /// </summary>
+    /// <exception cref="ArgumentException">A signature is not 64 bytes.</exception>
+    AnnouncementSignaturesMessage CreateAnnouncementSignaturesMessage(ChannelId channelId,
+                                                                      ShortChannelId shortChannelId,
+                                                                      CompactSignature nodeSignature,
+                                                                      CompactSignature bitcoinSignature);
+
+    /// <summary>A <c>splice_init</c> (BOLT 2, type 80, SP-W-01).</summary>
+    /// <param name="channelId">The channel.</param>
+    /// <param name="fundingContributionSatoshis">Our signed contribution (negative for a splice-out).</param>
+    /// <param name="fundingFeeratePerKw">The splice transaction's feerate.</param>
+    /// <param name="locktime">The splice transaction's <c>nLockTime</c>.</param>
+    /// <param name="fundingPubKey">Our funding key for the new funding.</param>
+    /// <param name="requireConfirmedInputs">Set <c>require_confirmed_inputs</c> (TLV 2).</param>
+    /// <param name="requestFunding">Our liquidity ads request (NL-850), null for none.</param>
+    SpliceInitMessage CreateSpliceInitMessage(ChannelId channelId, long fundingContributionSatoshis,
+                                              uint fundingFeeratePerKw, uint locktime, CompactPubKey fundingPubKey,
+                                              bool requireConfirmedInputs = false,
+                                              RequestFunding? requestFunding = null);
+
+    /// <summary>A <c>splice_ack</c> (BOLT 2, type 81, SP-W-02); <paramref name="willFund"/> is our liquidity ads
+    /// answer (NL-850), null for none.</summary>
+    SpliceAckMessage CreateSpliceAckMessage(ChannelId channelId, long fundingContributionSatoshis,
+                                            CompactPubKey fundingPubKey, bool requireConfirmedInputs = false,
+                                            WillFund? willFund = null);
+
+    /// <summary>A <c>splice_locked</c> (BOLT 2, type 77, SP-LK-01).</summary>
+    SpliceLockedMessage CreateSpliceLockedMessage(ChannelId channelId, TxId spliceTxId);
+
+    /// <summary>
+    /// A <c>start_batch</c> (BOLT 2, type 127) announcing <paramref name="batchSize"/> <c>commitment_signed</c>
+    /// messages (<c>message_type</c> = 132, SP-OP-03).
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="batchSize"/> is not in 2..20.</exception>
+    StartBatchMessage CreateStartBatchMessage(ChannelId channelId, ushort batchSize);
 }

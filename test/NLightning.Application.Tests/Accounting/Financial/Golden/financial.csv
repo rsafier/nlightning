@@ -1,0 +1,27 @@
+ledger_seq,adjustment,occurred_at,event_key,kind,account,role,amount_msat,fiat_amount,fiat_currency,price_id,price_per_btc,flags,classification,rule_id,closed_period,description
+1,0,2025-12-31T12:00:00.000Z,fixture:1,OpeningBalance,assets:onchain:wallet,Wallet,50000000,15,USD,1,30000,,Default,,,OpeningBalance
+1,0,2025-12-31T12:00:00.000Z,fixture:1,OpeningBalance,equity:opening-balances,Opening,-50000000,-15,USD,1,30000,,Default,,,OpeningBalance
+2,0,2026-01-01T00:10:00.000Z,fixture:2,WalletReceived,assets:onchain:wallet,Wallet,1000000000,400,USD,2,40000,,Default,,,WalletReceived
+2,0,2026-01-01T00:10:00.000Z,fixture:2,WalletReceived,equity:transfers:in,TransfersIn,-1000000000,-400,USD,2,40000,,Default,,,WalletReceived
+3,0,2026-01-05T00:00:00.000Z,fixture:3,ChannelFunded,assets:lightning:channels,Channels,500000000,200,USD,2,40000,,Default,,,ChannelFunded
+3,0,2026-01-05T00:00:00.000Z,fixture:3,ChannelFunded,expenses:fees:funding,FeeFunding,1000000,0.4,USD,2,40000,,Default,,,ChannelFunded
+3,0,2026-01-05T00:00:00.000Z,fixture:3,ChannelFunded,assets:onchain:wallet,Wallet,-501000000,-200.4,USD,,,,Default,,,ChannelFunded
+4,0,2026-02-10T12:00:00.000Z,fixture:4,InvoiceSettled,assets:lightning:channels,Channels,200000000,100,USD,3,50000,,Rule,7,,"InvoiceSettled: shop - Coffee; ""large"" with milk"
+4,0,2026-02-10T12:00:00.000Z,fixture:4,InvoiceSettled,income:sales,Received,-200000000,-100,USD,3,50000,,Rule,7,,"InvoiceSettled: shop - Coffee; ""large"" with milk"
+5,0,2026-03-02T00:00:00.000Z,fixture:5,PaymentSucceeded,expenses:payments,Sent,100000000,60,USD,4,60000,,Default,,,PaymentSucceeded
+5,0,2026-03-02T00:00:00.000Z,fixture:5,PaymentSucceeded,expenses:fees:routing,RoutingFees,10000,0.006,USD,4,60000,,Default,,,PaymentSucceeded
+5,0,2026-03-02T00:00:00.000Z,fixture:5,PaymentSucceeded,assets:lightning:channels,Channels,-100010000,-35.004,USD,,,,Default,,,PaymentSucceeded
+5,0,2026-03-02T00:00:00.000Z,fixture:5,PaymentSucceeded,income:gains:realized,Channels,0,-25.002,USD,,,,Default,,,PaymentSucceeded
+6,0,2026-03-05T00:00:00.000Z,fixture:6,ForwardSettled,assets:lightning:channels,Channels,5000,,,,,Unvalued,Default,,,ForwardSettled
+6,0,2026-03-05T00:00:00.000Z,fixture:6,ForwardSettled,income:routing,Routing,-5000,,,,,Unvalued,Default,,,ForwardSettled
+7,0,2026-03-06T00:00:00.000Z,fixture:7,PaymentSucceeded,expenses:unclassified,Sent,1000000,,,,,Unclassified|Unvalued,Default,,,PaymentSucceeded
+7,0,2026-03-06T00:00:00.000Z,fixture:7,PaymentSucceeded,assets:lightning:channels,Channels,-1000000,,,,,Unclassified|Unvalued,Default,,,PaymentSucceeded
+7,1,2026-03-20T00:00:00.000Z,fixture:7,PaymentSucceeded,expenses:payments,Sent,1000000,,,,,Adjustment|Unvalued,Override,,,PaymentSucceeded (adjustment 1)
+7,1,2026-03-20T00:00:00.000Z,fixture:7,PaymentSucceeded,expenses:unclassified,Sent,-1000000,,,,,Adjustment|Unvalued,Override,,,PaymentSucceeded (adjustment 1)
+8,0,2027-03-20T06:00:00.000Z,fixture:8,WalletSent,equity:transfers:out,TransfersOut,300000000,300,USD,5,100000,,Default,,,WalletSent
+8,0,2027-03-20T06:00:00.000Z,fixture:8,WalletSent,expenses:fees:withdraw,FeeWithdraw,200000,0.2,USD,5,100000,,Default,,,WalletSent
+8,0,2027-03-20T06:00:00.000Z,fixture:8,WalletSent,assets:onchain:wallet,Wallet,-300200000,-120.08,USD,,,,Default,,,WalletSent
+8,0,2027-03-20T06:00:00.000Z,fixture:8,WalletSent,income:gains:realized,Wallet,0,-180.12,USD,,,,Default,,,WalletSent
+9,0,2027-03-21T06:00:00.000Z,fixture:9,PaymentSucceeded,expenses:payments,Sent,1,0.00000033,USD,6,33333.33333333,,Default,,,PaymentSucceeded
+9,0,2027-03-21T06:00:00.000Z,fixture:9,PaymentSucceeded,expenses:fees:routing,RoutingFees,1,0.00000033,USD,6,33333.33333333,,Default,,,PaymentSucceeded
+9,0,2027-03-21T06:00:00.000Z,fixture:9,PaymentSucceeded,assets:lightning:channels,Channels,-2,-0.00000067,USD,6,33333.33333333,,Default,,,PaymentSucceeded

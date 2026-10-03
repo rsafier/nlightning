@@ -1,0 +1,58 @@
+namespace NLightning.Infrastructure.Bitcoin.Gossip;
+
+/// <summary>
+/// Limits of <see cref="FundingOutputLookup"/> (BOLT 7 plan §3.4). The property names match the plan's
+/// <c>Gossip:*</c> keys, so the host can bind this class from the <c>Gossip</c> section.
+/// </summary>
+public sealed class FundingOutputLookupOptions
+{
+    /// <summary>Lookups running against bitcoind at once (<c>Gossip:ChainLookupConcurrency</c>, default 4).</summary>
+    public int ChainLookupConcurrency { get; set; } = 4;
+
+    /// <summary>
+    /// Lookups started per second, with a burst of the same size (<c>Gossip:ChainLookupsPerSecond</c>, default 50), to
+    /// stay below bitcoind's <c>rpcworkqueue</c>.
+    /// </summary>
+    public int ChainLookupsPerSecond { get; set; } = 50;
+
+    /// <summary>
+    /// The bitcoind RPCs the lookup starts per second, with a burst of the same size
+    /// (<c>Gossip:ChainRpcsPerSecond</c>, default 250), bounded per RPC instead of per lookup (NL-346): one lookup
+    /// costs 3-5 RPCs (<c>getblockcount</c>, the block's txid list on a miss, <c>gettxout</c>, the
+    /// <c>getblockhash</c> rechecks, a second <c>gettxout</c> for a mempool-only spend), so the per-lookup rate alone
+    /// let 50 lookups a second mean about 250 RPCs. Keep this at least
+    /// <see cref="ChainLookupsPerSecond"/> x 5, or deep lookups queue behind the budget. An
+    /// <c>IFundingTxIdSource</c> (Esplora) rate-limits its own requests.
+    /// </summary>
+    public int ChainRpcsPerSecond { get; set; } = 250;
+
+    /// <summary>
+    /// Blocks whose txid list is kept, least recently used evicted first (<c>Gossip:ChainLookupCacheHeights</c>,
+    /// default 256).
+    /// </summary>
+    public int ChainLookupCacheHeights { get; set; } = 256;
+
+    /// <summary>
+    /// How long an "only spent in the mempool" answer is reused for the same short channel id while no new block was
+    /// seen (<c>Gossip:MempoolSpentRecheckInterval</c>, default 10 minutes, about one block; NL-414). A new block ends
+    /// it at once; the interval only bounds it when no block is reported (bitcoind stalled, or no chain monitor).
+    /// </summary>
+    public TimeSpan MempoolSpentRecheckInterval { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>The invalid settings, empty when valid.</summary>
+    public IReadOnlyList<string> GetValidationErrors()
+    {
+        var errors = new List<string>();
+        if (ChainLookupConcurrency < 1)
+            errors.Add($"{nameof(ChainLookupConcurrency)} must be at least 1");
+        if (ChainLookupsPerSecond < 1)
+            errors.Add($"{nameof(ChainLookupsPerSecond)} must be at least 1");
+        if (ChainRpcsPerSecond < 1)
+            errors.Add($"{nameof(ChainRpcsPerSecond)} must be at least 1");
+        if (ChainLookupCacheHeights < 1)
+            errors.Add($"{nameof(ChainLookupCacheHeights)} must be at least 1");
+        if (MempoolSpentRecheckInterval < TimeSpan.Zero)
+            errors.Add($"{nameof(MempoolSpentRecheckInterval)} must not be negative");
+        return errors;
+    }
+}
