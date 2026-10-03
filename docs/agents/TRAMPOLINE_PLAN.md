@@ -1,6 +1,6 @@
 # Trampoline Routing: Implementation Plan for NLightning
 
-**Status (2026-10-03, `wip/tram` from `wip/fafo` @ `6188986`):** the plan is written and wave tr1 has started. Lanes TR0, TR1 and TR3-P run in parallel worktrees.
+**Status (2026-10-03, `wip/fafo` @ `6188986`):** the plan is written and wave tr1 has started. Lanes TR0, TR1 and TR3-P run in parallel worktrees.
 
 **Spec source:** lightning/bolts PR #836, "Trampoline onion format (Feature 56/57)".
 - Author t-bast, branch `trampoline-onion`, head `8f5f37a8`, last rebased 2026-08-28, open.
@@ -16,7 +16,7 @@
 - Spec wire format only (D-TR1).
 - Blinded and BOLT 12 trampoline are in the first wave.
 - Proofs are the three spec vector files byte-exact, plus in-process multi-node harness tests. **No Docker:** the Docker suites are being removed on another branch, except Tor.
-- The work lives on `wip/tram`, a draft PR stacked on `wip/fafo`.
+- The work lands directly on `wip/fafo` (the cloud session can push only there; sync before every push, never force-push).
 
 **Out of scope for this plan:**
 - The Eclair/Phoenix/Electrum prototype format: bits 148/149 and 150/151, TLVs 66097-66102, errors NODE|51/52.
