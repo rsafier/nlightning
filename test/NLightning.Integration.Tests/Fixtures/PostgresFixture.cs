@@ -128,8 +128,12 @@ public class PostgresFixture : IDisposable
 
     public async Task StartPostgres()
     {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         await _backend.StartAsync(CancellationToken.None);
         DbConnectionString = BuildConnectionString(Host, HostPort, DefaultDatabase);
+        // One comparable line per backend (test harness: fixture start, Docker against the cluster)
+        Console.WriteLine($"[fixture] Postgres fixture {ContainerName} ({Backend}) ready in "
+                        + $"{watch.Elapsed.TotalSeconds:F1} s");
     }
 
     public Task<bool> IsRunning() => _backend.IsRunningAsync(CancellationToken.None);
