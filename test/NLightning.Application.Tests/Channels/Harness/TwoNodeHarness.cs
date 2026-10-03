@@ -90,6 +90,7 @@ internal sealed class TwoNodeHarness : IDisposable
     private readonly bool _hasAnchors;
     private readonly bool _localOnlySwitch;
     private readonly bool _announceChannel;
+    private readonly bool _simpleTaproot;
     private readonly Action<HarnessNode, IServiceCollection>? _configureServices;
 
     public HarnessNode Alice { get; private set; }
@@ -119,12 +120,16 @@ internal sealed class TwoNodeHarness : IDisposable
     /// close services (N10).</param>
     /// <param name="announceChannel">A public channel (<c>announce_channel</c>) confirmed at
     /// <see cref="FundingHeight"/> with the real <see cref="ShortChannelId"/> (BOLT 7 plan G1-T4).</param>
+    /// <param name="simpleTaproot">A simple taproot channel (NL-877 T3/T5): MuSig2 commitment signatures, nonces in
+    /// channel_ready (an Open channel starts with the peer's commitment 1 nonce), revoke_and_ack and
+    /// channel_reestablish.</param>
     public TwoNodeHarness(bool hasAnchors = false, bool localOnlySwitch = false,
                           ChannelState aliceState = ChannelState.Open, ChannelState bobState = ChannelState.Open,
                           Action<HarnessNode, IServiceCollection>? configureServices = null,
-                          bool announceChannel = false)
+                          bool announceChannel = false, bool simpleTaproot = false)
     {
-        _hasAnchors = hasAnchors;
+        _hasAnchors = hasAnchors || simpleTaproot;
+        _simpleTaproot = simpleTaproot;
         _localOnlySwitch = localOnlySwitch;
         _announceChannel = announceChannel;
         _configureServices = configureServices;
@@ -150,7 +155,10 @@ internal sealed class TwoNodeHarness : IDisposable
     private void OpenOrRegister(HarnessNode node, ChannelState state)
     {
         if (state == ChannelState.Open)
-            node.Open(CreateChannelFor(node));
+            node.Open(CreateChannelFor(node),
+                      _simpleTaproot
+                          ? node.Peer.Signer.GetLocalVerificationNonce(node.Peer.KeyIndex, _fundingTxId, 1)
+                          : null);
         else
             node.RegisterPending(CreateChannelFor(node, state));
     }
@@ -338,8 +346,11 @@ internal sealed class TwoNodeHarness : IDisposable
     {
         var isAlice = node.Name == "Alice";
         return CreateChannel(node, node.Peer, isAlice ? _aliceParty : _bobParty, isAlice ? _bobParty : _aliceParty,
-                             isAlice, _fundingTxId, _obscuring, _hasAnchors, state, _announceChannel);
+                             isAlice, _fundingTxId, _obscuring, _hasAnchors, state, _announceChannel, _simpleTaproot);
     }
+
+    /// <summary>The funding txid of the harness channel.</summary>
+    public TxId FundingTxId => _fundingTxId;
 
     /// <summary>The <c>reason</c> the fake error onion returns: a marker, the failure code and its data.</summary>
     public static byte[] FakeErrorPacket(FailureMessage message) =>
@@ -370,12 +381,13 @@ internal sealed class TwoNodeHarness : IDisposable
     private static ChannelModel CreateChannel(HarnessNode self, HarnessNode peer, ChannelParty local,
                                               ChannelParty remote, bool isInitiator, TxId fundingTxId,
                                               CommitmentNumber obscuring, bool hasAnchors, ChannelState state,
-                                              bool announceChannel)
+                                              bool announceChannel, bool simpleTaproot)
     {
         var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(InitialFeeratePerKw), 3,
                                               hasAnchors, FeatureSupport.No)
         {
-            AnnounceChannel = announceChannel
+            AnnounceChannel = announceChannel,
+            OptionSimpleTaproot = simpleTaproot
         };
         var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(FundingSatoshis),
                                                   self.Basepoints.FundingPubKey, peer.Basepoints.FundingPubKey,
@@ -610,11 +622,16 @@ internal sealed class HarnessNode : IDisposable
     }
 
     /// <summary>Registers the opened channel and gives it its first commitment state (as channel_ready would).</summary>
-    public void Open(ChannelModel channel)
+    /// <param name="channel">The channel.</param>
+    /// <param name="remoteNextNonce">A simple taproot channel's peer verification nonce for its commitment 1 (its
+    /// channel_ready's).</param>
+    public void Open(ChannelModel channel, MusigPublicNonce? remoteNextNonce = null)
     {
         Signer.RegisterChannel(channel.ChannelId, channel.GetSigningInfo());
         channel.UpdateCommitments(ChannelStateTransitionService.CreateInitialCommitments(channel, Peer.Point(0),
-                                                                                         Peer.Point(1)));
+                                                                                         Peer.Point(1),
+                                                                                         remoteNextNonce:
+                                                                                         remoteNextNonce));
         _channels.AddChannel(channel);
         Store.Seed(channel.Commitments!);
         Tracker.MarkOpened(channel.ChannelId, channel.RemoteNodeId);
@@ -759,8 +776,10 @@ internal sealed class HarnessNode : IDisposable
                                                          MusigPublicNonce? remoteVerificationNonce = null)
         {
             channels.TryGetChannel(channelId, out var channel);
+            // A second signature only for its txid (a simple taproot one burns a fresh signing nonce, never sent)
             var txId = service.SignRemoteCommitment(channel!, funding, CommitmentTxSpec.FromCommitmentSpec(spec),
-                                                    number, remotePerCommitmentPoint).CommitmentTxId;
+                                                    number, remotePerCommitmentPoint, remoteVerificationNonce)
+                              .CommitmentTxId;
             signed.Add((number, txId));
             return _inner.SignRemoteCommitment(channelId, funding, number, spec, remotePerCommitmentPoint,
                                                remoteVerificationNonce);
@@ -782,7 +801,8 @@ internal sealed class HarnessNode : IDisposable
 
             channels.TryGetChannel(channelId, out var channel);
             var txId = service.VerifyLocalCommitment(channel!, funding, CommitmentTxSpec.FromCommitmentSpec(spec),
-                                                     number, signatures.Signature, signatures.HtlcSignatures)
+                                                     number, signatures.Signature, signatures.HtlcSignatures,
+                                                     signatures.PartialSignature)
                               .CommitmentTxId;
             verified.Add((number, txId));
             return true;
