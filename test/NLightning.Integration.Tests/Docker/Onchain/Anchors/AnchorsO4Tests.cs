@@ -35,7 +35,7 @@ using Utils;
 /// <remarks>
 /// Passes on the pre-O7 resolvers already (the remote resolver spends the CSV-1 <c>to_remote</c> and claims the HTLCs
 /// with nSequence 1), so it guards the O7 lanes against regressions rather than gating O7-T3. Run with
-/// <c>ONCHAIN_SUITE=anchors scripts/run-onchain.sh</c>.
+/// <c>scripts/run-cluster.sh -n 1 --suite anchors</c>.
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 [Trait("Category", AnchorsChannelTests.AnchorsCategory)]

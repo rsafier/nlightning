@@ -7,9 +7,9 @@ using Fixtures;
 /// never shared with the <c>regtest</c> collection, because they close channels and reorg the chain.
 /// </summary>
 /// <remarks>
-/// Every fixture uses the same container names, so two fixtures must never be alive at once. The collection does not
-/// run in parallel with others (xUnit runs it after the parallel collections, whose fixtures are disposed when they
-/// finish), but the supported way to run it is its own <c>dotnet test</c> process: <c>scripts/run-onchain.sh</c>.
+/// The collection does not run in parallel with others (xUnit runs it after the parallel collections, whose fixtures
+/// are disposed when they finish); its network runs in a namespace of its own on the cluster, in its own test process:
+/// <c>scripts/run-cluster.sh -n 1 --suite onchain</c> (and <c>--suite anchors</c>).
 /// </remarks>
 [CollectionDefinition(Name, DisableParallelization = true)]
 public class OnchainRegtestCollection : ICollectionFixture<LightningRegtestNetworkFixture>

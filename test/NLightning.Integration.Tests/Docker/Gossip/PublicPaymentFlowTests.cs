@@ -27,9 +27,9 @@ using Utils;
 /// announced at payment time (a fresh fixture charges LND's defaults, but another test of the collection may have
 /// changed a policy and restored it), never from constants. Amounts are unique per test so the forwards can be traced
 /// by amount through <c>ForwardingHistory</c>.</para>
-/// <para>Run with <c>scripts/run-gossip.sh</c> (own process, own fixture). Needs lane C2 (G4: graph paths in
-/// <c>PaymentService</c>, <c>getroute</c> = IPC 19 through <see cref="GetRouteProbe"/>, no route hints in our invoices
-/// once an announced channel can receive); not lane C1 (our graph is filled through alice's dump after a hand-sent
+/// <para>Run with <c>scripts/run-cluster.sh -n 1 --suite gossip</c> (own process, own fixture). Needs lane C2 (G4:
+/// graph paths in <c>PaymentService</c>, <c>getroute</c> = IPC 19 through <see cref="GetRouteProbe"/>, no route hints
+/// in our invoices once an announced channel can receive); not lane C1 (our graph is filled through alice's dump after a hand-sent
 /// <c>gossip_timestamp_filter</c>, <see cref="PublicTopology.SyncOurGraphAsync"/>) and not NL-348 (we never forward).
 /// Both payees are checked to have no channel with our node.</para>
 /// </remarks>

@@ -236,13 +236,13 @@ The same topology model, sized up, on a multi-node cluster.
    - `Lnd` nodes, the generated gRPC clients, the regtest topology (miner + alice/bob/carol/david, pre-opened channels).
    - Port `LightningRegtestNetworkFixture` and move the 47 LNUnit files behind an adapter that keeps the member names they use (`GetLndNode`, `LightningClient`...).
    - Remove the `lnunit` package.
-   - Done apart from the package removal ("Phase 3 completion, phase 5 and phase 6 record"): the fixture delegates to
-     `DockerLndBackend` or `ClusterLndBackend`, and LNUnit is confined to the Docker backend. The removal is NL-820, an owner
-     decision: re-implement the Docker backend, or retire it.
+   - Done ("Phase 3 completion, phase 5 and phase 6 record", "NL-820 record"): the fixture ran on `DockerLndBackend` or
+     `ClusterLndBackend` with LNUnit confined to the Docker backend; NL-820 (owner decision 2026-10-03, option (b))
+     retired the Docker backend and removed the `LNUnit` package, so the fixture runs on `ClusterLndBackend` only.
    - **Prepared: in-tree LND client (wip/lnd-grpc).** The generated clients, `LndNodeConnection` and `LndNodePool`
      exist and are proven against LND 0.21.4; the swap is a `using`/type rename (record below).
 4. **Eclair, LDK, Tor, Postgres, faults (≈2–3 days).** Port the remaining fixtures; Tor closes NL-572; NetworkPolicy partition tests are new coverage.
-   Done apart from Tor ("Phase 3/4 record"); phase 3's fixture wiring is done ("Phase 3 completion record"); the `lnunit` removal remains.
+   Done apart from Tor ("Phase 3/4 record"); phase 3's fixture wiring is done ("Phase 3 completion record"); the `lnunit` removal is done ("NL-820 record").
 5. **Runner (≈1–2 days).**
    - `run-cluster` replaces `run-{onchain,gossip,abcd,interop}.sh` and the hand-made LND runs.
    - It builds once, then runs the suite matrix with N runs in flight, reruns one failed class alone, prints a summary and collects diagnostics.
@@ -1231,7 +1231,7 @@ runner change; phase 6 runs the full matrix twice concurrently.
 - **Proof.** Release build 0 warnings, format, sln check; Integration.Tests non-Docker 1122/1122, Testing.Lnd.Tests
   106/106; Docker (machine lock) `PostgresTests` 24/24 and `ChannelOpeningFlowTests` 5/5, twice, no leftover
   containers.
-- **Full removal (NL-820, open, owner decision).** Two ways. (a) Re-implement `DockerLndBackend` on Docker.DotNet
+- **Full removal (NL-820, done: option (b), "NL-820 record" below).** Two ways were weighed. (a) Re-implement `DockerLndBackend` on Docker.DotNet
   (about 1-1.5 days): bitcoind `miner` on the default bridge (wallet, mature coins), four `custom_lnd:0.21.4-beta`
   containers named by alias with `LndWorkload`'s flags (alice's `--protocol.rbf-coop-close`/`--accept-keysend`),
   `tls.cert`/`admin.macaroon` read from the container's archive, `SERVER_ACTIVE` waits, funding, permanent peers, the
@@ -1547,11 +1547,9 @@ Product items still open from the cluster work: NL-796 (no deadline for the peer
 (a dead connection kept after a cluster Eclair restart; a keep-alive or OrbStack question).
 
 **What remains:**
-1. **LNUnit removal (NL-820, owner decision).** (a) Re-implement `DockerLndBackend` on Docker.DotNet (about 1-1.5 days;
-   the container names, the bridge network and `host.docker.internal` stay), or (b) retire the Docker LND backend now
-   that every LND suite is proven on the cluster (the Tor fixture uses CLN only). Either way the `LNUnit` reference,
-   `lnunit.lnd`, SharpCompress 0.41.0 and the NL-170 audit suppression go. With (b) the Docker fallback of the LND,
-   on-chain, gossip and ABCD suites ends.
+1. **LNUnit removal (NL-820): done** with option (b), owner decision 2026-10-03 ("NL-820 record" below): the Docker
+   LND backend is retired, the `LNUnit` reference, `lnunit.lnd`, SharpCompress 0.41.0 and the NL-170 audit suppression
+   are gone, and the LND, on-chain, gossip and ABCD suites have no Docker fallback any more.
 2. **Tor** stays Docker only (owner decision): `ClnTorInteropTests` skip on the cluster and run with
    `run-interop.sh tor`.
 3. **SQL Server** tests are not ported (owner decision) and every matrix suite leaves them out
@@ -1561,6 +1559,48 @@ Product items still open from the cluster work: NL-796 (no deadline for the peer
 5. Open harness items: NL-818 (log volume: 1.1 GB per matrix pass after gzip), NL-843 (ZMQ heal timing, diagnostics
    in place) and NL-844 (the 15 min target; owner decision on a 7th namespace).
 6. Later phases, as planned: 7 (the `nltg` daemon image and scale) and 8 (facade convergence, NL-554, NL-556).
+
+### NL-820 record: the Docker LND backend retired and LNUnit removed (2026-10-03, branch `ia-retire-lnunit` from 07cce046)
+
+Owner decision 2026-10-03: NL-820 option (b). The LND-based suites run on the cluster backend only; the CLN, Eclair,
+LDK and Postgres fixtures keep their Docker backends (they never used LNUnit); Tor stays Docker only; SQL Server tests
+are not ported; CI on a cluster and NativeAOT are deferred.
+
+- **Removed.** `Fixtures/Lnd/DockerLndBackend` (LNUnit's `LNUnitBuilder`), its tests, the `ILndNetworkBackend` seam
+  (one backend left), `Fixtures/LnUnitConfinementTests`, the `LNUnit` 3.0.4 `PackageReference` of Integration.Tests
+  (and with it `lnunit.lnd`, ServiceStack and SharpCompress 0.41.0) and the NL-170 `NuGetAuditSuppress` in
+  `test/Directory.Build.props`. The two ServiceStack helpers the tests used (`SplitOnFirst`, `Print`/`PrintDump`) are
+  plain BCL calls now. The Docker-only LND branches went too: the NL-262 address holds of `ReestablishFlowTests` and
+  `LndChannelDbRollback` (the latter is cluster-only: a stopped window on the PVC), `RelayBitcoind`'s container path
+  (a pod only), `SkipUnlessDocker`/`RequireDocker` and the Docker log dump of `DumpLndLogsAsync`.
+- **Skip instead of Docker.** `LightningRegtestNetworkFixture` constructs `ClusterLndBackend` (the `LndBackendProbe`
+  marker) only when `NLTG_TEST_BACKEND=cluster` and a Kubernetes configuration can be built
+  (`KubeClientFactory.BuildConfiguration`). Otherwise it starts nothing and `UnavailableReason` says why; every member
+  that needs the network (`Bitcoin`, `LndNodes`, `GetLndNode`, `Cluster`, `GetOrCreateAsync`, ...) calls
+  `SkipIfUnavailable()`, which is xunit v3's `Assert.Skip`, so each test is reported skipped with the reason, never
+  passed or failed. A skip thrown in a collection fixture's `InitializeAsync` would fail the tests, hence the lazy
+  skip. Two places needed care: test code that took a pooled port before touching the fixture leaked it on the skip
+  (50 ports per process: the later tests failed with "Could not get a port in time"), so `NLightningTestNode.CreateAsync`
+  and its fixture constructors skip first, as do the four test constructors that take a port themselves; and a
+  `DisposeAsync` that resets the miner's mock time (`OnchainO6Tests`, `OnchainSpliceTests`) skipped a second time, an
+  `AggregateException` xunit reports as a failure, so it checks `UnavailableReason`. A configured cluster that fails is
+  still a fixture failure. Tests: `Fixtures/LightningRegtestNetworkFixtureTests` (reasons, every member skips with the
+  reason through an injectable skip, a typo in the backend throws), `Fixtures/LnUnitAbsenceTests` (no LNUnit package in
+  any project or shared MSBuild file, no LNUnit namespace in any source, no `lnunit*` library in the deps file).
+- **Scripts.** `scripts/run-onchain.sh`, `run-gossip.sh` and `run-abcd.sh` are pointers at `run-cluster.sh` (they
+  print the suites and exit 2); `run-interop.sh` stays for CLN, Eclair, LDK and Tor (its busy check no longer looks for
+  the LND container names). `test/Docker/custom_lnd` stays: the cluster runs `custom_lnd:0.21.4-beta` with pull policy
+  `Never` and nothing builds it any more, so build it once with
+  `docker build -t custom_lnd:0.21.4-beta test/Docker/custom_lnd` (a missing image fails the pod at once with
+  `ErrImageNeverPull`).
+- **Proof.** Release build 0 warnings on net10.0 (and the SDK 11 net11.0 compile check), format, sln check;
+  non-Docker suite on net10.0 green with `--blame-hang-timeout 5m` (14,299 passed, 8 platform skips; Integration.Tests
+  1150 incl. the new fixture and absence tests, the persistence model and compiled-model tests); the `Docker` namespace
+  without `NLTG_TEST_BACKEND` (Interop, Postgres and SQL Server left out): 154 tests, 0 failed, 142 skipped with the
+  reason, 12 container-free helpers passed, no container started; `scripts/run-cluster.sh --matrix
+  lnd,onchain,anchors,gossip,abcd -j 3 --max-namespaces 3` (batch `ia-lnunit-mx1`) green in 798 s: lnd 58/58, gossip
+  30/30, onchain 33/33 (+2 Explicit not run), anchors 18/18, abcd 11/11, no rerun, peak 3 namespaces, none left;
+  `scripts/tests/run-cluster-tests.sh` 48/48.
 
 ## 6. Risks and open questions
 

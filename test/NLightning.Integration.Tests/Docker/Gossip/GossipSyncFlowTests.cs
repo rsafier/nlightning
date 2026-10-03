@@ -18,8 +18,8 @@ using Utils;
 /// <remarks>
 /// <para>None of these tests sends <c>gossip_timestamp_filter</c> by hand (unlike the G0/G2 proofs): the sync is our
 /// node's own (G3-T2).</para>
-/// <para>Run with <c>scripts/run-gossip.sh</c> (own process, own fixture). Needs lane C1 (G3-T1..T4); written against
-/// the plan in parallel with it.</para>
+/// <para>Run with <c>scripts/run-cluster.sh -n 1 --suite gossip</c> (own process, own fixture). Needs lane C1
+/// (G3-T1..T4); written against the plan in parallel with it.</para>
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]
 public class GossipSyncFlowTests

@@ -4,9 +4,9 @@ using Docker.DotNet.Models;
 namespace NLightning.Integration.Tests.Fixtures;
 
 /// <summary>
-/// Container and image helpers shared by the Docker fixtures. They replace <c>LNUnit.Setup</c>'s Docker extensions
-/// (<c>PullImageAndWaitForCompleted</c>), so LNUnit is referenced only by the Docker LND backend
-/// (<see cref="Lnd.DockerLndBackend"/>; NL-819).
+/// Container and image helpers shared by the Docker fixtures (CLN, Eclair, LDK, Postgres, SQL Server, Tor). They
+/// replaced <c>LNUnit.Setup</c>'s Docker extensions (<c>PullImageAndWaitForCompleted</c>, NL-819); the solution
+/// references no LNUnit package since NL-820.
 /// </summary>
 internal static class DockerContainerUtils
 {

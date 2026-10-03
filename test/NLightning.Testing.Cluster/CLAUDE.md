@@ -305,6 +305,9 @@ every implementation, our own node included, is driven through the same seams.
   The default matrix (`scripts/run-cluster.sh --matrix -j 6 --max-namespaces 6`, 12 suites: gossip and Eclair split in
   two each, NL-841) is green in about 18 min, against about 72 min for the same suites one at a time on Docker; two
   matrices at once (3 namespaces each) are green in 35-38 min (two flakes rerun green: NL-842 fixed, NL-843).
+- NL-820 (owner decision 2026-10-03): the LND fixture's Docker backend was retired with LNUnit, so the LND-based suites
+  (lnd, onchain, anchors, gossip, day0, abcd) run on the cluster only; without `NLTG_TEST_BACKEND=cluster` their
+  tests are reported skipped. The CLN, Eclair, LDK and Postgres fixtures keep both backends; Tor stays Docker only.
 - A new suite follows the same pattern: the fixture keeps its members and delegates to a Docker backend (the old code,
   unchanged) and a cluster backend (`ClusterTopologyFixture`, plus `InProcessTopologyFixture` for our nodes); test
   bodies reach the backend only through the fixture.
@@ -315,7 +318,8 @@ every implementation, our own node included, is driven through the same seams.
   `default`, `kube-*` or another run's namespace; no cluster-scoped objects; at most 6 spike namespaces at once;
   pod requests at most 1 CPU / 1 GiB.
 - Never rebuild or retag existing images; new images only as `nltg-spike-*` (`ImageVersions.SpikeImagePrefix`).
-- Never run the Docker suites (`scripts/run-*.sh`, LNUnit fixtures) from this lane.
+- Never run the Docker suites (`scripts/run-interop.sh`) from this lane; the LND runners `run-onchain.sh`,
+  `run-gossip.sh` and `run-abcd.sh` are retired pointers (NL-820).
 
 ## Tests
 

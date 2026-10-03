@@ -35,8 +35,8 @@ using Utils;
 /// cannot rebuild (<see cref="ChannelCloseKind.FutureCommitment"/>) and our <c>to_remote</c> (our whole balance: no
 /// HTLC is in flight) is swept to the new wallet (after one block with anchors: CSV 1).
 /// </summary>
-/// <remarks>Own on-chain fixture (it closes channels): run with
-/// <c>scripts/run-onchain.sh 1 Release -class NLightning.Integration.Tests.Docker.BackupRestoreFlowTests</c>.</remarks>
+/// <remarks>Own on-chain fixture (it closes channels): run with <c>scripts/run-cluster.sh -n 1 --suite onchain --class
+/// NLightning.Integration.Tests.Docker.BackupRestoreFlowTests</c>.</remarks>
 [Collection(OnchainRegtestCollection.Name)]
 public class BackupRestoreFlowTests : IAsyncLifetime
 {

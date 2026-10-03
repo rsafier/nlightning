@@ -25,7 +25,8 @@ using Utils;
 /// </summary>
 /// <remarks>
 /// Public channels change the LND graph for good, so these proofs run in the gossip collection:
-/// <c>scripts/run-gossip.sh 1 Release -class NLightning.Integration.Tests.Docker.Gossip.Bolt11BlindedPathFlowTests</c>.
+/// <c>scripts/run-cluster.sh -n 1 --suite gossip --class
+/// NLightning.Integration.Tests.Docker.Gossip.Bolt11BlindedPathFlowTests</c>.
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]
 public class Bolt11BlindedPathFlowTests

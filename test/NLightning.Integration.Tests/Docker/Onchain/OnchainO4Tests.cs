@@ -48,7 +48,8 @@ using Utils;
 /// Needs the BOLT 5 on-chain watcher and resolution executor (plan O2-T5) wired into the node: it classifies the
 /// funding spend and drives the <c>IOutputResolver</c> <c>RemoteCommitResolver</c> (O4, ABCD W5-C). The assertions read what the resolver persists
 /// (<c>ChannelCloses</c>, <c>OutputResolutions</c>, <c>BroadcastTransactions</c>) and what bitcoind, our wallet and
-/// our invoices/payments show. Run with <c>scripts/run-onchain.sh</c> (own process, own fixture).
+/// our invoices/payments show. Run with <c>scripts/run-cluster.sh -n 1 --suite onchain</c> (own process, own
+/// fixture).
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 public class OnchainO4Tests : IAsyncLifetime

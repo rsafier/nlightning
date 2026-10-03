@@ -23,11 +23,10 @@ using Utils;
 /// </summary>
 /// <remarks>
 /// Written by wave spr lane SPR-E for the integrator. Public channels change the LND nodes' graph for good, so it runs
-/// in the gossip collection, in its own process:
-/// <c>scripts/run-gossip.sh 1 Release -class NLightning.Integration.Tests.Docker.SpliceLndObserverTests</c>. Both
-/// nodes run the day-0 feature set (<see cref="Day0Harness.EnableDay0Features"/>) and flush their own gossip every
-/// 5 s. Unlike the day-0 script the channel is a v1 (not dual-funded) open, so what LND sees depends on the splice
-/// alone.
+/// in the gossip collection, in its own process: <c>scripts/run-cluster.sh -n 1 --suite day0 --class
+/// NLightning.Integration.Tests.Docker.SpliceLndObserverTests</c>. Both nodes run the day-0 feature set
+/// (<see cref="Day0Harness.EnableDay0Features"/>) and flush their own gossip every 5 s. Unlike the day-0 script the
+/// channel is a v1 (not dual-funded) open, so what LND sees depends on the splice alone.
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]
 public sealed class SpliceLndObserverTests : IAsyncLifetime

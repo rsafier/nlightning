@@ -9,18 +9,20 @@
 #        scripts/run-interop.sh eclair Release -explicit on
 #        scripts/run-interop.sh ldk Release --build
 #
-# 1. Refuses to start while another run's containers are up (miner/alice/bob/carol/david, nltg-cln*, nltg-eclair*,
-#    nltg-ldk*, nltg-tor*): one Docker test process at a time on this machine. It never touches other containers (k8s,
+# 1. Refuses to start while another run's containers are up (nltg-cln*, nltg-eclair*, nltg-ldk*, nltg-tor*): one Docker
+#    test process at a time on this machine. It never touches other containers (k8s,
 #    mutinynet-bitcoind).
 # 2. With --build, builds the peer image (test/Docker/eclair, test/Docker/ldk_server, test/Docker/tor) when its tag is
 #    missing, and nothing else; the fixtures build a missing image themselves too.
 # 3. Builds the solution and runs the test assembly with -trait Category=Interop.<Peer> plus the extra arguments.
 # INTEROP_FRAMEWORK picks the framework (default net10.0). The run is logged to TestResults/interop/ and a red run's
-# failing tests are named in the summary (NL-378).
+# failing tests are named in the summary (NL-378). The CLN, Eclair and LDK suites also run on the Kubernetes harness
+# (scripts/run-cluster.sh --matrix cln,eclair,eclair2,ldk, the primary runner); Tor runs here only. The LND suites have
+# no Docker runner since NL-820 (scripts/run-cluster.sh --matrix lnd,onchain,anchors,gossip,day0,abcd).
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
 fi
 
@@ -54,7 +56,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 project="$repo_root/test/NLightning.Integration.Tests/NLightning.Integration.Tests.csproj"
 framework="${INTEROP_FRAMEWORK:-net10.0}"
 
-busy="$(docker ps --format '{{.Names}}' | grep -E '^(miner|alice|bob|carol|david)$|^nltg-(cln|eclair|ldk|tor)' || true)"
+busy="$(docker ps --format '{{.Names}}' | grep -E '^nltg-(cln|eclair|ldk|tor)' || true)"
 if [[ -n "$busy" ]]; then
     echo "Another Docker test run is using these containers; wait until it ends:" >&2
     echo "$busy" >&2

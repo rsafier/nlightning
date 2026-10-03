@@ -2,8 +2,11 @@
 # The test runner of the Kubernetes harness (plan docs/agents/TEST_HARNESS_PLAN.md §5 step 5, R4, R13, R14) and the
 # primary way to run the Docker-class suites (LND, on-chain, gossip, ABCD, CLN, Eclair, LDK, Postgres, partitions) on a
 # cluster (OrbStack's locally). Every test process gets its own NLTG_TEST_RUN_ID, so its own namespaces
-# (nltg-spike-<run>[-<n>]); it never starts Docker containers and needs no Docker lock. The Docker runners
-# (run-onchain.sh, run-gossip.sh, run-abcd.sh, run-interop.sh) stay as the fallback, and for Tor.
+# (nltg-spike-<run>[-<n>]); it never starts Docker containers and needs no Docker lock. The LND suites (lnd, onchain,
+# anchors, gossip, day0, abcd) run only here since NL-820 (their Docker backend was retired with LNUnit; the LND image
+# custom_lnd:0.21.4-beta is built once with `docker build -t custom_lnd:0.21.4-beta test/Docker/custom_lnd`, the
+# harness never builds or pulls it); scripts/run-interop.sh stays the Docker fallback for CLN, Eclair and LDK, and the
+# only runner of Tor.
 #
 # Two modes, both building once (the test project and the nltg-cluster CLI), never per run:
 #   --matrix [S,...]  runs the suites (default: every suite, see `nltg-cluster matrix list`) with at most -j suites in
@@ -45,7 +48,7 @@
 #                         is given; eclair and ldk likewise; eclair2 = EclairSpliceTests, split from eclair),
 #                         postgres = Docker/PostgresTests and the Explicit Cluster/Live/ServerDatabaseClusterTests on
 #                         Postgres pods, faults = the partition and ZMQ-loss tests, lnd/gossip/day0/onchain/anchors/abcd
-#                         = the LND Docker suites on LightningRegtestNetworkFixture's cluster backend (lnd = its regtest
+#                         = the LND suites on LightningRegtestNetworkFixture's cluster backend (lnd = its regtest
 #                         collection, 2 namespaces per run, so -j is capped at 3; day0 = the gossip-regtest classes
 #                         outside Docker.Gossip, split from gossip);
 #                         --class/--method replace a suite's classes; tor is refused (Docker)

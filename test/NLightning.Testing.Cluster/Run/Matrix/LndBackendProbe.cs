@@ -2,12 +2,12 @@ namespace NLightning.Testing.Cluster.Run.Matrix;
 
 /// <summary>
 /// Whether the LND suites may run on the cluster backend: <c>LightningRegtestNetworkFixture</c> must construct its
-/// cluster backend, <c>ClusterLndBackend</c> (test harness phase 3 wiring). A fixture that only delegates to
-/// <c>ILndNetworkBackend</c> may still always build the Docker backend (as lane <c>hf-lnunit</c>'s did), and would then
-/// ignore <c>NLTG_TEST_BACKEND=cluster</c> and start Docker containers, which a cluster run must never do (one Docker
-/// test process at a time machine-wide), so the runner skips those suites and says why. What the individual tests do
-/// on the cluster is the catalog's (<see cref="MatrixSuite.ClusterProofPending"/>) and the tests' own business: test
-/// code that drives Docker containers by name skips itself there (<c>LightningRegtestNetworkFixture.SkipUnlessDocker</c>).
+/// cluster backend, <c>ClusterLndBackend</c> (test harness phase 3 wiring). A fixture that did not (as lane
+/// <c>hf-lnunit</c>'s, which always built the Docker backend) would ignore <c>NLTG_TEST_BACKEND=cluster</c> and start
+/// Docker containers, which a cluster run must never do, so the runner skips those suites and says why. Since NL-820
+/// the cluster is the fixture's only backend (the Docker one was retired with LNUnit); the probe stays as the runner's
+/// guard against a fixture that loses that wiring. What the individual tests do on the cluster is the catalog's
+/// (<see cref="MatrixSuite.ClusterProofPending"/>) and the tests' own business.
 /// </summary>
 public static class LndBackendProbe
 {

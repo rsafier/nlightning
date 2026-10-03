@@ -137,9 +137,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 51 | 52 |
+| open | 0 | 0 | 1 | 50 | 51 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 194 | 390 | 660 |
+| fixed | 14 | 62 | 194 | 391 | 661 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
 | **Total** | **14** | **62** | **202** | **452** | **730** |
@@ -6091,7 +6091,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N6-T3
 
 ### NL-262 A restarted LND container can come back on another address; LNUnit RestartByAlias(isLND: true) then hangs
-- **Status:** fixed (c5e8ad38, proven in f40d9416; on the cluster backend, the primary runner since phase 5; the Docker fallback keeps the address holds)
+- **Status:** fixed (c5e8ad38, proven in f40d9416; on the cluster backend, the primary runner since phase 5; the Docker LND backend and its address holds are gone since NL-820)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/ReestablishFlowTests.cs` (`HoldAddressesBelowAsync`), LNUnit 3.0.4
@@ -6111,7 +6111,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-276 Host dotnet cannot reach Docker bridge container IPs; LNUnit Docker tests fail in the fixture
-- **Status:** fixed (c5e8ad38, proven in f40d9416, on the cluster backend, the primary runner since phase 5; earlier workaround 1d561f2; the Docker fallback keeps the in-container runner and the one-process lock)
+- **Status:** fixed (c5e8ad38, proven in f40d9416, on the cluster backend, the primary runner since phase 5; earlier workaround 1d561f2; the Docker LND fixture and its in-container runner are gone since NL-820, the remaining Docker suites (CLN, Eclair, LDK, Tor) run from the host under the one-process lock)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/` (LNUnit `LightningRegtestNetworkFixture`), this macOS host
@@ -7504,12 +7504,12 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Lane record: LNUnit confined to the Docker LND backend"
 
 ### NL-820 Full LNUnit removal: re-implement the Docker LND backend on Docker.DotNet, or retire it once the cluster backend is the default
-- **Status:** open
+- **Status:** fixed (42e96743)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `test/NLightning.Integration.Tests/Fixtures/Lnd/DockerLndBackend.cs`, `test/Directory.Build.props` (the NL-170 `NuGetAuditSuppress`)
 - **Evidence:** test harness phase 3/5/6 lane hf-lnunit: `LNUnitBuilder` is about 900 decompiled lines; the cluster's `LndRegtestNetwork` (894 lines) does the same on a `TestRun` topology with pod handles. An owner decision.
-- **Fix sketch:** (a) About 1-1.5 days: re-implement on Docker.DotNet (miner bitcoind on the default bridge, four `custom_lnd:0.21.4-beta` containers named by alias with `LndWorkload`'s flags, `tls.cert`/macaroon from the container archive, `SERVER_ACTIVE` waits, funding, permanent peers, pushed opens, policies and the graph wait of `LndRegtestNetworkSpec.Default`, the image build with `System.Formats.Tar`); container names, the bridge network and `host.docker.internal` must stay. (b) Retire the Docker LND backend once the cluster backend is the default for the LND, on-chain, gossip and ABCD suites (phase 6). Either way the `LNUnit` reference, `lnunit.lnd` and SharpCompress 0.41.0 go, and with them the NL-170 suppression. Update (test harness phase 6, 2026-10-03): the precondition of (b) is met: the LND, on-chain, anchors, gossip, day0 and ABCD suites are proven on the cluster backend and run in the default matrix; the Tor suite uses CLN only. Awaiting the owner's choice of (a) or (b).
+- **Fix sketch:** (a) About 1-1.5 days: re-implement on Docker.DotNet (miner bitcoind on the default bridge, four `custom_lnd:0.21.4-beta` containers named by alias with `LndWorkload`'s flags, `tls.cert`/macaroon from the container archive, `SERVER_ACTIVE` waits, funding, permanent peers, pushed opens, policies and the graph wait of `LndRegtestNetworkSpec.Default`, the image build with `System.Formats.Tar`); container names, the bridge network and `host.docker.internal` must stay. (b) Retire the Docker LND backend once the cluster backend is the default for the LND, on-chain, gossip and ABCD suites (phase 6). Either way the `LNUnit` reference, `lnunit.lnd` and SharpCompress 0.41.0 go, and with them the NL-170 suppression. Update (test harness phase 6, 2026-10-03): the precondition of (b) is met: the LND, on-chain, anchors, gossip, day0 and ABCD suites are proven on the cluster backend and run in the default matrix; the Tor suite uses CLN only. Owner decision 2026-10-03: (b). Done on branch `ia-retire-lnunit` (from 07cce046): `DockerLndBackend`, `ILndNetworkBackend`, `LnUnitConfinementTests` and the `LNUnit` reference removed (with `lnunit.lnd`, ServiceStack and SharpCompress 0.41.0), the NL-170 suppression dropped; `LightningRegtestNetworkFixture` runs on `ClusterLndBackend` only and, without `NLTG_TEST_BACKEND=cluster` or a kubeconfig, reports every test that touches it skipped with the reason (`UnavailableReason`, `SkipIfUnavailable`; `Fixtures/LightningRegtestNetworkFixtureTests`); `Fixtures/LnUnitAbsenceTests` keeps every LNUnit package out of the solution; the Docker-only LND paths (NL-262 address holds, `LndChannelDbRollback`'s and `RelayBitcoind`'s container paths) removed; `run-onchain.sh`, `run-gossip.sh`, `run-abcd.sh` reduced to pointers at `run-cluster.sh`. Record: `TEST_HARNESS_PLAN.md` "NL-820 record".
 - **Blocks/Blocked-by:** Related NL-170, NL-819
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Lane record: LNUnit confined to the Docker LND backend"
 

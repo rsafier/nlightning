@@ -41,9 +41,9 @@ using Utils;
 /// a value an old build wrote differently (or never wrote) is not exercised by the migrations' data steps; seeding
 /// with a staged old binary is not done.</para>
 /// <para>The splice after the upgrade needs the SP2 lanes (lock and SCID switch, SP2-B); the integrator runs it after
-/// the merge, in the gossip collection's process:
-/// <c>scripts/run-gossip.sh 1 Release -class NLightning.Integration.Tests.Docker.Day0.Day0UpgradeInPlaceTests</c>. The
-/// channel is private and the test needs no LND node, but the fixture's bitcoind.</para>
+/// the merge, in the gossip collection's process: <c>scripts/run-cluster.sh -n 1 --suite day0 --class
+/// NLightning.Integration.Tests.Docker.Day0.Day0UpgradeInPlaceTests</c>. The channel is private and the test needs
+/// no LND node, but the fixture's bitcoind.</para>
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]
 public sealed class Day0UpgradeInPlaceTests : IAsyncLifetime

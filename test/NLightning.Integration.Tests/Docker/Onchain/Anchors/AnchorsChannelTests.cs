@@ -21,7 +21,7 @@ using Utils;
 /// </summary>
 /// <remarks>
 /// Needs only what exists before the O7 lanes (anchors commitments and HTLC signatures, BOLT 3 Appendix F); the
-/// other anchors proofs need them. Run with <c>ONCHAIN_SUITE=anchors scripts/run-onchain.sh</c>.
+/// other anchors proofs need them. Run with <c>scripts/run-cluster.sh -n 1 --suite anchors</c>.
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 [Trait("Category", AnchorsCategory)]

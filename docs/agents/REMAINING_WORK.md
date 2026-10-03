@@ -80,7 +80,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
   - Run the Docker suites in CI. They are local only today, and NL-276 blocks the host process on macOS, so an in-container runner is needed.
   - Per-fixture container names, so suites can run in parallel.
 - **Platform checks not yet done.** NativeAOT publish under SDK 11 and the Wasm/Blazor build on SDK 11 (NL-300).
-- **Known flakes.** LNUnit fixture startup races (NL-263 family, NL-319 "server still starting").
+- **Known flakes.** LND fixture startup races (NL-263 family, NL-319 "server still starting"; the LNUnit Docker fixture is gone since NL-820, the LND suites run on the cluster harness).
 
 ## Tech debt worth scheduling
 

@@ -42,7 +42,7 @@ using Utils;
 /// </summary>
 /// <remarks>
 /// The child is found in bitcoind's mempool as the transaction that spends our anchor, so the proof holds whatever
-/// shape the CPFP service (lane O7-X2) takes. Run with <c>ONCHAIN_SUITE=anchors scripts/run-onchain.sh</c>.
+/// shape the CPFP service (lane O7-X2) takes. Run with <c>scripts/run-cluster.sh -n 1 --suite anchors</c>.
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 [Trait("Category", AnchorsChannelTests.AnchorsCategory)]

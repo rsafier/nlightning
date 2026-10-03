@@ -40,6 +40,7 @@ public class PaymentRetryFlowTests : IAsyncLifetime
     {
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
+        fixture.SkipIfUnavailable(); // before the port is taken (NL-820)
 
         var port = PortPoolUtil.GetAvailablePortAsync().GetAwaiter().GetResult();
         Assert.True(port > 0);

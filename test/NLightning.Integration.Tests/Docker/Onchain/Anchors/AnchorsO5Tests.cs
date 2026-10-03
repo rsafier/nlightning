@@ -27,7 +27,7 @@ using Utils;
 /// while the revoked commitment reaches the mempool; the mempool path is <c>AnchorsMempoolPenaltyTests</c>). Passes on
 /// the pre-O7 resolvers already (one transaction takes the penalty and the CSV-1 <c>to_remote</c>, valid once the
 /// commitment has a confirmation), so it guards the O7 lanes against regressions rather than gating O7-T3. Run with
-/// <c>ONCHAIN_SUITE=anchors scripts/run-onchain.sh</c>.
+/// <c>scripts/run-cluster.sh -n 1 --suite anchors</c>.
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 [Trait("Category", AnchorsChannelTests.AnchorsCategory)]
@@ -58,7 +58,7 @@ public class AnchorsO5Tests : IAsyncLifetime
 
         await AnchorsHarness.PayLndAsync(node, david, channelId, channelPoint, 20_000, ct);
         await AnchorsHarness.LndPaysUsAsync(node, david, lndChannel.ChanId, channelId, channelPoint, 30_000, ct);
-        using var rollback = new LndChannelDbRollback(_harness.Fixture, "david");
+        var rollback = new LndChannelDbRollback(_harness.Fixture, "david");
         await rollback.TakeSnapshotAsync(ct);
         await WaitUsableAsync(node, david, channelId, ct);
         var snapshotState = await node.GetChannelAsync(channelId, ct);

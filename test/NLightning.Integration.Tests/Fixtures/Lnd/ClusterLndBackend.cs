@@ -13,33 +13,34 @@ using Testing.Cluster.Topology;
 using Testing.Cluster.Topology.Lnd;
 
 /// <summary>
-/// The cluster backend of the LND regtest network (<c>NLTG_TEST_BACKEND=cluster</c>, test harness phase 3): a warm
-/// <see cref="LndRegtestNetworkFixture"/> (one run namespace for the collection: bitcoind <c>miner</c> + alice, bob,
-/// carol and david on <c>custom_lnd:0.21.4-beta</c> with the Docker fixture's flags, channels and policies, each on a
-/// PVC so it can restart) seen through the fixture's members (<see cref="ILndNetworkBackend"/>), plus the seam that
-/// lets our in-process node join (<see cref="JoinInProcessNodeAsync"/>). bitcoind is reached by its pod IP from the
-/// host (<see cref="ClusterChainEndpoint"/>), the LND nodes' gRPC by their pod DNS names (the in-tree clients survive a
-/// restart). A failed test of the collection dumps the namespace (<c>[assembly: ClusterDiagnostics]</c>).
+/// The backend of the LND regtest network (<c>NLTG_TEST_BACKEND=cluster</c>, test harness phase 3; the only one since
+/// the Docker backend was retired with LNUnit, NL-820): a warm <see cref="LndRegtestNetworkFixture"/> (one run
+/// namespace for the collection: bitcoind <c>miner</c> + alice, bob, carol and david on <c>custom_lnd:0.21.4-beta</c>
+/// with the old Docker fixture's flags, channels and policies, each on a PVC so it can restart) seen through the
+/// fixture's members, plus the seam that lets our in-process node join (<see cref="JoinInProcessNodeAsync"/>). bitcoind
+/// is reached by its pod IP from the host (<see cref="ClusterChainEndpoint"/>), the LND nodes' gRPC by their pod DNS
+/// names (the in-tree clients survive a restart). A failed test of the collection dumps the namespace
+/// (<c>[assembly: ClusterDiagnostics]</c>).
 /// </summary>
 /// <remarks>
 /// <para>
 /// A restart (<see cref="RestartLndAsync"/>) is a StatefulSet restart: same pod name, DNS name and PVC, a new pod IP.
 /// The network has LND peers and joined nodes dial the new IP or name and waits until those channels are active again,
-/// so nothing like the Docker fixture's address-hold containers (NL-262) is needed. A node a test started by itself
-/// (not through <see cref="JoinInProcessNodeAsync"/>) that dialled an LND node by IP keeps that stale IP: dial the
-/// node's DNS name instead (<c>alias.namespace.svc.cluster.local</c>, <see cref="LndPeerHost"/>).
+/// so nothing like the retired Docker fixture's address-hold containers (NL-262) is needed. A node a test started by
+/// itself (not through <see cref="JoinInProcessNodeAsync"/>) that dialled an LND node by IP keeps that stale IP: dial
+/// the node's DNS name instead (<c>alias.namespace.svc.cluster.local</c>, <see cref="LndPeerHost"/>).
 /// </para>
 /// <para>
 /// Our in-process nodes listen on loopback and are announced to the pods as <c>host.orb.internal</c> (OrbStack): they
 /// dial out to the LND nodes (pods appear to them as 127.0.0.1 and are saved inbound-only, NL-497).
 /// </para>
 /// </remarks>
-public sealed class ClusterLndBackend : ILndNetworkBackend
+public sealed class ClusterLndBackend : IAsyncDisposable
 {
     private readonly NetworkFixture _fixture;
     private RegtestBitcoinEndpoint? _bitcoin;
 
-    /// <param name="options">The network (the Docker fixture's by default).</param>
+    /// <param name="options">The network (<see cref="LndRegtestNetworkOptions"/>'s defaults when null).</param>
     /// <param name="deployer">The deployer of the in-process nodes that join; a default one when null.</param>
     /// <param name="environment">
     /// Reads environment variables (<see cref="HostEndpoints.ForPods"/>'s override); the process environment when null.
@@ -51,8 +52,6 @@ public sealed class ClusterLndBackend : ILndNetworkBackend
         Deployer = deployer ?? new InProcessNodeDeployer();
         _fixture = new NetworkFixture(options ?? new LndRegtestNetworkOptions(), Deployer);
     }
-
-    public TestBackendKind Kind => TestBackendKind.Cluster;
 
     /// <summary>The network (nodes, channels, restart, join, routed payments).</summary>
     public LndRegtestNetwork Network => _fixture.Network;
@@ -94,6 +93,7 @@ public sealed class ClusterLndBackend : ILndNetworkBackend
     public Task<string> GetLndPeerEndpointAsync(LndNodeConnection lnd, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(lnd);
+        cancellationToken.ThrowIfCancellationRequested();
         var node = Network.Nodes.FirstOrDefault(n => ReferenceEquals(n.Connection, lnd))
                 ?? Network.Node(lnd.LocalAlias);
         return Task.FromResult($"{LndPeerHost(node.Alias)}:{LndWorkload.P2pPort}");

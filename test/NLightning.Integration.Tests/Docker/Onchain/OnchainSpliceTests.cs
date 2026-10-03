@@ -50,8 +50,8 @@ using Utils;
 /// <item>(e) a locked splice reorged out: the channel keeps operating (a payment each way), no close, and the splice
 /// confirms again.</item>
 /// </list>
-/// Run with <c>scripts/run-onchain.sh 1 Release -class NLightning.Integration.Tests.Docker.Onchain.OnchainSpliceTests</c>
-/// (own process, the in-container runner with <c>--network host</c>).
+/// Run with <c>scripts/run-cluster.sh -n 1 --suite onchain --class
+/// NLightning.Integration.Tests.Docker.Onchain.OnchainSpliceTests</c> (own process, own fixture).
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 public sealed class OnchainSpliceTests : IAsyncLifetime
@@ -317,8 +317,9 @@ public sealed class OnchainSpliceTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        // A failed test must not leave the mock time set
-        await _fixture.Bitcoin.SendCommandAsync("setmocktime", CancellationToken.None, 0);
+        // A failed test must not leave the mock time set (a skipped one never reached the network)
+        if (_fixture.UnavailableReason is null)
+            await _fixture.Bitcoin.SendCommandAsync("setmocktime", CancellationToken.None, 0);
         foreach (var node in _nodes)
             await node.DisposeAsync();
     }

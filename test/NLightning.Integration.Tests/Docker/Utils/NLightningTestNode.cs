@@ -10,7 +10,6 @@ using NBitcoin;
 using NBitcoin.RPC;
 using NLightning.Testing.Lnd;
 using NLightning.Tests.Utils;
-using ServiceStack;
 
 namespace NLightning.Integration.Tests.Docker.Utils;
 
@@ -228,6 +227,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
         : this(() => RegtestBitcoinEndpoint.FromFixture(fixture), name, database, secureKeyManager, port,
                configureNodeOptions, ownsResources: false, fixture.GetLndPeerEndpointAsync)
     {
+        // A node of the shared network needs it running (the cluster backend, NL-820): skip the test otherwise
+        fixture.SkipIfUnavailable();
     }
 
     private NLightningTestNode(Func<RegtestBitcoinEndpoint> bitcoinEndpoint, string name, TestNodeDatabase database,
@@ -255,11 +256,19 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// <paramref name="database"/> says otherwise, its own SQLite file; <see cref="DisposeAsync"/> releases them. Its
     /// reconnect backoff starts at <see cref="FastReconnectInitialDelay"/>. The node is not started.
     /// </summary>
+    /// <remarks>
+    /// Skips the test, before taking a port, when the shared network cannot run in this process
+    /// (<see cref="LightningRegtestNetworkFixture.UnavailableReason"/>, NL-820).
+    /// </remarks>
     public static Task<NLightningTestNode> CreateAsync(LightningRegtestNetworkFixture fixture, string name,
                                                        TestNodeDatabase? database = null,
-                                                       Action<NodeOptions>? configureNodeOptions = null) =>
-        CreateAsync(() => RegtestBitcoinEndpoint.FromFixture(fixture), name, database, configureNodeOptions,
-                    fixture.GetLndPeerEndpointAsync);
+                                                       Action<NodeOptions>? configureNodeOptions = null)
+    {
+        ArgumentNullException.ThrowIfNull(fixture);
+        fixture.SkipIfUnavailable();
+        return CreateAsync(() => RegtestBitcoinEndpoint.FromFixture(fixture), name, database, configureNodeOptions,
+                           fixture.GetLndPeerEndpointAsync);
+    }
 
     /// <summary>
     /// As <see cref="CreateAsync(LightningRegtestNetworkFixture, string, TestNodeDatabase?, Action{NodeOptions}?)"/>,
@@ -504,8 +513,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
 
     /// <summary>
     /// Connects to an LND node of the fixture at the address its backend names
-    /// (<see cref="LightningRegtestNetworkFixture.GetLndPeerEndpointAsync"/>: the container IP on Docker, the Service
-    /// name on the cluster, which our node stores and redials after the pod restarted, NL-780). A node made without the
+    /// (<see cref="LightningRegtestNetworkFixture.GetLndPeerEndpointAsync"/>: the Service name on the cluster, which our
+    /// node stores and redials after the pod restarted, NL-780). A node made without the
     /// fixture dials the IP behind the gRPC host.
     /// </summary>
     /// <returns>The <c>pubkey@host:port</c> address used.</returns>
@@ -515,7 +524,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
         var host = _lndPeerEndpoint is not null
                        ? await _lndPeerEndpoint(lndNode, cancellationToken)
                        : new IPEndPoint(
-                             (await Dns.GetHostAddressesAsync(lndNode.Host.SplitOnFirst("//")[1].SplitOnFirst(":")[0],
+                             (await Dns.GetHostAddressesAsync(new Uri(lndNode.Host).Host,
                                                               cancellationToken)).First(), 9735).ToString();
         var address = $"{Convert.ToHexString(lndNode.LocalNodePubKeyBytes)}@{host}";
 

@@ -31,7 +31,7 @@ using Utils;
 /// monitor replays only its last processed block, which does not hold the sweep) the executor's first round catches
 /// the saved watch up and records the sweep's spend at its block.
 /// </summary>
-/// <remarks>Run with <c>scripts/run-onchain.sh</c> or the in-container runner (NL-276).</remarks>
+/// <remarks>Run with <c>scripts/run-cluster.sh -n 1 --suite onchain</c> (own process, own fixture).</remarks>
 [Collection(OnchainRegtestCollection.Name)]
 public class OnchainWatchCatchUpTests : IAsyncLifetime
 {
