@@ -12,32 +12,43 @@ public class MatrixPlannerTests
 
         // Assert
         Assert.Equal(SuiteCatalog.Names, plan.Select(p => p.Suite.Name));
-        Assert.Equal(["onchain", "anchors", "gossip", "tor"], plan.Where(p => !p.Runs).Select(p => p.Suite.Name));
+        // Skipped by default: the suites whose cluster proof is pending, and tor (Docker only)
+        Assert.Equal([.. PendingSuites(), "tor"], plan.Where(p => !p.Runs).Select(p => p.Suite.Name));
         Assert.All(plan.Where(p => p.Runs), p => Assert.False(p.Serial));
     }
 
     [Fact]
     public void Given_ASuiteWhoseClusterProofIsPending_When_PlannedByDefault_Then_ItIsSkippedWithTheReason()
     {
+        // Arrange
+        var pending = PendingSuites().FirstOrDefault();
+        if (pending is null)
+            Assert.Skip("every suite of the catalog is proven on the cluster");
+
         // Act
         var plan = MatrixPlanner.Plan(null, 6, lndClusterBackendWired: true);
 
         // Assert: left out of the default matrix, with how to run it
-        var onchain = plan.Single(p => p.Suite.Name == "onchain");
-        Assert.False(onchain.Runs);
-        Assert.Equal(0, onchain.Namespaces);
-        Assert.Contains("not in the default matrix until its cluster proof is made", onchain.SkipReason);
-        Assert.Contains("--suite onchain", onchain.SkipReason);
+        var suite = plan.Single(p => p.Suite.Name == pending);
+        Assert.False(suite.Runs);
+        Assert.Equal(0, suite.Namespaces);
+        Assert.Contains("not in the default matrix until its cluster proof is made", suite.SkipReason);
+        Assert.Contains($"--suite {pending}", suite.SkipReason);
     }
 
     [Fact]
     public void Given_ASuiteWhoseClusterProofIsPending_When_Named_Then_ItRuns()
     {
-        // Act
-        var plan = MatrixPlanner.Plan(["abcd", "onchain"], 6, lndClusterBackendWired: true);
+        // Arrange
+        var pending = PendingSuites().FirstOrDefault();
+        if (pending is null)
+            Assert.Skip("every suite of the catalog is proven on the cluster");
 
-        // Assert: naming a suite is how its proof gets made
-        Assert.Equal(["onchain", "abcd"], plan.Select(p => p.Suite.Name));
+        // Act
+        var plan = MatrixPlanner.Plan(["abcd", pending], 6, lndClusterBackendWired: true);
+
+        // Assert: naming a suite is how its proof gets made (in catalog order, the longest first)
+        Assert.Equal(SuiteCatalog.Names.Where(n => n == pending || n == "abcd"), plan.Select(p => p.Suite.Name));
         Assert.All(plan, p => Assert.True(p.Runs));
         Assert.All(plan, p => Assert.Equal(1, p.Namespaces));
     }
@@ -203,4 +214,8 @@ public class MatrixPlannerTests
             Directory.Delete(root, true);
         }
     }
+
+    /// <summary>The catalog's suites whose cluster proof is pending, in catalog order (the LND suites not proven yet).</summary>
+    private static IReadOnlyList<string> PendingSuites() =>
+        SuiteCatalog.All.Where(s => s.ClusterProofPending is not null).Select(s => s.Name).ToList();
 }

@@ -34,14 +34,10 @@ public static class SuiteCatalog
         new("onchain", "BOLT 5 legacy on-chain proofs and the channel backups (OnchainRegtestCollection)",
             "integration",
             ["-class", $"{Docker}.Onchain.Onchain*", "-class", $"{Docker}.BackupRestoreFlowTests"],
-            [], "off", 1, 1, TimeSpan.FromMinutes(90), SuiteRequirement.LndClusterBackend,
-            ClusterProofPending: "only BackupRestoreFlowTests has run on the cluster; OnchainO5Tests' LND channel.db "
-                               + "rollback skips there (it drives Docker containers)"),
+            [], "off", 1, 1, TimeSpan.FromMinutes(90), SuiteRequirement.LndClusterBackend),
         new("anchors", "BOLT 5 anchors proofs (Docker.Onchain.Anchors, OnchainRegtestCollection)", "integration",
             ["-namespace", $"{Docker}.Onchain.Anchors"],
-            [], "off", 1, 1, TimeSpan.FromMinutes(60), SuiteRequirement.LndClusterBackend,
-            ClusterProofPending: "not run on the cluster yet; AnchorsO5Tests and AnchorsPackageRelayTests skip there "
-                               + "(they drive Docker containers)"),
+            [], "off", 1, 1, TimeSpan.FromMinutes(60), SuiteRequirement.LndClusterBackend),
         new("gossip", "BOLT 7 gossip proofs, day-0 flows and the LND splice observer (GossipRegtestCollection)",
             "integration",
             [
