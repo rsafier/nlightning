@@ -153,11 +153,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 70 | 73 |
+| open | 0 | 0 | 3 | 69 | 72 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
 | fixed | 14 | 63 | 201 | 417 | 695 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
-| duplicate | 0 | 0 | 2 | 2 | 4 |
+| duplicate | 0 | 0 | 2 | 3 | 5 |
 | **Total** | **14** | **63** | **212** | **499** | **788** |
 
 ### Epics
@@ -2775,7 +2775,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TRAMPOLINE_PLAN TR3/TR4
 
 ### NL-920 `DualFundUpfrontShutdownScriptTests.Given_AP2TrScriptWithAnySegwit_*` fails on `wip/fafo` at `ed4d7e7a`
-- **Status:** open
+- **Status:** duplicate of NL-903 (fixed upstream in `f0ca4a5c`/`5c14c684`: the test no longer runs on the 1 s open timeout; 4/4 on `wip/fafo` after the NL-895 merge)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Channels/DualFunding/DualFundUpfrontShutdownScriptTests.cs:92`, `src/NLightning.Application/Channels/DualFunding/`
