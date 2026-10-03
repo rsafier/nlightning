@@ -16,6 +16,7 @@ using Domain.Channels.Enums;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
+using Domain.Node.Options;
 using Domain.Payments.Trampoline;
 using Domain.Payments.ValueObjects;
 using Domain.Protocol.Onion.Constants;
@@ -179,6 +180,50 @@ public class TrampolineRelayServiceTests
         Assert.Equal((ushort)FailureCode.TrampolineFeeOrExpiryInsufficient, relay.FailureCode);
         Assert.Empty(_legSender.Started);
         AssertNoHtlcs(harness);
+    }
+
+    [Fact]
+    public async Task Given_AnIncomingExpiryBeyondMaxCltvExpiryDistance_When_Complete_Then_TemporaryTrampolineFailure()
+    {
+        // Arrange: NL-922, the HTLC expires 700 blocks from now and Carol accepts at most 600 (expiry_too_far); the
+        // fee and delta are paid
+        await using var harness = await CreateHarnessAsync(routing: r => r.MaxCltvExpiryDistance = 600);
+        var payment = await NewPaymentAsync(harness);
+
+        // Act
+        var onion = await PayPartAsync(harness, payment, s_sumIn, s_sumIn);
+        await harness.PumpAsync();
+
+        // Assert: temporary_trampoline_failure, not NODE|26 (our fee and delta are not what is missing); on 9418c968
+        // the leg started
+        var failed = Assert.Single(harness.Alice.PaymentHandler.Failed);
+        var decrypted = Decrypt(harness, onion, payment.Trampoline, failed);
+        Assert.Equal(TrampolineFailureLayer.Trampoline, decrypted.Layer);
+        Assert.Equal(FailureCode.TemporaryTrampolineFailure, decrypted.Code);
+        var (relay, _) = await GetRelayAsync(harness, payment.Hash);
+        Assert.Equal(TrampolineRelayStatus.Failed, relay.Status);
+        Assert.Contains("too far", relay.FailureReason);
+        Assert.Empty(_legSender.Started);
+    }
+
+    [Fact]
+    public async Task Given_AnOutgoingExpiryWithinExpiryTooSoonBlocks_When_Complete_Then_TemporaryTrampolineFailure()
+    {
+        // Arrange: NL-922, Carol's chain is 90 blocks ahead: the expiry out (incoming - 600) is 10 blocks away (<= 18)
+        await using var harness = await CreateHarnessAsync();
+        var payment = await NewPaymentAsync(harness);
+        _carolMonitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(ThreeNodeHarness.BlockHeight + 90);
+
+        // Act
+        var onion = await PayPartAsync(harness, payment, s_sumIn, s_sumIn);
+        await harness.PumpAsync();
+
+        // Assert: on 9418c968 the leg started (the expiry was above the height)
+        var failed = Assert.Single(harness.Alice.PaymentHandler.Failed);
+        Assert.Equal(FailureCode.TemporaryTrampolineFailure, Decrypt(harness, onion, payment.Trampoline, failed).Code);
+        var (relay, _) = await GetRelayAsync(harness, payment.Hash);
+        Assert.Contains("too soon", relay.FailureReason);
+        Assert.Empty(_legSender.Started);
     }
 
     [Fact]
@@ -563,11 +608,13 @@ public class TrampolineRelayServiceTests
     #region Helpers
 
     private Task<ThreeNodeHarness> CreateHarnessAsync(Action<TrampolineOptions>? configure = null,
-                                                      bool registerLegSender = true, bool carolAlice = false) =>
+                                                      bool registerLegSender = true, bool carolAlice = false,
+                                                      Action<RoutingOptions>? routing = null) =>
         ThreeNodeHarness.CreateAsync(h =>
         {
             h.Carol.Options.Features.OptionTrampolineRouting = FeatureSupport.Optional;
             h.Carol.Options.Features.AllowExperimentalFeatures = true;
+            routing?.Invoke(h.Carol.Options.Routing);
             h.Carol.ConfigureServices = services =>
             {
                 services.Replace(ServiceDescriptor.Singleton<TimeProvider>(_clock));

@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-03 by the NL-895 review lane (worktree branch from `wip/fafo` at `9418c968`): NL-922 (medium) new and fixed in dedff28c (blinded trampoline hop fee floor, per-channel CLTV delta, expiry bounds), NL-923 (low, open) new: the kept delta of a blinded relay after a restart. Summary: fixed medium 201 -> 202, open low 69 -> 70.
+
 Updated 2026-10-03 by the taproot wave t01 integrator (branch `wip/taproot-int` from `origin/wip/taproot-plan` at `ee682a23`, merged into `wip/fafo`): NL-913 fixed (cluster proof `tap-mx1`; CLN v26.06.8 does not signal simple close), NL-903 (low, fixed in 075a7920, f0ca4a5c and 5c14c684: review fixes) and NL-904 (medium, open: T3/T4 obligations from the review) new; NL-911 and NL-914 updated. NL-910 (low, open: a `ClnPeerStorageTests` cluster flake). Taproot NL-895..NL-899 renumbered to NL-911..NL-915 (collision with the trampoline follow-ups, which landed first).
 
 Updated 2026-10-03 by the namespace-cap lane (branch `wip/nscap`, owner decision 2026-10-03): NL-844 (fixed, b8362d19, 501bebd7: the harness cap on run namespaces is 12, set once in `RunAdmission.DefaultMaxRuns`; the matrix in 1,058 s at a peak of 11 namespaces) and NL-905 (open, low: the cln suite is the matrix long pole at 12 namespaces). Summary rows recounted from the entries after the merge of `wip/fafo` at bd1a0dc5 (NL-806 lane): 773 entries, no duplicate IDs.
@@ -153,12 +155,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 69 | 72 |
+| open | 0 | 0 | 3 | 70 | 73 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 63 | 201 | 418 | 696 |
+| fixed | 14 | 63 | 202 | 418 | 697 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 3 | 5 |
-| **Total** | **14** | **63** | **212** | **500** | **789** |
+| **Total** | **14** | **63** | **213** | **501** | **791** |
 
 ### Epics
 
@@ -2793,6 +2795,27 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix (c7bc7ecf):** `KeysFrom` keeps the processor's `invalid_onion_blinding` as `IntroductionSha256` (the switch builds its keys with it too); `TrampolineHtlcFailures.FromStoredPart`, shared with the relay engine (its `PartFailureKeys` removed), keeps a re-peel's malformed `invalid_onion_blinding` as `BlindedMalformedSha256`; a row without a usable outer secret (32 non-zero bytes) gives no keys (the caller's ordinary path, the HTLC's stored secret) and `FailAsync` never uses an unusable trampoline secret (outer-only failure, warning, no throw); `ResolveAsync` returns the re-peel, reused by the monitor for the secret and the introduction check; the dust switch passes the HTLC's amount and expiry. The BOLT 2/4 random delay before an introduction node's `invalid_onion_blinding` stays out of these paths (documented, as `BlindedHtlcFailures.FailAsync`). Tests: region NL-921 of `HtlcExpiryMonitorTests` and `DustExposureHtlcSwitchTests` (new `TrampolineFailureTestKit.BuildBlindedRelayAsync`/`BuildBlindedFinalAsync`/`CreateUsWithoutRouteBlinding`) and `BlindedTrampolineRelayTests.Given_ARelayPartAtTheIntroductionNodeAddedAfterOurShutdown_*`; the six covering a fix fail on 9418c968.
 - **Blocks/Blocked-by:** Follow-up of NL-897 (and NL-895)
 - **Plan ref:** TRAMPOLINE_PLAN TR-R-14
+
+### NL-922 NL-895 review follow-ups: blinded trampoline hop fee floor, per-channel CLTV delta, expiry bounds
+- **Status:** fixed (dedff28c)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Trampoline/TrampolineRelayPolicy.cs`, `TrampolineRelayService.cs` (policy-evaluation path), `Payments/Policy/HtlcForwardingPolicy.cs` (shared grace helpers)
+- **Evidence:** adversarial review of NL-895 (2026-10-03, at `9418c968`): (1) `EvaluateBlinded` accepted any `payment_relay`, (0, 0, 40) included, so anyone could route a free circular rebalance through us and take a `MaxRelaysInFlight` slot (a plain blinded forward requires `payment_relay` >= our policy; before NL-895 a `next_node_id` blinded hop was priced by `Node:Trampoline`); (2) the delta check and the leg's first-hop cap used the node's `Node:Routing:CltvExpiryDelta`, while recipients build `payment_relay` from our channel's `channel_update` (`setchannelpolicy`); (3) neither evaluator checked expiry_too_soon or expiry_too_far (the leg planner caps the first hop at `MaxCltvExpiryDistance`, so a far outgoing expiry found no route, but only after the relay took a slot and started the leg; incoming expiries were not bounded at all); (6) `max_cltv_expiry` was checked against the outer expiry only.
+- **Fix (D-NL922-1):** D-NL895-2 stands (the price is `payment_relay`), but each blinded part is checked before it joins by `TrampolineRelayPolicy.CheckBlindedHopPrice`: fee and `cltv_expiry_delta` against the scid-resolved channel's configured policy (optional `IChannelPolicyProvider`: override else `Node:Routing`, with `GetPreviousPolicies` for the 10-minute grace through the helpers `HtlcForwardingPolicy.PaymentRelayCoversFee`/`LenientCltvExpiryDelta` that the forward now uses too; an unloaded provider refuses), or `Node:Routing` for a `next_node_id` hop, never `Node:Trampoline`; a refusal is `invalid_onion_blinding` with no relay row. The accepted hop's delta (the most lenient in grace) is what `EvaluateBlinded` keeps between the lowest incoming expiry and the outgoing one and the leg's first-hop cap. Deviation from the review's "cap at lowest incoming − max(channel delta, node delta)": the cap is lowest incoming − the hop's delta, as a plain forward over that channel keeps; with `max` a channel delta below the node's would be accepted and then left the leg no route. Both evaluators take a `TrampolineRelaySet` and `RoutingOptions`: expiry_too_soon (outgoing expiry <= height + `ExpiryTooSoonBlocks`, inclusive; for `recipient_blinded_paths` the outgoing value plus the paths' smallest delta, since the payer sets it near the height) and expiry_too_far (an incoming expiry > height + `MaxCltvExpiryDistance`); unblinded they and the `MinCltvMarginBlocks` check answer `temporary_trampoline_failure` (NODE|26 only for the fee and the delta: a payer cannot fix an expiry with our policy), blinded always `invalid_onion_blinding`. Each part's HTLC expiry is bounded by `payment_constraints.max_cltv_expiry`.
+- **Tests:** `BlindedTrampolineRelayTests` (fee below the channel's policy past the grace, the free relay, below `Node:Routing` for `next_node_id`, a `next_node_id` hop priced by `Node:Routing` though the channel asks more, grace accepted, channel delta below the node's accepted with its own cap, above it refused, too far, too soon, HTLC above `max_cltv_expiry`, HTLC below the outer `amt_to_forward`, a retired scid, a Compulsory alias channel's real scid, the unknown-scid tests asserting the scid check's own log reason, and a crash after the last part's save replayed from the stored `NextNodeId`/`NextPathKey` with the scid lookup counted), `TrampolineRelayServiceTests` (unblinded too far/too soon), `TrampolineRelayPolicyTests`. 11 of them fail on `9418c968`.
+- **Blocks/Blocked-by:** follow-up of NL-895; NL-923
+- **Plan ref:** TRAMPOLINE_PLAN §10 (D-NL922-1)
+
+### NL-923 A blinded trampoline relay's kept delta after a restart is an upper bound
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Trampoline/TrampolineRelayService.cs` (`KeptBlindedDeltaOf`)
+- **Evidence:** NL-922 keeps the hop's delta (the scid-named channel's, grace included) in memory per collecting relay, since the relay row stores the next node, not the channel. After a restart between the last part's save and `Sending`, the Collecting replay uses the largest of `Node:Routing:CltvExpiryDelta` and the current deltas of our open channels to the stored node, never resolving the scid again. A set whose `payment_relay` paid a smaller channel delta (or a delta in grace) is then refused with `invalid_onion_blinding` (safe, rare).
+- **Fix sketch:** store the hop's kept delta (or the named channel id) on the relay row (migration), or re-derive it from a re-peeled part onion without resolving the next node.
+- **Blocks/Blocked-by:** follow-up of NL-922
+- **Plan ref:** TRAMPOLINE_PLAN §10
 
 ## BOLT 5: On-chain handling
 
