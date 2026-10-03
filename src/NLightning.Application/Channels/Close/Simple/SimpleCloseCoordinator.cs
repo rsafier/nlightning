@@ -22,6 +22,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Protocol.Tlv;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
@@ -99,6 +100,10 @@ public sealed class SimpleCloseCoordinator
          })
             return null;
 
+        // Simple taproot: nothing to sign against before the peer's closee nonce (its shutdown carries it)
+        if (TaprootCloseNonces.IsTaproot(channel) && entry.RemoteCloseeNonce is null)
+            return null;
+
         var message = await CreateProposalAsync(channel, entry, entry.Request?.FeeRatePerKw);
         entry.SimpleProposalSentOnConnection = true;
         return message;
@@ -159,14 +164,29 @@ public sealed class SimpleCloseCoordinator
             return null;
         }
 
+        // Simple taproot: every variant is signed against the peer's current closee nonce (its shutdown_nonce, then
+        // the next_closee_nonce of its last closing_sig), each with a fresh closer nonce of ours
+        var taproot = TaprootCloseNonces.IsTaproot(channel);
+        MusigPublicNonce? remoteCloseeNonce = null;
+        if (taproot)
+            remoteCloseeNonce = entry.RemoteCloseeNonce
+                             ?? throw new InvalidOperationException(
+                                    $"Channel {channel.ChannelId} has no closee nonce from the peer for a new closing_complete "
+                                  + "(its shutdown or its last closing_sig did not carry one)");
+
         // B2-SC-C03..C05, C08: our script, the peer's last script, our lock time; BOLT 3 transaction per variant
         var lockTime = _blockchainMonitor?.LastProcessedBlockHeight ?? 0;
         var variants = new Dictionary<ClosingSigKind, SignedClosingVariant>();
         foreach (var kind in selection.Kinds)
         {
             var unsigned = _closingTransactionBuilder.BuildSimple(terms.Build(kind), lockTime);
-            variants[kind] = new SignedClosingVariant(
-                unsigned, _lightningSigner.SignChannelTransaction(channel.ChannelId, unsigned));
+            variants[kind] = taproot
+                                 ? new SignedClosingVariant(unsigned, null,
+                                                            _lightningSigner.SignClosingAsCloser(
+                                                                channel.ChannelId, unsigned,
+                                                                remoteCloseeNonce!.Value))
+                                 : new SignedClosingVariant(
+                                     unsigned, _lightningSigner.SignChannelTransaction(channel.ChannelId, unsigned));
         }
 
         var payload = new ClosingCompletePayload(channel.ChannelId, localScript, remoteScript,
@@ -175,11 +195,23 @@ public sealed class SimpleCloseCoordinator
                                                variants.GetValueOrDefault(ClosingSigKind.CloseeOutputOnly)?.OurSignature,
                                                variants.GetValueOrDefault(ClosingSigKind.CloserAndCloseeOutputs)
                                                       ?.OurSignature);
-        entry.SimpleProposal = new SimpleCloseProposal(payload, terms, variants);
+        var partialSignatures = taproot
+                                    ? new ClosingPartialSignaturesWithNonce(
+                                        variants.GetValueOrDefault(ClosingSigKind.CloserOutputOnly)
+                                               ?.OurPartialSignature,
+                                        variants.GetValueOrDefault(ClosingSigKind.CloseeOutputOnly)
+                                               ?.OurPartialSignature,
+                                        variants.GetValueOrDefault(ClosingSigKind.CloserAndCloseeOutputs)
+                                               ?.OurPartialSignature)
+                                    : null;
+        entry.SimpleProposal = new SimpleCloseProposal(payload, terms, variants, remoteCloseeNonce);
+        // The peer's closee nonce signs only this closing_complete; its closing_sig brings the next one
+        if (taproot)
+            entry.RemoteCloseeNonce = null;
         _logger.LogInformation(
             "Sending closing_complete for channel {ChannelId}: fee {Fee} sat at {Feerate} sat/kw, lock time {LockTime}, {Kinds}",
             channel.ChannelId, terms.FeeSat, feerate, lockTime, string.Join(",", selection.Kinds));
-        return new ClosingCompleteMessage(payload, signatures);
+        return new ClosingCompleteMessage(payload, signatures, partialSignatures);
     }
 
     #endregion
@@ -233,6 +265,9 @@ public sealed class SimpleCloseCoordinator
 
         // B2-SC-E04/E05: the closer's transaction (an OP_RETURN output carries 0)
         var terms = new SimpleClosingTerms(funding, remoteMsat, localMsat, closerScript, localScript, feeSat, false);
+
+        if (TaprootCloseNonces.IsTaproot(channel))
+            return await ReceiveTaprootClosingCompleteAsync(channel, message, terms);
 
         // B2-SC-E06..E08
         var kind = SimpleCloseRules.SelectCloseeKind(terms, message.Signatures);
@@ -313,6 +348,9 @@ public sealed class SimpleCloseCoordinator
                           $"closing_sig ({payload.FeeSatoshis.Satoshi} sat, lock time {payload.LockTime}) does not match our closing_complete ({sent.FeeSatoshis.Satoshi} sat, lock time {sent.LockTime})",
                           "closing_sig does not match our closing_complete");
 
+        if (TaprootCloseNonces.IsTaproot(channel))
+            return await ReceiveTaprootClosingSigAsync(channel, message, entry, proposal);
+
         // B2-SC-G02/G03: exactly one signature, in a field we sent
         var kinds = message.Signatures.Kinds;
         if (kinds.Count != 1)
@@ -330,7 +368,7 @@ public sealed class SimpleCloseCoordinator
         // B2-SC-G06: broadcast it
         var (funding, _, _) = GetCloseInputs(channel);
         var closingTransaction = _closingTransactionBuilder.AddWitness(variant.Unsigned, funding,
-                                                                       variant.OurSignature, peerSignature);
+                                                                       variant.OurSignature!.Value, peerSignature);
         entry.SimpleProposal = null;
         await RecordClosingTransactionAsync(channel, closingTransaction, true);
         _logger.LogInformation(
@@ -339,6 +377,158 @@ public sealed class SimpleCloseCoordinator
         await BroadcastAsync(channel, closingTransaction);
         return [];
     }
+
+    #endregion
+
+    #region Simple taproot channels
+
+    /// <summary>
+    /// The peer's <c>closing_complete</c> on a simple taproot channel (bolt-simple-taproot.md "closing_complete
+    /// Extensions", closee side): the 98-byte partial signature of the variant BOLT 2 selects, with the closer's nonce,
+    /// is checked against our current closee nonce, which then signs our half (consumed); the aggregated key-path
+    /// signature completes the transaction, which is persisted and broadcast, and our <c>closing_sig</c> carries our
+    /// 32-byte partial signature and a fresh <c>next_closee_nonce</c> for the next round (RBF).
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> ReceiveTaprootClosingCompleteAsync(
+        ChannelModel channel, ClosingCompleteMessage message, SimpleClosingTerms terms)
+    {
+        var channelId = channel.ChannelId;
+        var payload = message.Payload;
+        var entry = _registry.Get(channelId);
+
+        // B2-SC-E06..E08 over the partial signatures (TLVs 5/6/7); ECDSA fields can't spend a MuSig2 funding output
+        var partials = message.PartialSignatures;
+        var kind = SimpleCloseRules.SelectCloseeKind(terms, partials.CloserAndCloseeOutputs is not null);
+        var peerPartial = partials.Get(kind)
+                       ?? throw Warning(channelId, "B2-SC-E07",
+                                        $"taproot closing_complete has no {kind} partial signature, which our output requires",
+                                        $"closing_complete lacks the {ToTaprootTlvName(kind)} partial signature");
+
+        if (entry.LocalCloseeNonce is not { } localCloseeNonce)
+            throw Warning(channelId, "B2-SC-E08",
+                          "taproot closing_complete without a closee nonce of ours on this connection (no shutdown "
+                        + "sent, or our last closing_sig's nonce was used)", "no closee nonce for this closing_complete");
+
+        ClosingTransactionModel model;
+        try
+        {
+            model = terms.Build(kind);
+        }
+        catch (ArgumentException e)
+        {
+            throw Warning(channelId, "B2-SC-E05", $"closing_complete {kind} transaction can't be built: {e.Message}",
+                          "closing transaction can't be built");
+        }
+
+        var unsigned = _closingTransactionBuilder.BuildSimple(model, payload.LockTime);
+
+        // Verifies the closer's partial signature first (a bad one keeps our nonce), then signs with our closee nonce
+        MusigPartialSignature ourPartial;
+        try
+        {
+            ourPartial = _lightningSigner.SignClosingAsClosee(channelId, unsigned, localCloseeNonce, peerPartial);
+        }
+        catch (SignerException e)
+        {
+            throw Warning(channelId, "B2-SC-E08",
+                          $"taproot closing_complete partial signature is not valid for closing transaction {unsigned.TxId}: {e.Message}",
+                          "invalid closing_complete partial signature");
+        }
+
+        // Our closee nonce is spent: the next closing_complete must use the next_closee_nonce we send now
+        entry.LocalCloseeNonce = null;
+        var closingTransaction = _lightningSigner.AggregateClosingSignature(channelId, unsigned, ourPartial,
+                                                                       localCloseeNonce,
+                                                                       peerPartial.PartialSignature,
+                                                                       peerPartial.PublicNonce);
+
+        // B2-SC-E10: the closer's script is the one our later closing_complete pays
+        var closerScript = payload.CloserScriptPubKey;
+        if (channel.RemoteShutdownScript != closerScript)
+        {
+            _logger.LogInformation("Peer {Peer} now closes channel {ChannelId} to {Script}", channel.RemoteNodeId,
+                                   channelId, closerScript);
+            channel.ReplaceRemoteShutdownScript(closerScript);
+        }
+
+        await RecordClosingTransactionAsync(channel, closingTransaction, false);
+        _logger.LogInformation(
+            "Signed the peer's taproot closing transaction {TxId} for channel {ChannelId} ({Kind}, fee {Fee} sat, lock time {LockTime})",
+            closingTransaction.TxId, channelId, kind, payload.FeeSatoshis.Satoshi, payload.LockTime);
+
+        var nextCloseeNonce = _lightningSigner.CreateClosingNonce(channelId);
+        entry.LocalCloseeNonce = nextCloseeNonce;
+        var reply = new ClosingSigMessage(
+            new ClosingSigPayload(channelId, closerScript, payload.CloseeScriptPubKey, payload.FeeSatoshis,
+                                  payload.LockTime),
+            new ClosingSignatures(), ClosingPartialSignatures.Single(kind, ourPartial),
+            new NextCloseeNonceTlv(nextCloseeNonce));
+        await BroadcastAsync(channel, closingTransaction);
+        return [reply];
+    }
+
+    /// <summary>
+    /// The peer's <c>closing_sig</c> on a simple taproot channel (closer side): exactly one 32-byte partial signature
+    /// in a field we sent, made with the peer's closee nonce our <c>closing_complete</c> used and our closer nonce of
+    /// that variant; aggregated, persisted and broadcast. Its <c>next_closee_nonce</c> becomes the peer's closee nonce
+    /// for our next <c>closing_complete</c> (RBF).
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> ReceiveTaprootClosingSigAsync(
+        ChannelModel channel, ClosingSigMessage message, ClosingNegotiationRegistry.Entry entry,
+        SimpleCloseProposal proposal)
+    {
+        var channelId = channel.ChannelId;
+
+        // B2-SC-G02/G03: exactly one partial signature, in a field we sent
+        var kinds = message.PartialSignatures.Kinds;
+        if (kinds.Count != 1 || message.Signatures.Kinds.Count != 0)
+            throw Warning(channelId, "B2-SC-G02",
+                          $"taproot closing_sig carries {kinds.Count} partial and {message.Signatures.Kinds.Count} ECDSA signatures",
+                          "closing_sig must carry exactly one partial signature");
+        var kind = kinds[0];
+        if (!proposal.Variants.TryGetValue(kind, out var variant)
+         || variant.OurPartialSignature is not { } ourPartial || proposal.RemoteCloseeNonce is not { } remoteNonce)
+            throw Warning(channelId, "B2-SC-G03", $"closing_sig signs {kind}, which our closing_complete did not",
+                          $"closing_sig signs {ToTaprootTlvName(kind)}, which we did not send");
+
+        // B2-SC-G04/G05: PartialSigVerifyInternal (inside the aggregation), then PartialSigAgg
+        SignedTransaction closingTransaction;
+        try
+        {
+            closingTransaction = _lightningSigner.AggregateClosingSignature(
+                channelId, variant.Unsigned, ourPartial.PartialSignature, ourPartial.PublicNonce,
+                message.PartialSignatures.Get(kind)!.Value, remoteNonce);
+        }
+        catch (SignerException e)
+        {
+            throw Warning(channelId, "B2-SC-G04",
+                          $"taproot closing_sig partial signature is not valid for closing transaction {variant.Unsigned.TxId}: {e.Message}",
+                          "invalid closing_sig partial signature");
+        }
+
+        // The peer's closee nonce for our next closing_complete (absent: no RBF of ours until it re-sends shutdown)
+        entry.RemoteCloseeNonce = message.NextCloseeNonceTlv is { } next && TaprootCloseNonces.IsValidPublicNonce(next.Nonce)
+                                      ? next.Nonce
+                                      : null;
+        if (entry.RemoteCloseeNonce is null)
+            _logger.LogWarning("closing_sig for taproot channel {ChannelId} has no valid next_closee_nonce: no fee bump "
+                             + "of ours is possible until the peer re-sends its shutdown", channelId);
+
+        entry.SimpleProposal = null;
+        await RecordClosingTransactionAsync(channel, closingTransaction, true);
+        _logger.LogInformation(
+            "The peer signed our taproot closing transaction {TxId} for channel {ChannelId} ({Kind}, fee {Fee} sat)",
+            closingTransaction.TxId, channelId, kind, proposal.Payload.FeeSatoshis.Satoshi);
+        await BroadcastAsync(channel, closingTransaction);
+        return [];
+    }
+
+    private static string ToTaprootTlvName(ClosingSigKind kind) => kind switch
+    {
+        ClosingSigKind.CloserOutputOnly => "closer_no_closee",
+        ClosingSigKind.CloseeOutputOnly => "no_closer_closee",
+        _ => "closer_and_closee"
+    };
 
     #endregion
 

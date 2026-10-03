@@ -155,8 +155,9 @@ public sealed class ChannelCloseCoordinator
         if (channel.LocalShutdownScript is not { } script)
             return null;
 
-        _registry.Get(channel.ChannelId).ShutdownSentOnConnection = true;
-        return _messageFactory.CreateShutdownMessage(channel.ChannelId, script);
+        var entry = _registry.Get(channel.ChannelId);
+        entry.ShutdownSentOnConnection = true;
+        return TaprootCloseNonces.CreateShutdown(channel, script, _messageFactory, _lightningSigner, entry);
     }
 
     private async Task<ShutdownMessage> SendShutdownAsync(ChannelModel channel)
@@ -173,9 +174,10 @@ public sealed class ChannelCloseCoordinator
         });
         WatchFundingSpend(channel);
 
-        _registry.Get(channel.ChannelId).ShutdownSentOnConnection = true;
+        var entry = _registry.Get(channel.ChannelId);
+        entry.ShutdownSentOnConnection = true;
         _logger.LogInformation("Sending shutdown for channel {ChannelId} to {Script}", channel.ChannelId, script);
-        return _messageFactory.CreateShutdownMessage(channel.ChannelId, script);
+        return TaprootCloseNonces.CreateShutdown(channel, script, _messageFactory, _lightningSigner, entry);
     }
 
     #endregion
@@ -198,6 +200,8 @@ public sealed class ChannelCloseCoordinator
         var script = message.Payload.ScriptPubkey;
         var simpleClose = SimpleCloseCoordinator.IsNegotiated(negotiatedFeatures);
         _registry.Get(channelId).SimpleClose = simpleClose;
+        if (TaprootCloseNonces.IsTaproot(channel))
+            ReceiveTaprootShutdownNonce(channel, message, simpleClose);
 
         if (channel.State is < ChannelState.Open or ChannelState.Closing or ChannelState.Closed)
         {
@@ -315,6 +319,39 @@ public sealed class ChannelCloseCoordinator
         return replies;
     }
 
+    /// <summary>
+    /// A simple taproot channel's <c>shutdown</c> (bolt-simple-taproot.md §RBF Cooperative Close): it closes with
+    /// <c>option_simple_close</c> only, and the peer's <c>shutdown_nonce</c> becomes its current closee nonce (a
+    /// re-sent <c>shutdown</c> after a reconnection replaces it).
+    /// </summary>
+    /// <exception cref="ChannelWarningException">Simple close is not negotiated on this connection (warning and
+    /// disconnect: the legacy <c>closing_signed</c> can't close a taproot channel, and failing it would broadcast).
+    /// </exception>
+    /// <exception cref="ChannelFailedException">The nonce is missing or invalid (as Eclair's MissingClosingNonce and
+    /// LND's ErrTaprootShutdownNonceMissing): without it no cooperative close can ever be signed.</exception>
+    private void ReceiveTaprootShutdownNonce(ChannelModel channel, ShutdownMessage message, bool simpleClose)
+    {
+        var channelId = channel.ChannelId;
+        if (!simpleClose)
+            throw new ChannelWarningException(
+                $"shutdown on simple taproot channel {channelId} without option_simple_close negotiated", channelId,
+                "a simple taproot channel closes with option_simple_close only")
+            {
+                CloseConnection = true
+            };
+
+        if (message.ShutdownNonceTlv is not { } nonceTlv || !TaprootCloseNonces.IsValidPublicNonce(nonceTlv.Nonce))
+            throw new ChannelFailedException(
+                channelId,
+                $"shutdown on simple taproot channel {channelId} {(message.ShutdownNonceTlv is null ? "without" : "with an invalid")} shutdown_nonce",
+                message.ShutdownNonceTlv is null ? "missing shutdown_nonce" : "invalid shutdown_nonce")
+            {
+                MustBroadcast = !channel.DataLossDetected
+            };
+
+        _registry.Get(channelId).RemoteCloseeNonce = nonceTlv.Nonce;
+    }
+
     #endregion
 
     #region Negotiation
@@ -343,6 +380,11 @@ public sealed class ChannelCloseCoordinator
                 messages.Add(closingComplete);
             return messages;
         }
+
+        // A simple taproot channel never negotiates with closing_signed (its shutdown handling refuses a connection
+        // without option_simple_close)
+        if (TaprootCloseNonces.IsTaproot(channel))
+            return messages;
 
         if (channel is { State: ChannelState.Negotiating, IsInitiator: true })
         {
@@ -383,6 +425,13 @@ public sealed class ChannelCloseCoordinator
             throw new ChannelWarningException(
                 $"closing_signed on channel {channelId}, which closes with option_simple_close", channelId,
                 "closing_signed while option_simple_close is negotiated, message ignored");
+
+        // A simple taproot channel's funding output is a MuSig2 key: closing_signed (one ECDSA signature) can't spend
+        // it. A warning, not an error: an error would make the peer broadcast its commitment over a protocol mistake
+        if (TaprootCloseNonces.IsTaproot(channel))
+            throw new ChannelWarningException(
+                $"closing_signed on simple taproot channel {channelId}, which closes with option_simple_close only",
+                channelId, "closing_signed on a simple taproot channel, message ignored");
 
         if (channel.State is ChannelState.Closing or ChannelState.Closed)
         {

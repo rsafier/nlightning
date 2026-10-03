@@ -74,14 +74,21 @@ public static class SimpleCloseRules
     /// <param name="received">The fields the closer set.</param>
     public static ClosingSigKind SelectCloseeKind(SimpleClosingTerms terms, ClosingSignatures received)
     {
-        ArgumentNullException.ThrowIfNull(terms);
         ArgumentNullException.ThrowIfNull(received);
+        return SelectCloseeKind(terms, received.CloserAndCloseeOutputs is not null);
+    }
+
+    /// <summary>
+    /// <see cref="SelectCloseeKind(SimpleClosingTerms, ClosingSignatures)"/> from whether the closer set the
+    /// <c>closer_and_closee_outputs</c> field (simple taproot channels: its partial signature, TLV 7).
+    /// </summary>
+    public static ClosingSigKind SelectCloseeKind(SimpleClosingTerms terms, bool hasCloserAndCloseeOutputs)
+    {
+        ArgumentNullException.ThrowIfNull(terms);
         if (terms.CloseeIsDust)
             return ClosingSigKind.CloserOutputOnly;
 
-        return received.CloserAndCloseeOutputs is not null
-                   ? ClosingSigKind.CloserAndCloseeOutputs
-                   : ClosingSigKind.CloseeOutputOnly;
+        return hasCloserAndCloseeOutputs ? ClosingSigKind.CloserAndCloseeOutputs : ClosingSigKind.CloseeOutputOnly;
     }
 
     /// <summary>

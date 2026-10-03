@@ -599,6 +599,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
                 // BOLT 2: the closing negotiation restarts on every reconnection (B2-RE-29)
                 _serviceProvider.GetService<ClosingNegotiationRegistry>()?.ResetConnection(channel.ChannelId);
+                // Simple taproot closee nonces are bound to the connection (memory only): the old secrets go
+                if (channel.ChannelParams.OptionSimpleTaproot)
+                    _lightningSigner.ForgetClosingNonces(channel.ChannelId);
                 switch (channel.State)
                 {
                     case ChannelState.Failed or ChannelState.OnchainResolving:
