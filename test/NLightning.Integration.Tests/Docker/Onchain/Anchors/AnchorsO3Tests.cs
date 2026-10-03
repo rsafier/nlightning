@@ -41,7 +41,7 @@ using Utils;
 /// </summary>
 /// <remarks>
 /// Needs lanes O7-X1 (fee inputs, wallet signing) and O7-X3 (anchors HTLC transactions in the local resolver). Run
-/// with <c>ONCHAIN_SUITE=anchors scripts/run-onchain.sh</c>.
+/// with <c>scripts/run-cluster.sh -n 1 --suite anchors</c>.
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 [Trait("Category", AnchorsChannelTests.AnchorsCategory)]

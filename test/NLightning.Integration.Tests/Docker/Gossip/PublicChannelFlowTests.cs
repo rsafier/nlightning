@@ -22,7 +22,7 @@ using Utils;
 /// <remarks>
 /// <para>Each test uses its own node (fresh key) and its own channel, and asserts only on that channel and node.</para>
 /// <para>(d) (NL-255 re-check): once we are public, david's private-channel invoice hints through us.</para>
-/// <para>Run with <c>scripts/run-gossip.sh</c> (own process, own fixture).</para>
+/// <para>Run with <c>scripts/run-cluster.sh -n 1 --suite gossip</c> (own process, own fixture).</para>
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]
 public class PublicChannelFlowTests

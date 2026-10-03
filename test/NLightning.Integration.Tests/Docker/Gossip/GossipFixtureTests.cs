@@ -13,7 +13,7 @@ using Utils;
 /// policies, every LND has the others' <c>node_announcement</c>; and our node, sent alice's whole graph, parses every
 /// message and stays connected.
 /// </summary>
-/// <remarks>Run with <c>scripts/run-gossip.sh</c> (own process, own fixture).</remarks>
+/// <remarks>Run with <c>scripts/run-cluster.sh -n 1 --suite gossip</c> (own process, own fixture).</remarks>
 [Collection(GossipRegtestCollection.Name)]
 public class GossipFixtureTests
 {

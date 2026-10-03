@@ -321,7 +321,8 @@ public class ChannelPolicyFlowTests : IAsyncLifetime
 /// alice's relay, without a reconnection or restart.
 /// </summary>
 /// <remarks>Public channels change the LND nodes' graph for good, so this runs in the gossip collection
-/// (<c>scripts/run-gossip.sh 1 Release -class NLightning.Integration.Tests.Docker.ChannelPolicyPublicFlowTests</c>).
+/// (<c>scripts/run-cluster.sh -n 1 --suite day0 --class
+/// NLightning.Integration.Tests.Docker.ChannelPolicyPublicFlowTests</c>).
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]
 public class ChannelPolicyPublicFlowTests

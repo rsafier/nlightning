@@ -43,7 +43,7 @@ using Utils;
 /// <para>bitcoind has no RPC that drops one transaction from its mempool; the tests evict it by expiry: with
 /// <c>setmocktime</c> 15 days ahead, the next accepted transaction makes bitcoind expire everything older than
 /// <c>-mempoolexpiry</c> (336 hours), then the mock time is reset.</para>
-/// <para>Run with <c>scripts/run-onchain.sh</c> (own process, own fixture, one framework).</para>
+/// <para>Run with <c>scripts/run-cluster.sh -n 1 --suite onchain</c> (own process, own fixture).</para>
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 public class OnchainO6Tests : IAsyncLifetime
@@ -256,8 +256,9 @@ public class OnchainO6Tests : IAsyncLifetime
         if (DockerDiagnostics.CurrentTestFailed)
             await _fixture.DumpLndLogsAsync(["david"]);
 
-        // A failed test must not leave the mock time set
-        await _fixture.Bitcoin.SendCommandAsync("setmocktime", CancellationToken.None, 0);
+        // A failed test must not leave the mock time set (a skipped one never reached the network)
+        if (_fixture.UnavailableReason is null)
+            await _fixture.Bitcoin.SendCommandAsync("setmocktime", CancellationToken.None, 0);
 
         foreach (var node in _nodes)
             await node.DisposeAsync();

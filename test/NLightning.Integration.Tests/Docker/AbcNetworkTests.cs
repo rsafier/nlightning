@@ -1,7 +1,6 @@
 using System.Collections.Immutable;
 using NLightning.Testing.Lnd.Lnrpc;
 using NLightning.Tests.Utils;
-using ServiceStack.Text;
 
 namespace NLightning.Integration.Tests.Docker;
 
@@ -20,6 +19,7 @@ public class AbcNetworkTests : IAsyncLifetime
     {
         _lightningRegtestNetworkFixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
+        fixture.SkipIfUnavailable(); // before the port is taken (NL-820)
 
         var port = PortPoolUtil.GetAvailablePortAsync().GetAwaiter().GetResult();
         Assert.True(port > 0);
@@ -57,7 +57,7 @@ public class AbcNetworkTests : IAsyncLifetime
     public async Task NLightning_BOLT8_Test_Bob_Connect()
     {
         // Arrange
-        // HOST_ADDRESS or host.docker.internal on Docker, host.orb.internal on the cluster
+        // host.orb.internal on OrbStack's cluster, or NLTG_HOST_ADDRESS
         var hostAddress = _lightningRegtestNetworkFixture.HostAddressForLnd;
         var hex = Convert.ToHexString(_node.SecureKeyManager.GetNodePubKey());
 
@@ -95,7 +95,7 @@ public class AbcNetworkTests : IAsyncLifetime
         var nodeCount = readyNodes.Count;
         Assert.Equal(LightningRegtestNetworkFixture.LndAliases.Count, nodeCount);
         Assert.Equal(LightningRegtestNetworkFixture.LndAliases.Order(), readyNodes.Select(n => n.LocalAlias).Order());
-        $"LND Nodes in Ready State: {nodeCount}".Print();
+        Console.WriteLine($"LND Nodes in Ready State: {nodeCount}");
         foreach (var node in readyNodes)
         {
             var walletBalanceResponse =
@@ -104,13 +104,13 @@ public class AbcNetworkTests : IAsyncLifetime
             var channels =
                 await node.LightningClient.ListChannelsAsync(new ListChannelsRequest(),
                                                              cancellationToken: TestContext.Current.CancellationToken);
-            $"Node {node.LocalAlias} ({node.LocalNodePubKey})".Print();
-            walletBalanceResponse.PrintDump();
-            channels.PrintDump();
+            Console.WriteLine($"Node {node.LocalAlias} ({node.LocalNodePubKey})");
+            Console.WriteLine(walletBalanceResponse);
+            Console.WriteLine(channels);
         }
 
-        $"Bitcoin Node Balance: {(await _lightningRegtestNetworkFixture.Bitcoin.GetBalanceAsync()).Satoshi / 1e8}"
-           .Print();
+        var minerBalance = await _lightningRegtestNetworkFixture.Bitcoin.GetBalanceAsync();
+        Console.WriteLine($"Bitcoin Node Balance: {minerBalance.Satoshi / 1e8}");
     }
 
     public async ValueTask DisposeAsync()

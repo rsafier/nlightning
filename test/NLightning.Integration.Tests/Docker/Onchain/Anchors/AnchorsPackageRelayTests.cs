@@ -30,7 +30,7 @@ using Utils;
 /// <para>The evidence is chain-side only: the commitment is in the relay's mempool although its own feerate is below
 /// the minimum the relay had when it was broadcast (bitcoind only takes such a transaction in a package), a child
 /// spending our anchor is there with it, and the relay was the only way to the miner for our commitment (nobody else
-/// has it), which mines both in one block. Run with <c>ONCHAIN_SUITE=anchors scripts/run-onchain.sh</c>.</para>
+/// has it), which mines both in one block. Run with <c>scripts/run-cluster.sh -n 1 --suite anchors</c>.</para>
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 [Trait("Category", AnchorsChannelTests.AnchorsCategory)]

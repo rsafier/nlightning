@@ -15,8 +15,7 @@ using Fixtures;
 public sealed record RegtestBitcoinEndpoint(RPCClient Rpc, string ZmqHost, int ZmqBlockPort, int ZmqTxPort)
 {
     /// <summary>
-    /// The miner of the shared regtest network: LNUnit's RPC client, and the ZMQ ports from the miner's command line
-    /// on the same host.
+    /// The miner of the shared regtest network: the fixture's RPC client, and its ZMQ ports on the same host.
     /// </summary>
     public static RegtestBitcoinEndpoint FromFixture(LightningRegtestNetworkFixture fixture)
     {

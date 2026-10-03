@@ -5,6 +5,7 @@ using NLightning.Testing.Lnd;
 namespace NLightning.Integration.Tests.Fixtures;
 
 using Lnd;
+using Testing.Cluster.Run;
 
 /// <summary>
 /// The shared regtest network of the <c>regtest</c> collection (and of the <c>onchain-regtest</c> and
@@ -14,124 +15,125 @@ using Lnd;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Where it runs is <see cref="TestBackend"/>'s (<c>NLTG_TEST_BACKEND</c>, read once when xunit creates the fixture):
-/// Docker by default (<see cref="DockerLndBackend"/>: LNUnit's <c>LNUnitBuilder</c> starts the containers), or a run
-/// namespace of the Kubernetes harness (<see cref="ClusterLndBackend"/>: the warm <c>LndRegtestNetwork</c> with the same
-/// nodes, flags, channels and policies, test harness phase 3). The tests see the same members either way; every LND
-/// client is our own <see cref="LndNodeConnection"/> (<c>test/NLightning.Testing.Lnd</c>, LND 0.21.4 protos).
+/// The network runs on the Kubernetes harness only (<see cref="ClusterLndBackend"/>: the warm <c>LndRegtestNetwork</c>
+/// in a run namespace of its own, test harness phase 3). The Docker backend (LNUnit's <c>LNUnitBuilder</c>) was
+/// retired with LNUnit (NL-820). Without <c>NLTG_TEST_BACKEND=cluster</c>, or without a Kubernetes configuration to
+/// reach a cluster with, the fixture starts nothing and every test of its collections is skipped with the reason
+/// (<see cref="UnavailableReason"/>); run them with
+/// <c>scripts/run-cluster.sh --matrix lnd,onchain,anchors,gossip,abcd</c>. Every LND client is our own <see cref="LndNodeConnection"/> (<c>test/NLightning.Testing.Lnd</c>, LND 0.21.4 protos).
 /// </para>
 /// <para>
 /// Our in-process nodes dial an LND node at <see cref="GetLndPeerEndpointAsync"/> (what
-/// <c>NLightningTestNode.ConnectToAsync(LndNodeConnection)</c> does): its container IP on Docker, its Service name on
-/// the cluster, so a restarted pod is redialled at its new IP (NL-780). LND dials us at <see cref="HostAddressForLnd"/>.
+/// <c>NLightningTestNode.ConnectToAsync(LndNodeConnection)</c> does): its Service name, so a restarted pod is redialled
+/// at its new IP (NL-780). LND dials us at <see cref="HostAddressForLnd"/>.
 /// </para>
 /// </remarks>
 // ReSharper disable once ClassNeverInstantiated.Global
 public class LightningRegtestNetworkFixture : IAsyncLifetime
 {
     /// <summary>
-    /// Every container the Docker backend creates. They are force-removed before the network starts and when it is
-    /// disposed. The cluster backend's pods have the same names, in a namespace of their own.
+    /// The node names of the network, bitcoind first: the pods (StatefulSets and Services) of its run namespace.
     /// </summary>
-    public static readonly IReadOnlyList<string> ContainerNames = ["miner", "alice", "bob", "carol", "david"];
+    public static readonly IReadOnlyList<string> NodeNames = ["miner", "alice", "bob", "carol", "david"];
 
     /// <summary>
-    /// The LND aliases, in <see cref="ContainerNames"/> order.
+    /// The LND aliases, in <see cref="NodeNames"/> order.
     /// </summary>
     public static readonly IReadOnlyList<string> LndAliases = ["alice", "bob", "carol", "david"];
 
     /// <summary>
     /// The LND image the four nodes run: <c>test/Docker/custom_lnd</c> built for its <c>LND_VERSION</c> under a
-    /// versioned tag (never <c>custom_lnd:latest</c>, which other branches build for other LND versions).
+    /// versioned tag (never <c>custom_lnd:latest</c>, which other branches build for other LND versions). The harness
+    /// never pulls or builds it: build it once with
+    /// <c>docker build -t custom_lnd:0.21.4-beta test/Docker/custom_lnd</c> (OrbStack's cluster shares the Docker
+    /// image store).
     /// </summary>
     public const string LndImageName = "custom_lnd";
 
     /// <inheritdoc cref="LndImageName"/>
     public const string LndImageTag = "0.21.4-beta";
 
-    private readonly ILndNetworkBackend _backend =
-        TestBackend.Current == TestBackendKind.Cluster ? new ClusterLndBackend() : new DockerLndBackend();
-
+    private readonly ClusterLndBackend? _backend;
+    private readonly Action<string> _skip;
     private readonly SharedObjectCache _shared = new();
     private int _disposed;
 
-    /// <summary>Where the network runs (<see cref="TestBackend.Current"/> when xunit created the fixture).</summary>
-    public TestBackendKind Backend => _backend.Kind;
+    public LightningRegtestNetworkFixture()
+        : this(Environment.GetEnvironmentVariable, KubeConfigurationProbe)
+    {
+    }
 
-    /// <summary>The cluster backend (its run, network and in-process deployer), or null on Docker.</summary>
-    public ClusterLndBackend? Cluster => _backend as ClusterLndBackend;
+    /// <param name="environment">Reads environment variables (<see cref="TestBackend.EnvironmentVariable"/>).</param>
+    /// <param name="kubeConfiguration">
+    /// Throws when no Kubernetes configuration can be built (no kubeconfig and not in a pod); called only on the
+    /// cluster backend.
+    /// </param>
+    /// <param name="skip">Skips the current test with a reason (<see cref="Assert.Skip"/> when null).</param>
+    internal LightningRegtestNetworkFixture(Func<string, string?> environment, Action kubeConfiguration,
+                                            Action<string>? skip = null)
+    {
+        _skip = skip ?? (reason => Assert.Skip(reason));
+        UnavailableReason = GetUnavailableReason(environment, kubeConfiguration);
+        if (UnavailableReason is null)
+            _backend = new ClusterLndBackend();
+    }
 
-    public RPCClient Bitcoin => _backend.Bitcoin;
+    /// <summary>
+    /// Why the network cannot run in this process (the skip reason of every test that uses it), or null when it runs on
+    /// the cluster.
+    /// </summary>
+    public string? UnavailableReason { get; }
+
+    /// <summary>The cluster backend (its run, network and in-process deployer).</summary>
+    public ClusterLndBackend Cluster => Backend;
+
+    public RPCClient Bitcoin => Backend.Bitcoin;
 
     /// <summary>
     /// The ZMQ ports of the miner's raw block and raw tx feeds, on <see cref="Bitcoin"/>'s host.
     /// </summary>
-    public (int RawBlockPort, int RawTxPort) BitcoinZmqPorts => _backend.BitcoinZmqPorts;
+    public (int RawBlockPort, int RawTxPort) BitcoinZmqPorts => Backend.BitcoinZmqPorts;
 
     /// <summary>
     /// The four LND nodes, in <see cref="LndAliases"/> order (all ready once the fixture started).
     /// </summary>
-    public IReadOnlyList<LndNodeConnection> LndNodes => _backend.LndNodes;
+    public IReadOnlyList<LndNodeConnection> LndNodes => Backend.LndNodes;
 
     /// <summary>
-    /// The host an LND node dials to reach a listener of this process: <c>HOST_ADDRESS</c> or
-    /// <c>host.docker.internal</c> on Docker, <c>host.orb.internal</c> on OrbStack's cluster.
+    /// The host an LND node dials to reach a listener of this process: <c>host.orb.internal</c> on OrbStack's
+    /// cluster, or <c>NLTG_HOST_ADDRESS</c>.
     /// </summary>
-    public string HostAddressForLnd => _backend.HostAddressForPeers;
+    public string HostAddressForLnd => Backend.HostAddressForPeers;
 
     /// <summary>
     /// The LND node with <paramref name="alias"/> (<c>alice</c>, <c>bob</c>, <c>carol</c> or <c>david</c>).
     /// </summary>
     /// <remarks>
-    /// The connection stays the same across restarts: gRPC reconnects to the same address (Docker) or DNS name
-    /// (cluster) and the restarted LND keeps its <c>tls.cert</c>, which the connection pins.
+    /// The connection stays the same across restarts: gRPC reconnects to the same DNS name and the restarted LND keeps
+    /// its <c>tls.cert</c>, which the connection pins.
     /// </remarks>
-    public LndNodeConnection GetLndNode(string alias) => _backend.GetLndNode(alias);
+    public LndNodeConnection GetLndNode(string alias) => Backend.GetLndNode(alias);
 
     /// <summary>
     /// The <c>host:port</c> an in-process node dials (and stores) to reach <paramref name="lnd"/>'s p2p port: the
-    /// container IP on Docker, the Service name on the cluster (NL-780).
+    /// Service name (NL-780).
     /// </summary>
     public Task<string> GetLndPeerEndpointAsync(LndNodeConnection lnd, CancellationToken cancellationToken) =>
-        _backend.GetLndPeerEndpointAsync(lnd, cancellationToken);
+        Backend.GetLndPeerEndpointAsync(lnd, cancellationToken);
 
     /// <summary>
-    /// Restarts the LND node <paramref name="alias"/> on its data. Docker: a plain container restart (same container,
-    /// network and data); the caller waits for LND to be ready again. Cluster: a StatefulSet restart (same DNS name and
-    /// PVC, a new pod IP) that returns once LND is <c>SERVER_ACTIVE</c>, its LND peers dialled it again and those
-    /// channels are active.
+    /// Restarts the LND node <paramref name="alias"/> on its data: a StatefulSet restart (same DNS name and PVC, a new
+    /// pod IP) that returns once LND is <c>SERVER_ACTIVE</c>, its LND peers dialled it again and those channels are
+    /// active.
     /// </summary>
-    public Task RestartLndAsync(string alias) => _backend.RestartLndAsync(alias);
+    public Task RestartLndAsync(string alias) => Backend.RestartLndAsync(alias);
 
     /// <summary>
     /// Writes the last <paramref name="tail"/> log lines of the LND nodes <paramref name="aliases"/> to the test output
-    /// (container logs on Docker, pod logs on the cluster, where a failed test also gets a full namespace dump).
+    /// (pod logs; a failed test also gets a full namespace dump). Does nothing when the network is not running.
     /// </summary>
     public Task DumpLndLogsAsync(IEnumerable<string> aliases, int tail = 300) =>
-        _backend.DumpLndLogsAsync(aliases, tail);
-
-    /// <summary>
-    /// Skips the current test unless the network runs on Docker: for test code that drives the Docker containers by
-    /// name (<c>LndChannelDbRollback</c>, <c>RelayBitcoind</c>), which on the cluster backend would act on another
-    /// process's fixed-name containers.
-    /// </summary>
-    public void SkipUnlessDocker(string reason)
-    {
-        if (Backend != TestBackendKind.Docker)
-            Assert.Skip($"Docker backend only ({TestBackend.EnvironmentVariable}={Backend}): {reason}");
-    }
-
-    /// <summary>
-    /// Throws unless the network runs on Docker: the guard of the helpers that drive Docker containers by name, so that
-    /// they never touch another process's containers when a test forgot <see cref="SkipUnlessDocker"/>.
-    /// </summary>
-    /// <exception cref="InvalidOperationException">The network runs on the cluster backend.</exception>
-    public void RequireDocker(string what)
-    {
-        if (Backend != TestBackendKind.Docker)
-            throw new InvalidOperationException(
-                $"{what} drives Docker containers by name and runs on the Docker backend only, not on {Backend}");
-    }
+        _backend?.DumpLndLogsAsync(aliases, tail) ?? Task.CompletedTask;
 
     /// <summary>
     /// Returns the object stored under <paramref name="key"/>, creating it once with <paramref name="factory"/>.
@@ -140,17 +142,36 @@ public class LightningRegtestNetworkFixture : IAsyncLifetime
     /// <see cref="IDisposable"/>. A failed creation is not cached, so the next caller tries again.
     /// </summary>
     /// <exception cref="InvalidOperationException">The key is already used for another type.</exception>
-    public Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory) where T : class =>
-        _shared.GetOrCreateAsync(key, factory);
+    public Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory) where T : class
+    {
+        SkipIfUnavailable();
+        return _shared.GetOrCreateAsync(key, factory);
+    }
+
+    /// <summary>
+    /// Skips the current test when the network cannot run in this process (<see cref="UnavailableReason"/>). Every
+    /// member that needs the network calls it, so a test that reaches one is reported skipped, never passed.
+    /// </summary>
+    public void SkipIfUnavailable()
+    {
+        if (UnavailableReason is not null)
+            _skip(UnavailableReason);
+    }
 
     public async ValueTask InitializeAsync()
     {
+        if (_backend is null)
+        {
+            // Nothing to start: the tests skip on their first use of the fixture
+            Console.WriteLine($"[fixture] LND regtest network not started: {UnavailableReason}");
+            return;
+        }
+
         var watch = Stopwatch.StartNew();
         try
         {
             await _backend.StartAsync(TestContext.Current.CancellationToken);
-            // One comparable line per backend (test harness phase 3: fixture start, Docker against the cluster)
-            Console.WriteLine($"[fixture] LND regtest network ({Backend}) ready in {watch.Elapsed.TotalSeconds:F1} s");
+            Console.WriteLine($"[fixture] LND regtest network (cluster) ready in {watch.Elapsed.TotalSeconds:F1} s");
         }
         catch
         {
@@ -166,6 +187,43 @@ public class LightningRegtestNetworkFixture : IAsyncLifetime
 
         GC.SuppressFinalize(this);
         _shared.DisposeAll();
-        await _backend.DisposeAsync();
+        if (_backend is not null)
+            await _backend.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Why the network cannot run under <paramref name="environment"/>: the backend is not the cluster, or no
+    /// Kubernetes configuration can be built (<paramref name="kubeConfiguration"/> throws); null when it can.
+    /// </summary>
+    internal static string? GetUnavailableReason(Func<string, string?> environment, Action kubeConfiguration)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+        ArgumentNullException.ThrowIfNull(kubeConfiguration);
+        if (TestBackend.Parse(environment(TestBackend.EnvironmentVariable)) != TestBackendKind.Cluster)
+            return "The LND regtest network runs on the cluster backend only (NL-820): set "
+                 + $"{TestBackend.EnvironmentVariable}=cluster or run scripts/run-cluster.sh "
+                 + "--matrix lnd,onchain,anchors,gossip,abcd";
+
+        try
+        {
+            kubeConfiguration();
+            return null;
+        }
+        catch (Exception e)
+        {
+            return $"{TestBackend.EnvironmentVariable}=cluster, but no Kubernetes cluster is configured to run the LND "
+                 + $"regtest network on ({e.GetType().Name}: {e.Message})";
+        }
+    }
+
+    private static void KubeConfigurationProbe() => KubeClientFactory.BuildConfiguration();
+
+    private ClusterLndBackend Backend
+    {
+        get
+        {
+            SkipIfUnavailable();
+            return _backend ?? throw new InvalidOperationException(UnavailableReason);
+        }
     }
 }

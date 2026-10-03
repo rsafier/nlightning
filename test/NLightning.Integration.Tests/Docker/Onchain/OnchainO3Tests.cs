@@ -47,7 +47,7 @@ using Utils;
 /// <para>Authored against the wave 5 watcher/executor (W5-A: classification, rows, <c>IOutputResolver</c> rounds per
 /// block); they cannot pass before it is wired. The force close goes through <see cref="IChannelFailureService"/>, the
 /// only broadcaster of our commitment (the <c>forceclosechannel</c> IPC calls the same service).</para>
-/// <para>Run with <c>scripts/run-onchain.sh</c> (own process, own fixture, one framework).</para>
+/// <para>Run with <c>scripts/run-cluster.sh -n 1 --suite onchain</c> (own process, own fixture).</para>
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 public class OnchainO3Tests : IAsyncLifetime

@@ -30,7 +30,7 @@ using Utils;
 ///   <c>OnchainResolving</c> and record our <c>to_remote</c> (NL-272).</item>
 /// </list>
 /// </summary>
-/// <remarks>Run with <c>scripts/run-onchain.sh</c> (own process, own fixture).</remarks>
+/// <remarks>Run with <c>scripts/run-cluster.sh -n 1 --suite onchain</c> (own process, own fixture).</remarks>
 [Collection(OnchainRegtestCollection.Name)]
 public class OnchainO2Tests : IAsyncLifetime
 {

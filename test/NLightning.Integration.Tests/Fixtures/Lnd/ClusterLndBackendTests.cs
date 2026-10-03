@@ -11,7 +11,6 @@ public class ClusterLndBackendTests
         var backend = new ClusterLndBackend();
 
         // Act & Assert: no cluster call before StartAsync; the members fail with a message, disposal is a no-op
-        Assert.Equal(TestBackendKind.Cluster, backend.Kind);
         Assert.Throws<InvalidOperationException>(() => backend.Bitcoin);
         Assert.Throws<InvalidOperationException>(() => backend.BitcoinZmqPorts);
         Assert.Throws<InvalidOperationException>(() => backend.Network);
@@ -37,11 +36,11 @@ public class ClusterLndBackendTests
     }
 
     [Fact]
-    public void Given_TheDefaultNetwork_When_ComparedWithTheDockerFixture_Then_NamesAndImageMatch()
+    public void Given_TheDefaultNetwork_When_ComparedWithTheFixture_Then_NamesAndImageMatch()
     {
-        // Assert: the aliases the Docker fixture exposes (LightningRegtestNetworkFixture.LndAliases)
+        // Assert: the aliases and node names the fixture exposes
         Assert.Equal(LightningRegtestNetworkFixture.LndAliases, LndRegtestNetworkSpec.Default.Aliases);
-        Assert.Equal(LightningRegtestNetworkFixture.ContainerNames,
+        Assert.Equal(LightningRegtestNetworkFixture.NodeNames,
                      [LndRegtestNetworkSpec.Default.ChainName, .. LndRegtestNetworkSpec.Default.Aliases]);
         Assert.Equal(LightningRegtestNetworkFixture.LndImageName, Testing.Cluster.Images.ImageVersions.Lnd.Repository);
         Assert.Equal(LightningRegtestNetworkFixture.LndImageTag, Testing.Cluster.Images.ImageVersions.Lnd.Tag);

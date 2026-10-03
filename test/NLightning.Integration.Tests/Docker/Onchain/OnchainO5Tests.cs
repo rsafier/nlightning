@@ -37,7 +37,7 @@ using Utils;
 /// (<see cref="LndChannelDbRollback"/>) while our node is down and force-closes, broadcasting its revoked commitment.</para>
 /// <para>Both need the on-chain channel watcher and executor of lane W5-A (funding spend → <c>ChannelCloses</c> row of
 /// kind <see cref="ChannelCloseKind.RevokedCommitment"/> → resolver rounds → broadcasts). Run with
-/// <c>scripts/run-onchain.sh</c> (own process, own fixture).</para>
+/// <c>scripts/run-cluster.sh -n 1 --suite onchain</c> (own process, own fixture).</para>
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 public class OnchainO5Tests : IAsyncLifetime
@@ -281,7 +281,7 @@ public class OnchainO5Tests : IAsyncLifetime
 
         await PayLndAsync(node, david, channelId, channelPoint, 20_000, ct);
         await LndPaysUsAsync(node, david, lndChannel.ChanId, channelId, channelPoint, 30_000, ct);
-        using var rollback = new LndChannelDbRollback(_fixture, "david");
+        var rollback = new LndChannelDbRollback(_fixture, "david");
         await rollback.TakeSnapshotAsync(ct);
         Console.WriteLine($"[o5a] david's channel.db is {rollback.DatabasePath}");
         await WaitUsableAsync([david], [node], channelId, ct);

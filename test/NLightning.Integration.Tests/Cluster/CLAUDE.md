@@ -68,34 +68,38 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
 
 ## The LND regtest network on the cluster (phase 3)
 
-- `Fixtures/LightningRegtestNetworkFixture` (collections `regtest`, `onchain-regtest`, `gossip-regtest`) keeps its
-  members and delegates to `Fixtures/Lnd/ILndNetworkBackend`, picked by `NLTG_TEST_BACKEND` when xunit creates it
-  (`IAsyncLifetime`; the network starts in `InitializeAsync`): `DockerLndBackend` (the former fixture: LNUnit's
-  builder, the same containers, flags, channels and image; the only LNUnit user, NL-819) or `ClusterLndBackend`. Members: `Bitcoin` (the miner's
-  RPC with its `miner` wallet, by pod IP on the cluster), `BitcoinZmqPorts` (28332/28333 on that host), `LndNodes`,
-  `GetLndNode(alias)` (in-tree `LndNodeConnection`s, the same objects across restarts), `RestartLndAsync(alias)`,
-  `GetLndPeerEndpointAsync(lnd)`, `HostAddressForLnd` (where LND dials us: `HOST_ADDRESS`/`host.docker.internal` or
-  `host.orb.internal`), `DumpLndLogsAsync(aliases)` (container or pod logs; the test bodies call it instead of
-  `DockerDiagnostics`), `Backend` and `Cluster` (the `ClusterLndBackend`, null on Docker).
+- `Fixtures/LightningRegtestNetworkFixture` (collections `regtest`, `onchain-regtest`, `gossip-regtest`) runs on
+  `ClusterLndBackend` only (`IAsyncLifetime`; the network starts in `InitializeAsync`). NL-820 (owner decision
+  2026-10-03) retired its Docker backend (`DockerLndBackend`, LNUnit's builder, the only LNUnit user) and removed the
+  `LNUnit` package; `Fixtures/LnUnitAbsenceTests` keeps the solution free of it. Without `NLTG_TEST_BACKEND=cluster`,
+  or when no Kubernetes configuration can be built, the fixture starts nothing and every test that touches it is
+  reported **skipped** with `UnavailableReason` (`SkipIfUnavailable()`; `NLightningTestNode.CreateAsync(fixture, ...)`
+  and its fixture constructors skip before taking a port; tested in `Fixtures/LightningRegtestNetworkFixtureTests`). A
+  configured cluster that fails is a fixture failure, never a skip. Members: `Bitcoin` (the miner's RPC with its
+  `miner` wallet, by pod IP), `BitcoinZmqPorts` (28332/28333 on that host), `LndNodes`, `GetLndNode(alias)` (in-tree
+  `LndNodeConnection`s, the same objects across restarts), `RestartLndAsync(alias)`, `GetLndPeerEndpointAsync(lnd)`,
+  `HostAddressForLnd` (where LND dials us: `host.orb.internal` or `NLTG_HOST_ADDRESS`), `DumpLndLogsAsync(aliases)`
+  (pod logs; the test bodies call it instead of `DockerDiagnostics`), `Cluster` (the `ClusterLndBackend`) and
+  `UnavailableReason`. The image `custom_lnd:0.21.4-beta` is never pulled or built by the harness: build it once with
+  `docker build -t custom_lnd:0.21.4-beta test/Docker/custom_lnd` (OrbStack shares the Docker image store with its
+  cluster; a missing image fails the pod at once with `ErrImageNeverPull`).
 - `ClusterLndBackend` is a warm `LndRegtestNetworkFixture` (the library's `Topology/Lnd/LndRegtestNetwork`: the Docker
   fixture's nodes, flags, channels and policies on `custom_lnd:0.21.4-beta`, PVCs) plus `Network` (restart, join,
   open, routed payments), `BitcoinEndpoint`, `LndPeerHost(alias)` and `JoinInProcessNodeAsync(name, fundSat)`: our
   node on the network's chain through its own `InProcessNodeDeployer`, stopped before the namespace goes.
 - Restart: a StatefulSet restart keeps the DNS names and PVC, the pod IP changes. `RestartLndAsync` has the LND peers
   dial the new pod IP and joined nodes the Service name, and waits until those channels are active again (no NL-262
-  address-hold containers: `ReestablishFlowTests` holds addresses on Docker only). `NLightningTestNode`s made from the
-  fixture dial LND at `GetLndPeerEndpointAsync` (`NLightningTestNode.ConnectToAsync(LndNodeConnection)`): the
-  container IP on Docker, the Service name `alias.<ns>.svc.cluster.local:9735` on the cluster, which our node stores
+  address-hold containers; those went with the Docker backend, NL-820). `NLightningTestNode`s made from the fixture
+  dial LND at `GetLndPeerEndpointAsync` (`NLightningTestNode.ConnectToAsync(LndNodeConnection)`): the Service name
+  `alias.<ns>.svc.cluster.local:9735`, which our node stores
   and redials after the restart (NL-780; LND cannot dial back, it only saw our ephemeral port).
 - The LND suites: `scripts/run-cluster.sh -n 1 --suite lnd` runs the `regtest` collection's classes of the `Docker`
   namespace and `Docker.Utils` (the catalog's `lnd`, SQL Server left out; 2 namespaces: the collection's network and
   `MultiNodeHarnessTests`' own Postgres pod, so `-j` is capped at 3); the classes of the fixture's other collections
   run in their own suites: `PostgresTests` in `postgres`, `BackupRestoreFlowTests` in `onchain`,
   `ChannelPolicyPublicFlowTests` and `SpliceLndObserverTests` in `gossip` (`--suite onchain|gossip --class X`).
-  Test code that would drive Docker containers by name on the cluster guards itself with
-  `LightningRegtestNetworkFixture.SkipUnlessDocker`/`RequireDocker` (the on-chain helpers have cluster paths since
-  phase 6, below); failure dumps go through `DumpLndLogsAsync` everywhere. On Docker the suite runs as before (SDK
-  container, `--network host`, under the machine's Docker lock).
+  No test code drives Docker containers by name any more (the on-chain helpers run on the cluster only since NL-820,
+  below; `SkipUnlessDocker`/`RequireDocker` are gone); failure dumps go through `DumpLndLogsAsync` everywhere.
 - `Live/LndRegtestNetworkClusterTests` (`Category=Cluster`, `Explicit`): the backend's members answer, our node joins
   (2M sat), opens 1M sat to alice by her Service name, pays carol through alice and is paid by alice, alice restarts,
   and both payments work again. `scripts/run-cluster.sh -n 2 -p integration --class
@@ -179,8 +183,7 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   alice and david at `GetLndPeerEndpointAsync` (the Service names on the cluster), so LND's own disconnects in
   `AbcdReestablishTests` and bob's stop/crash in `AbcdRestartTests` end with our nodes redialling the stored names.
 - Run: `scripts/run-cluster.sh -n 1 --suite abcd` (1 namespace, the `regtest` collection's network; no Docker lock),
-  or as part of the default matrix (`--matrix`). `scripts/run-abcd.sh` is unchanged and runs the Docker backend
-  (under the machine's Docker lock). Proven 2026-10-03: 11/11 alone (51-58 s, network ready 28 s), 2 x 11/11 at once.
+  or as part of the default matrix (`--matrix`). `scripts/run-abcd.sh` is a retired pointer since NL-820. Proven 2026-10-03: 11/11 alone (51-58 s, network ready 28 s), 2 x 11/11 at once.
 
 ## The on-chain suites on the cluster (test harness phase 6)
 
@@ -190,7 +193,7 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   `setmocktime`, `prioritisetransaction`, mempool watching (ZMQ raw tx at the miner's pod IP) and LND's 0.21 sweeper
   pacing (`ChainSync.MineUntilLndSweptAsync`, NL-770) needed no change: they reach bitcoind and LND only through the
   fixture (`Bitcoin`, `GetLndNode`, `GetLndPeerEndpointAsync`).
-- The two helpers that drove Docker containers have cluster paths (Docker unchanged):
+- The two helpers that drove Docker containers run on the cluster only (their Docker paths went with NL-820):
   - `Onchain/Cheater/LndChannelDbRollback` (Proof O5 (a), `AnchorsO5Tests`): `LndRegtestNetwork.RestartAsync(alias,
     whileStopped: ...)` scales david's StatefulSet to 0, a maintenance pod on his PVC (`StoppedNodeMaintenance`, the
     library's `Kube/`) copies `channel.db` to `channel.db.nltg-snapshot` next to it (and later back), david starts again
@@ -202,16 +205,15 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   database open, and on the macOS host (where the cluster backend runs the test process) `File.Copy` replaces a file
   by a new inode, so `OnchainO4Tests`' O4 (d) restarted on the files it had replaced instead of the snapshot.
 - Run: `scripts/run-cluster.sh -n 1 --suite onchain` and `--suite anchors` (no Docker lock; `--class` for one class,
-  `--explicit on` adds the two by-hand O5 variants), or in the default matrix. `scripts/run-onchain.sh` is unchanged
-  and runs the Docker backend (under the machine's Docker lock, `ONCHAIN_SUITE=all` for both namespaces).
+  `--explicit on` adds the two by-hand O5 variants), or in the default matrix. `scripts/run-onchain.sh` is a retired
+  pointer since NL-820.
 
 ## The gossip suite on the cluster (test harness phase 6)
 
 - The gossip-regtest collection's 35 tests run as two catalog suites, each its own process and network (one namespace
   each; split in the phase 6 proof to shorten the matrix, NL-841): `gossip` = `Docker.Gossip.*` without the Explicit
-  `Gossip.Capture` sub-namespace (30 tests, 8 of them the container-free `GossipProofHelperTests`; what
-  `scripts/run-gossip.sh` runs by default) and `day0` = `Docker.Day0.*`, `ChannelPolicyPublicFlowTests` and
-  `SpliceLndObserverTests` (5). They run unchanged on either backend: LND only through
+  `Gossip.Capture` sub-namespace (30 tests, 8 of them the container-free `GossipProofHelperTests`) and `day0` = `Docker.Day0.*`, `ChannelPolicyPublicFlowTests` and
+  `SpliceLndObserverTests` (5). They reach LND only through
   `LightningRegtestNetworkFixture` (`GetLndNode`, `LndNodes`, `Bitcoin`, `GetLndPeerEndpointAsync` for
   `GraphStoreFlowTests`' LND-to-LND opens, `DumpLndLogsAsync`), our nodes dial LND at the Service names.
 - NL-830 (test): `SpliceLndObserverTests` waited only for alice's edge of the open before splicing; with two runs at
@@ -224,8 +226,7 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   `ChainSync.EnsureLndSpendableAsync(fixture, lnd, minSat, nodes, ct)` (confirmed, unleased, above the anchors reserve;
   two 0.1 BTC outputs and a block when short).
 - Run: `scripts/run-cluster.sh -n 1 --suite gossip` and `--suite day0` (no Docker lock; about 13 and 8 min, network
-  ready 29-58 s), or in the default matrix. `scripts/run-gossip.sh` is unchanged and runs the Docker backend (under the machine's Docker lock; by
-  default only the `Docker.Gossip` namespace, give the catalog's `-class` filters for the whole suite).
+  ready 29-58 s), or in the default matrix. `scripts/run-gossip.sh` is a retired pointer since NL-820.
 
 ## Reachability (OrbStack, host-side tests)
 

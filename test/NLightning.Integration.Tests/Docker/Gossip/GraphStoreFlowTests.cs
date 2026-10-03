@@ -24,7 +24,7 @@ using Utils;
 /// <para>(c)'s "excluded from getroute" is not asserted: the (c) node has no channel, so it has no route to anything.
 /// (d) (stale after <c>Gossip:StaleAfter</c>) keeps everyone but carol fresh instead of stopping carol, a shared LND
 /// node (see the test).</para>
-/// <para>Run with <c>scripts/run-gossip.sh</c> (own process, own fixture).</para>
+/// <para>Run with <c>scripts/run-cluster.sh -n 1 --suite gossip</c> (own process, own fixture).</para>
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]
 public class GraphStoreFlowTests
