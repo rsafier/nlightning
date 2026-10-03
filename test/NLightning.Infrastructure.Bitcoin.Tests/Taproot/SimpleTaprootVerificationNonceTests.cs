@@ -50,7 +50,8 @@ public class SimpleTaprootVerificationNonceTests
     [Fact]
     public void Given_CommitmentZero_When_Deriving_Then_TheFundingTxIdIsIgnored()
     {
-        // Arrange: commitment 0's nonce goes out in open_channel/accept_channel, before the funding txid exists
+        // Arrange: a v1 open's commitment-0 nonce goes out in open_channel/accept_channel, before the funding txid
+        // exists
         var kit = new TaprootSignerKit();
 
         // Act
@@ -64,6 +65,41 @@ public class SimpleTaprootVerificationNonceTests
         Assert.Equal(withoutTxId, otherTxId);
         Assert.Equal(withoutTxId, byChannel);
         Assert.NotEqual(withoutTxId, kit.Alice.GetLocalVerificationNonce(0u, kit.FundingTxId, 1));
+    }
+
+    [Fact]
+    public void Given_ADualFundedChannel_When_DerivingCommitmentZero_Then_ItIsBoundToTheFundingTxId()
+    {
+        // Arrange: a dual-funded open sends commitment 0's nonce in tx_complete, on the negotiated funding (lane V2)
+        var kit = new TaprootSignerKit(isDualFunded: true);
+
+        // Act
+        var byChannel = kit.Alice.GetLocalVerificationNonce(TaprootSignerKit.ChannelId, null, 0);
+        var interactive = kit.Alice.GetInteractiveVerificationNonce(0u, kit.FundingTxId, 0);
+        var otherFunding = kit.Alice.GetInteractiveVerificationNonce(0u, s_otherFundingTxId, 0);
+        var v1 = kit.Alice.GetLocalVerificationNonce(0u, null, 0);
+
+        // Assert: the registered channel and the pre-registration derivation agree, another funding (an RBF attempt)
+        // has another nonce, and none is the v1 open's txid-free nonce
+        Assert.Equal(interactive, byChannel);
+        Assert.NotEqual(interactive, otherFunding);
+        Assert.NotEqual(v1, interactive);
+    }
+
+    [Fact]
+    public void Given_ANonZeroNumber_When_DerivingInteractively_Then_ItIsTheV1RuleNonce()
+    {
+        // Arrange: only commitment 0 differs between the v1 and the dual-funded rule
+        var kit = new TaprootSignerKit(isDualFunded: true);
+
+        // Act
+        var interactive = kit.Alice.GetInteractiveVerificationNonce(0u, kit.FundingTxId, 1);
+        var byKeyIndex = kit.Alice.GetLocalVerificationNonce(0u, kit.FundingTxId, 1);
+        var byChannel = kit.Alice.GetLocalVerificationNonce(TaprootSignerKit.ChannelId, null, 1);
+
+        // Assert
+        Assert.Equal(byKeyIndex, interactive);
+        Assert.Equal(byKeyIndex, byChannel);
     }
 
     [Fact]

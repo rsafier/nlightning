@@ -232,10 +232,10 @@ public class SimpleTaprootCommitmentSigningTests
     }
 
     [Fact]
-    public void Given_TwoOpenAttempts_When_CommitmentZeroIsBroadcastOnBoth_Then_TheSecondIsRefused()
+    public void Given_TwoFundingsOfAV1Channel_When_CommitmentZeroIsBroadcastOnBoth_Then_TheSecondIsRefused()
     {
-        // Arrange: commitment 0's verification nonce has no funding txid in its context, so every attempt of a
-        // dual-funded open shares it (SP-I4 would allow the same number on another funding)
+        // Arrange: a v1-opened channel's commitment-0 nonce has no funding txid in its context, so a second funding
+        // of it would share the nonce (SP-I4 would allow the same number on another funding): the record refuses it
         var kit = new TaprootSignerKit();
         var (otherTxId, _) = kit.RegisterPendingFunding(keyIndex: 0);
         var bobNonce = kit.Bob.GetLocalVerificationNonce(TaprootSignerKit.ChannelId, null, 0);
@@ -250,6 +250,33 @@ public class SimpleTaprootCommitmentSigningTests
         // Act / Assert: one nonce never signs two transactions
         Assert.Throws<SignerException>(() => kit.Bob.SignLocalCommitmentForBroadcast(
                                            TaprootSignerKit.ChannelId, otherTxId, 0, other, otherSignature));
+    }
+
+    [Fact]
+    public void Given_TwoAttemptsOfADualFundedOpen_When_CommitmentZeroIsBroadcastOnEach_Then_EachHasItsOwnNonce()
+    {
+        // Arrange: a dual-funded channel's commitment 0 is bound to its funding txid (taproot wave t02 lane V2), so
+        // two RBF attempts of the open never share a verification nonce
+        var kit = new TaprootSignerKit(isDualFunded: true);
+        var (otherTxId, otherFundingTx) = kit.RegisterPendingFunding(keyIndex: 0);
+        var bobNonce = kit.Bob.GetLocalVerificationNonce(TaprootSignerKit.ChannelId, null, 0);
+        var bobOtherNonce = kit.Bob.GetLocalVerificationNonce(TaprootSignerKit.ChannelId, otherTxId, 0);
+        Assert.NotEqual(bobNonce, bobOtherNonce);
+        var first = kit.UnsignedSpend();
+        var other = kit.UnsignedSpend(fundingTxId: otherTxId);
+        var firstSignature = kit.Alice.SignRemoteCommitmentPartial(TaprootSignerKit.ChannelId, null, first, bobNonce);
+        var otherSignature = kit.Alice.SignRemoteCommitmentPartial(TaprootSignerKit.ChannelId, otherTxId, other,
+                                                                   bobOtherNonce);
+
+        // Act: each attempt's commitment 0 is signed for broadcast with its own nonce
+        var signedFirst = kit.Bob.SignLocalCommitmentForBroadcast(TaprootSignerKit.ChannelId, null, 0, first,
+                                                                  firstSignature);
+        var signedOther = kit.Bob.SignLocalCommitmentForBroadcast(TaprootSignerKit.ChannelId, otherTxId, 0, other,
+                                                                  otherSignature);
+
+        // Assert: both are valid key-path spends of their own funding output
+        Assert.Null(TaprootSignerKit.Execute(signedFirst, kit.FundingTxOut));
+        Assert.Null(TaprootSignerKit.Execute(signedOther, otherFundingTx.Outputs[0]));
     }
 
     [Fact]
