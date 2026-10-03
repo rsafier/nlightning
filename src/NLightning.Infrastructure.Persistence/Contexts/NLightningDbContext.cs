@@ -6,6 +6,7 @@ using Entities.Accounting;
 using Entities.Bitcoin;
 using Entities.Channel;
 using Entities.Gossip;
+using Entities.LiquidityAds;
 using Entities.Node;
 using Entities.Onchain;
 using Entities.Payment;
@@ -13,6 +14,7 @@ using EntityConfiguration.Accounting;
 using EntityConfiguration.Bitcoin;
 using EntityConfiguration.Channel;
 using EntityConfiguration.Gossip;
+using EntityConfiguration.LiquidityAds;
 using EntityConfiguration.Node;
 using EntityConfiguration.Onchain;
 using EntityConfiguration.Payment;
@@ -96,6 +98,9 @@ public class NLightningDbContext : DbContext
     public DbSet<GraphChannelPolicyEntity> GraphChannelPolicies { get; set; }
     public DbSet<GraphBannedNodeEntity> GraphBannedNodes { get; set; }
 
+    // Liquidity ads purchases (NL-771 LA3, migration AddLiquidityPurchases)
+    public DbSet<LiquidityPurchaseEntity> LiquidityPurchases { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -153,5 +158,8 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureGraphChannelEntity(_databaseType);
         modelBuilder.ConfigureGraphChannelPolicyEntity(_databaseType);
         modelBuilder.ConfigureGraphBannedNodeEntity(_databaseType);
+
+        // Liquidity ads purchases
+        modelBuilder.ConfigureLiquidityPurchaseEntity(_databaseType);
     }
 }

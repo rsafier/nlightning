@@ -8,6 +8,7 @@ using Bitcoin.ValueObjects;
 using Bitcoin.Wallet.Models;
 using Channels.Interfaces;
 using Gossip.Interfaces;
+using LiquidityAds.Interfaces;
 using Node.Interfaces;
 using Node.Models;
 using Node.PeerStorage;
@@ -118,6 +119,11 @@ public interface IUnitOfWork : IDisposable
 
     IAccountingPeriodDbRepository AccountingPeriodDbRepository =>
         throw new NotSupportedException("This unit of work does not store accounting periods.");
+
+    // Liquidity ads purchases, bought and sold (NL-771 LA3, migration AddLiquidityPurchases); the default is for test
+    // doubles that store none
+    ILiquidityPurchaseDbRepository LiquidityPurchaseDbRepository =>
+        throw new NotSupportedException("This unit of work does not store liquidity purchases.");
 
     /// <summary>
     /// Every saved peer with its channels, plus a peer marked <see cref="PeerModel.IsInboundOnly"/> for every channel

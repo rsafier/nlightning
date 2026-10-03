@@ -40,6 +40,7 @@ using Domain.Crypto.Hashes;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Gossip.Interfaces;
+using Domain.LiquidityAds.Interfaces;
 using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
@@ -791,6 +792,7 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
     public IAccountingOverrideDbRepository AccountingOverrideDbRepository => inner.AccountingOverrideDbRepository;
     public IAccountingLotDbRepository AccountingLotDbRepository => inner.AccountingLotDbRepository;
     public IAccountingPeriodDbRepository AccountingPeriodDbRepository => inner.AccountingPeriodDbRepository;
+    public ILiquidityPurchaseDbRepository LiquidityPurchaseDbRepository => inner.LiquidityPurchaseDbRepository;
 
     public Task<ICollection<PeerModel>> GetPeersForStartupAsync() => inner.GetPeersForStartupAsync();
     public void AddUtxo(UtxoModel utxoModel) => inner.AddUtxo(utxoModel);
