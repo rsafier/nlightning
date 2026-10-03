@@ -10,7 +10,7 @@ public class SuiteCatalogTests
         // Assert
         Assert.Equal([
                          "lnd", "cln", "gossip", "eclair", "ldk", "eclair2", "day0", "onchain", "anchors", "faults",
-                         "abcd", "postgres", "tor"
+                         "abcd", "postgres", "tor", "cashu"
                      ],
                      SuiteCatalog.Names);
     }
@@ -61,7 +61,8 @@ public class SuiteCatalogTests
     {
         // Assert
         Assert.NotNull(SuiteCatalog.Get("tor").DockerOnlyReason);
-        Assert.All(SuiteCatalog.All.Where(s => s.Name != "tor"), s => Assert.Null(s.DockerOnlyReason));
+        Assert.NotNull(SuiteCatalog.Get("cashu").DockerOnlyReason);
+        Assert.All(SuiteCatalog.All.Where(s => s.Name is not ("tor" or "cashu")), s => Assert.Null(s.DockerOnlyReason));
         Assert.Equal(["lnd", "gossip", "day0", "onchain", "anchors", "abcd"],
                      SuiteCatalog.All.Where(s => s.Requirement == SuiteRequirement.LndClusterBackend)
                                  .Select(s => s.Name));

@@ -12,8 +12,8 @@ public class MatrixPlannerTests
 
         // Assert
         Assert.Equal(SuiteCatalog.Names, plan.Select(p => p.Suite.Name));
-        // Skipped by default: the suites whose cluster proof is pending, and tor (Docker only)
-        Assert.Equal([.. PendingSuites(), "tor"], plan.Where(p => !p.Runs).Select(p => p.Suite.Name));
+        // Skipped by default: the suites whose cluster proof is pending, and tor and cashu (Docker only)
+        Assert.Equal([.. PendingSuites(), "tor", "cashu"], plan.Where(p => !p.Runs).Select(p => p.Suite.Name));
         Assert.All(plan.Where(p => p.Runs), p => Assert.False(p.Serial));
     }
 
@@ -71,11 +71,12 @@ public class MatrixPlannerTests
 
         // Assert
         var skipped = plan.Where(p => !p.Runs).ToList();
-        Assert.Equal(["lnd", "gossip", "day0", "onchain", "anchors", "abcd", "tor"],
+        Assert.Equal(["lnd", "gossip", "day0", "onchain", "anchors", "abcd", "tor", "cashu"],
                      skipped.Select(p => p.Suite.Name));
-        Assert.All(skipped.Where(p => p.Suite.Name != "tor"),
+        Assert.All(skipped.Where(p => p.Suite.Name is not ("tor" or "cashu")),
                    p => Assert.Contains("would start Docker containers", p.SkipReason));
         Assert.StartsWith("Docker only", skipped.Single(p => p.Suite.Name == "tor").SkipReason);
+        Assert.StartsWith("Docker only", skipped.Single(p => p.Suite.Name == "cashu").SkipReason);
         Assert.All(skipped, p => Assert.Equal(0, p.Namespaces));
     }
 

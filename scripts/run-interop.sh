@@ -5,7 +5,10 @@
 # NL-866): the CLN, Eclair and LDK suites run on the Kubernetes harness only, and for them this script prints the
 # run-cluster.sh command and exits 2 (scripts/run-cluster.sh --matrix cln,eclair,eclair2,ldk).
 #
-# Usage: scripts/run-interop.sh tor [configuration (default Release)] [--build] [extra xunit v3 args...]
+# Also runs the Cashu mint proof (Cashu plan C2, NL-903: cdk-mintd on our CDK payment processor, cdk-cli as the wallet;
+# host-network containers, image nltg-cdk-cli built from test/Docker/cdk-cli): scripts/run-interop.sh cashu.
+#
+# Usage: scripts/run-interop.sh tor|cashu [configuration (default Release)] [--build] [extra xunit v3 args...]
 # e.g.   scripts/run-interop.sh tor
 #        scripts/run-interop.sh tor Release --build
 #
@@ -44,6 +47,7 @@ done
 
 case "$peer" in
     tor) category="Interop.Tor"; image_tag="nltg-tor:alpine3.22"; docker_dir="tor" ;;
+    cashu) category="Interop.Cashu"; image_tag="nltg-cdk-cli:0.18.1"; docker_dir="cdk-cli" ;;
     cln|eclair|ldk)
         suites="$peer"
         if [[ "$peer" == eclair ]]; then suites="eclair,eclair2"; fi
@@ -51,14 +55,14 @@ case "$peer" in
         echo "  scripts/run-cluster.sh --matrix $suites" >&2
         echo "  scripts/run-cluster.sh -n 1 --suite $peer [--class <test class>]" >&2
         exit 2 ;;
-    *) echo "Unknown suite '$peer' (tor; cln, eclair and ldk run on scripts/run-cluster.sh)" >&2; exit 2 ;;
+    *) echo "Unknown suite '$peer' (tor, cashu; cln, eclair and ldk run on scripts/run-cluster.sh)" >&2; exit 2 ;;
 esac
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 project="$repo_root/test/NLightning.Integration.Tests/NLightning.Integration.Tests.csproj"
 framework="${INTEROP_FRAMEWORK:-net10.0}"
 
-busy="$(docker ps --format '{{.Names}}' | grep -E '^nltg-tor' || true)"
+busy="$(docker ps --format '{{.Names}}' | grep -E "^nltg-$peer" || true)"
 if [[ -n "$busy" ]]; then
     echo "Another Docker test run is using these containers; wait until it ends:" >&2
     echo "$busy" >&2

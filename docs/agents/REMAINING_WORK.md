@@ -73,7 +73,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 - MPP send parts persisted across restarts (NL-321); hold times of parts are in memory only.
 - A duplicate HTLC for a Settled invoice from before NL-323 (upgrade path).
 - Wallet features: on-chain send **done in wave M6** (`withdraw`, ClientCommand 25, NL-441); coin control, consolidation, better fee estimation per target (partly done for sweeps) remain.
-- **Cashu ecash** (epic NL-900, plan [`CASHU_PLAN.md`](CASHU_PLAN.md), branch `wip/cashu`): payment event stream and `waitinvoice` (C0, NL-901, in progress), NLightning as a CDK `cdk-mintd` payment processor over gRPC (C1, NL-902), its Docker proof (C2, NL-903), a native ecash wallet (C3, NL-904), hold invoices for NUT-14 swaps (C4, NL-905).
+- **Cashu ecash** (epic NL-900, plan [`CASHU_PLAN.md`](CASHU_PLAN.md), branch `wip/cashu`): payment event stream and `waitinvoice` (C0, NL-901, done), NLightning as a CDK `cdk-mintd` payment processor over gRPC (C1, NL-902, done for BOLT 11; BOLT 12, on-chain and MPP melts NL-907), proven in Docker with CDK's own mint and wallet (C2, NL-903, done); left: a native ecash wallet (C3, NL-904) and hold invoices for NUT-14 swaps (C4, NL-905).
 
 ## Interop and testing
 

@@ -148,15 +148,15 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 66 | 67 |
-| in-progress | 0 | 0 | 2 | 2 | 4 |
-| fixed | 14 | 63 | 201 | 411 | 689 |
+| in-progress | 0 | 0 | 2 | 0 | 2 |
+| fixed | 14 | 63 | 201 | 414 | 692 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **211** | **490** | **778** |
+| **Total** | **14** | **63** | **211** | **491** | **779** |
 
 ### Epics
 
-- NL-900: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-901, C1 CDK gRPC payment processor NL-902, C2 Docker proof NL-903, C3 native wallet NL-904, C4 hold invoices NL-905)
+- NL-900: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-901 (fixed), C1 CDK gRPC payment processor NL-902 (fixed, BOLT 11; follow-ups NL-907), C2 Docker proof NL-903 (fixed), C3 native wallet NL-904, C4 hold invoices NL-905)
 - NL-875: Trampoline routing (BOLTs PR #836): client, relay and target (in-progress, medium; plan `docs/agents/TRAMPOLINE_PLAN.md`, TR0-TR5 built on `wip/fafo` 2026-10-03, merges `7f5c5d85` TR0, `e958b8eb` TR1, `9f0d1050` TR3-P, `165acd77` TR2, `fb2b07ca` TR5 phase 1, `1c09e718` TR4, `dd48b26d` TR3, `c1811bbf` TR5 phase 2; experimental until an owner decision; follow-ups NL-895..NL-899)
 - NL-850: Liquidity ads (BOLT PR #1153) (fixed, medium; plan `docs/agents/LIQUIDITY_ADS_PLAN.md`, LA0-LA7 done on `claude/youthful-hamilton-x4ngo7` at `10b8ba84`: both roles in the dual-funded open, its RBF, the splice and the splice RBF with restarts, `LiquidityPurchases`, the lease guard, `LiquidityFeePaid`/`LiquidityFeeEarned`, `liquidityads` (IPC 46); proven in-process in both roles and against Eclair 0.14.3 as seller (`EclairLiquidityAdsTests` 5/5; Eclair sells only in splices); open follow-ups NL-851..NL-859; integration review fixes NL-870, NL-871)
 - NL-602: Accounting: core event feed and built-in books (fixed, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A3 all built on `wip/acct-a3`: A1 feed, A2 operational books, A3 financial profile (labels, classification, prices, projector and lots, period close, financial reports, config/security/docs; merge `c62d861b`, review fixes `94af679d`, `ecd983b1`); data gaps NL-603..NL-605 and the plugin stub NL-151 done; open follow-ups NL-606..NL-608, NL-610..NL-613, NL-645, NL-657, NL-658, NL-662, NL-674..NL-681 (NL-660, NL-665, NL-667 fixed on `wip/nl660`), flakes NL-620, NL-653)
@@ -8060,7 +8060,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `docs/agents/CASHU_PLAN.md`
 
 ### NL-901 No notification when an invoice is settled or a payment finishes
-- **Status:** in-progress
+- **Status:** fixed (e5cb13a8)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `src/NLightning.Domain/Payments/Events/`, `Domain/Payments/Interfaces/IPaymentEvent{Publisher,Source}.cs`, `src/NLightning.Application/Payments/Events/PaymentEventHub.cs`, `Payments/Switch/HtlcSwitch.cs` (`SettleWithAsync`), `Payments/Send/PaymentService.cs` (`LogSucceeded`/`LogFailed`), `src/NLightning.Daemon/Handlers/WaitInvoiceClientHandler.cs`, IPC 47
@@ -8070,7 +8070,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `CASHU_PLAN.md` C0
 
 ### NL-902 Cashu mints cannot use NLightning as their Lightning backend
-- **Status:** in-progress
+- **Status:** fixed (f5f69d23; BOLT 11 scope, follow-ups NL-907)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** new `src/NLightning.Cashu.PaymentProcessor`
@@ -8080,12 +8080,12 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `CASHU_PLAN.md` C1
 
 ### NL-903 No Docker proof of a CDK mint running on NLightning
-- **Status:** open
+- **Status:** fixed (wip/cashu C2 commit)
 - **Severity:** low
 - **Kind:** test-gap
 - **Location:** `test/NLightning.Integration.Tests/Docker/` (new `Cashu/`)
 - **Evidence:** C1 is proven only by unit tests until a `cdk-mintd` container runs on our processor.
-- **Fix sketch:** `cdk-mintd` (`ln_backend = grpcprocessor`) + `cdk-cli`: mint (we receive), melt to an LND invoice (we pay), a BOLT 12 melt, and a mint restart with quotes pending.
+- **Fix sketch:** Done: `Docker/Interop/Cashu/CdkMintdInteropTests` (collection `cashu-mint`, trait `Interop.Cashu`, Docker-only suite `cashu` in the catalog, `scripts/run-interop.sh cashu`) on `Fixtures/Cashu/CashuMintFixture` (own bitcoind, `cashubtc/mintd:0.18.1` and `nltg-cdk-cli:0.18.1` built from `test/Docker/cdk-cli`, both `--network host`): two in-process nodes, the mint's node runs the processor; `cdk-cli mint` 10,000 sat (our labelled invoice paid by the payer; quote UNPAID → PAID → ISSUED), `cdk-cli melt` 4,000 sat to the payer's invoice (fee reserve 20 sat = the processor's quote, paid by our node, change returned: wallet 6,000 sat). Green twice in a row, about 18 s. Found: `cdk-mintd` 0.18 needs `allow_insecure = true` for a plaintext processor even on loopback. Not covered: a BOLT 12 melt (C1 is BOLT 11 only, NL-907) and a mint restart with quotes pending.
 - **Blocks/Blocked-by:** Blocked by NL-902
 - **Plan ref:** `CASHU_PLAN.md` C2
 
@@ -8118,6 +8118,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Drop `TargetSite` from the log line (use the exception type and stack), or suppress with a justification if the member name is needed.
 - **Blocks/Blocked-by:** Related NL-894
 - **Plan ref:** —
+
+### NL-907 The CDK payment processor offers BOLT 11 only
+- **Status:** open
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `src/NLightning.Cashu.PaymentProcessor/CdkPaymentProcessorService.cs`
+- **Evidence:** C1 (NL-902) answers `UNIMPLEMENTED` for BOLT 12 (NUT-25) and on-chain (NUT-30) mint and melt, refuses partial (NUT-15 MPP) melts, and keeps the melt quote ids for `WaitPaymentEvent` in memory only (after a restart the mint learns outcomes through `CheckOutgoingPayment`). A mint restart with quotes pending is not proven in Docker.
+- **Fix sketch:** BOLT 12 through `IOfferService.CreateOfferAsync` (identifier `OFFER_ID`, `payment_received` per invoice of the offer) and `IOfferPaymentService.PayOfferAsync`; on-chain through `GetUnusedAddressAsync`/`IWalletSpendService` with the chain monitor's deposits; MPP melts as `PayInvoiceOptions` parts; persist quote ids with the payment label; extend `CdkMintdInteropTests`.
+- **Blocks/Blocked-by:** Related NL-902, NL-903
+- **Plan ref:** `CASHU_PLAN.md` §6
 
 ## Docs
 
