@@ -56,7 +56,7 @@ internal sealed class ListChannelsIpcHandler : IIpcCommandHandler
         }
         catch (ClientException ce)
         {
-            _logger.LogError(ce, "Error while handling ListChannels");
+            IpcRequestLog.LogClientException(_logger, Command, ce);
             return IpcErrorFactory.CreateErrorEnvelope(envelope, ce.ErrorCode, ce.Message);
         }
         catch (Exception e)

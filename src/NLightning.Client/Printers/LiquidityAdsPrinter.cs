@@ -121,7 +121,41 @@ public sealed class LiquidityAdsPrinter : IPrinter<LiquidityAdsIpcResponse>
                                                           + (seller.IsConnected ? " (connected)" : string.Empty)));
             _output.WriteLine("  Payment types:  " + string.Join(", ", seller.PaymentTypes));
             WriteRates(seller.Rates, "  ");
+            WriteOtherSource(seller);
         }
+    }
+
+    /// <summary>
+    /// The other source of a connected seller (NL-884): for rates read from its <c>init</c>, those of its
+    /// <c>node_announcement</c> (they can differ); for a connected seller read from its announcement, that its
+    /// <c>init</c> carries none.
+    /// </summary>
+    private void WriteOtherSource(LiquiditySellerIpcInfo seller)
+    {
+        if (seller.Source != LiquiditySellerSource.Init)
+        {
+            if (seller.IsConnected)
+                _output.WriteLine("  init:           no rates");
+            return;
+        }
+
+        if (seller.AnnouncedRates is not { } announced)
+        {
+            _output.WriteLine("  node_announcement: no rates");
+            return;
+        }
+
+        var announcedTypes = seller.AnnouncedPaymentTypes ?? [];
+        if (announcedTypes.SequenceEqual(seller.PaymentTypes)
+         && announced.Select(DescribeRate).SequenceEqual(seller.Rates.Select(DescribeRate)))
+        {
+            _output.WriteLine("  node_announcement: the same rates");
+            return;
+        }
+
+        _output.WriteLine("  node_announcement:");
+        _output.WriteLine("    Payment types:  " + string.Join(", ", announcedTypes));
+        WriteRates(announced, "    ");
     }
 
     private void PrintPurchases(LiquidityAdsIpcResponse item)

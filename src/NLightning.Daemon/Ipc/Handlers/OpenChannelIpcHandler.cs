@@ -61,12 +61,12 @@ internal sealed class OpenChannelIpcHandler : IIpcCommandHandler
         }
         catch (ClientException ce)
         {
-            _logger.LogError(ce, "Error while handling OpenChannel");
+            IpcRequestLog.LogClientException(_logger, Command, ce);
             return IpcErrorFactory.CreateErrorEnvelope(envelope, ce.ErrorCode, ce.Message);
         }
         catch (FormatException fe)
         {
-            _logger.LogWarning(fe, "Invalid peer address format");
+            IpcRequestLog.LogRefused(_logger, Command, $"Invalid address format: {fe.Message}");
             return IpcErrorFactory.CreateErrorEnvelope(envelope, ErrorCodes.InvalidAddress,
                                                        $"Invalid address format: {fe.Message}");
         }
@@ -78,13 +78,13 @@ internal sealed class OpenChannelIpcHandler : IIpcCommandHandler
         }
         catch (ConnectionException ce)
         {
-            _logger.LogError(ce, "Failed to connect to peer");
+            IpcRequestLog.LogRefused(_logger, Command, $"Connection failed: {ce.Message}");
             return IpcErrorFactory.CreateErrorEnvelope(envelope, ErrorCodes.ConnectionError,
                                                        $"Connection failed: {ce.Message}");
         }
         catch (ChannelErrorException cee)
         {
-            _logger.LogError(cee, "Error opening Channel");
+            IpcRequestLog.LogRefused(_logger, Command, $"Channel Error: {cee.Message}");
             return IpcErrorFactory.CreateErrorEnvelope(envelope, ErrorCodes.ConnectionError,
                                                        $"Channel Error: {cee.Message}");
         }

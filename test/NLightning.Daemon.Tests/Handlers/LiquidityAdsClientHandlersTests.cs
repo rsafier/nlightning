@@ -442,12 +442,18 @@ public class LiquidityAdsClientHandlersTests
         Assert.True(first.IsConnected);
         Assert.Equal("peer", first.Alias);
         Assert.Equal(initRates, first.Rates);
+        // NL-884: the connected seller's announcement rates come along with its init's
+        Assert.Equal(announcedRates, first.AnnouncedRates);
+        Assert.Equal(announcedRate, Assert.Single(ipc.Sellers[0].AnnouncedRates!).ToFundingRate());
+        Assert.Equal(["from_channel_balance", "from_future_htlc"], ipc.Sellers[0].AnnouncedPaymentTypes);
         var second = response.Sellers[1];
         Assert.Equal(s_other, second.NodeId);
         Assert.Equal(LiquiditySellerSource.NodeAnnouncement, second.Source);
         Assert.False(second.IsConnected);
         Assert.Equal(announcedRate, Assert.Single(second.Rates.Rates));
         Assert.Equal(["from_channel_balance", "from_future_htlc"], ipc.Sellers[1].PaymentTypes);
+        Assert.Null(second.AnnouncedRates);
+        Assert.Null(ipc.Sellers[1].AnnouncedRates);
     }
 
     [Fact]

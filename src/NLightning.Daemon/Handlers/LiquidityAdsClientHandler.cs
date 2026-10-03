@@ -10,6 +10,7 @@ using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
 using Domain.LiquidityAds;
 using Domain.LiquidityAds.Interfaces;
+using Domain.LiquidityAds.Models;
 using Domain.Node.Interfaces;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
@@ -24,8 +25,9 @@ using Interfaces;
 /// sale negotiations in progress.</para>
 /// <para><c>sellers</c>: every node that advertises rates, one row per node: a connected peer's <c>init</c>
 /// (<see cref="IPeerService.LiquidityRates"/>, the freshest) wins over its <c>node_announcement</c> in the graph
-/// (<see cref="NodeAnnouncementRates.TryReadFromAnnouncement"/>); connected sellers first, then by node id. Our own node
-/// is left out.</para>
+/// (<see cref="NodeAnnouncementRates.TryReadFromAnnouncement"/>), whose rates the row then carries as well
+/// (<see cref="LiquiditySellerInfo.AnnouncedRates"/>, NL-884); connected sellers first, then by node id. Our own node is
+/// left out.</para>
 /// <para><c>purchases</c>: the liquidity we bought and sold, newest first, paged like the other lists, with the chain
 /// height the lease status is computed at.</para>
 /// <para>Every collaborator is optional: a node without liquidity ads answers <see cref="ErrorCodes.InvalidOperation"/>
@@ -98,9 +100,17 @@ public sealed class LiquidityAdsClientHandler
                                          || service.LiquidityRates is not { } rates)
                 continue;
 
-            var alias = snapshot is not null && snapshot.TryGetNode(peer.NodeId, out var node) ? node.AliasText : null;
+            string? alias = null;
+            WillFundRates? announced = null;
+            if (snapshot is not null && snapshot.TryGetNode(peer.NodeId, out var node))
+            {
+                alias = node.AliasText;
+                if (NodeAnnouncementRates.TryReadFromAnnouncement(node.RawAnnouncement.Span, out var announcedRates))
+                    announced = announcedRates;
+            }
+
             sellers[peer.NodeId] = new LiquiditySellerInfo(peer.NodeId, LiquiditySellerSource.Init, rates, true,
-                                                           NullIfEmpty(alias));
+                                                           NullIfEmpty(alias), announced);
         }
 
         if (snapshot is not null)
