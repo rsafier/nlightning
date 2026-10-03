@@ -99,14 +99,14 @@ public class TopologySpecTests
     [Fact]
     public void Given_AKindWithoutADeployer_When_Built_Then_TheBuilderAsksForOne()
     {
-        // Arrange
-        var builder = new TopologyBuilder().AddBitcoinCore("miner").AddNode("carol", NodeKind.Ldk);
+        // Arrange: every Lightning kind but our own node has a default deployer (ours comes with UseInProcessNodes)
+        var builder = new TopologyBuilder().AddBitcoinCore("miner").AddNode("carol", NodeKind.NLightning);
 
         // Act
         var exception = Assert.Throws<ArgumentException>(() => builder.Build());
 
         // Assert
-        Assert.Contains("No deployer for Ldk", exception.Message);
+        Assert.Contains("No deployer for NLightning", exception.Message);
     }
 
     [Fact]
