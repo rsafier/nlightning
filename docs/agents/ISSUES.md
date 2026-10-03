@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-03 by the test harness phase 3/5/6 write-up (branch `wip/harness-spike`; the phase 6 lanes and proof committed on the branch after `3e31759f`): NL-825 (fixed, 251feaa8: a stopped `NLightningTestNode` clears its SQLite pool so a restored snapshot is read on the macOS host), NL-830 (fixed, b246306e: `SpliceLndObserverTests` waits for bob's edge before the splice), NL-840 (fixed, 69fd5caa: every run waits until its namespace is gone), NL-841 (fixed, 6e87db78: `day0` and `eclair2` split off, `lnd` first), NL-842 (fixed, 47e9a2ea: `ChainSync.EnsureLndSpendableAsync` before G1 (b)), NL-843 (open, diagnostics 2ee6e42f: ZMQ heal timing under two matrices at once) and NL-844 (open, owner decision: the 15 min matrix needs about 7 namespaces) added; NL-262 and NL-276 fixed on the cluster backend (moot there: the full matrix green at 6 namespaces in 18 min and twice at once, `TEST_HARNESS_PLAN.md` "Phase 6 proof record"; the Docker fallback keeps their workarounds); NL-818 and NL-820 updated, still open. NL-826..NL-829, NL-831..NL-839 were not assigned. No product bug in these phases. Summary rows recounted from the entries: 730 entries, no duplicate IDs.
+
 Updated 2026-10-03 by the test harness phase 3/5/6 integrator (branch `wip/harness-spike` from `7593fdda`; three lanes merged with `--no-ff` in this order — lane branches `hf-*` hold the originals; statuses carry the lane SHAs and the merge SHA): `e9305ee0` (hf-lnd-wire: `LightningRegtestNetworkFixture` behind `NLTG_TEST_BACKEND`, NL-780 fixed), `304c2976` (hf-runner: `run-cluster.sh --matrix`, NL-816 and NL-817 fixed, NL-818 open), `b74efadf` (hf-lnunit: NL-819 fixed, NL-820 open). Every confirmed review finding of the three lanes fixed in `dbf77b1e` as NL-821 (medium: Docker-by-name test code on the cluster backend), NL-822, NL-823 and NL-824; none rejected (the "lnd exceeds its weight without `-parallel none`" finding is answered by the catalog's one-collection `lnd` and a cluster re-proof of the moved classes). NL-811..NL-815 were not assigned. Gates: Release `--no-incremental` build 0 warnings, `dotnet format` clean, `check-sln-configs` OK, non-Docker net10.0 suite 14,283 passed with 6 platform/explicit skips and one NL-729 regex-timeout failure (`ClassificationEngineTests`, 53/53 alone), `run-cluster-tests.sh` 48/48, the LND suite on the cluster (`--suite lnd` 58/58 plus the moved classes 6/6 and 2/2) and on Docker under the machine lock (90/90). No SQL Server tests.
 
 Updated 2026-10-02 by the batch10 integrator (branch `wip/batch10` from `wip/fafo` at `44aeaf5f`; 13 lanes run in parallel worktrees on the owner decisions of 2026-10-02 and merged with `--no-ff` in lane order — lane branches `b10-*` hold the originals; the statuses carry the lane SHAs and the merge SHA): merges `a8bfc61a` (b10-plugin: NL-151 fixed, new NL-706, NL-707), `94d3e68e` (b10-chain: NL-012 fixed, testnet4), `666ec562` (b10-sec: NL-677, NL-678, NL-679 fixed, new NL-693), `d8ffd72e` (b10-acct-edges: NL-606, NL-607, NL-608, NL-610, NL-611, NL-612, NL-613, NL-645 fixed, new NL-688; migration `AddMutualCloseTerms`), `7b778718` (b10-lots: NL-674 (owner decision A, D-A12 amended), NL-657, NL-675, NL-680, NL-681, NL-658 fixed; migration `AddLotBuckets`), `f24b7ba3` (b10-splice-resume: NL-600 fixed, NL-698 new and fixed, NL-496 partial), `cb806664` (b10-attr: NL-332 fixed, `option_attribution_data` Optional by default), `a38caf6c` (b10-aot: NL-338 fixed, NL-300 partial, new NL-708, NL-709, NL-710 (fixed)), `1600d945` (b10-db-proofs: NL-662, NL-429, NL-347 fixed), `0419d687` (b10-eclair: NL-557, NL-407 fixed, NL-554 partial, NL-717, NL-718, NL-719 new and fixed), `4178186b` (b10-ldk: NL-556 fixed, NL-722, NL-723 new and fixed, new NL-721, NL-724), `9cabb01e` (b10-close-interop: NL-286 fixed, NL-725 new and fixed), `ee20aa9f` (b10-tor-interop: NL-572 fixed, new NL-729). Integration fixes: `5602e27b` (the later migration's Designers regenerated over both lanes' columns; `HasPendingModelChanges` false on all three providers), `08caba71` (the AOT MessagePack test after the plugin deletion). Review findings fixed with regression tests (each fails before its fix): NL-732 (`8be600e6`, a stalled HTTP body hung the fee/price/Esplora readers), NL-735 (`8be600e6`, LAN IP `http://` accepted), NL-733 and NL-734 (`1f956f72`), NL-736, NL-737, NL-738 (`290f3dcc`; plus `SetClosingTransaction`'s doc), NL-739 (`017d3ff0`, lots stranded by an unsettled claim), NL-740, NL-741 (`8a094fa9`, `2a26ac15`), NL-742, NL-743 (`fe957403`, route hints by the peer's alias; the template's old 144 margin raised on existing nodes), NL-744 (`3655e6f3`), and two test-strength findings without new IDs: the NL-600 wallet-load test now counts the loads (`41ab5a74`) and the NL-725 CLN proof asserts CLOSINGD_COMPLETE (`4e1f7763`, class 4/4 under the Docker lock). Rejected review findings: the BlindedPathBuilder scid choice "has no unit test" (the three arms are the `BlindedPaymentPathFactoryTests` alias theory), the blinded BOLT 11 margin "still 144" and the stale Application CLAUDE.md margin (both already 1,008 once b10-eclair and b10-ldk were merged). Owner decisions recorded: NL-161, NL-162, NL-169 wontfix (WASM/Blazor parked until there is a browser-wallet goal), NL-157 wontfix (layering left as is, do not make it worse), NL-437 wontfix (a .NET limitation; `SECURITY_REVIEW.md` SR-09 note), NL-180 stays open (interop stays local, no CI Docker). FAFO/FAFO2 (`~/.nltg`, not touched): NL-743 raises their pinned 144 margin at the next start with a warning. Gates on the merged tree: Release build `--no-incremental` 0 warnings, `dotnet format` clean, `check-sln-configs` OK, full non-Docker net10.0 suite green (see the final run in the integrator's report).
@@ -137,10 +139,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 51 | 52 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 194 | 383 | 653 |
+| fixed | 14 | 62 | 194 | 390 | 660 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **62** | **202** | **445** | **723** |
+| **Total** | **14** | **62** | **202** | **452** | **730** |
 
 ### Epics
 
@@ -6089,12 +6091,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N6-T3
 
 ### NL-262 A restarted LND container can come back on another address; LNUnit RestartByAlias(isLND: true) then hangs
-- **Status:** open
+- **Status:** fixed (c5e8ad38, proven in f40d9416; on the cluster backend, the primary runner since phase 5; the Docker fallback keeps the address holds)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/ReestablishFlowTests.cs` (`HoldAddressesBelowAsync`), LNUnit 3.0.4
 - **Evidence:** OrbStack/Docker gives a restarted container the lowest free address in the network, so alice moved (.5 → .2) once earlier containers were removed; every later test lost her. LNUnit's `isLND: true` path re-adds the node without removing the stale connection and waits forever in `WaitUntilAliasIsServerReady`. Worked around (30c1bb8): idle `nltg-address-hold-N` containers fill the lower addresses during the restart, and the test asserts her address is unchanged (reported by W2-A).
-- **Fix sketch:** Fix upstream in LNUnit (drop the stale connection, re-resolve the address), or give fixture containers static IPs.
+- **Fix sketch:** Fix upstream in LNUnit (drop the stale connection, re-resolve the address), or give fixture containers static IPs. Closed by test harness phase 6 (2026-10-03): on the cluster backend an LND restart is a StatefulSet restart that keeps the DNS name and PVC; the LND peers redial the new pod IP and our nodes the Service name (NL-780). `ReestablishFlowTests` (alice restarts) passed without address holds in all 6 matrices of the phase 6 proof (6 x 3/3), as did `AbcdRestartTests`, the O5 stopped-window rollback and the Eclair, CLN and LDK restarts. The `nltg-address-hold-N` workaround stays only in the Docker fallback (`DockerLndBackend`, NL-820).
 - **Blocks/Blocked-by:** Related NL-180
 - **Plan ref:** BOLT2 N7 proof
 
@@ -6109,11 +6111,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-276 Host dotnet cannot reach Docker bridge container IPs; LNUnit Docker tests fail in the fixture
-- **Status:** open (partial: 1d561f2)
+- **Status:** fixed (c5e8ad38, proven in f40d9416, on the cluster backend, the primary runner since phase 5; earlier workaround 1d561f2; the Docker fallback keeps the in-container runner and the one-process lock)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/` (LNUnit `LightningRegtestNetworkFixture`), this macOS host
-- **Evidence:** In wave 3 the host process got EHOSTUNREACH ('No route to host 192.168.215.x:18443') to container IPs while ping and /usr/bin/curl worked (likely macOS Local Network privacy for the parent app, or OrbStack routing). All 44 LND-based Docker tests failed at setup at integration (`c92d837`), so the ABCD 3-run gate and the N9/N10 Docker proofs were not re-verified there; the CLN and database fixtures publish ports on 127.0.0.1 and passed. Lanes worked around it by running the host-built test dll inside an SDK container on the bridge (`test/CLAUDE.md`). Concurrent Docker runs also force-remove each other's fixture containers (miner/alice/...). Update (ABCD wave 4, `6b5d50e`): still reproduces on the host. Workaround documented in `test/CLAUDE.md` (6b5d50e): run the host-built test dll inside an SDK container with `--network host`, which reaches the bridge addresses, the ports published on 127.0.0.1 and `host.docker.internal`; with it all 77 Docker tests passed at integration (`--network bridge` fails the database and connect-back cases). Update (ABCD wave 5, `1a5ab49`): still reproduces: `scripts/run-onchain.sh` from the host fails at fixture setup with "No route to host (192.168.215.2:18443)"; every wave 5 Docker result comes from the in-container runner (`--network host`). Update (gossip wave G-D, `48a8951`): every Docker runner script (`run-gossip.sh`, `run-onchain.sh`, `run-abcd.sh`) now uses the in-container `--network host` runner (1d561f2, NL-358) and test processes no longer share ports (NL-359); the host route itself still fails, and concurrent suites still force-remove each other's fixture containers, so run one Docker process at a time. Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): re-scoped to test infrastructure: every Docker runner script and `test/CLAUDE.md` use the in-container `--network host` runner, and every Docker result since wave 4 comes from it; no product behaviour is affected, so severity is lowered from high to low. Remaining: the host route itself and serializing concurrent Docker runs; it still blocks running Docker in CI (NL-180).
+- **Evidence:** In wave 3 the host process got EHOSTUNREACH ('No route to host 192.168.215.x:18443') to container IPs while ping and /usr/bin/curl worked (likely macOS Local Network privacy for the parent app, or OrbStack routing). All 44 LND-based Docker tests failed at setup at integration (`c92d837`), so the ABCD 3-run gate and the N9/N10 Docker proofs were not re-verified there; the CLN and database fixtures publish ports on 127.0.0.1 and passed. Lanes worked around it by running the host-built test dll inside an SDK container on the bridge (`test/CLAUDE.md`). Concurrent Docker runs also force-remove each other's fixture containers (miner/alice/...). Update (ABCD wave 4, `6b5d50e`): still reproduces on the host. Workaround documented in `test/CLAUDE.md` (6b5d50e): run the host-built test dll inside an SDK container with `--network host`, which reaches the bridge addresses, the ports published on 127.0.0.1 and `host.docker.internal`; with it all 77 Docker tests passed at integration (`--network bridge` fails the database and connect-back cases). Update (ABCD wave 5, `1a5ab49`): still reproduces: `scripts/run-onchain.sh` from the host fails at fixture setup with "No route to host (192.168.215.2:18443)"; every wave 5 Docker result comes from the in-container runner (`--network host`). Update (gossip wave G-D, `48a8951`): every Docker runner script (`run-gossip.sh`, `run-onchain.sh`, `run-abcd.sh`) now uses the in-container `--network host` runner (1d561f2, NL-358) and test processes no longer share ports (NL-359); the host route itself still fails, and concurrent suites still force-remove each other's fixture containers, so run one Docker process at a time. Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): re-scoped to test infrastructure: every Docker runner script and `test/CLAUDE.md` use the in-container `--network host` runner, and every Docker result since wave 4 comes from it; no product behaviour is affected, so severity is lowered from high to low. Remaining: the host route itself and serializing concurrent Docker runs; it still blocks running Docker in CI (NL-180). Closed by test harness phase 6 (2026-10-03): the cluster backend runs the test process on the macOS host and reaches every pod at its pod IP or Service name with no SDK container, and each test process has its own `nltg-spike-*` namespaces, so two whole matrices ran side by side green (`p6-twin-a/b`, `p6-twin2-a/b`). Both workarounds remain only in the Docker fallback (the `run-*.sh` runners), which Tor still needs; Docker in CI stays NL-180 (CI on a cluster deferred by the owner).
 - **Fix sketch:** Grant Local Network access to the terminal/Claude app or restart OrbStack; longer term publish LNUnit ports on 127.0.0.1 or run Docker tests from a container by default, and serialize Docker runs across agents.
 - **Blocks/Blocked-by:** Related NL-180, NL-263
 - **Plan ref:** ABCD wave 3 gate
@@ -7487,7 +7489,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Kind:** test
 - **Location:** `TestResults/cluster/<batch>/<suite>/output.log` (every in-process node logs Debug into the test output)
 - **Evidence:** test harness phase 5 lane hf-runner, `hfr-proof2`: the CLN `output.log` was 808 MB (3.3 M lines, 0.82 M of them Debug) and LDK 302 MB, so a full matrix writes several GB per pass.
-- **Fix sketch:** Partly mitigated (90debbfb, NL-823): the runner gzips the logs of green runs after the summary (about 4x smaller; `--keep-logs` opts out) and the summary reads `.gz` logs. The volume itself is left to phase 6: per-node log files, or Information level by default.
+- **Fix sketch:** Partly mitigated (90debbfb, NL-823): the runner gzips the logs of green runs after the summary (about 4x smaller; `--keep-logs` opts out) and the summary reads `.gz` logs. The volume itself is left to phase 6: per-node log files, or Information level by default. Update (test harness phase 6 proof): a whole matrix pass is 1.1 GB after the runner's gzip, most of it `results.xml`, which holds every test's output again (214 MB for CLN) and is not compressed; still open.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 5 runner record"
 
@@ -7507,7 +7509,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Kind:** tech-debt
 - **Location:** `test/NLightning.Integration.Tests/Fixtures/Lnd/DockerLndBackend.cs`, `test/Directory.Build.props` (the NL-170 `NuGetAuditSuppress`)
 - **Evidence:** test harness phase 3/5/6 lane hf-lnunit: `LNUnitBuilder` is about 900 decompiled lines; the cluster's `LndRegtestNetwork` (894 lines) does the same on a `TestRun` topology with pod handles. An owner decision.
-- **Fix sketch:** (a) About 1-1.5 days: re-implement on Docker.DotNet (miner bitcoind on the default bridge, four `custom_lnd:0.21.4-beta` containers named by alias with `LndWorkload`'s flags, `tls.cert`/macaroon from the container archive, `SERVER_ACTIVE` waits, funding, permanent peers, pushed opens, policies and the graph wait of `LndRegtestNetworkSpec.Default`, the image build with `System.Formats.Tar`); container names, the bridge network and `host.docker.internal` must stay. (b) Retire the Docker LND backend once the cluster backend is the default for the LND, on-chain, gossip and ABCD suites (phase 6). Either way the `LNUnit` reference, `lnunit.lnd` and SharpCompress 0.41.0 go, and with them the NL-170 suppression.
+- **Fix sketch:** (a) About 1-1.5 days: re-implement on Docker.DotNet (miner bitcoind on the default bridge, four `custom_lnd:0.21.4-beta` containers named by alias with `LndWorkload`'s flags, `tls.cert`/macaroon from the container archive, `SERVER_ACTIVE` waits, funding, permanent peers, pushed opens, policies and the graph wait of `LndRegtestNetworkSpec.Default`, the image build with `System.Formats.Tar`); container names, the bridge network and `host.docker.internal` must stay. (b) Retire the Docker LND backend once the cluster backend is the default for the LND, on-chain, gossip and ABCD suites (phase 6). Either way the `LNUnit` reference, `lnunit.lnd` and SharpCompress 0.41.0 go, and with them the NL-170 suppression. Update (test harness phase 6, 2026-10-03): the precondition of (b) is met: the LND, on-chain, anchors, gossip, day0 and ABCD suites are proven on the cluster backend and run in the default matrix; the Tor suite uses CLN only. Awaiting the owner's choice of (a) or (b).
 - **Blocks/Blocked-by:** Related NL-170, NL-819
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Lane record: LNUnit confined to the Docker LND backend"
 
@@ -7550,6 +7552,76 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix:** The guard finds the checkout by `NLightning.sln` and fails when the allowed file is gone, scans the sources of LNUnit-referencing projects for `lnunit.lnd`'s namespaces (using, global, static, alias, `global::`; `NLightning.Testing.Lnd.*` allowed) and every `.props`/`.targets` for an LNUnit reference; `DockerLndBackend.HostAddressFor(environment)` and `ClusterLndBackend(environment:)` take the environment lookup and the tests assert `host.docker.internal`/`host.orb.internal` and the configured values.
 - **Blocks/Blocked-by:** Related NL-819
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/5/6 integration record"
+
+### NL-825 A restored SQLite snapshot was not read after an in-process node restart on the macOS host: Microsoft.Data.Sqlite's pool kept the replaced file open
+- **Status:** fixed (251feaa8)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs` (stop), `Docker/Onchain/OnchainO4Tests.cs` (O4 (d))
+- **Evidence:** test harness phase 6 on-chain lane, first cluster run (`oc-legacy-1`): O4 (d) restored our database snapshot and restarted the node, which read the newer state (`ours 2/1` at the reestablish, `RemoteCommitment` instead of `RemoteNextCommitment`). Microsoft.Data.Sqlite keeps closed connections pooled and open; on the macOS host, where the cluster backend runs the test process, `File.Copy` replaces the file with a new inode, so the pool kept reading the old one. The Docker runner is a Linux container where the copy rewrites the inode in place, so Docker never hit it. Not a product bug: a stopped daemon process holds no file.
+- **Fix:** `NLightningTestNode` clears its SQLite pool when it stops. `--suite onchain` 33/33 (+2 `Explicit`) on the cluster (`oc-l2`, `oc-l3`, `oc-mx1`), Docker `ONCHAIN_SUITE=all` 45/45 (+2) unchanged.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 on-chain lane record"
+
+### NL-830 `SpliceLndObserverTests` spliced before bob had the open's edge, so bob kept the spent edge for good
+- **Status:** fixed (b246306e)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/SpliceLndObserverTests.cs`
+- **Evidence:** test harness phase 6 gossip lane, `gsp-c2` (two gossip suites at once): 35/35 and 34/35, "bob still has 494x2x1 73 blocks later". The test waited only for alice's edge of the A-B open; the splice confirmed 7 s after the open's sixth block while bob, who hears the open only through alice's 5 s trickle, was still taking it in; at the splice's block bob's LND closed 0 channels (alice's 1). Not a product bug: the edge is LND's own graph state.
+- **Fix:** The test also waits for bob's edge on the open's outpoint before the splice (what its step (4) proves him to forget). Class 2 x 1/1 at once (`gsp-obs1`), `-n 2 --suite gossip` 2 x 35/35 (`gsp-c3`), Docker `run-gossip.sh` 35/35.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 gossip lane record"
+
+### NL-840 A matrix suite that builds one topology per test (faults) held more namespaces than its count
+- **Status:** fixed (69fd5caa)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `scripts/run-cluster.sh` (`run_attempt`), `test/NLightning.Testing.Cluster/Run/TestRunOptions.cs`, `scripts/tests/run-cluster-tests.sh`
+- **Evidence:** test harness phase 6 proof, `p6-twin-b`: faults created `nltg-spike-p6-twin-b-faults-3` while `-faults` and `-faults-2` existed (one terminating); the batch's sampled peak was 4 of a 3 budget. `PartitionClusterTests` builds a topology per test and the next test's namespace was created while the last one terminated. The machine-wide admission held ("6/6 runs under nltg-spike; waiting for a slot").
+- **Fix:** `run-cluster.sh` sets `NLTG_WAIT_NAMESPACE_DELETION=1` for every run, not only for `-parallel none`. Runner bash tests 48/48. After the fix no faults run used a third name (`p6-tuned1`, `p6-twin2-a/b`, `p6-final`) and every batch peaked at its budget.
+- **Blocks/Blocked-by:** Related NL-817, NL-822
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
+
+### NL-841 Matrix wall time was bounded by gossip and eclair, and the catalog's "longest first" order was wrong
+- **Status:** fixed (6e87db78)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Run/Matrix/SuiteCatalog.cs` (+ `SuiteCatalogTests`, `MatrixPlannerTests`, `SuiteCatalogMembershipTests`)
+- **Evidence:** test harness phase 6 proof, `p6-full1`: gossip 1,177 s and eclair 1,141 s (one collection in one process each) set the 1,206 s matrix wall, while onchain and anchors (231-345 s) were planned before them.
+- **Fix:** New suites `day0` (`Docker.Day0.*`, `ChannelPolicyPublicFlowTests`, `SpliceLndObserverTests`, split from `gossip`) and `eclair2` (`EclairSpliceTests`, split from `eclair`); order: `lnd` first (2 namespaces; the admission queue backfills), then by measured wall time. `p6-tuned1`: 1,088 s.
+- **Blocks/Blocked-by:** Related NL-844
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
+
+### NL-842 `PublicChannelFlowTests` G1 (b): alice's open failed because her sweeper had leased her wallet outputs
+- **Status:** fixed (47e9a2ea)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Gossip/PublicChannelFlowTests.cs`, `Docker/Utils/ChainSync.cs`
+- **Evidence:** test harness phase 6 proof, `p6-twin2-b`: "not enough witness outputs to create funding transaction, need 0.01000000 BTC only have 0 BTC available". Alice's log shows her sweeper taking her two wallet outputs as fee inputs of HTLC-timeout sweeps of an earlier test's force close one second before `OpenChannelSync`. Depends on xunit's random test order, so the Docker backend could hit it too.
+- **Fix:** `ChainSync.EnsureLndSpendableAsync`: when confirmed minus leased minus the anchors reserve is below what is needed, two 0.1 BTC outputs from the miner and a block. G1 (b) calls it for alice before her open. Class reruns: cluster 2 x 4/4 at once (`p6-g1b`), Docker 4/4; in `p6-final` the state recurred ("alice can spend -100000 sat, needs 1100000: funding it") and gossip passed 30/30.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
+
+### NL-843 `ChainMonitorZmqClusterTests`: the first block after the ZMQ heal took 7.9 s (limit 3 s) with two matrices at once
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Cluster/Live/ChainMonitorZmqClusterTests.cs`
+- **Evidence:** test harness phase 6 proof, `p6-twin2-b` faults failed once ("the block after the heal took 7.9 s (ZMQ not back?)"); the runner's alone rerun was green, the five other matrices' faults runs were green, then 2 x 1/1 at once (`p6-zmq`) and 5/5 in `p6-final` (next block after the heal in 102 ms). Likely ZMQ's slow joiner: the test mines as soon as the subscriber's TCP connection is back, and bitcoind drops what it publishes before it has read the subscription, so the block came by the 5 s tip poll (NL-775).
+- **Fix sketch:** Diagnostics only so far (2ee6e42f; assertion unchanged): the message prints the resubscription time and the tip-poll catch-ups for that block. If the next failure shows a catch-up, have the test wait for one ZMQ-delivered block before it starts timing.
+- **Blocks/Blocked-by:** Related NL-775, NL-797
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
+
+### NL-844 The ~15 min full-matrix target is not reachable within the 6-namespace cap
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `docs/agents/TEST_HARNESS_PLAN.md` "Phase 6 proof record", `scripts/run-cluster.sh` (`--max-namespaces`, cap 6)
+- **Evidence:** test harness phase 6 proof: `p6-tuned1` used 6,131 namespace-seconds, so 6 namespaces need at least 1,022 s; the run took 1,088 s (18.1 min). A simulation of 300,000 random suite orders found none below 1,052 s. CLN at 902 s is now the longest suite.
+- **Fix sketch:** Owner decision: allow about 7 namespaces (the VM has 28 cores and 64 GiB), or shorten the long poles (CLN, gossip, eclair).
+- **Blocks/Blocked-by:** Related NL-841
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
 
 ## Docs
 

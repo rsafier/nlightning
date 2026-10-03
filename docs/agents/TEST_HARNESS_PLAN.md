@@ -236,6 +236,9 @@ The same topology model, sized up, on a multi-node cluster.
    - `Lnd` nodes, the generated gRPC clients, the regtest topology (miner + alice/bob/carol/david, pre-opened channels).
    - Port `LightningRegtestNetworkFixture` and move the 47 LNUnit files behind an adapter that keeps the member names they use (`GetLndNode`, `LightningClient`...).
    - Remove the `lnunit` package.
+   - Done apart from the package removal ("Phase 3 completion, phase 5 and phase 6 record"): the fixture delegates to
+     `DockerLndBackend` or `ClusterLndBackend`, and LNUnit is confined to the Docker backend. The removal is NL-820, an owner
+     decision: re-implement the Docker backend, or retire it.
    - **Prepared: in-tree LND client (wip/lnd-grpc).** The generated clients, `LndNodeConnection` and `LndNodePool`
      exist and are proven against LND 0.21.4; the swap is a `using`/type rename (record below).
 4. **Eclair, LDK, Tor, Postgres, faults (≈2–3 days).** Port the remaining fixtures; Tor closes NL-572; NetworkPolicy partition tests are new coverage.
@@ -1467,6 +1470,97 @@ Gates: `--no-incremental` Release build 0 warnings, `dotnet format` clean, `chec
 `scripts/tests/run-cluster-tests.sh` 48/48, `Testing.Cluster.Tests` (`Category!=Cluster`) 673 + 2 skipped, Integration.Tests non-Docker
 (`FullyQualifiedName!~Docker&Category!=Cluster`) 1,136/1,136. After the fixes `--matrix gossip,day0,faults -j 3
 --max-namespaces 4` (`p6-final`): 30/30, 5/5, 5/5, wall 801 s, peak 4 of 4.
+
+### Phase 3 completion, phase 5 and phase 6 record (2026-10-03, `wip/harness-spike` at f40d9416)
+
+The summary of the work after the "Phase 3/4 record": the LND fixture on the cluster, the remaining suites ported, the
+runner and the full-matrix proof. The records above have the details; this one says where things stand and what is
+left for the owner.
+
+**The LND wiring (phase 3 completion; `hf-lnd-wire` e9305ee0, `hf-lnunit` b74efadf, review fixes dbf77b1e).**
+`LightningRegtestNetworkFixture` (collections `regtest`, `onchain-regtest`, `gossip-regtest`) keeps its members and
+delegates to `Fixtures/Lnd/ILndNetworkBackend`, chosen by `NLTG_TEST_BACKEND` (Docker when unset):
+`DockerLndBackend` (LNUnit's container builder, the only LNUnit user left, guarded by `LnUnitConfinementTests`) or
+`ClusterLndBackend` (the warm `Topology/Lnd/LndRegtestNetwork`: miner + alice/bob/carol/david on
+`custom_lnd:0.21.4-beta`, PVCs, LNUnit's channels, flags and policies). Every test reaches LND through the in-tree
+client `NLightning.Testing.Lnd` (LND 0.21.4). Test nodes dial LND at `GetLndPeerEndpointAsync` (the Service name on
+the cluster, NL-780), and test code that drove Docker containers by name got cluster paths: `LndChannelDbRollback`
+rewrites david's `channel.db` in a stopped window on his PVC (`StoppedNodeMaintenance`), `RelayBitcoind` is a pod
+(NL-821, 4ab28ea7, ee530155).
+
+**The suite ports (phase 6 lanes).** With the fixture wired, the LND-based suites needed no change to their test
+bodies beyond NL-821; each was proven alone, twice at once and in a matrix, against its Docker run under the machine
+lock:
+
+| Suite | Cluster | Docker | Found |
+|---|---|---|---|
+| `lnd` (regtest collection) | 58/58 alone (`hfi-lnd1`, 385 s); the moved classes 6/6 + 2/2 | 90/90 over all four collections (502 s) | — |
+| `onchain` (Onchain* + `BackupRestoreFlowTests`) | 33/33 (+2 `Explicit`) alone, at once with anchors, matrix | 45/45 (+2) `ONCHAIN_SUITE=all`, `BackupRestoreFlowTests` 6/6 | NL-825 (harness) |
+| `anchors` | 18/18 alone, at once, matrix | in the 45 above | — |
+| `gossip` (+ `day0` since NL-841) | 35/35 alone, 2 x 35/35 at once, matrix | 35/35 with the catalog's classes | NL-830 (test) |
+| `abcd` | 11/11 alone, 2 x 11/11 at once, matrix | 11/11 | — |
+
+Earlier phases had already ported `cln` (phase 2), `eclair`, `ldk`, `postgres` and the new `faults` (phases 3/4).
+Nothing skips on the cluster any more except `ClnTorInteropTests` (Tor stays on Docker).
+
+**The runner (phase 5; `hf-runner` 304c2976, NL-816..NL-818, NL-822, NL-823, NL-840, NL-841).**
+`scripts/run-cluster.sh --matrix [suites] [-j N] [--max-namespaces M]` is now the primary runner of the Docker-class
+suites. It builds once, plans from the catalog (`nltg-cluster matrix list|plan`; 12 suites: `lnd`, `cln`, `gossip`,
+`eclair`, `ldk`, `eclair2`, `day0`, `onchain`, `anchors`, `faults`, `abcd`, `postgres`; `tor` listed as skipped,
+Docker only; SQL Server always left out), and runs `lnd` first, then the longest first, through an admission queue
+within the namespace budget (cap 6). Each suite is one test process with a hang timeout. A slot is freed only once
+the suite's namespaces are gone. A failed class is rerun alone (green = a named flake, red = a real failure;
+fixture failures, timeouts and crashes are not rerun). The runner writes a summary with diagnostics folders and exits
+1 on a real failure and 3 when nothing ran. `-n N --suite S` runs one suite N times. The Docker runners
+(`run-{onchain,gossip,abcd,interop}.sh`, under the machine lock) stay as the fallback and for Tor. The runner logic is
+tested without a cluster (matrix unit tests, `SuiteCatalogMembershipTests`, `scripts/tests/run-cluster-tests.sh`
+48/48).
+
+**The matrix proof (phase 6; "Phase 6 proof record").** One matrix pass is 330 passed tests + 7 `Explicit` not run,
+over 12 suites.
+
+| Batch | Budget | Result | Wall |
+|---|---|---|---|
+| `p6-full1` (10 suites, before tuning) | 6 namespaces | green | 1,206 s |
+| `p6-twin-a` + `p6-twin-b` at once | 3 + 3 | green + green (4 of 3 peak, NL-840) | 2,229 s, 2,251 s |
+| `p6-tuned1` (12 suites, NL-841) | 6 namespaces | green | **1,088 s (18.1 min)** |
+| `p6-twin2-a` + `p6-twin2-b` at once | 3 + 3 | green; green after 2 flakes rerun green (NL-842 fixed, NL-843) | 2,087 s, 2,255 s |
+| `p6-final` (gossip, day0, faults after the fixes) | 4 namespaces | 30/30, 5/5, 5/5 | 801 s |
+
+Against Docker: the same suites one at a time on Docker take about 72 min of test time (4,298 s, the latest Docker
+runs of 2026-10-02/03; batch10's serial pass 67.9 min wall). The cluster takes 18.1 min, **about 4.0x faster**, and also
+runs the partition tests and the server-database restart that Docker does not have. Alone, a suite on the cluster
+takes 1.1-1.5x its Docker time (fixtures ready in 13-56 s against 3-14 s). The gain comes from running six suites
+at once, and two whole matrices side by side. NL-262 and NL-276 are moot on the cluster backend and closed. The
+≈15 min target needs about 7 namespaces (NL-844).
+
+**Product bugs found by the cluster.** The cluster found these product bugs, each fixed in the product with unit tests:
+
+| Phase | Bug |
+|---|---|
+| Phase 2 | NL-477: CLN failed our `stfu` crossed by its fulfill; fixed with `TCP_NODELAY` on peer connections |
+| Phase 2 | NL-775: the chain monitor never re-read bitcoind's tip; fixed by the tip poll `Bitcoin:TipPollInterval` |
+| Phases 3/4 | NL-805/NL-810: a channel load torn by a concurrent save; fixed with one database snapshot per load, on `wip/fafo` |
+| Phase 3 completion, phases 5 and 6 | None. Every finding was in the harness or the tests (NL-780, NL-816, NL-817, NL-821..NL-825, NL-830, NL-840..NL-842) |
+
+Product items still open from the cluster work: NL-796 (no deadline for the peer's `channel_reestablish`) and NL-806
+(a dead connection kept after a cluster Eclair restart; a keep-alive or OrbStack question).
+
+**What remains:**
+1. **LNUnit removal (NL-820, owner decision).** (a) Re-implement `DockerLndBackend` on Docker.DotNet (about 1-1.5 days;
+   the container names, the bridge network and `host.docker.internal` stay), or (b) retire the Docker LND backend now
+   that every LND suite is proven on the cluster (the Tor fixture uses CLN only). Either way the `LNUnit` reference,
+   `lnunit.lnd`, SharpCompress 0.41.0 and the NL-170 audit suppression go. With (b) the Docker fallback of the LND,
+   on-chain, gossip and ABCD suites ends.
+2. **Tor** stays Docker only (owner decision): `ClnTorInteropTests` skip on the cluster and run with
+   `run-interop.sh tor`.
+3. **SQL Server** tests are not ported (owner decision) and every matrix suite leaves them out
+   (`-trait- Database=SqlServer`). The migrations are still generated for all three providers.
+4. **CI on a cluster** is deferred (owner decision). CI keeps running the non-Docker suite. The live cluster tests stay
+   `Category=Cluster` + `Explicit`, and NL-180 (interop not in CI) stays open.
+5. Open harness items: NL-818 (log volume: 1.1 GB per matrix pass after gzip), NL-843 (ZMQ heal timing, diagnostics
+   in place) and NL-844 (the 15 min target; owner decision on a 7th namespace).
+6. Later phases, as planned: 7 (the `nltg` daemon image and scale) and 8 (facade convergence, NL-554, NL-556).
 
 ## 6. Risks and open questions
 

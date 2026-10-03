@@ -56,8 +56,8 @@ every implementation, our own node included, is driven through the same seams.
     parallelism, hang timeout, `SuiteRequirement.LndClusterBackend`, Docker-only reason; `GlobalConstraints` leave SQL
     Server out), `MatrixPlanner` (catalog order, skips, the namespace budget, `PlannedSuite.ToLine` = the '|'-separated
     line the script reads), `LndBackendProbe` (the LND suites run only once `LightningRegtestNetworkFixture` constructs
-    `ClusterLndBackend`), `MatrixSuite.ClusterProofPending` (LND suites not proven on the cluster yet, named by `nltg-cluster
-    matrix list`: out of the default matrix, run when named), `XunitResults` (xunit v3 XML: counts, failed classes, first error, fixture failures), `SuiteAttempt` (one
+    `ClusterLndBackend`), `MatrixSuite.ClusterProofPending` (a suite not proven on the cluster yet, named by `nltg-cluster
+    matrix list`: out of the default matrix, run when named; none since phase 6), `XunitResults` (xunit v3 XML: counts, failed classes, first error, fixture failures), `SuiteAttempt` (one
     test process's folder: exit, timedout, class, namespaces created, `[fixture] ... ready in` lines, dumps) and
     `MatrixReport` (`ClassesToRerun`: 1..rerun-max failed classes, never after a timeout, crash, error or fixture failure; `Judge`:
     green, rerun-green, failed, timeout, skipped, not run; `Format`; `ExitCode`: 1 on a failure, 3 when nothing ran or a named suite was skipped; `green-attempts` lists the
@@ -298,8 +298,8 @@ every implementation, our own node included, is driven through the same seams.
 - Phase 3/4 proof (plan "Phase 3/4 record", cbdee79f): every ported suite green alone and 3 processes at once
   against its Docker baseline (Eclair 28, LDK 27, CLN 77, Postgres 24, faults 5). Fixture ready on the cluster against
   Docker: CLN 6.3 / 3.0 s, Eclair 25.8 / 10.8 s, LDK 15.6 / 4.9 s, Postgres 6.1 / 2.0 s; suite wall time 1.1-1.3x
-  Docker's, and three at once take about as long as one. Still Docker only: the LND fixture (the network is ready in
-  `Topology/Lnd/`, the wiring is next), on-chain, gossip, ABCD and Tor.
+  Docker's, and three at once take about as long as one. Still Docker only at that point: the LND fixture, on-chain, gossip, ABCD and Tor
+  (all but Tor ported in phase 6, below).
 - Phase 6 (plan "Phase 6 lane records" and "Phase 6 proof record"): the LND, on-chain, anchors, gossip and ABCD suites
   run on `LightningRegtestNetworkFixture`'s cluster backend too, so every Docker-class suite but Tor is on the cluster.
   The default matrix (`scripts/run-cluster.sh --matrix -j 6 --max-namespaces 6`, 12 suites: gossip and Eclair split in
