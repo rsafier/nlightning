@@ -134,7 +134,11 @@ public class ChainMonitorZmqClusterTests
                 Assert.Equal(0, subscribersAfterOpen);
                 Assert.True(catchUpsWhileCut >= 1, $"no tip poll catch-up while ZMQ was cut ({catchUpsWhileCut})");
                 Assert.True(paid.Succeeded, paid.FailureReason);
-                Assert.True(afterHeal < s_zmqDelivery, $"the block after the heal took {afterHeal} (ZMQ not back?)");
+                // Tells a block lost to the subscriber (taken by the tip poll: a catch-up) from a slow ZMQ delivery (NL-843)
+                Assert.True(afterHeal < s_zmqDelivery,
+                            $"the block after the heal took {afterHeal} (ZMQ not back?), ZMQ resubscribed "
+                          + $"{resubscribed.TotalSeconds:F1} s after the heal, tip-poll catch-ups for it: "
+                          + $"{monitor.TipPollCatchUps - catchUpsAfterHeal}");
                 Assert.Equal(catchUpsAfterHeal, monitor.TipPollCatchUps);
 
                 Log($"{run.Namespace}: baseline block over ZMQ in {overZmq.TotalMilliseconds:F0} ms; bitcoind restarted "
