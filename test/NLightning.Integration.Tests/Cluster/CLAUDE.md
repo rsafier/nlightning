@@ -23,7 +23,8 @@ the library's existing seams: `NodeKind.NLightning`, `ILightningNodeDeployer`, `
   monitor's), confirmed balance, `FindChannelAsync(fundingTxId)`, `CloseChannelAsync(channelId)` (cooperative, returns
   the closing txid), `RestartAsync` (stop + start on the same key, database and port), `TestNode` for the rest.
 - `InProcessTopologyFixture` (a `ClusterTopologyFixture` of the library: one warm topology per xunit collection, built
-  once, nothing reset, the isolation rules in the base class's XML docs): owns the `InProcessNodeDeployer`
+  once by the first test that runs (`IAsyncLifetime.InitializeAsync` awaits `fixture.EnsureStartedAsync()`, NL-800),
+  nothing reset, the isolation rules in the base class's XML docs): owns the `InProcessNodeDeployer`
   (`CreateDeployer()` for its hooks), registers it after `ConfigureTopology(builder)` and disposes it in
   `OnStoppingAsync`, i.e. after the topology's adapters and before the namespace is deleted. `fixture.InProcessNode(name)`
   and `fixture.Node<T>(name)` read the nodes. Use it for every ported suite with a shared topology (the CLN port).
@@ -128,9 +129,12 @@ the library's existing seams: `NodeKind.NLightning`, `ILightningNodeDeployer`, `
   `postgres` or `postgres-<name>`, one `PostgresNode` by digest on an `emptyDir`, reached at its pod IP; about 4-5 s
   to ready). `Docker/PostgresTests` run unchanged on both; `MultiNodeHarnessTests`' Postgres fact gets the backend's
   server through `StartNamed` but still needs the LND Docker fixture (phase 3).
-- `Live/ServerDatabaseClusterTests` (Explicit, collection `postgres`): the server-database restart on the cluster: our
-  node on a fresh database of the collection's server connects to an LND pod, stops, starts and redials it from the
-  stored peer.
+- `Live/ServerDatabaseClusterTests` (Explicit, `Category=Cluster`, no collection): the server-database restart on the
+  cluster: our node on a fresh database of a Postgres pod the test starts itself
+  (`PostgresFixture.StartNamed("pg-restart", TestBackendKind.Cluster)`, whatever `NLTG_TEST_BACKEND` says) connects to
+  an LND pod, stops, starts and redials it from the stored peer. It must not join the `postgres` collection: xunit
+  creates a collection's fixture whenever the selection holds any of its tests, Explicit ones included, so a
+  `FullyQualifiedName!~Docker` run would start the Docker Postgres container (NL-801).
 - `Live/PartitionClusterTests` (Explicit, one topology per test: bitcoind, our node, CLN with `ProcessFaults`, a channel
   `nltg` → `cln` with a push; `Node:ReconnectMaxDelay` 4 s): an HTLC to a frozen CLN across a partition (our ping gets
   no pong and drops the link; the HTLC is kept, then settles after the heal through `channel_reestablish`), a partition
@@ -146,8 +150,9 @@ the library's existing seams: `NodeKind.NLightning`, `ILightningNodeDeployer`, `
 - A partition cuts new connections only, so every test also drops the established one, and how matters: our
   `DisconnectPeer` is "on purpose" and never redialled; CLN's `disconnect` or our own ping timeout are drops our node
   reconnects after (`PeerManager`'s backoff).
-- Run: `scripts/run-cluster.sh -n 1 --suite postgres` and `scripts/run-cluster.sh -n 1 --suite faults` (no Docker
-  lock). The Docker side of the Postgres round trips is unchanged (`PostgresTests` from the host, under the lock).
+- Run: `scripts/run-cluster.sh -n 1 --suite postgres` (3 namespaces at once: the collection's server, and the
+  server-database test's own server and topology; `--class` runs one class) and `scripts/run-cluster.sh -n 1 --suite
+  faults` (no Docker lock). The Docker side of the Postgres round trips is unchanged (`PostgresTests` from the host, under the lock).
 
 ## Reachability (OrbStack, host-side tests)
 

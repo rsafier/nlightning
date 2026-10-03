@@ -955,6 +955,60 @@ design, the operator's `disconnect`); CLN's `disconnect` or our own ping timeout
 Not found: a product bug. Observations: NL-796 (our node has no deadline for the peer's `channel_reestablish`),
 NL-797 (the ZMQ subscriber came back 0-12.5 s after the port cut healed; the tip poll covered the gap).
 
+### Phase 3/4 integration record (2026-10-02, `wip/harness-spike`)
+
+Merged `--no-ff` from b88b2717 in order: `hp3-lnd-topo` (e4d116ce), `hp3-eclair` (521b0a28), `hp3-ldk` (6986266f),
+`hp3-pg-faults` (84f4e46c). Conflicts were in the CLAUDE.md files, this plan, `run-cluster.sh` (every suite kept:
+`cln`, `eclair`, `ldk`, `postgres`, `faults`; `--help` now prints the header up to its first non-comment line instead
+of a fixed line range), `TopologyBuilder` (both deployers and `AddEclair`/`AddLdk`) and `NodeStateCommands` (both
+kinds' state commands). Two semantic conflicts surfaced only after the merges: `ServerDatabaseClusterTests` still used
+LNUnit's `Lnrpc` after lnd-topo moved `LndNode` onto the in-tree client (fixed in the pg-faults merge), and
+`TopologySpecTests`' missing-deployer case named `Ldk`, which now has a default deployer (7d08dc24: it names
+`NLightning`, the one Lightning kind whose deployer comes with `UseInProcessNodes`).
+
+Review findings, all fixed (no false positives):
+- **NL-800 (found here, 4d1e2997).** xunit v3 creates a collection's or class's fixtures whenever the selection holds
+  any of its tests, Explicit ones included. `ClusterTopologyFixture` built in `InitializeAsync`, so CI's
+  `FullyQualifiedName!~Docker` started the warm topologies, and with no cluster reachable the Explicit tests failed
+  (2/2 for the warm CLN collection with `KUBECONFIG` unset). Now `EnsureStartedAsync()` builds on the first call from a
+  test class's `IAsyncLifetime.InitializeAsync`; the cluster backends of the Docker-era fixtures call
+  `EnsureStartedAsync(ct)` with their start token (lnd-topo low: the token was ignored).
+- **NL-801 (pg-faults high + medium, 3deb5976).** `ServerDatabaseClusterTests` left the `postgres` collection (it made
+  every non-Docker run start the Docker Postgres container) and starts its own server with
+  `PostgresFixture.StartNamed("pg-restart", TestBackendKind.Cluster)`, asserting the cluster backend. So
+  `run-cluster.sh --suite postgres` now runs its two classes in parallel on 3 namespaces (the collection's server, the
+  test's server, its topology).
+- **NL-802 (lnd-topo medium + lows, 8968d060).** `PayAlongAsync` bounds every call by its timeout (an HTLC a hop holds
+  silently ends as a failed payment naming the route); a restart's LND redial is checked from both ends, sent at the
+  new pod IP and drops a stale connection first, and `WaitMeshAsync` is asserted by the restart test; polls count a
+  failed gRPC call as "not yet"; the workload de-duplicates only whole flags; the miner's balance is checked before the
+  wallet fundings and `Validate`'s docs say what it checks.
+- **NL-803 (Eclair low, 06e8072b).** The wallet init passes `NLTG_RPC_USER`/`NLTG_RPC_PASSWORD`, so failure dumps mask
+  the password (it was printed as `NLTG_RPC_AUTH=user:password`).
+- **pg-faults medium (3deb5976).** The frozen-`lightningd` partition test asserts the redial, the transport up for the
+  whole hold and an established socket on CLN's 9735; before, it only logged them.
+- **NL-804 (pg-faults low, 3deb5976).** `TcpConnectionTable` reads `/proc/net/tcp6` only when it exists.
+
+Found and not fixed: a torn read of a channel's stored state. `ChannelDbRepository.GetAllAsync` maps the channel's
+parameters from its first query and `ChannelStateDbRepository.LoadAsync` re-reads `Channels` and the state rows in
+separate queries, with no read transaction. A splice-lock save committing in between made `listchannels` throw
+"Balances add up to 1100000000 msat, not 1000000000" once (`EclairSpliceTests.Given_WeSpliceIn_*` in the full
+cluster Eclair run; the class 7/7 alone). Product code these lanes did not touch; reported for a ledger ID.
+
+Evidence (OrbStack, Release, net10.0, at most 2 harness namespaces of this job at once; `TestResults/cluster/hpi-*`):
+
+| Run | Result | Time |
+|---|---|---|
+| `--no-incremental` Release build, `dotnet format`, `check-sln-configs.py` | 0 warnings, clean, OK | |
+| Non-Docker suite (`FullyQualifiedName!~Docker&Category!=Cluster`) | 14,167 passed, 6 skipped (platform), 1 failed (the missing-deployer test, fixed in 7d08dc24, then Testing.Cluster.Tests 588/588); no Postgres container appeared in `docker ps` during the run | |
+| `LndRegtestNetworkTests` + `LndRegtestNetworkClusterTests` at once (`hpi-lndnet`, `hpi-lndint`) | 3/3, 1/1 | network ready 34.3 s; alice restart `SERVER_ACTIVE` 7.3 s, 3 peers redialled, mesh whole; 51 s, 60 s |
+| `--suite ldk` (`hpi-ldk`) and `--suite eclair` (`hpi-eclair`) at once | 27/27; 27/28 + 1 Explicit not run (the torn read above), `EclairSpliceTests` alone 7/7 (`hpi-eclsplice`) | 557 s; 1,098 s; 432 s |
+| `Live/LdkTopologyTests` (`hpi-ldktopo`) | 1/1 | 30 s |
+| NL-800 lazy start: `TopologyFixtureTests`, `InProcessTopologyFixtureClusterTests` (`hpi-warm`, `hpi-warmnl`) | 2/2, 2/2 (one namespace each) | 18 s, 15 s |
+| `PostgresTests` on a Postgres pod (`hpi-pgt`), `ServerDatabaseClusterTests` without `NLTG_TEST_BACKEND` (`hpi-pgsrv`) | 23/23, 1/1 (cluster Postgres) | 39 s, 15 s |
+| `--suite faults` (`hpi-faults`) | 5/5: HTLC held 10 s, settled 4.0 s after the heal; gated 10 s with the transport up (1 socket on CLN's 9735); CLN held at 113 while the tip went to 116; ZMQ cut covered by 1 tip-poll catch-up | 112 s |
+| No cluster reachable (`KUBECONFIG` pointing nowhere), the warm classes without `-explicit` | Not Run 2 / Not Run 5, 0 failed (before NL-800: 2 failed) | |
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.

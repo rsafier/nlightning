@@ -36,8 +36,11 @@ Plan: `docs/agents/TEST_HARNESS_PLAN.md` R8 (declarative topology), R9 (facade),
   - `MineAndSyncAsync`, `WaitAllAtTipAsync`, `WaitChannelsActiveAsync`, `ReconnectChannelsAsync`.
 - `ClusterTopologyFixture` / `ClusterTopologyFixture<TDefinition>` (`IClusterTopologyDefinition`: static `Suite`
   and `Configure(builder)`): an xunit collection (or class) fixture that starts its run and builds the topology once,
-  before the collection's first test, and disposes the run after its last (`OnBuiltAsync` for more setup, `StartLog`,
-  `StartTime`). Nothing is reset between tests. Isolation expectations (the XML docs have them in full): collections
+  when the first test that runs awaits `EnsureStartedAsync()` (each test class implements `IAsyncLifetime` and calls it
+  in `InitializeAsync`; a Docker-era fixture's cluster backend calls `EnsureStartedAsync(ct)`), and disposes the run
+  after its last (`OnBuiltAsync` for more setup, `StartLog`, `StartTime`). xunit's own `InitializeAsync` builds
+  nothing: xunit creates the fixtures of Explicit tests that will not run too, which would start a namespace in every
+  `FullyQualifiedName!~Docker` run and fail those tests where no cluster is reachable (NL-800). Nothing is reset between tests. Isolation expectations (the XML docs have them in full): collections
   are isolated (each its own namespace and slot); tests of one collection run one after another and see what the
   earlier ones left (assert deltas, unique invoice labels, own channels when a fresh one is needed); a test that
   restarts, kills, crashes, pauses or partitions a node restores the topology before it returns or runs in its own

@@ -133,12 +133,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 47 | 48 |
+| open | 0 | 0 | 1 | 49 | 50 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 187 | 373 | 636 |
-| wontfix | 0 | 0 | 5 | 8 | 13 |
+| fixed | 14 | 62 | 190 | 376 | 642 |
+| wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **194** | **430** | **700** |
+| **Total** | **14** | **62** | **197** | **436** | **709** |
 
 ### Epics
 
@@ -7317,6 +7317,96 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Generate into a temporary folder and replace only after all three providers succeed.
 - **Fix:** Done as sketched, and the old models are put back when the final build fails. Verified by hand: a run without a model change leaves the tree clean; a fake dotnet-ef failing on Postgres, no dotnet-ef on PATH and a broken generated SqlServer file each exit non-zero with the committed models intact and the project building.
 - **Blocks/Blocked-by:** Related NL-708
+- **Plan ref:** —
+
+### NL-780 After a cluster LND restart, a node connected by the IP behind `LndNodeConnection.Host` keeps dialling the old IP
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs` (`ConnectToAsync(LndNodeConnection)`, owned by the p3-lnd-swap lane), `test/NLightning.Integration.Tests/Fixtures/Lnd/ClusterLndBackend.cs`
+- **Evidence:** test harness phase 3 lane lnd-topo (7a16ab70), by reading the code, not reproduced live: `ConnectToAsync` resolves `lndNode.Host` with `Dns.GetHostAddressesAsync` and dials `pubkey@IP:9735`, and our node stores that IP. A cluster restart gives the pod a new IP, and LND cannot dial back (it only saw our ephemeral port). Nodes that joined through `ClusterLndBackend` are redialled by the network at the Service name: alice restarts in 7.6-8.4 s with our channel active again (`LndRegtestNetworkClusterTests`).
+- **Fix sketch:** At the wiring step, on the cluster backend dial `ClusterLndBackend.LndPeerHost(alias)` (`alias.<ns>.svc.cluster.local`) instead of the resolved IP, or join the node through `JoinInProcessNodeAsync`. This replaces the NL-262 address-hold trick of `ReestablishFlowTests`.
+- **Blocks/Blocked-by:** Related NL-262
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3 lane record"
+
+### NL-795 `FaultInjector.ResumeAsync` killed CLN: its bash entrypoint got SIGCONT before `lightningd` and exited 147
+- **Status:** fixed (7807708d)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `test/NLightning.Testing.Cluster/Faults/ContainerProcessScripts.cs` (`Signal`)
+- **Evidence:** test harness phase 4 lane pg-faults, runs hp4pt-a1/a2: the CLN container exited with code 147 (128 + SIGSTOP) at the resume and the next exec returned HTTP 500. The `/proc` walk went in name order (SIGCONT to pids 14, 19, ...), so the wrapper bash ran while `lightningd` was still stopped. hp4pt-c1: a named pause of `lightningd` alone killed CLN the same way.
+- **Fix sketch:** Done: the script ranks processes by depth in the process tree (walking the ppid chain); STOP goes parents first and CONT children first, and a named pause also stops the process's ancestors in the container. Unit tests pin the order and the ancestor set; the partition tests prove it live.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 4 lane record: Postgres and network partitions"
+
+### NL-796 No deadline for the peer's `channel_reestablish`: a peer whose transport answers but never reestablishes keeps the channel gated with the connection up
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Reestablish/` (nothing times out)
+- **Evidence:** test harness phase 4 lane pg-faults, `PartitionClusterTests` frozen-`lightningd` case: CLN's `connectd` completes init and answers pings, and our channel stayed un-reestablished with the transport up for the whole hold (10 s in hp4-ft1 and hp4-ft2; asserted since 3deb5976). Nothing would ever disconnect and redial. Gating was correct (a payment was refused without adding an HTLC). BOLT 2 sets no deadline.
+- **Fix sketch:** Suggested, not done: after a deadline (e.g. a few times `Node:NetworkTimeout`) disconnect and let the reconnect backoff redial, so a peer whose channel daemon hung recovers without operator action.
+- **Blocks/Blocked-by:** Related NL-201
+- **Plan ref:** BOLT2 N7
+
+### NL-797 The ZMQ subscriber took 0-12.5 s to come back after bitcoind's ZMQ port cut healed
+- **Status:** wontfix (the NL-775 tip poll covers the gap; no fix needed)
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (NetMQ `SubscriberSocket` defaults)
+- **Evidence:** test harness phase 4 lane pg-faults, `ChainMonitorZmqClusterTests`: "ZMQ back 12.5 s after the heal" in hp4zmq-a1, 0.0 s in hp4-ft1 and hp4-ft2. Likely NetMQ's reconnect riding on TCP SYN retransmits to the port the policy dropped. The NL-775 tip poll covered the gap every time.
+- **Fix sketch:** None needed. Optionally set NetMQ's reconnect options if a faster resubscribe ever matters.
+- **Blocks/Blocked-by:** Related NL-775
+- **Plan ref:** —
+
+### NL-800 xunit built the cluster fixtures of Explicit tests that were not run, so every non-Docker run started namespaces, and failed where no cluster is reachable
+- **Status:** fixed (4d1e2997)
+- **Severity:** medium
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Topology/ClusterTopologyFixture.cs` (`InitializeAsync`), its users `Live/TopologyFixtureTests`, `Live/Lnd/LndRegtestNetworkTests` (Testing.Cluster.Tests) and `Cluster/Live/InProcessTopologyFixtureClusterTests` (Integration)
+- **Evidence:** test harness phase 3/4 integration (2026-10-02), found while checking the pg-faults review: xunit v3 creates a collection's or class's fixtures whenever the selection holds any of its tests, Explicit ones included (they turn into "not run" later). `ClusterTopologyFixture` built its namespace and topology in `InitializeAsync`, and CI's filter `FullyQualifiedName!~Docker` keeps the `Cluster` namespace tests. On this machine `-class ...InProcessTopologyFixtureClusterTests` without `-explicit` built the warm CLN topology (namespace `nltg-spike-6d23549f`, 12 s) for 2 "not run" tests; with `KUBECONFIG` pointing nowhere (CI) both tests failed in the fixture.
+- **Fix sketch:** Done: xunit's `InitializeAsync` builds nothing; `EnsureStartedAsync()` builds on the first call (the same start for every later call) and each live test class awaits it in its own `IAsyncLifetime.InitializeAsync`; the Docker-era fixtures' cluster backends call `EnsureStartedAsync(ct)`. After the fix the same two runs report Not Run 2 / Not Run 5 with 0 failures and no namespace; `ClusterTopologyFixtureTests` pins it.
+- **Blocks/Blocked-by:** Related NL-801
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/4 integration record"
+
+### NL-801 `ServerDatabaseClusterTests` in the `postgres` collection made every non-Docker run start the Docker Postgres fixture
+- **Status:** fixed (3deb5976)
+- **Severity:** medium
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Cluster/Live/ServerDatabaseClusterTests.cs`, `Fixtures/PostgresFixture.cs`
+- **Evidence:** pg-faults review (high): the Explicit, non-Docker-namespace test sat in `[Collection("postgres")]`, so (NL-800's xunit rule) `dotnet test --filter 'FullyQualifiedName!~Docker'` built `PostgresFixture` on the Docker backend: it force-removed and started the container named `postgres` outside the Docker lock, colliding with locked Docker Postgres runs. `run-cluster.sh -p integration` (Category=Cluster, no `--suite`) did the same in N processes at once, and the test's backend check (`Backend == TestBackend.Current`) held on Docker too.
+- **Fix sketch:** Done: out of the collection; the test starts its own server with `PostgresFixture.StartNamed("pg-restart", TestBackendKind.Cluster)` whatever `NLTG_TEST_BACKEND` says and asserts the cluster backend. A non-Docker run watched with `docker ps` showed no Postgres container.
+- **Blocks/Blocked-by:** Related NL-800, NL-429
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/4 integration record"
+
+### NL-802 `LndRegtestNetwork.PayAlongAsync` could wait until an HTLC's CLTV expiry: its timeout bounded only the retries
+- **Status:** fixed (8968d060)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Topology/Lnd/LndRegtestNetwork.cs` (`PayAlongAsync`, `ConnectPermanentAsync`, the graph and channel polls)
+- **Evidence:** lnd-topo review (medium): `SendToRouteV2` (and `BuildRoute`, `AddInvoice`, `DecodePayReq`) ran without a deadline, and `SendToRouteV2` blocks until the HTLC settles or fails; a hop killed or paused mid-payment holds it until its CLTV expiry, about 40 blocks nobody mines on regtest, so the test hung until xunit's token. The same review's lows were fixed with it: a restarted node's LND peer that still listed the old pod was taken as reconnected (david's permanent address stayed the old pod IP); a transient gRPC error ended the graph/peer polls at once; the workload's flag de-duplication dropped repeated value tokens; `Validate` claimed to check the miner's reserve.
+- **Fix sketch:** Done: every call carries the remaining time; past it the payment fails naming the in-flight route. Restart redials are checked from both ends with a stale connection dropped, `WaitMeshAsync` is asserted by the restart test, polls count a failed call as "not yet", only whole flags are de-duplicated, and the miner's balance is checked before the wallet fundings.
+- **Blocks/Blocked-by:** Related NL-319
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/4 integration record"
+
+### NL-803 The Eclair wallet init passed `user:password` in `NLTG_RPC_AUTH`, which the failure dumps printed unmasked
+- **Status:** fixed (06e8072b)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Nodes/Eclair/EclairNode.cs` (`WalletInitContainer`, `WalletInitScript`)
+- **Evidence:** Eclair review: `ResourceDescriber` masks an env value only by its name (`SecretRedactor.IsSecretName`), and the redactor's `key=value` pass cannot see a password inside `nltg:nltg`, so every failed Eclair cluster test wrote the bitcoind RPC password into `<pod>/describe.txt` (regtest credentials, but the docs promise masked dumps).
+- **Fix sketch:** Done: `NLTG_RPC_USER` and `NLTG_RPC_PASSWORD` (masked by name); `EclairNodeTests` describes a pod of the workload and asserts neither the RPC nor the API password appears.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** —
+
+### NL-804 `TcpConnectionTable` failed on a kernel without IPv6: `cat` of a missing `/proc/net/tcp6` exits 1
+- **Status:** fixed (3deb5976)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Reach/TcpConnectionTable.cs` (`Command`, `Script`)
+- **Evidence:** pg-faults review: `cat /proc/net/tcp /proc/net/tcp6 2>/dev/null` exits non-zero when tcp6 is absent (`ipv6.disable=1`, some kind/k3s hosts); `2>/dev/null` hides only the message, so `ReadAsync` threw and `ChainMonitorZmqClusterTests` would fail at its baseline as if the product had. OrbStack has tcp6, so the lane never saw it.
+- **Fix sketch:** Done: `cat /proc/net/tcp && { [ ! -e /proc/net/tcp6 ] || cat /proc/net/tcp6; }` keeps a failure on `/proc/net/tcp` itself visible; `TcpConnectionTableTests` pins the command and runs the script against a fake `/proc/net` (both tables, no tcp6, no tcp).
+- **Blocks/Blocked-by:** —
 - **Plan ref:** —
 
 ## Docs

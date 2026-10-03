@@ -102,7 +102,8 @@ every implementation, our own node included, is driven through the same seams.
 - `Nodes/Postgres/` (phase 4): `PostgresNode.DeployAsync(run, PostgresNodeOptions, timeout, ct)` (the fixture's image,
   user/password `superuser`, database `nlightning`, `PGDATA` under an `emptyDir` by default, readiness = `pg_isready`
   over TCP, which the image's Unix-socket-only init server never passes), `Host` = pod IP, `ConnectionString(db)`.
-- `Reach/TcpConnectionTable`: a pod's TCP sockets from `/proc/net/tcp{,6}` through an exec (no `ss` in the images);
+- `Reach/TcpConnectionTable`: a pod's TCP sockets from `/proc/net/tcp{,6}` through an exec (no `ss` in the images;
+  a kernel without IPv6 has no `tcp6`, which the script allows, NL-804);
   `CountEstablishedAsync(node, port)` says whether a client really is connected (e.g. a ZMQ subscriber), which a
   NetworkPolicy does not.
 - `Poll` (library root): the one deadline-bound wait (`UntilAsync` for a bool, `UntilDoneAsync` for a check that
@@ -185,8 +186,13 @@ every implementation, our own node included, is driven through the same seams.
   again (LND peers at the new pod IP, permanent; joined nodes at its alias), and every channel it had active with
   them is active on both ends again (about 7-8 s). `JoinAsync(deployer, spec, fundSat)` adds a node on the chain
   (our in-process node through `InProcessNodeDeployer`), `OpenChannelAsync(from, to, ...)` opens and waits active
-  plus the LND ends' own edge, `PayAlongAsync(payer, hops, msat, outgoingChanId)` pays along exactly one route
-  (`BuildRoute` + `SendToRouteV2`, retried). `LndRegtestNetworkFixture` is the warm `ClusterTopologyFixture` of it.
+  plus the LND ends' own edge, `PayAlongAsync(payer, hops, msat, outgoingChanId, timeout)` pays along exactly one
+  route (`BuildRoute` + `SendToRouteV2`, retried; `timeout` bounds every call, so an HTLC a hop holds silently ends as
+  a failed payment naming the route instead of a wait until its CLTV expiry). A restart checks a redialled LND peer
+  from both ends (the restarted node's list holds only connections of its new process; a stale connection to the old
+  pod is dropped so the permanent address becomes the new pod IP), and `WaitMeshAsync` waits until every LND lists
+  every other one. Polls count a failed gRPC call (10 s deadline) as "not yet". `LndRegtestNetworkFixture` is the
+  warm `ClusterTopologyFixture` of it.
 - `Faults/`: `FaultInjector` (`run.CreateFaultInjector(log)`; disposing resumes and heals; `Events` is the
   timeline). Measured on OrbStack (k3s, flannel host-gw + k3s's kube-router policy controller):
   - `RestartAsync` (graceful) and `KillAsync` (pod deleted with a 1 s grace) replace the pod; PVC data stays, the DNS
