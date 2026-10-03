@@ -9,6 +9,7 @@ using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.InteractiveTx.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Tlv;
 using Models;
 
 /// <summary>
@@ -59,6 +60,21 @@ public interface IInteractiveTxHost
     Task<string?> GetTxSignaturesRefusalAsync(ConstructedInteractiveTx transaction,
                                               CancellationToken cancellationToken) =>
         Task.FromResult<string?>(null);
+
+    /// <summary>
+    /// Simple taproot channels (BOLTs PR #1324): our <c>commit_nonces</c> for a <c>tx_complete</c> we send while the
+    /// negotiated transaction is <paramref name="fundingTxId"/> (our verification nonces of the commitment the session's
+    /// <c>commitment_signed</c> signs and of the next one), or null when the session needs none (the default).
+    /// </summary>
+    CommitNoncesTlv? GetLocalCommitNonces(TxId fundingTxId) => null;
+
+    /// <summary>
+    /// Simple taproot channels (BOLTs PR #1324): the transaction is constructed and the peer's last <c>tx_complete</c>
+    /// carried <paramref name="remoteNonces"/> (null for none); called before <see cref="CreateCommitmentSignedAsync"/>.
+    /// Returns the reason of the <c>tx_abort</c> that ends the negotiation (a taproot session without the peer's nonces),
+    /// or null to go on. A host that needs no nonce keeps the default.
+    /// </summary>
+    string? AcceptRemoteCommitNonces(ConstructedInteractiveTx transaction, CommitNoncesTlv? remoteNonces) => null;
 
     /// <summary>The shared input's full witness from both signatures (the 2-of-2 funding script spend).</summary>
     Witness BuildSharedInputWitness(ConstructedInteractiveTx transaction, CompactSignature localSignature,

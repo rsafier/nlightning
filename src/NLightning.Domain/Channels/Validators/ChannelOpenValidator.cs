@@ -215,6 +215,7 @@ public class ChannelOpenValidator : IChannelOpenValidator
                 throw new ChannelErrorException($"Unsupported channel type bit {bit}",
                                                 "ChannelTypeTlv: This channel type is not supported");
 
+        // A simple taproot type skips the option_static_remotekey/option_anchors checks: its own rules apply
         if (isTaproot)
             CheckSimpleTaprootChannelType(parameters);
         // Check if OptionStaticRemoteKey is Compulsory

@@ -34,4 +34,12 @@ public sealed record DualFundedOpenRequest(
     /// Inbound liquidity bought from the peer with this attempt (liquidity ads, NL-850); null buys none.
     /// </summary>
     public LiquidityRequest? Liquidity { get; init; }
+
+    /// <summary>
+    /// Open a simple taproot channel (<c>channel_type</c> {80}, plus <c>option_scid_alias</c> when negotiated;
+    /// bolt-simple-taproot.md, taproot wave t02 lane V2): needs <c>option_simple_taproot</c> negotiated with the peer
+    /// and a private channel (refused with <see cref="IsPublic"/>), and the open cannot be bumped with RBF yet (NL-970).
+    /// The seam <c>openchannel --channel-type taproot</c> sets when the open goes v2.
+    /// </summary>
+    public bool SimpleTaproot { get; init; }
 }

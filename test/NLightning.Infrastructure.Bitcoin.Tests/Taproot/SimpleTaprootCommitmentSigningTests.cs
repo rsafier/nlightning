@@ -232,10 +232,10 @@ public class SimpleTaprootCommitmentSigningTests
     }
 
     [Fact]
-    public void Given_TwoOpenAttempts_When_CommitmentZeroIsBroadcastOnBoth_Then_TheSecondIsRefused()
+    public void Given_TwoFundingsOfAV1Channel_When_CommitmentZeroIsBroadcastOnBoth_Then_TheSecondIsRefused()
     {
-        // Arrange: commitment 0's verification nonce has no funding txid in its context, so every attempt of a
-        // dual-funded open shares it (SP-I4 would allow the same number on another funding)
+        // Arrange: a v1-opened channel's commitment-0 nonce has no funding txid in its context, so a second funding
+        // of it would share the nonce (SP-I4 would allow the same number on another funding): the record refuses it
         var kit = new TaprootSignerKit();
         var (otherTxId, _) = kit.RegisterPendingFunding(keyIndex: 0);
         var bobNonce = kit.Bob.GetLocalVerificationNonce(TaprootSignerKit.ChannelId, null, 0);

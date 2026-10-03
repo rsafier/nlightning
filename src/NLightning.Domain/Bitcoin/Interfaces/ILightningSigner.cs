@@ -371,7 +371,11 @@ public interface ILightningSigner
         throw new NotImplementedException("Taproot wave t02 lane SIG");
 
     /// <summary>
-    /// <see cref="GetLocalVerificationNonce(uint, TxId?, ulong)"/> for a registered channel.
+    /// <see cref="GetLocalVerificationNonce(uint, TxId?, ulong)"/> for a registered channel. Commitment 0 uses the
+    /// context without a txid only for a channel opened with v1 (<see cref="ChannelSigningInfo.IsDualFunded"/> false); a
+    /// dual-funded channel's commitment 0 is bound to <paramref name="fundingTxId"/> (null: the current funding), as the
+    /// key index overload derives it before registration when given that txid (a dual-funded open's <c>tx_complete</c>
+    /// <c>commit_nonces</c>, NL-972).
     /// </summary>
     MusigPublicNonce GetLocalVerificationNonce(ChannelId channelId, TxId? fundingTxId, ulong localCommitmentNumber) =>
         throw new NotImplementedException("Taproot wave t02 lane SIG");

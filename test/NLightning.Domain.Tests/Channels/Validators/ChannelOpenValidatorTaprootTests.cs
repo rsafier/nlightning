@@ -12,8 +12,8 @@ using Domain.Protocol.Tlv;
 
 /// <summary>
 /// The simple taproot channel type in the open validator (NL-877 T5, bolt-simple-taproot.md §open_channel): bit 80
-/// alone (plus scid_alias/zeroconf), only in the v1 flow, only with option_simple_taproot and option_simple_close
-/// negotiated, and never for a public channel.
+/// alone (plus scid_alias/zeroconf), in the v1 and the dual-funded flow, only with option_simple_taproot and
+/// option_simple_close negotiated, and never for a public channel.
 /// </summary>
 public class ChannelOpenValidatorTaprootTests
 {
@@ -107,7 +107,7 @@ public class ChannelOpenValidatorTaprootTests
     [Fact]
     public void Given_TaprootTypeInAFlowThatCannotRunIt_When_Checked_Then_Refused()
     {
-        // The dual-funded open leaves AllowSimpleTaproot false until it signs MuSig2 commitments
+        // A flow that cannot sign MuSig2 commitments leaves AllowSimpleTaproot false
         var parameters = Parameters(TaprootType(), allowTaproot: false);
 
         var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
@@ -135,6 +135,21 @@ public class ChannelOpenValidatorTaprootTests
         Assert.Equal([80], plain.ToChannelType().GetSetBits());
         Assert.Equal([0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], plain.ToChannelType().GetWireBytes());
         Assert.Equal([46, 80], aliased.ToChannelType().GetSetBits());
+    }
+
+    [Fact]
+    public void Given_Bit80WithStaticRemoteKeyOnly_When_Checked_Then_Refused()
+    {
+        // Arrange - {80, 12} is not a taproot type either
+        var channelType = TaprootType();
+        channelType.SetFeature(Feature.OptionStaticRemoteKey, true);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(
+            () => _validator.PerformMandatoryChecks(Parameters(channelType), out _));
+
+        // Assert
+        Assert.Contains("option_static_remotekey", exception.Message);
     }
 
     private static FeatureSet TaprootType()
