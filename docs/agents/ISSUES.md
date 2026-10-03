@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-03 by the batch12 integrator (branch `wip/batch12` from `wip/fafo` at `fedb876b`; lanes b12-splice-htlc, b12-ux, b12-reconcile-drift, b12-reestablish-deadline and b12-trimmed-loss merged with `--no-ff`): NL-880 (high) and NL-881 (medium) fixed in d2d2a7e5, NL-882..NL-885 (low) in 730ff053, NL-886/NL-887 (low) in 24d3dc4c, NL-760 and NL-796 fixed, NL-890 (low flake, open); review fixes NL-891 (medium), NL-892 (medium), NL-893 and NL-894 (low), all fixed. NL-888 and NL-889 are unused. NL-776 (lane b12-anysegwit, cfafd698) fixed.
+
 Updated 2026-10-03 by the Docker retirement lane (branch `wip/retire-docker` from 61889866, owner decision 2026-10-03: every suite but Tor on the cluster harness only): NL-866 (low, fixed in cea4bc4f: the CLN, Eclair, LDK and Postgres fixtures lost their Docker backends; Tor stays on Docker). Summary rows recounted from the entries: 749 entries, no duplicate IDs.
 
 Updated 2026-10-03 by the wip/integrate integrator (branch `wip/integrate` from `wip/harness-spike` 07cce046; owner decisions 2026-10-03: NL-820 option (b) and PR #19 merged with the harness): merges `ia-retire-lnunit` (NL-820 fixed, the Docker LND backend and LNUnit gone) and `c0d6a0cf` (`ia-pr19`: liquidity ads, PR #19's NL-771..NL-780 as NL-850..NL-859, wip/fafo's NL-779 and NL-810 unchanged); review fixes NL-860 (medium) and NL-861..NL-864 (low), all fixed. NL-864 runs PR #19's Eclair seller on both Eclair backends. The final proof added NL-865 (low, fixed), and the review of the integrated liquidity ads code NL-870 (medium, fixed: an aborted splice's sale no longer holds the lease guard) and NL-871 (low, fixed: a repeated purchase keeps the buyer's fee limit, migration `AddLiquidityPurchaseMaxFee`); NL-869 and NL-872..NL-874 are unused there; NL-866 (Docker backends of CLN, Eclair, LDK and Postgres retired), NL-867 (dual-fund and splice RBF: an attempt whose sibling confirmed is abandoned with `tx_abort`) and NL-868 (the price source's `ThroughTor` option) were added after.
@@ -145,12 +147,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 59 | 60 |
+| open | 0 | 0 | 1 | 57 | 58 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 62 | 198 | 400 | 674 |
+| fixed | 14 | 63 | 201 | 411 | 689 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **62** | **207** | **470** | **753** |
+| **Total** | **14** | **63** | **210** | **479** | **766** |
 
 ### Epics
 
@@ -6845,12 +6847,12 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-746 A banned gossip peer's in-flight invalid messages banned it a second time
-- **Status:** fixed (2c6475d9)
+- **Status:** fixed (2c6475d9, 9a3cc834)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.cs` (`ScoreMisbehaviour`)
 - **Evidence:** `GossipFloodTests.Given_APeerFloodingInvalidSignatures_*` failed in the batch10 finalize's loaded full run with two `Disconnect` calls carrying "Too much invalid gossip" (expected once). `GossipMisbehaviourTracker.Record` clears the peer's events when it crosses the threshold, and the worker's ban check runs before the validation, so five more invalid messages already past that check scored a fresh threshold: a second ban (renewed end), `peers.banned` counted twice and a second disconnect. Reproduced deterministically by `GossipIngressLimitsTests.Given_APeerJustBanned_When_ItsInFlightInvalidGossipIsProcessed_*` (five invalid signatures processed after the ban; fails before the fix).
-- **Fix sketch:** Done: `ScoreMisbehaviour` skips a peer that is banned already. The NL-382 flood test's residual is this bug.
+- **Fix sketch:** Done: `ScoreMisbehaviour` skips a peer that is banned already. The NL-382 flood test's residual is this bug. Batch12: the same two disconnects came back once in the batch12 integrator's loaded full run (3785/3786): the banned check, the count and the in-memory ban were separate steps and the store wrote the ban before the memory had it, so other workers could reach the threshold again meanwhile; now the check, `Record` and `AddBan` run under `_banGate` and the store write follows.
 - **Blocks/Blocked-by:** Related NL-382, NL-370
 - **Plan ref:** BOLT7 G5-T2
 
@@ -6906,12 +6908,12 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 2 record"
 
 ### NL-776 CLN v26.06.8 sends a P2TR shutdown script on a dual-funded channel without `option_shutdown_anysegwit`, so our cooperative close stalls
-- **Status:** open
+- **Status:** fixed (cfafd698)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Close/` (`ChannelCloseCoordinator`, B2-SHUT-R02), `FeatureOptions.BeyondSegwitShutdown` (default No); the v2 open accepts CLN's P2TR upfront script without complaint
 - **Evidence:** test harness phase 2 lane A (cluster `InProcessNodeClusterTests`): our node opens a dual-funded channel to CLN (`--experimental-dual-fund`) and closes it cooperatively; CLN's `close_to` is P2TR (`5120…`), our init does not set bits 26/27, so we refuse CLN's `shutdown` with "shutdown scriptpubkey is not a valid form"; our channel stays ShuttingDown and CLN stays in CLOSINGD_SIGEXCHANGE. v1 channels with CLN close fine (Docker `ClnCloseTests`), and the Docker dual-fund proofs never close cooperatively. The cluster proof advertises the option for now (comment in the test).
-- **Fix sketch:** Advertise `option_shutdown_anysegwit` Optional by default (the validator already accepts segwit v1-16), check whether BOLT 9 lists it as assumed now, refuse a P2TR upfront script at open when the feature is not negotiated, and add a Docker dual-fund close proof against CLN.
+- **Fix sketch:** Done (batch12): `FeatureOptions.BeyondSegwitShutdown` defaults to Optional (BOLT 9 does not list 26/27 as assumed); `ShutdownScriptValidator.IsValidUpfront` checks a non-empty `upfront_shutdown_script` in `open_channel`, `accept_channel`, `open_channel2` and `accept_channel2` against the negotiated features, failing the open with a channel `error` before any funds move; the cluster workaround in `InProcessNodeClusterTests` is gone. Tests: validator, `ChannelFactoryTests`, `AcceptChannel1MessageHandlerTests`, `DualFundUpfrontShutdownScriptTests`, `FeatureOptionsTests` (7 fail without the fix); `ClnDualFundTests` gains a dual-funded cooperative close against CLN with its P2TR script.
 - **Blocks/Blocked-by:** Related NL-286, NL-037
 - **Plan ref:** —
 
@@ -7481,13 +7483,13 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-760 A settled invoice's or forward's trimmed incoming HTLC lost at a force close records no loss
-- **Status:** open
+- **Status:** fixed (dda7e123, 86520723)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/Accounting/OnchainAccounting.cs` (the close event: B and trimmedHtlcMsat count only our offered HTLCs); `OnchainResolutionExecutor` (losses are staged only for output rows)
 - **Evidence:** By code reading (batch11 lane acct-gaps): an incoming HTLC below dust has no output row, so neither `ForwardLostOnchain` (NL-608) nor `InvoiceLostOnchain` (NL-688) is ever staged for it; B excludes incoming HTLCs, so the amount `InvoiceSettled`/`ForwardSettled` booked stays in the channels account after the close (reconcile drift equal to the HTLC).
-- **Fix sketch:** In the force-close save, stage the invoice or forward loss for every incoming HTLC of the confirmed commitment that has no output and was settled (same conditions as NL-688/NL-608), reversed with the close.
-- **Blocks/Blocked-by:** Related NL-608, NL-688; part of NL-602
+- **Fix sketch:** Done (batch12): the force-close save stages `ForwardLostOnchain`/`InvoiceLostOnchain` (`trimmed=true`) for every incoming HTLC of the confirmed commitment (ours, the peer's current or next one) without an output, under the NL-608/NL-688 conditions, keyed by generation and only with a new close fact; the close event lists its trimmed incoming HTLCs (`trimmedIncomingHtlcs`) and a close replaced after a reorg reverses those losses with it. Review follow-ups: a settle after the close's save (NL-892) and unmapped outputs (NL-893). Tests in `OnchainAccountingTests` (local and remote closes, FIFO/LIFO/HIFO lots invariant, reconcile drift 0, replays, the reorg case).
+- **Blocks/Blocked-by:** Related NL-608, NL-688, NL-892, NL-893; part of NL-602
 - **Plan ref:** ACCOUNTING_PLAN A2
 
 ### NL-765 A closed fact reclassified after a price replacement left the price correction on its old account
@@ -7544,13 +7546,13 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 4 lane record: Postgres and network partitions"
 
 ### NL-796 No deadline for the peer's `channel_reestablish`: a peer whose transport answers but never reestablishes keeps the channel gated with the connection up
-- **Status:** open
+- **Status:** fixed (d09a3027, b2894baa, 384fdfaf)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Reestablish/` (nothing times out)
 - **Evidence:** test harness phase 4 lane pg-faults, `PartitionClusterTests` frozen-`lightningd` case: CLN's `connectd` completes init and answers pings, and our channel stayed un-reestablished with the transport up for the whole hold (10 s in hp4-ft1 and hp4-ft2; asserted since 3deb5976). Nothing would ever disconnect and redial. Gating was correct (a payment was refused without adding an HTLC). BOLT 2 sets no deadline.
-- **Fix sketch:** Suggested, not done: after a deadline (e.g. a few times `Node:NetworkTimeout`) disconnect and let the reconnect backoff redial, so a peer whose channel daemon hung recovers without operator action.
-- **Blocks/Blocked-by:** Related NL-201
+- **Fix sketch:** Done (batch12): `Node:ReestablishTimeout` (default 60 s, zero = off, negative or above 4,294,967,294 ms rejected). Each connection arms a timer owned by its `PeerSession` (disposed on close); when it fires on the current session and a ReadyForThem/Open/ShuttingDown/Negotiating channel is still waiting for the peer's reestablish, one connection-level `warning` goes out and the connection closes without suppressing the reconnect, so the backoff redials. Review follow-up NL-891 (ReadyForUs not awaited, the bound, the arming failure caught, a real lower bound in the cluster test). Tests: `PeerManagerTests.ReestablishDeadline` (6, stepped clock), `ChannelManagerReconnectTests` selection tests, `NodeOptionsTests`; cluster `PartitionClusterTests` 4/4. NL-806 (a reestablished connection that dies silently) is not covered.
+- **Blocks/Blocked-by:** Related NL-201, NL-806, NL-891
 - **Plan ref:** BOLT2 N7
 
 ### NL-797 The ZMQ subscriber took 0-12.5 s to come back after bitcoind's ZMQ port cut healed
@@ -7861,6 +7863,136 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Evidence:** trampoline wave tr1 (2026-10-03, cloud host with SDK 10.0.401): the format gate reported 13 IDE0031 ("null check can be simplified") errors at `858f0b7e`, none in changed files; the analyzer of the newer SDK suggests C# 14 null-conditional assignment for `if (x is not null) x.Event += h;`.
 - **Fix sketch:** Done: `dotnet format --diagnostics IDE0031` (13 sites, `x?.Event += h`); Release build 0 warnings.
 - **Blocks/Blocked-by:** Related NL-875
+- **Plan ref:** none
+
+### NL-880 `max_htlc_value_in_flight_msat` announced as a share of the opening capacity froze a spliced channel at its first size
+- **Status:** fixed (d2d2a7e5)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Channels/Factories/ChannelFactory.cs`, `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs`, `src/NLightning.Domain/Channels/Policies/MaxHtlcValueInFlightRules.cs` (new), `NodeOptions.LimitInFlightOnSpliceableChannels`
+- **Evidence:** Mutinynet 2026-10-03, channel 30f245ac (dual-funded 140k, spliced to 210k): FAFO2 logged "our channel 3476189x12x0 can send at most 48000000 msat, not 60000000 msat". BOLT 2 fixes the value for the channel's lifetime and no splice message changes it. Cluster without the fix: local in-flight limit 80,000,000 msat (80 % of 100k) after the open; with it u64 max, and payments of 150k and 120k pass after a splice to 300k (`Day0SpliceInFlightTests`).
+- **Fix sketch:** Done: channels opened with `option_splice` negotiated announce no cap (u64 max); others announce `Node:AllowUpToPercentageOfChannelFundsInFlight` of the capacity; `Node:LimitInFlightOnSpliceableChannels` (default false) keeps the share on spliceable channels. All four open paths go through `MaxHtlcValueInFlightRules`. Tests `MaxHtlcValueInFlightRulesTests`, `DualFundInFlightLimitTests`.
+- **Blocks/Blocked-by:** Related NL-881, NL-021
+- **Plan ref:** SPLICING_PLAN.md
+
+### NL-881 A dual-funded opener announced its in-flight limit from its own share only and stored another value than it announced; an RBF recomputed both sides' limits
+- **Status:** fixed (d2d2a7e5)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`OpenAsync`, the `accept_channel2` handler, `CreateLocalParams`, `WithCapacity`)
+- **Evidence:** FAFO (opener, 60k plus 80k bought) announced 48,000,000 msat but kept 112,000,000 as its own limit. `DualFundInFlightLimitTests` without the fix: stored 800,000 sat against 480,000 announced; the liquidity purchase not counted; after an RBF 840,000 against 480,000.
+- **Fix sketch:** Done: the opener's base is its share plus the requested liquidity; `Local.MaxHtlcValueInFlight` stays the announced value at `accept_channel2`; `WithCapacity` (RBF) moves only the reserve.
+- **Blocks/Blocked-by:** Related NL-880, NL-850
+- **Plan ref:** SPLICING_PLAN.md (DF)
+
+### NL-882 The `closechannel` lease-guard refusal named only the newest sale, not every lease in force
+- **Status:** fixed (730ff053)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/LiquidityAds/LiquidityLeases.cs`, `src/NLightning.Application/Channels/Close/ChannelCloseService.cs`
+- **Evidence:** FAFO2 log 2026-10-03 10:06:06: two refusals each naming one sale; channel 30f245ac also carried the 80,000 sat open purchase.
+- **Fix sketch:** Done: `GetLeasesInForceAsync` (both roles; Active before its end plus the newest Pending attempt, newest first) and `DescribeCloseRefusal(channelId, leases, height)` list amount, role, kind and end block of each.
+- **Blocks/Blocked-by:** Related NL-850
+- **Plan ref:** LIQUIDITY_ADS_PLAN.md
+
+### NL-883 IPC refusals were logged inconsistently (openchannel at ERR with a stack, the others at WRN with the stack, the lease refusal twice)
+- **Status:** fixed (730ff053, ed43ef68)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Ipc/Handlers/` (`ClientCommandIpcHandler`, `OpenChannel`, `OpenChannelSubscription`, `ConnectPeer`, `ListChannels`), `IpcRequestLog.cs` (new)
+- **Evidence:** FAFO log 2026-10-03 09:53:51/09:53:56 ERR with a stack for a refused open; FAFO2 16702-16714 WRN with a stack.
+- **Fix sketch:** Done: `IpcRequestLog`: a refusal (`ClientException` other than `server_error`, a bad address, `ConnectionException`, `ChannelErrorException`) is one WRN line without the exception; `server_error` or anything else an ERR with it; `ChannelCloseService` no longer logs the lease refusal itself. The review follow-up NL-894 keeps a wrapped fault's stack.
+- **Blocks/Blocked-by:** Related NL-894
+- **Plan ref:** none
+
+### NL-884 `liquidityads sellers` showed only a connected seller's init rates, never its node_announcement rates
+- **Status:** fixed (730ff053)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Handlers/LiquidityAdsClientHandler.cs`, `src/NLightning.Client/Printers/LiquidityAdsPrinter.cs`, `LiquiditySellerInfo`, `LiquiditySellerIpcInfo`
+- **Evidence:** 2026-10-03 liquidity-ads test: a connected seller whose announcement carried other rates showed only the init ones.
+- **Fix sketch:** Done: `LiquiditySellerInfo.AnnouncedRates`; IPC keys 6/7 (`AnnouncedRates`, `AnnouncedPaymentTypes`) of `LiquiditySellerIpcInfo`; the printer shows the other source (its rates, "the same rates" or "no rates"; "init: no rates" for a connected announcement-only seller).
+- **Blocks/Blocked-by:** Related NL-850
+- **Plan ref:** LIQUIDITY_ADS_PLAN.md
+
+### NL-885 `info` printed Best Block Time as a UTC wall time with the local offset
+- **Status:** fixed (730ff053)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Services/NodeInfoQueryService.cs`, `src/NLightning.Infrastructure.Repositories/Database/Bitcoin/BlockchainStateDbRepository.cs`, `src/NLightning.Client/Printers/NodeInfoPrinter.cs`
+- **Evidence:** `info` printed "Best Block Time: 2026-10-03T13:52:19-04:00" while the logs (local -04:00) showed 09:52: a kind-less `DateTime` from the database was converted as local.
+- **Fix sketch:** Done: the daemon reports the UTC instant (`NodeInfoQueryService.AsUtc`), the repository marks the value UTC, the printer prints `yyyy-MM-dd HH:mm:ss'Z'` through `PaymentsPrintFormat.FormatTime`; the other printers already convert to UTC. Tests `NodeInfoTimeTests`.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** none
+
+### NL-886 The books reconcile reported a transient channels drift of plus or minus the payment amount between a settle and the end of its commitment round
+- **Status:** fixed (24d3dc4c, 43c7672d)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Accounting/Books/AccountingBooksService.cs` (`BuildReconcileLines`), `Accounting/Books/HtlcOutstandingReader.cs` (new), `Accounting/NodeSnapshotSource.cs` (`InFlightHtlcBucket`)
+- **Evidence:** FAFO2 log 2026-10-03 09:59:07, seq 193: channels drift 20,000,000 msat (books 682,018,782, node 662,018,782); FAFO seq 178: -20,000,000; 0 five seconds later. `InvoiceSettled` is staged in the fulfill's save and `PaymentSucceeded`/`ForwardSettled` when the switch handles the peer's fulfill, while `ChannelCommitments` moves the gross balances only on a final state.
+- **Fix sketch:** Done: the snapshot lists every non-final HTLC per channel; `HtlcOutstandingReader` counts an HTLC whose settle the books booked (incoming by `ForwardSettled` of its channel and id, else `InvoiceSettled` of its hash; outgoing by its stored origin) as outstanding (+ incoming, - outgoing), a failing HTLC never; only the remainder is drift. Review: the plan's preimage-based rule missed a forward whose upstream link is down after the downstream fold; the built rule counts it by its `ForwardSettled` key (test `Given_AForwardFoldedDownstreamWhileTheUpstreamLinkStaysDown_*`, clean). Tests `AccountingReconcileHtlcSettleTests` (8; 6 of the first 7 fail on 0efe066b).
+- **Blocks/Blocked-by:** Related NL-887, NL-602
+- **Plan ref:** ACCOUNTING_PLAN A2
+
+### NL-887 The reconcile projected the books before it took the node snapshot, so a settle committed in between read as drift
+- **Status:** fixed (24d3dc4c)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Accounting/Books/AccountingBooksService.cs` (`ReconcileAsync`, `ReconcileCoreAsync`)
+- **Evidence:** Found with NL-886: `ReconcileAsync` sealed and projected, then took the snapshot.
+- **Fix sketch:** Done: the snapshot first, then seal and project, then the books read under the round gate; a settle committed after the snapshot is matched to its HTLC as snapshotted by NL-886's reader (an event always commits before its HTLC can be final). Residual, not fixed: an HTLC added and settled entirely between the snapshot and the projection (milliseconds; it needs a whole commitment round) reads as drift once. The review's two-reads rule was not adopted: nothing is hidden, every reconcile records its gauge.
+- **Blocks/Blocked-by:** Related NL-886
+- **Plan ref:** ACCOUNTING_PLAN A2
+
+### NL-890 `QuiescenceServiceTests.Given_OurRequestNotSentYet_When_ThePeerSendsStfuWithInitiatorZero_Then_WarningAndTheRequestIsKept` can time out under a loaded full Application run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Channels/Quiescence/QuiescenceServiceTests.cs`
+- **Evidence:** Failed once (10 s) in the full Application.Tests run on net10.0 (3767/3768, batch12 lane trimmed-loss) while other lanes ran test hosts on the same machine; the class passes 19/19 alone. The lane did not touch quiescence code.
+- **Fix sketch:** Find its wall-clock wait or deadline and make it stepped or event-driven, like NL-512 and NL-565.
+- **Blocks/Blocked-by:** Related NL-512, NL-565
+- **Plan ref:** none
+
+### NL-891 The reestablish deadline counted ReadyForUs channels, took any `Node:ReestablishTimeout`, could fault the inbound loop when its timer failed, and its cluster proof could not fail early
+- **Status:** fixed (384fdfaf)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (`GetChannelsAwaitingPeerReestablish`), `src/NLightning.Domain/Node/Options/NodeOptions.cs`, `src/NLightning.Application/Node/Managers/PeerManager.cs` (`ArmReestablishDeadline`), `test/NLightning.Integration.Tests/Cluster/Live/PartitionClusterTests.cs`
+- **Evidence:** Review of NL-796: (1) ReadyForUs (we sent channel_ready, the peer has not) was awaited, but LND sends no `channel_reestablish` for a channel still pending on its side, so a lagging LND would be dropped every ~60 s with all its other channels; (2) a timeout above 4,294,967,294 ms passed validation and made `TimeProvider.System.CreateTimer` throw in the inbound loop of every connection; (3) nothing caught a failure to arm the timer; (4) the cluster test's "not before the deadline" bound was measured after a fixed 17 s hold.
+- **Fix sketch:** Done: ReadyForUs left out (ReadyForThem, Open, ShuttingDown, Negotiating stay); `NodeOptions.MaxReestablishTimeout` (a larger value is a validation error); the arming caught and logged at ERR (test `Given_ADeadlineThatCannotBeArmed_*` fails without the catch); the cluster test polls the connection every 0.5 s and asserts the first connection is gone no earlier than the deadline.
+- **Blocks/Blocked-by:** Related NL-796
+- **Plan ref:** BOLT2 N7
+
+### NL-892 The loss of a trimmed incoming HTLC was staged only in the close's save, so a forward or invoice settled after the close kept its amount in the channels
+- **Status:** fixed (86520723)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs` (`StageTrimmedIncomingLossesAsync`, the round's `StageLateTrimmedLossesAsync`), `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs` (`StageLateTrimmedLossAsync`)
+- **Evidence:** Review of NL-760: a forward whose upstream commitment (with the trimmed HTLC) confirms while the downstream HTLC is pending is fulfilled downstream later; `ForwardSettled` is booked, but no output row exists and the close fact already stood, so `ForwardLostOnchain` was never written. Same for an MPP set completed after the close.
+- **Fix sketch:** Done: every executor round stages the loss for the trimmed incoming HTLCs the standing close event lists (same conditions and generation keys; never twice), and the switch stages it in its own save right after a late settle (a circuit becoming Fulfilled, an HTLC set settled with a part on a channel closed on chain; Closed channels are read from the database). Tests `OnchainAccountingTests.Given_AForwardOfATrimmedIncomingHtlcSettledAfterTheClose_*` and `Given_AnInvoicePartTrimmedByTheCloseSettledAfterIt_*` (both fail without the round's staging); the switch hook has no test of its own.
+- **Blocks/Blocked-by:** Related NL-760, NL-608, NL-688
+- **Plan ref:** ACCOUNTING_PLAN A2
+
+### NL-893 An incoming HTLC whose output could not be mapped was listed as trimmed and its loss booked with the reason "below dust"
+- **Status:** fixed (86520723)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Onchain/Accounting/OnchainAccounting.cs` (`TrimmedIncomingHtlcs`, `ForceClosed`), `src/NLightning.Application/Onchain/OnchainChannelWatcher.cs`
+- **Evidence:** Review of NL-760: `TrimmedIncomingHtlcs` took every incoming HTLC without a descriptor as trimmed, also when the mapper left vouts unmapped (B5-GEN-06), so an above-dust HTLC with an output on chain could be booked lost.
+- **Fix sketch:** Done: no HTLC is listed as trimmed (and no trimmed loss staged) when the transaction on chain has unmapped outputs (the watcher passes `unmapped is not null`). Test `Given_OutputsOnChainThatMatchedNothing_*`. The outgoing `trimmedHtlcMsat` keeps the old assumption.
+- **Blocks/Blocked-by:** Related NL-760
+- **Plan ref:** ACCOUNTING_PLAN A2
+
+### NL-894 An IPC refusal that wrapped a fault (an InvalidOperationException from LINQ or EF) was logged as one WRN line without its stack
+- **Status:** fixed (ed43ef68)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Ipc/Handlers/IpcRequestLog.cs`, `ConnectPeerIpcHandler.cs`
+- **Evidence:** Review of NL-883: `CloseChannelClientHandler`, `OfferClientHandlers`, `SpliceClientHandlers` and `AccountingFinancialReportDispatcher` wrap every `InvalidOperationException` as an `InvalidOperation` refusal; `ObjectDisposedException`, EF's "a second operation was started on this context" and `Single()` on an empty sequence are all `InvalidOperationException`s, so a bug left one WRN line with no origin.
+- **Fix sketch:** Done: `IpcRequestLog.IsFault`: an exception only a bug raises, or one thrown outside NLightning code (its `TargetSite`), is logged at ERR with the stack whatever the error code; a refusal thrown by our code stays one WRN line and its exception goes to Debug; `ConnectPeer`'s `InvalidOperationException` catch uses the same rule. Tests `IpcRequestLogTests` (3 new). A dedicated refusal exception type for the services stays a possible cleanup.
+- **Blocks/Blocked-by:** Related NL-883
 - **Plan ref:** none
 
 ## Docs

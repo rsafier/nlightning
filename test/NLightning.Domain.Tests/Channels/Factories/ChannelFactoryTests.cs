@@ -24,6 +24,8 @@ using Domain.Protocol.ValueObjects;
 
 public class ChannelFactoryTests
 {
+    private static readonly FeatureOptions s_noSplice = new() { OptionSplice = FeatureSupport.No };
+
     private static readonly CompactPubKey s_remoteNodeId =
         Convert.FromHexString("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa");
 
@@ -137,6 +139,63 @@ public class ChannelFactoryTests
         // Assert
         Assert.Equal(s_temporaryChannelId, channel.ChannelId);
         Assert.Equal(ChannelState.V1Opening, channel.State);
+    }
+
+    [Theory]
+    [InlineData("5120" + "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", FeatureSupport.No)]
+    [InlineData("76a914" + "cccccccccccccccccccccccccccccccccccccccc" + "88ac", FeatureSupport.Optional)]
+    [InlineData("6a06" + "000000000000", FeatureSupport.Optional)]
+    public async Task Given_UpfrontShutdownScriptOfAForbiddenForm_When_CreatingChannelAsNonInitiator_Then_ChannelError(
+        string scriptHex, FeatureSupport anySegwit)
+    {
+        // Arrange (NL-776: CLN v26.06.8 sends a P2TR upfront script without option_shutdown_anysegwit)
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()),
+                                                upfrontShutdownScriptTlv: new UpfrontShutdownScriptTlv(
+                                                    Convert.FromHexString(scriptHex)));
+        var negotiatedFeatures = new FeatureOptions
+        {
+            UpfrontShutdownScript = FeatureSupport.Optional,
+            BeyondSegwitShutdown = anySegwit
+        };
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => channelFactory.CreateChannelV1AsNonInitiatorAsync(message, negotiatedFeatures,
+                                                                                    s_remoteNodeId));
+
+        // Assert
+        Assert.Contains("upfront_shutdown_script", exception.Message);
+        Assert.Equal(s_temporaryChannelId, exception.ChannelId);
+    }
+
+    [Theory]
+    [InlineData("5120" + "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")]
+    [InlineData("0014" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    [InlineData("")]
+    public async Task Given_UpfrontShutdownScriptAllowedWithAnySegwit_When_CreatingChannelAsNonInitiator_Then_ScriptIsKept(
+        string scriptHex)
+    {
+        // Arrange
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var script = Convert.FromHexString(scriptHex);
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()),
+                                                upfrontShutdownScriptTlv: new UpfrontShutdownScriptTlv(script));
+        var negotiatedFeatures = new FeatureOptions
+        {
+            UpfrontShutdownScript = FeatureSupport.Optional,
+            BeyondSegwitShutdown = FeatureSupport.Optional
+        };
+
+        // Act
+        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, negotiatedFeatures,
+                                                                              s_remoteNodeId);
+
+        // Assert
+        if (script.Length == 0)
+            Assert.Null(channel.RemoteUpfrontShutdownScript);
+        else
+            Assert.Equal(script, (byte[])channel.RemoteUpfrontShutdownScript!.Value);
     }
 
     [Theory]
@@ -300,9 +359,8 @@ public class ChannelFactoryTests
         var channelFactory = CreateNonInitiatorChannelFactory(nodeOptions);
         var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()));
 
-        // Act
-        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, new FeatureOptions(),
-                                                                              s_remoteNodeId);
+        // Act: a peer without option_splice, so our in-flight limit is a share of the funding (NL-880)
+        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, s_noSplice, s_remoteNodeId);
 
         // Assert: the peer's values are what it sent
         var remote = channel.ChannelParams.Remote;
@@ -382,9 +440,8 @@ public class ChannelFactoryTests
         var request = CreateRequest(LightningMoney.Satoshis(200_000));
         request.ToSelfDelay = 300;
 
-        // Act
-        var channel = await channelFactory.CreateChannelV1AsInitiatorAsync(request, new FeatureOptions(),
-                                                                           s_remoteNodeId);
+        // Act: a peer without option_splice, so our in-flight limit is a share of the funding (NL-880)
+        var channel = await channelFactory.CreateChannelV1AsInitiatorAsync(request, s_noSplice, s_remoteNodeId);
 
         // Assert
         var local = channel.ChannelParams.Local;
@@ -476,6 +533,52 @@ public class ChannelFactoryTests
         Assert.Contains("public", exception.Message);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_SpliceNegotiated_When_CreatingChannel_Then_InFlightLimitHasNoCap(bool isInitiator)
+    {
+        // Arrange: max_htlc_value_in_flight_msat is fixed for the channel's lifetime (BOLT 2) while a splice can grow
+        // the channel, so a share of the opening capacity would cap the peer's sends at the first size (NL-880)
+        var channelFactory = CreateNonInitiatorChannelFactory(CreateDistinctNodeOptions());
+        var withSplice = new FeatureOptions { OptionAnchors = FeatureSupport.No, OptionSplice = FeatureSupport.Optional };
+
+        // Act
+        var channel = isInitiator
+                          ? await channelFactory.CreateChannelV1AsInitiatorAsync(
+                                CreateRequest(LightningMoney.Satoshis(200_000)), withSplice, s_remoteNodeId)
+                          : await channelFactory.CreateChannelV1AsNonInitiatorAsync(
+                                CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType())),
+                                withSplice, s_remoteNodeId);
+
+        // Assert
+        Assert.Equal(ulong.MaxValue, channel.ChannelParams.Local.MaxHtlcValueInFlight.MilliSatoshi);
+    }
+
+    [Theory]
+    [InlineData(true, 100_000)]
+    [InlineData(false, 50_000)]
+    public async Task Given_LimitOnSpliceableChannels_When_SpliceNegotiated_Then_InFlightLimitIsAShareOfTheFunding(
+        bool isInitiator, long expectedSatoshis)
+    {
+        // Arrange: the operator keeps the percentage on channels that can be spliced (Node:LimitInFlightOnSpliceable...)
+        var nodeOptions = CreateDistinctNodeOptions();
+        nodeOptions.LimitInFlightOnSpliceableChannels = true;
+        var channelFactory = CreateNonInitiatorChannelFactory(nodeOptions);
+        var withSplice = new FeatureOptions { OptionAnchors = FeatureSupport.No, OptionSplice = FeatureSupport.Optional };
+
+        // Act
+        var channel = isInitiator
+                          ? await channelFactory.CreateChannelV1AsInitiatorAsync(
+                                CreateRequest(LightningMoney.Satoshis(200_000)), withSplice, s_remoteNodeId)
+                          : await channelFactory.CreateChannelV1AsNonInitiatorAsync(
+                                CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType())),
+                                withSplice, s_remoteNodeId);
+
+        // Assert: 50 % of the funding
+        Assert.Equal(LightningMoney.Satoshis(expectedSatoshis), channel.ChannelParams.Local.MaxHtlcValueInFlight);
+    }
+
     private static NodeOptions CreateDistinctNodeOptions()
     {
         return new NodeOptions
@@ -548,7 +651,9 @@ public class ChannelFactoryTests
     private static OpenChannel1Message CreateOpenChannel1Message(ChannelTypeTlv? channelTypeTlv,
                                                                  LightningMoney? openerDustLimit = null,
                                                                  LightningMoney? openerReserve = null,
-                                                                 ChannelFlag channelFlags = ChannelFlag.None)
+                                                                 ChannelFlag channelFlags = ChannelFlag.None,
+                                                                 UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv =
+                                                                     null)
     {
         var payload = new OpenChannel1Payload(BitcoinNetwork.Mainnet.ChainHash, new ChannelFlags(channelFlags),
                                               s_temporaryChannelId, openerReserve ?? LightningMoney.Satoshis(1_000),
@@ -559,7 +664,7 @@ public class ChannelFactoryTests
                                               LightningMoney.Satoshis(100_000), s_remoteNodeId, LightningMoney.Zero,
                                               s_remoteNodeId, 144);
 
-        return new OpenChannel1Message(payload, channelTypeTlv);
+        return new OpenChannel1Message(payload, channelTypeTlv, upfrontShutdownScriptTlv);
     }
 
     private static OpenChannelClientRequest CreateRequest(LightningMoney fundingAmount,

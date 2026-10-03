@@ -5,6 +5,7 @@ using Bitcoin.Transactions.Factories;
 using Bitcoin.Transactions.Outputs;
 using Bitcoin.ValueObjects;
 using Client.Requests;
+using Closing;
 using Constants;
 using Crypto.Hashes;
 using Crypto.ValueObjects;
@@ -15,6 +16,7 @@ using Interfaces;
 using Models;
 using Money;
 using Node.Options;
+using Policies;
 using Protocol.Interfaces;
 using Protocol.Messages;
 using Protocol.Models;
@@ -70,7 +72,15 @@ public class ChannelFactory : IChannelFactory
 
         BitcoinScript? remoteUpfrontShutdownScript = null;
         if (message.UpfrontShutdownScriptTlv is not null && message.UpfrontShutdownScriptTlv.Value.Length > 0)
+        {
+            // BOLT 2: a non-empty upfront_shutdown_script is a shutdown form the negotiated features allow; a P2TR
+            // script without option_shutdown_anysegwit could never close cooperatively (NL-776)
+            if (!ShutdownScriptValidator.IsValidUpfront(message.UpfrontShutdownScriptTlv.Value, negotiatedFeatures))
+                throw new ChannelErrorException("upfront_shutdown_script is not a valid shutdown script",
+                                                payload.ChannelId, "upfront_shutdown_script is not a valid form");
+
             remoteUpfrontShutdownScript = message.UpfrontShutdownScriptTlv.Value;
+        }
 
         // Calculate the amounts
         var toLocalAmount = payload.PushAmount;
@@ -112,7 +122,8 @@ public class ChannelFactory : IChannelFactory
                                             payload.HtlcMinimumAmount, payload.MaxAcceptedHtlcs,
                                             payload.MaxHtlcValueInFlight, payload.ToSelfDelay,
                                             remoteUpfrontShutdownScript);
-        var localParams = CreateLocalParamsAsNonInitiator(payload, localUpfrontShutdownScript);
+        var localParams = CreateLocalParamsAsNonInitiator(payload, localUpfrontShutdownScript,
+                                                          negotiatedFeatures.OptionSplice > FeatureSupport.No);
 
         // The channel type decides anchors, not the init features (the opener may pick a type without them)
         var optionAnchorOutputs = message.ChannelTypeTlv?.Features.IsFeatureSet(Feature.OptionAnchors, true) ?? false;
@@ -231,10 +242,11 @@ public class ChannelFactory : IChannelFactory
         var toRemoteAmount = request.PushAmount ?? LightningMoney.Zero;
         var toLocalAmount = request.FundingAmount - toRemoteAmount;
 
-        // Generate our MaxHtlcValueInFlight if not provided
+        // Generate our MaxHtlcValueInFlight if not provided: no cap on a channel that can be spliced (NL-880)
         var maxHtlcValueInFlight = request.MaxHtlcValueInFlight
-                                ?? LightningMoney.Satoshis(_nodeOptions.AllowUpToPercentageOfChannelFundsInFlight *
-                                                           request.FundingAmount.Satoshi / 100M);
+                                ?? MaxHtlcValueInFlightRules.GetAnnounced(
+                                       _nodeOptions, request.FundingAmount,
+                                       negotiatedFeatures.OptionSplice > FeatureSupport.No);
 
         // Generate local keys through the signer
         var localKeyIndex = _lightningSigner.CreateNewChannel(out var localBasepoints, out var firstPerCommitmentPoint);
@@ -290,7 +302,8 @@ public class ChannelFactory : IChannelFactory
     /// dust_limit_satoshis, and our dust_limit_satoshis at most the opener's channel_reserve_satoshis.
     /// </summary>
     private ChannelParty CreateLocalParamsAsNonInitiator(OpenChannel1Payload payload,
-                                                         BitcoinScript? localUpfrontShutdownScript)
+                                                         BitcoinScript? localUpfrontShutdownScript,
+                                                         bool spliceNegotiated)
     {
         var dustLimitAmount = _nodeOptions.DustLimitAmount;
         if (dustLimitAmount > payload.ChannelReserveAmount)
@@ -304,9 +317,8 @@ public class ChannelFactory : IChannelFactory
         if (channelReserveAmount < dustLimitAmount)
             channelReserveAmount = dustLimitAmount;
 
-        var maxHtlcValueInFlight =
-            LightningMoney.Satoshis(_nodeOptions.AllowUpToPercentageOfChannelFundsInFlight *
-                                    payload.FundingAmount.Satoshi / 100M);
+        var maxHtlcValueInFlight = MaxHtlcValueInFlightRules.GetAnnounced(_nodeOptions, payload.FundingAmount,
+                                                                          spliceNegotiated);
 
         return new ChannelParty(dustLimitAmount, channelReserveAmount, _nodeOptions.HtlcMinimumAmount,
                                 _nodeOptions.MaxAcceptedHtlcs, maxHtlcValueInFlight, _nodeOptions.ToSelfDelay,

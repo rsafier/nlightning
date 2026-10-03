@@ -105,7 +105,23 @@ public class NodeOptions
     /// <remarks>Configuration key <c>Node:MaxAcceptedToSelfDelay</c>; must be positive.</remarks>
     public ushort MaxAcceptedToSelfDelay { get; set; } = DefaultMaxAcceptedToSelfDelay;
 
+    /// <summary>
+    /// Our <c>max_htlc_value_in_flight_msat</c> as a percentage of the capacity known at the open (the funding
+    /// amount; a dual-funded opener counts its share and the liquidity it buys). The announced value is fixed for the
+    /// channel's lifetime (BOLT 2), so a channel opened with <c>option_splice</c> negotiated announces no cap unless
+    /// <see cref="LimitInFlightOnSpliceableChannels"/> is set (NL-880, <c>MaxHtlcValueInFlightRules</c>).
+    /// </summary>
+    /// <remarks>Configuration key <c>Node:AllowUpToPercentageOfChannelFundsInFlight</c>.</remarks>
     public uint AllowUpToPercentageOfChannelFundsInFlight { get; set; } = 80;
+
+    /// <summary>
+    /// Whether <see cref="AllowUpToPercentageOfChannelFundsInFlight"/> also caps channels opened with
+    /// <c>option_splice</c> negotiated. Off by default: such a channel can grow by splices, but the announced
+    /// <c>max_htlc_value_in_flight_msat</c> cannot follow it (BOLT 2 fixes it at the open), so a share of the opening
+    /// capacity would keep the peer's sends at that share of the first size for good (NL-880).
+    /// </summary>
+    /// <remarks>Configuration key <c>Node:LimitInFlightOnSpliceableChannels</c>.</remarks>
+    public bool LimitInFlightOnSpliceableChannels { get; set; }
 
     /// <summary>
     /// The default of <see cref="MinAcceptedMaxHtlcValueInFlightPercent"/>: 1 %.
@@ -192,6 +208,25 @@ public class NodeOptions
     /// The longest wait between two reconnection attempts.
     /// </summary>
     public TimeSpan ReconnectMaxDelay { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>The default <see cref="ReestablishTimeout"/>: 60 s.</summary>
+    public static readonly TimeSpan DefaultReestablishTimeout = TimeSpan.FromSeconds(60);
+
+    /// <summary>The largest <see cref="ReestablishTimeout"/> a timer accepts: 4,294,967,294 ms (about 49.7 days).</summary>
+    public static readonly TimeSpan MaxReestablishTimeout = TimeSpan.FromMilliseconds(uint.MaxValue - 1.0);
+
+    /// <summary>
+    /// How long a new connection waits for the peer's <c>channel_reestablish</c> (NL-796). When a channel of the peer
+    /// that should carry updates (ReadyForThem, Open, ShuttingDown or Negotiating; not ReadyForUs, whose funding the
+    /// peer may not have seen confirmed yet, NL-891) is still not reestablished then, we send one <c>warning</c> and close the connection, and the reconnect backoff
+    /// (<see cref="ReconnectInitialDelay"/>) dials the peer again: a peer whose transport answers but whose channel
+    /// daemon hangs recovers without the operator. Until the peer's <c>channel_reestablish</c> arrives the channel stays
+    /// gated (BOLT 2 sets no deadline). <see cref="TimeSpan.Zero"/> turns the deadline off; at most
+    /// <see cref="MaxReestablishTimeout"/> (a timer's limit, NL-891).
+    /// </summary>
+    /// <remarks>Configuration key <c>Node:ReestablishTimeout</c> (a <see cref="TimeSpan"/>, e.g. <c>"00:01:00"</c>).
+    /// </remarks>
+    public TimeSpan ReestablishTimeout { get; set; } = DefaultReestablishTimeout;
 
     /// <summary>
     /// Our forwarding policy and invoice defaults.
@@ -288,7 +323,7 @@ public class NodeOptions
 
     /// <summary>
     /// Returns every configuration error of the options this class owns (currently <see cref="Routing"/>,
-    /// <see cref="FeeUpdates"/>, <see cref="Anchors"/>, <see cref="LiquidityAds"/>, <see cref="Bootstrap"/>, <see cref="CustomSignet"/>, the reconnect delays, the accepted open limits, <see cref="Alias"/> and <see cref="Color"/>); empty when valid. Feature errors are reported by
+    /// <see cref="FeeUpdates"/>, <see cref="Anchors"/>, <see cref="LiquidityAds"/>, <see cref="Bootstrap"/>, <see cref="CustomSignet"/>, the reconnect delays, <see cref="ReestablishTimeout"/>, the accepted open limits, <see cref="Alias"/> and <see cref="Color"/>); empty when valid. Feature errors are reported by
     /// <see cref="FeatureOptions.GetValidationErrors"/>.
     /// </summary>
     public IReadOnlyList<string> GetValidationErrors()
@@ -298,6 +333,10 @@ public class NodeOptions
             errors.Add($"{nameof(ReconnectInitialDelay)} must be positive.");
         if (ReconnectMaxDelay < ReconnectInitialDelay)
             errors.Add($"{nameof(ReconnectMaxDelay)} must be at least {nameof(ReconnectInitialDelay)}.");
+        if (ReestablishTimeout < TimeSpan.Zero)
+            errors.Add($"{nameof(ReestablishTimeout)} must not be negative (zero turns it off).");
+        if (ReestablishTimeout > MaxReestablishTimeout)
+            errors.Add($"{nameof(ReestablishTimeout)} must be at most {MaxReestablishTimeout} (zero turns it off).");
         if (MaxAcceptedToSelfDelay == 0)
             errors.Add($"{nameof(MaxAcceptedToSelfDelay)} must be positive.");
         if (MinAcceptedMaxHtlcValueInFlightPercent > 100)

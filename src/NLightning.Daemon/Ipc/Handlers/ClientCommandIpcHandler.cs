@@ -72,7 +72,7 @@ internal abstract class ClientCommandIpcHandler<TIpcRequest, TClientRequest, TCl
         }
         catch (ClientException ce)
         {
-            _logger.LogWarning(ce, "{Command} refused: {Message}", Command, ce.Message);
+            IpcRequestLog.LogClientException(_logger, Command, ce);
             return IpcErrorFactory.CreateErrorEnvelope(envelope, ce.ErrorCode, ce.Message);
         }
         catch (Exception e)

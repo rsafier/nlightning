@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Accounting.Models;
 
+using Channels.Commitments;
 using Channels.Enums;
 using Channels.ValueObjects;
 using Crypto.ValueObjects;
@@ -82,6 +83,8 @@ public sealed record AccountingSnapshot(
 /// the preimage, so the money is paid; NL-602 A3-T6, the risk-weighted view).</param>
 /// <param name="RemoteInFlightPreimageMsat">The part of <paramref name="RemoteInFlightMsat"/> whose preimage we hold (we
 /// fulfilled it, or accepted it as the final node; A3-T6).</param>
+/// <param name="Htlcs">The channel's HTLCs that are not final yet, as the snapshot read them (empty for a channel that
+/// is not loaded): the reconcile counts the ones whose settle the books already booked as outstanding (NL-886).</param>
 public sealed record ChannelBalanceBucket(
     ChannelId ChannelId,
     ShortChannelId? ShortChannelId,
@@ -98,7 +101,32 @@ public sealed record ChannelBalanceBucket(
     bool IsLoaded,
     long PendingUncountedMsat = 0,
     long LocalInFlightFulfilledMsat = 0,
-    long RemoteInFlightPreimageMsat = 0);
+    long RemoteInFlightPreimageMsat = 0,
+    IReadOnlyList<InFlightHtlcBucket>? Htlcs = null);
+
+/// <summary>
+/// One HTLC of a channel in an <see cref="AccountingSnapshot"/> that is not final yet: its amount is still in its
+/// offerer's gross balance (the commitment engine folds it into the balances only once its removal is irrevocably
+/// committed).
+/// </summary>
+/// <param name="Direction"><see cref="HtlcDirection.Outgoing"/> when we offered it.</param>
+/// <param name="HtlcId">Its <c>update_add_htlc</c> id.</param>
+/// <param name="AmountMsat">Its amount.</param>
+/// <param name="PaymentHash">Its payment hash.</param>
+/// <param name="RemovalKind">How it is being removed (a fulfill or fail sent or received), or null.</param>
+/// <param name="PreimageKnown">We hold its preimage (a fulfill, or an incoming HTLC we committed to as final node).
+/// </param>
+public sealed record InFlightHtlcBucket(
+    HtlcDirection Direction,
+    ulong HtlcId,
+    long AmountMsat,
+    Hash PaymentHash,
+    HtlcRemovalKind? RemovalKind,
+    bool PreimageKnown)
+{
+    /// <summary>The HTLC is being failed (its amount returns to the offerer): no settle of it can be booked.</summary>
+    public bool IsFailing => RemovalKind is not null and not HtlcRemovalKind.Fulfill;
+}
 
 /// <summary>
 /// The on-chain wallet in an <see cref="AccountingSnapshot"/> (the <c>walletbalance</c> numbers).

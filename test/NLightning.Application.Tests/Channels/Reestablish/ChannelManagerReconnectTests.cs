@@ -305,6 +305,73 @@ public class ChannelManagerReconnectTests
         Assert.True(_tracker.IsReestablished(channel.ChannelId));
     }
 
+    [Fact]
+    public async Task Given_ChannelsWhoseReestablishWentOut_When_AskedWhichAwaitThePeer_Then_OnlyThoseThatShouldCarryUpdates()
+    {
+        // Arrange (NL-796): channels that should carry updates, one waiting for its funding, one whose close is agreed,
+        // one only we sent channel_ready for (NL-891: the peer may not have seen its funding confirmed), and another
+        // peer's
+        _channels.Add(CreateChannel(0x01, ChannelState.Open, s_peer));
+        _channels.Add(CreateChannel(0x02, ChannelState.ReadyForThem, s_peer));
+        _channels.Add(CreateChannel(0x03, ChannelState.ShuttingDown, s_peer));
+        _channels.Add(CreateChannel(0x04, ChannelState.V1FundingSigned, s_peer));
+        _channels.Add(CreateChannel(0x05, ChannelState.Closing, s_peer));
+        _channels.Add(CreateChannel(0x06, ChannelState.Open, s_otherPeer));
+        _channels.Add(CreateChannel(0x07, ChannelState.ReadyForUs, s_peer));
+        var manager = CreateManager();
+        await manager.OnPeerConnectedAsync(s_peer);
+        await manager.OnPeerConnectedAsync(s_otherPeer);
+
+        // Act
+        var awaiting = manager.GetChannelsAwaitingPeerReestablish(s_peer);
+
+        // Assert
+        Assert.Equal([_channels[0].ChannelId, _channels[1].ChannelId, _channels[2].ChannelId], awaiting);
+        Assert.Equal(ReestablishStatus.Sent, _tracker.GetStatus(_channels[3].ChannelId));
+        Assert.Equal(ReestablishStatus.Sent, _tracker.GetStatus(_channels[4].ChannelId));
+        Assert.Equal(ReestablishStatus.Sent, _tracker.GetStatus(_channels[6].ChannelId));
+    }
+
+    [Fact]
+    public async Task Given_ThePeerAnsweredOneChannel_When_AskedWhichAwaitThePeer_Then_TheAnsweredOneIsNotListed()
+    {
+        // Arrange (NL-796)
+        var answered = CreateChannel(0x01, ChannelState.Open, s_peer);
+        var silent = CreateChannel(0x02, ChannelState.Open, s_peer);
+        _channels.Add(answered);
+        _channels.Add(silent);
+        var manager = CreateManager();
+        await manager.OnPeerConnectedAsync(s_peer);
+
+        // Act
+        await manager.HandleChannelMessageAsync(PeerReestablish(answered.ChannelId, 1, 0), new FeatureOptions(),
+                                                s_peer);
+        var awaiting = manager.GetChannelsAwaitingPeerReestablish(s_peer);
+
+        // Assert
+        Assert.True(_tracker.IsReestablished(answered.ChannelId));
+        Assert.Equal([silent.ChannelId], awaiting);
+    }
+
+    [Fact]
+    public async Task Given_TheConnectionChanged_When_AskedWhichAwaitThePeer_Then_NoneUntilOursGoesOutAgain()
+    {
+        // Arrange (NL-796): a dropped connection resets the tracker; nothing was sent on the next one yet
+        _channels.Add(CreateChannel(0x01, ChannelState.Open, s_peer));
+        var manager = CreateManager();
+        await manager.OnPeerConnectedAsync(s_peer);
+
+        // Act
+        manager.OnPeerConnectionChanged(s_peer);
+        var afterChange = manager.GetChannelsAwaitingPeerReestablish(s_peer);
+        await manager.OnPeerConnectedAsync(s_peer);
+        var afterReconnect = manager.GetChannelsAwaitingPeerReestablish(s_peer);
+
+        // Assert
+        Assert.Empty(afterChange);
+        Assert.Equal([_channels[0].ChannelId], afterReconnect);
+    }
+
     private ChannelManager CreateManager()
     {
         var services = new ServiceCollection();
