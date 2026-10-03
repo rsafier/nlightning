@@ -109,8 +109,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
                                    _options.MinRbfBlocks);
 
         _quiescenceEvents = serviceProvider.GetService<QuiescenceService>();
-        if (_quiescenceEvents is not null)
-            _quiescenceEvents.QuiescenceEnded += OnQuiescenceEnded;
+        _quiescenceEvents?.QuiescenceEnded += OnQuiescenceEnded;
 
         // The depth watcher follows the chain from the first splice message of the process on (it resolves this
         // service lazily); the host also resolves it at startup for its catch-up (SpliceDepthWatcher.CatchUpAsync)
@@ -1198,8 +1197,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_quiescenceEvents is not null)
-            _quiescenceEvents.QuiescenceEnded -= OnQuiescenceEnded;
+        _quiescenceEvents?.QuiescenceEnded -= OnQuiescenceEnded;
     }
 
     #region Negotiation lifecycle

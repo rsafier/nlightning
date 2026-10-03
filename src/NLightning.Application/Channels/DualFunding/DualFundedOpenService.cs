@@ -270,8 +270,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                     new DualFundedOpenResult(negotiation.ChannelId, null, $"peer error: {args.Message}"));
         }
 
-        if (peerService is not null)
-            peerService.OnAttentionMessageReceived += OnAttention;
+        peerService?.OnAttentionMessageReceived += OnAttention;
         try
         {
             var channelManager = _serviceProvider.GetRequiredService<IChannelManager>();
@@ -289,8 +288,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         }
         finally
         {
-            if (peerService is not null)
-                peerService.OnAttentionMessageReceived -= OnAttention;
+            peerService?.OnAttentionMessageReceived -= OnAttention;
         }
     }
 

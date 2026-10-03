@@ -105,13 +105,11 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IGossipPendingCh
         _txIdSource = txIdSource;
 
         _outpointWatcher = outpointWatcher;
-        if (_outpointWatcher is not null)
-            _outpointWatcher.OnBlockDisconnected += HandleBlockDisconnected;
+        _outpointWatcher?.OnBlockDisconnected += HandleBlockDisconnected;
 
         // NL-414: the monitor's blocks end the kept mempool answers without a getblockcount per lookup
         _blockMonitor = outpointWatcher as IBlockchainMonitor;
-        if (_blockMonitor is not null)
-            _blockMonitor.OnNewBlockDetected += HandleNewBlock;
+        _blockMonitor?.OnNewBlockDetected += HandleNewBlock;
     }
 
     /// <summary>The short channel ids whose "only spent in the mempool" answer is kept (tests).</summary>
@@ -223,10 +221,8 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IGossipPendingCh
 
     public void Dispose()
     {
-        if (_outpointWatcher is not null)
-            _outpointWatcher.OnBlockDisconnected -= HandleBlockDisconnected;
-        if (_blockMonitor is not null)
-            _blockMonitor.OnNewBlockDetected -= HandleNewBlock;
+        _outpointWatcher?.OnBlockDisconnected -= HandleBlockDisconnected;
+        _blockMonitor?.OnNewBlockDetected -= HandleNewBlock;
         _concurrency.Dispose();
     }
 
