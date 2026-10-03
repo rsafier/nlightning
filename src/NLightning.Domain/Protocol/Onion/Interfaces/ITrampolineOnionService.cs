@@ -60,10 +60,13 @@ public interface ITrampolineOnionService
     /// real offset of the record and may rebuild the data).
     /// </para>
     /// <para>
-    /// Otherwise as <see cref="ISphinxService.PeelAsLocalNode"/>: a BADONION code (version, key, HMAC, or
-    /// <c>invalid_onion_blinding</c> with a <paramref name="pathKey"/>) carries the sha256 of the <b>trampoline</b>
-    /// packet. The outer onion was valid, so such a failure is not an <c>update_fail_malformed_htlc</c>: the caller
-    /// encrypts it for the origin with the outer shared secret in an <c>update_fail_htlc</c>.
+    /// Otherwise as <see cref="ISphinxService.PeelAsLocalNode"/>: a BADONION code (version, key, HMAC, or, with a
+    /// <paramref name="pathKey"/>, always <c>invalid_onion_blinding</c>) carrying the sha256 of the <b>trampoline</b>
+    /// packet; a framing failure after the HMAC is <c>invalid_onion_payload</c> with the trampoline shared secret.
+    /// How to return it is the caller's choice: the PR 836 blinded vector's Dave (a blinded trampoline hop) sends
+    /// <c>invalid_onion_blinding</c> with the trampoline packet's sha256 in <c>update_fail_malformed_htlc</c>, and an
+    /// unblinded trampoline node may instead encrypt the failure for the origin
+    /// (<see cref="ITrampolineFailureOnionService"/>).
     /// </para>
     /// </exception>
     /// <exception cref="ArgumentException">If <paramref name="paymentHash"/> is not 32 bytes.</exception>
