@@ -350,8 +350,12 @@ public class FeatureSet
             }
         }
 
-        // Check if all the other node's dependencies are set
-        if (other.AreDependenciesSet())
+        // Check if all the other node's dependencies are set. A peer's option_simple_taproot is read as the unknown odd
+        // bit it was before we knew it while we do not set it ourselves (NL-973): LND with taproot overlay channels
+        // (litd) advertises 81 without option_simple_close, and refusing it would cut nodes that never negotiate
+        // taproot with us off from them
+        if (other.GetMissingDependencies().All(m => m.Feature == Feature.OptionSimpleTaproot
+                                                 && !HasFeature(Feature.OptionSimpleTaproot)))
             return true;
 
         negotiatedFeatureSet = null;
