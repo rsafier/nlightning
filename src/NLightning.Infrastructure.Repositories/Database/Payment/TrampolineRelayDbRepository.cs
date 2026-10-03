@@ -65,6 +65,22 @@ public class TrampolineRelayDbRepository : BaseDbRepository<TrampolineRelayEntit
     }
 
     /// <inheritdoc />
+    public async Task RemoveFailedAsync(Hash paymentHash)
+    {
+        var entity = await DbSet.FindAsync(paymentHash)
+                  ?? throw new InvalidOperationException($"No trampoline relay for payment hash {paymentHash}");
+        if (entity.Status != (byte)TrampolineRelayStatus.Failed)
+            throw new InvalidOperationException($"The trampoline relay {paymentHash} is not failed");
+
+        foreach (var part in await _parts.Where(p => p.PaymentHash == paymentHash).ToListAsync())
+            _parts.Remove(part);
+        foreach (var staged in _parts.Local.Where(p => p.PaymentHash == paymentHash
+                                                    && _parts.Entry(p).State == EntityState.Added).ToList())
+            _parts.Remove(staged);
+        DbSet.Remove(entity);
+    }
+
+    /// <inheritdoc />
     public async Task AddPartAsync(TrampolineRelayPartModel part)
     {
         ArgumentNullException.ThrowIfNull(part);

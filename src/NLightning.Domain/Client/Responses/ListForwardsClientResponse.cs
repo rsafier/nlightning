@@ -9,10 +9,12 @@ using Payments.Models;
 public sealed class ListForwardsClientResponse
 {
     public ListForwardsClientResponse(IReadOnlyList<ForwardInfoClientResponse> forwards,
-                                      ForwardSummaryClientResponse summary)
+                                      ForwardSummaryClientResponse summary,
+                                      IReadOnlyList<TrampolineRelayInfoClientResponse>? trampolineRelays = null)
     {
         Forwards = forwards;
         Summary = summary;
+        TrampolineRelays = trampolineRelays ?? [];
     }
 
     /// <summary>The page of forwards, newest first.</summary>
@@ -20,6 +22,12 @@ public sealed class ListForwardsClientResponse
 
     /// <summary>The counts and fees over the whole filtered set, with the refused-HTLC counters (NL-598).</summary>
     public ForwardSummaryClientResponse Summary { get; }
+
+    /// <summary>
+    /// The trampoline payments we relayed (NL-875, kind <c>trampoline</c>), newest first, paged and filtered like the
+    /// forwards (an incoming channel filter matches a relay with a part on it); empty when the node keeps none.
+    /// </summary>
+    public IReadOnlyList<TrampolineRelayInfoClientResponse> TrampolineRelays { get; }
 
     /// <summary>Maps the models of one page (the summary is built by the handler).</summary>
     public static ListForwardsClientResponse FromModels(IReadOnlyList<ForwardCircuitModel> circuits,

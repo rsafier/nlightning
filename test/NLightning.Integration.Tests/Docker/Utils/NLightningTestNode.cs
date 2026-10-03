@@ -26,6 +26,7 @@ using Application.InteractiveTx;
 using Application.Onchain.Fees;
 using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
+using Application.Payments.Trampoline;
 using Daemon.Extensions;
 using Daemon.Interfaces;
 using Daemon.Services;
@@ -353,6 +354,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
             await Services.GetRequiredService<ITorOnionService>().StartAsync(CancellationToken.None);
             // As the daemon does: settle the payments a crash left without an HTLC id once every channel is loaded
             await Services.GetRequiredService<IPaymentOutcomeHandler>().ReconcileInFlightPaymentsAsync(cancellationToken);
+            // As the daemon does: resume the unfinished trampoline relays (NL-875 TR3)
+            var trampolineRelays = Services.GetService<TrampolineRelayService>();
+            if (trampolineRelays is not null)
+                await trampolineRelays.StartAsync(cancellationToken);
             // As the daemon does: the N9 safety services and the update_fee rounds (off unless a test enables them)
             Services.GetRequiredService<IChannelFailureService>().Start();
             Services.GetRequiredService<IHtlcExpiryMonitor>().Start();
