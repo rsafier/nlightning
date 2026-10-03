@@ -257,7 +257,7 @@ every implementation, our own node included, is driven through the same seams.
   admits itself without the cap (the host already holds the slot) and its disposal also removes its nodes'
   `StableNodeAddress` Services.
 
-## Running a ported suite (phase 2)
+## Running a ported suite (phases 2-4)
 
 - The suites keep their fixtures; `NLTG_TEST_BACKEND=docker|cluster` (Integration.Tests `Fixtures/TestBackend`, Docker
   when unset, an unknown value throws) picks the backend per process. Ported so far: the CLN interop suite
@@ -272,6 +272,11 @@ every implementation, our own node included, is driven through the same seams.
 - `scripts/run-cluster.sh -n 3 --suite cln` builds once and runs 3 processes of `-p integration --trait
   Category=Interop.Cln`, each with `NLTG_TEST_BACKEND=cluster` and its own run id and namespace (`--class X` narrows it,
   `--explicit on` adds the captures, `--keep-on-failure` keeps a failed run's namespace). No Docker lock is needed.
+- Phase 3/4 proof (plan "Phase 3/4 record", cbdee79f): every ported suite green alone and 3 processes at once
+  against its Docker baseline (Eclair 28, LDK 27, CLN 77, Postgres 24, faults 5). Fixture ready on the cluster against
+  Docker: CLN 6.3 / 3.0 s, Eclair 25.8 / 10.8 s, LDK 15.6 / 4.9 s, Postgres 6.1 / 2.0 s; suite wall time 1.1-1.3x
+  Docker's, and three at once take about as long as one. Still Docker only: the LND fixture (the network is ready in
+  `Topology/Lnd/`, the wiring is next), on-chain, gossip, ABCD and Tor.
 - A new suite follows the same pattern: the fixture keeps its members and delegates to a Docker backend (the old code,
   unchanged) and a cluster backend (`ClusterTopologyFixture`, plus `InProcessTopologyFixture` for our nodes); test
   bodies reach the backend only through the fixture.

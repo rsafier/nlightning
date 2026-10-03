@@ -239,8 +239,7 @@ The same topology model, sized up, on a multi-node cluster.
    - **Prepared: in-tree LND client (wip/lnd-grpc).** The generated clients, `LndNodeConnection` and `LndNodePool`
      exist and are proven against LND 0.21.4; the swap is a `using`/type rename (record below).
 4. **Eclair, LDK, Tor, Postgres, faults (≈2–3 days).** Port the remaining fixtures; Tor closes NL-572; NetworkPolicy partition tests are new coverage.
-5. **Runner (≈1–2 days).**
-4. **Eclair, LDK, Tor, Postgres, faults (≈2–3 days).** Port the remaining fixtures; Tor closes NL-572; NetworkPolicy partition tests are new coverage.
+   Done apart from Tor ("Phase 3/4 record"); phase 3's fixture wiring and `lnunit` removal remain.
 5. **Runner (≈1–2 days).**
    - `run-cluster` replaces `run-{onchain,gossip,abcd,interop}.sh` and the hand-made LND runs.
    - It builds once, then runs the suite matrix with N runs in flight, reruns one failed class alone, prints a summary and collects diagnostics.
@@ -1008,6 +1007,87 @@ Evidence (OrbStack, Release, net10.0, at most 2 harness namespaces of this job a
 | `PostgresTests` on a Postgres pod (`hpi-pgt`), `ServerDatabaseClusterTests` without `NLTG_TEST_BACKEND` (`hpi-pgsrv`) | 23/23, 1/1 (cluster Postgres) | 39 s, 15 s |
 | `--suite faults` (`hpi-faults`) | 5/5: HTLC held 10 s, settled 4.0 s after the heal; gated 10 s with the transport up (1 socket on CLN's 9735); CLN held at 113 while the tip went to 116; ZMQ cut covered by 1 tip-poll catch-up | 112 s |
 | No cluster reachable (`KUBECONFIG` pointing nowhere), the warm classes without `-explicit` | Not Run 2 / Not Run 5, 0 failed (before NL-800: 2 failed) | |
+
+### Phase 3/4 record (lanes: LND topology, Eclair, LDK, Postgres, partitions) (2026-10-02, `wip/harness-spike` at cbdee79f)
+
+The summary of phases 3 and 4 so far. The four lane records and the integration record above have the details; this
+record adds the proof stage and says what is left.
+
+**What each lane built** (four lanes from b88b2717, merged `--no-ff` in this order):
+
+| Lane (branch, merge) | Built | Product findings |
+|---|---|---|
+| LND topology (`hp3-lnd-topo`, e4d116ce) | `Topology/Lnd/LndRegtestNetwork` (miner + alice/bob/carol/david on `custom_lnd:0.21.4-beta`, PVCs, LNUnit's channels, flags and policies, every edge in every graph), restart/kill with the redial checked from both ends, `JoinAsync`/`OpenChannelAsync`/`PayAlongAsync`; `NLightning.Testing.Cluster` on the in-tree LND client (`NLightning.Testing.Lnd`), no LNUnit; `Fixtures/Lnd/ILndNetworkBackend` + `ClusterLndBackend` ready for the fixture's cluster backend | NL-780 (open: the Docker helper stores LND's IP, so after a cluster restart our node redials the old pod IP; dial `LndPeerHost`) |
+| Eclair (`hp3-eclair`, 521b0a28) | `Nodes/Eclair/` (workload on the existing `nltg-eclair:0.14.3`, wallet init, facade, deployer, dumps), `EclairFixture` over `IEclairBackend` (Docker / cluster), `--suite eclair` | none in the lane; the proof found NL-805 and NL-806 |
+| LDK (`hp3-ldk`, 6986266f) | `Nodes/Ldk/` (workload on the existing `nltg-ldk-server:dc02b76c`, exec RPC, facade, deployer with a stable ClusterIP), `LdkFixture` over `ILdkBackend`, `--suite ldk` | none |
+| Postgres and partitions (`hp3-pg-faults`, 84f4e46c) | `PostgresFixture` over `IPostgresBackend` (`Nodes/Postgres/`), `ServerDatabaseClusterTests`; `Faults/` partition from host, ingress ports, restart in place, process pause, `TcpConnectionTable`; `PartitionClusterTests` (4) and `ChainMonitorZmqClusterTests`; `--suite postgres`, `--suite faults` | NL-795 (harness, fixed), NL-796 (open: no deadline for the peer's `channel_reestablish`), NL-797 (wontfix, the NL-775 tip poll covers it) |
+
+Integration and review (6d4c1a3b and before): NL-800 (xunit built the warm fixtures of Explicit tests not run; lazy
+`EnsureStartedAsync`), NL-801..NL-804 (review fixes), all fixed.
+
+**Proof stage** (OrbStack k8s, Release, net10.0, `--no-incremental` build 0 warnings; at most 6 run namespaces at
+once, none left at the end; cluster logs `TestResults/cluster/pf-*`, Docker logs `TestResults/proof/docker-*.log`; the
+Docker stream ran under the machine lock in parallel with the cluster runs):
+
+| Run | Cluster | Docker (machine lock) |
+|---|---|---|
+| Eclair suite alone (`pf-ecl1`) | 28/28 (+1 Explicit not run), 1,148 s | 28/28 (+1 Explicit), 1,077 s |
+| Eclair suite 3 at once (`pf-ecl3`) | 28/28, 27/28 (NL-805), 27/28 (NL-806); 1,165-1,227 s | — |
+| `EclairSpliceTests` with the NL-805 fix: alone (`pf-eclsp1`), 3 at once (`pf-eclsp3`) | 7/7; 7/7 x3 (411-444 s) | — |
+| LDK suite alone (`pf-ldk1`), 3 at once (`pf-ldk3`) | 27/27, 643 s; 27/27 x3, 573-632 s | 27/27, 502 s |
+| Postgres (`pf-pg1`: `PostgresTests` + `ServerDatabaseClusterTests`, 3 namespaces) | 24/24, 47 s | `PostgresTests` 23/23, 22.5 s |
+| `LndRegtestNetworkTests` 3 at once (`pf-lndnet3`) | 3/3 x3; network ready 43.1-46.4 s; restarts 5.8-7.7 s to `SERVER_ACTIVE` | — |
+| `LndRegtestNetworkClusterTests` 3 at once (`pf-lndint3`) | 1/1 x3; network 37.0-49.1 s, our node's channel active about 5 s later | — |
+| Partition and ZMQ-loss tests (`pf-ft1`) | 5/5, 106 s | — (new coverage) |
+| CLN suite regression (`pf-cln1`) | 77/77 (+4 Explicit), 864 s | 77/77 (+4 Explicit), 761 s |
+
+Fixture ready, cluster against Docker: CLN 6.3 s / 3.0 s, Eclair 25.8 s (21.8-36.2 s 3 at once) / 10.8 s, LDK 15.6 s
+(13.0-18.2 s) / 4.9 s, Postgres 6.1 s / 2.0 s. Suite wall time on the cluster is within 1.1-1.3x of Docker alone and
+3 runs at once take about the time of one, which is the point: the Docker suites run one at a time machine-wide.
+
+**Product fixes and findings from the proof:**
+- **NL-805 (fixed, cbdee79f): a channel load torn by a save committing between its queries.** `listchannels` threw
+  "Balances add up to 1100000000 msat, not 1000000000" in `EclairSpliceTests` 3 at once (the torn read the integration
+  record reported without an ID). `ChannelDbRepository` maps the channel row first and `ChannelStateDbRepository`
+  reads the state rows after it, with no read transaction; a splice lock committing in between mixed the old capacity
+  with the new balances. The fix: the engine's restore error is a `ChannelStateInconsistentException` and the
+  channel is read again, whole, up to 3 times; a state inconsistent on every read is still refused with the same
+  message. Two SQLite tests (an interceptor commits the lock between the queries). **Overlap:** another job fixes the
+  same read on `wip/nl810` as NL-810 with one database snapshot per load (`ReadConsistentlyAsync`, all three
+  providers). That is the stronger fix; when both reach `wip/fafo`, keep NL-810's snapshot read and either drop the
+  re-read or keep it as a second line, and mark one of the two entries `duplicate`.
+- **NL-806 (open): a dead connection kept after a cluster Eclair restart.** One of our in-process nodes never got the
+  close of its idle connection (Eclair showed it OFFLINE, our node "connected, reestablished"), and our keep-alive
+  (random 30-300 s) did not notice within the test's 2 min. Once in 8 cluster Eclair runs; Docker never hits it
+  (docker-proxy closes the host socket). A product or owner call (why OrbStack's host-to-ClusterIP path lost the
+  close, or a shorter keep-alive: LND pings every minute); no assertion was weakened.
+
+**Decisions:**
+- Each Docker-era fixture keeps its members and delegates to a Docker backend (the old code moved over) and a cluster
+  backend; `NLTG_TEST_BACKEND` picks per process, Docker when unset. Test bodies changed only where they named Docker.
+- Existing images are reused as they are (`nltg-eclair:0.14.3`, `nltg-ldk-server:dc02b76c`, `custom_lnd:0.21.4-beta`,
+  `postgres:16.2-alpine` by digest); no image was rebuilt or retagged.
+- Nodes a restart test restarts sit on PVCs and are dialled at a stable name (StatefulSet DNS or a `StableNodeAddress`
+  ClusterIP); the rest use `emptyDir`.
+- Warm cluster fixtures start lazily from the first test class that runs (NL-800), so CI's non-Docker run never
+  touches a cluster.
+- Tor stays on Docker (`ClnTorInteropTests` skip on the cluster; NL-572 is not closed by these phases).
+
+**What remains** (revised estimate about 6-8 working days, against the 5-8 days phases 3-4 had left in §5):
+1. **The LND fixture's cluster backend wired to the topology (about 1 day).** The `p3-lnd-swap` lane landed on
+   `wip/fafo` (2f0cce7b..50f108fe: the Docker tests on `NLightning.Testing.Lnd`, NL-770); merge `wip/fafo` into this
+   branch, then make `LightningRegtestNetworkFixture` delegate to `ILndNetworkBackend` (Docker = LNUnit's builder,
+   cluster = `ClusterLndBackend`) and fix NL-780 by dialling `LndPeerHost`.
+2. **Per-suite cluster proofs (about 2-3 days):** the LND suite, on-chain legacy and anchors (`run-onchain.sh`'s
+   suites), gossip and ABCD, each alone and 3 at once, against their Docker baselines; `MultiNodeHarnessTests` on the
+   cluster.
+3. **Removing `lnunit` (about 1 day):** once every LND suite runs on the in-tree client, the Docker backend needs its
+   own container builder (or Docker LND runs end), then the package goes.
+4. **Phase 5 runner (1-2 days):** `run-cluster` replaces `run-{onchain,gossip,abcd,interop}.sh`, builds once, runs the
+   matrix with N in flight, reruns a failed class alone, summarizes and collects diagnostics.
+5. **Phase 6 full-matrix proof (about 1 day plus reruns):** the whole matrix twice concurrently, then at the tuned N;
+   wall time against today's serial pass; NL-262 and NL-276 closed.
+Open items carried: NL-780, NL-796, NL-806, and the NL-805/NL-810 merge.
 
 ## 6. Risks and open questions
 

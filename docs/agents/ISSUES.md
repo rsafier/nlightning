@@ -133,12 +133,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 49 | 50 |
+| open | 0 | 0 | 1 | 50 | 51 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 190 | 376 | 642 |
+| fixed | 14 | 62 | 191 | 376 | 643 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **197** | **436** | **709** |
+| **Total** | **14** | **62** | **198** | **437** | **711** |
 
 ### Epics
 
@@ -4443,6 +4443,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-497, NL-201
 - **Plan ref:** —
 
+### NL-805 A channel load torn by a save committing between its queries refused a healthy channel ("Balances add up to 1100000000 msat, not 1000000000")
+- **Status:** fixed (cbdee79f)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Repositories/Database/Channel/ChannelDbRepository.cs` (`MapWithStateAsync`), `ChannelStateDbRepository.cs` (`MapToDomain`), new `ChannelStateInconsistentException.cs`
+- **Evidence:** test harness phase 3/4 (integration record, then the proof's cluster Eclair run 3 at once, `pf-ecl3-2`): `EclairSpliceTests.Given_EclairSplicesIn_When_TheSpliceLocks_Then_WeAcceptAndPaymentsFlow` failed in `listchannels` (`ListChannelsClientHandler` -> `ChannelDbRepository.GetAllAsync` -> `ChannelStateDbRepository.LoadAsync` -> `ChannelCommitments.Restore`). The channel row (capacity, current funding) and the state rows are read in separate queries with no read transaction, so a splice-lock save committing in between mixed the old capacity with the new balances. The class passed 7/7 alone.
+- **Fix:** The restore error is a `ChannelStateInconsistentException` (an `InvalidOperationException`, same message); `MapWithStateAsync` reads the channel again, whole (row, funding, state), up to 3 times before refusing it; a channel deleted in between keeps the first error. Tests (Integration `Persistence/ChannelStateDbRepositoryTests`): `Given_ASpliceLockCommittingDuringALoad_*` (the `WriteBeforeStateQueryInterceptor` commits the lock between the queries; without the re-read it fails with the cluster's exact error) and `Given_AStoredStateInconsistentOnEveryRead_*`. Reruns: `EclairSpliceTests` 7/7 alone and 7/7 x3 at once.
+- **Blocks/Blocked-by:** Same torn read as NL-810 on `wip/nl810` (another job: one database snapshot per load, all three providers, the stronger fix). When both reach `wip/fafo`, keep NL-810's snapshot read and mark one entry duplicate.
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/4 record"
+
 ## Daemon / IPC / Client
 
 ### NL-139 `--cookie <path>` / `-c <path>` stores the flag itself as the path
@@ -7408,6 +7418,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Done: `cat /proc/net/tcp && { [ ! -e /proc/net/tcp6 ] || cat /proc/net/tcp6; }` keeps a failure on `/proc/net/tcp` itself visible; `TcpConnectionTableTests` pins the command and runs the script against a fake `/proc/net` (both tables, no tcp6, no tcp).
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
+
+### NL-806 After a cluster Eclair restart one in-process node kept a dead connection and our 30-300 s keep-alive did not notice within 2 min
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `test/NLightning.Integration.Tests/Fixtures/Eclair/ClusterEclairBackend.cs` (`RestartEclairAsync`; the host to ClusterIP path on OrbStack), `src/NLightning.Infrastructure/Protocol/Services/PingPongService.cs` (`StartPingAsync`, random 30-300 s interval)
+- **Evidence:** test harness phase 3/4 proof, `pf-ecl3-3`: `EclairSpliceTests.Given_OurPendingSplice_When_EclairRestarts_*` timed out waiting for Eclair's `channel_reestablish`. Eclair stopped at 02:45:22; another node of ours logged the close at 02:45:27.47 and reestablished at 02:45:45; `nltg-eclair-splice-g` logged nothing and still showed connected and reestablished while Eclair had it DISCONNECTED and the channel OFFLINE. Once in 8 cluster Eclair suite/class runs; reruns green (class 7/7 alone, 7/7 x3 at once). Docker never hits it (docker-proxy closes the host socket).
+- **Fix sketch:** Not decided: find why OrbStack's host-to-ClusterIP path lost the close of that one connection, or use a shorter or deterministic keep-alive (LND pings every minute). A product or owner call; no assertion was weakened.
+- **Blocks/Blocked-by:** Related NL-796
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/4 record"
 
 ## Docs
 
