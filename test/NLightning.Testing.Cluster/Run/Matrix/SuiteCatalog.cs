@@ -2,7 +2,11 @@ namespace NLightning.Testing.Cluster.Run.Matrix;
 
 /// <summary>
 /// The suites <c>scripts/run-cluster.sh</c> knows (<c>--suite</c> runs one, <c>--matrix</c> several), in the matrix's
-/// default order: the longest first, so the slowest suite never starts last. Every suite runs on the cluster backend
+/// default order: <c>lnd</c> (2 namespaces) first, then the longest first by their measured wall time (phase 6 proof),
+/// so the slowest suite never starts last. The runner's admission queue starts any queued suite that fits, so a
+/// 2-namespace suite queued behind 1-namespace ones would wait until two slots free at once. The longest collections
+/// are split in two suites (<c>gossip</c>/<c>day0</c>, <c>eclair</c>/<c>eclair2</c>), each its own process and
+/// topology, so no suite runs much longer than the CLN suite. Every suite runs on the cluster backend
 /// (<c>NLTG_TEST_BACKEND=cluster</c>) except <c>tor</c>, which stays on Docker (owner decision) and is listed as
 /// skipped. SQL Server tests never run (owner decision): <see cref="GlobalConstraints"/> leave them out everywhere.
 /// </summary>
@@ -31,6 +35,29 @@ public static class SuiteCatalog
                 "-class-", $"{Docker}.SpliceLndObserverTests"
             ],
             "off", Namespaces: 2, SerialNamespaces: 2, TimeSpan.FromMinutes(90), SuiteRequirement.LndClusterBackend),
+        new("cln", "the CLN interop suite (Category=Interop.Cln)", "integration",
+            [], ["-trait", "Category=Interop.Cln"], "off", 1, 1, TimeSpan.FromMinutes(40)),
+        new("gossip", "BOLT 7 gossip proofs (Docker.Gossip, GossipRegtestCollection)", "integration",
+            ["-class", $"{Docker}.Gossip.*"],
+            ["-class-", $"{Docker}.Gossip.Capture.*"],
+            "off", 1, 1, TimeSpan.FromMinutes(60), SuiteRequirement.LndClusterBackend),
+        new("eclair", "the Eclair interop suite without its splice class (Category=Interop.Eclair)", "integration",
+            [], ["-trait", "Category=Interop.Eclair", "-class-", $"{Docker}.Interop.Eclair.EclairSpliceTests"],
+            "off", 1, 1, TimeSpan.FromMinutes(45)),
+        new("ldk", "the LDK interop suite (Category=Interop.Ldk)", "integration",
+            [], ["-trait", "Category=Interop.Ldk"], "off", 1, 1, TimeSpan.FromMinutes(30)),
+        // The Eclair suite's longest class, split from eclair (its own Eclair topology) to shorten the matrix
+        new("eclair2", "the Eclair splice tests (EclairSpliceTests, Category=Interop.Eclair)", "integration",
+            ["-class", $"{Docker}.Interop.Eclair.EclairSpliceTests"], ["-trait", "Category=Interop.Eclair"],
+            "off", 1, 1, TimeSpan.FromMinutes(30)),
+        // The rest of the gossip-regtest collection, split from gossip (its own network) to shorten the matrix
+        new("day0", "the day-0 flows, the LND splice observer and the public channel policy (GossipRegtestCollection)",
+            "integration",
+            [
+                "-class", $"{Docker}.Day0.*", "-class", $"{Docker}.ChannelPolicyPublicFlowTests",
+                "-class", $"{Docker}.SpliceLndObserverTests"
+            ],
+            [], "off", 1, 1, TimeSpan.FromMinutes(30), SuiteRequirement.LndClusterBackend),
         new("onchain", "BOLT 5 legacy on-chain proofs and the channel backups (OnchainRegtestCollection)",
             "integration",
             ["-class", $"{Docker}.Onchain.Onchain*", "-class", $"{Docker}.BackupRestoreFlowTests"],
@@ -38,26 +65,12 @@ public static class SuiteCatalog
         new("anchors", "BOLT 5 anchors proofs (Docker.Onchain.Anchors, OnchainRegtestCollection)", "integration",
             ["-namespace", $"{Docker}.Onchain.Anchors"],
             [], "off", 1, 1, TimeSpan.FromMinutes(60), SuiteRequirement.LndClusterBackend),
-        new("gossip", "BOLT 7 gossip proofs, day-0 flows and the LND splice observer (GossipRegtestCollection)",
-            "integration",
-            [
-                "-class", $"{Docker}.Gossip.*", "-class", $"{Docker}.Day0.*",
-                "-class", $"{Docker}.ChannelPolicyPublicFlowTests", "-class", $"{Docker}.SpliceLndObserverTests"
-            ],
-            ["-class-", $"{Docker}.Gossip.Capture.*"],
-            "off", 1, 1, TimeSpan.FromMinutes(60), SuiteRequirement.LndClusterBackend),
-        new("eclair", "the Eclair interop suite (Category=Interop.Eclair)", "integration",
-            [], ["-trait", "Category=Interop.Eclair"], "off", 1, 1, TimeSpan.FromMinutes(45)),
-        new("cln", "the CLN interop suite (Category=Interop.Cln)", "integration",
-            [], ["-trait", "Category=Interop.Cln"], "off", 1, 1, TimeSpan.FromMinutes(40)),
-        new("abcd", "the ABCD multi-hop suite (Docker.Abcd)", "integration",
-            ["-namespace", $"{Docker}.Abcd"],
-            [], "off", 1, 1, TimeSpan.FromMinutes(45), SuiteRequirement.LndClusterBackend),
-        new("ldk", "the LDK interop suite (Category=Interop.Ldk)", "integration",
-            [], ["-trait", "Category=Interop.Ldk"], "off", 1, 1, TimeSpan.FromMinutes(30)),
         new("faults", "partition and ZMQ-loss tests (Cluster/Live, one topology per class)", "integration",
             ["-class", $"{Cluster}.PartitionClusterTests", "-class", $"{Cluster}.ChainMonitorZmqClusterTests"],
             ["-trait", "Category=Cluster"], "only", 2, 1, TimeSpan.FromMinutes(15)),
+        new("abcd", "the ABCD multi-hop suite (Docker.Abcd)", "integration",
+            ["-namespace", $"{Docker}.Abcd"],
+            [], "off", 1, 1, TimeSpan.FromMinutes(45), SuiteRequirement.LndClusterBackend),
         new("postgres", "PostgresTests and ServerDatabaseClusterTests on Postgres pods", "integration",
             ["-class", $"{Docker}.PostgresTests", "-class", $"{Cluster}.ServerDatabaseClusterTests"],
             ["-trait", "Database=Postgres"], "on", 3, 2, TimeSpan.FromMinutes(10)),

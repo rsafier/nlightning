@@ -8,7 +8,10 @@ public class SuiteCatalogTests
     public void Given_TheCatalog_When_Read_Then_EveryPortedSuiteAndTorAreThere()
     {
         // Assert
-        Assert.Equal(["lnd", "onchain", "anchors", "gossip", "eclair", "cln", "abcd", "ldk", "faults", "postgres", "tor"],
+        Assert.Equal([
+                         "lnd", "cln", "gossip", "eclair", "ldk", "eclair2", "day0", "onchain", "anchors", "faults",
+                         "abcd", "postgres", "tor"
+                     ],
                      SuiteCatalog.Names);
     }
 
@@ -59,12 +62,12 @@ public class SuiteCatalogTests
         // Assert
         Assert.NotNull(SuiteCatalog.Get("tor").DockerOnlyReason);
         Assert.All(SuiteCatalog.All.Where(s => s.Name != "tor"), s => Assert.Null(s.DockerOnlyReason));
-        Assert.Equal(["lnd", "onchain", "anchors", "gossip", "abcd"],
+        Assert.Equal(["lnd", "gossip", "day0", "onchain", "anchors", "abcd"],
                      SuiteCatalog.All.Where(s => s.Requirement == SuiteRequirement.LndClusterBackend)
                                  .Select(s => s.Name));
-        // lnd, onchain, anchors, gossip and abcd are proven on the cluster (in the default matrix); an LND suite still
+        // lnd, gossip, day0, onchain, anchors and abcd are proven on the cluster (in the default matrix); an LND suite still
         // waiting for its proof carries ClusterProofPending
-        Assert.All(["lnd", "onchain", "anchors", "gossip", "abcd"],
+        Assert.All(["lnd", "gossip", "day0", "onchain", "anchors", "abcd"],
                    name => Assert.Null(SuiteCatalog.Get(name).ClusterProofPending));
     }
 

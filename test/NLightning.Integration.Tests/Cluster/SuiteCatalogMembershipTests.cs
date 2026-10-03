@@ -29,8 +29,10 @@ public class SuiteCatalogMembershipTests
         ["onchain"] = OnchainRegtestCollection.Name,
         ["anchors"] = OnchainRegtestCollection.Name,
         ["gossip"] = GossipRegtestCollection.Name,
+        ["day0"] = GossipRegtestCollection.Name,
         ["cln"] = ClnInteropCollection.Name,
         ["eclair"] = EclairInteropCollection.Name,
+        ["eclair2"] = EclairInteropCollection.Name,
         ["ldk"] = LdkInteropCollection.Name,
         ["tor"] = TorInteropCollection.Name,
         ["postgres"] = "postgres"

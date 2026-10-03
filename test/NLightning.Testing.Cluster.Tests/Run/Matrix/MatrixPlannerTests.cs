@@ -71,7 +71,8 @@ public class MatrixPlannerTests
 
         // Assert
         var skipped = plan.Where(p => !p.Runs).ToList();
-        Assert.Equal(["lnd", "onchain", "anchors", "gossip", "abcd", "tor"], skipped.Select(p => p.Suite.Name));
+        Assert.Equal(["lnd", "gossip", "day0", "onchain", "anchors", "abcd", "tor"],
+                     skipped.Select(p => p.Suite.Name));
         Assert.All(skipped.Where(p => p.Suite.Name != "tor"),
                    p => Assert.Contains("would start Docker containers", p.SkipReason));
         Assert.StartsWith("Docker only", skipped.Single(p => p.Suite.Name == "tor").SkipReason);
