@@ -153,12 +153,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 69 | 72 |
+| open | 0 | 0 | 4 | 69 | 73 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
 | fixed | 14 | 63 | 201 | 418 | 696 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 3 | 5 |
-| **Total** | **14** | **63** | **212** | **500** | **789** |
+| **Total** | **14** | **63** | **213** | **500** | **790** |
 
 ### Epics
 
@@ -1892,6 +1892,24 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** record 0 (or the budget in a separate field) for a payment that ends Failed.
 - **Blocks/Blocked-by:** Related NL-875
 - **Plan ref:** —
+
+### NL-983 A late `closing_sig` replaces a mutual close that already confirmed, and the channel stays Closing
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Close/Simple/SimpleCloseCoordinator.cs` (`HandleClosingSig` → `RecordClosingTransactionAsync`; probably also the `closing_complete` path near line 270); the mutual-close spend and confirmation handling in `ChannelManager`
+- **Evidence:** cluster matrix `trreg-mx1` (wip/fafo 9418c968, 2026-10-03), `Day0FlowTests.Given_TwoNLightningNodes_When_TheyRunTheDay0Script_Then_LndSeesEveryStepAndEveryBackupIsCurrent`, step 8 (a simple close between two default nodes, `option_simple_close` Optional by default since NL-913/D-T1). The test timed out with `day0-b: channel 9428c344… Closed` (`Day0FlowTests.cs:467`).
+  - Each side had its own closing transaction: A's 418a9c1c and B's 78878e76.
+  - B signed and broadcast A's 418a, and the test mined it: confirmed at height 423, 22:04:13.241.
+  - 61 ms later B received A's `closing_sig` for 78878e. `HandleClosingSig` recorded 78878e as the channel's closing transaction, overwriting 418a, and watched it. Its broadcast then failed with `bad-txns-inputs-missingorspent`.
+  - At 418a's 6th confirmation B no longer recognised it as its close, never called `CompleteCloseAsync`, and the channel stayed Closing.
+  - A received the messages in the other order and reached Closed ("closed on chain by mutual close 418a (we had 78878e)").
+  - The class passed rerun alone, and on base 61889866, which still had legacy close, so the comparison says nothing about this bug.
+  - Diagnostics: `TestResults/cluster/trreg-mx1/day0/` in the main checkout (output.log.gz, diag, rerun-1).
+  - Funds are not at risk (the close confirmed). The channel row never reaches Closed.
+- **Fix sketch:** once the funding output is seen spent by one of the channel's mutual closes, in the mempool or confirmed, a later `closing_complete`/`closing_sig` must not replace the stored closing transaction. Alternatively, `CompleteCloseAsync` accepts the confirmed spend the funding watch recorded. Add a regression test that delivers `closing_sig` after the peer's closing transaction has confirmed.
+- **Blocks/Blocked-by:** Related NL-913, NL-859 (probably the same bug, seen against Eclair), NL-877
+- **Plan ref:** BOLT2 N11
 ### NL-056 HTLC-success / HTLC-timeout second-stage transactions not implemented
 - **Status:** fixed (dfe8866, b222896)
 - **Severity:** high
