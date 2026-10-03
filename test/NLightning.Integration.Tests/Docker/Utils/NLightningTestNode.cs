@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -754,6 +755,15 @@ public sealed class NLightningTestNode : IAsyncDisposable
         _tcpService = null;
         if (serviceProvider is not null)
             await serviceProvider.DisposeAsync();
+
+        // A stopped node holds no database file open, as a stopped daemon process does: Microsoft.Data.Sqlite keeps
+        // closed connections pooled (open) for the next start, so a test that replaces the files of a stopped node saw
+        // the old ones on macOS hosts, where File.Copy replaces a file by a new inode (NL-825)
+        if (Database.Provider != TestDatabaseProvider.Sqlite)
+            return;
+
+        using var connection = new SqliteConnection(Database.ConnectionString);
+        SqliteConnection.ClearPool(connection);
     }
 
     private ServiceProvider BuildServiceProvider()
