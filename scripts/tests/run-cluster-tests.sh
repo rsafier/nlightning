@@ -174,6 +174,9 @@ if run_case both 2 -- --matrix --suite cln; then expect both "--matrix with --su
 if run_case runs 2 -- --matrix -n 2; then expect runs "--matrix with -n refused" has "runs each suite once"; fi
 if run_case keep 2 -- --matrix --keep; then expect keep "--matrix with --keep refused" has "takes no --keep"; fi
 if run_case budget 2 -- --matrix --max-namespaces 13; then expect budget "budget over 12 refused" has "1-12"; fi
+if run_case defjobs 0 FAKE_SLEEP=1 -- --matrix cln,ldk --max-namespaces 2; then
+  expect defjobs "-j defaults to the namespace budget (NL-844)" has "2/2 in use"
+fi
 if run_case tight 2 -- --matrix postgres --max-namespaces 1; then
   expect tight "a suite that never fits is refused" has "needs 2 namespace"
 fi

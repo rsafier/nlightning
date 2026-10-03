@@ -40,8 +40,8 @@
 #                         whose parallel collections need more runs with -parallel none when that fits)
 #       --rerun-max N     matrix: rerun at most N failed classes of a suite alone (default 3; 0 = no reruns)
 #   -n, --runs N          default mode: runs (default 3)
-#   -j, --jobs J          runs (default mode, default N) or suites (matrix, default 3) in flight at once; at most the
-#                         machine's cap (12)
+#   -j, --jobs J          runs (default mode, default N) or suites (matrix, default the --max-namespaces budget) in
+#                         flight at once; at most the machine's cap (12)
 #   -c, --config C        build configuration (default Release)
 #   -f, --framework F     target framework (default net10.0)
 #   -p, --project P       the test project: cluster (default, test/NLightning.Testing.Cluster.Tests), integration
@@ -75,7 +75,7 @@
 #       --keep-logs       leave the logs of green runs as they are (by default they are gzipped once the summary is
 #                         written: a suite's output.log reaches 0.3-0.8 GB, NL-818)
 #
-# Example: the default matrix, 3 suites at once within the 12-namespace cap
+# Example: the default matrix, every suite that fits started at once within the 12-namespace cap (18 min)
 #   scripts/run-cluster.sh --matrix
 # Example: a small matrix within 2 namespaces (postgres then runs its two collections one after the other)
 #   scripts/run-cluster.sh --matrix cln,ldk,postgres -j 2 --max-namespaces 2
@@ -187,13 +187,14 @@ if (( matrix )); then
   # Kept namespaces hold machine slots until their TTL (6 h), so a matrix that keeps all of them could never start its
   # later suites; --keep-on-failure is fine (the queue counts the namespaces failed suites keep)
   [[ "$keep" != 1 ]] || die "--matrix takes no --keep (use --keep-on-failure, or --suite S --keep for one suite)"
-  jobs="${jobs:-3}"
+  # -j defaults to the namespace budget below (every suite that fits starts at once; NL-844)
 else
   runs="${runs:-3}"
   [[ "$runs" =~ ^[0-9]+$ && "$runs" -ge 1 ]] || die "--runs must be a positive number"
   jobs="${jobs:-$runs}"
 fi
-[[ "$jobs" =~ ^[0-9]+$ && "$jobs" -ge 1 ]] || die "--jobs must be a positive number"
+[[ ( -z "$jobs" && "$matrix" == 1 ) || ( "$jobs" =~ ^[0-9]+$ && "$jobs" -ge 1 ) ]] \
+  || die "--jobs must be a positive number"
 [[ "$diag" =~ ^(failure|always|off)$ ]] || die "--diag must be failure, always or off"
 [[ "$explicit" =~ ^(only|on|off)$ ]] || die "--explicit must be only, on or off"
 if [[ -n "$timeout" ]]; then
@@ -249,6 +250,7 @@ machine_cap="$(matrix_cli cap)" && [[ "$machine_cap" =~ ^[0-9]+$ ]] || die "nltg
 if (( matrix )); then
   max_namespaces="${max_namespaces:-$machine_cap}"
   (( max_namespaces >= 1 && max_namespaces <= machine_cap )) || die "--max-namespaces must be 1-$machine_cap"
+  jobs="${jobs:-$max_namespaces}"
 fi
 if (( jobs > machine_cap )); then
   echo "run-cluster: capping --jobs at $machine_cap (the harness's namespace cap)"
