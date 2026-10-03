@@ -31,6 +31,9 @@ using Onchain.Accounting;
 /// close event's <c>countedVouts</c> and the resolutions follow) go into those two amounts; the others (the peer's
 /// HTLCs, a revoked commitment's outputs, a fundee's anchor) are booked only once claimed and are reported as
 /// <see cref="ChannelBalanceBucket.PendingUncountedMsat"/> (NL-618).</para>
+/// <para>Each loaded channel's bucket lists its HTLCs that are not final (<see cref="ChannelBalanceBucket.Htlcs"/>),
+/// read from the same commitment snapshot as its balances, so the reconcile can tell a settle the books booked from the
+/// commitment dance that has not folded it into the balance yet (NL-886).</para>
 /// <para>Closed and Stale channels are left out; a channel whose funding is spent (<see cref="ChannelState.OnchainResolving"/>)
 /// reports no off-chain amount (see <see cref="ChannelBalanceBucket"/>).</para>
 /// </remarks>
@@ -117,7 +120,12 @@ public sealed class NodeSnapshotSource : INodeSnapshotSource
         long remoteInFlight = 0;
         long localFulfilled = 0;
         long remoteWithPreimage = 0;
-        if (channel.Commitments is { } commitments)
+        var htlcs = new List<InFlightHtlcBucket>();
+        // One read of the snapshot: the balances and the HTLCs come from the same commitment state (NL-886)
+        var commitments = channel.Commitments;
+        var localBalance = commitments?.LocalBalanceMsat ?? channel.LocalBalance.MilliSatoshi;
+        var remoteBalance = commitments?.RemoteBalanceMsat ?? channel.RemoteBalance.MilliSatoshi;
+        if (commitments is not null)
         {
             foreach (var htlc in commitments.Htlcs.Values)
             {
@@ -127,6 +135,8 @@ public sealed class NodeSnapshotSource : INodeSnapshotSource
                 // The preimage is known once a fulfill was sent or received, or the switch committed to an incoming
                 // HTLC as its final node (A3-T6, the risk-weighted view)
                 var preimageKnown = htlc.KnownPreimage is not null || htlc.Removal?.PaymentPreimage is not null;
+                htlcs.Add(new InFlightHtlcBucket(htlc.Direction, htlc.Id, ToMsat(htlc.AmountMsat), htlc.PaymentHash,
+                                                 htlc.Removal?.Kind, preimageKnown));
                 if (htlc.Direction == HtlcDirection.Outgoing)
                 {
                     localInFlight += ToMsat(htlc.AmountMsat);
@@ -143,10 +153,9 @@ public sealed class NodeSnapshotSource : INodeSnapshotSource
         }
 
         return new ChannelBalanceBucket(channel.ChannelId, scid, channel.State, channel.RemoteNodeId, capacity,
-                                        ToMsat(channel.LocalBalance.MilliSatoshi),
-                                        ToMsat(channel.RemoteBalance.MilliSatoshi), localInFlight, remoteInFlight,
+                                        ToMsat(localBalance), ToMsat(remoteBalance), localInFlight, remoteInFlight,
                                         pendingOnchain, pendingHtlcs, count, true, uncounted, localFulfilled,
-                                        remoteWithPreimage);
+                                        remoteWithPreimage, htlcs);
     }
 
     private static (long Ours, long Htlcs, long Uncounted, int Count) Sum(List<OutputResolutionModel>? outputs,
