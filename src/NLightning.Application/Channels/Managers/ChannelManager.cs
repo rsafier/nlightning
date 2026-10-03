@@ -695,6 +695,25 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         _serviceProvider.GetService<IChannelAnnouncementService>()?.OnPeerConnectionChanged(peerPubKey);
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// Reads the tracker and the memory repository without the channel locks: the answer is a snapshot, and a
+    /// <c>channel_reestablish</c> still queued in the peer's inbound loop is not counted yet.
+    /// </remarks>
+    public IReadOnlyList<ChannelId> GetChannelsAwaitingPeerReestablish(CompactPubKey peerPubKey)
+    {
+        if (GetTracker() is not { } tracker)
+            return [];
+
+        return GetPeerChannels(peerPubKey)
+              .Where(c => c.State is ChannelState.ReadyForThem or ChannelState.ReadyForUs or ChannelState.Open
+                                  or ChannelState.ShuttingDown or ChannelState.Negotiating
+                       && tracker.GetStatus(c.ChannelId) == ReestablishStatus.Sent
+                       && !tracker.IsReestablished(c.ChannelId))
+              .Select(c => c.ChannelId)
+              .ToList();
+    }
+
     private List<ChannelModel> GetPeerChannels(CompactPubKey peerPubKey) =>
         _channelMemoryRepository.FindChannels(c => c.RemoteNodeId == peerPubKey);
 

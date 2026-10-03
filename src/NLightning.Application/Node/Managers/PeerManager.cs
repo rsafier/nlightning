@@ -171,6 +171,12 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// </summary>
     internal TimeSpan StartupDialWait { get; set; } = TimeSpan.FromSeconds(15);
 
+    /// <summary>
+    /// How long a connection waits for the peer's <c>channel_reestablish</c> before it is closed so the reconnect
+    /// backoff dials again (<c>Node:ReestablishTimeout</c>, NL-796); <see cref="TimeSpan.Zero"/> = no deadline.
+    /// </summary>
+    internal TimeSpan ReestablishTimeout { get; set; } = NodeOptions.DefaultReestablishTimeout;
+
     public PeerManager(IChannelManager channelManager, IChannelMemoryRepository channelMemoryRepository,
                        ILogger<PeerManager> logger, IPeerServiceFactory peerServiceFactory,
                        ISecureKeyManager secureKeyManager, ITcpService tcpService, IServiceProvider serviceProvider,
@@ -182,6 +188,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             ReconnectInitialDelay = nodeOptions.Value.ReconnectInitialDelay;
             ReconnectMaxDelay = nodeOptions.Value.ReconnectMaxDelay;
             StartupDialWait = nodeOptions.Value.NetworkTimeout;
+            ReestablishTimeout = nodeOptions.Value.ReestablishTimeout;
         }
 
         _torOptions = nodeOptions?.Value.Tor ?? new TorOptions();
@@ -1189,6 +1196,56 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         {
             _logger.LogError(e, "Failed to start channel_reestablish with peer {Peer}", session.Peer.NodeId);
         }
+        finally
+        {
+            ArmReestablishDeadline(session);
+        }
+    }
+
+    /// <summary>
+    /// Starts the connection's <c>channel_reestablish</c> deadline (NL-796): the timer belongs to the session and is
+    /// disposed when the session closes, so it never acts on a newer connection.
+    /// </summary>
+    private void ArmReestablishDeadline(PeerSession session)
+    {
+        var timeout = ReestablishTimeout;
+        if (timeout <= TimeSpan.Zero || timeout == Timeout.InfiniteTimeSpan || session.IsDisconnected)
+            return;
+
+        var timeProvider = _serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System;
+        session.SetReestablishDeadline(timeProvider.CreateTimer(_ => OnReestablishDeadline(session, timeout), null,
+                                                                timeout, Timeout.InfiniteTimeSpan));
+    }
+
+    /// <summary>
+    /// The connection's deadline passed (NL-796): when a channel of the peer that should carry updates still waits for
+    /// the peer's <c>channel_reestablish</c>, one <c>warning</c> goes out after what is queued and the connection
+    /// closes. The session is not marked as closed on purpose, so the reconnect backoff dials the peer again. The
+    /// channel stays gated until a connection's reestablish completes; nothing else about it changes.
+    /// </summary>
+    private void OnReestablishDeadline(PeerSession session, TimeSpan timeout)
+    {
+        try
+        {
+            var peerId = session.Peer.NodeId;
+            if (session.IsDisconnected || _stopping || !_peers.TryGetValue(peerId, out var current)
+             || !ReferenceEquals(current, session))
+                return;
+
+            var waiting = _channelManager.GetChannelsAwaitingPeerReestablish(peerId);
+            if (waiting is not { Count: > 0 })
+                return;
+
+            _logger.LogWarning(
+                "Peer {Peer} sent no channel_reestablish within {Timeout} for {Count} channel(s) ({Channels}); closing the connection to dial again",
+                peerId, timeout, waiting.Count, string.Join(", ", waiting));
+            session.Outbox.TryEnqueueDisconnect(new WarningException(
+                                                    $"No channel_reestablish within {timeout.TotalSeconds:0} s; reconnecting"));
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "The channel_reestablish deadline of peer {Peer} failed", session.Peer.NodeId);
+        }
     }
 
     private async Task RevertPeerUpdatesAsync(PeerSession session)
@@ -1683,6 +1740,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             });
 
         private readonly CancellationTokenSource _closeCts = new();
+        private ITimer? _reestablishDeadline;
         private int _disconnected;
         private volatile bool _reconnectSuppressed;
         private PeerModel? _dialablePeer;
@@ -1770,6 +1828,17 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         public void SuppressReconnect() => _reconnectSuppressed = true;
 
         /// <summary>
+        /// Keeps the connection's <c>channel_reestablish</c> deadline (NL-796) until <see cref="Close"/> disposes it
+        /// (at once when the session is already closed).
+        /// </summary>
+        public void SetReestablishDeadline(ITimer timer)
+        {
+            Interlocked.Exchange(ref _reestablishDeadline, timer)?.Dispose();
+            if (_closeCts.IsCancellationRequested)
+                Interlocked.Exchange(ref _reestablishDeadline, null)?.Dispose();
+        }
+
+        /// <summary>
         /// Stops accepting inbound messages, stops the inbound loop (queued messages are dropped; the one being
         /// handled finishes) and closes the outbox (what is already queued there is still sent).
         /// </summary>
@@ -1777,6 +1846,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         {
             _inbound.Writer.TryComplete();
             _closeCts.Cancel();
+            Interlocked.Exchange(ref _reestablishDeadline, null)?.Dispose();
             Outbox.Complete();
         }
     }
