@@ -6847,7 +6847,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-746 A banned gossip peer's in-flight invalid messages banned it a second time
-- **Status:** fixed (2c6475d9, see batch12 below)
+- **Status:** fixed (2c6475d9, 9a3cc834)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.cs` (`ScoreMisbehaviour`)
