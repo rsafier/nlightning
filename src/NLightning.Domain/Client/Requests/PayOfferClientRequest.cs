@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Client.Requests;
 
+using Crypto.ValueObjects;
 using Money;
 
 /// <summary>
@@ -45,4 +46,10 @@ public sealed class PayOfferClientRequest
     /// daemon (<c>SourceLabelRules</c>).
     /// </summary>
     public IReadOnlyList<string> Tags { get; init; } = [];
+
+    /// <summary>
+    /// The trampoline node to pay through (NL-875, <c>--trampoline</c>); null lets the node's
+    /// <c>Node:Payments:Trampoline</c> decide.
+    /// </summary>
+    public CompactPubKey? TrampolineNode { get; init; }
 }

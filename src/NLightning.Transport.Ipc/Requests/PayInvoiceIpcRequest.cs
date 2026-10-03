@@ -3,6 +3,7 @@ using MessagePack;
 namespace NLightning.Transport.Ipc.Requests;
 
 using Domain.Client.Requests;
+using Domain.Crypto.ValueObjects;
 using Domain.Money;
 
 /// <summary>
@@ -58,6 +59,12 @@ public sealed class PayInvoiceIpcRequest
     /// </summary>
     [Key(8)] public string? IncomingChannel { get; init; }
 
+    /// <summary>
+    /// The trampoline node to pay through (NL-875, <c>--trampoline</c>), or null to let the daemon's
+    /// <c>Node:Payments:Trampoline</c> decide; an older client sends none.
+    /// </summary>
+    [Key(9)] public CompactPubKey? TrampolineNode { get; init; }
+
     public PayInvoiceClientRequest ToClientRequest()
     {
         return new PayInvoiceClientRequest(Bolt11)
@@ -68,6 +75,7 @@ public sealed class PayInvoiceIpcRequest
             MaxParts = MaxParts,
             OutgoingChannel = OutgoingChannel,
             IncomingChannel = IncomingChannel,
+            TrampolineNode = TrampolineNode,
             Label = Label,
             Tags = Tags ?? []
         };
