@@ -58,6 +58,11 @@
     <Content Include="Offers\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>
   </ItemGroup>
 
+  <!-- Simple taproot channel vectors (bolt-simple-taproot.md "Test Vectors", verbatim; README has the source) -->
+  <ItemGroup>
+    <Content Include="Taproot\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
   <!-- BOLT 4 trampoline vectors (lightning/bolts PR 836, bolt04/trampoline-*.json, verbatim; README has the commit) -->
   <ItemGroup>
     <Content Include="Onion\Trampoline\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>

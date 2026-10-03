@@ -102,7 +102,7 @@ public abstract class BaseOutput : IOutput
         return new TxOut(Money.Satoshis(Amount.Satoshi), ScriptPubKey);
     }
 
-    public ScriptCoin ToCoin()
+    public virtual ScriptCoin ToCoin()
     {
         if (TxIdHash is null || TxIdHash == uint256.Zero || TxIdHash == uint256.One)
             throw new InvalidOperationException("Transaction ID is not set. Sign the transaction first.");
