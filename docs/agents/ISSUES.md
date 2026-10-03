@@ -4,7 +4,7 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
-Updated 2026-10-03 by the Cashu integrator (branch `wip/cashu-int` from `origin/wip/cashu` at `b38d2686`, merged with `wip/fafo`): the Cashu entries are renumbered because `wip/fafo` landed NL-900, NL-903, NL-904 and NL-905 first: NL-900 → NL-990 (epic), NL-901 → NL-991 (C0), NL-902 → NL-992 (C1), NL-903 → NL-993 (C2), NL-904 → NL-994 (C3), NL-905 → NL-995 (C4), NL-906 → NL-996 (IL2026), NL-907 → NL-997 (processor follow-ups), in every doc, code comment and test of the Cashu work (old commit messages keep the old IDs; the C0 commit `e5cb13a8` cites its first numbers NL-811 (epic, now NL-990) and NL-812 (C0, now NL-991), which stay unassigned as the harness note below says). The Cashu mint proof (NL-993) moved from Docker to the cluster harness (matrix suite `cashu`). NL-996 fixed in the merge (`12440f0b`). Integration review of the Cashu diff (listener security, payment event stream, `waitinvoice`, the processor against CDK v0.18.1, trampoline interplay): NL-998 (high), NL-999 and NL-1003 fixed; NL-1000, NL-1001 (medium) and NL-1002 open; rejected: none (the sub-sat melt note in the plan was a doc mismatch, fixed in `CASHU_PLAN.md`). Summary rows recounted from the entries after merging wip/fafo at `83494ee8`: 803 entries, no duplicate IDs.
+Updated 2026-10-03 by the Cashu integrator (branch `wip/cashu-int` from `origin/wip/cashu` at `b38d2686`, merged with `wip/fafo`): the Cashu entries are renumbered because `wip/fafo` landed NL-900, NL-903, NL-904 and NL-905 first: NL-900 → NL-990 (epic), NL-901 → NL-991 (C0), NL-902 → NL-992 (C1), NL-903 → NL-993 (C2), NL-904 → NL-994 (C3), NL-905 → NL-995 (C4), NL-906 → NL-996 (IL2026), NL-907 → NL-997 (processor follow-ups), in every doc, code comment and test of the Cashu work (old commit messages keep the old IDs; the C0 commit `e5cb13a8` cites its first numbers NL-811 (epic, now NL-990) and NL-812 (C0, now NL-991), which stay unassigned as the harness note below says). The Cashu mint proof (NL-993) moved from Docker to the cluster harness (matrix suite `cashu`). NL-996 fixed in the merge (`12440f0b`). Integration review of the Cashu diff (listener security, payment event stream, `waitinvoice`, the processor against CDK v0.18.1, trampoline interplay): NL-998 (high), NL-999 and NL-1003 fixed; NL-1000, NL-1001 (medium) and NL-1002 open; rejected: none (the sub-sat melt note in the plan was a doc mismatch, fixed in `CASHU_PLAN.md`). Summary rows recounted from the entries after merging wip/fafo at `5d59c5f2`: 804 entries, no duplicate IDs.
 
 Updated 2026-10-03 by the taproot wave t01 integrator (branch `wip/taproot-int` from `origin/wip/taproot-plan` at `ee682a23`, merged into `wip/fafo`): NL-913 fixed (cluster proof `tap-mx1`; CLN v26.06.8 does not signal simple close), NL-903 (low, fixed in 075a7920, f0ca4a5c and 5c14c684: review fixes) and NL-904 (medium, open: T3/T4 obligations from the review) new; NL-911 and NL-914 updated. NL-910 (low, open: a `ClnPeerStorageTests` cluster flake). Taproot NL-895..NL-899 renumbered to NL-911..NL-915 (collision with the trampoline follow-ups, which landed first).
 
@@ -155,12 +155,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 4 | 74 | 78 |
+| open | 0 | 0 | 5 | 74 | 79 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
 | fixed | 14 | 64 | 202 | 423 | 703 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 3 | 5 |
-| **Total** | **14** | **64** | **215** | **510** | **803** |
+| **Total** | **14** | **64** | **216** | **510** | **804** |
 
 ### Epics
 
@@ -1895,6 +1895,24 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** record 0 (or the budget in a separate field) for a payment that ends Failed.
 - **Blocks/Blocked-by:** Related NL-875
 - **Plan ref:** —
+
+### NL-983 A late `closing_sig` replaces a mutual close that already confirmed, and the channel stays Closing
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Close/Simple/SimpleCloseCoordinator.cs` (`HandleClosingSig` → `RecordClosingTransactionAsync`; probably also the `closing_complete` path near line 270); the mutual-close spend and confirmation handling in `ChannelManager`
+- **Evidence:** cluster matrix `trreg-mx1` (wip/fafo 9418c968, 2026-10-03), `Day0FlowTests.Given_TwoNLightningNodes_When_TheyRunTheDay0Script_Then_LndSeesEveryStepAndEveryBackupIsCurrent`, step 8 (a simple close between two default nodes, `option_simple_close` Optional by default since NL-913/D-T1). The test timed out with `day0-b: channel 9428c344… Closed` (`Day0FlowTests.cs:467`).
+  - Each side had its own closing transaction: A's 418a9c1c and B's 78878e76.
+  - B signed and broadcast A's 418a, and the test mined it: confirmed at height 423, 22:04:13.241.
+  - 61 ms later B received A's `closing_sig` for 78878e. `HandleClosingSig` recorded 78878e as the channel's closing transaction, overwriting 418a, and watched it. Its broadcast then failed with `bad-txns-inputs-missingorspent`.
+  - At 418a's 6th confirmation B no longer recognised it as its close, never called `CompleteCloseAsync`, and the channel stayed Closing.
+  - A received the messages in the other order and reached Closed ("closed on chain by mutual close 418a (we had 78878e)").
+  - The class passed rerun alone, and on base 61889866, which still had legacy close, so the comparison says nothing about this bug.
+  - Diagnostics: `TestResults/cluster/trreg-mx1/day0/` in the main checkout (output.log.gz, diag, rerun-1).
+  - Funds are not at risk (the close confirmed). The channel row never reaches Closed.
+- **Fix sketch:** once the funding output is seen spent by one of the channel's mutual closes, in the mempool or confirmed, a later `closing_complete`/`closing_sig` must not replace the stored closing transaction. Alternatively, `CompleteCloseAsync` accepts the confirmed spend the funding watch recorded. Add a regression test that delivers `closing_sig` after the peer's closing transaction has confirmed.
+- **Blocks/Blocked-by:** Related NL-913, NL-859 (probably the same bug, seen against Eclair), NL-877
+- **Plan ref:** BOLT2 N11
 ### NL-056 HTLC-success / HTLC-timeout second-stage transactions not implemented
 - **Status:** fixed (dfe8866, b222896)
 - **Severity:** high
