@@ -1,10 +1,10 @@
 using System.Security.Cryptography;
 using Google.Protobuf;
 using Grpc.Core;
-using Invoicesrpc;
-using Lnrpc;
-using LNUnit.LND;
-using Routerrpc;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Invoicesrpc;
+using NLightning.Testing.Lnd.Lnrpc;
+using NLightning.Testing.Lnd.Routerrpc;
 
 namespace NLightning.Integration.Tests.Docker.Utils;
 
@@ -55,7 +55,7 @@ public static class LndTestHelpers
     /// Adds an invoice carrying exactly <paramref name="routeHints"/> (LND adds no hints of its own unless
     /// <paramref name="addPrivateHints"/>).
     /// </summary>
-    public static async Task<AddInvoiceResponse> AddInvoiceAsync(LNDNodeConnection node, long valueMsat,
+    public static async Task<AddInvoiceResponse> AddInvoiceAsync(LndNodeConnection node, long valueMsat,
                                                                  IEnumerable<RouteHint> routeHints,
                                                                  CancellationToken cancellationToken,
                                                                  string memo = "", bool addPrivateHints = false,
@@ -73,7 +73,7 @@ public static class LndTestHelpers
     /// Adds a hold invoice for <paramref name="paymentHash"/>: LND accepts the HTLC and holds it until
     /// <see cref="SettleInvoiceAsync"/> or <see cref="CancelInvoiceAsync"/>.
     /// </summary>
-    public static async Task<AddHoldInvoiceResp> AddHoldInvoiceAsync(LNDNodeConnection node, byte[] paymentHash,
+    public static async Task<AddHoldInvoiceResp> AddHoldInvoiceAsync(LndNodeConnection node, byte[] paymentHash,
                                                                       long valueMsat,
                                                                       IEnumerable<RouteHint> routeHints,
                                                                       CancellationToken cancellationToken,
@@ -92,14 +92,14 @@ public static class LndTestHelpers
         return await node.InvoiceClient.AddHoldInvoiceAsync(request, cancellationToken: cancellationToken);
     }
 
-    public static async Task SettleInvoiceAsync(LNDNodeConnection node, byte[] preimage,
+    public static async Task SettleInvoiceAsync(LndNodeConnection node, byte[] preimage,
                                                 CancellationToken cancellationToken)
     {
         await node.InvoiceClient.SettleInvoiceAsync(new SettleInvoiceMsg { Preimage = ByteString.CopyFrom(preimage) },
                                                     cancellationToken: cancellationToken);
     }
 
-    public static async Task CancelInvoiceAsync(LNDNodeConnection node, byte[] paymentHash,
+    public static async Task CancelInvoiceAsync(LndNodeConnection node, byte[] paymentHash,
                                                 CancellationToken cancellationToken)
     {
         await node.InvoiceClient.CancelInvoiceAsync(
@@ -107,7 +107,7 @@ public static class LndTestHelpers
             cancellationToken: cancellationToken);
     }
 
-    public static async Task<Invoice> LookupInvoiceAsync(LNDNodeConnection node, byte[] paymentHash,
+    public static async Task<Invoice> LookupInvoiceAsync(LndNodeConnection node, byte[] paymentHash,
                                                          CancellationToken cancellationToken)
     {
         return await node.LightningClient.LookupInvoiceAsync(new PaymentHash { RHash = ByteString.CopyFrom(paymentHash) },
@@ -118,7 +118,7 @@ public static class LndTestHelpers
     /// Polls the invoice until it reaches <paramref name="state"/>.
     /// </summary>
     /// <exception cref="TimeoutException">Not reached in time; the message names the last state seen.</exception>
-    public static async Task<Invoice> WaitForInvoiceStateAsync(LNDNodeConnection node, byte[] paymentHash,
+    public static async Task<Invoice> WaitForInvoiceStateAsync(LndNodeConnection node, byte[] paymentHash,
                                                                Invoice.Types.InvoiceState state, TimeSpan timeout,
                                                                CancellationToken cancellationToken)
     {
@@ -162,7 +162,7 @@ public static class LndTestHelpers
     /// Not awaiting the task leaves the payment in flight (e.g. towards a hold invoice).
     /// </summary>
     /// <exception cref="TimeoutException">No final state within <paramref name="timeout"/>.</exception>
-    public static async Task<Payment> SendPaymentV2Async(LNDNodeConnection node, SendPaymentRequest request,
+    public static async Task<Payment> SendPaymentV2Async(LndNodeConnection node, SendPaymentRequest request,
                                                          CancellationToken cancellationToken,
                                                          TimeSpan? timeout = null)
     {
@@ -196,7 +196,7 @@ public static class LndTestHelpers
     /// <summary>
     /// Forgets what LND learned from earlier payment failures, so a new payment is not steered by them.
     /// </summary>
-    public static async Task ResetMissionControlAsync(LNDNodeConnection node, CancellationToken cancellationToken)
+    public static async Task ResetMissionControlAsync(LndNodeConnection node, CancellationToken cancellationToken)
     {
         await node.RouterClient.ResetMissionControlAsync(new ResetMissionControlRequest(),
                                                          cancellationToken: cancellationToken);
@@ -213,7 +213,7 @@ public static class LndTestHelpers
     public static long FunderAnchorsSat(Channel channel) =>
         channel.CommitmentType is CommitmentType.Anchors or CommitmentType.SimpleTaproot ? 2 * 330 : 0;
 
-    public static async Task<Channel?> GetChannelByPointAsync(LNDNodeConnection node, string channelPoint,
+    public static async Task<Channel?> GetChannelByPointAsync(LndNodeConnection node, string channelPoint,
                                                               CancellationToken cancellationToken)
     {
         var channels = await node.LightningClient.ListChannelsAsync(new ListChannelsRequest(),
@@ -229,7 +229,7 @@ public static class LndTestHelpers
     /// fails with <c>insufficient_balance</c> or "no matching outgoing channel", and <c>GetChanInfo</c> with
     /// <c>NotFound</c>.
     /// </summary>
-    public static async Task<bool> HasOwnChannelEdgeAsync(LNDNodeConnection node, ulong chanId,
+    public static async Task<bool> HasOwnChannelEdgeAsync(LndNodeConnection node, ulong chanId,
                                                           CancellationToken cancellationToken)
     {
         try
@@ -250,7 +250,7 @@ public static class LndTestHelpers
     /// <summary>
     /// Whether <paramref name="node"/> lists <paramref name="peerIdHex"/> as a connected peer.
     /// </summary>
-    public static async Task<bool> IsConnectedToAsync(LNDNodeConnection node, string peerIdHex,
+    public static async Task<bool> IsConnectedToAsync(LndNodeConnection node, string peerIdHex,
                                                       CancellationToken cancellationToken)
     {
         var peers = await node.LightningClient.ListPeersAsync(new ListPeersRequest(),
@@ -262,7 +262,7 @@ public static class LndTestHelpers
     /// Makes <paramref name="node"/> drop its connection to <paramref name="peerIdHex"/> (LND does not refuse this for
     /// a channel peer). A channel peer of ours reconnects by itself.
     /// </summary>
-    public static async Task DisconnectPeerAsync(LNDNodeConnection node, string peerIdHex,
+    public static async Task DisconnectPeerAsync(LndNodeConnection node, string peerIdHex,
                                                  CancellationToken cancellationToken)
     {
         await node.LightningClient.DisconnectPeerAsync(
@@ -272,7 +272,7 @@ public static class LndTestHelpers
     /// <summary>
     /// The LND version string (<c>0.21.4-beta commit=...</c>), for the test log.
     /// </summary>
-    public static async Task<string> GetVersionAsync(LNDNodeConnection node, CancellationToken cancellationToken)
+    public static async Task<string> GetVersionAsync(LndNodeConnection node, CancellationToken cancellationToken)
     {
         var info = await node.LightningClient.GetInfoAsync(new GetInfoRequest(), cancellationToken: cancellationToken);
         return info.Version;

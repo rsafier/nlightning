@@ -1,9 +1,9 @@
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 using OutPoint = NBitcoin.OutPoint;
 using Transaction = NBitcoin.Transaction;
 
@@ -224,7 +224,7 @@ public class BackupRestoreFlowTests : IAsyncLifetime
     }
 
     /// <summary>LND <c>CloseChannel { force = true }</c>; returns its commitment once it is in the mempool.</summary>
-    private async Task<Transaction> ForceCloseAsync(LNDNodeConnection lnd, OutPoint fundingOutPoint,
+    private async Task<Transaction> ForceCloseAsync(LndNodeConnection lnd, OutPoint fundingOutPoint,
                                                     CancellationToken ct)
     {
         using var closeTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -262,7 +262,7 @@ public class BackupRestoreFlowTests : IAsyncLifetime
     /// its type on both ends.
     /// </summary>
     private async Task<OpenChannelClientSubscriptionResponse> OpenChannelAsync(
-        NLightningTestNode node, LNDNodeConnection lnd, bool anchors, CancellationToken ct)
+        NLightningTestNode node, LndNodeConnection lnd, bool anchors, CancellationToken ct)
     {
         await _harness.EnsureLndWalletFundedAsync(lnd, ct);
         await node.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);

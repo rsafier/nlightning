@@ -1,7 +1,7 @@
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker;
 
@@ -167,7 +167,7 @@ public class WithdrawFlowTests : IAsyncLifetime
     }
 
     /// <summary>Mines until the reserve-backing balance (three confirmations, nothing locked) reaches the amount.</summary>
-    private Task WaitSpendableAsync(LNDNodeConnection david, LightningMoney amount, CancellationToken ct) =>
+    private Task WaitSpendableAsync(LndNodeConnection david, LightningMoney amount, CancellationToken ct) =>
         Poll.UntilAsync(async () =>
         {
             var utxos = Node.Services.GetRequiredService<IUtxoMemoryRepository>();
@@ -180,7 +180,7 @@ public class WithdrawFlowTests : IAsyncLifetime
             return false;
         }, AnchorsHarness.Timeout, $"{amount} spendable", ct);
 
-    private static async Task<string> NewLndAddressAsync(LNDNodeConnection lnd, CancellationToken ct) =>
+    private static async Task<string> NewLndAddressAsync(LndNodeConnection lnd, CancellationToken ct) =>
         (await lnd.LightningClient.NewAddressAsync(new NewAddressRequest { Type = AddressType.WitnessPubkeyHash },
                                                    cancellationToken: ct)).Address;
 

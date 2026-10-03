@@ -29,8 +29,12 @@ public class RevokedCommitmentDbRepository : BaseDbRepository<RevokedCommitmentE
     /// <remarks>Since migration <c>AddSpliceFundings</c> a number may be logged once per funding (SP-I5): this returns
     /// the row of the channel's current funding when there is one, else the one of the funding created first (lowest
     /// <c>ChannelFundings.Sequence</c>; rows of a funding without a <c>ChannelFundings</c> row come last, by txid). Use
-    /// <see cref="GetAsync(ChannelId, TxId, ulong)"/> when the funding the commitment spends is known.</remarks>
-    public async Task<RevokedCommitmentModel?> GetAsync(ChannelId channelId, ulong number)
+    /// <see cref="GetAsync(ChannelId, TxId, ulong)"/> when the funding the commitment spends is known. The channel row,
+    /// the log and the funding rows are read from one snapshot of the database (NL-810).</remarks>
+    public Task<RevokedCommitmentModel?> GetAsync(ChannelId channelId, ulong number) =>
+        _context.ReadConsistentlyAsync(() => ReadAsync(channelId, number));
+
+    private async Task<RevokedCommitmentModel?> ReadAsync(ChannelId channelId, ulong number)
     {
         var channel = await _context.Channels.FindAsync(channelId);
         if (channel is not null)

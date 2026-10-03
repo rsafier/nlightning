@@ -54,7 +54,9 @@ using Options;
 /// disconnected blocks are removed and wallet outputs they spent are restored when bitcoind reports them unspent
 /// (NL-293).</para>
 /// <para>Broadcasts (NL-258): every stored <see cref="BroadcastState.Pending"/> transaction is sent again after each
-/// processing round (also a halted one) and at startup (also when halted), until a processed block holds it.</para>
+/// processing round (also a halted one) and at startup (also when halted), until a processed block holds it, or, for a
+/// transaction that confirmed in a block processed before the monitor tracked it, until a refusal that may mean it is
+/// confirmed finds it in the chain (NL-779, <see cref="TrySettleConfirmedAsync"/>).</para>
 /// <para>Mempool (BOLT 5 plan O8, NL-098): with <see cref="BitcoinOptions.WatchMempool"/> a second loop reads ZMQ
 /// <c>rawtx</c> and raises <see cref="OnWatchedOutpointSpentInMempool"/> for a transaction that spends a watched
 /// outpoint, or an output of a transaction it reported before. Nothing is saved or marked spent for it: only a
@@ -441,6 +443,14 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             _logger.LogInformation("Publishing {Purpose} transaction {TxId}", Enum.GetName(transaction.Purpose), txId);
 
         return await TrySendAsync(transaction);
+    }
+
+    /// <inheritdoc />
+    public void TrackPendingBroadcast(BroadcastTransactionModel transaction)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        if (transaction.State == BroadcastState.Pending)
+            _pendingBroadcasts[new uint256(transaction.TransactionId)] = transaction;
     }
 
     /// <inheritdoc />
@@ -1488,6 +1498,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 await LoadPendingWatchedTransactionsAsync(uow);
                 foreach (var broadcast in await uow.BroadcastTransactionDbRepository.GetPendingAsync())
                     _pendingBroadcasts[new uint256(broadcast.TransactionId)] = broadcast;
+
+                // A row the rollback made pending again may be looked up again (NL-779)
+                _confirmationLookups.Clear();
             }
 
             _blocksToProcess.Clear();
@@ -1630,7 +1643,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     {
         await DropSettledBroadcastsAsync();
         foreach (var broadcast in _pendingBroadcasts.Values.ToList())
-            await TrySendAsync(broadcast);
+            await TrySendAsync(broadcast, settleConfirmed: true);
     }
 
     /// <summary>
@@ -1764,9 +1777,13 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     /// <summary>
     /// Sends a stored broadcast. True when the node accepted it or already has it; false when it was refused. A refusal
     /// is logged at Warning the first time and then every <see cref="RefusalWarningInterval"/> refusals in a row (at
-    /// Debug in between), so a transaction the node keeps refusing stays visible without a line per block.
+    /// Debug in between), so a transaction the node keeps refusing stays visible without a line per block. With
+    /// <paramref name="settleConfirmed"/> (the rebroadcast round, never a caller's publish: a block's event handler may
+    /// publish while the block's round holds the queue), a refusal that may mean the transaction is already confirmed
+    /// is checked first (NL-779, <see cref="TrySettleConfirmedAsync"/>); a confirmed one is marked so and counts as
+    /// accepted, not as refused.
     /// </summary>
-    private async Task<bool> TrySendAsync(BroadcastTransactionModel broadcast)
+    private async Task<bool> TrySendAsync(BroadcastTransactionModel broadcast, bool settleConfirmed = false)
     {
         var txId = new uint256(broadcast.TransactionId);
         try
@@ -1777,6 +1794,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            if (settleConfirmed && BroadcastRefusalRules.MayBeConfirmed(ex) && await TrySettleConfirmedAsync(broadcast))
+                return true;
+
             if (IsAlreadyKnown(ex))
             {
                 ForgetRefusals(txId);

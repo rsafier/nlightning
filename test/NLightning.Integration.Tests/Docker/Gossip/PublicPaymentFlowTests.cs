@@ -1,5 +1,5 @@
 using System.Globalization;
-using Lnrpc;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 

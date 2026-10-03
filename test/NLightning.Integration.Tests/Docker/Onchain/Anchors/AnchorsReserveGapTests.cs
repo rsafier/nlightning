@@ -1,6 +1,6 @@
 using System.Globalization;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Testing.Lnd;
 
 namespace NLightning.Integration.Tests.Docker.Onchain.Anchors;
 
@@ -173,7 +173,7 @@ public class AnchorsReserveGapTests : IAsyncLifetime
     /// Mines until <see cref="AvailableBalance"/> reaches <paramref name="amount"/> (the wallet counts an output as
     /// confirmed three blocks after the one that includes it).
     /// </summary>
-    private Task WaitAvailableAsync(LNDNodeConnection david, LightningMoney amount, CancellationToken ct) =>
+    private Task WaitAvailableAsync(LndNodeConnection david, LightningMoney amount, CancellationToken ct) =>
         Poll.UntilAsync(async () =>
         {
             if (AvailableBalance(Node) >= amount)
@@ -208,7 +208,7 @@ public class AnchorsReserveGapTests : IAsyncLifetime
 
     /// <summary>Opens a channel and waits until both ends use it.</summary>
     private async Task<OpenChannelClientSubscriptionResponse> OpenUsableAsync(
-        LNDNodeConnection david, string peerAddress, LightningMoney amount, CancellationToken ct)
+        LndNodeConnection david, string peerAddress, LightningMoney amount, CancellationToken ct)
     {
         var channel = await OpenAsync(peerAddress, amount, ct);
         Console.WriteLine($"Opened channel {channel.ChannelId} ({channel.ChannelPoint()}) of {amount}");

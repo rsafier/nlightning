@@ -2,8 +2,8 @@ using System.Buffers.Binary;
 using System.Net;
 using Docker.DotNet;
 using Docker.DotNet.Models;
-using Lnrpc;
-using LNUnit.LND;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Onchain.Cheater;
 
@@ -98,7 +98,7 @@ public sealed class LndChannelDbRollback : IDisposable
     /// <summary>
     /// Waits until the container's LND answers and is synced to the chain (after a restart).
     /// </summary>
-    public async Task<LNDNodeConnection> WaitSyncedAsync(CancellationToken ct)
+    public async Task<LndNodeConnection> WaitSyncedAsync(CancellationToken ct)
     {
         return await Poll.ForAsync(async () =>
         {

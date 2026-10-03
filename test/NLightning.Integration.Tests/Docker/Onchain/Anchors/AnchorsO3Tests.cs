@@ -1,8 +1,8 @@
 using System.Globalization;
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 using OutPoint = NBitcoin.OutPoint;
 using Transaction = NBitcoin.Transaction;
 
@@ -84,6 +84,7 @@ public class AnchorsO3Tests : IAsyncLifetime
 
         // Act: force close, the commitment confirms
         var commitment = await _harness.ForceCloseAndConfirmAsync(node, [david], channel, ct);
+        await ChainSync.MineUntilLndSweptAsync(_harness.Fixture, david, [node], commitment.Transaction.GetHash(), ct);
         var (ourAnchor, peerAnchor) = AnchorsHarness.FindAnchors(model, commitment.Transaction);
         var toLocalRow = await AnchorsHarness.WaitForRowAsync(node, channel.ChannelId,
                                                               r => r.TransactionId == commitment.TxId
@@ -351,7 +352,7 @@ public class AnchorsO3Tests : IAsyncLifetime
     }
 
     /// <summary>The CSV LND imposes on our <c>to_local</c> (our channel's <c>Remote.ToSelfDelay</c>).</summary>
-    private static async Task<ushort> GetOurCsvAsync(NLightningTestNode node, LNDNodeConnection peer,
+    private static async Task<ushort> GetOurCsvAsync(NLightningTestNode node, LndNodeConnection peer,
                                                      OpenChannelClientSubscriptionResponse channel,
                                                      CancellationToken ct)
     {

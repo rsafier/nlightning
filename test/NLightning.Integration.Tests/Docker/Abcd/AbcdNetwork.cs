@@ -1,6 +1,6 @@
 using System.Text;
-using Lnrpc;
-using LNUnit.LND;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Abcd;
 
@@ -53,8 +53,8 @@ public sealed class AbcdNetwork : IAsyncDisposable
 
     private readonly LightningRegtestNetworkFixture _fixture;
 
-    public LNDNodeConnection Alice { get; }
-    public LNDNodeConnection David { get; }
+    public LndNodeConnection Alice { get; }
+    public LndNodeConnection David { get; }
     public NLightningTestNode Bob { get; }
     public NLightningTestNode Carol { get; }
 
@@ -74,7 +74,7 @@ public sealed class AbcdNetwork : IAsyncDisposable
 
     public IReadOnlyList<NLightningTestNode> Nodes => [Bob, Carol];
 
-    private AbcdNetwork(LightningRegtestNetworkFixture fixture, LNDNodeConnection alice, LNDNodeConnection david,
+    private AbcdNetwork(LightningRegtestNetworkFixture fixture, LndNodeConnection alice, LndNodeConnection david,
                         NLightningTestNode bob, NLightningTestNode carol)
     {
         _fixture = fixture;

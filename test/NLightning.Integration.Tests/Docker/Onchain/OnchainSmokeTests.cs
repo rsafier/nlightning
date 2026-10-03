@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NLightning.Testing.Lnd;
 
 namespace NLightning.Integration.Tests.Docker.Onchain;
 
@@ -223,7 +224,7 @@ public class OnchainSmokeTests : IAsyncLifetime
     }
 
     private async Task<ChannelInfoClientResponse> WaitUsableAsync(NLightningTestNode node,
-                                                                  LNUnit.LND.LNDNodeConnection peer,
+                                                                  LndNodeConnection peer,
                                                                   OpenChannelClientSubscriptionResponse opened,
                                                                   CancellationToken ct)
     {

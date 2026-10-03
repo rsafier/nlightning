@@ -1,5 +1,3 @@
-using Microsoft.Extensions.DependencyInjection;
-
 namespace NLightning.Application.Tests.Channels.DualFunding;
 
 using Domain.Accounting.Constants;

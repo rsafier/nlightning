@@ -91,9 +91,7 @@ public class ChannelOpeningFlowTests : IAsyncLifetime
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
-        var alice = _lightningRegtestNetworkFixture.Builder!.LNDNodePool!.ReadyNodes
-                                                   .First(x => x.LocalAlias == "alice");
-        Assert.NotNull(alice);
+        var alice = _lightningRegtestNetworkFixture.GetLndNode("alice");
 
         foreach (var deposit in deposits)
             await _node.FundWalletAsync(deposit.Amount, deposit.Type, ct, deposit.IsChange);

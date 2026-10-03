@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using LNUnit.LND;
+using NLightning.Testing.Lnd;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
@@ -259,7 +259,7 @@ public class GossipSyncFlowTests
     /// Waits for the restarted node's own reconnect to <paramref name="lnd"/> (<c>PeerManager</c> reconnects to its
     /// stored peers at start), connecting by hand if it does not come.
     /// </summary>
-    private static async Task ReconnectAsync(NLightningTestNode node, LNDNodeConnection lnd, CancellationToken ct)
+    private static async Task ReconnectAsync(NLightningTestNode node, LndNodeConnection lnd, CancellationToken ct)
     {
         if (await Poll.HoldsAsync(() => !node.IsConnectedTo(lnd.LocalNodePubKeyBytes), s_ownReconnectWait, ct))
             await node.ConnectToAsync(lnd, ct);

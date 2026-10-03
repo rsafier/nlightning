@@ -1,8 +1,8 @@
 using Grpc.Core;
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 using OutPoint = NBitcoin.OutPoint;
 using Transaction = NBitcoin.Transaction;
 
@@ -260,7 +260,7 @@ public class OnchainO5Tests : IAsyncLifetime
     /// three payments each way revoke that state; our node stops; david restarts on the copy and force-closes (its
     /// revoked commitment is mined); our node starts.
     /// </summary>
-    private async Task<(NLightningTestNode Node, LNDNodeConnection David, ChannelId ChannelId, string ChannelPoint,
+    private async Task<(NLightningTestNode Node, LndNodeConnection David, ChannelId ChannelId, string ChannelPoint,
                         Transaction Revoked, LightningMoney WalletBefore)> PrepareLndBreachAsync(CancellationToken ct)
     {
         var node = await CreateNodeAsync("breach-victim", ct);
@@ -443,7 +443,7 @@ public class OnchainO5Tests : IAsyncLifetime
     }
 
     /// <summary>Mines one block at a time until the channel is usable at every NLightning end and active in LND.</summary>
-    private async Task WaitUsableAsync(IReadOnlyList<LNDNodeConnection> lndNodes,
+    private async Task WaitUsableAsync(IReadOnlyList<LndNodeConnection> lndNodes,
                                        IReadOnlyList<NLightningTestNode> nodes, ChannelId channelId,
                                        CancellationToken ct)
     {
@@ -487,7 +487,7 @@ public class OnchainO5Tests : IAsyncLifetime
     }
 
     /// <summary>We pay david <paramref name="amountSat"/> and wait until both sides settled.</summary>
-    private static async Task PayLndAsync(NLightningTestNode node, LNDNodeConnection david, ChannelId channelId,
+    private static async Task PayLndAsync(NLightningTestNode node, LndNodeConnection david, ChannelId channelId,
                                           string channelPoint, long amountSat, CancellationToken ct)
     {
         var invoice = await LndTestHelpers.AddInvoiceAsync(david, amountSat * 1_000, [], ct, "o5 we pay david");
@@ -497,30 +497,30 @@ public class OnchainO5Tests : IAsyncLifetime
     }
 
     /// <summary>david pays our invoice of <paramref name="amountSat"/> over the channel, and both sides settle.</summary>
-    private static async Task LndPaysUsAsync(NLightningTestNode node, LNDNodeConnection david, ulong chanId,
+    private static async Task LndPaysUsAsync(NLightningTestNode node, LndNodeConnection david, ulong chanId,
                                              ChannelId channelId, string channelPoint, long amountSat,
                                              CancellationToken ct)
     {
         var invoice = await node.CreateInvoiceAsync(LightningMoney.Satoshis(amountSat), "o5 david pays us", ct);
-        Lnrpc.Payment? payment = null;
+        Testing.Lnd.Lnrpc.Payment? payment = null;
         for (var attempt = 1; attempt <= 5; attempt++)
         {
             // Right after a restart or a settled payment LND may not route to us yet (no route); try again
             await LndTestHelpers.ResetMissionControlAsync(david, ct);
             payment = await LndTestHelpers.SendPaymentV2Async(
                           david, LndTestHelpers.PinnedPayment(invoice.Bolt11!, [chanId]), ct);
-            if (payment.Status == Lnrpc.Payment.Types.PaymentStatus.Succeeded)
+            if (payment.Status == Testing.Lnd.Lnrpc.Payment.Types.PaymentStatus.Succeeded)
                 break;
 
             Console.WriteLine($"[o5a] david's payment attempt {attempt} failed: {payment.FailureReason}");
             await Task.Delay(TimeSpan.FromSeconds(2), ct);
         }
 
-        Assert.Equal(Lnrpc.Payment.Types.PaymentStatus.Succeeded, payment!.Status);
+        Assert.Equal(Testing.Lnd.Lnrpc.Payment.Types.PaymentStatus.Succeeded, payment!.Status);
         await WaitSettledWithLndAsync(node, david, channelId, channelPoint, ct);
     }
 
-    private static async Task WaitSettledWithLndAsync(NLightningTestNode node, LNDNodeConnection david,
+    private static async Task WaitSettledWithLndAsync(NLightningTestNode node, LndNodeConnection david,
                                                       ChannelId channelId, string channelPoint, CancellationToken ct)
     {
         await Poll.UntilAsync(async () =>

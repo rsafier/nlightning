@@ -1,6 +1,6 @@
 using Google.Protobuf;
-using Lnrpc;
-using LNUnit.LND;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
@@ -222,7 +222,7 @@ public class PublicChannelFlowTests
     /// alice has the channel with both policies (ours included, not disabled), and bob, who got it relayed by alice,
     /// lists it in <c>DescribeGraph</c>. Mines a block now and then: both ends announce at 6 confirmations.
     /// </summary>
-    private async Task AssertAnnouncedAsync(NLightningTestNode node, LNDNodeConnection alice, LNDNodeConnection bob,
+    private async Task AssertAnnouncedAsync(NLightningTestNode node, LndNodeConnection alice, LndNodeConnection bob,
                                             ulong scid, CancellationToken ct)
     {
         await GossipGraphProbe.MineUntilAsync(
@@ -248,7 +248,7 @@ public class PublicChannelFlowTests
     /// <summary>
     /// bob has our <c>node_announcement</c> with the alias and color we configured.
     /// </summary>
-    private static async Task AssertOurNodeAnnouncedAsync(NLightningTestNode node, LNDNodeConnection bob,
+    private static async Task AssertOurNodeAnnouncedAsync(NLightningTestNode node, LndNodeConnection bob,
                                                           string alias, CancellationToken ct)
     {
         var announced = await Poll.ForAsync(() => GossipGraphProbe.TryGetNodeInfoAsync(bob, node.NodeIdHex, ct),

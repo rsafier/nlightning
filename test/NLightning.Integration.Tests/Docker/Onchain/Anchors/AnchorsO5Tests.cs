@@ -1,7 +1,7 @@
 using Grpc.Core;
-using Lnrpc;
-using LNUnit.LND;
 using NBitcoin;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 using OutPoint = NBitcoin.OutPoint;
 using Transaction = NBitcoin.Transaction;
 
@@ -161,7 +161,7 @@ public class AnchorsO5Tests : IAsyncLifetime
     /// LND answers GetInfo (synced) before its server is started and refuses CloseChannel until then: retries the force
     /// close; returns the commitment's txid.
     /// </summary>
-    private static async Task<uint256> ForceCloseWhenStartedAsync(LNDNodeConnection david, string channelPoint,
+    private static async Task<uint256> ForceCloseWhenStartedAsync(LndNodeConnection david, string channelPoint,
                                                                   CancellationToken ct)
     {
         var parts = channelPoint.Split(':');
@@ -222,7 +222,7 @@ public class AnchorsO5Tests : IAsyncLifetime
         return total;
     }
 
-    private async Task WaitUsableAsync(NLightningTestNode node, LNDNodeConnection david,
+    private async Task WaitUsableAsync(NLightningTestNode node, LndNodeConnection david,
                                        Domain.Channels.ValueObjects.ChannelId channelId, CancellationToken ct)
     {
         await Poll.UntilAsync(async () =>

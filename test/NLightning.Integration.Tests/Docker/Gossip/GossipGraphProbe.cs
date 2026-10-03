@@ -1,7 +1,7 @@
 using Grpc.Core;
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
@@ -28,7 +28,7 @@ public static class GossipGraphProbe
     /// <summary>
     /// LND's edge for <paramref name="shortChannelId"/>, or null while LND does not know the channel.
     /// </summary>
-    public static async Task<ChannelEdge?> TryGetChanInfoAsync(LNDNodeConnection lnd, ulong shortChannelId,
+    public static async Task<ChannelEdge?> TryGetChanInfoAsync(LndNodeConnection lnd, ulong shortChannelId,
                                                                CancellationToken cancellationToken)
     {
         try
@@ -50,7 +50,7 @@ public static class GossipGraphProbe
     /// <summary>
     /// Whether LND's <c>DescribeGraph</c> (announced channels only) lists <paramref name="shortChannelId"/>.
     /// </summary>
-    public static async Task<bool> GraphHasChannelAsync(LNDNodeConnection lnd, ulong shortChannelId,
+    public static async Task<bool> GraphHasChannelAsync(LndNodeConnection lnd, ulong shortChannelId,
                                                         CancellationToken cancellationToken)
     {
         var graph = await lnd.LightningClient.DescribeGraphAsync(new ChannelGraphRequest { IncludeUnannounced = false },
@@ -64,7 +64,7 @@ public static class GossipGraphProbe
     /// <summary>
     /// LND's announcement of <paramref name="nodeIdHex"/>, or null while it has none.
     /// </summary>
-    public static async Task<LightningNode?> TryGetNodeInfoAsync(LNDNodeConnection lnd, string nodeIdHex,
+    public static async Task<LightningNode?> TryGetNodeInfoAsync(LndNodeConnection lnd, string nodeIdHex,
                                                                  CancellationToken cancellationToken)
     {
         try
@@ -88,7 +88,7 @@ public static class GossipGraphProbe
     /// id, the two node ids, and whether LND marks the channel private.
     /// </summary>
     public static async Task<IReadOnlyList<(ulong ShortChannelId, string Local, string Remote, bool Private)>>
-        GetFixtureChannelsAsync(IReadOnlyList<LNDNodeConnection> lndNodes, CancellationToken cancellationToken)
+        GetFixtureChannelsAsync(IReadOnlyList<LndNodeConnection> lndNodes, CancellationToken cancellationToken)
     {
         var ids = lndNodes.Select(n => n.LocalNodePubKey.ToLowerInvariant()).ToHashSet();
         var channels = new Dictionary<ulong, (ulong, string, string, bool)>();
@@ -141,7 +141,7 @@ public static class GossipGraphProbe
     /// announcement of every node in <paramref name="nodeIds"/>. Logs what is missing.
     /// </summary>
     public static async Task<bool> OurGraphHasAsync(NLightningTestNode node, IEnumerable<ulong> shortChannelIds,
-                                                    IEnumerable<LNDNodeConnection> nodeIds)
+                                                    IEnumerable<LndNodeConnection> nodeIds)
     {
         var missing = new List<string>();
         foreach (var scid in shortChannelIds)

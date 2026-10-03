@@ -1,6 +1,6 @@
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker;
 
@@ -249,7 +249,7 @@ public sealed class CloseRestartFlowTests : IAsyncLifetime
     }
 
     /// <summary>Both sides list <paramref name="count"/> HTLCs on the channel (ours offered, alice's pending).</summary>
-    private static async Task WaitHtlcsAsync(NLightningTestNode node, LNDNodeConnection alice, ChannelId channelId,
+    private static async Task WaitHtlcsAsync(NLightningTestNode node, LndNodeConnection alice, ChannelId channelId,
                                              string channelPoint, int count, CancellationToken ct) =>
         await Poll.UntilAsync(async () =>
         {
@@ -259,7 +259,7 @@ public sealed class CloseRestartFlowTests : IAsyncLifetime
         }, s_timeout, $"{count} HTLC(s) on both sides", ct);
 
     /// <summary>Our restarted node dials alice (a stored peer with a channel) and both list the connection.</summary>
-    private static async Task WaitReconnectedAsync(NLightningTestNode node, LNDNodeConnection alice,
+    private static async Task WaitReconnectedAsync(NLightningTestNode node, LndNodeConnection alice,
                                                    CancellationToken ct) =>
         await Poll.UntilAsync(async () => node.IsConnectedTo(new CompactPubKey(alice.LocalNodePubKeyBytes))
                                        && await LndTestHelpers.IsConnectedToAsync(alice, node.NodeIdHex, ct),

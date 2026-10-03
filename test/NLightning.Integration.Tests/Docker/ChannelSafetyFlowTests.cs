@@ -1,7 +1,7 @@
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker;
 
@@ -301,7 +301,7 @@ public class ChannelSafetyFlowTests : IAsyncLifetime
         (node.Services.GetRequiredService<ChannelFailureService>(), node.Services.GetRequiredService<HtlcExpiryMonitor>());
 
     private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(NLightningTestNode node,
-        LNDNodeConnection peer, LightningMoney? push, CancellationToken ct)
+        LndNodeConnection peer, LightningMoney? push, CancellationToken ct)
     {
         var peerAddress = await node.ConnectToAsync(peer, ct);
         var channel = await node.OpenChannelAsync(new OpenChannelClientRequest(peerAddress,
@@ -364,7 +364,7 @@ public class ChannelSafetyFlowTests : IAsyncLifetime
         return task.IsCompleted;
     }
 
-    private static async Task CancelHoldInvoiceQuietlyAsync(LNDNodeConnection node, byte[] paymentHash)
+    private static async Task CancelHoldInvoiceQuietlyAsync(LndNodeConnection node, byte[] paymentHash)
     {
         try
         {

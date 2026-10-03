@@ -1,7 +1,7 @@
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 using Transaction = NBitcoin.Transaction;
 
 namespace NLightning.Integration.Tests.Docker.Onchain;
@@ -297,7 +297,7 @@ public class OnchainO6Tests : IAsyncLifetime
     }
 
     private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(NLightningTestNode node,
-                                                                                    LNDNodeConnection peer,
+                                                                                    LndNodeConnection peer,
                                                                                     CancellationToken ct)
     {
         await node.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
@@ -327,7 +327,7 @@ public class OnchainO6Tests : IAsyncLifetime
     /// <summary>We fail the channel (our latest commitment broadcast), mine it, wait for the local-commitment close.
     /// </summary>
     private async Task<(TxId TxId, uint Height)> ForceCloseAndConfirmAsync(NLightningTestNode node,
-                                                                           LNDNodeConnection peer,
+                                                                           LndNodeConnection peer,
                                                                            OpenChannelClientSubscriptionResponse channel,
                                                                            CancellationToken ct)
     {
@@ -345,7 +345,7 @@ public class OnchainO6Tests : IAsyncLifetime
     }
 
     /// <summary>david force-closes; its commitment confirms and we record the remote close. Returns its txid.</summary>
-    private async Task<TxId> DavidForceClosesAsync(NLightningTestNode node, LNDNodeConnection david,
+    private async Task<TxId> DavidForceClosesAsync(NLightningTestNode node, LndNodeConnection david,
                                                    OpenChannelClientSubscriptionResponse channel, CancellationToken ct)
     {
         var parts = channel.ChannelPoint().Split(':');
@@ -431,7 +431,7 @@ public class OnchainO6Tests : IAsyncLifetime
         }, s_timeout, "the payment settled on both sides", ct);
     }
 
-    private async Task MineToAsync(NLightningTestNode node, LNDNodeConnection[] peers, uint height,
+    private async Task MineToAsync(NLightningTestNode node, LndNodeConnection[] peers, uint height,
                                    CancellationToken ct)
     {
         var tip = (uint)await _fixture.Bitcoin.GetBlockCountAsync(ct);

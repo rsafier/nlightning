@@ -1,5 +1,5 @@
-using Lnrpc;
-using LNUnit.LND;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
@@ -15,7 +15,7 @@ public sealed class LndPolicyChanges
 {
     private static readonly TimeSpan s_seenTimeout = TimeSpan.FromMinutes(2);
 
-    private readonly Dictionary<(string Node, ulong Scid), (LNDNodeConnection Lnd, RoutingPolicy Original, string Point)>
+    private readonly Dictionary<(string Node, ulong Scid), (LndNodeConnection Lnd, RoutingPolicy Original, string Point)>
         _changed = [];
 
     /// <summary>
@@ -26,13 +26,13 @@ public sealed class LndPolicyChanges
     /// <summary>
     /// The policy <paramref name="lnd"/> had on <paramref name="shortChannelId"/> before the first change.
     /// </summary>
-    public RoutingPolicy Original(LNDNodeConnection lnd, ulong shortChannelId) =>
+    public RoutingPolicy Original(LndNodeConnection lnd, ulong shortChannelId) =>
         _changed[(lnd.LocalNodePubKey.ToLowerInvariant(), shortChannelId)].Original;
 
     /// <summary>
     /// Sets <paramref name="lnd"/>'s fee on <paramref name="shortChannelId"/> (other fields unchanged).
     /// </summary>
-    public async Task SetAsync(LNDNodeConnection lnd, ulong shortChannelId, long feeBaseMsat, uint feePpm,
+    public async Task SetAsync(LndNodeConnection lnd, ulong shortChannelId, long feeBaseMsat, uint feePpm,
                                CancellationToken cancellationToken)
     {
         var (original, point) = await RememberAsync(lnd, shortChannelId, cancellationToken);
@@ -44,7 +44,7 @@ public sealed class LndPolicyChanges
     /// A fresh <c>channel_update</c> for each of <paramref name="shortChannelIds"/> from <paramref name="lnd"/>: the
     /// original base fee on even rounds and one msat more on odd ones, so every round really changes the policy.
     /// </summary>
-    public async Task RefreshAsync(LNDNodeConnection lnd, IEnumerable<ulong> shortChannelIds, int round,
+    public async Task RefreshAsync(LndNodeConnection lnd, IEnumerable<ulong> shortChannelIds, int round,
                                    CancellationToken cancellationToken)
     {
         foreach (var scid in shortChannelIds)
@@ -59,7 +59,7 @@ public sealed class LndPolicyChanges
     /// Waits until <paramref name="observer"/>'s graph has every change made so far (the announced policy's
     /// <c>last_update</c> is not older than the change).
     /// </summary>
-    public async Task WaitSeenByAsync(LNDNodeConnection observer, CancellationToken cancellationToken)
+    public async Task WaitSeenByAsync(LndNodeConnection observer, CancellationToken cancellationToken)
     {
         foreach (var ((node, scid), at) in _changedAt)
             await Poll.UntilAsync(async () =>
@@ -93,7 +93,7 @@ public sealed class LndPolicyChanges
         }
     }
 
-    private async Task<(RoutingPolicy Original, string Point)> RememberAsync(LNDNodeConnection lnd, ulong scid,
+    private async Task<(RoutingPolicy Original, string Point)> RememberAsync(LndNodeConnection lnd, ulong scid,
                                                                             CancellationToken cancellationToken)
     {
         var key = (lnd.LocalNodePubKey.ToLowerInvariant(), scid);

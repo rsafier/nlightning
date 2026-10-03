@@ -1,5 +1,5 @@
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Testing.Lnd;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
@@ -39,7 +39,7 @@ public static class PublicTopology
     /// <summary>
     /// alice, bob and carol, the fixture's LND nodes with channels.
     /// </summary>
-    public static IReadOnlyList<LNDNodeConnection> LndNodes(LightningRegtestNetworkFixture fixture) =>
+    public static IReadOnlyList<LndNodeConnection> LndNodes(LightningRegtestNetworkFixture fixture) =>
         [fixture.GetLndNode("alice"), fixture.GetLndNode("bob"), fixture.GetLndNode("carol")];
 
     /// <summary>
@@ -50,7 +50,7 @@ public static class PublicTopology
     /// </summary>
     public static async Task<PublicChannelToAlice> OpenPublicChannelToAliceAsync(
         LightningRegtestNetworkFixture fixture, NLightningTestNode node, LightningMoney? push,
-        IReadOnlyList<LNDNodeConnection> observers, CancellationToken ct, bool syncGraph = true)
+        IReadOnlyList<LndNodeConnection> observers, CancellationToken ct, bool syncGraph = true)
     {
         var alice = fixture.GetLndNode("alice");
         await node.FundWalletAsync(LightningMoney.Satoshis(Capacity.Satoshi * 2), AddressType.P2Wpkh, ct);
@@ -103,7 +103,7 @@ public static class PublicTopology
     /// <see cref="s_blockEvery"/> without success (up to 6).
     /// </summary>
     public static Task WaitLndHasChannelAsync(LightningRegtestNetworkFixture fixture, NLightningTestNode node,
-                                              LNDNodeConnection lnd, ulong scid, CancellationToken ct) =>
+                                              LndNodeConnection lnd, ulong scid, CancellationToken ct) =>
         GossipGraphProbe.MineUntilAsync(
             async () => await GossipGraphProbe.TryGetChanInfoAsync(lnd, scid, ct) is
             { Node1Policy: not null, Node2Policy: not null },
@@ -137,7 +137,7 @@ public static class PublicTopology
     /// </summary>
     public static ulong FixtureChannelBetween(
         IReadOnlyList<(ulong ShortChannelId, string Local, string Remote, bool Private)> channels,
-        LNDNodeConnection a, LNDNodeConnection b)
+        LndNodeConnection a, LndNodeConnection b)
     {
         var ids = new[] { a.LocalNodePubKey.ToLowerInvariant(), b.LocalNodePubKey.ToLowerInvariant() };
         return channels.First(c => ids.Contains(c.Local) && ids.Contains(c.Remote)).ShortChannelId;

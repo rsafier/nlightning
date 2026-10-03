@@ -46,6 +46,21 @@ public class BroadcastRefusalRulesTests
     }
 
     [Theory]
+    [InlineData("bad-txns-inputs-missingorspent", true)]
+    [InlineData("Transaction outputs already in utxo set", true)]
+    [InlineData("Transaction already in block chain", true)]
+    [InlineData("txn-already-known", true)]
+    [InlineData("txn-already-in-mempool", false)]
+    [InlineData("min relay fee not met, 100 < 141", false)]
+    [InlineData("bad-txns-in-belowout", false)]
+    public void Given_ARefusal_When_AskedWhetherTheTransactionMayBeConfirmed_Then_OnlyInChainAndMissingInputsMay(
+        string reason, bool mayBeConfirmed)
+    {
+        // Act / Assert (NL-779)
+        Assert.Equal(mayBeConfirmed, BroadcastRefusalRules.MayBeConfirmed(new InvalidOperationException(reason)));
+    }
+
+    [Theory]
     [InlineData(BroadcastPurpose.Funding, true)]
     [InlineData(BroadcastPurpose.Unspecified, true)]
     [InlineData(BroadcastPurpose.WalletSend, true)]

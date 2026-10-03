@@ -1,5 +1,5 @@
-using Lnrpc;
 using NBitcoin;
+using NLightning.Testing.Lnd.Lnrpc;
 using OutPoint = NBitcoin.OutPoint;
 using Transaction = NBitcoin.Transaction;
 

@@ -1,5 +1,5 @@
-using Lnrpc;
-using LNUnit.LND;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker;
 
@@ -130,7 +130,7 @@ public class MppFlowTests : IAsyncLifetime
         GC.SuppressFinalize(this);
     }
 
-    private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(LNDNodeConnection peer,
+    private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(LndNodeConnection peer,
         string peerAddress, CancellationToken ct)
     {
         await Node.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
@@ -169,7 +169,7 @@ public class MppFlowTests : IAsyncLifetime
     /// for want of a route or balance (its router adds a fresh private channel's edge a moment after the channel turns
     /// active, NL-319) is started again; the final update of any other outcome is returned.
     /// </summary>
-    private static async Task<Payment> PayUntilDoneAsync(LNDNodeConnection lnd, string bolt11, ulong[] chanIds,
+    private static async Task<Payment> PayUntilDoneAsync(LndNodeConnection lnd, string bolt11, ulong[] chanIds,
                                                          CancellationToken ct)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);

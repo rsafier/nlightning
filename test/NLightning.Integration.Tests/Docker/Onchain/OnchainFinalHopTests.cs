@@ -1,10 +1,10 @@
 using Google.Protobuf;
 using Grpc.Core;
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
-using Routerrpc;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
+using NLightning.Testing.Lnd.Routerrpc;
 
 namespace NLightning.Integration.Tests.Docker.Onchain;
 
@@ -157,7 +157,7 @@ public class OnchainFinalHopTests : IAsyncLifetime
         Assert.Equal(InvoiceStatus.Settled, (await GetInvoiceAsync(invoice, ct)).Status);
     }
 
-    private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(LNDNodeConnection peer,
+    private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(LndNodeConnection peer,
                                                                                     string peerAddress,
                                                                                     CancellationToken ct)
     {
@@ -190,7 +190,7 @@ public class OnchainFinalHopTests : IAsyncLifetime
     /// which completes when the part is resolved. <c>BuildRoute</c> is retried while LND's router lacks the fresh
     /// private channel's edge (NL-319).
     /// </summary>
-    private async Task<Task<HTLCAttempt>> SendPartAsync(LNDNodeConnection lnd, ulong chanId, InvoiceModel invoice,
+    private async Task<Task<HTLCAttempt>> SendPartAsync(LndNodeConnection lnd, ulong chanId, InvoiceModel invoice,
                                                         LightningMoney part, CancellationToken ct)
     {
         var route = await Poll.ForAsync(async () =>
@@ -221,7 +221,7 @@ public class OnchainFinalHopTests : IAsyncLifetime
             PaymentAddr = ByteString.CopyFrom((byte[])invoice.PaymentSecret),
             TotalAmtMsat = (long)s_amount.MilliSatoshi
         };
-        return lnd.RouterClient.SendToRouteV2Async(new Routerrpc.SendToRouteRequest
+        return lnd.RouterClient.SendToRouteV2Async(new Testing.Lnd.Routerrpc.SendToRouteRequest
         {
             PaymentHash = ByteString.CopyFrom((byte[])invoice.PaymentHash),
             Route = route.Route
@@ -229,7 +229,7 @@ public class OnchainFinalHopTests : IAsyncLifetime
     }
 
     /// <summary>LND <c>CloseChannel { force = true }</c>; returns the commitment's txid once it is broadcast.</summary>
-    private static async Task<uint256> ForceCloseAsync(LNDNodeConnection lnd,
+    private static async Task<uint256> ForceCloseAsync(LndNodeConnection lnd,
                                                        OpenChannelClientSubscriptionResponse channel,
                                                        CancellationToken ct)
     {
@@ -254,7 +254,7 @@ public class OnchainFinalHopTests : IAsyncLifetime
 
     /// <summary>Mines one block at a time until <paramref name="txId"/> (internal order) is confirmed.</summary>
     private async Task<NBitcoin.Transaction> MineUntilConfirmedAsync(Domain.Bitcoin.ValueObjects.TxId txId,
-                                                            IEnumerable<LNDNodeConnection> lndNodes,
+                                                            IEnumerable<LndNodeConnection> lndNodes,
                                                             CancellationToken ct)
     {
         var displayTxId = new uint256((byte[])txId);

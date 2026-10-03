@@ -1,8 +1,8 @@
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using NBitcoin;
 using NBitcoin.RPC;
+using NLightning.Testing.Lnd;
 
 namespace NLightning.Integration.Tests.Docker.Day0;
 
@@ -132,7 +132,7 @@ public sealed class Day0FlowTests : IAsyncLifetime
     {
         var ct = TestContext.Current.CancellationToken;
         var alice = _fixture.GetLndNode("alice");
-        IReadOnlyList<LNDNodeConnection> observers = [alice];
+        IReadOnlyList<LndNodeConnection> observers = [alice];
 
         // Arrange: A and B with the runbook's features; B contributes to a peer's dual-funded open. A has a public
         // channel to alice (alice gets a push, so she can pay B through A)
@@ -555,9 +555,9 @@ public sealed class Day0FlowTests : IAsyncLifetime
         return scid;
     }
 
-    private static void AssertRoutedThroughA(Lnrpc.Payment payment, NLightningTestNode a, NLightningTestNode b)
+    private static void AssertRoutedThroughA(Testing.Lnd.Lnrpc.Payment payment, NLightningTestNode a, NLightningTestNode b)
     {
-        var route = payment.Htlcs.Single(h => h.Status == Lnrpc.HTLCAttempt.Types.HTLCStatus.Succeeded).Route;
+        var route = payment.Htlcs.Single(h => h.Status == Testing.Lnd.Lnrpc.HTLCAttempt.Types.HTLCStatus.Succeeded).Route;
         Assert.True(route.Hops.Count >= 2, $"alice's route has {route.Hops.Count} hop(s)");
         Assert.Equal(b.NodeIdHex, route.Hops[^1].PubKey, StringComparer.OrdinalIgnoreCase);
         Assert.Equal(a.NodeIdHex, route.Hops[^2].PubKey, StringComparer.OrdinalIgnoreCase);

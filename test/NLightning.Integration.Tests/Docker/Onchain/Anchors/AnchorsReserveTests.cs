@@ -1,8 +1,8 @@
 using Google.Protobuf;
 using Grpc.Core;
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Onchain.Anchors;
 
@@ -123,7 +123,7 @@ public class AnchorsReserveTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync() => await _harness.DisposeNodesAsync(["david"]);
 
-    private static async Task<ChannelPoint> OpenFromDavidAsync(LNDNodeConnection david, NLightningTestNode node,
+    private static async Task<ChannelPoint> OpenFromDavidAsync(LndNodeConnection david, NLightningTestNode node,
                                                                CancellationToken ct) =>
         await david.LightningClient.OpenChannelSyncAsync(new OpenChannelRequest
         {
@@ -137,7 +137,7 @@ public class AnchorsReserveTests : IAsyncLifetime
     /// Our <c>error</c> for the refused temporary channel closes the connection: wait for that (up to 10 s), then
     /// connect again.
     /// </summary>
-    private static async Task ReconnectAsync(NLightningTestNode node, LNDNodeConnection david, CancellationToken ct)
+    private static async Task ReconnectAsync(NLightningTestNode node, LndNodeConnection david, CancellationToken ct)
     {
         var davidId = new CompactPubKey(david.LocalNodePubKeyBytes);
         for (var i = 0; i < 20 && node.PeerManager.GetPeer(davidId) is not null; i++)

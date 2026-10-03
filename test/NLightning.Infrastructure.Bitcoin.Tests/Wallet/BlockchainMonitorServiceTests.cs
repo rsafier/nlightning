@@ -1176,6 +1176,131 @@ public class BlockchainMonitorServiceTests
     }
 
     [Fact]
+    public async Task Given_ATrackedRow_When_ABlockHoldsIt_Then_TheBlockConfirmsIt()
+    {
+        // Arrange (NL-779): the peer's commitment the mempool reactor handed over, saved by the caller and followed
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        var transaction = CreateTransaction(0x50);
+        var row = new BroadcastTransactionModel(ToSigned(transaction), BroadcastPurpose.PeerCommitment,
+                                                new ChannelId(Enumerable.Repeat((byte)0x50, 32).ToArray()), 110);
+
+        // Act
+        _service.TrackPendingBroadcast(row);
+        var block = _chain.Mine(transaction);
+        await _service.ProcessNewBlockAsync(block, 111);
+        await _service.ProcessNewBlockAsync(_chain.Mine(), 112);
+        await _service.StopAsync();
+
+        // Assert: confirmed by its block, never sent (the caller did not publish it and it confirmed first)
+        _mockBroadcastRepository.Verify(x => x.MarkConfirmedAsync(row.TransactionId, 111,
+                                                                  new Hash(block.GetHash().ToBytes())), Times.Once);
+        Assert.DoesNotContain(_chain.SendAttempts, t => t.GetHash() == transaction.GetHash());
+    }
+
+    [Theory]
+    [InlineData("bad-txns-inputs-missingorspent", true)]
+    [InlineData("bad-txns-inputs-missingorspent", false)]
+    [InlineData("Transaction outputs already in utxo set", true)]
+    [InlineData("txn-already-known", false)]
+    public async Task Given_ARowWhoseTransactionConfirmedBeforeTheMonitorFollowedIt_When_Refused_Then_ConfirmedAtItsBlock(
+        string refusal, bool hasTxIndex)
+    {
+        // Arrange (NL-779): the block holding the transaction was processed before the row was followed (the hand-over
+        // was saved in the background while the block was processed); bitcoind refuses it as spent or known
+        var logger = new RecordingLogger();
+        var service = CreateService(_chain, logger: logger);
+        _chain.HasTxIndex = hasTxIndex;
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+        var transaction = CreateTransaction(0x51);
+        var block = _chain.Mine(transaction);
+        await service.ProcessNewBlockAsync(block, 111);
+        var row = new BroadcastTransactionModel(ToSigned(transaction), BroadcastPurpose.PeerCommitment,
+                                                new ChannelId(Enumerable.Repeat((byte)0x51, 32).ToArray()), 110);
+        _mockBroadcastRepository.Setup(x => x.GetByTransactionIdAsync(row.TransactionId))
+                                .ReturnsAsync(() => Copy(row, BroadcastState.Pending));
+        _mockBroadcastRepository.Setup(x => x.MarkConfirmedAsync(row.TransactionId, It.IsAny<uint>(), It.IsAny<Hash>()))
+                                .Callback(() => _steps.Add("confirm"))
+                                .Returns(Task.CompletedTask);
+        service.TrackPendingBroadcast(row);
+        _chain.SendFailure = new InvalidOperationException(refusal);
+
+        // Act: three blocks, a rebroadcast round after each
+        for (var i = 0; i < 3; i++)
+            await service.ProcessNewBlockAsync(_chain.Mine(), _chain.TipHeight);
+        await service.StopAsync();
+
+        // Assert: marked confirmed at its block in its own save, sent once, not reported as refused
+        _mockBroadcastRepository.Verify(x => x.MarkConfirmedAsync(row.TransactionId, 111,
+                                                                  new Hash(block.GetHash().ToBytes())), Times.Once);
+        Assert.Equal("save", _steps[_steps.IndexOf("confirm") + 1]);
+        Assert.Equal(BroadcastState.Confirmed, row.State);
+        Assert.Equal(1, _chain.SendAttempts.Count(t => t.GetHash() == transaction.GetHash()));
+        Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("was refused"));
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Information && e.Message.Contains("NL-779"));
+    }
+
+    [Fact]
+    public async Task Given_AStuckRowFromAnEarlierRun_When_Starting_Then_ItIsMarkedConfirmedAndNoLongerSent()
+    {
+        // Arrange (NL-779): the live case. A pending PeerCommitment row whose commitment confirmed at 105, long before
+        // the start at 110; bitcoind (txindex) refuses it for missing inputs, its outputs being spent
+        var chain = new FakeBitcoinChain(104);
+        var transaction = CreateTransaction(0x52);
+        var block = chain.Mine(transaction);
+        for (var i = 0; i < 5; i++)
+            chain.Mine();
+        var row = new BroadcastTransactionModel(ToSigned(transaction), BroadcastPurpose.PeerCommitment,
+                                                new ChannelId(Enumerable.Repeat((byte)0x52, 32).ToArray()), 104);
+        _mockBlockchainStateRepository.Setup(x => x.GetStateAsync())
+                                      .ReturnsAsync(new BlockchainState(110, Hash.Empty, DateTime.UtcNow));
+        _mockBroadcastRepository.Setup(x => x.GetPendingAsync()).ReturnsAsync([row]);
+        _mockBroadcastRepository.Setup(x => x.GetByTransactionIdAsync(row.TransactionId))
+                                .ReturnsAsync(() => Copy(row, BroadcastState.Pending));
+        chain.SendFailure = new InvalidOperationException("bad-txns-inputs-missingorspent");
+        var logger = new RecordingLogger();
+        var service = CreateService(chain, logger: logger);
+
+        // Act: the start, then two blocks
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+        for (var i = 0; i < 2; i++)
+            await service.ProcessNewBlockAsync(chain.Mine(), chain.TipHeight);
+        await service.StopAsync();
+
+        // Assert
+        _mockBroadcastRepository.Verify(x => x.MarkConfirmedAsync(row.TransactionId, 105,
+                                                                  new Hash(block.GetHash().ToBytes())), Times.Once);
+        Assert.Equal(1, chain.SendAttempts.Count(t => t.GetHash() == transaction.GetHash()));
+        Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("was refused"));
+    }
+
+    [Fact]
+    public async Task Given_ARowNotInTheChain_When_RefusedForMissingInputs_Then_ItIsStillRefusedAndKept()
+    {
+        // Arrange (NL-779, NL-294): a channel-output spend whose parent is not confirmed is refused as missing too; the
+        // lookup does not find it, so it stays pending, refused and sent after every block
+        var logger = new RecordingLogger();
+        var service = CreateService(_chain, logger: logger);
+        _chain.HasTxIndex = false;
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+        var row = new BroadcastTransactionModel(ToSigned(CreateTransaction(0x53)), BroadcastPurpose.HtlcTransaction,
+                                                new ChannelId(Enumerable.Repeat((byte)0x53, 32).ToArray()), 110);
+        _chain.SendFailure = new InvalidOperationException("bad-txns-inputs-missingorspent");
+
+        // Act
+        Assert.False(await service.PublishAsync(row));
+        for (var i = 0; i < 3; i++)
+            await service.ProcessNewBlockAsync(_chain.Mine(), _chain.TipHeight);
+        await service.StopAsync();
+
+        // Assert
+        _mockBroadcastRepository.Verify(x => x.MarkConfirmedAsync(row.TransactionId, It.IsAny<uint>(), It.IsAny<Hash>()),
+                                        Times.Never);
+        Assert.Equal(BroadcastState.Pending, row.State);
+        Assert.Equal(4, _chain.SendAttempts.Count(t => t.GetHash() == new uint256((byte[])row.TransactionId)));
+        Assert.Equal(4, logger.Entries.Count(e => e.Message.Contains("was refused")));
+    }
+
+    [Fact]
     public async Task Given_APendingBroadcastReplacedByRbf_When_TheNextBlockArrives_Then_ItIsNotSentAgain()
     {
         // Arrange (NL-294, O6-T1): a sweep sent once, then replaced by the sweep scheduler (its row is Replaced)
@@ -1471,6 +1596,10 @@ public class BlockchainMonitorServiceTests
         transaction.Outputs.Add(Money.Satoshis(10_000), new Key().PubKey.WitHash.ScriptPubKey);
         return transaction;
     }
+
+    private static BroadcastTransactionModel Copy(BroadcastTransactionModel row, BroadcastState state) =>
+        BroadcastTransactionModel.Restore(row.TransactionId, row.RawTransaction, row.Purpose, row.ChannelId, 0, null,
+                                          row.FirstBroadcastHeight, state, null, null, DateTimeOffset.UtcNow);
 
     private static SignedTransaction ToSigned(Transaction transaction) =>
         new(new TxId(transaction.GetHash().ToBytes()), transaction.ToBytes());

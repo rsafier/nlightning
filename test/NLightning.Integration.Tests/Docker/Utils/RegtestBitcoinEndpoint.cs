@@ -20,12 +20,8 @@ public sealed record RegtestBitcoinEndpoint(RPCClient Rpc, string ZmqHost, int Z
     /// </summary>
     public static RegtestBitcoinEndpoint FromFixture(LightningRegtestNetworkFixture fixture)
     {
-        Assert.NotNull(fixture.Builder);
-        var bitcoinConfiguration = fixture.Builder.Configuration.BTCNodes[0];
-        var zmqRawBlockPort = bitcoinConfiguration.Cmd.First(c => c.Contains("-zmqpubrawblock")).Split(':')[2];
-        var zmqRawTxPort = bitcoinConfiguration.Cmd.First(c => c.Contains("-zmqpubrawtx")).Split(':')[2];
+        var (zmqRawBlockPort, zmqRawTxPort) = fixture.BitcoinZmqPorts;
         var rpc = fixture.Bitcoin;
-        return new RegtestBitcoinEndpoint(rpc, rpc.Address.Host, int.Parse(zmqRawBlockPort),
-                                          int.Parse(zmqRawTxPort));
+        return new RegtestBitcoinEndpoint(rpc, rpc.Address.Host, zmqRawBlockPort, zmqRawTxPort);
     }
 }

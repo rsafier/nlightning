@@ -97,6 +97,46 @@ public class ChainMonitorPersistenceTests
     }
 
     [Fact]
+    public async Task Given_APendingRowWhoseTransactionConfirmedBeforeItWasSaved_When_Restarting_Then_ItIsMarkedConfirmed()
+    {
+        // Arrange (NL-779, the live case): the peer's commitment confirmed in a processed block, and its hand-over row
+        // was saved as pending without the monitor following it; bitcoind refuses it for missing inputs
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        var commitment = CreateTransaction(0x07);
+        var block = await harness.MineAndDeliverAsync(commitment);
+        var confirmedAt = harness.Chain.TipHeight;
+        await harness.MineAndDeliverAsync();
+        await using (var context = harness.Context())
+        {
+            new Infrastructure.Repositories.Database.Onchain.BroadcastTransactionDbRepository(context)
+               .Add(new BroadcastTransactionModel(ToSigned(commitment), BroadcastPurpose.PeerCommitment,
+                                                  ChannelIdOf(0x07), confirmedAt - 1));
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        harness.Chain.SendFailure = new InvalidOperationException("bad-txns-inputs-missingorspent");
+
+        // Act
+        await harness.RestartAsync();
+
+        // Assert: confirmed at its block on the start
+        var stored = await LoadBroadcastAsync(harness, commitment);
+        Assert.Equal(BroadcastState.Confirmed, stored.State);
+        Assert.Equal(confirmedAt, stored.ConfirmedHeight);
+        Assert.Equal(block.GetHash().ToBytes(), (byte[])stored.ConfirmedBlockHash!.Value);
+
+        // Act: more blocks and another restart
+        var attempts = harness.Chain.SendAttempts.Count(t => t.GetHash() == commitment.GetHash());
+        await harness.MineAndDeliverAsync();
+        await harness.RestartAsync();
+
+        // Assert: never sent again
+        Assert.Equal(1, attempts);
+        Assert.Equal(attempts, harness.Chain.SendAttempts.Count(t => t.GetHash() == commitment.GetHash()));
+    }
+
+    [Fact]
     public async Task Given_BlockSpendsWatchedOutpoint_When_Processed_Then_EventRaisedOnceWithSpenderAndRowMarked()
     {
         // Arrange

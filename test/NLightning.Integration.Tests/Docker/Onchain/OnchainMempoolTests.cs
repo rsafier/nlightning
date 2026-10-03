@@ -1,7 +1,7 @@
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 using OutPoint = NBitcoin.OutPoint;
 using Transaction = NBitcoin.Transaction;
 
@@ -206,7 +206,7 @@ public class OnchainMempoolTests : IAsyncLifetime
     /// there.
     /// </summary>
     private async Task<(Transaction Spender, uint Tip)> WaitForMempoolSpendAsync(
-        OutPoint outpoint, LNDNodeConnection[] peers, NLightningTestNode[] nodes, CancellationToken ct)
+        OutPoint outpoint, LndNodeConnection[] peers, NLightningTestNode[] nodes, CancellationToken ct)
     {
         for (var block = 0; block < 20; block++)
         {
@@ -317,7 +317,7 @@ public class OnchainMempoolTests : IAsyncLifetime
     /// Fails the channel through <see cref="IChannelFailureService"/> (our latest commitment, broadcast), mines it and
     /// waits until the node recorded the funding spend as our local commitment.
     /// </summary>
-    private async Task<TxId> ForceCloseAndConfirmAsync(NLightningTestNode node, LNDNodeConnection peer,
+    private async Task<TxId> ForceCloseAndConfirmAsync(NLightningTestNode node, LndNodeConnection peer,
                                                        OpenChannelClientSubscriptionResponse channel,
                                                        CancellationToken ct)
     {
@@ -340,7 +340,7 @@ public class OnchainMempoolTests : IAsyncLifetime
     }
 
     private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(NLightningTestNode node,
-        LNDNodeConnection peer, LightningMoney? push, CancellationToken ct)
+        LndNodeConnection peer, LightningMoney? push, CancellationToken ct)
     {
         var peerAddress = await node.ConnectToAsync(peer, ct);
         var channel = await node.OpenChannelAsync(new OpenChannelClientRequest(peerAddress,

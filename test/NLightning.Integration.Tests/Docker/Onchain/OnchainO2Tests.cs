@@ -1,7 +1,7 @@
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Onchain;
 
@@ -178,7 +178,7 @@ public class OnchainO2Tests : IAsyncLifetime
     }
 
     private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(NLightningTestNode node,
-                                                                                    LNDNodeConnection david,
+                                                                                    LndNodeConnection david,
                                                                                     CancellationToken ct)
     {
         await node.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);

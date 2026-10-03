@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Net;
-using LNUnit.LND;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -8,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Moq.Protected;
 using NBitcoin;
 using NBitcoin.RPC;
+using NLightning.Testing.Lnd;
 using NLightning.Tests.Utils;
 using ServiceStack;
 
@@ -499,7 +499,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// Connects to an LND node of the fixture over its container address.
     /// </summary>
     /// <returns>The <c>pubkey@host:port</c> address used.</returns>
-    public async Task<string> ConnectToAsync(LNDNodeConnection lndNode, CancellationToken cancellationToken)
+    public async Task<string> ConnectToAsync(LndNodeConnection lndNode, CancellationToken cancellationToken)
     {
         var host = new IPEndPoint(
             (await Dns.GetHostAddressesAsync(lndNode.Host.SplitOnFirst("//")[1].SplitOnFirst(":")[0],
