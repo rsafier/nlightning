@@ -135,10 +135,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 45 | 46 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 186 | 372 | 634 |
+| fixed | 14 | 62 | 186 | 373 | 635 |
 | wontfix | 0 | 0 | 5 | 8 | 13 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **193** | **427** | **696** |
+| **Total** | **14** | **62** | **193** | **428** | **697** |
 
 ### Epics
 
@@ -6838,6 +6838,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Evidence:** batch11 review fix-up (2026-10-02, wip/batch11 dd2464bf): one failure in a full Application.Tests run (3619/3620), the test took 39 s there; the error text was not captured. The class passed alone 2/2 (about 5 s each) and the next full run passed 3620/3620. Nothing in that change touches blinded payments or the three-node harness. Possibly the same loaded-run stall as NL-764.
 - **Fix sketch:** on recurrence, rerun the full suite with `--blame-hang-timeout 5m` and keep the full output; then move the wait that runs out to a stepped clock or an event-driven wait, as the de-timing pass did.
 - **Blocks/Blocked-by:** Related NL-764, NL-747
+- **Plan ref:** —
+
+### NL-770 LND 0.21.4 gives up its `to_remote` sweep after a burst of blocks, so the O3 push proofs never saw `RemoteForceClose`
+- **Status:** fixed (46d0538e)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Utils/ChainSync.cs` (`MineUntilLndSweptAsync`), `Docker/Onchain/OnchainO3Tests.cs` and `Docker/Onchain/Anchors/AnchorsO3Tests.cs` (`Given_Idle*ChannelWithPush_When_WeForceClose_Then_ToLocalSweptAfterLndsCsv`)
+- **Evidence:** test harness phase 3 lane B (2026-10-02): the on-chain `all` run was 45/47, both failures `AssertLndClosedAsync` timing out on "LND lists the channel as remote force closed"; the legacy class failed alone 0/1 for that test on the lane branch and on its base 3b7701d6 (so not the client swap), the anchors one passed alone. A diagnostic run showed david with the channel in `pending_force_closing_channels`, `limbo_balance` 200,000 sat and `blocks_til_maturity` -467 although `ListSweeps` had its sweep of our commitment's output 0 with 451 confirmations. david's log: the sweep request was registered "at block 263" while bitcoind was already near 282 (the test mined its CSV blocks in a burst while LND was still on its 3 close confirmations), the wallet marked its sweep "mined in block 279", the fee bumper then tried to bump it ("Fail to fee bump tx ...: input no longer exists", "found orphan inputs"), and the `commitSweepResolver` failed for good ("unable to progress *contractcourt.commitSweepResolver: input no longer exists"); the arbitrator stayed in `StateWaitingFullResolution`. An LND 0.21.4 sweeper race, not an NLightning behavior; NL-768's 47/47 had not hit it.
+- **Fix:** `ChainSync.MineUntilLndSweptAsync` mines one block a second after the close until LND lists a confirmed sweep of an output of the closing transaction; the two push proofs call it right after the commitment confirms. The `RemoteForceClose` and closing-txid assertions are unchanged. `OnchainO3Tests` 4/4 and `AnchorsO3Tests` 3/3 alone, then the on-chain `all` run 47/47 (+ 2 `Explicit` not run). `test/CLAUDE.md` lists the behavior with the 0.21 ones.
+- **Blocks/Blocked-by:** Related NL-768 (LND 0.21 behaviors)
 - **Plan ref:** —
 
 ### NL-749 Cost-basis lots landed in the wrong bucket when the clearing account was spent before the event that pays it
