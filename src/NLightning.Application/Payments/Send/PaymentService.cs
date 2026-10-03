@@ -1979,12 +1979,15 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         string note;
         if (DecideTrampolineFailure(session, part, failed.Removal) is { } trampoline)
         {
-            (code, sourceIndex, reason, interpretation) = (trampoline.Code, trampoline.SourceIndex, trampoline.Reason,
-                                                           trampoline.Interpretation);
-            attribution = AttributionVerification.Absent;
+            // NL-898: the attribution DescribeFailure verified over the outer route stays (the trampoline layer has
+            // none, BOLTs PR 836): its hold times are recorded and a hop whose HMAC failed is blamed as for any payment
+            (code, interpretation) = (trampoline.Code, trampoline.Interpretation);
+            sourceIndex = trampoline.SourceIndex ?? (trampoline.Code is null ? attribution.InvalidHopIndex : null);
+            reason = trampoline.Reason + DescribeOuterAttribution(part.Hops, attribution);
             (retry, note) = trampoline.Retry is { } decided
                                 ? (decided, trampoline.Note!)
-                                : _retryPolicy.Decide(part, failed.Removal.Kind, interpretation, session.Constraints);
+                                : _retryPolicy.Decide(part, failed.Removal.Kind, interpretation, session.Constraints,
+                                                      attribution.InvalidHopIndex);
         }
         else
         {
