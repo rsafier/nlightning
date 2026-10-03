@@ -66,6 +66,7 @@ public sealed class OnchainAccountingTests : IDisposable
     private const uint SpendHeight = 600;
     private const ulong OurHtlcSat = 20_000;
     private const ulong TheirHtlcSat = 30_000;
+    private const ulong TrimmedSat = 1_000;
 
     private static readonly DateTimeOffset s_now = new(2026, 10, 2, 12, 0, 0, TimeSpan.Zero);
 
@@ -765,15 +766,335 @@ public sealed class OnchainAccountingTests : IDisposable
     }
 
     /// <summary>Our invoice of <see cref="TheirHtlcSat"/> paid by the peer's HTLC, settled and stored (NL-688).</summary>
-    private InvoiceModel SettledInvoice(Secret preimage)
+    private InvoiceModel SettledInvoice(Secret preimage, ulong amountSat = TheirHtlcSat)
     {
         var invoice = new InvoiceModel(RealSigningCommitmentPair.Hash(preimage), preimage,
-                                       RealSigningCommitmentPair.Preimage(9), LightningMoney.Satoshis(TheirHtlcSat),
+                                       RealSigningCommitmentPair.Preimage(9), LightningMoney.Satoshis(amountSat),
                                        "lost on chain", "lnbcrt-test", s_now, 3_600, 18);
-        invoice.Accept(LightningMoney.Satoshis(TheirHtlcSat));
+        invoice.Accept(LightningMoney.Satoshis(amountSat));
         invoice.Settle(s_now);
         _store.Invoices[invoice.PaymentHash] = invoice;
         return invoice;
+    }
+
+    [Theory]
+    [InlineData(CommitmentSide.Local, AccountingCostBasisMethod.Fifo)]
+    [InlineData(CommitmentSide.Local, AccountingCostBasisMethod.Lifo)]
+    [InlineData(CommitmentSide.Remote, AccountingCostBasisMethod.Fifo)]
+    [InlineData(CommitmentSide.Remote, AccountingCostBasisMethod.Hifo)]
+    public async Task Given_ASettledInvoicesTrimmedIncomingHtlc_When_TheCommitmentConfirms_Then_InvoiceLostOnchainInTheCloseSave(
+        CommitmentSide side, AccountingCostBasisMethod method)
+    {
+        // Arrange (NL-760): the peer's HTLC below dust pays our invoice; we fulfilled it off chain (InvoiceSettled booked
+        // its amount into the channels) but a commitment that still carries it confirmed: it has no output there, so
+        // no resolution ever sees it
+        var (htlcId, preimage) = AddTrimmedIncomingHtlc();
+        _pair.Fulfill(_pair.Alice, htlcId, preimage);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        var invoice = SettledInvoice(preimage, TrimmedSat);
+        var settled = PaymentAccountingEvents.InvoiceSettled(invoice, LightningMoney.Satoshis(TrimmedSat),
+                                                             _channel.ChannelId, _channel, 1, false, SpendHeight - 1);
+        var commitment = BuildConfirmedCommitment(side);
+
+        // Act
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+
+        // Assert: the HTLC is trimmed (no row), the close lists it, and its loss is in the close's save
+        Assert.DoesNotContain(_store.Outputs.Values, o => o is { HtlcDirection: HtlcDirection.Incoming }
+                                                       && o.HtlcId == htlcId);
+        var close = _store.Events.Single(e => e.Kind == AccountingEventKind.ChannelForceClosed);
+        Assert.Equal($"{htlcId}:{invoice.PaymentHash}", close.Details[OnchainAccounting.TrimmedIncomingHtlcsKey]);
+        var lost = Assert.Single(_store.Events, e => e.Kind == AccountingEventKind.InvoiceLostOnchain);
+        Assert.Equal(AccountingEventKeys.InvoiceLostOnchain(invoice.PaymentHash, _channel.ChannelId, htlcId),
+                     lost.EventKey);
+        Assert.Equal(-(long)TrimmedSat * 1_000, lost.AmountMsat);
+        Assert.Equal(invoice.PaymentHash, lost.PaymentHash);
+        Assert.Equal(_channel.ChannelId, lost.ChannelId);
+        Assert.Equal(SpendHeight, lost.BlockHeight);
+        Assert.Equal(PaymentAccountingEvents.InvoiceOnchainCause, lost.Details["cause"]);
+        Assert.Equal("true", lost.Details[PaymentAccountingEvents.TrimmedDetail]);
+        Assert.Equal(commitment.TxId.ToString(), lost.Details[AccountingDetailKeys.CloseTxId]);
+        Assert.False(lost.Details.ContainsKey("spenderTxId"));
+        Assert.Equal(settled.EventKey, lost.Details["settledKey"]);
+        var (_, closeSave) = _store.AccountingEvents.Single(a => a.Event.EventKey == close.EventKey);
+        var (_, lossSave) = _store.AccountingEvents.Single(a => a.Event.EventKey == lost.EventKey);
+        Assert.Equal(closeSave, lossSave);
+        Assert.Contains("close", _store.Saves[lossSave]);
+
+        // Assert (the reconcile): the close took B (without the incoming HTLC) out of the channels and the loss takes
+        // the invoice's amount out, so the channels hold exactly what the opening put in (no drift); the sale stays
+        // income
+        var books = BooksSimulator.Of([settled, .. _store.Events]);
+        Assert.Equal(close.AmountMsat, books[AccountRole.Channels]);
+        Assert.Equal(-(long)TrimmedSat * 1_000, books[AccountRole.Received]);
+        Assert.Equal([(AccountRole.Channels, -(long)TrimmedSat * 1_000),
+                      (AccountRole.LossOnchain, (long)TrimmedSat * 1_000)],
+                     books.Entry(lost.EventKey)!.Postings.Select(p => (p.Account, p.AmountMsat)).OrderBy(p => p.Account));
+
+        // Assert (the financial book, NL-749's lots invariant after every entry): the channels' bucket ends empty
+        var financial = new LotBook(method);
+        financial.Plan(true, (AccountRole.Channels, -close.AmountMsat), (AccountRole.Opening, close.AmountMsat));
+        foreach (var entry in books.Entries.Where(e => e.Postings.Count > 0))
+            financial.Plan(false, entry.Postings.Select(p => (p.Account, p.AmountMsat)).ToArray());
+        Assert.Empty(financial.Pool.Debts);
+        Assert.Equal(0, financial.Shortfall);
+        Assert.Equal(0, financial.Pool.HeldMsat(AccountingLotBucket.Channels));
+        Assert.Equal(books[AccountRole.Pending], financial.Pool.HeldMsat(AccountingLotBucket.Pending));
+
+        // Act: the same close replayed (the block again, then the same transaction in another block)
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+        await Watcher.HandleFundingSpentAsync(
+            new OutpointSpentEventArgs(_channel.ChannelId, commitment, SpendHeight + 1, 1,
+                                       _channel.FundingOutput!.TransactionId!.Value,
+                                       _channel.FundingOutput.Index!.Value, OnchainTestStore.BlockHash(7)),
+            TestContext.Current.CancellationToken);
+
+        // Assert: still one loss
+        Assert.Single(_store.Events, e => e.Kind == AccountingEventKind.InvoiceLostOnchain);
+    }
+
+    [Fact]
+    public async Task Given_ASettledForwardsTrimmedIncomingHtlc_When_ThePeersCommitmentConfirms_Then_ForwardLostOnchainInTheCloseSave()
+    {
+        // Arrange (NL-760): the peer's HTLC below dust was forwarded and the forward booked as settled (the circuit is
+        // Fulfilled: our upstream fulfill never got through), and the peer's commitment with it confirmed
+        var (htlcId, preimage) = AddTrimmedIncomingHtlc();
+        _channel.UpdateCommitments(_pair.Alice.State);
+        var circuit = FulfilledCircuit(htlcId, preimage);
+        var forwardSettled = PaymentAccountingEvents.ForwardSettled(circuit, _channel, null);
+        var commitment = BuildConfirmedCommitment(CommitmentSide.Remote);
+
+        // Act
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+
+        // Assert: the forward's incoming amount is lost, in the close's save
+        var close = _store.Events.Single(e => e.Kind == AccountingEventKind.ChannelForceClosed);
+        var lost = Assert.Single(_store.Events, e => e.Kind == AccountingEventKind.ForwardLostOnchain);
+        Assert.Equal(AccountingEventKeys.ForwardLostOnchain(_channel.ChannelId, htlcId), lost.EventKey);
+        Assert.Equal(-(long)TrimmedSat * 1_000, lost.AmountMsat);
+        Assert.Equal(SpendHeight, lost.BlockHeight);
+        Assert.Equal(PaymentAccountingEvents.UpstreamOnchainCause, lost.Details["cause"]);
+        Assert.Equal("true", lost.Details[PaymentAccountingEvents.TrimmedDetail]);
+        Assert.Equal(commitment.TxId.ToString(), lost.Details[AccountingDetailKeys.CloseTxId]);
+        Assert.DoesNotContain(_store.Events, e => e.Kind == AccountingEventKind.InvoiceLostOnchain);
+        Assert.Equal(_store.AccountingEvents.Single(a => a.Event.EventKey == close.EventKey).Save,
+                     _store.AccountingEvents.Single(a => a.Event.EventKey == lost.EventKey).Save);
+
+        // Assert (the reconcile): the incoming channel closed without the HTLC and the outgoing one paid it out, so the
+        // channels moved by exactly -B and -outgoing amount (no drift)
+        var books = BooksSimulator.Of([forwardSettled, .. _store.Events]);
+        Assert.Equal(close.AmountMsat - (long)circuit.OutgoingAmount.MilliSatoshi, books[AccountRole.Channels]);
+        Assert.Equal((long)TrimmedSat * 1_000, books[AccountRole.LossOnchain] - Math.Max(0, Msat(close, OnchainAccounting.LostKey)));
+    }
+
+    [Theory]
+    [InlineData(false, true, false)]
+    [InlineData(true, false, false)]
+    [InlineData(false, false, true)]
+    public async Task Given_ATrimmedIncomingHtlcNotBookedAsSettled_When_TheCommitmentConfirms_Then_NoLossIsRecorded(
+        bool fulfilled, bool settled, bool failedForward)
+    {
+        // Arrange (NL-760): no preimage on the HTLC, an invoice not settled, or a forward that failed: nothing booked it
+        var (htlcId, preimage) = AddTrimmedIncomingHtlc();
+        if (fulfilled)
+            _pair.Fulfill(_pair.Alice, htlcId, preimage);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        if (failedForward)
+        {
+            var circuit = FulfilledCircuit(htlcId, preimage, fulfilled: false);
+            circuit.MarkFailed(s_now);
+        }
+        else if (settled)
+        {
+            SettledInvoice(preimage, TrimmedSat);
+        }
+        else
+        {
+            var invoice = new InvoiceModel(RealSigningCommitmentPair.Hash(preimage), preimage,
+                                           RealSigningCommitmentPair.Preimage(9), LightningMoney.Satoshis(TrimmedSat),
+                                           "open", "lnbcrt-test", s_now, 3_600, 18);
+            _store.Invoices[invoice.PaymentHash] = invoice;
+        }
+
+        var commitment = BuildConfirmedCommitment(CommitmentSide.Remote);
+
+        // Act
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+
+        // Assert: the close (listing the trimmed HTLC) and nothing else
+        var close = Assert.Single(_store.Events);
+        Assert.Equal(AccountingEventKind.ChannelForceClosed, close.Kind);
+        Assert.Equal([(htlcId, RealSigningCommitmentPair.Hash(preimage))],
+                     OnchainAccounting.TrimmedIncomingHtlcsOf(close));
+    }
+
+    [Fact]
+    public async Task Given_ATrimmedIncomingHtlcLostWithAClose_When_AReorgReplacesTheClose_Then_TheLossIsReversedWithItAndRecordedAgain()
+    {
+        // Arrange (NL-760): our commitment recorded with the settled invoice's trimmed HTLC lost; a reorg took it out
+        // and the peer's commitment (with the HTLC trimmed too) confirmed instead
+        var (htlcId, preimage) = AddTrimmedIncomingHtlc();
+        _pair.Fulfill(_pair.Alice, htlcId, preimage);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        var invoice = SettledInvoice(preimage, TrimmedSat);
+        var settled = PaymentAccountingEvents.InvoiceSettled(invoice, LightningMoney.Satoshis(TrimmedSat),
+                                                             _channel.ChannelId, _channel, 1, false, SpendHeight - 1);
+        var ours = BuildConfirmedCommitment(CommitmentSide.Local);
+        await Watcher.HandleFundingSpentAsync(SpentBy(ours), TestContext.Current.CancellationToken);
+        var oldClose = _store.Events.Single(e => e.Kind == AccountingEventKind.ChannelForceClosed);
+        var oldLoss = _store.Events.Single(e => e.Kind == AccountingEventKind.InvoiceLostOnchain);
+        var theirs = BuildConfirmedCommitment(CommitmentSide.Remote);
+        var reorged = new OutpointSpentEventArgs(_channel.ChannelId, theirs, SpendHeight + 2, 1,
+                                                 _channel.FundingOutput!.TransactionId!.Value,
+                                                 _channel.FundingOutput.Index!.Value, OnchainTestStore.BlockHash(9));
+
+        // Act
+        await Watcher.HandleFundingSpentAsync(reorged, TestContext.Current.CancellationToken);
+
+        // Assert: the old loss and the old close negated, the new close and its loss under the next confirmation key,
+        // all in the new close's save
+        var added = _store.AccountingEvents.Skip(2).ToList();
+        Assert.Single(added.Select(a => a.Save).Distinct());
+        Assert.Equal([AccountingEventKind.Reversal, AccountingEventKind.Reversal, AccountingEventKind.ChannelForceClosed,
+                      AccountingEventKind.InvoiceLostOnchain],
+                     added.Select(a => a.Event.Kind));
+        Assert.Equal(oldLoss.EventKey, added[0].Event.Details[OnchainAccounting.ReversesKey]);
+        Assert.Equal(-oldLoss.AmountMsat, added[0].Event.AmountMsat);
+        Assert.Equal(oldClose.EventKey, added[1].Event.Details[OnchainAccounting.ReversesKey]);
+        var newClose = added[2].Event;
+        var newLoss = added[3].Event;
+        Assert.Equal(AccountingEventKeys.Reconfirmed(oldLoss.EventKey, 2), newLoss.EventKey);
+        Assert.Equal(theirs.TxId.ToString(), newLoss.Details[AccountingDetailKeys.CloseTxId]);
+        Assert.Equal(SpendHeight + 2, newLoss.BlockHeight);
+
+        // Assert (the reconcile): one loss stands, and the channels hold what the opening put in
+        var books = BooksSimulator.Of([settled, .. _store.Events]);
+        Assert.Equal(newClose.AmountMsat, books[AccountRole.Channels]);
+        Assert.Equal(-(long)TrimmedSat * 1_000,
+                     _store.Events.Where(e => e.Kind == AccountingEventKind.InvoiceLostOnchain
+                                           || (e.Kind == AccountingEventKind.Reversal
+                                            && e.Details[OnchainAccounting.OriginalKindKey]
+                                            == nameof(AccountingEventKind.InvoiceLostOnchain)))
+                                  .Sum(e => e.AmountMsat));
+    }
+
+    [Fact]
+    public async Task Given_AForwardOfATrimmedIncomingHtlcSettledAfterTheClose_When_TheNextRound_Then_ForwardLostOnchainOnce()
+    {
+        // Arrange (NL-892): the peer's commitment with our trimmed incoming HTLC confirmed while its forward was still
+        // pending downstream (circuit Offered: nothing booked, so no loss in the close's save)
+        var (htlcId, preimage) = AddTrimmedIncomingHtlc();
+        _channel.UpdateCommitments(_pair.Alice.State);
+        var circuit = FulfilledCircuit(htlcId, preimage, fulfilled: false);
+        var commitment = BuildConfirmedCommitment(CommitmentSide.Remote);
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+        Assert.DoesNotContain(_store.Events, e => e.Kind == AccountingEventKind.ForwardLostOnchain);
+        var executor = CreateExecutor();
+
+        // Act: the downstream peer fulfills it minutes later (the switch books ForwardSettled), then the next block
+        circuit.MarkFulfilled(s_now);
+        var forwardSettled = PaymentAccountingEvents.ForwardSettled(circuit, _channel, null);
+        await executor.RunRoundAsync(SpendHeight + 3, TestContext.Current.CancellationToken);
+        await executor.RunRoundAsync(SpendHeight + 4, TestContext.Current.CancellationToken);
+
+        // Assert: the loss is recorded once, at the round's height, flagged trimmed
+        var close = _store.Events.Single(e => e.Kind == AccountingEventKind.ChannelForceClosed);
+        var lost = Assert.Single(_store.Events, e => e.Kind == AccountingEventKind.ForwardLostOnchain);
+        Assert.Equal(AccountingEventKeys.ForwardLostOnchain(_channel.ChannelId, htlcId), lost.EventKey);
+        Assert.Equal(-(long)TrimmedSat * 1_000, lost.AmountMsat);
+        Assert.Equal(SpendHeight + 3, lost.BlockHeight);
+        Assert.Equal("true", lost.Details[PaymentAccountingEvents.TrimmedDetail]);
+        Assert.Equal(commitment.TxId.ToString(), lost.Details[AccountingDetailKeys.CloseTxId]);
+
+        // Assert (the reconcile): as when the forward settled before the close (no drift)
+        var books = BooksSimulator.Of([forwardSettled, .. _store.Events]);
+        Assert.Equal(close.AmountMsat - (long)circuit.OutgoingAmount.MilliSatoshi, books[AccountRole.Channels]);
+    }
+
+    [Fact]
+    public async Task Given_AnInvoicePartTrimmedByTheCloseSettledAfterIt_When_TheNextRound_Then_InvoiceLostOnchainOnce()
+    {
+        // Arrange (NL-892): our commitment with the trimmed incoming HTLC confirmed before its invoice settled (an MPP
+        // set completed later and the switch put the preimage on the part's record)
+        var (htlcId, preimage) = AddTrimmedIncomingHtlc();
+        _channel.UpdateCommitments(_pair.Alice.State);
+        var commitment = BuildConfirmedCommitment(CommitmentSide.Local);
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+        Assert.DoesNotContain(_store.Events, e => e.Kind == AccountingEventKind.InvoiceLostOnchain);
+        var executor = CreateExecutor();
+
+        // Act: the set completes and settles the invoice, then the next blocks
+        _pair.Fulfill(_pair.Alice, htlcId, preimage);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        var invoice = SettledInvoice(preimage, TrimmedSat);
+        var settled = PaymentAccountingEvents.InvoiceSettled(invoice, LightningMoney.Satoshis(TrimmedSat),
+                                                             _channel.ChannelId, _channel, 1, true, SpendHeight + 2);
+        await executor.RunRoundAsync(SpendHeight + 3, TestContext.Current.CancellationToken);
+        await executor.RunRoundAsync(SpendHeight + 4, TestContext.Current.CancellationToken);
+
+        // Assert: one loss, flagged trimmed, and the channels hold what the close left (no drift)
+        var close = _store.Events.Single(e => e.Kind == AccountingEventKind.ChannelForceClosed);
+        var lost = Assert.Single(_store.Events, e => e.Kind == AccountingEventKind.InvoiceLostOnchain);
+        Assert.Equal(AccountingEventKeys.InvoiceLostOnchain(invoice.PaymentHash, _channel.ChannelId, htlcId),
+                     lost.EventKey);
+        Assert.Equal(-(long)TrimmedSat * 1_000, lost.AmountMsat);
+        Assert.Equal("true", lost.Details[PaymentAccountingEvents.TrimmedDetail]);
+        var books = BooksSimulator.Of([settled, .. _store.Events]);
+        Assert.Equal(close.AmountMsat, books[AccountRole.Channels]);
+    }
+
+    [Fact]
+    public void Given_OutputsOnChainThatMatchedNothing_When_TrimmedIncomingHtlcsAreListed_Then_NoneIsAssumedTrimmed()
+    {
+        // Arrange (NL-893): an incoming HTLC without a descriptor, on a commitment whose mapping left vouts unmapped
+        var (htlcId, _) = AddTrimmedIncomingHtlc();
+        var spec = CommitmentTxSpec.FromCommitmentSpec(_pair.Alice.State.LocalCommit.Spec);
+        Assert.Contains(spec.Htlcs, h => h.Id == htlcId && h.Direction == HtlcDirection.Incoming);
+
+        // Act
+        var mapped = OnchainAccounting.TrimmedIncomingHtlcs(ChannelCloseKind.LocalCommitment, spec, []);
+        var unmapped = OnchainAccounting.TrimmedIncomingHtlcs(ChannelCloseKind.LocalCommitment, spec, [], true);
+
+        // Assert: trimmed only when every output was identified
+        Assert.Contains(mapped, h => h.Id == htlcId);
+        Assert.Empty(unmapped);
+    }
+
+    /// <summary>Bob offers an HTLC of <see cref="TrimmedSat"/> (below dust on both commitments), committed on both
+    /// sides (NL-760).</summary>
+    private (ulong Id, Secret Preimage) AddTrimmedIncomingHtlc()
+    {
+        var preimage = RealSigningCommitmentPair.Preimage(3);
+        var id = _pair.Add(_pair.Bob, TrimmedSat * 1_000, preimage);
+        _pair.Settle(_pair.Bob);
+        return (id, preimage);
+    }
+
+    /// <summary>A forward of the peer's HTLC <paramref name="htlcId"/>, stored, Fulfilled unless told otherwise.</summary>
+    private ForwardCircuitModel FulfilledCircuit(ulong htlcId, Secret preimage, bool fulfilled = true)
+    {
+        var circuit = new ForwardCircuitModel(_channel.ChannelId, htlcId, LightningMoney.Satoshis(TrimmedSat), 700,
+                                              RealSigningCommitmentPair.Hash(preimage), new Secret(new byte[32]),
+                                              new ShortChannelId(1, 2, 3), LightningMoney.Satoshis(TrimmedSat - 1), 660,
+                                              s_now);
+        circuit.AddOutgoingHtlc(new ChannelId(Enumerable.Repeat((byte)0x77, 32).ToArray()), 4);
+        if (fulfilled)
+            circuit.MarkFulfilled(s_now);
+        _store.Circuits[(_channel.ChannelId, htlcId)] = circuit;
+        return circuit;
+    }
+
+    /// <summary>Alice's latest commitment or the peer's current one, as it would confirm.</summary>
+    private SignedTransaction BuildConfirmedCommitment(CommitmentSide side)
+    {
+        if (side == CommitmentSide.Local)
+        {
+            var local = _pair.Alice.State.LocalCommit;
+            return BuildCommitment(CommitmentSide.Local, local.Spec, local.Number, null);
+        }
+
+        var remote = _pair.Alice.State.RemoteCommit;
+        return BuildCommitment(CommitmentSide.Remote, remote.Spec, remote.Number, remote.PerCommitmentPoint);
     }
 
     [Fact]

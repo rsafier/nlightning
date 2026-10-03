@@ -154,6 +154,48 @@ public class LiquidityAdsCommandsTests
         Assert.Contains("Rate 1:  100000-1000000 sat", printed);
     }
 
+    [Fact]
+    public void Given_ConnectedSellers_When_Printed_Then_BothSourcesAreShown()
+    {
+        // Arrange (NL-884): init rates with different announced ones, with the same, with none announced, and a
+        // connected seller whose init carries none
+        using var output = new StringWriter();
+        var rates = WillFundRates.Create([LiquidityAdsTestData.Rate], [LiquidityPaymentType.FromChannelBalance]);
+        var other = WillFundRates.Create([new FundingRate(1, 2, 3, 4, 5, 6)],
+                                         [LiquidityPaymentType.FromChannelBalance, LiquidityPaymentType.FromFutureHtlc]);
+        var response = LiquidityAdsIpcResponse.FromClientResponse(
+            new LiquidityAdsClientResponse(LiquidityAdsAction.Sellers)
+            {
+                Sellers =
+                [
+                    new LiquiditySellerInfo(LiquidityAdsTestData.Peer, LiquiditySellerSource.Init, rates, true,
+                                            "differs", other),
+                    new LiquiditySellerInfo(LiquidityAdsTestData.Peer, LiquiditySellerSource.Init, rates, true,
+                                            "same", rates),
+                    new LiquiditySellerInfo(LiquidityAdsTestData.Peer, LiquiditySellerSource.Init, rates, true,
+                                            "unannounced"),
+                    new LiquiditySellerInfo(LiquidityAdsTestData.Peer, LiquiditySellerSource.NodeAnnouncement, rates,
+                                            true, "announced-only")
+                ]
+            });
+
+        // Act
+        new LiquidityAdsPrinter(output).Print(response);
+
+        // Assert
+        var sellers = output.ToString().Split("Node ID:", StringSplitOptions.RemoveEmptyEntries)[1..];
+        Assert.Equal(4, sellers.Length);
+        var nl = Environment.NewLine;
+        Assert.Contains("  node_announcement:" + nl + "    Payment types:  from_channel_balance, from_future_htlc" + nl
+                      + "    Rate 1:  1-2 sat, fee base 5 sat + 4 basis points, channel creation fee 6 sat, funding "
+                      + "weight 3", sellers[0]);
+        Assert.Contains("  Rate 1:  100000-1000000 sat", sellers[0]);
+        Assert.Contains("  node_announcement: the same rates", sellers[1]);
+        Assert.Contains("  node_announcement: no rates", sellers[2]);
+        Assert.Contains("Source:         node_announcement (connected)", sellers[3]);
+        Assert.Contains("  init:           no rates", sellers[3]);
+    }
+
     [Theory]
     [InlineData(LiquidityPurchaseStatus.Active, 1_000U, "until block 4132 (3132 blocks left)")]
     [InlineData(LiquidityPurchaseStatus.Active, 5_000U, "ended at block 4132")]

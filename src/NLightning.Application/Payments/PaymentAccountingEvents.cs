@@ -261,11 +261,13 @@ internal static class PaymentAccountingEvents
     /// <param name="closeTxId">The commitment the HTLC output belongs to.</param>
     /// <param name="spenderTxId">The peer's transaction that took it; null when we gave it up.</param>
     /// <param name="occurredAt">When the resolution was recorded.</param>
-    /// <param name="blockHeight">The block of the spend (or of the round that gave it up).</param>
+    /// <param name="blockHeight">The block of the spend (or of the round that gave it up, or of the close).</param>
+    /// <param name="trimmed">The HTLC had no output on the commitment that confirmed (below dust, NL-760): lost with
+    /// the close.</param>
     public static AccountingEventModel ForwardUpstreamLostOnchain(string key, ForwardCircuitModel circuit,
                                                                   ChannelModel? incoming, TxId closeTxId,
                                                                   TxId? spenderTxId, DateTimeOffset occurredAt,
-                                                                  uint blockHeight)
+                                                                  uint blockHeight, bool trimmed = false)
     {
         var details = AccountingDetailsCodec.Create(
         [
@@ -273,10 +275,13 @@ internal static class PaymentAccountingEvents
             ("cause", UpstreamOnchainCause),
             (AccountingDetailKeys.CloseTxId, closeTxId.ToString()),
             ("spenderTxId", spenderTxId?.ToString()),
+            (TrimmedDetail, trimmed ? "true" : null),
             (AccountingDetailKeys.Reason,
-             spenderTxId is null
-                 ? "The incoming HTLC of a settled forward was given up on chain"
-                 : "The incoming HTLC of a settled forward was taken by the peer on chain")
+             trimmed
+                 ? "The incoming HTLC of a settled forward was trimmed (below dust) on the commitment that confirmed"
+                 : spenderTxId is null
+                     ? "The incoming HTLC of a settled forward was given up on chain"
+                     : "The incoming HTLC of a settled forward was taken by the peer on chain")
         ]);
 
         return new AccountingEventModel
@@ -296,6 +301,11 @@ internal static class PaymentAccountingEvents
         };
     }
 
+    /// <summary>The detail of a <see cref="AccountingEventKind.ForwardLostOnchain"/> or
+    /// <see cref="AccountingEventKind.InvoiceLostOnchain"/> whose incoming HTLC had no output on the commitment that
+    /// confirmed (NL-760): <c>true</c>.</summary>
+    public const string TrimmedDetail = "trimmed";
+
     /// <summary>The detail <c>cause</c> of an <see cref="AccountingEventKind.InvoiceLostOnchain"/> (NL-688).</summary>
     public const string InvoiceOnchainCause = "invoiceOnchain";
 
@@ -312,11 +322,13 @@ internal static class PaymentAccountingEvents
     /// <param name="closeTxId">The commitment the HTLC output belongs to.</param>
     /// <param name="spenderTxId">The peer's transaction that took it; null when we gave it up.</param>
     /// <param name="occurredAt">When the resolution was recorded.</param>
-    /// <param name="blockHeight">The block of the spend (or of the round that gave it up).</param>
+    /// <param name="blockHeight">The block of the spend (or of the round that gave it up, or of the close).</param>
+    /// <param name="trimmed">The HTLC had no output on the commitment that confirmed (below dust, NL-760): lost with
+    /// the close.</param>
     public static AccountingEventModel InvoiceLostOnchain(string key, InvoiceModel invoice, ulong htlcId,
                                                           ulong htlcAmountMsat, ChannelModel channel, TxId closeTxId,
                                                           TxId? spenderTxId, DateTimeOffset occurredAt,
-                                                          uint blockHeight)
+                                                          uint blockHeight, bool trimmed = false)
     {
         var details = AccountingDetailsCodec.Create(
         [
@@ -328,10 +340,13 @@ internal static class PaymentAccountingEvents
             (AccountingDetailKeys.CloseTxId, closeTxId.ToString()),
             ("spenderTxId", spenderTxId?.ToString()),
             ("settledKey", AccountingEventKeys.InvoiceSettled(invoice.PaymentHash)),
+            (TrimmedDetail, trimmed ? "true" : null),
             (AccountingDetailKeys.Reason,
-             spenderTxId is null
-                 ? "An incoming HTLC of a settled invoice was given up on chain"
-                 : "An incoming HTLC of a settled invoice was taken back by the peer on chain (its timeout)"),
+             trimmed
+                 ? "An incoming HTLC of a settled invoice was trimmed (below dust) on the commitment that confirmed"
+                 : spenderTxId is null
+                     ? "An incoming HTLC of a settled invoice was given up on chain"
+                     : "An incoming HTLC of a settled invoice was taken back by the peer on chain (its timeout)"),
             .. SourceLabels.FromStored(invoice.Label, invoice.Tags).ToDetailPairs()
         ]);
 

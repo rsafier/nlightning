@@ -13,6 +13,7 @@ using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
 
@@ -77,7 +78,11 @@ using Domain.Onchain.Models;
 /// commitment (or any spend without the preimage) gets no <see cref="ValueBookedByKey"/>, so the books post a loss. (c) An offered HTLC that times out back to us is an ordinary movement into the wallet, with
 /// its fees: it was in our gross balance at the close. (d) An incoming HTLC that times out to the peer is 0,
 /// informational; when the off-chain side had booked it (a settled forward, NL-608, or a settled invoice of ours, NL-688)
-/// its own event (<c>ForwardLostOnchain</c>, <c>InvoiceLostOnchain</c>) books the loss in the same save. The books match the HTLC by <see cref="PaymentHashKey"/>/<see cref="HtlcIdKey"/>.</para>
+/// its own event (<c>ForwardLostOnchain</c>, <c>InvoiceLostOnchain</c>) books the loss in the same save. (e) An incoming
+/// HTLC trimmed on the commitment that confirmed (below dust, no output) is not in B either: when the off-chain side had
+/// booked it (the same conditions as (d)) its loss is staged in the close's save, and the close event lists the trimmed
+/// incoming HTLCs (<see cref="TrimmedIncomingHtlcsKey"/>) so a close replaced by another reverses those losses with it
+/// (NL-760). The books match the HTLC by <see cref="PaymentHashKey"/>/<see cref="HtlcIdKey"/>.</para>
 /// <para><b>Reorgs.</b> A resolution whose spend was reorged out, and a close replaced by another transaction, are
 /// negated by <see cref="AccountingEventKind.Reversal"/> events (key
 /// <see cref="AccountingEventKeys.Reversal(string, uint)"/>, amount and fee negated, details
@@ -103,6 +108,7 @@ internal static class OnchainAccounting
     public const string PendingKey = AccountingDetailKeys.PendingMsat;
     public const string LostKey = AccountingDetailKeys.LostMsat;
     public const string TrimmedHtlcKey = "trimmedHtlcMsat";
+    public const string TrimmedIncomingHtlcsKey = "trimmedIncomingHtlcs";
     public const string OurOutputsKey = "ourOutputsSat";
     public const string CommitmentFeeKey = "commitmentFeeSat";
     public const string LatestBalanceKey = "latestLocalBalanceMsat";
@@ -189,7 +195,8 @@ internal static class OnchainAccounting
                                                    ChainTx spend, ulong? commitmentNumber, uint height,
                                                    IReadOnlyList<CommitmentOutputDescriptor> descriptors,
                                                    CommitmentTxSpec? spec, CommitmentTxSpec? latestSpec,
-                                                   ChannelFunding spentFunding, DateTimeOffset occurredAt)
+                                                   ChannelFunding spentFunding, DateTimeOffset occurredAt,
+                                                   bool outputsUnmapped = false)
     {
         var weFund = channel.IsInitiator;
         var latest = latestSpec is null ? (long?)null : OurBalanceMsat(latestSpec);
@@ -217,6 +224,7 @@ internal static class OnchainAccounting
                                 ? (spentFunding.CapacitySatoshis - outputsSat).ToString(CultureInfo.InvariantCulture)
                                 : null;
         var ours = descriptors.Where(d => d.IsOurs).Aggregate(0UL, (sum, d) => sum + d.AmountSat);
+        var trimmedIncoming = TrimmedIncomingHtlcs(closeKind, spec, descriptors, outputsUnmapped);
 
         return new AccountingEventModel
         {
@@ -241,8 +249,72 @@ internal static class OnchainAccounting
                 (OurOutputsKey, ours.ToString(CultureInfo.InvariantCulture)), (CommitmentFeeKey, commitmentFee),
                 (LatestBalanceKey, latest is { } value ? Text(value) : null),
                 (FundingTxIdKey, spentFunding.FundingTxId.ToString()),
-                (CountedVoutsKey, string.Join(",", counted.Select(d => d.Vout.ToString(CultureInfo.InvariantCulture)))))
+                (CountedVoutsKey, string.Join(",", counted.Select(d => d.Vout.ToString(CultureInfo.InvariantCulture)))),
+                (TrimmedIncomingHtlcsKey,
+                 trimmedIncoming.Count == 0
+                     ? null
+                     : string.Join(",", trimmedIncoming.Select(h => string.Create(CultureInfo.InvariantCulture,
+                                                                                 $"{h.Id}:{h.PaymentHash}")))))
         };
+    }
+
+    /// <summary>
+    /// The incoming HTLCs of the commitment that confirmed that have no output on it (trimmed: below dust), for a close
+    /// whose B comes from that commitment (ours, the peer's current or next one; see the remarks, (e)); empty for any
+    /// other close (a revoked commitment's B is our latest local balance, a commitment we cannot rebuild has no spec),
+    /// and empty when some outputs of the transaction on chain matched no expected output
+    /// (<paramref name="outputsUnmapped"/>): an HTLC without a descriptor may then have an output we could not identify,
+    /// so it is not known to be trimmed (NL-893).
+    /// </summary>
+    public static IReadOnlyList<Htlc> TrimmedIncomingHtlcs(ChannelCloseKind closeKind, CommitmentTxSpec? spec,
+                                                           IReadOnlyList<CommitmentOutputDescriptor> descriptors,
+                                                           bool outputsUnmapped = false)
+    {
+        ArgumentNullException.ThrowIfNull(descriptors);
+        if (spec is null || outputsUnmapped
+                         || closeKind is not (ChannelCloseKind.LocalCommitment or ChannelCloseKind.RemoteCommitment
+                                                  or ChannelCloseKind.RemoteNextCommitment))
+            return [];
+
+        return spec.Htlcs.Where(h => h.Direction == HtlcDirection.Incoming
+                                  && !descriptors.Any(d => d.Htlc is { Direction: HtlcDirection.Incoming } output
+                                                        && output.Id == h.Id))
+                   .OrderBy(h => h.Id)
+                   .ToList();
+    }
+
+    /// <summary>
+    /// The trimmed incoming HTLCs the close event <paramref name="close"/> lists (<see cref="TrimmedIncomingHtlcsKey"/>):
+    /// their ids and payment hashes; empty when there is none.
+    /// </summary>
+    public static IReadOnlyList<(ulong Id, Hash PaymentHash)> TrimmedIncomingHtlcsOf(AccountingEventModel? close)
+    {
+        var htlcs = new List<(ulong, Hash)>();
+        if (close is null || !close.Details.TryGetValue(TrimmedIncomingHtlcsKey, out var text))
+            return htlcs;
+
+        foreach (var part in text.Split(',', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = part.IndexOf(':');
+            if (separator <= 0
+             || !ulong.TryParse(part.AsSpan(0, separator), NumberStyles.None, CultureInfo.InvariantCulture, out var id))
+                continue;
+
+            var hex = part[(separator + 1)..];
+            if (hex.Length != 64)
+                continue;
+
+            try
+            {
+                htlcs.Add((id, new Hash(Convert.FromHexString(hex))));
+            }
+            catch (FormatException)
+            {
+                // Not a hash: skipped
+            }
+        }
+
+        return htlcs;
     }
 
     /// <summary>

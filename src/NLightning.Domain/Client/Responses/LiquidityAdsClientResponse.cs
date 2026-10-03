@@ -53,9 +53,13 @@ public enum LiquiditySellerSource
 /// <param name="Rates">Its rates and payment types.</param>
 /// <param name="IsConnected">Whether it is connected to us now.</param>
 /// <param name="Alias">Its alias from its <c>node_announcement</c>, or null.</param>
+/// <param name="AnnouncedRates">When <paramref name="Source"/> is <see cref="LiquiditySellerSource.Init"/>: the rates
+/// its <c>node_announcement</c> in our graph carries, or null when it carries none (NL-884: both sources are shown, they
+/// can differ).</param>
 public sealed record LiquiditySellerInfo(
     CompactPubKey NodeId,
     LiquiditySellerSource Source,
     WillFundRates Rates,
     bool IsConnected,
-    string? Alias);
+    string? Alias,
+    WillFundRates? AnnouncedRates = null);

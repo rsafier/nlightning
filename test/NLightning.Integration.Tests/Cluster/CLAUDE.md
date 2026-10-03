@@ -178,7 +178,8 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   no pong and drops the link; the HTLC is kept, then settles after the heal through `channel_reestablish`), a partition
   that outlasts our reconnect attempts (CLN drops us; a payment fails at once without an HTLC; our node reconnects by
   itself after the heal), a CLN whose `lightningd` is frozen behind a live `connectd` (our `channel_reestablish` goes
-  unanswered: the channel stays gated and refuses a payment), and CLN split from bitcoind (CLN's height stalls, our
+  unanswered: the channel stays gated and refuses a payment; after `Node:ReestablishTimeout`, 15 s there, our node
+  drops the connection and its backoff dials CLN again, still gated, NL-796), and CLN split from bitcoind (CLN's height stalls, our
   node follows the tip and pays over the established connection; CLN catches up after the heal).
 - `Live/ChainMonitorZmqClusterTests` (Explicit): bitcoind keeps only RPC and P2P open (`LimitIngressPortsAsync`) and
   restarts in place, so our ZMQ subscriber is gone (`TcpConnectionTable` shows no connection on 28332); our node
@@ -264,6 +265,6 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   open, pay both ways, cooperative close) and LND (v1 open by the topology with a push, pay both ways, restart, pay,
   cooperative close). Run: `scripts/run-cluster.sh -n 3 -p integration --class
   NLightning.Integration.Tests.Cluster.Live.InProcessNodeClusterTests`.
-- The CLN proof advertises `option_shutdown_anysegwit`: CLN v26.06.8 sends a P2TR `shutdown` script on a dual-funded
-  channel without the option negotiated, which our default features refuse ("shutdown scriptpubkey is not a valid
-  form"), and the close stalls.
+- The CLN proof runs with the default features: CLN v26.06.8 sends a P2TR upfront and `shutdown` script on a
+  dual-funded channel, allowed only with `option_shutdown_anysegwit`, which we advertise by default since NL-776
+  (before, our node refused CLN's `shutdown` and the close stalled).
