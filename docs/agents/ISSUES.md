@@ -8304,7 +8304,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 
 
 ### NL-998 The CDK payment processor authenticated no client (loopback h2c, server-only TLS) and took ambient Kestrel endpoints
-- **Status:** fixed (SHA_FIX)
+- **Status:** fixed (2ed1e71b)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `src/NLightning.Cashu.PaymentProcessor/CashuPaymentProcessorOptions.cs`, `CashuPaymentProcessorHost.cs`, `CashuPaymentProcessorServiceCollectionExtensions.cs`
@@ -8314,7 +8314,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `CASHU_PLAN.md` §5.3, §6
 
 ### NL-999 The CDK payment processor answered FAILED between two attempts and served payments and invoices that were not the mint's
-- **Status:** fixed (SHA_FIX)
+- **Status:** fixed (2ed1e71b)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Cashu.PaymentProcessor/CdkPaymentProcessorService.cs`, `src/NLightning.Domain/Payments/Interfaces/IPaymentService.cs` (`IsPaying`), `src/NLightning.Application/Payments/Send/PaymentService.cs`
@@ -8354,7 +8354,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `CASHU_PLAN.md` C0
 
 ### NL-1003 Trampoline relay legs published payment events; a failure recorded for good could be published twice
-- **Status:** fixed (SHA_FIX)
+- **Status:** fixed (2ed1e71b)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`LogSucceeded`, `LogFailed`, `FinishFailedAsync`)
