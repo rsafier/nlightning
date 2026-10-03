@@ -127,6 +127,20 @@ every implementation, our own node included, is driven through the same seams.
   fully synced") and reconnects after `RestartAsync`/`KillAsync`; `LndNodeDeployer` puts LND in a declarative topology (`AddLnd`); `LndMapping` (txids,
   `chan_id` → `BxTxO`, channel points). `LndNodeOptions` defaults follow the shared bitcoind (`miner`, `nltg`, ZMQ
   28332/28333).
+- `Nodes/Ldk/` (phase 4, LDK lane): `LdkNodeOptions` (alias, announced addresses, the bitcoind Service, log level,
+  storage; PVC by default) → `LdkNode.Workload` (`nltg-ldk-server:dc02b76c` pulled `Never`, the image the Docker fixture
+  builds and never rebuilt here; the container writes `NLTG_LDK_CONFIG` to `/data/config.toml` at every start
+  (`LdkNode.BuildConfig`, the Docker fixture's layout) and `exec`s ldk-server as PID 1; readiness = `ldk-server-cli
+  get-node-info` answers and no drain file; `preStop` drains 5 s like CLN's, then ldk-server stops on SIGTERM, a
+  graceful restart takes about 8 s); `LdkRpc` (`ldk-server-cli -c /data/config.toml` over a Kubernetes exec, JSON or
+  `LdkRpcException` with the printed JSON); `LdkTestPeer` (`ITopologyLightningNode`; open = `open-channel` to the
+  address `list-peers` has, then until `list-channels` shows the funding outpoint; local balance = outbound capacity +
+  the reserve the peer makes us keep); `LdkJson` (pure mapping, the 64-bit SCID as `BxTxO`); `LdkNodeDeployer`
+  (registered by default, `DeploysWithChain`, `builder.AddLdk(name, extraArgs: ["alias=..."])`): creates the node's
+  `StableNodeAddress` Service first and announces its ClusterIP (`StableNodeAddress.ReadClusterIpAsync`), which peers
+  and the test process dial and which survives a restart. Diagnostics dump `get-node-info`, `list-channels`,
+  `list-peers`, `get-balances`. Live proof `Live/LdkTopologyTests` (bitcoind 31.1 + LDK + CLN, LDK's channel to CLN,
+  payments both ways, LDK restarted on its PVC, paid again).
 - `Topology/Lnd/` (LND lane): `LndPairTopology.BuildAsync` = the shared bitcoind `miner`
   (`BitcoinCoreTopologyChain`) + `alice`/`bob` (started in bitcoind's wave, `Settings.DeployNodesWithChain`;
   `Settings.Storage`) with an active alice → bob channel; `PayAsync` retries a failed
@@ -185,7 +199,8 @@ every implementation, our own node included, is driven through the same seams.
 
 - The suites keep their fixtures; `NLTG_TEST_BACKEND=docker|cluster` (Integration.Tests `Fixtures/TestBackend`, Docker
   when unset, an unknown value throws) picks the backend per process. Ported so far: the CLN interop suite
-  (`ClnFixture` -> `ClusterClnBackend`, a warm `ClusterTopologyFixture`).
+  (`ClnFixture` -> `ClusterClnBackend`, a warm `ClusterTopologyFixture`) and, in phase 4, the LDK interop suite
+  (`LdkFixture` -> `ClusterLdkBackend`; `scripts/run-cluster.sh -n 1 --suite ldk`, `Category=Interop.Ldk`).
 - `scripts/run-cluster.sh -n 3 --suite cln` builds once and runs 3 processes of `-p integration --trait
   Category=Interop.Cln`, each with `NLTG_TEST_BACKEND=cluster` and its own run id and namespace (`--class X` narrows it,
   `--explicit on` adds the captures, `--keep-on-failure` keeps a failed run's namespace). No Docker lock is needed.

@@ -69,4 +69,22 @@ public static class StableNodeAddress
 
         return DnsName(run, nodeName);
     }
+
+    /// <summary>
+    /// The virtual IP of <paramref name="nodeName"/>'s Service (<see cref="EnsureAsync"/> first). It is allocated when the
+    /// Service is created, before any pod runs, so a node can announce it in its own configuration (ldk-server).
+    /// </summary>
+    public static async Task<string> ReadClusterIpAsync(IKubernetes client, RunIdentity run, string nodeName,
+                                                        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(run);
+        var service = await client.CoreV1.ReadNamespacedServiceAsync(ServiceName(nodeName), run.Namespace,
+                                                                     cancellationToken: cancellationToken)
+                                  .ConfigureAwait(false);
+        var ip = service.Spec?.ClusterIP;
+        return string.IsNullOrEmpty(ip) || ip == "None"
+                   ? throw new InvalidOperationException($"{ServiceName(nodeName)} has no ClusterIP")
+                   : ip;
+    }
 }

@@ -4,6 +4,7 @@ using Images;
 using Kube;
 using Nodes;
 using Nodes.Cln;
+using Nodes.Ldk;
 using Nodes.Lnd;
 using Run;
 
@@ -30,7 +31,8 @@ public sealed class TopologyBuilder
     private readonly Dictionary<NodeKind, ILightningNodeDeployer> _deployers = new()
     {
         [NodeKind.Cln] = new ClnNodeDeployer(),
-        [NodeKind.Lnd] = new LndNodeDeployer()
+        [NodeKind.Lnd] = new LndNodeDeployer(),
+        [NodeKind.Ldk] = new LdkNodeDeployer()
     };
 
     private ChainFactory _chainFactory = BitcoinCoreTopologyChain.DeployAsync;
@@ -103,6 +105,14 @@ public sealed class TopologyBuilder
     public TopologyBuilder AddLnd(string name, ImageRef? image = null, IReadOnlyList<string>? extraArgs = null,
                                   NodeStorage? storage = null) =>
         AddNode(name, NodeKind.Lnd, image, extraArgs, storage);
+
+    /// <summary>
+    /// An ldk-server node (<see cref="LdkNode"/>; on a PVC by default, see <see cref="LdkNodeDeployer.BuildOptions"/>
+    /// for its <paramref name="extraArgs"/>).
+    /// </summary>
+    public TopologyBuilder AddLdk(string name, ImageRef? image = null, IReadOnlyList<string>? extraArgs = null,
+                                  NodeStorage? storage = null) =>
+        AddNode(name, NodeKind.Ldk, image, extraArgs, storage);
 
     /// <summary>Sends <paramref name="amountSat"/> to <paramref name="node"/>'s wallet (confirmed before the opens).</summary>
     public TopologyBuilder FundWallet(string node, long amountSat)

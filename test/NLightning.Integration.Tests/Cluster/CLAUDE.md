@@ -62,6 +62,23 @@ the library's existing seams: `NodeKind.NLightning`, `ILightningNodeDeployer`, `
   `NLTG_TEST_BACKEND=cluster NLTG_KUBE_CONTEXT=orbstack dotnet test/NLightning.Integration.Tests/bin/Release/net10.0/NLightning.Integration.Tests.dll -trait Category=Interop.Cln`.
   `scripts/run-interop.sh cln` is unchanged and runs the Docker backend (under the machine's Docker lock).
 
+## The LDK interop suite on the cluster (test harness phase 4)
+
+- `Fixtures/LdkFixture` delegates to `Fixtures/Ldk/ILdkBackend`: `DockerLdkBackend` (the former fixture: the same
+  `InteropChainHost` bitcoind 31.1, container, config file and fixed `127.0.0.1` port; its `config.toml` is pinned by
+  `LdkBackendTests`) and `ClusterLdkBackend` (a warm `ClusterTopologyFixture`, suite `ldk-interop`: bitcoind `miner`
+  31.1 on `emptyDir` + ldk-server `nltg-ldk` from the local `nltg-ldk-server:dc02b76c` image (never rebuilt, pulled
+  `Never`) on a PVC, through the harness's `LdkNodeDeployer`). The 27 tests under `Docker/Interop/Ldk/` run unchanged
+  on either backend; they reach the backend only through the fixture.
+- Addresses: this process dials LDK at its stable ClusterIP (`LdkFixture.LdkHost`; LDK announces the same address),
+  which survives `RestartLdkAsync` as the Docker backend's fixed port does (a graceful pod restart: 5 s drain, then
+  SIGTERM; the new pod on the same PVC keeps the node id and channels). LDK dials our listeners at
+  `LdkFixture.HostAddressForLdk` (`host.docker.internal` on Docker, `host.orb.internal` on OrbStack's cluster).
+- `LdkClient` runs `ldk-server-cli` through an `LdkExec` delegate (`docker exec`, or `ClusterLdkBackend.KubeExec`);
+  `LdkFixture.DumpLdkLogAsync` replaces the container log dumps and `LdkFixture.GetTipAsync` the chain host's.
+- Run: `scripts/run-cluster.sh -n 1 --suite ldk` (no Docker lock; `--class` for one class). `scripts/run-interop.sh
+  ldk` is unchanged and runs the Docker backend (under the machine's Docker lock).
+
 ## Reachability (OrbStack, host-side tests)
 
 - Our node listens on 127.0.0.1 (all interfaces when `NLTG_HOST_ADDRESS` names another host) and is announced to the

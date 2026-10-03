@@ -42,7 +42,7 @@ public sealed class LdkPeerStorageTests : IAsyncLifetime
             if (_session is not null)
                 Console.WriteLine($"[ldk] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
 
-            await DockerDiagnostics.DumpContainerLogsAsync([LdkFixture.LdkContainerName], 400);
+            await _fixture.DumpLdkLogAsync(400);
         }
 
         if (_session is not null)
