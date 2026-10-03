@@ -33,8 +33,17 @@ public sealed partial class CdkPaymentProcessorService
             expirySeconds = (uint)Math.Min(seconds, uint.MaxValue);
         }
 
-        var invoice = await _invoiceService.CreateInvoiceAsync(amount, bolt11.HasDescription ? bolt11.Description : "",
+        InvoiceModel invoice;
+        try
+        {
+            invoice = await _invoiceService.CreateInvoiceAsync(amount, bolt11.HasDescription ? bolt11.Description : "",
                                                                expirySeconds, _labels, cancellationToken);
+        }
+        catch (ArgumentException e)
+        {
+            // A description too long for BOLT 11, an amount or expiry out of range (NL-999)
+            throw new RpcException(new Status(StatusCode.InvalidArgument, e.Message));
+        }
         _logger.LogInformation("Cashu mint quote: invoice {PaymentHash} for {Amount}", invoice.PaymentHash,
                                amount is null ? "any amount" : $"{amount.MilliSatoshi} msat");
         return new CreatePaymentResponse
@@ -91,6 +100,7 @@ public sealed partial class CdkPaymentProcessorService
     {
         var invoice = Decode(request.Request);
         var amount = AmountToPay(invoice, request.Options);
+        CheckPaymentAmount(amount);
         return new PaymentQuoteResponse
         {
             RequestIdentifier = Identifier(HashOf(invoice)),
@@ -106,6 +116,7 @@ public sealed partial class CdkPaymentProcessorService
     {
         var quoteId = CheckQuoteId(request.QuoteId);
         var amount = OfferAmountToPay(request.Request, request.Options);
+        CheckPaymentAmount(amount);
         var reserve = FeeReserve(amount);
         var quote = await WithQuotesAsync(r => r.GetAsync(quoteId));
         if (quote is null)
@@ -140,8 +151,9 @@ public sealed partial class CdkPaymentProcessorService
         var invoice = Decode(options.Bolt11);
         var paymentHash = HashOf(invoice);
         var amount = AmountToPay(invoice, options.MeltOptions);
+        CheckPaymentAmount(amount);
         maxFee ??= options.MaxFeeAmount;
-        var fee = maxFee is null ? FeeReserve(amount) : ToMoney(maxFee);
+        var fee = CapFee(maxFee is null ? null : ToMoney(maxFee), amount);
         var quoteId = string.IsNullOrWhiteSpace(options.QuoteId) ? null : CheckQuoteId(options.QuoteId);
 
         // The quote is saved before the payment starts (by hash: the mint names BOLT 11 melts by payment hash)
@@ -182,9 +194,16 @@ public sealed partial class CdkPaymentProcessorService
         }
         catch (InvalidOperationException e) when (e.GetType() == typeof(InvalidOperationException))
         {
-            // Already in flight or paid: answer with the stored payment
-            payment = await _paymentService.GetPaymentAsync(paymentHash, cancellationToken)
-                   ?? throw new RpcException(new Status(StatusCode.FailedPrecondition, e.Message));
+            // Already in flight or paid: answer with the stored payment when it is the mint's (NL-999)
+            var stored = await _paymentService.GetPaymentAsync(paymentHash, cancellationToken);
+            if (stored is null || !IsMintPayment(stored))
+            {
+                var reason = stored is null ? e.Message : "This node already pays or paid this invoice outside the mint.";
+                await FailQuoteAsync(quoteId, reason);
+                throw new RpcException(new Status(StatusCode.FailedPrecondition, reason));
+            }
+
+            payment = stored;
         }
         finally
         {
@@ -208,8 +227,9 @@ public sealed partial class CdkPaymentProcessorService
         var quoteId = CheckQuoteId(options.QuoteId);
         var identifier = QuoteIdentifier(quoteId);
         var amount = OfferAmountToPay(options.Offer, options.MeltOptions);
+        CheckPaymentAmount(amount);
         maxFee ??= options.MaxFeeAmount;
-        var fee = maxFee is null ? FeeReserve(amount) : ToMoney(maxFee);
+        var fee = CapFee(maxFee is null ? null : ToMoney(maxFee), amount);
 
         // Replays keep what is stored: a melt in flight, paid or pending is never sent again
         var quote = await WithQuotesAsync(r => r.GetAsync(quoteId));
@@ -277,7 +297,8 @@ public sealed partial class CdkPaymentProcessorService
         using var scope = _scopeFactory!.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var invoices = await unitOfWork.InvoiceDbRepository.ListSettledByOfferIdAsync(offerId);
-        return invoices.Select(Received).ToList();
+        // Only the mint's own offers' invoices (NL-999)
+        return invoices.Where(i => i.Label == _options.Label).Select(Received).ToList();
     }
 
     /// <summary>Stores the payment's hash and outcome on its melt.</summary>
@@ -294,10 +315,10 @@ public sealed partial class CdkPaymentProcessorService
 
             quote.PaymentHash = payment.PaymentHash;
             quote.Fee = payment.Status == PaymentStatus.Succeeded ? payment.Fee : null;
-            quote.SetState(payment.Status switch
+            quote.SetState(LightningState(payment) switch
             {
-                PaymentStatus.Succeeded => CashuQuoteState.Paid,
-                PaymentStatus.Failed => CashuQuoteState.Failed,
+                QuoteState.Paid => CashuQuoteState.Paid,
+                QuoteState.Failed => CashuQuoteState.Failed,
                 _ => CashuQuoteState.Pending
             }, _timeProvider.GetUtcNow(), payment.FailureReason);
             await SaveQuoteAsync(quote, isNew: false);
@@ -330,12 +351,7 @@ public sealed partial class CdkPaymentProcessorService
         var response = new MakePaymentResponse
         {
             PaymentIdentifier = identifier,
-            Status = payment.Status switch
-            {
-                PaymentStatus.Succeeded => QuoteState.Paid,
-                PaymentStatus.Failed => QuoteState.Failed,
-                _ => QuoteState.Pending
-            },
+            Status = LightningState(payment),
             TotalSpent = ToAmount(payment.Status == PaymentStatus.Succeeded
                                       ? payment.Amount + payment.Fee
                                       : LightningMoney.Zero, roundUp: true)
@@ -344,6 +360,25 @@ public sealed partial class CdkPaymentProcessorService
             response.PaymentProof = Convert.ToHexString((byte[])preimage).ToLowerInvariant();
         return response;
     }
+
+    /// <summary>
+    /// The mint's view of a payment. CDK takes <c>FAILED</c> as final and gives the melt's ecash back, so a payment
+    /// row that reads <c>Failed</c> is <c>FAILED</c> only when it is: not between two attempts of a payment the
+    /// payment service still retries (<c>PENDING</c>), and not failed for an unknown outcome after a restart, which a
+    /// replayed fulfill may still turn into paid (<c>UNKNOWN</c>) (NL-999, NL-1001).
+    /// </summary>
+    private QuoteState LightningState(PaymentModel payment) => payment.Status switch
+    {
+        PaymentStatus.Succeeded => QuoteState.Paid,
+        PaymentStatus.Failed when payment.IsOutcomeUnknown => QuoteState.Unknown,
+        PaymentStatus.Failed when _paymentService.IsPaying(payment.PaymentHash) => QuoteState.Pending,
+        PaymentStatus.Failed => QuoteState.Failed,
+        _ => QuoteState.Pending
+    };
+
+    /// <summary>Whether <paramref name="payment"/> is one the processor made (its label; never a trampoline relay's).</summary>
+    private bool IsMintPayment(PaymentModel payment) =>
+        payment is { IsTrampolineRelay: false } && payment.Label == _options.Label;
 
     /// <summary>A settled invoice as the mint's payment: by payment hash (BOLT 11) or by its offer (BOLT 12).</summary>
     private WaitIncomingPaymentResponse Received(InvoiceModel invoice) => new()

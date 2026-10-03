@@ -2,6 +2,7 @@ namespace NLightning.Daemon.Tests.Handlers;
 
 using Application.Payments.Events;
 using Daemon.Handlers;
+using Daemon.Services.Ipc;
 using Domain.Client.Constants;
 using Domain.Client.Exceptions;
 using Domain.Client.Requests;
@@ -131,6 +132,49 @@ public class WaitInvoiceClientHandlerTests
         // Assert
         Assert.Equal(ErrorCodes.InvalidOperation, error.ErrorCode);
         _invoiceServiceMock.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_AClientThatGoesAway_When_Waiting_Then_TheWaitEndsAndUnsubscribes()
+    {
+        // Arrange (NL-1002): the IPC connection's disconnect ends the wait, as for shutdown --wait
+        _invoiceServiceMock.Setup(x => x.GetInvoiceAsync(s_paymentHash, It.IsAny<CancellationToken>()))
+                           .ReturnsAsync(() => Invoice(InvoiceStatus.Open));
+        using var disconnected = new CancellationTokenSource();
+        var accessor = new IpcClientConnectionAccessor { Current = new FakeConnection(disconnected.Token) };
+        var handler = new WaitInvoiceClientHandler(_invoiceServiceMock.Object, _hub, TimeProvider.System, accessor);
+
+        // Act
+        var wait = handler.HandleAsync(new WaitInvoiceClientRequest(s_paymentHash, 300),
+                                       TestContext.Current.CancellationToken);
+        await WaitForSubscriberAsync();
+        await disconnected.CancelAsync();
+
+        // Assert
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => wait.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.Equal(0, _hub.SubscriberCount);
+    }
+
+    [Fact]
+    public async Task Given_NoPaymentHash_When_Waiting_Then_InvalidOperationBeforeAnyRead()
+    {
+        // Arrange (NL-1002): a hand-made request without a hash
+        var handler = CreateHandler();
+
+        // Act
+        var error = await Assert.ThrowsAsync<ClientException>(
+                        () => handler.HandleAsync(new WaitInvoiceClientRequest(default(Hash)),
+                                                  TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Equal(ErrorCodes.InvalidOperation, error.ErrorCode);
+        _invoiceServiceMock.VerifyNoOtherCalls();
+    }
+
+    private sealed class FakeConnection(CancellationToken disconnected) : IIpcClientConnection
+    {
+        public CancellationToken Disconnected { get; } = disconnected;
     }
 
     private WaitInvoiceClientHandler CreateHandler() =>

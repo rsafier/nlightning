@@ -185,7 +185,8 @@ public sealed partial class CdkPaymentProcessorService : CdkPaymentProcessor.Cdk
             case PaymentIdentifierType.PaymentHash:
                 var invoice = await _invoiceService.GetInvoiceAsync(ParseHash(identifier, "payment hash"),
                                                                     context.CancellationToken);
-                if (invoice is { Status: Domain.Payments.Enums.InvoiceStatus.Settled })
+                // Only the mint's own invoices (NL-999)
+                if (invoice is { Status: Domain.Payments.Enums.InvoiceStatus.Settled } && invoice.Label == _options.Label)
                     response.Payments.Add(Received(invoice));
                 return response;
             case PaymentIdentifierType.OfferId when Bolt12Available:
@@ -210,7 +211,8 @@ public sealed partial class CdkPaymentProcessorService : CdkPaymentProcessor.Cdk
             case PaymentIdentifierType.PaymentHash:
                 var paymentHash = ParseHash(identifier, "payment hash");
                 var payment = await _paymentService.GetPaymentAsync(paymentHash, context.CancellationToken);
-                if (payment is not null)
+                // Another payment of the node, a trampoline relay's leg included, is not the mint's to read (NL-999)
+                if (payment is not null && IsMintPayment(payment))
                     return ToMakePaymentResponse(payment, Identifier(paymentHash));
 
                 // A melt saved before its payment that never reached the payment service, in this process or before
@@ -235,16 +237,23 @@ public sealed partial class CdkPaymentProcessorService : CdkPaymentProcessor.Cdk
         try
         {
             await foreach (var response in subscription.ReadAllAsync(context.CancellationToken))
+            {
+                // Events were dropped: end the stream, so the mint subscribes again and checks its quotes (NL-999)
+                if (subscription.Overflowed)
+                    throw new EventsDroppedException();
                 await stream.WriteAsync(response, context.CancellationToken);
+            }
         }
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
         {
             // The mint went away
         }
-
-        if (subscription.Overflowed)
-            _logger.LogWarning("The Cashu mint read payment events too slowly; some were dropped (the mint's checks "
-                             + "recover them)");
+        catch (EventsDroppedException e)
+        {
+            _logger.LogWarning("Payment events for the Cashu mint were dropped; its stream is ended for it to "
+                             + "subscribe again and check its quotes");
+            throw new RpcException(new Status(StatusCode.Unavailable, e.Message));
+        }
     }
 
     /// <summary>The state of a melt by its quote id (BOLT 12 and on-chain melts, and BOLT 11 melts as stored).</summary>
@@ -319,10 +328,34 @@ public sealed partial class CdkPaymentProcessorService : CdkPaymentProcessor.Cdk
         return LightningMoney.MilliSatoshis(Math.Max(proportional, _options.MinFeeReserveMsat));
     }
 
+    /// <summary>Refuses a melt above <see cref="CashuPaymentProcessorOptions.MaxPaymentSat"/> (NL-1004).</summary>
+    private void CheckPaymentAmount(LightningMoney amount)
+    {
+        if ((ulong)amount.Satoshi > _options.MaxPaymentSat
+         || amount.MilliSatoshi > _options.MaxPaymentSat * 1_000)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                                              $"The amount is above this processor's limit of {_options.MaxPaymentSat} "
+                                            + "sat."));
+    }
+
+    /// <summary>
+    /// The Lightning fee limit of a melt: the mint's <paramref name="requested"/> limit (the reserve without one), never
+    /// above max(<see cref="CashuPaymentProcessorOptions.MinFeeReserveMsat"/>, amount × MaxFeePpm / 1,000,000) (NL-1004).
+    /// </summary>
+    internal LightningMoney CapFee(LightningMoney? requested, LightningMoney amount)
+    {
+        var proportional = (ulong)(amount.MilliSatoshi * (UInt128)_options.MaxFeePpm / 1_000_000);
+        var cap = LightningMoney.MilliSatoshis(Math.Max(proportional, _options.MinFeeReserveMsat));
+        var fee = requested ?? FeeReserve(amount);
+        return fee > cap ? cap : fee;
+    }
+
     internal LightningMoney ToMoney(AmountMessage amount)
     {
         if (!string.IsNullOrEmpty(amount.Unit))
             CheckUnit(amount.Unit);
+        if (!_options.IsMsat && amount.Value > ulong.MaxValue / 1_000)
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The amount is too large."));
         return _options.IsMsat ? LightningMoney.MilliSatoshis(amount.Value) : LightningMoney.Satoshis(amount.Value);
     }
 

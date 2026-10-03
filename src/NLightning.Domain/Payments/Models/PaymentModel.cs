@@ -95,6 +95,21 @@ public sealed class PaymentModel
     /// </summary>
     public string? FailureReason { get; private set; }
 
+    /// <summary>
+    /// The failure reason of a payment failed at startup because its HTLCs were gone and their outcomes unknown
+    /// (NL-321): it may still turn out paid when a fulfill is replayed, so it is not a final failure to report
+    /// (NL-1001).
+    /// </summary>
+    public const string UnknownOutcomeReason = "No part of the payment was still in flight after the restart; its "
+                                             + "stored parts' HTLCs are gone and their outcomes are unknown.";
+
+    /// <summary>
+    /// Whether the payment failed only because its outcome was unknown after a restart (<see cref="UnknownOutcomeReason"/>):
+    /// not a final failure (NL-1001).
+    /// </summary>
+    public bool IsOutcomeUnknown =>
+        Status == PaymentStatus.Failed && FailureCode is null && FailureReason == UnknownOutcomeReason;
+
     public DateTimeOffset? CompletedAt { get; private set; }
 
     /// <summary>

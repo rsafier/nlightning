@@ -48,6 +48,20 @@ internal sealed class ProcessorEventHub
             subscription.Write(response);
     }
 
+    /// <summary>
+    /// Ends every open stream as overflowed: the processor itself missed node events (its own subscription
+    /// overflowed), so each mint must subscribe again and check its quotes (NL-999).
+    /// </summary>
+    public void AbortAll()
+    {
+        Subscription[] subscriptions;
+        lock (_lock)
+            subscriptions = [.. _subscriptions];
+
+        foreach (var subscription in subscriptions)
+            subscription.Abort();
+    }
+
     private void Remove(Subscription subscription)
     {
         lock (_lock)
@@ -80,6 +94,13 @@ internal sealed class ProcessorEventHub
 
         public void Write(PaymentEventResponse response) => _channel.Writer.TryWrite(response);
 
+        /// <summary>Marks the stream overflowed and ends its reads with <see cref="EventsDroppedException"/>.</summary>
+        public void Abort()
+        {
+            Interlocked.Exchange(ref _overflowed, 1);
+            _channel.Writer.TryComplete(new EventsDroppedException());
+        }
+
         public void Dispose()
         {
             _hub.Remove(this);
@@ -87,3 +108,6 @@ internal sealed class ProcessorEventHub
         }
     }
 }
+
+/// <summary>The processor dropped events a stream should have had (NL-999).</summary>
+internal sealed class EventsDroppedException() : Exception("Payment events were dropped; subscribe again.");

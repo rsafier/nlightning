@@ -98,10 +98,20 @@ public sealed partial class CdkPaymentProcessorService
     private async Task PumpPaymentEventsAsync(IPaymentEventSubscription subscription,
                                               CancellationToken cancellationToken)
     {
+        var overflowReported = false;
         using (subscription)
         {
             await foreach (var paymentEvent in subscription.ReadAllAsync(cancellationToken))
             {
+                // The processor missed node events: every mint stream ends and the mints check their quotes (NL-999)
+                if (subscription.Overflowed && !overflowReported)
+                {
+                    overflowReported = true;
+                    _logger.LogWarning("The Cashu processor read payment events too slowly; some were dropped, so the "
+                                     + "mint's streams are ended for them to subscribe again");
+                    _events.AbortAll();
+                }
+
                 try
                 {
                     if (await ToEventResponseAsync(paymentEvent, cancellationToken) is { } response)

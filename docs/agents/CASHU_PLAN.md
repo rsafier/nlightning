@@ -258,6 +258,11 @@ Before C0 there was no "invoice paid" or "payment finished" notification, only p
   - `payment_successful` / `payment_failed` for payments with a remembered quote id.
   - A subscription that overflowed ends the stream with `UNAVAILABLE`, so the mint subscribes again and checks its quotes.
 
+**Spend cap (NL-1004, integration review)**
+- `MaxPaymentSat` (default 1,000,000 sat) refuses a larger quote or melt of every method (BOLT 11, BOLT 12, on-chain) with `InvalidArgument` before anything is stored or sent (an on-chain melt answers `FAILED`, as `cdk-bdk`).
+- The Lightning fee limit is the mint's `max_fee_amount` capped at max(`MinFeeReserveMsat`, amount × `MaxFeePpm` / 10^6; default 10,000 = 1 %, twice the quoted reserve); the on-chain fee limit is capped at `MaxOnchainFeeSat` (25,000 sat).
+- A payment row that reads Failed for an unknown outcome after a restart (`PaymentModel.IsOutcomeUnknown`, NL-1001) answers `UNKNOWN`, never `FAILED`, and publishes no failure event.
+
 **Startup refusals**
 - An enabled processor on mainnet without `AllowMainnet` (also when the node's network is unknown).
 - A non-loopback `ListenAddress` without mutual TLS (`TlsDirectory` with `server.pem`, `server.key` and `ca.pem`).

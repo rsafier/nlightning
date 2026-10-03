@@ -59,6 +59,24 @@ public sealed class CashuPaymentProcessorOptions
     /// <summary>The smallest fee reserve quoted for a melt, in msat.</summary>
     public ulong MinFeeReserveMsat { get; set; } = 5_000;
 
+    /// <summary>
+    /// The largest melt (any method), in sat: a larger quote or melt is refused (NL-1004). Default 1,000,000 sat; raise
+    /// it for a mint that serves larger melts.
+    /// </summary>
+    public ulong MaxPaymentSat { get; set; } = 1_000_000;
+
+    /// <summary>
+    /// The largest Lightning fee a melt may pay, in millionths of its amount (at least
+    /// <see cref="MinFeeReserveMsat"/>): the mint's <c>max_fee_amount</c> is capped to it (NL-1004). Default 1 %, twice
+    /// the quoted reserve.
+    /// </summary>
+    public uint MaxFeePpm { get; set; } = 10_000;
+
+    /// <summary>
+    /// The largest fee an on-chain melt's transaction may pay, in sat: the mint's fee limit is capped to it (NL-1004).
+    /// </summary>
+    public ulong MaxOnchainFeeSat { get; set; } = 25_000;
+
     /// <summary>How long a melt waits for the payment's outcome before answering <c>PENDING</c>, in seconds.</summary>
     public int PaymentTimeoutSeconds { get; set; } = 60;
 
@@ -153,6 +171,13 @@ public sealed class CashuPaymentProcessorOptions
             errors.Add($"{SectionName}:Unit '{Unit}' is not sat or msat.");
         if (FeeReservePpm > 1_000_000)
             errors.Add($"{SectionName}:FeeReservePpm {FeeReservePpm} is above 1,000,000.");
+        if (MaxPaymentSat is 0 or > 21_000_000UL * 100_000_000UL)
+            errors.Add($"{SectionName}:MaxPaymentSat {MaxPaymentSat} is outside 1-2,100,000,000,000,000.");
+        if (MaxFeePpm < FeeReservePpm || MaxFeePpm > 1_000_000)
+            errors.Add($"{SectionName}:MaxFeePpm {MaxFeePpm} is outside FeeReservePpm ({FeeReservePpm})-1,000,000: the "
+                     + "quoted reserve must be payable.");
+        if (MaxOnchainFeeSat == 0)
+            errors.Add($"{SectionName}:MaxOnchainFeeSat is 0.");
         if (PaymentTimeoutSeconds is < 1 or > 600)
             errors.Add($"{SectionName}:PaymentTimeoutSeconds {PaymentTimeoutSeconds} is outside 1-600.");
         if (string.IsNullOrWhiteSpace(Label))

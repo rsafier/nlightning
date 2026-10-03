@@ -93,6 +93,7 @@ public sealed partial class CdkPaymentProcessorService
         var quoteId = CheckQuoteId(string.IsNullOrEmpty(onchain.QuoteId) ? request.QuoteId : onchain.QuoteId);
         var address = string.IsNullOrWhiteSpace(onchain.Address) ? request.Request.Trim() : onchain.Address.Trim();
         var amount = OnchainAmount(onchain.Amount);
+        CheckPaymentAmount(amount);
 
         var options = new List<OnchainFeeOption>();
         var targets = _options.GetOnchainFeeTargets()!;
@@ -157,6 +158,7 @@ public sealed partial class CdkPaymentProcessorService
             try
             {
                 amount = OnchainAmount(onchain.Amount);
+                CheckPaymentAmount(amount);
                 var targets = _options.GetOnchainFeeTargets()!;
                 var index = onchain.HasFeeIndex ? onchain.FeeIndex : 0;
                 if (index >= targets.Count)
@@ -168,7 +170,12 @@ public sealed partial class CdkPaymentProcessorService
                 return await FailOnchainAsync(quote, quoteId, address, null, e.Status.Detail);
             }
 
-            var limit = (maxFee ?? onchain.MaxFeeAmount) is { } given ? ToMoney(given) : null;
+            // Never above MaxOnchainFeeSat, whatever limit the mint passes (NL-1004)
+            var cap = LightningMoney.Satoshis(_options.MaxOnchainFeeSat);
+            var limit = (maxFee ?? onchain.MaxFeeAmount) is { } given && ToMoney(given) is var requested
+                        && requested < cap
+                            ? requested
+                            : cap;
             var isNew = quote is null;
             quote ??= new CashuQuoteModel(quoteId, CashuQuoteMethod.Onchain, CashuQuoteDirection.Outgoing, amount,
                                           _timeProvider.GetUtcNow());

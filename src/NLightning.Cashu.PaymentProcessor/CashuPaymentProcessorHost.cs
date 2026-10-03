@@ -60,6 +60,8 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
         if (!_options.Enabled)
             return;
 
+        WarnIfKeyReadable();
+
         // No ambient configuration (appsettings.json in the working directory, environment variables): a Kestrel
         // section there would add endpoints beside the checked one (NL-998)
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
@@ -182,6 +184,18 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
             foreach (var element in chain.ChainElements)
                 element.Certificate.Dispose();
         }
+    }
+
+    /// <summary>Warns when <c>server.key</c> can be read by the group or others (NL-1000).</summary>
+    private void WarnIfKeyReadable()
+    {
+        if (string.IsNullOrWhiteSpace(_options.TlsDirectory) || OperatingSystem.IsWindows())
+            return;
+
+        var key = Path.Combine(_options.TlsDirectory, "server.key");
+        if (File.Exists(key) && (File.GetUnixFileMode(key) & (UnixFileMode.GroupRead | UnixFileMode.OtherRead)) != 0)
+            _logger.LogWarning("{Key} can be read by its group or by others; restrict it to its owner (chmod 600)",
+                               key);
     }
 
     private static bool HasCa(string directory) => File.Exists(Path.Combine(directory, "ca.pem"));

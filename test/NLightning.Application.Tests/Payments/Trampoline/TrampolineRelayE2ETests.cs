@@ -290,6 +290,33 @@ public class TrampolineRelayE2ETests
         await AssertNoOtherEventAsync(harness.T, tEvents, invoice.PaymentHash);
     }
 
+    [Fact]
+    public async Task Given_TAsksMoreThanAsBudget_When_ARetriesAtTsPolicy_Then_ASucceedsOnceWithoutAFailureEvent()
+    {
+        // Arrange: T refuses A's first attempt (fee_insufficient at its policy); A retries at T's policy
+        await using var harness = await CreateAsync(o =>
+        {
+            o.FeeBaseMsat = 5_000;
+            o.FeeProportionalMillionths = 2_000;
+            o.CltvExpiryDelta = 600;
+        });
+        var invoice = await TrampolineHarness.CreateInvoiceAsync(harness.C, s_amount);
+        using var aEvents = SubscribeEvents(harness.A);
+        using var tEvents = SubscribeEvents(harness.T);
+
+        // Act
+        var result = await harness.PumpUntilAsync(PayAsync(harness.A, invoice.Bolt11!, Through(harness.T)));
+        await WhenRelayIdleAsync(harness);
+
+        // Assert: the refused first attempt published no failure; the one success carries T's policy fee
+        Assert.Equal(2, result.Attempts);
+        var succeeded = Assert.IsType<PaymentSucceededEvent>(await PaymentEventHubTests.ReadOneAsync(aEvents));
+        Assert.Equal(invoice.PaymentHash, succeeded.PaymentHash);
+        Assert.Equal(LightningMoney.MilliSatoshis(5_000 + 100_000), succeeded.Fee);
+        await AssertNoOtherEventAsync(harness.A, aEvents, invoice.PaymentHash);
+        await AssertNoOtherEventAsync(harness.T, tEvents, invoice.PaymentHash);
+    }
+
     private static IPaymentEventSubscription SubscribeEvents(SwitchNode node) =>
         node.Services.GetRequiredService<IPaymentEventSource>().Subscribe();
 

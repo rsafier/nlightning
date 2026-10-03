@@ -915,12 +915,12 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                 return payment;
         }
 
-        payment.Fail(null, null, "No part of the payment was still in flight after the restart; its stored parts' "
-                               + "HTLCs are gone and their outcomes are unknown.", _timeProvider.GetUtcNow());
+        payment.Fail(null, null, PaymentModel.UnknownOutcomeReason, _timeProvider.GetUtcNow());
         await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().UpdateAsync(payment);
         StagePaymentFailed(scope, payment);
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
-        LogFailed(payment);
+        // An unknown outcome is not a final failure: a replayed fulfill may still prove it paid (NL-1001)
+        LogFailed(payment, publish: false);
         if (_sessions.TryGetValue(payment.PaymentHash, out var session) && !session.HasPartsInFlight)
             CompleteSession(session);
 
@@ -2714,7 +2714,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     {
         if (_logger.IsEnabled(LogLevel.Warning))
             _logger.LogWarning("Payment {PaymentHash} failed: {Reason}", payment.PaymentHash, payment.FailureReason);
-        if (publish && payment is { IsTrampolineRelay: false, Status: PaymentStatus.Failed })
+        if (publish && payment is { IsTrampolineRelay: false, Status: PaymentStatus.Failed, IsOutcomeUnknown: false })
             _paymentEventPublisher?.Publish(new PaymentFailedEvent(payment.PaymentHash, payment.FailureReason,
                                                                    payment.CompletedAt ?? _timeProvider.GetUtcNow()));
     }
