@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-03 by the test harness phase 3/5/6 integrator (branch `wip/harness-spike` from `7593fdda`; three lanes merged with `--no-ff` in this order — lane branches `hf-*` hold the originals; statuses carry the lane SHAs and the merge SHA): `e9305ee0` (hf-lnd-wire: `LightningRegtestNetworkFixture` behind `NLTG_TEST_BACKEND`, NL-780 fixed), `304c2976` (hf-runner: `run-cluster.sh --matrix`, NL-816 and NL-817 fixed, NL-818 open), `b74efadf` (hf-lnunit: NL-819 fixed, NL-820 open). Every confirmed review finding of the three lanes fixed in `dbf77b1e` as NL-821 (medium: Docker-by-name test code on the cluster backend), NL-822, NL-823 and NL-824; none rejected (the "lnd exceeds its weight without `-parallel none`" finding is answered by the catalog's one-collection `lnd` and a cluster re-proof of the moved classes). NL-811..NL-815 were not assigned. Gates: Release `--no-incremental` build 0 warnings, `dotnet format` clean, `check-sln-configs` OK, non-Docker net10.0 suite 14,283 passed with 6 platform/explicit skips and one NL-729 regex-timeout failure (`ClassificationEngineTests`, 53/53 alone), `run-cluster-tests.sh` 48/48, the LND suite on the cluster (`--suite lnd` 58/58 plus the moved classes 6/6 and 2/2) and on Docker under the machine lock (90/90). No SQL Server tests.
+
 Updated 2026-10-02 by the batch10 integrator (branch `wip/batch10` from `wip/fafo` at `44aeaf5f`; 13 lanes run in parallel worktrees on the owner decisions of 2026-10-02 and merged with `--no-ff` in lane order — lane branches `b10-*` hold the originals; the statuses carry the lane SHAs and the merge SHA): merges `a8bfc61a` (b10-plugin: NL-151 fixed, new NL-706, NL-707), `94d3e68e` (b10-chain: NL-012 fixed, testnet4), `666ec562` (b10-sec: NL-677, NL-678, NL-679 fixed, new NL-693), `d8ffd72e` (b10-acct-edges: NL-606, NL-607, NL-608, NL-610, NL-611, NL-612, NL-613, NL-645 fixed, new NL-688; migration `AddMutualCloseTerms`), `7b778718` (b10-lots: NL-674 (owner decision A, D-A12 amended), NL-657, NL-675, NL-680, NL-681, NL-658 fixed; migration `AddLotBuckets`), `f24b7ba3` (b10-splice-resume: NL-600 fixed, NL-698 new and fixed, NL-496 partial), `cb806664` (b10-attr: NL-332 fixed, `option_attribution_data` Optional by default), `a38caf6c` (b10-aot: NL-338 fixed, NL-300 partial, new NL-708, NL-709, NL-710 (fixed)), `1600d945` (b10-db-proofs: NL-662, NL-429, NL-347 fixed), `0419d687` (b10-eclair: NL-557, NL-407 fixed, NL-554 partial, NL-717, NL-718, NL-719 new and fixed), `4178186b` (b10-ldk: NL-556 fixed, NL-722, NL-723 new and fixed, new NL-721, NL-724), `9cabb01e` (b10-close-interop: NL-286 fixed, NL-725 new and fixed), `ee20aa9f` (b10-tor-interop: NL-572 fixed, new NL-729). Integration fixes: `5602e27b` (the later migration's Designers regenerated over both lanes' columns; `HasPendingModelChanges` false on all three providers), `08caba71` (the AOT MessagePack test after the plugin deletion). Review findings fixed with regression tests (each fails before its fix): NL-732 (`8be600e6`, a stalled HTTP body hung the fee/price/Esplora readers), NL-735 (`8be600e6`, LAN IP `http://` accepted), NL-733 and NL-734 (`1f956f72`), NL-736, NL-737, NL-738 (`290f3dcc`; plus `SetClosingTransaction`'s doc), NL-739 (`017d3ff0`, lots stranded by an unsettled claim), NL-740, NL-741 (`8a094fa9`, `2a26ac15`), NL-742, NL-743 (`fe957403`, route hints by the peer's alias; the template's old 144 margin raised on existing nodes), NL-744 (`3655e6f3`), and two test-strength findings without new IDs: the NL-600 wallet-load test now counts the loads (`41ab5a74`) and the NL-725 CLN proof asserts CLOSINGD_COMPLETE (`4e1f7763`, class 4/4 under the Docker lock). Rejected review findings: the BlindedPathBuilder scid choice "has no unit test" (the three arms are the `BlindedPaymentPathFactoryTests` alias theory), the blinded BOLT 11 margin "still 144" and the stale Application CLAUDE.md margin (both already 1,008 once b10-eclair and b10-ldk were merged). Owner decisions recorded: NL-161, NL-162, NL-169 wontfix (WASM/Blazor parked until there is a browser-wallet goal), NL-157 wontfix (layering left as is, do not make it worse), NL-437 wontfix (a .NET limitation; `SECURITY_REVIEW.md` SR-09 note), NL-180 stays open (interop stays local, no CI Docker). FAFO/FAFO2 (`~/.nltg`, not touched): NL-743 raises their pinned 144 margin at the next start with a warning. Gates on the merged tree: Release build `--no-incremental` 0 warnings, `dotnet format` clean, `check-sln-configs` OK, full non-Docker net10.0 suite green (see the final run in the integrator's report).
 
 Updated 2026-10-02 by the batch10 finalizer (branch `wip/batch10`, after the full Docker pass at `e84f43f6`: LND 87/87, on-chain all 47/47, CLN 78/81, Eclair 29/29, LDK 27/27, gossip 30/30, ABCD 10/10, Tor 3/3): NL-745 new and fixed (`b22d157f`, the three order-dependent `ClnCloseTests` failures of the pass: CLN took our own closing fee, B2-CLS-R02; full CLN rerun 81/81 + 4 `Explicit`), NL-676 fixed (`c9f2b083`, the A3 Docker smoke: bob and carol run `Profile=Financial` for the whole ABCD suite, `AbcdAccountingTests`; ABCD 11/11), and two loaded-run failures of the final non-Docker run root-caused: NL-746 new and fixed (`2c6475d9`, a banned gossip peer's in-flight invalid messages banned it twice; the NL-382 residual, regression test fails before the fix) and NL-747 new and fixed (`08fa0b0a`, `ClearAllPools` in parallel test teardowns disposed other tests' SQLite connections). All Docker runs under the machine-wide lock; no SQL Server container tests. Gates: Release `--no-incremental` build 0 CS warnings, `dotnet format` clean, `check-sln-configs` OK, full non-Docker net10.0 suite green (13,302 passed, 6 platform/explicit skips: Domain 4201, Application 3594, Infrastructure.Bitcoin 1577, Daemon 1268, Integration 1041, Infrastructure 656, Serialization 622, Bolt11 343).
@@ -133,12 +135,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 50 | 51 |
+| open | 0 | 0 | 1 | 51 | 52 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 192 | 377 | 645 |
+| fixed | 14 | 62 | 194 | 383 | 653 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **62** | **200** | **438** | **714** |
+| **Total** | **14** | **62** | **202** | **445** | **723** |
 
 ### Epics
 
@@ -7360,12 +7362,12 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-780 After a cluster LND restart, a node connected by the IP behind `LndNodeConnection.Host` keeps dialling the old IP
-- **Status:** open
+- **Status:** fixed (c5e8ad38; merged in e9305ee0)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs` (`ConnectToAsync(LndNodeConnection)`, owned by the p3-lnd-swap lane), `test/NLightning.Integration.Tests/Fixtures/Lnd/ClusterLndBackend.cs`
 - **Evidence:** test harness phase 3 lane lnd-topo (7a16ab70), by reading the code, not reproduced live: `ConnectToAsync` resolves `lndNode.Host` with `Dns.GetHostAddressesAsync` and dials `pubkey@IP:9735`, and our node stores that IP. A cluster restart gives the pod a new IP, and LND cannot dial back (it only saw our ephemeral port). Nodes that joined through `ClusterLndBackend` are redialled by the network at the Service name: alice restarts in 7.6-8.4 s with our channel active again (`LndRegtestNetworkClusterTests`).
-- **Fix sketch:** At the wiring step, on the cluster backend dial `ClusterLndBackend.LndPeerHost(alias)` (`alias.<ns>.svc.cluster.local`) instead of the resolved IP, or join the node through `JoinInProcessNodeAsync`. This replaces the NL-262 address-hold trick of `ReestablishFlowTests`.
+- **Fix:** Lane hf-lnd-wire: `NLightningTestNode`s made from `LightningRegtestNetworkFixture` dial LND at the backend's `GetLndPeerEndpointAsync`: the resolved container IP on Docker (unchanged), the Service name `alias.<ns>.svc.cluster.local:9735` on the cluster, which our node stores and redials after a pod restart. `ReestablishFlowTests.Given_LndRestarts_*` on the cluster (hfl-lnd1, hfl-lnd2): "Unable to reconnect ... retrying in 00:00:02", then "Reconnected to peer" and the channel reestablished. The NL-262 address hold runs on Docker only.
 - **Blocks/Blocked-by:** Related NL-262
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3 lane record"
 
@@ -7458,6 +7460,96 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Not decided: find why OrbStack's host-to-ClusterIP path lost the close of that one connection, or use a shorter or deterministic keep-alive (LND pings every minute). A product or owner call; no assertion was weakened.
 - **Blocks/Blocked-by:** Related NL-796
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/4 record"
+
+### NL-816 Two container-free CLN helper test classes ran in no suite
+- **Status:** fixed (90debbfb; merged in 304c2976)
+- **Severity:** medium
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnChannelSessionTests.cs`, `ClnSpliceRbfHelperTests.cs`
+- **Evidence:** test harness phase 5 lane hf-runner: `SuiteCatalogMembershipTests` reported both classes as "runs in no suite". They had no `Interop.Cln` trait and "Docker" in their full names, so CI's `FullyQualifiedName!~Docker`, `run-interop.sh cln` and `--suite cln` all skipped their 13 tests.
+- **Fix:** Tagged `[Trait("Category", ClnInteropCollection.Category)]`; all 13 pass and the CLN suite grows from 81 to 94 tests. The membership test keeps a new class from running nowhere.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 5 runner record"
+
+### NL-817 A finished run's namespaces kept holding cluster capacity after the runner treated its slot as free
+- **Status:** fixed (90debbfb; merged in 304c2976)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `scripts/run-cluster.sh`, `test/NLightning.Testing.Cluster/Run/TestRunOptions.cs`
+- **Evidence:** test harness phase 5 lane hf-runner: `nltg-cluster reap --wait` waits only for the namespaces it deletes itself, and `TestRun` disposal deletes in the background; in proof 1 the serial postgres suite created 3 namespaces against a planned 2 (the next collection's namespace was created while the previous one was terminating).
+- **Fix:** The runner waits until a run's namespaces are gone, terminating ones included, before freeing its slot; `NLTG_WAIT_NAMESPACE_DELETION=1` (`TestRunOptions.WaitForDeletion`) for `-parallel none` suites. Proof 2's sampled peak was 2 of 2. The integration (NL-822) also counts the namespaces of ended suites that are still there.
+- **Blocks/Blocked-by:** Related NL-822
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 5 runner record"
+
+### NL-818 Suite test logs are very large (0.3-0.8 GB per suite run)
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `TestResults/cluster/<batch>/<suite>/output.log` (every in-process node logs Debug into the test output)
+- **Evidence:** test harness phase 5 lane hf-runner, `hfr-proof2`: the CLN `output.log` was 808 MB (3.3 M lines, 0.82 M of them Debug) and LDK 302 MB, so a full matrix writes several GB per pass.
+- **Fix sketch:** Partly mitigated (90debbfb, NL-823): the runner gzips the logs of green runs after the summary (about 4x smaller; `--keep-logs` opts out) and the summary reads `.gz` logs. The volume itself is left to phase 6: per-node log files, or Information level by default.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 5 runner record"
+
+### NL-819 LNUnit was used across the test fixtures; confine it to the Docker LND backend
+- **Status:** fixed (0c80777e; merged in b74efadf)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Fixtures/Lnd/DockerLndBackend.cs`, `Fixtures/LightningRegtestNetworkFixture.cs`, `Fixtures/DockerContainerUtils.cs`, `test/NLightning.Testing.Lnd.Tests`
+- **Evidence:** test harness phase 3/5/6 lane hf-lnunit: LNUnit's builder lived in the fixture and `LNUnit.Setup`'s `PullImageAndWaitForCompleted` in the CLN, Postgres and SQL Server fixtures; `Testing.Lnd.Tests` referenced `LNUnit.LND` for `LnUnitCoexistenceTests`.
+- **Fix:** The `LNUnitBuilder` network moved to `DockerLndBackend` (the only LNUnit user; its dispose calls the builder's `Dispose()` instead of the unawaited `Destroy()`); `LightningRegtestNetworkFixture` is backend-neutral; images are pulled with `DockerContainerUtils.EnsureImageAsync`/`ImageExistsAsync` only when missing; `LnUnitCoexistenceTests` and the `LNUnit.LND` reference are gone; `Fixtures/LnUnitConfinementTests` guards it (hardened by NL-824). Integration.Tests non-Docker 1122/1122; Docker `PostgresTests` 24/24 and `ChannelOpeningFlowTests` 5/5 twice under the lock.
+- **Blocks/Blocked-by:** Related NL-820, NL-824
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Lane record: LNUnit confined to the Docker LND backend"
+
+### NL-820 Full LNUnit removal: re-implement the Docker LND backend on Docker.DotNet, or retire it once the cluster backend is the default
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `test/NLightning.Integration.Tests/Fixtures/Lnd/DockerLndBackend.cs`, `test/Directory.Build.props` (the NL-170 `NuGetAuditSuppress`)
+- **Evidence:** test harness phase 3/5/6 lane hf-lnunit: `LNUnitBuilder` is about 900 decompiled lines; the cluster's `LndRegtestNetwork` (894 lines) does the same on a `TestRun` topology with pod handles. An owner decision.
+- **Fix sketch:** (a) About 1-1.5 days: re-implement on Docker.DotNet (miner bitcoind on the default bridge, four `custom_lnd:0.21.4-beta` containers named by alias with `LndWorkload`'s flags, `tls.cert`/macaroon from the container archive, `SERVER_ACTIVE` waits, funding, permanent peers, pushed opens, policies and the graph wait of `LndRegtestNetworkSpec.Default`, the image build with `System.Formats.Tar`); container names, the bridge network and `host.docker.internal` must stay. (b) Retire the Docker LND backend once the cluster backend is the default for the LND, on-chain, gossip and ABCD suites (phase 6). Either way the `LNUnit` reference, `lnunit.lnd` and SharpCompress 0.41.0 go, and with them the NL-170 suppression.
+- **Blocks/Blocked-by:** Related NL-170, NL-819
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Lane record: LNUnit confined to the Docker LND backend"
+
+### NL-821 Test code that drives Docker containers by fixed name could run on the cluster backend and act on another run's containers
+- **Status:** fixed (dbf77b1e)
+- **Severity:** medium
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Onchain/Cheater/LndChannelDbRollback.cs`, `Docker/Onchain/Anchors/RelayBitcoind.cs`, `AnchorsPackageRelayTests.cs`, `AnchorsO5Tests.cs`, `Docker/Onchain/OnchainO5Tests.cs`, `Fixtures/LightningRegtestNetworkFixture.cs`, `test/NLightning.Testing.Cluster/Run/Matrix/{SuiteCatalog,LndBackendProbe,MatrixPlanner}.cs`
+- **Evidence:** test harness phase 3/5/6 integration, reviews of hf-lnd-wire and hf-runner (both medium): once `LightningRegtestNetworkFixture` takes `NLTG_TEST_BACKEND=cluster` (hf-lnd-wire), the onchain-regtest and gossip-regtest collections and the `onchain`/`anchors` matrix suites run on the cluster, but `LndChannelDbRollback` stops the Docker container `david` and writes an old `channel.db` into it, and `RelayBitcoind` inspects `miner` and recreates `nltg-anchors-relay-bitcoind`, by fixed name and outside the Docker lock: e.g. `run-cluster.sh -n 1 --suite lnd --class ...OnchainO5Tests` next to a Docker on-chain run. `LndBackendProbe` cleared all five LND suites on a text marker (`ILndNetworkBackend`) that hf-lnunit's fixture also carried while always building Docker.
+- **Fix:** `LightningRegtestNetworkFixture.SkipUnlessDocker(reason)`/`RequireDocker(what)`: the two helpers require Docker, and the LND breach of `OnchainO5Tests`, `AnchorsO5Tests` and `AnchorsPackageRelayTests` skip on the cluster with the reason (live: `hfi-skip-relay`, `hfi-skip-o5`); the remaining `DockerDiagnostics` dumps of the LND-fixture suites go through `DumpLndLogsAsync`; `GraphStoreFlowTests` dials `GetLndPeerEndpointAsync`. The catalog marks `onchain`, `anchors`, `gossip` and `abcd` `ClusterProofPending` (out of the default matrix, run when named), and the probe needs `new ClusterLndBackend(` in the fixture. Planner and catalog tests pin both.
+- **Blocks/Blocked-by:** Related NL-780, NL-262
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/5/6 integration record"
+
+### NL-822 `run-cluster.sh` admission and stop: kept namespaces not counted, kubectl without a timeout, no KILL on Ctrl-C, `--suite lnd -n 6` over the cap
+- **Status:** fixed (dbf77b1e)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `scripts/run-cluster.sh` (`count_namespaces`, `wait_namespaces_gone`, `sample_peak`, the admission loop, `on_signal`, the `--suite` selection)
+- **Evidence:** test harness phase 3/5/6 integration, reviews of hf-runner and hf-lnd-wire (low): with `--keep-on-failure` a failed suite's namespaces held machine slots for their 6 h TTL after the runner freed their budget, so later suites waited in `RunAdmission` and failed after 15 min (`--keep` did the same for every suite); `kubectl get ns` had no request timeout (a stalled API server hung the matrix) and a failed call read as "0 0" (slot freed early, NL-817 again); `on_signal` lost the watchdog's TERM-then-KILL and reaped after 2 s while test processes still ran; `--suite lnd` holds 2 namespaces per run, so `-n 4..6` exceeded the machine cap and the `MultiNodeHarnessTests` Postgres facts timed out.
+- **Fix:** kubectl with `--request-timeout=15s`; a failed listing returns non-zero and is retried until the deadline, never taken as "gone", and the peak sampler skips it; the namespaces of ended suites that are still there count against the budget (`held_by_finished`), and a queue they block gives up with NOT RUN instead of spinning; `--matrix` refuses `--keep`; Ctrl-C TERMs the suites, watchdogs and test processes, KILLs survivors after 30 s, then reaps with `--wait`; `--suite S` caps `-j` at 6 / its namespaces per run (`lnd`: 3). `scripts/tests/run-cluster-tests.sh` covers each (48/48).
+- **Blocks/Blocked-by:** Related NL-817
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/5/6 integration record"
+
+### NL-823 Matrix judgement: an all-skipped matrix exited 0, fixture failures were rerun as flakes, failed exit-0 logs were gzipped away
+- **Status:** fixed (dbf77b1e)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Run/Matrix/{MatrixReport,XunitResults,SuiteAttempt,MatrixCli}.cs`, `scripts/run-cluster.sh` (`compress_green_logs`)
+- **Evidence:** test harness phase 3/5/6 integration, review of hf-runner (low): `--matrix tor` (or the five LND suites before the wiring) ran nothing and exited 0; xunit v3 reports a collection or class fixture that throws as a failure of every test with `errors` 0, so a flaky fixture bring-up (one class) was rerun and read rerun-green; `compress_green_logs` gzipped any exit-0 attempt, including one the summary had just reported FAILED ("no tests ran"), leaving the summary's log path dangling.
+- **Fix:** `MatrixReport.ExitCode` returns 3 when nothing ran or a suite named in `--matrix S,...` was skipped (`summary --named`); `XunitRunResult.FixtureFailures` counts failures with xunit's fixture messages and `ClassesToRerun` returns none for them (the summary says so); the runner gzips only the attempts `nltg-cluster matrix green-attempts` lists (exit 0, no timeout, results green). Unit tests and the bash cases pin each.
+- **Blocks/Blocked-by:** Related NL-818
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/5/6 integration record"
+
+### NL-824 Guards that pinned nothing: the LNUnit confinement guard went quiet or blind, the host-address tests copied the code they tested
+- **Status:** fixed (dbf77b1e)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Fixtures/LnUnitConfinementTests.cs`, `Fixtures/Lnd/{DockerLndBackendTests,ClusterLndBackendTests,DockerLndBackend,ClusterLndBackend}.cs`
+- **Evidence:** test harness phase 3/5/6 integration, reviews of hf-lnunit and hf-lnd-wire (low): the confinement guard skipped (passing in CI) when `DockerLndBackend.cs` moved; it did not see `using Lnrpc;` and the other global namespaces of `lnunit.lnd` (LND 0.20 protos) that still compile into Integration.Tests, nor an LNUnit reference in a `.props`/`.targets`; the `HostAddressForPeers` tests asserted the production expression itself and never controlled `HOST_ADDRESS`/`NLTG_HOST_ADDRESS`.
+- **Fix:** The guard finds the checkout by `NLightning.sln` and fails when the allowed file is gone, scans the sources of LNUnit-referencing projects for `lnunit.lnd`'s namespaces (using, global, static, alias, `global::`; `NLightning.Testing.Lnd.*` allowed) and every `.props`/`.targets` for an LNUnit reference; `DockerLndBackend.HostAddressFor(environment)` and `ClusterLndBackend(environment:)` take the environment lookup and the tests assert `host.docker.internal`/`host.orb.internal` and the configured values.
+- **Blocks/Blocked-by:** Related NL-819
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/5/6 integration record"
 
 ## Docs
 

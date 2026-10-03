@@ -1238,6 +1238,56 @@ runner change; phase 6 runs the full matrix twice concurrently.
   way the `LNUnit` reference goes, with it `lnunit.lnd` and SharpCompress 0.41.0, so the NL-170
   `NuGetAuditSuppress` in `test/Directory.Build.props` can go too.
 
+### Phase 3/5/6 integration record (2026-10-03, `wip/harness-spike` from 7593fdda)
+
+Merged with `--no-ff` in this order: `hf-lnd-wire` (e9305ee0), `hf-runner` (304c2976), `hf-lnunit` (b74efadf); review
+fixes in dbf77b1e. Conflicts: `run-cluster.sh` takes the catalog-driven runner (hf-lnd-wire's `--suite lnd` case is
+now the catalog's `lnd`); `LightningRegtestNetworkFixture` keeps hf-lnd-wire's backend selection and is backend-neutral;
+`DockerLndBackend` combines hf-lnd-wire's members with hf-lnunit's image check and builder `Dispose()`.
+
+- **The `lnd` suite split.** hf-lnd-wire proved 90 tests with `-parallel none` over four fixture collections; the
+  catalog runs the `regtest` collection as `lnd` (2 namespaces with parallel collections: the network and
+  `MultiNodeHarnessTests`' Postgres pod; `SuiteCatalogMembershipTests` keeps other collections out) and puts
+  `PostgresTests` in `postgres`, `BackupRestoreFlowTests` in `onchain`, `ChannelPolicyPublicFlowTests` and
+  `SpliceLndObserverTests` in `gossip`. Re-proven on the cluster below: 58 + 6 + 2 (+ postgres 24 from the runner
+  proof) = the 90.
+- **NL-821 (medium):** with the fixture wired, `--suite`/`--matrix` could run test code that drives Docker containers
+  by fixed name (`LndChannelDbRollback` stops `david` and rewrites its `channel.db`; `RelayBitcoind` starts a container
+  on the miner's network) on the cluster backend, outside the Docker lock, against another process's containers. Now
+  `LightningRegtestNetworkFixture.SkipUnlessDocker`/`RequireDocker` skip those tests on the cluster (live: both skip
+  with the reason), the remaining container-log dumps go through `DumpLndLogsAsync`, `GraphStoreFlowTests` dials
+  `GetLndPeerEndpointAsync`, `onchain`/`anchors`/`gossip`/`abcd` carry `ClusterProofPending` (out of the default
+  matrix, run when named) and `LndBackendProbe` needs `new ClusterLndBackend(` (hf-lnunit's intermediate fixture named
+  `ILndNetworkBackend` but always built Docker).
+- **NL-822 (low):** runner robustness: kubectl with `--request-timeout=15s`, a failed listing never read as "gone";
+  the namespaces of ended suites (kept on failure, still terminating) count against the budget and a queue they block
+  gives up (NOT RUN) instead of spinning; `--keep` refused with `--matrix`; Ctrl-C TERMs the test processes, KILLs them
+  after 30 s, then reaps; `--suite` caps `-j` at 6 / its namespaces per run (`lnd`: 3).
+- **NL-823 (low):** judgement: exit 3 when nothing ran or a named suite was skipped; a fixture failure (xunit v3
+  reports "<kind> fixture type 'X' threw in ..." on every test of the collection or class, `errors` 0) is not rerun as
+  a flake; only runs the summary calls green get their logs gzipped (`nltg-cluster matrix green-attempts`).
+- **NL-824 (low):** guards that pinned nothing: `LnUnitConfinementTests` fails (instead of skipping) when the allowed
+  file moved, catches `lnunit.lnd`'s global LND 0.20 namespaces in LNUnit-referencing projects and scans
+  `.props`/`.targets`; the backends' host-address tests inject the environment and assert literals.
+- Rejected: none. The finding "lnd may exceed its admission weight without `-parallel none`" holds only for
+  hf-lnd-wire's four-collection selection; the catalog's `lnd` spans one fixture collection (above), so its weight of
+  2 is right as planned.
+
+Evidence (OrbStack, Release, net10.0):
+
+| Run | Result | Time |
+|---|---|---|
+| `--no-incremental` Release build, `dotnet format`, `check-sln-configs.py` | 0 warnings, clean, OK | |
+| Non-Docker suite (`FullyQualifiedName!~Docker&Category!=Cluster`, `--blame-hang-timeout 5m`) | 14,283 passed, 6 platform/explicit skips, 1 failure: `ClassificationEngineTests` "label regex matches" (NL-729, the known loaded-run regex timeout; class 53/53 alone) | |
+| `scripts/tests/run-cluster-tests.sh` | 48/48 (new: fixture failure, exit-0 empty run, named skips, held namespaces, pending suite, lnd jobs cap, `--keep`, stop with KILL escalation) | |
+| `run-cluster.sh -n 1 --suite lnd` (`hfi-lnd1`) | 58/58, 2 namespaces | 385 s |
+| `--suite onchain --class BackupRestoreFlowTests` (`hfi-onchain-br`), `--suite gossip --class ChannelPolicyPublicFlowTests --class SpliceLndObserverTests` (`hfi-gossip-moved`) | 6/6, 2/2 | 64 s, 125 s |
+| Docker-only guards on the cluster (`hfi-skip-relay`, `hfi-skip-o5`) | `AnchorsPackageRelayTests` and the O5 LND rollback skipped with the reason | 27 s each |
+| Docker LND suite (SDK container, `--network host`, machine lock; hf-lnd-wire's selection) | 90/90; network ready 10.8 s | 502 s |
+
+Still open: the cluster proofs of `onchain`, `anchors`, `gossip` and `abcd` (phase 6; then drop their
+`ClusterProofPending`), NL-818 (log volume), NL-820 (LNUnit removal).
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.
