@@ -145,15 +145,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 59 | 60 |
+| open | 0 | 0 | 2 | 60 | 62 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
 | fixed | 14 | 62 | 198 | 400 | 674 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **62** | **207** | **470** | **753** |
+| **Total** | **14** | **62** | **208** | **471** | **755** |
 
 ### Epics
 
+- NL-877: Simple taproot channels (`option_simple_taproot`) (open, medium; plan `docs/agents/TAPROOT_CHANNELS_PLAN.md` T0-T6; spec merged 2026-05-04, LND 0.21 and Eclair 0.14 run it as private channels; taproot gossip NL-878 waits for BOLTs #1059)
 - NL-875: Trampoline routing (BOLTs PR #836): client, relay and target (in-progress, medium; plan `docs/agents/TRAMPOLINE_PLAN.md`, waves tr1-tr3 on `wip/fafo`)
 - NL-850: Liquidity ads (BOLT PR #1153) (fixed, medium; plan `docs/agents/LIQUIDITY_ADS_PLAN.md`, LA0-LA7 done on `claude/youthful-hamilton-x4ngo7` at `10b8ba84`: both roles in the dual-funded open, its RBF, the splice and the splice RBF with restarts, `LiquidityPurchases`, the lease guard, `LiquidityFeePaid`/`LiquidityFeeEarned`, `liquidityads` (IPC 46); proven in-process in both roles and against Eclair 0.14.3 as seller (`EclairLiquidityAdsTests` 5/5; Eclair sells only in splices); open follow-ups NL-851..NL-859; integration review fixes NL-870, NL-871)
 - NL-602: Accounting: core event feed and built-in books (fixed, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A3 all built on `wip/acct-a3`: A1 feed, A2 operational books, A3 financial profile (labels, classification, prices, projector and lots, period close, financial reports, config/security/docs; merge `c62d861b`, review fixes `94af679d`, `ecd983b1`); data gaps NL-603..NL-605 and the plugin stub NL-151 done; open follow-ups NL-606..NL-608, NL-610..NL-613, NL-645, NL-657, NL-658, NL-662, NL-674..NL-681 (NL-660, NL-665, NL-667 fixed on `wip/nl660`), flakes NL-620, NL-653)
@@ -2001,6 +2002,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-230
 - **Plan ref:** —
 
+### NL-877 [EPIC] Simple taproot channels (`option_simple_taproot`, bits 80/81) not implemented
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** none yet; plan `docs/agents/TAPROOT_CHANNELS_PLAN.md` (T0-T6)
+- **Evidence:** No MuSig2, no taproot channel type, no taproot commitment, HTLC or sweep scripts; the only taproot code is wallet P2TR signing and the BOLT 11 v1 fallback (NL-118). The spec is merged (BOLTs #995, `bolt-simple-taproot.md`, 2026-05-04; depends on `option_channel_type` and `option_simple_close`, MUST NOT set `announce_channel`). LND 0.21 (production, private, on explicit request) and Eclair 0.14 (default, private) run it, so we fall back to anchors with both.
+- **Fix sketch:** Plan T0 MuSig2 (BIP 327 vectors) → T1 scripts/txs (spec vectors) → T2 wire TLVs → T3 signer, nonces (counter scheme, never reused across a crash), persistence, reestablish → T4 BOLT 5 resolvers → T5 simple close, dual fund, splicing, backups → T6 cluster proofs against LND 0.21.4 and Eclair 0.14.3; experimental until T6 and an owner decision (D-T1 `option_simple_close` default, D-T2 taproot default).
+- **Blocks/Blocked-by:** Blocks NL-878
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T0-T6
+
 ---
 
 ## BOLT 4: Onion routing
@@ -3766,6 +3777,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Collect right before taking a backlog snapshot, or skip pending items whose version equals the one the backlog sent.
 - **Blocks/Blocked-by:** Related NL-548
 - **Plan ref:** BOLT7 G3-T3
+
+### NL-878 Taproot gossip (`channel_announcement_2` and related; public taproot channels) not implemented
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Gossip/`, `src/NLightning.Domain/Gossip/` (v1 messages only)
+- **Evidence:** BOLTs #1059 (bits 70-75: TLV-only `channel_announcement_2`, `channel_update_2`, `announcement_signatures_2`, `node_announcement_2`, MuSig2/Schnorr signatures, block heights) was still a draft on 2026-10-03; LND's gossip v2 wire work (lnd #11164) was approved but not merged. No implementation announces taproot channels yet, so nothing is lost today; the BOLT 7 plan lists it as out of scope.
+- **Fix sketch:** After #1059 is merged: plan T7 (typed v2 messages, MuSig2 announcement signing, graph and sync for v2 next to v1), proven against LND's implementation.
+- **Blocks/Blocked-by:** Blocked-by NL-877 and BOLTs #1059
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T7; BOLT7_GOSSIP_PLAN "Out of scope"
 
 ## BOLT 8: Transport
 

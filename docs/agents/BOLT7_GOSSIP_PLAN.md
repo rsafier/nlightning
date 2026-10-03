@@ -25,7 +25,7 @@ Every repo claim cites a repo-relative path, with line numbers where they are us
   - Queries get empty replies (`full_information=0`).
   - No graph, no pathfinding.
 - **Out of scope:**
-  - gossip v1.5 / taproot gossip (`channel_announcement_2` and related, not merged in BOLT 7 master);
+  - gossip v1.5 / taproot gossip (`channel_announcement_2` and related, BOLTs #1059, still a draft on 2026-10-03; tracked as NL-878, plan `TAPROOT_CHANNELS_PLAN.md` T7);
   - splice `announcement_signatures` (we have no splicing);
   - zlib encoding 1 (the spec now says it "MUST NOT be used");
   - `option_zeroconf` public channels.
