@@ -6,10 +6,13 @@ namespace NLightning.Infrastructure.Bitcoin.Builders;
 
 using Domain.Bitcoin.Transactions.Constants;
 using Domain.Bitcoin.Transactions.Models;
+using Domain.Bitcoin.Transactions.Outputs;
+using Domain.Crypto.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
+using Crypto.Musig2;
 using Interfaces;
 using Networks;
 using Outputs;
@@ -56,14 +59,13 @@ public class FundingTransactionBuilder : IFundingTransactionBuilder
         foreach (var coin in orderedCoins)
             tx.Inputs.Add(new OutPoint(new uint256(coin.TxId), coin.Index));
 
-        // Convert and add the funding output
-        var fundingOutput = new FundingOutput(transaction.FundingOutput.Amount,
-                                              new PubKey(transaction.FundingOutput.LocalFundingPubKey),
-                                              new PubKey(transaction.FundingOutput.RemoteFundingPubKey));
-        var fundingTxOut = fundingOutput.ToTxOut();
+        // Convert and add the funding output: the P2WSH 2-of-2, or a simple taproot channel's MuSig2 P2TR output (the
+        // BIP 86 key path of KeyAgg(KeySort(both funding keys)), NL-877 T5, NL-953); both scripts are 34 bytes, so the
+        // fee sizing is the same
+        var fundingTxOut = BuildFundingTxOut(transaction.FundingOutput);
         tx.Outputs.Add(fundingTxOut);
 
-        var requiredAmount = fundingOutput.Amount + transaction.Fee;
+        var requiredAmount = transaction.FundingOutput.Amount + transaction.Fee;
         if (totalInputAmount < requiredAmount)
             throw new InsufficientFundsException(requiredAmount, totalInputAmount);
 
@@ -98,6 +100,20 @@ public class FundingTransactionBuilder : IFundingTransactionBuilder
         return new FundingTransactionBuildResult(new SignedTransaction(txId.ToBytes(), tx.ToBytes()),
                                                  (ushort)fundingOutputIndex);
     }
+
+    /// <summary>The funding output's <see cref="TxOut"/>, P2WSH or (simple taproot) the MuSig2 P2TR output.</summary>
+    internal static TxOut BuildFundingTxOut(FundingOutputInfo fundingOutput)
+    {
+        if (!fundingOutput.IsSimpleTaproot)
+            return new FundingOutput(fundingOutput.Amount, new PubKey(fundingOutput.LocalFundingPubKey),
+                                     new PubKey(fundingOutput.RemoteFundingPubKey)).ToTxOut();
+
+        var aggregate = s_musig2.AggregateTaprootKeyPath(fundingOutput.LocalFundingPubKey,
+                                                         fundingOutput.RemoteFundingPubKey);
+        return new TxOut(Money.Satoshis(fundingOutput.Amount.Satoshi), new Script(aggregate.GetTaprootScriptPubKey()));
+    }
+
+    private static readonly IMusig2Service s_musig2 = new Musig2Service();
 
     private sealed class ByteArrayLexicographicComparer : IComparer<byte[]>
     {

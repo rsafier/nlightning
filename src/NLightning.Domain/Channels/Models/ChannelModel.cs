@@ -180,6 +180,14 @@ public class ChannelModel
     /// </summary>
     public MusigPartialSignatureWithNonce? LastReceivedPartialSignature { get; private set; }
 
+    /// <summary>
+    /// Simple taproot channels, during a v1 open (NL-877 T5): the peer's <c>next_local_nonce</c> of its
+    /// <c>open_channel</c> (we are the fundee) or <c>accept_channel</c> (we are the funder), its verification nonce for
+    /// its commitment 0, which our <c>funding_signed</c>/<c>funding_created</c> partial signature is made against.
+    /// Memory only: the temporary channel it belongs to is never persisted.
+    /// </summary>
+    public MusigPublicNonce? RemoteOpeningNonce { get; set; }
+
     #endregion
 
     #region Local Information
@@ -270,7 +278,7 @@ public class ChannelModel
         ChannelParams = channelParams;
         ChannelId = channelId;
         CommitmentNumber = commitmentNumber;
-        FundingOutput = fundingOutput;
+        FundingOutput = MarkFormat(fundingOutput);
         IsInitiator = isInitiator;
         LastSentSignature = lastSentSignature;
         LastReceivedSignature = lastReceivedSignature;
@@ -362,7 +370,19 @@ public class ChannelModel
         if (FundingOutput is not null)
             throw new InvalidOperationException("Funding output already set");
 
-        FundingOutput = fundingOutput;
+        FundingOutput = MarkFormat(fundingOutput);
+    }
+
+    /// <summary>
+    /// A simple taproot channel's funding output is the MuSig2 P2TR one (<see cref="FundingOutputInfo.IsSimpleTaproot"/>,
+    /// NL-877 T5): set here, so every builder that reads the channel's funding output builds the right script.
+    /// </summary>
+    private FundingOutputInfo? MarkFormat(FundingOutputInfo? fundingOutput)
+    {
+        if (fundingOutput is not null && ChannelParams.OptionSimpleTaproot)
+            fundingOutput.IsSimpleTaproot = true;
+
+        return fundingOutput;
     }
 
     /// <summary>
@@ -377,7 +397,7 @@ public class ChannelModel
         if (FundingOutput is null)
             throw new InvalidOperationException("The channel has no funding output to replace");
 
-        FundingOutput = fundingOutput;
+        FundingOutput = MarkFormat(fundingOutput);
     }
 
     /// <summary>

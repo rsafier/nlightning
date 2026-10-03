@@ -363,6 +363,12 @@ public class FeatureOptions
             && (AllowExperimentalFeatures || !ExperimentalFeatureSet.Contains(feature));
     }
 
+    /// <summary>
+    /// Whether our init advertises <c>option_simple_taproot</c>: configured and, while it is experimental,
+    /// <see cref="AllowExperimentalFeatures"/> set (NL-877 T5: our taproot opens need it).
+    /// </summary>
+    public bool IsSimpleTaprootAdvertised => IsAdvertised(Feature.OptionSimpleTaproot, OptionSimpleTaproot);
+
     private FeatureSet BuildFeatureSet()
     {
         var features = new FeatureSet();

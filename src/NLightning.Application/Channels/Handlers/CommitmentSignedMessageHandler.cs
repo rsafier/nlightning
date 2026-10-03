@@ -53,7 +53,8 @@ public class CommitmentSignedMessageHandler : IChannelMessageHandler<CommitmentS
         CommitmentsResult result;
         try
         {
-            var signatures = new CommitmentSignatures(payload.Signature, payload.HtlcSignatures.ToList());
+            // A simple taproot channel's partial signature rides in partial_signature_with_nonce (NL-877 T3)
+            var signatures = ChannelStateTransitionService.ToReceivedSignatures(channel, message);
             result = channel.Commitments!.ReceiveCommit(signatures, _commitmentVerifier);
         }
         catch (CommitmentViolationException e)

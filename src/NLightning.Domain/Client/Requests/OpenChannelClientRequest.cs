@@ -38,6 +38,15 @@ public sealed class OpenChannelClientRequest
     public bool ForceV1 { get; set; }
 
     /// <summary>
+    /// Open a simple taproot channel (<c>openchannel --channel-type taproot</c>, <c>option_simple_taproot</c>, NL-877
+    /// T5): channel type {80} (plus <c>option_scid_alias</c>/<c>option_zeroconf</c> as for any private channel), a
+    /// MuSig2 funding output. Private only, v1 only for now (a v2 open of it is refused), and only while our
+    /// <c>Features:OptionSimpleTaproot</c> is advertised and the peer supports it and <c>option_simple_close</c>.
+    /// False keeps the default type (anchors when negotiated).
+    /// </summary>
+    public bool IsSimpleTaproot { get; set; }
+
+    /// <summary>
     /// The operator's label (NL-602 A3-T1, <c>--label</c>): stored on the row and copied into the accounting event's
     /// details; null for none. Checked by the daemon (<c>SourceLabelRules</c>).
     /// </summary>

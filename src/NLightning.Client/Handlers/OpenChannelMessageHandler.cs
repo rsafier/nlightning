@@ -5,6 +5,7 @@ using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
 using Ipc;
 using Printers;
+using Transport.Ipc.Requests;
 using Transport.Ipc.Responses;
 
 internal class OpenChannelMessageHandler
@@ -33,14 +34,21 @@ internal class OpenChannelMessageHandler
     /// </summary>
     internal const string NoWaitOption = "--no-wait";
 
+    /// <summary>
+    /// The option that names the channel type (NL-877 T5): <c>taproot</c> opens a private simple taproot channel (v1,
+    /// experimental: the node must advertise <c>option_simple_taproot</c>), <c>anchors</c> the default.
+    /// </summary>
+    internal const string ChannelTypeOption = "--channel-type";
+
     internal const string Usage =
-        "<node> <amount_sats> [push_sats] [--public] [--dual-fund|--v1] [--no-wait] " + LiquidityOptions.Usage;
+        "<node> <amount_sats> [push_sats] [--public] [--dual-fund|--v1] [--no-wait] [--channel-type taproot|anchors] "
+      + LiquidityOptions.Usage;
 
     internal static async Task HandleAsync(string[] commandArgs, NamedPipeIpcClient client,
                                            CancellationToken cancellationToken, LabelArguments? labels = null)
     {
         var positional = ParseArguments(commandArgs, out var isPublic, out var isDualFunded, out var forceV1,
-                                        out var noWait, out var liquidity, out var error);
+                                        out var noWait, out var liquidity, out var channelType, out var error);
         if (error is not null)
             throw new ArgumentException(error, nameof(commandArgs));
 
@@ -50,7 +58,7 @@ internal class OpenChannelMessageHandler
         await RunAsync(ct => client.OpenChannelAsync(positional[0], positional[1],
                                                      positional.Length > 2 ? positional[2] : null, ct, isPublic,
                                                      isDualFunded, forceV1, labels, liquidity.RequestInboundSat,
-                                                     liquidity.MaxLiquidityFeeSat),
+                                                     liquidity.MaxLiquidityFeeSat, channelType),
                        client.OpenChannelSubscriptionAsync, noWait, Console.Out, cancellationToken);
     }
 
@@ -148,14 +156,34 @@ internal class OpenChannelMessageHandler
     /// <returns>The positional arguments, in order.</returns>
     internal static string[] ParseArguments(string[] commandArgs, out bool isPublic, out bool isDualFunded,
                                             out bool forceV1, out bool noWait, out LiquidityArguments liquidity,
-                                            out string? error)
+                                            out string? error) =>
+        ParseArguments(commandArgs, out isPublic, out isDualFunded, out forceV1, out noWait, out liquidity, out _,
+                       out error);
+
+    /// <summary>
+    /// <see cref="ParseArguments(string[], out bool, out bool, out bool, out bool, out LiquidityArguments, out string?)"/>
+    /// with <see cref="ChannelTypeOption"/> (NL-877 T5): <paramref name="channelType"/> is its value (null when not
+    /// given); <c>taproot</c> is refused with <see cref="PublicOption"/>, <see cref="DualFundOption"/> and the liquidity
+    /// options, and an unknown type is an error.
+    /// </summary>
+    internal static string[] ParseArguments(string[] commandArgs, out bool isPublic, out bool isDualFunded,
+                                            out bool forceV1, out bool noWait, out LiquidityArguments liquidity,
+                                            out string? channelType, out string? error)
     {
         isPublic = false;
         isDualFunded = false;
         forceV1 = false;
         noWait = false;
         error = null;
-        var rest = LiquidityOptions.Extract(commandArgs, out liquidity, out var liquidityError);
+        liquidity = LiquidityArguments.None;
+        var withoutType = ExtractChannelType(commandArgs, out channelType, out var channelTypeError);
+        if (withoutType is null)
+        {
+            error = $"{channelTypeError} Usage: openchannel {Usage}";
+            return [];
+        }
+
+        var rest = LiquidityOptions.Extract(withoutType, out liquidity, out var liquidityError);
         if (rest is null)
         {
             error = $"{liquidityError} Usage: openchannel {Usage}";
@@ -209,7 +237,50 @@ internal class OpenChannelMessageHandler
                   + $"can't be used with {V1Option}.";
         else if (positional.Count > 3)
             error = $"Too many arguments. Usage: openchannel {Usage}";
+        else if (OpenChannelIpcRequest.IsSimpleTaprootChannelType(channelType) == true
+              && (isPublic || isDualFunded || liquidity.IsRequested))
+            error = $"{ChannelTypeOption} {OpenChannelIpcRequest.TaprootChannelType} opens a private v1 channel; it "
+                  + $"can't be used with {PublicOption}, {DualFundOption} or {LiquidityOptions.RequestInboundOption}.";
 
         return positional.ToArray();
+    }
+
+    /// <summary>
+    /// Takes <see cref="ChannelTypeOption"/> and its value out of <paramref name="commandArgs"/>.
+    /// </summary>
+    /// <returns>The other arguments, or null (with <paramref name="error"/>) when the value is missing, unknown or
+    /// given twice.</returns>
+    private static string[]? ExtractChannelType(string[] commandArgs, out string? channelType, out string? error)
+    {
+        channelType = null;
+        error = null;
+        var rest = new List<string>(commandArgs.Length);
+        for (var i = 0; i < commandArgs.Length; i++)
+        {
+            if (!string.Equals(commandArgs[i], ChannelTypeOption, StringComparison.OrdinalIgnoreCase))
+            {
+                rest.Add(commandArgs[i]);
+                continue;
+            }
+
+            if (channelType is not null)
+            {
+                error = $"{ChannelTypeOption} given twice.";
+                return null;
+            }
+
+            if (i + 1 >= commandArgs.Length
+             || OpenChannelIpcRequest.IsSimpleTaprootChannelType(commandArgs[i + 1]) is null
+             || commandArgs[i + 1].Length == 0)
+            {
+                error = $"{ChannelTypeOption} expects {OpenChannelIpcRequest.TaprootChannelType} or "
+                      + $"{OpenChannelIpcRequest.AnchorsChannelType}.";
+                return null;
+            }
+
+            channelType = commandArgs[++i].ToLowerInvariant();
+        }
+
+        return rest.ToArray();
     }
 }

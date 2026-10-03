@@ -177,10 +177,12 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
                                                                bool isPublic = false, bool isDualFunded = false,
                                                                bool forceV1 = false, LabelArguments? labels = null,
                                                                ulong? requestInboundSat = null,
-                                                               ulong? maxLiquidityFeeSat = null)
+                                                               ulong? maxLiquidityFeeSat = null,
+                                                               string? channelType = null)
     {
         var req = new OpenChannelIpcRequest
         {
+            ChannelType = channelType,
             NodeInfo = nodeInfo,
             Amount = LightningMoney.Satoshis(Convert.ToInt64(amountSats)),
             PushAmount = pushSats is null ? null : LightningMoney.Satoshis(Convert.ToInt64(pushSats)),

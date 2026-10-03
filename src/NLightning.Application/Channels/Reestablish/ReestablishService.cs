@@ -27,6 +27,7 @@ using Domain.Protocol.Tlv;
 using Gossip.Announcements.Interfaces;
 using Services;
 using Splicing.Interfaces;
+using Taproot;
 
 /// <summary>
 /// Builds our <c>channel_reestablish</c> and checks the peer's secret against our own per-commitment points (BOLT2
@@ -129,7 +130,13 @@ public sealed class ReestablishService
 
         var reestablish = _messageFactory.CreateChannelReestablishMessage(channel.ChannelId, own.NextCommitmentNumber,
                                                                          own.NextRevocationNumber, secret, point);
-        if (own.NextFunding is null && own.MyCurrentFundingLocked is null)
+
+        // Simple taproot channels (NL-877 T3): next_local_nonces, per active funding our verification nonce for the
+        // commitment the peer signs next (our next_commitment_number), counter-derived (LND reads only this map)
+        var nonces = channel.ChannelParams.OptionSimpleTaproot
+                         ? TaprootChannelNonces.CreateLocalNonces(_lightningSigner, channel, own.NextCommitmentNumber)
+                         : null;
+        if (own.NextFunding is null && own.MyCurrentFundingLocked is null && nonces is null)
             return reestablish;
 
         return new ChannelReestablishMessage(
@@ -139,7 +146,8 @@ public sealed class ReestablishService
                 : null,
             own.MyCurrentFundingLocked is { } fundingLocked
                 ? new MyCurrentFundingLockedTlv(fundingLocked.TxId, fundingLocked.RetransmitFlags)
-                : null);
+                : null,
+            nonces is null ? null : new NextLocalNoncesTlv(nonces));
     }
 
     /// <summary>

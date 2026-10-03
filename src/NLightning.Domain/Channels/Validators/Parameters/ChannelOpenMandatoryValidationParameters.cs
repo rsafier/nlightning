@@ -22,6 +22,13 @@ public sealed class ChannelOpenMandatoryValidationParameters
     public required LightningMoney ChannelReserveAmount { get; init; }
     public ChannelFlags? ChannelFlags { get; init; }
 
+    /// <summary>
+    /// Whether the open flow can run a simple taproot channel (<c>option_simple_taproot</c>, NL-877 T5): the v1 flow
+    /// (<c>open_channel</c>/<c>accept_channel</c>) can; a flow that leaves it false (the dual-funded open, until it signs
+    /// MuSig2 commitments) refuses the taproot channel type as unsupported.
+    /// </summary>
+    public bool AllowSimpleTaproot { get; init; }
+
     public static ChannelOpenMandatoryValidationParameters FromOpenChannel1Payload(
         ChannelTypeTlv? channelTypeTlv, LightningMoney currentFeeRatePerKw, FeatureOptions negotiatedFeatures,
         OpenChannel1Payload payload)
@@ -40,6 +47,7 @@ public sealed class ChannelOpenMandatoryValidationParameters
             DustLimitAmount = payload.DustLimitAmount,
             ChannelReserveAmount = payload.ChannelReserveAmount,
             ChannelFlags = payload.ChannelFlags,
+            AllowSimpleTaproot = true
         };
     }
 
@@ -55,7 +63,8 @@ public sealed class ChannelOpenMandatoryValidationParameters
             ToSelfDelay = payload.ToSelfDelay,
             MaxAcceptedHtlcs = payload.MaxAcceptedHtlcs,
             DustLimitAmount = payload.DustLimitAmount,
-            ChannelReserveAmount = payload.ChannelReserveAmount
+            ChannelReserveAmount = payload.ChannelReserveAmount,
+            AllowSimpleTaproot = true
         };
     }
 }

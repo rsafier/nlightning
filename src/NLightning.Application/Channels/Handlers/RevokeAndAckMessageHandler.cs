@@ -14,6 +14,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
 using Interfaces;
 using Services;
+using Taproot;
 
 /// <summary>
 /// Receives <c>revoke_and_ack</c> (BOLT 2, plan N6-T1): the engine checks that the secret generates the point of the
@@ -52,7 +53,12 @@ public class RevokeAndAckMessageHandler : IChannelMessageHandler<RevokeAndAckMes
         CommitmentsResult result;
         try
         {
-            result = commitments.ReceiveRevoke(secret, payload.NextPerCommitmentPoint, _revocationVerifier);
+            // A simple taproot channel's next_local_nonces replace the peer's verification nonces; the engine fails the
+            // channel when they are absent or miss an active funding (NL-877 T3)
+            var nonces = message.NextLocalNoncesTlv is { } noncesTlv
+                             ? TaprootChannelNonces.ToDictionary(noncesTlv.Nonces)
+                             : null;
+            result = commitments.ReceiveRevoke(secret, payload.NextPerCommitmentPoint, _revocationVerifier, nonces);
         }
         catch (CommitmentViolationException e)
         {

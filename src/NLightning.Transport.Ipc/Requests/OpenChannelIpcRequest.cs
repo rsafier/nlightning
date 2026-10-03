@@ -2,6 +2,8 @@ using MessagePack;
 
 namespace NLightning.Transport.Ipc.Requests;
 
+using Domain.Client.Constants;
+using Domain.Client.Exceptions;
 using Domain.Client.Requests;
 using Domain.Money;
 
@@ -55,6 +57,29 @@ public sealed class OpenChannelIpcRequest
     /// <summary>The most we pay for the purchase, in satoshis (<c>--max-liquidity-fee</c>), or null.</summary>
     [Key(10)] public ulong? MaxLiquidityFeeSat { get; init; }
 
+    /// <summary>
+    /// The channel type (<c>openchannel --channel-type</c>, NL-877 T5): <see cref="TaprootChannelType"/> opens a simple
+    /// taproot channel; null, empty or <see cref="AnchorsChannelType"/> keep the default type (an older client sends
+    /// none). Any other value is refused.
+    /// </summary>
+    [Key(11)] public string? ChannelType { get; init; }
+
+    /// <summary>The <see cref="ChannelType"/> of a simple taproot channel.</summary>
+    public const string TaprootChannelType = "taproot";
+
+    /// <summary>The <see cref="ChannelType"/> that names the default type (anchors when negotiated).</summary>
+    public const string AnchorsChannelType = "anchors";
+
+    /// <summary>Whether <paramref name="channelType"/> names a simple taproot channel; null for an unknown name.</summary>
+    public static bool? IsSimpleTaprootChannelType(string? channelType)
+    {
+        if (string.IsNullOrEmpty(channelType) || string.Equals(channelType, AnchorsChannelType,
+                                                               StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return string.Equals(channelType, TaprootChannelType, StringComparison.OrdinalIgnoreCase) ? true : null;
+    }
+
     public OpenChannelClientRequest ToClientRequest()
     {
         return new OpenChannelClientRequest(NodeInfo, Amount)
@@ -66,7 +91,11 @@ public sealed class OpenChannelIpcRequest
             Label = Label,
             Tags = Tags ?? [],
             RequestInboundSat = RequestInboundSat,
-            MaxLiquidityFeeSat = MaxLiquidityFeeSat
+            MaxLiquidityFeeSat = MaxLiquidityFeeSat,
+            IsSimpleTaproot = IsSimpleTaprootChannelType(ChannelType)
+                           ?? throw new ClientException(ErrorCodes.InvalidOperation,
+                                                        $"Unknown channel type '{ChannelType}': expected "
+                                                      + $"{TaprootChannelType} or {AnchorsChannelType}")
         };
     }
 }

@@ -17,6 +17,7 @@ using Domain.Channels.Models;
 using Domain.Channels.Validators.Parameters;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.Hashes;
+using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
@@ -27,6 +28,7 @@ using Domain.Protocol.Models;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Taproot;
 
 public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel1Message>
 {
@@ -47,6 +49,7 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
     private readonly ILightningSigner _lightningSigner;
     private readonly ILogger<OpenChannel1MessageHandler> _logger;
     private readonly IMessageFactory _messageFactory;
+    private readonly IMusig2Service? _musig2;
     private readonly ISha256 _sha256;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
@@ -60,8 +63,9 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
                                         IFundingTransactionModelFactory fundingTransactionModelFactory,
                                         ILightningSigner lightningSigner, ILogger<OpenChannel1MessageHandler> logger,
                                         IMessageFactory messageFactory, ISha256 sha256, IUnitOfWork unitOfWork,
-                                        IUtxoMemoryRepository utxoMemoryRepository)
+                                        IUtxoMemoryRepository utxoMemoryRepository, IMusig2Service? musig2 = null)
     {
+        _musig2 = musig2;
         _bitcoinWalletService = bitcoinWalletService;
         _channelIdFactory = channelIdFactory;
         _channelMemoryRepository = channelMemoryRepository;
@@ -140,6 +144,12 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
 
         if (minimumDepth != tempChannel.ChannelParams.MinimumDepth)
             throw new ChannelErrorException("Minimum depth is not acceptable", payload.ChannelId);
+
+        // Simple taproot channels (bolt-simple-taproot.md §accept_channel, NL-877 T5): the accepter's next_local_nonce
+        // (its verification nonce for its commitment 0) is required and must parse as two points: our funding_created
+        // partial signature is made against it
+        if (tempChannel.ChannelParams.OptionSimpleTaproot)
+            tempChannel.RemoteOpeningNonce = GetAcceptNonce(message);
 
         // Check for the upfront shutdown script: it's only required when option_upfront_shutdown_script was negotiated
         if (message.UpfrontShutdownScriptTlv is null && negotiatedFeatures.UpfrontShutdownScript > FeatureSupport.No)
@@ -233,18 +243,34 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
             // Build the output and the transactions
             var remoteUnsignedCommitmentTransaction = _commitmentTransactionBuilder.Build(remoteCommitmentTransaction);
 
-            // Sign their remote commitment transaction
-            var ourSignature =
-                _lightningSigner.SignChannelTransaction(tempChannel.ChannelId, remoteUnsignedCommitmentTransaction);
+            // Sign their remote commitment transaction: ECDSA, or (simple taproot) our MuSig2 partial signature with a
+            // fresh signing nonce against the accepter's next_local_nonce, the 64-byte signature field all zeros
+            FundingCreatedMessage fundingCreatedMessage;
+            if (tempChannel.ChannelParams.OptionSimpleTaproot)
+            {
+                var partialSignature = _lightningSigner.SignRemoteCommitmentPartial(
+                    tempChannel.ChannelId, null, remoteUnsignedCommitmentTransaction,
+                    tempChannel.RemoteOpeningNonce!.Value);
+                tempChannel.UpdateState(ChannelState.V1FundingCreated);
+                fundingCreatedMessage =
+                    _messageFactory.CreateFundingCreatedMessage(oldChannelId, fundingOutput.TransactionId.Value,
+                                                                fundingOutput.Index.Value, partialSignature);
+            }
+            else
+            {
+                var ourSignature =
+                    _lightningSigner.SignChannelTransaction(tempChannel.ChannelId,
+                                                            remoteUnsignedCommitmentTransaction);
 
-            // Update the channel with the new signature and the new state
-            tempChannel.UpdateLastSentSignature(ourSignature);
-            tempChannel.UpdateState(ChannelState.V1FundingCreated);
+                // Update the channel with the new signature and the new state
+                tempChannel.UpdateLastSentSignature(ourSignature);
+                tempChannel.UpdateState(ChannelState.V1FundingCreated);
 
-            // Create the funding created message
-            var fundingCreatedMessage =
-                _messageFactory.CreateFundingCreatedMessage(oldChannelId, fundingOutput.TransactionId.Value,
-                                                            fundingOutput.Index.Value, ourSignature);
+                // Create the funding created message
+                fundingCreatedMessage =
+                    _messageFactory.CreateFundingCreatedMessage(oldChannelId, fundingOutput.TransactionId.Value,
+                                                                fundingOutput.Index.Value, ourSignature);
+            }
 
             // Move the locked utxos to the real channel id first: UpgradeChannel raises OnChannelUpgraded, and the
             // open-channel subscription looks the locks up by the new id as soon as it sees it (NL-263)
@@ -278,5 +304,19 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
 
             throw new ChannelErrorException("Error creating commitment transaction", e);
         }
+    }
+
+    /// <summary>The accepter's simple taproot <c>next_local_nonce</c>, checked (MUST reject the channel otherwise).</summary>
+    private MusigPublicNonce GetAcceptNonce(AcceptChannel1Message message)
+    {
+        if (message.NextLocalNonceTlv is not { } nonceTlv)
+            throw new ChannelErrorException("accept_channel of a simple taproot channel without next_local_nonce",
+                                            message.Payload.ChannelId, "accept_channel without next_local_nonce");
+
+        if (_musig2 is not null && !TaprootChannelNonces.IsValidPublicNonce(_musig2, nonceTlv.Nonce))
+            throw new ChannelErrorException("accept_channel next_local_nonce is not two points",
+                                            message.Payload.ChannelId, "next_local_nonce does not parse");
+
+        return nonceTlv.Nonce;
     }
 }

@@ -10,10 +10,12 @@ using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using DualFunding;
+using Taproot;
 
 public class FundingConfirmedMessageHandler
 {
@@ -110,13 +112,24 @@ public class FundingConfirmedMessageHandler
                                        channel.ChannelId);
             }
 
+            // A simple taproot channel's channel_ready carries next_local_nonce: our verification nonce for that same
+            // next commitment on the funding that confirmed (bolt-simple-taproot.md §channel_ready, NL-877 T5)
+            MusigPublicNonce? nonce = channel.ChannelParams.OptionSimpleTaproot
+                                          ? TaprootChannelNonces.GetCurrentFundingNonce(
+                                              _lightningSigner, channel, channel.LocalCommitmentNumber + 1)
+                                          : null;
+
             if (channel.LocalAliases is { Count: > 0 })
             {
                 // Create a ChannelReady message with the SCID aliases
                 foreach (var alias in channel.LocalAliases)
                 {
                     var channelReadyMessage =
-                        _messageFactory.CreateChannelReadyMessage(channel.ChannelId, secondPerCommitmentPoint, alias);
+                        nonce is { } aliasNonce
+                            ? _messageFactory.CreateChannelReadyMessage(channel.ChannelId, secondPerCommitmentPoint,
+                                                                        alias, aliasNonce)
+                            : _messageFactory.CreateChannelReadyMessage(channel.ChannelId, secondPerCommitmentPoint,
+                                                                        alias);
 
                     // Raise the event with the message
                     OnMessageReady?.Invoke(this, channelReadyMessage);
@@ -125,8 +138,11 @@ public class FundingConfirmedMessageHandler
             else
             {
                 var channelReadyMessage =
-                    _messageFactory.CreateChannelReadyMessage(channel.ChannelId, secondPerCommitmentPoint,
-                                                              channel.ShortChannelId);
+                    nonce is { } scidNonce
+                        ? _messageFactory.CreateChannelReadyMessage(channel.ChannelId, secondPerCommitmentPoint,
+                                                                    channel.ShortChannelId, scidNonce)
+                        : _messageFactory.CreateChannelReadyMessage(channel.ChannelId, secondPerCommitmentPoint,
+                                                                    channel.ShortChannelId);
 
                 // Raise the event with the message
                 OnMessageReady?.Invoke(this, channelReadyMessage);
