@@ -30,11 +30,14 @@ using Domain.Routing.Pathfinding;
 /// <c>htlc_maximum_msat</c> and, with the parts already planned over it and the payment's parts still in flight over it
 /// (<see cref="PaymentPlanRequest.HintForwardsInFlightMsat"/>), less than its learnt liquidity bound.</para>
 /// <para>One part: the first path, in order (direct paths first, then hints in invoice order; each by what its channel
-/// can send, largest first), that fits the whole amount. Split (only with <see cref="PaymentTarget.SupportsMpp"/> and
-/// at least two parts allowed): paths by fee for the whole amount, cheapest first, then by what they can send; each
-/// takes the largest amount that fits (at least <see cref="PaymentPlanRequest.MinPartMsat"/> unless that is all that
-/// is left), until the amount is covered, within <see cref="PaymentPlanRequest.MaxParts"/>. Every part carries
-/// <c>total_msat</c> = <see cref="PaymentPlanRequest.TotalMsat"/>.</para>
+/// can send, largest first), that fits the whole amount. When no single direct path fits but our direct channels to
+/// the payee carry the amount together, that split (no fee, no other node sees the payment; at least two direct
+/// channels, the split rules below) comes before any hint or graph path, single-part or not (NL-980). Split (only
+/// with <see cref="PaymentTarget.SupportsMpp"/> and at least two parts allowed): paths by fee for the whole amount,
+/// cheapest first, then by what they can send; each takes the largest amount that fits (at least
+/// <see cref="PaymentPlanRequest.MinPartMsat"/> unless that is all that is left), until the amount is covered,
+/// within <see cref="PaymentPlanRequest.MaxParts"/>. Every part carries <c>total_msat</c> =
+/// <see cref="PaymentPlanRequest.TotalMsat"/>.</para>
 /// <para>Graph paths (BOLT 7 plan G4-T3, decision D7; only with <see cref="PaymentPlanRequest.Graph"/>): when no direct
 /// or hint path carries the whole amount (there is none, the payment avoided them, or they are depleted, bounded by a
 /// failure, too small or too dear), <see cref="GraphPathfinder"/> searches the gossip graph from us to the payee
@@ -126,9 +129,26 @@ public sealed class PaymentRoutePlanner
         var target = circular ? "No circular route back to us" : "No route to the payee";
         var usableTarget = circular ? "No usable circular route back to us" : "No usable route to the payee";
 
-        // One part, when one direct or hint path can carry the whole amount (they come first: the payee's own hints)
+        // One part, when one direct path can carry the whole amount (they come first)
         var singleReasons = new List<string>();
-        if (TryFitSingle(request, paths, inFlight, singleReasons, out parts))
+        var directCount = circular ? 0 : paths.TakeWhile(p => p.HintIndex < 0).Count();
+        if (TryFitSingle(request, paths.Take(directCount), inFlight, singleReasons, out parts))
+        {
+            failureReason = null;
+            return true;
+        }
+
+        // NL-980: then a split over our own channels to the payee, which costs no fee and shows the payment to no other
+        // node, before any route through other nodes (hints or the graph), whatever those charge
+        if (directCount >= 2 && request.Target.SupportsMpp && request.MaxParts >= 2
+         && TrySplit(request, paths.Take(directCount).ToList(), inFlight, out parts, out _))
+        {
+            failureReason = null;
+            return true;
+        }
+
+        // Then one part over a hint path (the payee's own hints) or, for a circular payment, any of its paths
+        if (TryFitSingle(request, paths.Skip(directCount), inFlight, singleReasons, out parts))
         {
             failureReason = null;
             return true;

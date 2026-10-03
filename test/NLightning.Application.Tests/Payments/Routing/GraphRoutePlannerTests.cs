@@ -386,6 +386,79 @@ public class GraphRoutePlannerTests
     }
 
     [Fact]
+    public void Given_ThePayeeIsOurPeerOverTwoChannelsTooSmallAlone_When_PlannedWithAGraph_Then_SplitOverThemAtNoFee()
+    {
+        // Arrange (NL-980): David is our peer and the payee over two channels of 600,000 msat each; the graph has a
+        // single-part route us → Carol → David that carries the whole amount at a fee
+        var toDavid2 = new LocalChannelCandidate(new ChannelId(Enumerable.Repeat((byte)0xD2, 32).ToArray()), s_david,
+                                                 new ShortChannelId(302, 1, 0));
+        _channels.AddRange([s_toDavid, toDavid2]);
+        _sendableByChannel[s_toDavid.ChannelId] = 600_000;
+        _sendableByChannel[toDavid2.ChannelId] = 600_000;
+
+        // Act
+        var planned = Planner().TryPlan(Request(DavidTarget(mpp: true), Context(Graph().Build()), maxParts: 16),
+                                        out var parts, out var reason);
+
+        // Assert: both direct channels, no fee, nobody else on the route
+        Assert.True(planned, reason);
+        Assert.Equal(2, parts!.Count);
+        Assert.Equal(new HashSet<LocalChannelCandidate> { s_toDavid, toDavid2 },
+                     parts.Select(p => p.Channel).ToHashSet());
+        Assert.All(parts, p => Assert.True(p.Route.Fee.IsZero));
+        Assert.All(parts, p => Assert.Equal([s_david], p.Route.Hops.Select(h => h.NodeId)));
+        Assert.Equal(Amount, parts.Aggregate(0UL, (sum, p) => sum + p.Route.Amount.MilliSatoshi));
+        Assert.All(parts, p => Assert.Equal(Amount, p.Route.TotalAmount.MilliSatoshi));
+    }
+
+    [Fact]
+    public void Given_ThePayeeIsOurPeerAndOneChannelCarriesTheAmount_When_PlannedWithAGraph_Then_OneDirectPart()
+    {
+        // Arrange
+        var toDavid2 = new LocalChannelCandidate(new ChannelId(Enumerable.Repeat((byte)0xD2, 32).ToArray()), s_david,
+                                                 new ShortChannelId(302, 1, 0));
+        _channels.AddRange([s_toDavid, toDavid2]);
+        _sendableByChannel[s_toDavid.ChannelId] = 600_000;
+        _sendableByChannel[toDavid2.ChannelId] = 1_200_000;
+
+        // Act
+        var planned = Planner().TryPlan(Request(DavidTarget(mpp: true), Context(Graph().Build()), maxParts: 16),
+                                        out var parts, out var reason);
+
+        // Assert
+        Assert.True(planned, reason);
+        var part = Assert.Single(parts!);
+        Assert.Equal(toDavid2, part.Channel);
+        Assert.True(part.Route.Fee.IsZero);
+    }
+
+    [Fact]
+    public void Given_ThePayeeIsOurPeerOverTwoSmallChannelsWithoutBasicMpp_When_PlannedWithAGraph_Then_TheGraphRoute()
+    {
+        // Arrange: as above, but David's invoice does not offer basic_mpp, so the split is not an option
+        var toDavid2 = new LocalChannelCandidate(new ChannelId(Enumerable.Repeat((byte)0xD2, 32).ToArray()), s_david,
+                                                 new ShortChannelId(302, 1, 0));
+        _channels.AddRange([s_toDavid, toDavid2]);
+        _sendableByChannel[s_toDavid.ChannelId] = 600_000;
+        _sendableByChannel[toDavid2.ChannelId] = 600_000;
+
+        // Act
+        var planned = Planner().TryPlan(Request(DavidTarget(mpp: false), Context(Graph().Build()), maxParts: 16),
+                                        out var parts, out var reason);
+
+        // Assert: the single-part graph route through Carol, as before NL-980
+        Assert.True(planned, reason);
+        var part = Assert.Single(parts!);
+        Assert.Equal(s_toCarol, part.Channel);
+        Assert.Equal([s_carol, s_david], part.Route.Hops.Select(h => h.NodeId));
+        Assert.False(part.Route.Fee.IsZero);
+    }
+
+    private static PaymentTarget DavidTarget(bool mpp) =>
+        new(s_david, Enumerable.Repeat((byte)0x11, 32).ToArray(), Enumerable.Repeat((byte)0x22, 32).ToArray(), null,
+            FinalDelta, [], null, mpp);
+
+    [Fact]
     public void Given_AHintBoundedByATemporaryChannelFailure_When_PlannedWithAGraph_Then_TheGraphRouteIsUsed()
     {
         // Arrange: Erin's cheap hint from Carol could not forward 500,000 msat on an earlier round
