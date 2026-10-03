@@ -5,6 +5,9 @@ library `test/NLightning.Testing.Cluster` references no NLightning project, so t
 (`Docker/Utils/NLightningTestNode`, built from the daemon's `AddNltgNodeServices`) into its topologies lives here, on
 the library's existing seams: `NodeKind.NLightning`, `ILightningNodeDeployer`, `ITopologyLightningNode`.
 
+Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs several at once within the namespace cap
+(phase 5; test/CLAUDE.md "Phase 5"), `scripts/run-cluster.sh -n N --suite <suite>` one of them N times (below).
+
 ## Pieces
 
 - `InProcessNodeDeployer` (`ILightningNodeDeployer` for `NodeKind.NLightning`, `IAsyncDisposable`): builds and starts

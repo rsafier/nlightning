@@ -11,7 +11,10 @@ using Infrastructure.Serialization;
 /// <summary>
 /// Container-free tests of the helpers Proof SPR (c) asserts through: the IT-RBF-01 minimum it uses as its precondition
 /// guard, and the <c>tx_abort</c> reason it expects from our node for a feerate below that minimum.
+/// Tagged <c>Interop.Cln</c> so the CLN suite runs them: their names hold "Docker", which CI's
+/// <c>FullyQualifiedName!~Docker</c> leaves out (NL-816).
 /// </summary>
+[Trait("Category", ClnInteropCollection.Category)]
 public class ClnSpliceRbfHelperTests
 {
     [Theory]

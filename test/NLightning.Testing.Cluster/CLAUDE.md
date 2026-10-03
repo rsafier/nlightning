@@ -24,7 +24,8 @@ every implementation, our own node included, is driven through the same seams.
     so one teardown hiccup never fails every later deployment of the name (`Live/RunLifecycleTests`).
   - `TestRunOptions.FromEnvironment(suite)`: `NLTG_TEST_RUN_ID` (run id; generated when unset),
     `NLTG_TEST_NAMESPACE_PREFIX` (default `nltg-spike`; the real harness uses `nltg`), `NLTG_KUBE_CONTEXT`,
-    `NLTG_KEEP_NAMESPACE=1` (keep for debugging).
+    `NLTG_KEEP_NAMESPACE=1` (keep for debugging), `NLTG_WAIT_NAMESPACE_DELETION=1` (disposal waits until the
+    namespace is gone; `run-cluster.sh --matrix` sets it for a suite it runs with `-parallel none`).
   - `RunIdentity` (pure names and labels), `RunLabels` (`nltg.run`, `nltg.suite`, `nltg.started` (Unix seconds),
     `nltg.spike`, `nltg.node`, `nltg.kind`, `app.kubernetes.io/managed-by=nltg-test-harness`), `RunNamespace`
     (build/create/delete with the ownership check `IsOwnedBy`), `KubeClientFactory` (in-cluster when
@@ -48,6 +49,18 @@ every implementation, our own node included, is driven through the same seams.
     `TestResults/cluster/<batch>/<run>/`, reaps each run's leftovers, prints a summary table (`summary.txt`).
     `--diag failure|always|off`, `--keep-on-failure` and `--trait` (default `Category=Cluster`); each run's dumps go
     to `<run>/diag/`, the table counts them (DIAG) and the summary lists the folders of every failed run.
+    `--suite S` takes a suite of the matrix catalog; `--timeout` (or the suite's) is each run's hang timeout.
+  - `Run/Matrix/` (phase 5, the pure half of `run-cluster.sh --matrix`, CLI `nltg-cluster matrix
+    list|plan|rerun-classes|summary`, no cluster access): `SuiteCatalog` (every suite: project, selection that
+    `--class`/a rerun replaces, constraints always applied, explicit mode, namespaces with and without collection
+    parallelism, hang timeout, `SuiteRequirement.LndClusterBackend`, Docker-only reason; `GlobalConstraints` leave SQL
+    Server out), `MatrixPlanner` (catalog order, skips, the namespace budget, `PlannedSuite.ToLine` = the '|'-separated
+    line the script reads), `LndBackendProbe` (the LND suites run only once `LightningRegtestNetworkFixture` names
+    `ILndNetworkBackend`), `XunitResults` (xunit v3 XML: counts, failed classes, first error), `SuiteAttempt` (one
+    test process's folder: exit, timedout, class, namespaces created, `[fixture] ... ready in` lines, dumps) and
+    `MatrixReport` (`ClassesToRerun`: 1..rerun-max failed classes, never after a timeout, crash or error; `Judge`:
+    green, rerun-green, failed, timeout, skipped, not run; `Format`; `ExitCode`). The script keeps only the admission
+    queue, the processes, the hang timeout and the reaping (tested by `scripts/tests/run-cluster-tests.sh`).
 - `Kube/`
   - `NodeWorkload`: one node = StatefulSet (1 replica, `Parallel`) + headless Service of the same name
     (`publishNotReadyAddresses`) + optional data volume (`Data = new DataVolume(mountPath, size)`: a PVC template, or
@@ -269,6 +282,8 @@ every implementation, our own node included, is driven through the same seams.
   Category=Interop.Eclair`), `--suite ldk` the LDK one (`Category=Interop.Ldk`), `--suite postgres`
   `Docker/PostgresTests` and `Cluster/Live/ServerDatabaseClusterTests` on a Postgres pod, and `--suite faults` the
   partition tests (`Cluster/Live/PartitionClusterTests`, `ChainMonitorZmqClusterTests`).
+- `scripts/run-cluster.sh --matrix [suites] -j N --max-namespaces M` (phase 5) runs several suites at once within the
+  namespace budget, reruns a failed class alone once and summarizes; test/CLAUDE.md "Phase 5" has the details.
 - `scripts/run-cluster.sh -n 3 --suite cln` builds once and runs 3 processes of `-p integration --trait
   Category=Interop.Cln`, each with `NLTG_TEST_BACKEND=cluster` and its own run id and namespace (`--class X` narrows it,
   `--explicit on` adds the captures, `--keep-on-failure` keeps a failed run's namespace). No Docker lock is needed.

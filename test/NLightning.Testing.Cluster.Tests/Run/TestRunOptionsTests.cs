@@ -55,4 +55,20 @@ public class TestRunOptionsTests
         // Assert
         Assert.Equal(expected, options.AdoptNamespace);
     }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("1", true)]
+    [InlineData("true", true)]
+    public void Given_TheWaitForDeletionVariable_When_OptionsAreRead_Then_DisposalWaitsOnlyWhenSet(string? value,
+        bool expected)
+    {
+        // Act
+        var options = TestRunOptions.FromEnvironment(
+            "postgres", k => k == TestRunOptions.WaitForDeletionVariable ? value : null);
+
+        // Assert
+        Assert.Equal(expected, options.WaitForDeletion);
+    }
 }
