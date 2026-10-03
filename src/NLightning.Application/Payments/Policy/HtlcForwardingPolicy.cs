@@ -78,8 +78,7 @@ public sealed class HtlcForwardingPolicy : IForwardingPolicy
         if (request.BlindedRelay is { } relay)
         {
             // Inside a blinded route the recipient set our fee (BOLT 4 payment_relay): it must be at least our policy
-            if (!RelayCoversFee(relay.FeeBaseMsat, relay.FeeProportionalMillionths, policy)
-             && !previous.Any(p => RelayCoversFee(relay.FeeBaseMsat, relay.FeeProportionalMillionths, p)))
+            if (!PaymentRelayCoversFee(relay.FeeBaseMsat, relay.FeeProportionalMillionths, policy, previous))
                 return ForwardingDecision.FeeInsufficient(incomingAmountMsat);
         }
         else if (!PaysFee(policy, incomingAmountMsat, amountToForwardMsat)
@@ -89,8 +88,7 @@ public sealed class HtlcForwardingPolicy : IForwardingPolicy
         }
 
         // cltv_expiry - cltv_expiry_delta >= outgoing_cltv_value, without underflow
-        var cltvExpiryDelta = previous.Aggregate(policy.CltvExpiryDelta,
-                                                 (delta, p) => Math.Min(delta, p.CltvExpiryDelta));
+        var cltvExpiryDelta = LenientCltvExpiryDelta(policy, previous);
         if ((ulong)request.IncomingCltvExpiry < (ulong)request.OutgoingCltvValue + cltvExpiryDelta)
             return ForwardingDecision.IncorrectCltvExpiry(request.OutgoingCltvValue);
 
@@ -108,6 +106,26 @@ public sealed class HtlcForwardingPolicy : IForwardingPolicy
 
         return ForwardingDecision.Forward;
     }
+
+    /// <summary>
+    /// Whether a blinded route's <c>payment_relay</c> fee is at least <paramref name="policy"/>'s, or, in the BOLT 7
+    /// grace period, at least one of the <paramref name="previousPolicies"/> it replaced (the blinded forwards here and
+    /// the blinded trampoline hops of the relay engine, NL-922).
+    /// </summary>
+    internal static bool PaymentRelayCoversFee(uint relayFeeBaseMsat, uint relayFeeProportionalMillionths,
+                                               ConfiguredChannelPolicy policy,
+                                               IReadOnlyList<ConfiguredChannelPolicy> previousPolicies) =>
+        RelayCoversFee(relayFeeBaseMsat, relayFeeProportionalMillionths, policy)
+     || previousPolicies.Any(p => RelayCoversFee(relayFeeBaseMsat, relayFeeProportionalMillionths, p));
+
+    /// <summary>
+    /// The <c>cltv_expiry_delta</c> a forward must keep: <paramref name="policy"/>'s, or, in the BOLT 7 grace period,
+    /// the smallest of the <paramref name="previousPolicies"/> it replaced (the most lenient, as CLN's
+    /// <c>enforcedelay</c>).
+    /// </summary>
+    internal static ushort LenientCltvExpiryDelta(ConfiguredChannelPolicy policy,
+                                                  IReadOnlyList<ConfiguredChannelPolicy> previousPolicies) =>
+        previousPolicies.Aggregate(policy.CltvExpiryDelta, (delta, p) => Math.Min(delta, p.CltvExpiryDelta));
 
     private static bool RelayCoversFee(uint relayFeeBaseMsat, uint relayFeeProportionalMillionths,
                                        ConfiguredChannelPolicy policy) =>
