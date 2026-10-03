@@ -91,11 +91,11 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   namespace and `Docker.Utils` (the catalog's `lnd`, SQL Server left out; 2 namespaces: the collection's network and
   `MultiNodeHarnessTests`' own Postgres pod, so `-j` is capped at 3); the classes of the fixture's other collections
   run in their own suites: `PostgresTests` in `postgres`, `BackupRestoreFlowTests` in `onchain`,
-  `ChannelPolicyPublicFlowTests` and `SpliceLndObserverTests` in `gossip` (`--suite onchain|gossip --class X`; those
-  suites stay out of the default matrix until their cluster proofs are made). Test code that drives Docker containers
-  by name skips itself on the cluster (`LightningRegtestNetworkFixture.SkipUnlessDocker`/`RequireDocker`:
-  `LndChannelDbRollback`, `RelayBitcoind`); failure dumps go through `DumpLndLogsAsync` everywhere. On Docker the suite
-  runs as before (SDK container, `--network host`, under the machine's Docker lock).
+  `ChannelPolicyPublicFlowTests` and `SpliceLndObserverTests` in `gossip` (`--suite onchain|gossip --class X`).
+  Test code that would drive Docker containers by name on the cluster guards itself with
+  `LightningRegtestNetworkFixture.SkipUnlessDocker`/`RequireDocker` (the on-chain helpers have cluster paths since
+  phase 6, below); failure dumps go through `DumpLndLogsAsync` everywhere. On Docker the suite runs as before (SDK
+  container, `--network host`, under the machine's Docker lock).
 - `Live/LndRegtestNetworkClusterTests` (`Category=Cluster`, `Explicit`): the backend's members answer, our node joins
   (2M sat), opens 1M sat to alice by her Service name, pays carol through alice and is paid by alice, alice restarts,
   and both payments work again. `scripts/run-cluster.sh -n 2 -p integration --class
@@ -180,6 +180,29 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
 - Run: `scripts/run-cluster.sh -n 1 --suite abcd` (1 namespace, the `regtest` collection's network; no Docker lock),
   or as part of the default matrix (`--matrix`). `scripts/run-abcd.sh` is unchanged and runs the Docker backend
   (under the machine's Docker lock). Proven 2026-10-03: 11/11 alone (51-58 s, network ready 28 s), 2 x 11/11 at once.
+
+## The on-chain suites on the cluster (test harness phase 6)
+
+- `Docker/Onchain/` (the catalog's `onchain`: `Docker.Onchain.Onchain*` + `Docker.BackupRestoreFlowTests`, 33 + 2
+  `Explicit`) and `Docker/Onchain/Anchors/` (`anchors`, 18) run on `LightningRegtestNetworkFixture`'s cluster backend
+  (collection `onchain-regtest`, one namespace each). Reorgs (`invalidateblock`/`reconsiderblock`, `generateblock`),
+  `setmocktime`, `prioritisetransaction`, mempool watching (ZMQ raw tx at the miner's pod IP) and LND's 0.21 sweeper
+  pacing (`ChainSync.MineUntilLndSweptAsync`, NL-770) needed no change: they reach bitcoind and LND only through the
+  fixture (`Bitcoin`, `GetLndNode`, `GetLndPeerEndpointAsync`).
+- The two helpers that drove Docker containers have cluster paths (Docker unchanged):
+  - `Onchain/Cheater/LndChannelDbRollback` (Proof O5 (a), `AnchorsO5Tests`): `LndRegtestNetwork.RestartAsync(alias,
+    whileStopped: ...)` scales david's StatefulSet to 0, a maintenance pod on his PVC (`StoppedNodeMaintenance`, the
+    library's `Kube/`) copies `channel.db` to `channel.db.nltg-snapshot` next to it (and later back), david starts again
+    and the network has the LND peers redial his new pod IP; our node redials his Service name.
+  - `Onchain/Anchors/RelayBitcoind` (`AnchorsPackageRelayTests`, NL-380): a bitcoind pod `relay` of the harness in the
+    network's namespace (`BitcoinCoreNode`, the version table's image, `emptyDir`, `-connect=miner:18444`,
+    `-maxmempool=5`, wallet `relay`), RPC and ZMQ at its pod IP, removed with `TestRun.RemoveNodeAsync` on disposal.
+- `NLightningTestNode.StopAsync` clears the node's SQLite connection pool (NL-825): the pooled connections kept the
+  database open, and on the macOS host (where the cluster backend runs the test process) `File.Copy` replaces a file
+  by a new inode, so `OnchainO4Tests`' O4 (d) restarted on the files it had replaced instead of the snapshot.
+- Run: `scripts/run-cluster.sh -n 1 --suite onchain` and `--suite anchors` (no Docker lock; `--class` for one class,
+  `--explicit on` adds the two by-hand O5 variants), or in the default matrix. `scripts/run-onchain.sh` is unchanged
+  and runs the Docker backend (under the machine's Docker lock, `ONCHAIN_SUITE=all` for both namespaces).
 
 ## Reachability (OrbStack, host-side tests)
 

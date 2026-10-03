@@ -245,7 +245,8 @@ The same topology model, sized up, on a multi-node cluster.
    - It builds once, then runs the suite matrix with N runs in flight, reruns one failed class alone, prints a summary and collects diagnostics.
    - Update `test/CLAUDE.md` and root `CLAUDE.md`.
    - Done ("Phase 5 runner record", "Phase 3/5/6 integration record"): `scripts/run-cluster.sh --matrix`; `lnd` runs in
-     it, `onchain`, `anchors`, `gossip` and `abcd` run when named until their cluster proofs are made.
+     it, and so do `abcd`, `onchain` and `anchors` since their phase 6 proofs; a suite whose proof is pending runs when
+     named.
 6. **Proof.**
    - The full matrix twice concurrently, then at the tuned N, green apart from documented flakes.
    - Wall time compared with today's serial pass (target ≈15 min instead of ≈75).
@@ -1301,6 +1302,41 @@ Still open: the cluster proofs of `onchain`, `anchors`, `gossip` and `abcd` (pha
   `scripts/run-abcd.sh 1` under the machine lock 11/11 (network ready 9.9 s, 34 s). Matrix unit tests 76/76,
   `SuiteCatalogMembershipTests` green, `scripts/tests/run-cluster-tests.sh` 48/48 (its "pending suite runs when named"
   case still names `abcd`, which now simply runs as a proven suite).
+
+### Phase 6 on-chain lane record: the on-chain and anchors suites on the cluster (2026-10-03, `wip/harness-spike` from 3e31759f)
+
+- What the suites (`onchain`: `Docker.Onchain.Onchain*` + `BackupRestoreFlowTests`; `anchors`:
+  `Docker.Onchain.Anchors`; one `onchain-regtest` network each) need from the chain and LND already went through the
+  backend-neutral fixture: reorgs (`invalidateblock`/`reconsiderblock`, `generateblock`), `setmocktime`,
+  `prioritisetransaction`, the mempool feeds (ZMQ raw tx at the miner's pod IP), LND 0.21's sweeper pacing
+  (`ChainSync.MineUntilLndSweptAsync`, NL-770). The first cluster run (`oc-legacy-1`, `oc-anchors-1`) was 32/33 + 18/18
+  with three tests skipped (the Docker-only helpers) and one real failure.
+- NL-825 (fixed in 251feaa8): `OnchainO4Tests`' O4 (d) restarted our node on the files it had replaced instead of the
+  snapshot it restored (`ours 2/1` at the reestablish, `RemoteCommitment` instead of `RemoteNextCommitment`).
+  Microsoft.Data.Sqlite keeps closed connections pooled and open; on the macOS host, where the cluster backend runs the
+  test process, `File.Copy` replaces a file by a new inode, so the pool kept reading the old one (the Docker runner is a
+  Linux container, where the copy rewrites the inode in place). `NLightningTestNode` now clears its pool when it stops,
+  as a stopped daemon process holds no file. A test-harness defect, not a product one; NL-826..NL-829 unused.
+- The Docker-only helpers got cluster paths (4ab28ea7), so nothing skips any more: `LndChannelDbRollback` copies
+  david's `channel.db` on his PVC in a stopped window (ee530155: `KubeNodeHandle.RestartAsync(readyTimeout,
+  whileStopped, ct)` scales the StatefulSet to 0, runs a maintenance pod on the PVC, scales back; through
+  `LndRegtestNetwork.RestartAsync(alias, whileStopped: ...)`, which also has the LND peers redial the new pod IP), and
+  `RelayBitcoind` is a harness bitcoind pod `relay` (`-connect=miner:18444`, `-maxmempool=5`) in the network's
+  namespace, removed with `RemoveNodeAsync`. Both suites lose `ClusterProofPending` (5c68c654); the planner tests take
+  the pending suite from the catalog.
+- Evidence (OrbStack, Release, net10.0, both suites at once beside the gossip lane's runs): `--suite onchain` 33/33
+  (+2 `Explicit` not run; `oc-l3`, network ready 30.0 s, 312 s) and `--suite anchors` 18/18 (`oc-a3`, 41.4 s, 210 s);
+  `--matrix onchain,anchors -j 2 --max-namespaces 2` green 33/33 and 18/18 (`oc-mx1`, matrix wall 336 s, fixture ready
+  30.9 / 39.3 s, peak 2 namespaces). Per class on the cluster: `OnchainSmokeTests` 2, `OnchainO2Tests` 2,
+  `OnchainO3Tests` 4, `OnchainO4Tests` 5, `OnchainO5Tests` 2 (+2 `Explicit`), `OnchainO6Tests` 3,
+  `OnchainFinalHopTests` 1, `OnchainMempoolTests` 2, `OnchainWatchCatchUpTests` 1, `OnchainSpliceTests` 5,
+  `BackupRestoreFlowTests` 6; `AnchorsChannelTests` 2, `AnchorsO3Tests` 3, `AnchorsO4Tests` 3, `AnchorsO5Tests` 1,
+  `AnchorsCpfpTests` 2, `AnchorsMempoolPenaltyTests` 1, `AnchorsPackageRelayTests` 1 (relay mempool minimum raised by 41
+  fills), `AnchorsPeerCommitmentBumpTests` 1, `AnchorsReserveTests` 2, `AnchorsReserveGapTests` 2. Docker unchanged
+  under the machine lock: `ONCHAIN_SUITE=all scripts/run-onchain.sh 1` 45/45 + 2 `Explicit` not run (network ready
+  9.5 s, 375 s; the rollback still copies the tar archive and the relay is still a container) and
+  `BackupRestoreFlowTests` 6/6 (41 s). Unit tests: `StoppedNodeMaintenanceTests` 3, matrix 76/76, Integration
+  `Cluster` namespace 27/27.
 
 ## 6. Risks and open questions
 

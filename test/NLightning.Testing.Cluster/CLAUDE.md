@@ -88,6 +88,12 @@ every implementation, our own node included, is driven through the same seams.
     `PodDnsName`, `PodIp`, exec and file IO, logs, `RestartAsync` (graceful delete, same name + PVC) and `KillAsync`
     (a hard stop: delete with a 1 s grace, `KubeNodeHandle.KillGracePeriodSeconds`; a grace-0 delete let the
     replacement start while the old container still ran on the PVC). Crash, pause and partition are in `Faults/`.
+    `RestartAsync(readyTimeout, whileStopped, ct)` (phase 6) is a restart with a stopped window: `Kube/StoppedNodeMaintenance`
+    scales the StatefulSet to 0, runs `whileStopped` in a maintenance pod `<node>-maint` (the node container's image,
+    security context and resources, its data PVC at the same mount path, `sleep`; the template's labels without the
+    selector's, so the StatefulSet never adopts it; `NodeMaintenanceShell.ExecAsync`/`RunScriptAsync`), deletes it and
+    scales back to 1; `LndNode.RestartAsync` and `LndRegtestNetwork.RestartAsync(alias, whileStopped: ...)` take it too
+    (what the Docker on-chain suite did with `docker stop`/`docker cp`: LND's `channel.db` rolled back).
   - `ILightningTestPeer`: the facade shape (node id, address, connect/disconnect, new address, open channel, list
     channels, invoice, pay). Implementations live per kind (`Nodes/<Kind>/`), amounts in `Sat`/`Msat` longs, node ids
     lower-case hex.
