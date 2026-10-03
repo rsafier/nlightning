@@ -18,13 +18,88 @@ public sealed class ListForwardsIpcResponse
     /// <summary>The counts and fees over the whole filtered set, with the refused counters (NL-598).</summary>
     [Key(1)] public required ForwardSummaryIpcResponse Summary { get; init; }
 
+    /// <summary>The trampoline payments we relayed (NL-875), newest first; null from a daemon before them.</summary>
+    [Key(2)] public List<TrampolineRelayIpcResponse>? TrampolineRelays { get; init; }
+
     public static ListForwardsIpcResponse FromClientResponse(ListForwardsClientResponse clientResponse)
     {
         ArgumentNullException.ThrowIfNull(clientResponse);
         return new ListForwardsIpcResponse
         {
             Forwards = clientResponse.Forwards.Select(ForwardInfoIpcResponse.FromClientResponse).ToList(),
-            Summary = ForwardSummaryIpcResponse.FromClientResponse(clientResponse.Summary)
+            Summary = ForwardSummaryIpcResponse.FromClientResponse(clientResponse.Summary),
+            TrampolineRelays = clientResponse.TrampolineRelays.Select(TrampolineRelayIpcResponse.FromClientResponse)
+                                             .ToList()
+        };
+    }
+}
+
+/// <summary>One trampoline payment we relayed over the wire (NL-875, a <c>listforwards</c> row of kind
+/// <c>trampoline</c>).</summary>
+[MessagePackObject]
+public sealed class TrampolineRelayIpcResponse
+{
+    /// <summary>The payment hash, 64 hex characters.</summary>
+    [Key(0)] public required string PaymentHash { get; init; }
+
+    /// <summary>The <c>TrampolineRelayStatus</c> (0 collecting, 1 sending, 2 fulfilled, 3 failed).</summary>
+    [Key(1)] public required byte Status { get; init; }
+
+    /// <summary>The incoming parts stored.</summary>
+    [Key(2)] public required int Parts { get; init; }
+
+    /// <summary>The channels the parts came in on (64 hex each), in part order.</summary>
+    [Key(3)] public required List<string> IncomingChannelIds { get; init; }
+
+    /// <summary>Each incoming channel's scid as <c>block x tx x output</c>, or null to show the channel id.</summary>
+    [Key(4)] public required List<string?> IncomingChannelScids { get; init; }
+
+    /// <summary>The sum of the incoming parts, msat.</summary>
+    [Key(5)] public required long IncomingAmountMsat { get; init; }
+
+    /// <summary>The outer <c>total_msat</c> the incoming set had to reach, msat.</summary>
+    [Key(6)] public required long IncomingTotalMsat { get; init; }
+
+    /// <summary>What the next node had to receive, msat.</summary>
+    [Key(7)] public required long AmountOutMsat { get; init; }
+
+    /// <summary>What the relay earned once fulfilled, msat; null before.</summary>
+    [Key(8)] public long? FeeEarnedMsat { get; init; }
+
+    /// <summary>The next trampoline node (66 hex), or null for the recipient's blinded paths.</summary>
+    [Key(9)] public string? NextNodeId { get; init; }
+
+    /// <summary>When the first part arrived, Unix seconds.</summary>
+    [Key(10)] public required long CreatedAtUnixSeconds { get; init; }
+
+    /// <summary>When the relay was fulfilled or failed, Unix seconds.</summary>
+    [Key(11)] public long? CompletedAtUnixSeconds { get; init; }
+
+    /// <summary>The BOLT 4 failure code we answered with, when we made it ourselves.</summary>
+    [Key(12)] public ushort? FailureCode { get; init; }
+
+    /// <summary>The failure code's name (or hex), or null.</summary>
+    [Key(13)] public string? FailureCodeName { get; init; }
+
+    public static TrampolineRelayIpcResponse FromClientResponse(TrampolineRelayInfoClientResponse relay)
+    {
+        ArgumentNullException.ThrowIfNull(relay);
+        return new TrampolineRelayIpcResponse
+        {
+            PaymentHash = relay.PaymentHash.ToString(),
+            Status = (byte)relay.Status,
+            Parts = relay.Parts,
+            IncomingChannelIds = relay.IncomingChannelIds.Select(c => c.ToString()).ToList(),
+            IncomingChannelScids = relay.IncomingChannelScids.ToList(),
+            IncomingAmountMsat = checked((long)relay.IncomingAmount.MilliSatoshi),
+            IncomingTotalMsat = checked((long)relay.IncomingTotal.MilliSatoshi),
+            AmountOutMsat = checked((long)relay.AmountOut.MilliSatoshi),
+            FeeEarnedMsat = relay.FeeEarned is { } fee ? checked((long)fee.MilliSatoshi) : null,
+            NextNodeId = relay.NextNodeId?.ToString(),
+            CreatedAtUnixSeconds = relay.CreatedAt.ToUnixTimeSeconds(),
+            CompletedAtUnixSeconds = relay.CompletedAt?.ToUnixTimeSeconds(),
+            FailureCode = relay.FailureCode,
+            FailureCodeName = relay.FailureCodeName
         };
     }
 }

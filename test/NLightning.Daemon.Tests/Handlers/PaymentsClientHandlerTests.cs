@@ -223,6 +223,27 @@ public class PaymentsClientHandlerTests
                                    Times.Once);
     }
 
+    [Fact]
+    public async Task Given_ATrampolineNode_When_PayInvoice_Then_ItIsPassedThrough()
+    {
+        // Arrange (NL-875)
+        var trampoline = new CompactPubKey(Convert.FromHexString("02" + new string('1', 64)));
+        _paymentServiceMock.Setup(x => x.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
+                                                         It.IsAny<PayInvoiceOptions>(), It.IsAny<CancellationToken>()))
+                           .ReturnsAsync(new PayInvoiceResult(CreatePayment(), 1, 1));
+        var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object);
+
+        // Act
+        await handler.HandleAsync(new PayInvoiceClientRequest("lnbcrt1pay") { TrampolineNode = trampoline },
+                                  TestContext.Current.CancellationToken);
+
+        // Assert
+        _paymentServiceMock.Verify(x => x.PayInvoiceAsync("lnbcrt1pay", null,
+                                                          It.Is<PayInvoiceOptions>(o => o.TrampolineNode == trampoline),
+                                                          It.IsAny<CancellationToken>()),
+                                   Times.Once);
+    }
+
     [Theory]
     [InlineData("600x1x0")]
     [InlineData("not-a-channel")]

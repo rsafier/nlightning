@@ -35,6 +35,16 @@ public interface ITrampolineRelayDbRepository
     /// part.</exception>
     Task AddPartAsync(TrampolineRelayPartModel part);
 
+    /// <summary>
+    /// Stages the removal of the <c>Failed</c> relay of <paramref name="paymentHash"/> and its parts, so a new attempt
+    /// of the payer with the same payment hash can start a new relay (as a retried payment replaces a failed one; the
+    /// relay engine calls it only once every part's incoming HTLC is resolved and no outgoing HTLC of the relay is
+    /// unresolved). Save it before adding the new relay.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No relay for the hash, or it is not <c>Failed</c>.</exception>
+    Task RemoveFailedAsync(Hash paymentHash) =>
+        throw new NotSupportedException("This repository cannot remove a failed trampoline relay.");
+
     /// <summary>The relay of <paramref name="paymentHash"/> with its parts (ordered by channel and HTLC id), or null.
     /// </summary>
     Task<(TrampolineRelayModel Relay, IReadOnlyList<TrampolineRelayPartModel> Parts)?> GetAsync(Hash paymentHash);

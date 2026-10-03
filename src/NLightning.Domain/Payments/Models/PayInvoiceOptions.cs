@@ -2,6 +2,7 @@ namespace NLightning.Domain.Payments.Models;
 
 using Accounting.Labels;
 using Channels.ValueObjects;
+using Crypto.ValueObjects;
 using Money;
 
 /// <summary>
@@ -42,6 +43,14 @@ public sealed record PayInvoiceOptions
     /// (<c>payinvoice --in</c>).
     /// </summary>
     public ChannelId? IncomingChannelId { get; init; }
+
+    /// <summary>
+    /// Pay through this trampoline node (NL-875, BOLTs PR 836; <c>payinvoice --trampoline</c>): the outer onion goes to
+    /// it and a trampoline onion carries the rest of the route. The recipient must support trampoline routing (its
+    /// invoice sets bit 57; a BOLT 11 invoice without it is refused), unless it is the trampoline node itself (then a
+    /// plain payment). Null lets <c>Node:Payments:Trampoline</c> decide (default: never).
+    /// </summary>
+    public CompactPubKey? TrampolineNode { get; init; }
 
     /// <summary>
     /// The operator's label and tags (NL-602 A3-T1) the payment row (and its

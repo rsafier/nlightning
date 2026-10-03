@@ -130,8 +130,10 @@ public static class InvoiceVerifier
         }
 
         var mpp = false;
+        var invoiceFeatures = ReadOnlyMemory<byte>.Empty;
         if (stream.TryGetValue(Bolt12TlvTypes.InvoiceFeatures, out var features))
         {
+            invoiceFeatures = features.ToArray();
             if (TryFindUnknownEvenBit(features.Span, MppCompulsoryBit, out var unknownBit))
             {
                 reason = $"B12-INV-03: invoice_features sets the unknown even bit {unknownBit}";
@@ -198,7 +200,7 @@ public static class InvoiceVerifier
                                          ? DateTimeOffset.MaxValue
                                          : DateTimeOffset.FromUnixTimeSeconds((long)createdAt),
                                      relativeExpiry, totalPaths),
-            paths, mpp);
+            paths, mpp, invoiceFeatures);
         reason = null;
         return true;
     }
@@ -391,5 +393,7 @@ public static class InvoiceVerifier
 /// <param name="Invoice">The invoice's fields.</param>
 /// <param name="Paths">Its usable paths, in the invoice's order of preference, introduction nodes named.</param>
 /// <param name="AllowsMpp">Whether <c>invoice_features</c> sets <c>basic_mpp</c> (16 or 17).</param>
+/// <param name="Features">The raw <c>invoice_features</c> (empty when absent), e.g. for <c>trampoline_routing</c>
+/// (NL-875).</param>
 public sealed record VerifiedInvoice(FetchedBolt12Invoice Invoice, IReadOnlyList<BlindedPaymentPath> Paths,
-                                     bool AllowsMpp);
+                                     bool AllowsMpp, ReadOnlyMemory<byte> Features = default);

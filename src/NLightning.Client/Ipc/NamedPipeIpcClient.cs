@@ -284,10 +284,12 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// <param name="incomingChannel">For our own invoice, the only channel the payment may come back in through
     /// (NL-609, <c>--in</c>), or null.</param>
     /// <param name="labels">The operator's label and tags (NL-602 A3-T1), or null for none.</param>
+    /// <param name="trampolineNode">The trampoline node to pay through (NL-875, <c>--trampoline</c>), or null.</param>
     public Task<PayInvoiceIpcResponse> PayInvoiceAsync(string bolt11, LightningMoney? amount, uint? timeoutSeconds,
                                                        ulong? maxFeeMsat = null, uint? maxParts = null,
                                                        CancellationToken ct = default, string? outgoingChannel = null,
-                                                       string? incomingChannel = null, LabelArguments? labels = null)
+                                                       string? incomingChannel = null, LabelArguments? labels = null,
+                                                       CompactPubKey? trampolineNode = null)
     {
         var req = new PayInvoiceIpcRequest
         {
@@ -298,6 +300,7 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
             MaxParts = maxParts,
             OutgoingChannel = outgoingChannel,
             IncomingChannel = incomingChannel,
+            TrampolineNode = trampolineNode,
             Label = labels?.Label,
             Tags = labels?.TagsOrNull
         };
@@ -599,7 +602,8 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
         MaxFee = arguments.MaxFeeMsat is { } fee ? LightningMoney.MilliSatoshis(fee) : null,
         MaxParts = arguments.MaxParts,
         Label = labels?.Label,
-        Tags = labels?.TagsOrNull
+        Tags = labels?.TagsOrNull,
+        TrampolineNode = arguments.TrampolineNode
     };
 
     /// <summary>

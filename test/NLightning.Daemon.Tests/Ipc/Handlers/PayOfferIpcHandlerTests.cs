@@ -69,7 +69,8 @@ public class PayOfferIpcHandlerTests
             PayerNote = "note",
             TimeoutSeconds = 45,
             MaxFee = LightningMoney.MilliSatoshis(3_000),
-            MaxParts = 4
+            MaxParts = 4,
+            TrampolineNode = s_node
         }), TestContext.Current.CancellationToken);
 
         // Assert
@@ -90,6 +91,7 @@ public class PayOfferIpcHandlerTests
         Assert.Equal(TimeSpan.FromSeconds(45), _options!.Payment.Timeout);
         Assert.Equal(3_000UL, _options.Payment.MaxFee!.MilliSatoshi);
         Assert.Equal(4, _options.Payment.MaxParts);
+        Assert.Equal(s_node, _options.Payment.TrampolineNode);
     }
 
     [Fact]

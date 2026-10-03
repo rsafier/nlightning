@@ -72,6 +72,12 @@ internal sealed class HarnessForwardingSwitch(
     /// </summary>
     public Func<HtlcRecord, IncomingOnionFinal, FailureMessage?>? FinalHopInterceptor { get; set; }
 
+    /// <summary>
+    /// When set, called first for every incoming HTLC locked in; true means the test handled it (a trampoline stand-in,
+    /// NL-875, which reads TLV 20 before the production onion processor would refuse it).
+    /// </summary>
+    public Func<ChannelId, HtlcRecord, CancellationToken, Task<bool>>? IncomingInterceptor { get; set; }
+
     /// <summary>The forwards this node made or refused, in order: (incoming amount, forward instruction).</summary>
     public ConcurrentQueue<(ulong IncomingAmountMsat, IncomingOnionForward Forward)> Forwards { get; } = new();
 
@@ -149,6 +155,9 @@ internal sealed class HarnessForwardingSwitch(
 
     private async Task HandleIncomingAsync(ChannelId channelId, HtlcRecord htlc, CancellationToken cancellationToken)
     {
+        if (IncomingInterceptor is { } interceptor && await interceptor(channelId, htlc, cancellationToken))
+            return;
+
         var result = await onionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash,
                                                        new OnionReplayOwner(channelId, htlc.Id, htlc.CltvExpiry));
         if (result.SharedSecretOrNull is { } secret)

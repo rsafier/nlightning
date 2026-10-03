@@ -19,6 +19,7 @@ using Application.Node.Services;
 using Application.Onchain.Fees;
 using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
+using Application.Payments.Trampoline;
 using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
@@ -72,6 +73,7 @@ public class NltgDaemonService : BackgroundService
     private readonly PriceValuationService? _priceValuation;
     private readonly FinancialBooksProjector? _financialBooks;
     private readonly IAccountingBackfill? _accountingBackfill;
+    private readonly TrampolineRelayService? _trampolineRelayService;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
                              IConfiguration configuration, IFeeService feeService,
@@ -98,8 +100,10 @@ public class NltgDaemonService : BackgroundService
                              AccountingBooksService? accountingBooks = null,
                              IAccountingBackfill? accountingBackfill = null,
                              PriceValuationService? priceValuation = null,
-                             FinancialBooksProjector? financialBooks = null)
+                             FinancialBooksProjector? financialBooks = null,
+                             TrampolineRelayService? trampolineRelayService = null)
     {
+        _trampolineRelayService = trampolineRelayService;
         _priceValuation = priceValuation;
         _financialBooks = financialBooks;
         _accountingEventSealer = accountingEventSealer;
@@ -195,6 +199,11 @@ public class NltgDaemonService : BackgroundService
 
             // Every stored channel is in memory now: settle the payments a crash left without an HTLC id (W2-C)
             await _paymentOutcomeHandler.ReconcileInFlightPaymentsAsync(stoppingToken);
+
+            // Resume the unfinished trampoline relays (NL-875 TR3): their mpp_timeout and leg watchdogs, once every
+            // channel is loaded and the payments (the relays' outgoing legs) are reconciled
+            if (_trampolineRelayService is not null)
+                await _trampolineRelayService.StartAsync(stoppingToken);
 
             // Channel safety (N9): fail-the-channel broadcasts (and their resumption), the HTLC deadline monitor and
             // the update_fee rounds of the channels we fund
