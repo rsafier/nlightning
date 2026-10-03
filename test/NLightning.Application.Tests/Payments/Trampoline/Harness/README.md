@@ -107,11 +107,17 @@ T ──(T–X #2, optional)── X ──(X–C #2, optional)── C
    one retry);
 9. `Node:Payments:Trampoline=Auto` picking T from a peer manager stand-in (A sees no graph);
 10. (a) a blinded recipient without bit 57: T pays `recipient_blinded_paths` (C's `BlindedPathBuilder` path through X).
+    (b) a blinded recipient with bit 57 (NL-895): T, X and C advertise it, A, T and X run the payment service, T and X
+    the relay engine (`ConfigureServices`). C's builder path (no dummy hop, or one) is introduced by X and names the
+    X–C channel by `short_channel_id`; A pays it through T with the path's hops as trampoline hops (T → blinded(X) →
+    blinded(C)). X resolves the scid to C, forwards what the path's `payment_relay` leaves of the total (not its
+    `Node:Trampoline` policy) with the next path key in C's outer payload (TLV 12), and keeps that fee; C settles. A
+    path that lives one block makes A's expiry break X's `payment_constraints`: X answers with its own
+    `invalid_onion_blinding`, which A reads from X's inner index and does not retry.
 
-Not covered: (b) blinded hops as trampoline hops. With C's builder path X (the introduction node) gets the trampoline
-onion but its recipient data names the X–C channel by `short_channel_id`, which the relay engine does not resolve
-("lacks its relay instructions"); resolved by hand, X then applies its own `Node:Trampoline` fee and delta to a hop
-whose price the recipient fixed in `payment_relay`, and refuses with NODE|26.
+The relay engine's blinded rules (scid and alias resolution, unknown scid at and past the introduction node,
+`payment_relay` over an MPP set, the constraints, a restart while collecting) are proven on `ThreeNodeHarness` in
+`../BlindedTrampolineRelayTests`.
 
 Phase 2 found two product bugs, fixed with the scenarios: the relay kept its own trampoline fee and delta out of the
 leg's budget, so a payer paying exactly the policy of a NODE|26 got no route past T's peers (1, 3); and a last
