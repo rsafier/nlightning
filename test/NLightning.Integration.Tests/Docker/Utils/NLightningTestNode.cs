@@ -803,6 +803,11 @@ public sealed class NLightningTestNode : IAsyncDisposable
             // Hermetic Docker runs: the financial books never ask mempool.space for prices (NL-641); a test that
             // runs Profile=Financial imports its prices (or sets a source through ExtraConfiguration)
             new("Accounting:Prices:Source", "None"),
+            // The gossip memory budget (Gossip:MaxMemoryMb, 1 GiB) reads this process's RSS, which the test process
+            // shares among every node of a suite: a long run (the CLN suite on the cluster passed 1.1 GiB) refused new
+            // channels from gossip and the gossip proofs waited in vain (NL-865, as NL-466 for the reload tests). A
+            // test that proves the budget sets it through ExtraConfiguration
+            new("Gossip:MaxMemoryMb", "0"),
             new("Bitcoin:WatchMempool", WatchMempool ? "true" : "false")
         ];
         // A later source overrides an earlier one, so ExtraConfiguration wins over the defaults above
