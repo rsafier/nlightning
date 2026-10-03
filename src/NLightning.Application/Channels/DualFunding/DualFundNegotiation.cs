@@ -8,6 +8,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.LiquidityAds.Models;
 using Domain.Money;
 using Domain.Protocol.InteractiveTx;
+using Domain.Protocol.Tlv;
 using LiquidityAds;
 
 /// <summary>
@@ -112,6 +113,20 @@ internal sealed class DualFundNegotiation
     /// </summary>
     public LiquidityAdsService.LiquiditySale? Sale { get; set; }
 
+    /// <summary>
+    /// Simple taproot channels (BOLTs PR #1324, taproot wave t02 lane V2): the <c>commit_nonces</c> of the peer's last
+    /// <c>tx_complete</c> for the constructed attempt (its verification nonces of its commitment 0 and 1 on that
+    /// funding), set before our <c>commitment_signed</c> is made. Memory only.
+    /// </summary>
+    public CommitNoncesTlv? RemoteCommitNonces { get; set; }
+
+    /// <summary>
+    /// Simple taproot channels: the peer's <c>channel_reestablish</c> <c>current_commit_nonce</c> (type 24) of the
+    /// current connection, the nonce a retransmitted <c>commitment_signed</c> is signed against (never the one of the
+    /// first signature: a re-sign takes a fresh nonce). Memory only.
+    /// </summary>
+    public MusigPublicNonce? RemoteCurrentCommitNonce { get; set; }
+
     /// <summary>Whether an anchors channel counts toward the anchors reserve while it is being opened.</summary>
     public bool HoldsAnchorReserve { get; set; }
 
@@ -198,5 +213,6 @@ internal sealed class DualFundNegotiation
         uint CommitmentFeeratePerKw,
         bool IsPublic,
         bool OptionAnchors,
-        Domain.Enums.FeatureSupport UseScidAlias);
+        Domain.Enums.FeatureSupport UseScidAlias,
+        bool SimpleTaproot = false);
 }

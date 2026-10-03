@@ -361,18 +361,38 @@ public interface ILightningSigner
     /// secret half only to sign that commitment for broadcast.
     /// </summary>
     /// <param name="channelKeyIndex">The channel's key index (usable before the channel id exists: open/accept).</param>
-    /// <param name="fundingTxId">The funding the commitment spends. Ignored for commitment 0, whose nonce is sent in
-    /// <c>open_channel</c>/<c>accept_channel</c> before the funding txid is known: commitment 0 always uses the context
-    /// without a txid (only one commitment 0 is ever signed for broadcast, invariant S1).</param>
+    /// <param name="fundingTxId">The funding the commitment spends. Ignored for commitment 0: this overload is the v1
+    /// open's (<c>open_channel</c>/<c>accept_channel</c> send commitment 0's nonce before the funding txid is known), so
+    /// commitment 0 uses the context without a txid. A dual-funded open binds commitment 0 to its funding txid too:
+    /// <see cref="GetInteractiveVerificationNonce"/>.</param>
     /// <param name="localCommitmentNumber">Our local commitment number the nonce verifies.</param>
     MusigPublicNonce GetLocalVerificationNonce(uint channelKeyIndex, TxId? fundingTxId, ulong localCommitmentNumber) =>
         throw new NotImplementedException("Taproot wave t02 lane SIG");
 
     /// <summary>
-    /// <see cref="GetLocalVerificationNonce(uint, TxId?, ulong)"/> for a registered channel.
+    /// <see cref="GetLocalVerificationNonce(uint, TxId?, ulong)"/> for a registered channel. Commitment 0 uses the
+    /// context without a txid only for a channel opened with v1 (<see cref="ChannelSigningInfo.IsDualFunded"/> false); a
+    /// dual-funded channel's commitment 0 is bound to <paramref name="fundingTxId"/> (null: the current funding), as
+    /// <see cref="GetInteractiveVerificationNonce"/> derives it.
     /// </summary>
     MusigPublicNonce GetLocalVerificationNonce(ChannelId channelId, TxId? fundingTxId, ulong localCommitmentNumber) =>
         throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
+    /// Simple taproot channels opened with the interactive protocol (a dual-funded open, taproot wave t02 lane V2; BOLTs
+    /// PR #1324 <c>tx_complete</c> <c>commit_nonces</c>): our verification nonce for local commitment
+    /// <paramref name="localCommitmentNumber"/> on the funding transaction <paramref name="fundingTxId"/>, before the
+    /// channel is registered. Always bound to the funding txid, commitment 0 included: every RBF attempt of the open has
+    /// its own commitment 0, and one nonce must never sign two of them (SP-I4 lets the same number be signed on another
+    /// funding). The same nonce as <see cref="GetLocalVerificationNonce(ChannelId, TxId?, ulong)"/> gives once the
+    /// channel is registered as dual-funded.
+    /// </summary>
+    /// <param name="channelKeyIndex">The channel's key index (its original funding key, index 0, is used).</param>
+    /// <param name="fundingTxId">The txid of the negotiated funding transaction.</param>
+    /// <param name="localCommitmentNumber">Our local commitment number the nonce verifies.</param>
+    MusigPublicNonce GetInteractiveVerificationNonce(uint channelKeyIndex, TxId fundingTxId,
+                                                     ulong localCommitmentNumber) =>
+        throw new NotImplementedException("Taproot wave t02 lane V2");
 
     /// <summary>
     /// Simple taproot channels: our MuSig2 partial signature of the peer's commitment <paramref name="unsignedCommitment"/>

@@ -207,21 +207,38 @@ public class ChannelOpenValidator : IChannelOpenValidator
             throw new ChannelErrorException("ChannelTypeTlv is not present");
 
         // BOLT 2: fail the channel if the channel_type is not suitable. We know option_static_remotekey, optionally
-        // with option_anchors, and the option_scid_alias/option_zeroconf variations; channel types only use even bits
+        // with option_anchors, and the option_scid_alias/option_zeroconf variations; channel types only use even bits.
+        // A simple taproot type (bit 80 without 12/22, NL-877) is known when option_simple_taproot is negotiated
+        var isTaproot = TaprootChannelType.IsTaprootChannelType(parameters.ChannelTypeTlv.Features);
         foreach (var bit in parameters.ChannelTypeTlv.Features.GetSetBits())
-            if (!s_supportedChannelTypeBits.Contains(bit))
+            if (!s_supportedChannelTypeBits.Contains(bit) && !(isTaproot && bit == TaprootChannelType.CompulsoryBit))
                 throw new ChannelErrorException($"Unsupported channel type bit {bit}",
                                                 "ChannelTypeTlv: This channel type is not supported");
 
-        // Check if OptionStaticRemoteKey is Compulsory
-        if (!parameters.ChannelTypeTlv.Features.IsFeatureSet(Feature.OptionStaticRemoteKey, true))
-            throw new ChannelErrorException("Static remote key feature is compulsory but not set by peer",
-                                            "ChannelTypeTlv: Static remote key is compulsory");
+        if (isTaproot)
+        {
+            // bolt-simple-taproot.md: the type needs option_simple_taproot, and a taproot channel MUST NOT be announced
+            if (parameters.NegotiatedFeatures.OptionSimpleTaproot == FeatureSupport.No)
+                throw new ChannelErrorException("Simple taproot channel type requested but option_simple_taproot is "
+                                              + "not negotiated",
+                                                "ChannelTypeTlv: We don't support option_simple_taproot");
 
-        if (parameters.ChannelTypeTlv.Features.IsFeatureSet(Feature.OptionAnchors, true)
-         && parameters.NegotiatedFeatures.OptionAnchors == FeatureSupport.No)
-            throw new ChannelErrorException("Anchor outputs feature is not supported but requested by peer",
-                                            "ChannelTypeTlv: We don't support anchor outputs");
+            if (parameters.ChannelFlags is not null && parameters.ChannelFlags.Value.AnnounceChannel)
+                throw new ChannelErrorException("A simple taproot channel cannot be announced",
+                                                "ChannelTypeTlv: taproot channel type for a public channel");
+        }
+        else
+        {
+            // Check if OptionStaticRemoteKey is Compulsory
+            if (!parameters.ChannelTypeTlv.Features.IsFeatureSet(Feature.OptionStaticRemoteKey, true))
+                throw new ChannelErrorException("Static remote key feature is compulsory but not set by peer",
+                                                "ChannelTypeTlv: Static remote key is compulsory");
+
+            if (parameters.ChannelTypeTlv.Features.IsFeatureSet(Feature.OptionAnchors, true)
+             && parameters.NegotiatedFeatures.OptionAnchors == FeatureSupport.No)
+                throw new ChannelErrorException("Anchor outputs feature is not supported but requested by peer",
+                                                "ChannelTypeTlv: We don't support anchor outputs");
+        }
 
         if (parameters.ChannelTypeTlv.Features.IsFeatureSet(Feature.OptionScidAlias, true))
         {

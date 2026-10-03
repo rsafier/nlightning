@@ -24,6 +24,16 @@ public record struct ChannelSigningInfo
     public bool IsSimpleTaproot { get; init; }
 
     /// <summary>
+    /// True for a channel opened with the dual-funded (v2) open (<c>ChannelModel.Version</c> V2; derived from the
+    /// persisted channel version, no column of its own). Simple taproot channels (taproot wave t02 lane V2): the
+    /// verification nonce of commitment 0 is then bound to the real funding txid like every other number (its nonce goes
+    /// out in <c>tx_complete</c>, after the funding transaction is known, and each RBF attempt has its own commitment 0;
+    /// Eclair 0.14.3 does the same), while a v1-opened channel's commitment-0 nonce uses the context without a txid
+    /// (it is sent in <c>open_channel</c>/<c>accept_channel</c>, before the funding txid exists).
+    /// </summary>
+    public bool IsDualFunded { get; init; }
+
+    /// <summary>
     /// The peer's <c>htlc_basepoint</c>, used to verify the HTLC signatures it sends for our commitments. Null until
     /// the peer's basepoints are known; HTLC signature validation then fails.
     /// </summary>

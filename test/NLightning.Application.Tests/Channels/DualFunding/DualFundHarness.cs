@@ -88,6 +88,10 @@ internal sealed class DualFundHarness : IAsyncDisposable
     /// <summary>When set, messages sent while it returns true are dropped (a link that is down).</summary>
     public bool LinkDown { get; set; }
 
+    /// <summary>When set, every message a node sends goes through it first (sender name, message) and the result is
+    /// queued instead (a peer that sends something else).</summary>
+    public Func<string, IChannelMessage, IChannelMessage>? Rewrite { get; set; }
+
     /// <summary>What the nodes negotiated (<c>option_dual_fund</c> and the defaults, anchors included).</summary>
     public FeatureOptions NegotiatedFeatures { get; set; } = new() { DualFund = FeatureSupport.Optional };
 
@@ -266,6 +270,9 @@ internal sealed class DualFundHarness : IAsyncDisposable
             from.Dropped.Add(message);
             return;
         }
+
+        if (Rewrite is { } rewrite)
+            message = rewrite(from.Name, message);
 
         _links.GetOrAdd((from.Name, Other(from).Name), _ => new ConcurrentQueue<IChannelMessage>()).Enqueue(message);
     }

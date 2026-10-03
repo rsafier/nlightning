@@ -25,12 +25,15 @@ using Taproot;
 /// || funding_txid, msg = sha256(shachain_root))</c>, where <c>shachain_root</c> is the channel's per-commitment seed;
 /// the nonce of local commitment <c>n</c> is <c>NonceGen(rand' = leaf n of that shachain, pk = our funding key of that
 /// funding)</c>, with the leaf index of our per-commitment secrets (<c>2^48-1-n</c>). The funding txid binds every
-/// nonce to one funding (a splice signs one number once per funding, NL-904 item 3). Commitment 0's nonce goes out in
-/// <c>open_channel</c>/<c>accept_channel</c> before any txid exists, so it uses the context without a txid: that is
-/// the formula of LND's <c>channeldb.DeriveMusig2Shachain</c>, which binds no txid.</para>
+/// nonce to one funding (a splice signs one number once per funding, NL-904 item 3). Commitment 0's nonce of a v1 open
+/// goes out in <c>open_channel</c>/<c>accept_channel</c> before any txid exists, so it uses the context without a
+/// txid: that is the formula of LND's <c>channeldb.DeriveMusig2Shachain</c>, which binds no txid. A dual-funded open
+/// (<see cref="ChannelSigningInfo.IsDualFunded"/>) sends commitment 0's nonce in <c>tx_complete</c>, once the funding
+/// transaction is known, so its commitment 0 is bound to the funding txid like every other number (taproot wave t02
+/// lane V2; Eclair 0.14.3 does the same): each RBF attempt of the open has its own commitment 0 on another funding, and
+/// a nonce shared by them would sign two transactions if we ever broadcast on two attempts.</para>
 /// <para>A verification nonce signs only when we broadcast our commitment. Its secret half is re-derived then, and the
-/// signer refuses a second broadcast signature with the same nonce over another session (the commitment-0 nonce is
-/// shared by every funding of a dual-funded open, so only one commitment 0 is ever signed). That record is memory only
+/// signer refuses a second broadcast signature with the same nonce over another session. That record is memory only
 /// (as the S1 mark before it is restored), so after a restart the caller must sign the commitment it persisted.</para>
 /// <para><b>Signing nonces</b> (our partial signature of the peer's commitment, the closer's nonce) are just in time:
 /// fresh randomness, our funding key, the output key and the sighash, used once and never stored. Closee nonces live
@@ -63,9 +66,26 @@ public partial class LocalLightningSigner
             throw new SignerException($"The verification nonce of local commitment {localCommitmentNumber} needs the "
                                     + "funding txid", "Internal error");
 
-        // Before a channel exists only the original funding key (index 0) can be meant
+        // Before a channel exists only the original funding key (index 0) can be meant; a v1 open's commitment 0
         var fundingPubKey = GetFundingPubKey(channelKeyIndex, 0);
-        var pair = DeriveVerificationNonce(channelKeyIndex, NonceContext(fundingTxId, localCommitmentNumber),
+        var pair = DeriveVerificationNonce(channelKeyIndex, NonceContext(false, fundingTxId, localCommitmentNumber),
+                                           localCommitmentNumber, fundingPubKey);
+        pair.SecretNonce.Dispose();
+        return pair.PublicNonce;
+    }
+
+    /// <inheritdoc />
+    public MusigPublicNonce GetInteractiveVerificationNonce(uint channelKeyIndex, TxId fundingTxId,
+                                                            ulong localCommitmentNumber)
+    {
+        ThrowIfNotCommitmentNumber(localCommitmentNumber);
+        if ((byte[])fundingTxId is null)
+            throw new SignerException("The verification nonce of an interactive funding needs its txid",
+                                      "Internal error");
+
+        // The open's original funding key (index 0), commitment 0 bound to the funding txid as every other number
+        var fundingPubKey = GetFundingPubKey(channelKeyIndex, 0);
+        var pair = DeriveVerificationNonce(channelKeyIndex, NonceContext(true, fundingTxId, localCommitmentNumber),
                                            localCommitmentNumber, fundingPubKey);
         pair.SecretNonce.Dispose();
         return pair.PublicNonce;
@@ -80,15 +100,18 @@ public partial class LocalLightningSigner
 
         FundingKeys funding;
         uint channelKeyIndex;
+        bool isDualFunded;
         lock (GetCommitmentLock(channelId))
         {
             var signingInfo = GetRegisteredSigningInfo(channelId);
             ThrowIfNotTaproot(channelId, signingInfo, "derive a MuSig2 verification nonce");
             funding = ResolveTaprootFunding(channelId, signingInfo, fundingTxId, activeOnly: true);
             channelKeyIndex = signingInfo.ChannelKeyIndex;
+            isDualFunded = signingInfo.IsDualFunded;
         }
 
-        var pair = DeriveVerificationNonce(channelKeyIndex, NonceContext(funding.TxId, localCommitmentNumber),
+        var pair = DeriveVerificationNonce(channelKeyIndex,
+                                           NonceContext(isDualFunded, funding.TxId, localCommitmentNumber),
                                            localCommitmentNumber, funding.LocalPubKey);
         pair.SecretNonce.Dispose();
         return pair.PublicNonce;
@@ -134,18 +157,21 @@ public partial class LocalLightningSigner
 
         FundingKeys funding;
         uint channelKeyIndex;
+        bool isDualFunded;
         lock (GetCommitmentLock(channelId))
         {
             var signingInfo = GetRegisteredSigningInfo(channelId);
             ThrowIfNotTaproot(channelId, signingInfo, "check a MuSig2 commitment signature");
             funding = ResolveTaprootFunding(channelId, signingInfo, fundingTxId, activeOnly: false);
             channelKeyIndex = signingInfo.ChannelKeyIndex;
+            isDualFunded = signingInfo.IsDualFunded;
         }
 
         var tx = LoadTransaction(channelId, unsignedCommitment, "commitment");
         ThrowIfNotSpendingFunding(channelId, tx, funding);
 
-        var pair = DeriveVerificationNonce(channelKeyIndex, NonceContext(funding.TxId, localCommitmentNumber),
+        var pair = DeriveVerificationNonce(channelKeyIndex,
+                                           NonceContext(isDualFunded, funding.TxId, localCommitmentNumber),
                                            localCommitmentNumber, funding.LocalPubKey);
         pair.SecretNonce.Dispose();
 
@@ -176,7 +202,7 @@ public partial class LocalLightningSigner
             ThrowIfNotSpendingFunding(channelId, tx, funding);
             ThrowIfCannotSignForBroadcast(channelId, commitmentNumber);
 
-            var context = NonceContext(funding.TxId, commitmentNumber);
+            var context = NonceContext(signingInfo.IsDualFunded, funding.TxId, commitmentNumber);
             var (aggregate, sigHash) = GetFundingSession(funding, unsignedCommitment);
             var ourNonce = DeriveVerificationNonce(signingInfo.ChannelKeyIndex, context, commitmentNumber,
                                                    funding.LocalPubKey);
@@ -349,11 +375,13 @@ public partial class LocalLightningSigner
     #region Helpers
 
     /// <summary>
-    /// The channel's MuSig2 shachain context: the funding txid, except for commitment 0, whose nonce is sent before any
-    /// funding txid exists.
+    /// The channel's MuSig2 shachain context: the funding txid, except for commitment 0 of a v1-opened channel, whose
+    /// nonce is sent in <c>open_channel</c>/<c>accept_channel</c> before any funding txid exists. A dual-funded
+    /// (<paramref name="isDualFunded"/>) channel's commitment 0 is bound to its funding txid (each RBF attempt has its
+    /// own commitment 0).
     /// </summary>
-    private static TxId? NonceContext(TxId? fundingTxId, ulong commitmentNumber) =>
-        commitmentNumber == 0 ? null : fundingTxId;
+    private static TxId? NonceContext(bool isDualFunded, TxId? fundingTxId, ulong commitmentNumber) =>
+        commitmentNumber == 0 && !isDualFunded ? null : fundingTxId;
 
     /// <summary>
     /// The verification nonce pair of local commitment <paramref name="commitmentNumber"/> in

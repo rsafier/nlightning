@@ -157,6 +157,7 @@ public class ChannelSigningInfoDbRepository : IChannelSigningInfoDbRepository
             ShortChannelId = channel.ShortChannelId,
             AnnounceChannel = channel.Config?.AnnounceChannel ?? false,
             IsSimpleTaproot = channel.Config?.OptionSimpleTaproot ?? false,
+            IsDualFunded = channel.Version == (byte)ChannelVersion.V2,
             LocalFundingKeyIndex = current?.LocalFundingKeyIndex ?? 0,
             Fundings = others.Count == 0 ? null : others,
             PersistedSpliceCommitments = persisted.Count == 0 ? null : persisted

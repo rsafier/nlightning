@@ -593,7 +593,8 @@ public class ChannelModel
             ShortChannelId = ((byte[]?)ShortChannelId)?.Length > 0 ? ShortChannelId : (ShortChannelId?)null,
             AnnounceChannel = AnnounceChannel,
             LocalFundingKeyIndex = LocalFundingKeyIndex,
-            IsSimpleTaproot = ChannelParams.OptionSimpleTaproot
+            IsSimpleTaproot = ChannelParams.OptionSimpleTaproot,
+            IsDualFunded = Version == ChannelVersion.V2
         };
     }
 }

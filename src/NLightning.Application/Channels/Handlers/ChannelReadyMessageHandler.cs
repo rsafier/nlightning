@@ -102,7 +102,8 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
         {
             if (channel.Commitments is null)
                 firstSnapshot = TryCreateFirstSnapshot(channel, channel.RemoteKeySet.CurrentPerCommitmentCompactPoint,
-                                                       payload.SecondPerCommitmentPoint);
+                                                       payload.SecondPerCommitmentPoint,
+                                                       GetRemoteNextNonce(channel, message));
 
             channel.RemoteKeySet.UpdatePerCommitmentPoint(payload.SecondPerCommitmentPoint);
         }
@@ -195,12 +196,14 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
     /// inconsistent: the channel then works as before, without HTLCs.
     /// </summary>
     private ChannelCommitments? TryCreateFirstSnapshot(ChannelModel channel, CompactPubKey remoteCurrentPoint,
-                                                       CompactPubKey remoteNextPoint)
+                                                       CompactPubKey remoteNextPoint,
+                                                       MusigPublicNonce? remoteNextNonce = null)
     {
         try
         {
             return ChannelStateTransitionService.CreateInitialCommitments(channel, remoteCurrentPoint,
-                                                                          remoteNextPoint, _maxDustHtlcExposureMsat);
+                                                                          remoteNextPoint, _maxDustHtlcExposureMsat,
+                                                                          remoteNextNonce);
         }
         catch (Exception e) when (e is ArgumentException or InvalidOperationException or OverflowException)
         {
@@ -208,6 +211,24 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
                              channel.ChannelId);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Simple taproot channels: the peer's verification nonce of its commitment 1 for the first commitment state, its
+    /// <c>channel_ready</c> <c>next_local_nonce</c>, else (a dual-funded open, taproot wave t02 lane V2) the next commit
+    /// nonce of its last <c>tx_complete</c> on this funding (BOLTs PR #1324). Null for any other channel type.
+    /// </summary>
+    private MusigPublicNonce? GetRemoteNextNonce(ChannelModel channel, ChannelReadyMessage message)
+    {
+        if (!channel.ChannelParams.OptionSimpleTaproot)
+            return null;
+
+        if (message.NextLocalNonceTlv is { } nonceTlv)
+            return nonceTlv.Nonce;
+
+        return channel.FundingOutput?.TransactionId is { } fundingTxId
+                   ? _dualFundedOpenService?.GetRemoteNextCommitNonce(channel.ChannelId, fundingTxId)
+                   : null;
     }
 
     /// <summary>
