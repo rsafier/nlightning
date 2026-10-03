@@ -144,14 +144,15 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 59 | 60 |
-| in-progress | 0 | 0 | 0 | 0 | 0 |
+| in-progress | 0 | 0 | 1 | 0 | 1 |
 | fixed | 14 | 62 | 198 | 398 | 672 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **62** | **206** | **468** | **750** |
+| **Total** | **14** | **62** | **207** | **468** | **751** |
 
 ### Epics
 
+- NL-875: Trampoline routing (BOLTs PR #836): client, relay and target (in-progress, medium; plan `docs/agents/TRAMPOLINE_PLAN.md`, waves tr1-tr3 on `wip/tram`, a draft PR stacked on `wip/fafo`)
 - NL-850: Liquidity ads (BOLT PR #1153) (fixed, medium; plan `docs/agents/LIQUIDITY_ADS_PLAN.md`, LA0-LA7 done on `claude/youthful-hamilton-x4ngo7` at `10b8ba84`: both roles in the dual-funded open, its RBF, the splice and the splice RBF with restarts, `LiquidityPurchases`, the lease guard, `LiquidityFeePaid`/`LiquidityFeeEarned`, `liquidityads` (IPC 46); proven in-process in both roles and against Eclair 0.14.3 as seller (`EclairLiquidityAdsTests` 5/5; Eclair sells only in splices); open follow-ups NL-851..NL-859; integration review fixes NL-870, NL-871)
 - NL-602: Accounting: core event feed and built-in books (fixed, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A3 all built on `wip/acct-a3`: A1 feed, A2 operational books, A3 financial profile (labels, classification, prices, projector and lots, period close, financial reports, config/security/docs; merge `c62d861b`, review fixes `94af679d`, `ecd983b1`); data gaps NL-603..NL-605 and the plugin stub NL-151 done; open follow-ups NL-606..NL-608, NL-610..NL-613, NL-645, NL-657, NL-658, NL-662, NL-674..NL-681 (NL-660, NL-665, NL-667 fixed on `wip/nl660`), flakes NL-620, NL-653)
 - NL-569: Tor: onion peers, our onion service, Tor-only mode (fixed, medium; lane tor, branch `wip/tor`: `Node:Tor` Off/Hybrid/TorOnly, SOCKS5 with isolation, control port with SAFECOOKIE, persisted v3 onion service announced in `node_announcement`, NL-542 and NL-178 fixed; `docs/agents/TOR.md`; follow-ups NL-571..NL-573; review fixes NL-575..NL-590)
@@ -2585,6 +2586,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Route the malformed drop through one onion-message metrics port that Infrastructure can call, or document the split.
 - **Blocks/Blocked-by:** Follow-up of NL-444
 - **Plan ref:** `BOLT12_PLAN.md` OM0-T1
+
+### NL-875 [EPIC] Trampoline routing (BOLTs PR #836): pay through a trampoline, relay as one, receive as the final trampoline
+- **Status:** in-progress (`wip/tram`)
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** new Domain onion TLVs 14/20/21/22, failure codes 0x2019/0x201A/0x401B, `Feature.OptionTrampolineRouting` (56/57); `Infrastructure.Bitcoin/Onion/Trampoline/`; `Application/Payments/Trampoline/`, `IncomingOnionProcessor`, `HtlcSwitch`, `PaymentService`; tables `TrampolineRelays`, `TrampolineRelayParts`, `PaymentTrampolineHops` (migration `AddTrampolineRelays`); `HtlcOriginKind.Trampoline = 3`
+- **Evidence:** Owner request 2026-10-03: trampoline support as client and as target (relay included, since advertising the bit promises it). Nothing exists: TLV 20 is refused as an unknown even type, and a forward circuit is 1:1 while a relay is N incoming HTLCs to one outgoing payment. Spec state: PR #836 open, head `8f5f37a8` (2026-08-28). LDK main speaks the spec values; Eclair/Phoenix/Electrum still use the prototype (148/149, TLVs 66097-66102), and Eclair's move is draft PR #2819.
+- **Fix sketch:** Plan `docs/agents/TRAMPOLINE_PLAN.md`: TR0 contracts, TR1 trampoline onion crypto with the three spec vector files byte-exact, TR2 target, TR3 relay engine (payment-backed, origin 3), TR4 client (`Node:Payments:Trampoline`, `--trampoline`), TR5 in-process multi-node proofs (no Docker, owner decision 2026-10-03). Spec format only (D-TR1); experimental until TR5 and an owner decision. Follow-ups: interop proofs against Eclair (after #2819) and LDK.
+- **Blocks/Blocked-by:** Related NL-080 (onion messages), NL-447 (BOLT 12), NL-459 (keysend pattern)
+- **Plan ref:** TRAMPOLINE_PLAN TR0-TR5
 
 ## BOLT 5: On-chain handling
 
