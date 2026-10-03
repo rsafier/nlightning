@@ -147,16 +147,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 57 | 58 |
+| open | 0 | 0 | 1 | 62 | 63 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
 | fixed | 14 | 63 | 201 | 411 | 689 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **210** | **479** | **766** |
+| **Total** | **14** | **63** | **210** | **484** | **771** |
 
 ### Epics
 
-- NL-875: Trampoline routing (BOLTs PR #836): client, relay and target (in-progress, medium; plan `docs/agents/TRAMPOLINE_PLAN.md`, waves tr1-tr3 on `wip/fafo`)
+- NL-875: Trampoline routing (BOLTs PR #836): client, relay and target (in-progress, medium; plan `docs/agents/TRAMPOLINE_PLAN.md`, TR0-TR5 built on `wip/fafo` 2026-10-03, merges `7f5c5d85` TR0, `e958b8eb` TR1, `9f0d1050` TR3-P, `165acd77` TR2, `fb2b07ca` TR5 phase 1, `1c09e718` TR4, `dd48b26d` TR3, `c1811bbf` TR5 phase 2; experimental until an owner decision; follow-ups NL-895..NL-899)
 - NL-850: Liquidity ads (BOLT PR #1153) (fixed, medium; plan `docs/agents/LIQUIDITY_ADS_PLAN.md`, LA0-LA7 done on `claude/youthful-hamilton-x4ngo7` at `10b8ba84`: both roles in the dual-funded open, its RBF, the splice and the splice RBF with restarts, `LiquidityPurchases`, the lease guard, `LiquidityFeePaid`/`LiquidityFeeEarned`, `liquidityads` (IPC 46); proven in-process in both roles and against Eclair 0.14.3 as seller (`EclairLiquidityAdsTests` 5/5; Eclair sells only in splices); open follow-ups NL-851..NL-859; integration review fixes NL-870, NL-871)
 - NL-602: Accounting: core event feed and built-in books (fixed, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A3 all built on `wip/acct-a3`: A1 feed, A2 operational books, A3 financial profile (labels, classification, prices, projector and lots, period close, financial reports, config/security/docs; merge `c62d861b`, review fixes `94af679d`, `ecd983b1`); data gaps NL-603..NL-605 and the plugin stub NL-151 done; open follow-ups NL-606..NL-608, NL-610..NL-613, NL-645, NL-657, NL-658, NL-662, NL-674..NL-681 (NL-660, NL-665, NL-667 fixed on `wip/nl660`), flakes NL-620, NL-653)
 - NL-569: Tor: onion peers, our onion service, Tor-only mode (fixed, medium; lane tor, branch `wip/tor`: `Node:Tor` Off/Hybrid/TorOnly, SOCKS5 with isolation, control port with SAFECOOKIE, persisted v3 onion service announced in `node_announcement`, NL-542 and NL-178 fixed; `docs/agents/TOR.md`; follow-ups NL-571..NL-573; review fixes NL-575..NL-590)
@@ -2597,9 +2597,60 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Kind:** gap
 - **Location:** new Domain onion TLVs 14/20/21/22, failure codes 0x2019/0x201A/0x401B, `Feature.OptionTrampolineRouting` (56/57); `Infrastructure.Bitcoin/Onion/Trampoline/`; `Application/Payments/Trampoline/`, `IncomingOnionProcessor`, `HtlcSwitch`, `PaymentService`; tables `TrampolineRelays`, `TrampolineRelayParts`, `PaymentTrampolineHops` (migration `AddTrampolineRelays`); `HtlcOriginKind.Trampoline = 3`
 - **Evidence:** Owner request 2026-10-03: trampoline support as client and as target (relay included, since advertising the bit promises it). Nothing exists: TLV 20 is refused as an unknown even type, and a forward circuit is 1:1 while a relay is N incoming HTLCs to one outgoing payment. Spec state: PR #836 open, head `8f5f37a8` (2026-08-28). LDK main speaks the spec values; Eclair/Phoenix/Electrum still use the prototype (148/149, TLVs 66097-66102), and Eclair's move is draft PR #2819.
+- **Built (2026-10-03, `wip/fafo`):** TR0 contracts (`7f5c5d85`), TR1 crypto with the three PR 836 vector files byte-exact (`e958b8eb`), TR3-P relay persistence/origin 3/accounting (`9f0d1050`, migration `AddTrampolineRelays`), TR2 target (`165acd77`), TR4 payer + leg sender + `--trampoline` IPC key 9 (`1c09e718`), TR3 relay engine + `Node:Trampoline` + relays in `listforwards` (`dd48b26d`), `UnknownNextNode` leg kind (`8b671e69`), TR5 in-process proofs: target (`fb2b07ca`) and 13 relay end-to-end scenarios with the real engine, leg sender and payer (`c1811bbf`, which also fixed two cross-lane bugs: the leg's budget now gets the whole fee difference and the first hop the plain forwarding delta (D-TR6 amended); a last trampoline layer naming `recipient_blinded_paths` is a relay). Status stays in-progress until the owner decides to take `OptionTrampolineRouting` out of `ExperimentalFeatures`. Follow-ups: NL-895 (blinded hops as trampoline hops, scenario 10b), NL-896 (interop proofs), NL-897 (outer-only failures from the deadline monitor and dust switch), NL-898 (attribution on trampoline failures), NL-899 (listing/observability gaps).
 - **Fix sketch:** Plan `docs/agents/TRAMPOLINE_PLAN.md`: TR0 contracts, TR1 trampoline onion crypto with the three spec vector files byte-exact, TR2 target, TR3 relay engine (payment-backed, origin 3), TR4 client (`Node:Payments:Trampoline`, `--trampoline`), TR5 in-process multi-node proofs (no Docker, owner decision 2026-10-03). Spec format only (D-TR1); experimental until TR5 and an owner decision. Follow-ups: interop proofs against Eclair (after #2819) and LDK.
 - **Blocks/Blocked-by:** Related NL-080 (onion messages), NL-447 (BOLT 12), NL-459 (keysend pattern)
 - **Plan ref:** TRAMPOLINE_PLAN TR0-TR5
+
+### NL-895 Blinded hops as trampoline hops (BOLT 12 recipient with bit 57) do not relay
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Trampoline/TrampolineRelayService.cs`, `Payments/Onion/IncomingOnionProcessor.cs` (blinded trampoline relay data), `Payments/Send/PaymentService.Trampoline*.cs`
+- **Evidence:** TR5 phase 2 scenario 10(b) (2026-10-03): C's `BlindedPathBuilder` path names the X–C hop by `short_channel_id`, which the relay engine does not resolve to a node ("lacks its relay instructions"); with it resolved by hand, X applies its own `Node:Trampoline` fee/delta although the recipient fixed that hop's price in the path's `payment_relay`, so X refuses with NODE|26. TR-R-07/TR-R-10.
+- **Fix sketch:** resolve `short_channel_id` in blinded trampoline recipient data to the channel peer; use the path's `payment_relay`/constraints (not `Node:Trampoline`) as a blinded hop's policy; prove 10(b) in `TrampolineRelayE2ETests` (X running the relay engine).
+- **Blocks/Blocked-by:** Follow-up of NL-875
+- **Plan ref:** TRAMPOLINE_PLAN TR5 scenario 10(b)
+
+### NL-896 Trampoline interop proofs against Eclair and LDK
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Nodes/{Eclair,Ldk}`, `test/Docker/eclair/Dockerfile` (pinned 0.14.3)
+- **Evidence:** NL-875 is proven by the PR 836 vectors and in-process NLightning-only tests (owner decision 2026-10-03). Eclair 0.14.3 speaks only the prototype (148/149, TLVs 66097-66102); its move to the spec values is draft ACINQ/eclair#2819. LDK main speaks 56/57 (receive; send to blinded recipients only).
+- **Fix sketch:** once #2819 ships, bump the pinned Eclair image and prove pay-through and relay both ways on the cluster; prove LDK receiving through our relay when its ldk-server exposes trampoline.
+- **Blocks/Blocked-by:** Follow-up of NL-875; blocks taking trampoline out of experimental (owner call)
+- **Plan ref:** TRAMPOLINE_PLAN §7
+
+### NL-897 Trampoline parts failed by the deadline monitor or the dust switch use the outer secret only
+- **Status:** open
+- **Severity:** low
+- **Kind:** spec
+- **Location:** `src/NLightning.Application/Channels/Safety/HtlcExpiryMonitor.cs` (`FailBackAsync`), `Channels/Fees/DustExposureHtlcSwitch.cs`
+- **Evidence:** TR2/TR3 reports (2026-10-03): the switch and the relay engine double-wrap (trampoline then outer secret) every failure of a trampoline part, but the two failure paths outside them create the error with the outer secret only. The payer still decrypts it (outer layer, TR-R-15) but cannot attribute it to the trampoline layer.
+- **Fix sketch:** have both paths rebuild the trampoline keys (re-peel the stored onion as `HtlcSwitch` does) and use `TrampolineErrorPackets.CreateAttributed`.
+- **Blocks/Blocked-by:** Follow-up of NL-875
+- **Plan ref:** TRAMPOLINE_PLAN TR-R-14
+
+### NL-898 The payer does not verify attribution_data on trampoline failures
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.Trampoline*.cs`
+- **Evidence:** TR4 report (2026-10-03): failures through a trampoline are decrypted with `DecryptTrampolineErrorPacket`, but the outer-layer `attribution_data` (which the relay and target create, TR2's `TrampolineErrorPackets.CreateAttributed`/`WrapAttributed`) is not verified as it is for ordinary payments (NL-326). PR 836 says nothing about attribution on the trampoline layer (TR1 finding).
+- **Fix sketch:** verify the outer layer's attribution over the outer route's hold times when `OptionAttributionData` is advertised.
+- **Blocks/Blocked-by:** Follow-up of NL-875; related NL-326
+- **Plan ref:** TRAMPOLINE_PLAN R2
+
+### NL-899 Trampoline observability gaps: `listpayments`/`getroute`, failed relay history
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `Daemon/Handlers/ListPaymentsClientHandler.cs`, `GetRouteClientHandler`, `ITrampolineRelayDbRepository.RemoveFailedAsync`
+- **Evidence:** TR3/TR4 reports (2026-10-03): `getroute` and `listpayments` know nothing of trampolines (a payer's inner route is in `PaymentTrampolineHops` only; a relay's outgoing leg shows in `listpayments` as a row with `IsTrampolineRelay` but no marker); a payer's retry of the same hash deletes the failed relay row and its parts, so `listforwards` loses that history; the channels report credits a relay's income to its first incoming channel only.
+- **Fix sketch:** show the trampoline node/inner route in `listpayments`, hide or mark relay legs, keep failed relay attempts (attempt column or history table), split relay income per incoming part.
+- **Blocks/Blocked-by:** Follow-up of NL-875
+- **Plan ref:** TRAMPOLINE_PLAN TR3/TR4
 
 ## BOLT 5: On-chain handling
 

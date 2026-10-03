@@ -1,6 +1,6 @@
 # Trampoline Routing: Implementation Plan for NLightning
 
-**Status (2026-10-03, `wip/fafo` @ `6188986`):** the plan is written and wave tr1 has started. Lanes TR0, TR1 and TR3-P run in parallel worktrees.
+**Status (2026-10-03, `wip/fafo` @ `c1811bbf`):** TR0-TR5 built and merged (record in §10). Client, relay and target work end to end in-process (13 relay scenarios plus the target proofs); `Feature.OptionTrampolineRouting` stays in `ExperimentalFeatures` until an owner decision. Open follow-ups NL-895..NL-899.
 
 **Spec source:** lightning/bolts PR #836, "Trampoline onion format (Feature 56/57)".
 - Author t-bast, branch `trampoline-onion`, head `8f5f37a8`, last rebased 2026-08-28, open.
@@ -296,3 +296,22 @@ No new `ClientCommand` is needed. New request and response keys go on `payinvoic
 - **R3:** a relay holds N incoming HTLCs while it routes, which costs liquidity and invites griefing. Mitigations: `MaxRelaysInFlight`, the MPP timeout, CLTV margins, the experimental gate.
 - **R4:** the onion size can leak privacy (D-TR3).
 - **R5:** no proof against another implementation in this pass; the spec vectors are the interop evidence.
+
+## 10. Wave record (2026-10-03)
+Lanes ran in parallel worktrees, were merged with `--no-ff` into `wip/fafo` and pushed after the fast gates (Release build 0 warnings, `dotnet format` clean, non-Docker net10.0 suites green; no Docker, owner decision).
+
+| Lane | Merge | What |
+|---|---|---|
+| TR0 contracts | `7f5c5d85` | bit 56/57 (experimental), TLVs 14/20/21/22 (`PaymentBlindedPathCodec`, `BlindedPayInfoCodec` shared with BOLT 12), failure codes 0x2019/0x201A/0x401B, `HopPayloadValidator` opt-in, `TrampolinePayloadValidator` |
+| TR1 crypto | `e958b8eb` | `ITrampolineOnionService` (Auto pads to 650), `ITrampolineFailureOnionService`; all stages of the three PR 836 vector files byte-exact; attribution stays on the outer layer (the PR is silent) |
+| TR3-P persistence | `9f0d1050` | `HtlcOriginKind.Trampoline = 3`, `TrampolineRelays`/`TrampolineRelayParts`/`PaymentTrampolineHops`/`Payments.IsTrampolineRelay` (migration `AddTrampolineRelays`), origin-3 consumers, `TrampolineRelaySettled` (accounting kind 7) |
+| TR2 target | `165acd77` | `IncomingOnionTrampolineFinal`/`Relay`/`Failed`, final receive against the inner total, `ITrampolineRelayIngress`, `TrampolineErrorPackets`, bit 57 in BOLT 11/12 invoices |
+| TR5 phase 1 | `fb2b07ca` | four-node harness `Payments/Trampoline/Harness/` (A→T→X→C, restartable SQLite), target proofs |
+| TR4 payer + leg | `1c09e718` | `PayInvoiceOptions.TrampolineNode`, `Node:Payments:Trampoline` (`Never`/`Auto`/`Always`), NODE\|26 cache and retry, `PaymentService : ITrampolineLegSender`, IPC key 9 on `payinvoice`/`payoffer` |
+| TR3 relay engine | `dd48b26d` | `TrampolineRelayService`, `Node:Trampoline` (1000 msat + 1000 ppm, delta 576, 32 in flight, `LegTimeout` 60 s, margin 48), watchdog, `RemoveFailedAsync` for payer retries, relays in `listforwards` (response key 2) |
+| merge fix | `8b671e69` | `TrampolineLegFailureKind.UnknownNextNode`: only an unknown next node gets `unknown_next_trampoline`; no route within budget is `temporary_trampoline_failure` |
+| TR5 phase 2 | `c1811bbf` | 13 relay end-to-end scenarios (single/MPP both legs, NODE\|26 retry, C's error at the trampoline layer, restarts while Collecting and Sending, CLTV/in-flight/MPP-timeout refusals, unknown vs unreachable next node, Auto mode, recipient_blinded_paths); fixed: the leg gets the whole fee difference and the first hop the plain forwarding delta (D-TR6 amended, as Eclair: the relay may earn less than its advertised fee), and a last layer naming `recipient_blinded_paths` is a relay |
+
+**D-TR6 amended:** the relay's policy check is unchanged (the payer must offer at least our fee and delta), but the leg's routing budget is the whole difference (incoming sum − amount out) and its first HTLC may expire at the lowest incoming expiry minus `Node:Routing:CltvExpiryDelta` (capped by the trampoline delta). Our earned fee is what routing leaves.
+
+**Not done:** scenario 10(b), blinded hops as trampoline hops (NL-895); interop proofs (NL-896); outer-only failures from the deadline monitor and dust switch (NL-897); attribution verification on trampoline failures (NL-898); listing gaps (NL-899). Owner decision pending: take `OptionTrampolineRouting` out of `ExperimentalFeatures`.
