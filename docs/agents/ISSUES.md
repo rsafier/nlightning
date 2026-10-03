@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-03 by the taproot wave t01 integrator (branch `wip/taproot-int` from `origin/wip/taproot-plan` at `ee682a23`, merged into `wip/fafo`): NL-897 fixed (cluster proof `tap-mx1`; CLN v26.06.8 does not signal simple close), NL-903 (low, fixed in 075a7920 and f0ca4a5c: review fixes) and NL-904 (medium, open: T3/T4 obligations from the review) new; NL-895 and NL-898 updated. Summary: open 64, fixed 691, total 775.
+
 Updated 2026-10-03 by the batch12 integrator (branch `wip/batch12` from `wip/fafo` at `fedb876b`; lanes b12-splice-htlc, b12-ux, b12-reconcile-drift, b12-reestablish-deadline and b12-trimmed-loss merged with `--no-ff`): NL-880 (high) and NL-881 (medium) fixed in d2d2a7e5, NL-882..NL-885 (low) in 730ff053, NL-886/NL-887 (low) in 24d3dc4c, NL-760 and NL-796 fixed, NL-890 (low flake, open); review fixes NL-891 (medium), NL-892 (medium), NL-893 and NL-894 (low), all fixed. NL-888 and NL-889 are unused. NL-776 (lane b12-anysegwit, cfafd698) fixed.
 
 Updated 2026-10-03 by the Docker retirement lane (branch `wip/retire-docker` from 61889866, owner decision 2026-10-03: every suite but Tor on the cluster harness only): NL-866 (low, fixed in cea4bc4f: the CLN, Eclair, LDK and Postgres fixtures lost their Docker backends; Tor stays on Docker). Summary rows recounted from the entries: 749 entries, no duplicate IDs.
@@ -147,12 +149,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 62 | 64 |
+| open | 0 | 0 | 3 | 61 | 64 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 63 | 201 | 411 | 689 |
+| fixed | 14 | 63 | 201 | 413 | 691 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **211** | **485** | **773** |
+| **Total** | **14** | **63** | **212** | **486** | **775** |
 
 ### Epics
 
@@ -1783,12 +1785,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `docs/agents/SPLICING_PLAN.md` (IT-R-04)
 
 ### NL-897 `option_simple_close` on by default: cluster proof of the changed close flows pending
-- **Status:** open
+- **Status:** fixed (a2e7d6bc; cluster proof `tap-mx1` on 78907b32)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `src/NLightning.Domain/Node/Options/FeatureOptions.cs` (`OptionSimpleClose` Optional, D-T1); `test/NLightning.Integration.Tests/Docker/{CooperativeCloseFlowTests,CloseRestartFlowTests,Day0/Day0FlowTests}.cs`, `Docker/Interop/Eclair/{EclairInteropTests,EclairCloseTests}.cs`, `Docker/Interop/Cln/{ClnCloseTests,ClnCloseRestartTests,ClnDualFundTests}.cs`
 - **Evidence:** Wave t01 lane SC (`a2e7d6bc`): the close flow is chosen per peer from the negotiated features (simple close with Eclair 0.14.3, LND with `--protocol.rbf-coop-close` and NLightning; legacy `closing_signed` with default LND and LDK). The legacy Docker proofs now pin `OptionSimpleClose = No` (CooperativeCloseFlowTests legacy theories, CloseRestartFlowTests, the EclairInteropTests closes, ClnCloseTests, ClnCloseRestartTests through `ClnChannelSession.PinLegacyClose`), and `Day0FlowTests` step 8 now proves a simple close between two default nodes. None of these ran: they need the cluster. Open question: whether CLN v26.06.8 signals simple close (`test/CLAUDE.md` says no); `ClnDualFundTests`' cooperative close changes if it does.
-- **Fix sketch:** `scripts/run-cluster.sh --matrix cln,eclair,lnd,day0` on the owner's machine; fix what fails.
+- **Fix:** Proven on the cluster (`scripts/run-cluster.sh --matrix cln,eclair,lnd,day0,abcd --id tap-mx1` on the T0+SC tree 78907b32, 2026-10-03): lnd 58/58, cln 90 passed + 1 rerun-green (`ClnPeerStorageTests`, rerun alone green) + 4 `Explicit` not run, eclair 25/25 + 2 `Explicit`, day0 6/6 (incl. `Day0FlowTests` step 8, the simple close between two default nodes), abcd 11/11; T1 added no channel wiring, so the proof stands for the t01 tree. CLN v26.06.8 does not signal simple close: its `getinfo` `our_features.init` has bits 0, 5, 7, 8, 11, 12, 14, 17, 19, 23, 25, 27, 35, 39, 43, 44, 47, 51, 63 (no 60/61) and its log of the whole `cln` suite shows only `WIRE_CLOSING_SIGNED`, so every close with CLN (`ClnDualFundTests`' included) stays legacy; `test/CLAUDE.md` corrected.
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** TAPROOT_CHANNELS_PLAN D-T1
 
@@ -1797,7 +1799,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** low
 - **Kind:** spec-violation
 - **Location:** upstream `lightning/bolts` `bolt-simple-taproot.md`; our record in `test/NLightning.Infrastructure.Bitcoin.Tests/Taproot/Vectors/README.md`
-- **Evidence:** Wave t01 (lanes T0, T1): (1) §To Remote Outputs names a second NUMS point `0245b181...` and a control block with `combined_funding_key`, while the vectors use `02dca094...` as the internal key of to_local and to_remote; (2) `scripts.funding.combined_key` is the BIP 86-tweaked output key, not the untweaked aggregate the text calls `combined_funding_key`; (3) the `scripts.accepted_htlc_*` vectors swap the local and remote HTLC keys relative to their names (the transaction vectors use the spec's roles, as does our code); (4) the `*_local_commit` and `*_remote_commit` script entries are identical. We follow the vectors and the transaction cases.
+- **Evidence:** Wave t01 (lanes T0, T1): (1) §To Remote Outputs names a second NUMS point `0245b181...` and a control block with `combined_funding_key`, while the vectors use `02dca094...` as the internal key of to_local and to_remote; (2) `scripts.funding.combined_key` is the BIP 86-tweaked output key, not the untweaked aggregate the text calls `combined_funding_key`; (3) the `scripts.accepted_htlc_*` vectors swap the local and remote HTLC keys relative to their names (the transaction vectors use the spec's roles, as does our code); (4) the `*_local_commit` and `*_remote_commit` script entries are identical. We follow the vectors and the transaction cases. The t01 integration review checked each against LND master (`input/script_utils.go`, `lnwallet/commitment.go`): (1) LND uses `TaprootNUMSKey` 02dca094... for to_remote, so the text is wrong; (2) the vector is LND's BIP 86 `FinalKey`, our `TaprootFundingOutput` tweaks the untweaked aggregate; (3) the script vector is what LND builds for an outgoing HTLC on the remote commitment, the holder's own accepted HTLC uses the spec's roles, as do we and the transaction vectors; (4) a generator artefact (remote-commitment bytes are not covered by the vectors, NL-904). More text errata found then: §To Local calls the delay control block 33 bytes and ends the revoke one with `revoke_script` (a two-leaf control block is 65 bytes and ends with the sibling leaf's hash); the anchor, offered and accepted output-key formulas leave out `*G`; §HTLC Second Level says CLTV for a CSV delay; §SIGHASH_ALL vs SIGHASH_DEFAULT claims one digest (BIP 341 commits to the hash type, so they differ).
 - **Fix sketch:** Report upstream (an issue or PR on lightning/bolts); re-check when the file changes.
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** TAPROOT_CHANNELS_PLAN "Spec errata", wave t01 record
@@ -1812,6 +1814,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** TAPROOT_CHANNELS_PLAN wave t01 hand-off
 
+
+### NL-903 Taproot wave t01 integration review: MuSig2 blame, nonce Clear race, format/anchors contradiction, a dual-fund test flake
+- **Status:** fixed (075a7920, f0ca4a5c)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Crypto/Musig2/Bip327.cs` (`PartialSigAgg`, `NonceAgg`'s `Half`, `NonceGen`/`DeterministicSign`), `src/NLightning.Domain/Crypto/ValueObjects/MusigSecretNonce.cs` (`Clear`), `src/NLightning.Domain/Bitcoin/Transactions/Models/CommitmentTransactionModel.cs` (`HasAnchors`), `test/NLightning.Application.Tests/Channels/DualFunding/DualFundUpfrontShutdownScriptTests.cs`
+- **Evidence:** The t01 integration review (three reviewers: MuSig2 against BIP 327 `reference.py`, scripts/signatures against BIP 340-342, the spec and LND master, transactions/fees against the spec and the legacy/anchors paths): (1) a 31-byte or default partial signature threw `IndexOutOfRangeException` and a default public nonce `NullReferenceException` instead of `MusigInvalidContributionException` blaming that signer (the reference raises `InvalidContributionError`); (2) `MusigSecretNonce.Clear` zeroed the buffer unconditionally, so a `Clear` racing a `Consume` that had won its compare-and-swap could zero `k1` while `Consume` copied it and the signer would sign with a wrong nonce; (3) `CommitmentTransactionModel` accepted `HasAnchors` contradicting `Format` (`HtlcTransactionModel` then threw); (4) the signer's comment said `SIGHASH_ALL` and `SIGHASH_DEFAULT` give one digest. Integration gate: `DualFundUpfrontShutdownScriptTests.Given_AP2TrScriptWithAnySegwit_*` (batch12) failed once in the loaded full run (Alice's `tx_abort` after the test's 1 s open timeout), green 3/3 alone. No legacy or anchors regression was found (byte-identity of every shared path checked; BOLT 3 248/248).
+- **Fix:** (1) length/null checked before the scalar is built, a null nonce half is an invalid contribution; (2) `Clear` zeroes only when it wins the compare-and-swap from live; the `MuSig/aux` hash is zeroed after use; (3) `HasAnchors` follows `Format` when it is set; (4) comment corrected; the dual-fund test uses the harness's default open timeout. Tests (fail without the fix): `Musig2ServiceTests.Given_ADefaultPublicNonce_*`, `Given_ADefaultPartialSignature_*`, `Given_APartialSignatureOfAWrongLength_*`, `MusigValueObjectTests.Given_AConsumedSecretNonce_When_Cleared_Then_ItWritesNothing`, `HtlcTransactionModelFactoryTests.Given_ACommitmentWhoseHasAnchorsContradictsItsFormat_*`; plus `Bip327SignVectorTests.Given_AnAggregateNonceWithOneInfinityHalf_*` (regression vectors from `reference.py`). Rejected: "the pubkey-mismatch throw in `Sign` leaves the secret key scalar uncleared" (it is cleared before the throw).
+- **Blocks/Blocked-by:** Related NL-877, NL-895
+- **Plan ref:** TAPROOT_CHANNELS_PLAN wave t01 integration
+
+### NL-904 Simple taproot T3/T4 obligations found by the t01 review (fees by format, the format switch, nonce binding per funding, HTLC fee inputs)
+- **Status:** open
+- **Severity:** medium
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Domain/Bitcoin/Transactions/Factories/CommitmentFeeCalculator.cs` (the `CommitmentSpec` region: `IsHtlcTrimmed`, `UntrimmedHtlcCount`, `TrimmedHtlcTotalMsat`, `CommitmentBaseFeeSatoshis`, `FunderCostMsat` take only `bool hasAnchors`) and its callers (`UpdateValidator`, `ChannelOpenValidator`, `ChannelFactory`, `DualFundedOpenService`, `HtlcSwitch`, `InvoiceService`, `ChannelCloseCoordinator`, `DustExposurePolicy`, `AnchorCpfpService*`); `ChannelParams.CommitmentFormat` and the ~25 places that branch on `OptionAnchorOutputs`; `Musig2Service.GenerateNonce`; `HtlcTransactionBuilder` (`ThrowIfSimpleTaproot`), `TaprootSignatures`, `LocalLightningSigner` HTLC signing
+- **Evidence:** Latent while `CommitmentFormat` never returns `SimpleTaproot` (wave t01 is library code). (1) The `CommitmentSpec` fee methods would charge a taproot channel the anchors weight (1,124 + 172/HTLC) where its commitment pays 968: funder-cost, reserve, fee-spike and close-fee checks would ask 156 x feerate/1000 sat too much and refuse an exactly affordable add or `update_fee`. (2) A taproot channel type without the anchors bit would take the non-anchors branches (HTLC fees, sequence 0, SIGHASH_ALL peer signatures) unless those places use `format.HasAnchorOutputs()`. (3) `GenerateNonce` takes the caller's randomness and makes a new live object for the same inputs; the spec's counter-derived verification nonces must bind the funding txid (a splice signs one height once per funding) or one nonce signs two messages; an overload that draws its own randomness with `sk` required would remove the footgun for signing nonces; `VerifyPartialSignature` does not tie the public nonce to the session's aggregate (as the reference), so the caller must build the aggregate from the TLV's nonce. (4) Taproot HTLC transactions pay no fee and their output is behind the CSV, so they confirm only with wallet fee inputs, which are refused for taproot (`NotSupportedException`); `SIGHASH_DEFAULT` commits to every input's amount and script, so our signature must come after the fee inputs and the sighash must get every spent output; keep the HTLC input index equal to its output index for the peer's 0x83 signature. (5) No byte-level test of a commitment built from the remote side (the `*_remote_commit` vectors duplicate the local ones): Alice's remote commitment and Bob's local one must have one txid and Alice's HTLC signatures must pass Bob's validation. (6) LND's deployed staging type (bits 180/181) uses other leaves (`OP_CHECKSIG ... OP_CSV OP_DROP` forms) than the final type we build; staging peers would need a second script set. (7) Hardening: verify our own BIP 340 signature after signing (BIP 340's fault-attack advice); a taproot context with `HasAnchors = false` throws `ArgumentException` instead of `SignerException` in `ValidateLocalHtlcSignatures`.
+- **Fix sketch:** T3: carry `CommitmentFormat` through the commitment params and give the `CommitmentSpec` methods format overloads; move the anchors branches to `format.HasAnchorOutputs()` (or keep `OptionAnchorOutputs` true for the taproot type); bind the funding txid into the counter nonce derivation (`extra_in`); the mirrored-commitment test. T4: wallet fee inputs for taproot HTLC transactions. (6) and (7) when the channel type is wired.
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T3, T4
 ## BOLT 3: Transactions and scripts
 
 ### NL-056 HTLC-success / HTLC-timeout second-stage transactions not implemented
@@ -2043,7 +2065,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Plan T0 MuSig2 (BIP 327 vectors) → T1 scripts/txs (spec vectors) → T2 wire TLVs → T3 signer, nonces (counter scheme, never reused across a crash), persistence, reestablish → T4 BOLT 5 resolvers → T5 simple close, dual fund, splicing, backups → T6 cluster proofs against LND 0.21.4 and Eclair 0.14.3; experimental until T6 and an owner decision (D-T1 `option_simple_close` default, D-T2 taproot default).
 - **Blocks/Blocked-by:** Blocks NL-878
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T0-T6
-- **Update (wave t01, 2026-10-03, branch `wip/taproot-plan`):** T0 merged (`795ae14b`): BIP 327 MuSig2 behind `IMusig2Service` (our own module, D-T3; NBitcoin's MuSig2 refused, NL-896), every BIP 327 vector and the spec's signed commitment (partial and aggregated signatures) byte-exact. D-T1 done (lane SC, `a2e7d6bc`): `option_simple_close` Optional by default on every network; cluster re-run pending (NL-897). T1 (scripts and transactions) in progress. T1 merged (`c7da7b8b`): `CommitmentFormat` with the simple taproot weights and 354 sat dust in the one fee calculator, `Infrastructure.Bitcoin/Taproot/` scripts, tapscript trees, outputs, builders and BIP 340 HTLC signatures; every spec script vector, the three signed commitment transactions and the 9 HTLC resolution transactions byte-exact. Library only, not wired. Hand-off and wave t02 (T2 wire, T3 signer/state) in `TAPROOT_CHANNELS_PLAN.md` "Wave t01 hand-off".
+- **Update (wave t01, 2026-10-03, branch `wip/taproot-plan`):** T0 merged (`795ae14b`): BIP 327 MuSig2 behind `IMusig2Service` (our own module, D-T3; NBitcoin's MuSig2 refused, NL-896), every BIP 327 vector and the spec's signed commitment (partial and aggregated signatures) byte-exact. D-T1 done (lane SC, `a2e7d6bc`): `option_simple_close` Optional by default on every network; cluster re-run pending (NL-897). T1 (scripts and transactions) in progress. T1 merged (`c7da7b8b`): `CommitmentFormat` with the simple taproot weights and 354 sat dust in the one fee calculator, `Infrastructure.Bitcoin/Taproot/` scripts, tapscript trees, outputs, builders and BIP 340 HTLC signatures; every spec script vector, the three signed commitment transactions and the 9 HTLC resolution transactions byte-exact. Library only, not wired. Hand-off and wave t02 (T2 wire, T3 signer/state) in `TAPROOT_CHANNELS_PLAN.md` "Wave t01 hand-off". Integrated into `wip/fafo` (2026-10-03): review fixes NL-903, T3/T4 obligations NL-904, NL-897 proven on the cluster.
 
 ---
 
@@ -5790,7 +5812,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Crypto/Musig2/Bip327.cs`
-- **Evidence:** Wave t01 lane T0: the nonce scalars and the secret key are `Scalar` structs copied by value through the BIP 327 steps, and the tagged-SHA256 state that absorbed the randomness or the secret key in `NonceGen`/`DeterministicSign` is not wiped; only the byte buffers and the `Scalar` locals are cleared. Same class of residual as the managed-memory key material notes in `SECURITY_REVIEW.md` (SR-09, NL-437: a .NET limitation).
+- **Evidence:** Wave t01 lane T0: the nonce scalars and the secret key are `Scalar` structs copied by value through the BIP 327 steps, and the tagged-SHA256 state that absorbed the randomness or the secret key in `NonceGen`/`DeterministicSign` is not wiped; only the byte buffers and the `Scalar` locals are cleared (the `MuSig/aux` hash is zeroed since the t01 integration, NL-903; the caller's randomness buffer of `GenerateNonce` is the caller's to zero). Same class of residual as the managed-memory key material notes in `SECURITY_REVIEW.md` (SR-09, NL-437: a .NET limitation).
 - **Fix sketch:** Reset the hash states after use where the API allows it; record the residual in `SECURITY_REVIEW.md` next to SR-09 when T3 wires the signer.
 - **Blocks/Blocked-by:** Related NL-877, NL-437
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T0, T3
