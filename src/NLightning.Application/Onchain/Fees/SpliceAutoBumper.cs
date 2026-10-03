@@ -17,6 +17,7 @@ using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Splicing.Interfaces;
 using Domain.Channels.Splicing.Models;
 using Domain.Channels.ValueObjects;
+using Domain.LiquidityAds.Enums;
 using Domain.Onchain.Enums;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.InteractiveTx;
@@ -294,6 +295,11 @@ public sealed class SpliceAutoBumper : ISpliceAutoBumper
         if (broadcast is not { State: BroadcastState.Pending })
             return null;
 
+        // Liquidity ads (NL-771): a splice we sold liquidity in is the buyer's to bump (its RBF must request the funding
+        // again), so SpliceService refuses our bump [LA-RBF-01]; never try it
+        if (await IsSaleAsync(unitOfWork!, channel.ChannelId, latest.FundingTxId))
+            return null;
+
         uint baseline;
         lock (_gate)
         {
@@ -313,6 +319,25 @@ public sealed class SpliceAutoBumper : ISpliceAutoBumper
             return null;
 
         return (latest, height - baseline);
+    }
+
+    private static async Task<bool> IsSaleAsync(IUnitOfWork unitOfWork, ChannelId channelId, TxId fundingTxId)
+    {
+        try
+        {
+            // A mocked unit of work answers null for the repository
+            var repository = unitOfWork.LiquidityPurchaseDbRepository;
+            if (repository is null)
+                return false;
+
+            var purchase = await repository.GetByFundingTxIdAsync(channelId, fundingTxId);
+            return purchase is { Role: LiquidityPurchaseRole.Seller };
+        }
+        catch (NotSupportedException)
+        {
+            // A unit of work without the purchase table (test doubles): no sale
+            return false;
+        }
     }
 
     /// <summary>

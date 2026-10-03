@@ -21,6 +21,9 @@ using Domain.Channels.Splicing.Interfaces;
 using Domain.Channels.Splicing.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.LiquidityAds.Enums;
+using Domain.LiquidityAds.Interfaces;
+using Domain.LiquidityAds.Models;
 using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
@@ -52,6 +55,7 @@ public class SpliceAutoBumperTests
     private readonly Mock<ISpliceStatePort> _statePort = new();
     private readonly Mock<IFeeService> _feeService = new();
     private readonly Mock<IBroadcastTransactionDbRepository> _broadcasts = new();
+    private readonly Mock<ILiquidityPurchaseDbRepository> _purchases = new();
     private readonly List<SpliceBumpRequest> _bumps = [];
     private readonly Dictionary<TxId, BroadcastTransactionModel> _rows = [];
     private readonly ChannelModel _channel;
@@ -84,6 +88,27 @@ public class SpliceAutoBumperTests
                    .ReturnsAsync(LightningMoney.Satoshis(1_000));
         _broadcasts.Setup(b => b.GetByTransactionIdAsync(It.IsAny<TxId>()))
                    .ReturnsAsync((TxId txId) => _rows.GetValueOrDefault(txId));
+    }
+
+    [Fact]
+    public async Task Given_ASpliceWeSoldLiquidityIn_When_ItWaitedLong_Then_ItIsNotBumped()
+    {
+        // Arrange: liquidity ads (NL-771): the buyer bumps a sale, our bump would be refused [LA-RBF-01]
+        var sale = new LiquidityPurchaseModel(s_channelId, s_spliceTxId, LiquidityPurchaseRole.Seller,
+                                              LiquidityPurchaseKind.Splice, 50_000, 50_000,
+                                              new FundingRate(10_000, 100_000, 500, 100, 1_000, 0),
+                                              LiquidityPaymentType.FromChannelBalance, 1_250, 1_500,
+                                              new CompactSignature(new byte[64]), [0x00, 0x20], s_key, 4_032,
+                                              DateTimeOffset.UnixEpoch);
+        _purchases.Setup(p => p.GetByFundingTxIdAsync(s_channelId, s_spliceTxId)).ReturnsAsync(sale);
+        var bumper = CreateBumper();
+
+        // Act
+        var results = await bumper.BumpStaleSplicesAsync(BroadcastHeight + 10, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(results);
+        Assert.Empty(_bumps);
     }
 
     [Fact]
@@ -506,6 +531,7 @@ public class SpliceAutoBumperTests
     {
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.BroadcastTransactionDbRepository).Returns(_broadcasts.Object);
+        unitOfWork.SetupGet(u => u.LiquidityPurchaseDbRepository).Returns(_purchases.Object);
         var services = new ServiceCollection();
         services.AddScoped(_ => unitOfWork.Object);
         var provider = services.BuildServiceProvider();
