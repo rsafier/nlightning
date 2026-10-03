@@ -76,6 +76,7 @@ public sealed partial class SpliceService
         var driver = GetDriver();
         if (!_channelMemoryRepository.TryGetChannel(channelId, out var unlocked))
             throw new KeyNotFoundException($"Channel {channelId} is not loaded");
+        ThrowIfSimpleTaproot(unlocked);
 
         // The I/O that needs no lock: a splice-out destination for a new splice-out, the quick-confirmation estimate
         // once more than 10 RBF attempts are pending
