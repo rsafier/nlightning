@@ -68,6 +68,20 @@ public static class ImageVersions
     public static readonly ImageRef Postgres =
         new("postgres", "16.2-alpine", "sha256:951bfda460300925caa3949eaa092ba022e9aec191bbea9056a39e2382260b27");
 
+    /// <summary>
+    /// CDK's mint daemon <c>cdk-mintd</c> 0.18.1 (the official image, multi-arch index digest), the CDK release of the
+    /// vendored payment processor proto (Cashu plan C2, NL-993). Pull it once (<c>docker pull cashubtc/mintd:0.18.1</c>).
+    /// </summary>
+    public static readonly ImageRef CdkMintd =
+        new("cashubtc/mintd", "0.18.1", "sha256:fbeac6e5bed139c525911c0a04c9556cbf3a645e20ecec142b52e27fde457f9f");
+
+    /// <summary>
+    /// CDK's wallet CLI <c>cdk-cli</c> 0.18.1, built locally from <c>test/Docker/cdk-cli</c>
+    /// (<c>docker build -t nltg-cdk-cli:0.18.1 test/Docker/cdk-cli</c>, about 10 min; CDK publishes no image of it).
+    /// Reused as it is.
+    /// </summary>
+    public static readonly ImageRef CdkCli = new("nltg-cdk-cli", "0.18.1", PullPolicy: ImagePullPolicy.Never);
+
     /// <summary>A tiny image for the harness's own smoke tests.</summary>
     public static readonly ImageRef Busybox = new("busybox", "1.37");
 

@@ -75,6 +75,21 @@ public class PaymentModelTests
     }
 
     [Fact]
+    public void Given_AnInFlightPaymentWithAFee_When_Failed_Then_ItRecordsNoFee()
+    {
+        // Arrange (NL-982): the attempt offered 27,000 msat in fees
+        var payment = CreatePayment();
+        payment.AddOutgoingHtlc(s_channelId, 0);
+
+        // Act
+        payment.Fail(FailureCode.TemporaryTrampolineFailure, 1, "refused", s_createdAt.AddSeconds(3));
+
+        // Assert: nothing was paid
+        Assert.True(payment.Fee.IsZero);
+        Assert.Equal(payment.Amount, payment.TotalAmount);
+    }
+
+    [Fact]
     public void Given_ZeroAmount_When_Created_Then_Throws()
     {
         // Act & Assert

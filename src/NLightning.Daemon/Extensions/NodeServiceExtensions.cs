@@ -32,6 +32,7 @@ using Application.Payments.Routing.Interfaces;
 using Application.Payments.Send;
 using Application.Payments.Switch;
 using Application.Payments.Trampoline;
+using Cashu.PaymentProcessor;
 using Contracts.Utilities;
 using Daemon.Ipc.Handlers;
 using Daemon.Ipc.Interfaces;
@@ -44,6 +45,7 @@ using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Node.Options;
 using Domain.Payments.Interfaces;
+using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Handlers;
@@ -91,6 +93,10 @@ public static class NodeServiceExtensions
 
             // Expired unpaid BOLT 12 invoice rows pruned on a timer (NL-448)
             services.AddExpiredBolt12InvoicePruning();
+
+            // Cashu plan C1 (NL-992): the CDK payment processor's gRPC server, after the node started (off unless
+            // Cashu:PaymentProcessor:Enabled)
+            services.AddCashuPaymentProcessorHost();
 
             // IPC server pieces that need the config path
             services.AddSingleton<INamedPipeIpcService>(sp =>
@@ -163,7 +169,13 @@ public static class NodeServiceExtensions
             new ListInvoicesClientHandler(GetPaymentLayerService<IInvoiceService>(sp),
                                           sp.GetRequiredService<TimeProvider>()));
         services.AddScoped<IClientCommandHandler<ListPaymentsClientRequest, ListPaymentsClientResponse>>(sp =>
-            new ListPaymentsClientHandler(GetPaymentLayerService<IPaymentService>(sp)));
+            new ListPaymentsClientHandler(GetPaymentLayerService<IPaymentService>(sp),
+                                          sp.GetService<IPaymentDbRepository>(), sp.GetService<IUnitOfWork>()));
+        // Cashu plan C0 (NL-991): wait for an invoice to leave Open (ClientCommand 47)
+        services.AddScoped<IClientCommandHandler<WaitInvoiceClientRequest, WaitInvoiceClientResponse>>(sp =>
+            new WaitInvoiceClientHandler(GetPaymentLayerService<IInvoiceService>(sp),
+                                         sp.GetService<IPaymentEventSource>(),
+                                         sp.GetRequiredService<TimeProvider>()));
         services.AddScoped<IClientCommandHandler<ListForwardsClientRequest, ListForwardsClientResponse>>(sp =>
             new ListForwardsClientHandler(GetPaymentLayerService<IForwardCircuitDbRepository>(sp),
                                           sp.GetRequiredService<ILogger<ListForwardsClientHandler>>(),
@@ -219,6 +231,7 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, PayInvoiceIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListInvoicesIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListPaymentsIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, WaitInvoiceIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListForwardsIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, CloseChannelIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ForceCloseChannelIpcHandler>();
@@ -235,6 +248,9 @@ public static class NodeServiceExtensions
         services.AddOperatorIpcServices();
         // On-chain withdraw (wave m6 W1, ClientCommand 25)
         services.AddWithdrawIpcServices();
+
+        // Cashu plan C1 (NL-992): the CDK payment processor (Cashu:PaymentProcessor, off by default)
+        services.AddCashuPaymentProcessor(configuration);
         // BOLT 12 offers (wave B12): createoffer/listoffers/disableoffer (ClientCommand 26-28) and payoffer/
         // fetchinvoice (29-30); the Application registers the offer services themselves (AddApplicationServices)
         services.AddOfferIpcServices();
@@ -262,7 +278,7 @@ public static class NodeServiceExtensions
         services.Configure<DualFundingOptions>(configuration.GetSection(DualFundingOptions.SectionName));
         // bumpopen (ClientCommand 38, lane dfrbf): RBF of our unconfirmed dual-funded open (Node:DualFund:AllowRbf)
         services.AddDualFundIpcServices();
-        // Liquidity ads (NL-850): liquidityads rates|sellers|purchases (ClientCommand 46)
+        // Liquidity ads (NL-850): liquidityads rates|sellers|purchases (ClientCommand 47)
         services.AddLiquidityAdsIpcServices();
         // Per-channel routing policies (wave sp1 lane SP1-G): setchannelpolicy/getchannelpolicy (ClientCommand 35/36)
         services.AddChannelPolicyIpcServices();

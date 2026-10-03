@@ -28,4 +28,20 @@ public class TrampolineRelayPersistenceTests
             () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)), DatabaseType.Sqlite,
             TestContext.Current.CancellationToken);
     }
+
+    [Fact]
+    public async Task Given_SchemaFromBeforeAddTrampolineRelayAttempts_When_RetriesReplaceFailedRelays_Then_KeptAndListed()
+    {
+        // Arrange (NL-899/NL-981: the SQLite run of the replaced-attempt round trip the Docker Postgres test shares)
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        var options = new DbContextOptionsBuilder<NLightningDbContext>()
+                     .UseSqlite(connection, x => x.MigrationsAssembly("NLightning.Infrastructure.Persistence.Sqlite"))
+                     .Options;
+
+        // Act & Assert
+        await TrampolineRelayAttemptsSchemaRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)),
+            TestContext.Current.CancellationToken);
+    }
 }

@@ -26,6 +26,7 @@ using Domain.Gossip.Interfaces;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Payments.Enums;
+using Domain.Payments.Events;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Keysend;
 using Domain.Payments.Models;
@@ -152,6 +153,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     private readonly IChannelUpdateService? _channelUpdateService;
     private readonly ITrampolineFailureOnionService? _trampolineFailureOnionService;
     private readonly TrampolineOnionFactory? _trampolineOnionFactory;
+    private readonly IPaymentEventPublisher? _paymentEventPublisher;
 
     /// <summary>
     /// The engine's sender rules (<c>UpdateValidator.ValidateSendAdd</c>) that a smaller HTLC on the same channel may
@@ -185,12 +187,14 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                           IChannelUpdateService? channelUpdateService = null,
                           ITrampolineOnionService? trampolineOnionService = null,
                           ITrampolineFailureOnionService? trampolineFailureOnionService = null,
-                          IHopPayloadSerializer? hopPayloadSerializer = null)
+                          IHopPayloadSerializer? hopPayloadSerializer = null,
+                          IPaymentEventPublisher? paymentEventPublisher = null)
     {
         _trampolineFailureOnionService = trampolineFailureOnionService;
         _trampolineOnionFactory = trampolineOnionService is not null && hopPayloadSerializer is not null
                                       ? new TrampolineOnionFactory(trampolineOnionService, hopPayloadSerializer)
                                       : null;
+        _paymentEventPublisher = paymentEventPublisher;
         _routeBlindingService = routeBlindingService;
         _channelUpdateService = channelUpdateService;
         _attributionDataService = attributionDataService;
@@ -581,6 +585,9 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
 
         return probability;
     }
+
+    /// <inheritdoc />
+    public bool IsPaying(Hash paymentHash) => _sessions.ContainsKey(paymentHash);
 
     /// <inheritdoc />
     public async Task<PaymentModel?> GetPaymentAsync(Hash paymentHash, CancellationToken cancellationToken = default)
@@ -1730,6 +1737,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         {
             var repository = scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>();
             PaymentModel payment;
+            // The fee the in-flight attempt offered: kept in the log only, a failed payment records none (NL-982)
+            var lastAttemptFee = LightningMoney.Zero;
             // A row already Failed was failed by an attempt that was retried ("Retrying", no event) or, after a race,
             // for good by another path (its event exists): the final failure is recorded once
             var recordFailure = true;
@@ -1762,13 +1771,16 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                 if (stored.Status == PaymentStatus.InFlight)
                 {
                     RecordLastFailureHoldTimes(stored, session);
+                    lastAttemptFee = stored.Fee;
                     stored.Fail(code, sourceIndex, reason, now);
                     payment = stored;
                 }
                 else
                 {
+                    // A failed payment paid no fee (NL-982), whatever an older row recorded
                     payment = PaymentModel.Restore(stored.PaymentHash, stored.Bolt11, stored.PayeeNodeId,
-                                                   stored.Amount, stored.Fee, stored.CreatedAt, PaymentStatus.Failed,
+                                                   stored.Amount, LightningMoney.Zero, stored.CreatedAt,
+                                                   PaymentStatus.Failed,
                                                    stored.OutgoingChannelId, stored.OutgoingHtlcId, null, code,
                                                    sourceIndex, reason, now, stored.Route, stored.Bolt12,
                                                    stored.Keysend, stored.IsTrampolineRelay);
@@ -1791,7 +1803,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             }
 
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
-            LogFailed(payment);
+            // A failure another path already recorded for good was published by that path
+            LogFailed(payment, lastAttemptFee, publish: recordFailure);
         }
 
         if (session.IsTrampolineRelay)
@@ -1974,12 +1987,15 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         string note;
         if (DecideTrampolineFailure(session, part, failed.Removal) is { } trampoline)
         {
-            (code, sourceIndex, reason, interpretation) = (trampoline.Code, trampoline.SourceIndex, trampoline.Reason,
-                                                           trampoline.Interpretation);
-            attribution = AttributionVerification.Absent;
+            // NL-898: the attribution DescribeFailure verified over the outer route stays (the trampoline layer has
+            // none, BOLTs PR 836): its hold times are recorded and a hop whose HMAC failed is blamed as for any payment
+            (code, interpretation) = (trampoline.Code, trampoline.Interpretation);
+            sourceIndex = trampoline.SourceIndex ?? (trampoline.Code is null ? attribution.InvalidHopIndex : null);
+            reason = trampoline.Reason + DescribeOuterAttribution(part.Hops, attribution);
             (retry, note) = trampoline.Retry is { } decided
                                 ? (decided, trampoline.Note!)
-                                : _retryPolicy.Decide(part, failed.Removal.Kind, interpretation, session.Constraints);
+                                : _retryPolicy.Decide(part, failed.Removal.Kind, interpretation, session.Constraints,
+                                                      attribution.InvalidHopIndex);
         }
         else
         {
@@ -2533,8 +2549,15 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         var (channelId, htlcId) = payment.OutgoingHtlcId is { } recordedId
                                       ? (payment.OutgoingChannelId!.Value, recordedId)
                                       : (fulfilled.ChannelId, fulfilled.HtlcId);
+        // A failed row records no fee (NL-982): when the fulfilled HTLC is the row's and carried the whole amount, its
+        // fee is what it carried above the amount; otherwise it stays unknown (zero)
+        var fee = payment.Fee;
+        if (payment.Status == PaymentStatus.Failed && (channelId, htlcId) == (fulfilled.ChannelId, fulfilled.HtlcId)
+                                                   && payment.Route.Count > 0
+                                                   && payment.Route[0].Amount > payment.Amount)
+            fee = payment.Route[0].Amount - payment.Amount;
         return PaymentModel.Restore(payment.PaymentHash, payment.Bolt11, payment.PayeeNodeId, payment.Amount,
-                                    payment.Fee, payment.CreatedAt, PaymentStatus.Succeeded, channelId, htlcId,
+                                    fee, payment.CreatedAt, PaymentStatus.Succeeded, channelId, htlcId,
                                     fulfilled.PaymentPreimage, null, null, null, completedAt, payment.Route,
                                     payment.Bolt12, payment.Keysend, payment.IsTrampolineRelay);
     }
@@ -2678,17 +2701,47 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         }
     }
 
+    /// <summary>
+    /// Logs a payment that succeeded and tells the payment event subscribers (Cashu plan C0, NL-991). Every caller
+    /// calls it after the save that marked the payment succeeded. A trampoline relay's outgoing leg (NL-875) is not one
+    /// of our payments: its relay hears of it (<c>ReportLegSucceeded</c>) and nothing is published, as nothing is
+    /// booked.
+    /// </summary>
     private void LogSucceeded(PaymentModel payment)
     {
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Payment {PaymentHash} succeeded ({Amount} msat, fee {Fee} msat)",
                                    payment.PaymentHash, payment.Amount.MilliSatoshi, payment.Fee.MilliSatoshi);
+        if (!payment.IsTrampolineRelay && payment.Preimage is { } preimage)
+            _paymentEventPublisher?.Publish(new PaymentSucceededEvent(payment.PaymentHash, payment.Amount, payment.Fee,
+                                                                      preimage,
+                                                                      payment.CompletedAt
+                                                                   ?? _timeProvider.GetUtcNow()));
     }
 
-    private void LogFailed(PaymentModel payment)
+    /// <summary>
+    /// Logs a payment that failed and tells the payment event subscribers (Cashu plan C0, NL-991) unless
+    /// <paramref name="publish"/> is false (its failure was published before). Every caller calls it after the save
+    /// that marked the payment failed. A trampoline relay's outgoing leg is not published (see
+    /// <see cref="LogSucceeded"/>).
+    /// </summary>
+    private void LogFailed(PaymentModel payment, LightningMoney? lastAttemptFee = null, bool publish = true)
     {
         if (_logger.IsEnabled(LogLevel.Warning))
-            _logger.LogWarning("Payment {PaymentHash} failed: {Reason}", payment.PaymentHash, payment.FailureReason);
+        {
+            // NL-982: the fee the last attempt offered is logged only; the failed payment records none
+            if (lastAttemptFee is { IsZero: false } offered)
+                _logger.LogWarning("Payment {PaymentHash} failed (its last attempt offered {Fee} msat in fees, none "
+                                 + "paid): {Reason}", payment.PaymentHash, offered.MilliSatoshi,
+                                   payment.FailureReason);
+            else
+                _logger.LogWarning("Payment {PaymentHash} failed: {Reason}", payment.PaymentHash,
+                                   payment.FailureReason);
+        }
+
+        if (publish && payment is { IsTrampolineRelay: false, Status: PaymentStatus.Failed })
+            _paymentEventPublisher?.Publish(new PaymentFailedEvent(payment.PaymentHash, payment.FailureReason,
+                                                                   payment.CompletedAt ?? _timeProvider.GetUtcNow()));
     }
 
     private sealed class HashLock

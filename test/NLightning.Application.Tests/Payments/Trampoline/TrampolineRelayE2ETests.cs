@@ -21,6 +21,7 @@ using Domain.Node;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Payments.Enums;
+using Domain.Payments.Events;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Payments.Trampoline;
@@ -28,6 +29,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.ValueObjects;
+using Events;
 using Harness;
 
 /// <summary>
@@ -220,6 +222,85 @@ public class TrampolineRelayE2ETests
         Assert.DoesNotContain(await UnsealedEventsAsync(harness.T),
                               e => e.Kind == AccountingEventKind.TrampolineRelaySettled);
         harness.AssertQuiescent();
+    }
+
+    #endregion
+
+    #region Payment events (Cashu plan C0, NL-991)
+
+    [Fact]
+    public async Task Given_SubscribersOnEveryNode_When_APaysThroughT_Then_ASucceedsOnceCSettlesOnceAndTPublishesNothing()
+    {
+        // Arrange
+        await using var harness = await CreateAsync();
+        var invoice = await TrampolineHarness.CreateInvoiceAsync(harness.C, s_amount);
+        using var aEvents = SubscribeEvents(harness.A);
+        using var tEvents = SubscribeEvents(harness.T);
+        using var cEvents = SubscribeEvents(harness.C);
+
+        // Act
+        await harness.PumpUntilAsync(PayAsync(harness.A, invoice.Bolt11!, Through(harness.T)));
+        await WhenRelayIdleAsync(harness);
+
+        // Assert: A (the trampoline client) published its success with the trampoline fee, after its save
+        var succeeded = Assert.IsType<PaymentSucceededEvent>(await PaymentEventHubTests.ReadOneAsync(aEvents));
+        Assert.Equal(invoice.PaymentHash, succeeded.PaymentHash);
+        Assert.Equal(invoice.Preimage, succeeded.Preimage);
+        Assert.Equal(s_amount, succeeded.Amount);
+        Assert.Equal(s_trampolineFee, succeeded.Fee);
+        Assert.Equal(PaymentStatus.Succeeded,
+                     (await TrampolineHarness.GetPaymentAsync(harness.A, invoice.PaymentHash))!.Status);
+
+        // Assert: C (the trampoline target) published the settle after its save
+        var settled = Assert.IsType<InvoiceSettledEvent>(await PaymentEventHubTests.ReadOneAsync(cEvents));
+        Assert.Equal(invoice.PaymentHash, settled.PaymentHash);
+        Assert.Equal(s_amount, settled.Amount);
+        Assert.Equal(InvoiceStatus.Settled,
+                     (await TrampolineHarness.GetInvoiceAsync(harness.C, invoice.PaymentHash))!.Status);
+
+        // Assert: once each, and nothing for T's relay leg, a Succeeded relay payment that is not T's own
+        Assert.True((await TrampolineHarness.GetPaymentAsync(harness.T, invoice.PaymentHash))!.IsTrampolineRelay);
+        await AssertNoOtherEventAsync(harness.A, aEvents, invoice.PaymentHash);
+        await AssertNoOtherEventAsync(harness.C, cEvents, invoice.PaymentHash);
+        await AssertNoOtherEventAsync(harness.T, tEvents, invoice.PaymentHash);
+    }
+
+    [Fact]
+    public async Task Given_CRefusesThePayment_When_ARelayedPaymentFails_Then_AOnlyPublishesTheFailure()
+    {
+        // Arrange: C canceled its invoice
+        await using var harness = await CreateAsync();
+        var invoice = await TrampolineHarness.CreateInvoiceAsync(harness.C, s_amount);
+        Assert.True(await harness.C.Invoices.CancelInvoiceAsync(invoice.PaymentHash,
+                                                                TestContext.Current.CancellationToken));
+        using var aEvents = SubscribeEvents(harness.A);
+        using var tEvents = SubscribeEvents(harness.T);
+
+        // Act
+        var result = await harness.PumpUntilAsync(PayAsync(harness.A, invoice.Bolt11!, Through(harness.T)));
+        await WhenRelayIdleAsync(harness);
+
+        // Assert: A published one failure; T's failed relay leg published nothing
+        Assert.Equal(PaymentStatus.Failed, result.Payment.Status);
+        var failed = Assert.IsType<PaymentFailedEvent>(await PaymentEventHubTests.ReadOneAsync(aEvents));
+        Assert.Equal(invoice.PaymentHash, failed.PaymentHash);
+        Assert.Equal(PaymentStatus.Failed,
+                     (await TrampolineHarness.GetPaymentAsync(harness.T, invoice.PaymentHash))!.Status);
+        await AssertNoOtherEventAsync(harness.A, aEvents, invoice.PaymentHash);
+        await AssertNoOtherEventAsync(harness.T, tEvents, invoice.PaymentHash);
+    }
+
+    private static IPaymentEventSubscription SubscribeEvents(SwitchNode node) =>
+        node.Services.GetRequiredService<IPaymentEventSource>().Subscribe();
+
+    /// <summary>Publishes a marker on <paramref name="node"/> and asserts it is the next event read.</summary>
+    private static async Task AssertNoOtherEventAsync(SwitchNode node, IPaymentEventSubscription events, Hash hash)
+    {
+        node.Services.GetRequiredService<IPaymentEventPublisher>()
+            .Publish(new PaymentFailedEvent(hash, "marker", DateTimeOffset.UnixEpoch));
+        var next = Assert.IsType<PaymentFailedEvent>(await PaymentEventHubTests.ReadOneAsync(events));
+        Assert.Equal("marker", next.Reason);
+        Assert.False(events.Overflowed);
     }
 
     #endregion
@@ -512,17 +593,162 @@ public class TrampolineRelayE2ETests
         harness.AssertQuiescent();
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public async Task Given_ABlindedRecipientWithTrampoline_When_PaidThroughT_Then_XRelaysAtThePathsPaymentRelay(
+        int dummyHops)
+    {
+        // Arrange: C advertises trampoline_routing and its blinded path (BlindedPathBuilder: X names the X-C channel by
+        // short_channel_id, X's price is the path's payment_relay, C's own dummy hops after it) is introduced by X,
+        // which runs the relay engine (NL-895, scenario 10(b))
+        await using var harness = await CreateBlindedTrampolineHarnessAsync();
+        var invoice = await TrampolineHarness.CreateInvoiceAsync(harness.C, s_amount);
+        var path = Assert.Single(await BuildBlindedPathsAsync(harness, invoice, dummyHops));
+        Assert.Equal(harness.X.NodeId, path.Path.FirstNodeId);
+        Assert.Equal(dummyHops + 2, path.Path.Hops.Count);
+
+        // Act
+        var result = await harness.PumpUntilAsync(Payer(harness.A).PayBlindedAsync(
+                                                      BlindedTrampolineRequest(harness, invoice, path),
+                                                      Through(harness.T) with { Timeout = TimeSpan.FromMinutes(5) },
+                                                      TestContext.Current.CancellationToken));
+        await WhenRelaysIdleAsync(harness);
+
+        // Assert: A paid T's fee on what X must receive (the path's amount) plus the path's fee; its inner route was
+        // T, then the path's hops as trampoline hops
+        var pathFee = LightningMoney.MilliSatoshis(path.PayInfo.ComputeFeeMsat(s_amount.MilliSatoshi));
+        var introAmount = s_amount + pathFee;
+        var trampolineFee = LightningMoney.MilliSatoshis(1_000 + (introAmount.MilliSatoshi * 1_000 + 999_999)
+                                                       / 1_000_000);
+        Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
+        Assert.Equal(1, result.Attempts);
+        Assert.Equal(trampolineFee + pathFee, result.Payment.Fee);
+        var hops = await TrampolineHarness.GetTrampolineHopsAsync(harness.A, invoice.PaymentHash);
+        Assert.Contains(hops, h => h is { Attempt: 0, HopIndex: 0 } && h.NodeId == harness.T.NodeId);
+        Assert.Contains(hops, h => h is { Attempt: 0, HopIndex: 1 } && h.NodeId == harness.X.NodeId);
+
+        // Assert: T relayed to X (its own policy) over their direct channel
+        var (tRelay, _) = (await TrampolineHarness.GetRelayAsync(harness.T, invoice.PaymentHash))!.Value;
+        Assert.Equal(TrampolineRelayStatus.Fulfilled, tRelay.Status);
+        Assert.Equal(harness.X.NodeId, tRelay.NextNodeId);
+        Assert.Equal(introAmount, tRelay.AmountOut);
+        Assert.Equal(trampolineFee, tRelay.FeeEarned);
+
+        // Assert: X resolved the X-C scid to C, forwarded what payment_relay leaves of the total (not its
+        // Node:Trampoline policy, which asks more) with the next path key in C's outer payload, and kept that fee
+        var (xRelay, xParts) = (await TrampolineHarness.GetRelayAsync(harness.X, invoice.PaymentHash))!.Value;
+        Assert.Equal(TrampolineRelayStatus.Fulfilled, xRelay.Status);
+        Assert.Equal(harness.C.NodeId, xRelay.NextNodeId);
+        Assert.NotNull(xRelay.NextPathKey);
+        Assert.Equal(introAmount, xRelay.IncomingTotal);
+        var xPaymentRelay = new BlindedPaymentRelay(TrampolineHarness.XRouting.CltvExpiryDelta,
+                                                    TrampolineHarness.XRouting.FeeProportionalMillionths,
+                                                    TrampolineHarness.XRouting.FeeBaseMsat);
+        Assert.True(xPaymentRelay.TryComputeAmountToForward(introAmount.MilliSatoshi, out var xAmountOut));
+        Assert.Equal(LightningMoney.MilliSatoshis(xAmountOut), xRelay.AmountOut);
+        Assert.Equal(introAmount - xRelay.AmountOut, xRelay.FeeEarned);
+        Assert.Single(xParts);
+        var xLeg = await TrampolineHarness.GetPaymentAsync(harness.X, invoice.PaymentHash);
+        Assert.NotNull(xLeg);
+        Assert.True(xLeg.IsTrampolineRelay);
+        Assert.Equal(LightningMoney.Zero, xLeg.Fee);
+        var toC = Assert.IsType<UpdateAddHtlcMessage>(Assert.Single(harness.C.Received,
+                                                                    m => m is UpdateAddHtlcMessage));
+        Assert.Null(toC.BlindedPathTlv);
+        Assert.Equal(xRelay.AmountOut.MilliSatoshi, toC.Payload.Amount.MilliSatoshi);
+
+        // Assert: C settled once
+        var stored = await TrampolineHarness.GetInvoiceAsync(harness.C, invoice.PaymentHash);
+        Assert.Equal(InvoiceStatus.Settled, stored!.Status);
+        Assert.True(stored.AmountReceived! >= s_amount);
+        harness.AssertQuiescent();
+    }
+
+    [Fact]
+    public async Task Given_ABlindedTrampolineHopBreakingItsConstraints_When_PaidThroughT_Then_AReadsXsOwnBlindingError()
+    {
+        // Arrange: C's path lives one block, so A's expiry at X is above X's max_cltv_expiry (payment_constraints)
+        await using var harness = await CreateBlindedTrampolineHarnessAsync();
+        var invoice = await TrampolineHarness.CreateInvoiceAsync(harness.C, s_amount);
+        var path = Assert.Single(await BuildBlindedPathsAsync(harness, invoice, 0, pathLifetimeBlocks: 1));
+
+        // Act
+        var result = await harness.PumpUntilAsync(Payer(harness.A).PayBlindedAsync(
+                                                      BlindedTrampolineRequest(harness, invoice, path),
+                                                      Through(harness.T) with { Timeout = TimeSpan.FromMinutes(5) },
+                                                      TestContext.Current.CancellationToken));
+        await WhenRelaysIdleAsync(harness);
+
+        // Assert: X, the introduction node, answers with its own invalid_onion_blinding, which T relays at the
+        // trampoline layer and A reads from X's inner index; A stops (not a T policy error), C never sees an HTLC
+        Assert.Equal(PaymentStatus.Failed, result.Payment.Status);
+        Assert.Equal(FailureCode.InvalidOnionBlinding, result.Payment.FailureCode);
+        Assert.Equal(1, result.Payment.FailureSourceIndex);
+        Assert.Equal(1, result.Attempts);
+        Assert.Equal(1, CountAdds(harness, "T", "X", invoice.PaymentHash));
+        Assert.Equal(0, CountAdds(harness, "X", "C", invoice.PaymentHash));
+        Assert.Null(await TrampolineHarness.GetRelayAsync(harness.X, invoice.PaymentHash));
+        var (tRelay, _) = (await TrampolineHarness.GetRelayAsync(harness.T, invoice.PaymentHash))!.Value;
+        Assert.Equal(TrampolineRelayStatus.Failed, tRelay.Status);
+        Assert.Equal(InvoiceStatus.Open,
+                     (await TrampolineHarness.GetInvoiceAsync(harness.C, invoice.PaymentHash))!.Status);
+        harness.AssertQuiescent();
+    }
+
     #endregion
 
     #region Helpers
 
     /// <summary>
-    /// C's blinded payment paths for <paramref name="invoice"/> (production <see cref="BlindedPathBuilder"/>, no dummy
-    /// hop), introduced by X over their private channel; C first gets X's signed <c>channel_update</c> of it (the gossip
-    /// the harness leaves out).
+    /// Scenario 10(b)'s harness: T, X and C advertise <c>trampoline_routing</c>; A, T and X run the payment service;
+    /// T and X run the relay engine.
     /// </summary>
-    private static async Task<IReadOnlyList<BlindedPaymentPath>> BuildBlindedPathsAsync(TrampolineHarness harness,
-                                                                                       InvoiceModel invoice)
+    private static Task<TrampolineHarness> CreateBlindedTrampolineHarnessAsync() =>
+        CreateAsync(configure: o =>
+        {
+            o.Trampoline = TrampolineHarnessNodes.T | TrampolineHarnessNodes.X | TrampolineHarnessNodes.C;
+            o.PaymentSenders = TrampolineHarnessNodes.A | TrampolineHarnessNodes.T | TrampolineHarnessNodes.X;
+            var previous = o.ConfigureServices;
+            o.ConfigureServices = (node, services) =>
+            {
+                previous?.Invoke(node, services);
+                if (node.Name == "X")
+                    services.AddTrampolineRelayServices();
+            };
+        });
+
+    /// <summary>A's request for C's invoice over <paramref name="path"/>, C's features carrying bit 57 (as a BOLT 12
+    /// invoice's would).</summary>
+    private static PayBlindedRequest BlindedTrampolineRequest(TrampolineHarness harness, InvoiceModel invoice,
+                                                              BlindedPaymentPath path)
+    {
+        var features = new FeatureSet();
+        features.SetFeature(Feature.BasicMpp, false);
+        features.SetFeature(Feature.OptionTrampolineRouting, false);
+        return new PayBlindedRequest(invoice.PaymentHash, s_amount, [path])
+        {
+            PayeeNodeId = harness.C.NodeId,
+            RecipientFeatures = features
+        };
+    }
+
+    /// <summary>Waits for T's and X's relay timers and leg reports, then pumps what they sent.</summary>
+    private static async Task WhenRelaysIdleAsync(TrampolineHarness harness)
+    {
+        await Engine(harness.T).WhenIdleAsync();
+        await Engine(harness.X).WhenIdleAsync();
+        await harness.PumpAsync();
+    }
+
+    /// <summary>
+    /// C's blinded payment paths for <paramref name="invoice"/> (production <see cref="BlindedPathBuilder"/>, no dummy
+    /// hop unless <paramref name="dummyHops"/>), introduced by X over their private channel; C first gets X's signed
+    /// <c>channel_update</c> of it (the gossip the harness leaves out).
+    /// </summary>
+    private static async Task<IReadOnlyList<BlindedPaymentPath>> BuildBlindedPathsAsync(
+        TrampolineHarness harness, InvoiceModel invoice, int dummyHops = 0,
+        uint pathLifetimeBlocks = BlindedPathBuilder.DefaultPathLifetimeBlocks)
     {
         Assert.True(harness.X.Services.GetRequiredService<IChannelUpdateService>()
                            .TryGetLocalChannelUpdate(TrampolineHarness.XCarolChannelId, out var update));
@@ -531,8 +757,8 @@ public class TrampolineRelayE2ETests
         var builder = harness.C.Services.GetRequiredService<BlindedPathBuilder>();
         return await builder.BuildAsync(new BlindedPathRequest(invoice.Preimage, invoice.Amount,
                                                                invoice.MinFinalCltvExpiry,
-                                                               TrampolineHarness.BlockHeight,
-                                                               IncludePrivateChannels: true, DummyHops: 0),
+                                                               TrampolineHarness.BlockHeight, pathLifetimeBlocks,
+                                                               IncludePrivateChannels: true, DummyHops: dummyHops),
                                         TestContext.Current.CancellationToken);
     }
 

@@ -3,6 +3,7 @@ using System.Reflection;
 namespace NLightning.Integration.Tests.Cluster;
 
 using Docker.Gossip;
+using Docker.Interop.Cashu;
 using Docker.Interop.Cln;
 using Docker.Interop.Eclair;
 using Docker.Interop.Ldk;
@@ -37,6 +38,7 @@ public class SuiteCatalogMembershipTests
         ["ldk"] = LdkInteropCollection.Name,
         ["tor"] = TorInteropCollection.Name,
         ["taproot"] = LndTaprootRegtestCollection.Name,
+        ["cashu"] = CashuMintCollection.Name,
         ["postgres"] = "postgres"
     };
 

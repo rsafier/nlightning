@@ -5,11 +5,13 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Payments.Trampoline;
 
+using Channels.RoutingPolicies;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
@@ -57,30 +59,38 @@ using Switch;
 public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolineHtlcHandler, ITrampolineLegObserver,
                                              IDisposable, IAsyncDisposable
 {
+    private static readonly RoutingOptions s_defaultRouting = new();
+
     private readonly IAttributionDataService? _attributionDataService;
     private readonly IBlockchainMonitor? _blockchainMonitor;
+    private readonly IChannelPolicyProvider? _channelPolicyProvider;
     private readonly IChannelLockProvider _channelLockProvider;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly IChannelOperations _channelOperations;
     private readonly IFailureOnionService _failureOnionService;
     private readonly ILogger<TrampolineRelayService> _logger;
     private readonly INodeDrainState? _nodeDrainState;
+    private readonly IOptions<NodeOptions>? _nodeOptions;
     private readonly IncomingOnionProcessor? _onionProcessor;
+    private readonly IRetiredScidMap? _retiredScidMap;
     private readonly IServiceProvider _serviceProvider;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly TimeProvider _timeProvider;
     private readonly ITrampolineFailureOnionService? _trampolineFailureOnionService;
     private readonly TrampolineOptions _options;
     private readonly bool _advertisesAttribution;
-    private readonly ushort _forwardingCltvExpiryDelta;
     private readonly TimeSpan _blindedErrorMaxDelay;
     private readonly TimeSpan _mppTimeout;
 
     private readonly KeyedAsyncLock<Hash> _paymentHashLocks = new();
     private readonly ConcurrentDictionary<Hash, ITimer> _mppTimers = new();
     private readonly ConcurrentDictionary<Hash, ITimer> _watchdogs = new();
-    private readonly ConcurrentDictionary<(ChannelId, ulong), PartFailureKeys> _failureKeys = new();
+    private readonly ConcurrentDictionary<(ChannelId, ulong), TrampolineFailureKeys> _failureKeys = new();
     private readonly ConcurrentDictionary<Hash, PendingFailure> _failures = new();
+
+    // NL-922: the cltv_expiry_delta each collecting blinded relay keeps (its parts' price check), until it leaves
+    // collecting; memory only (see KeptBlindedDeltaOf for a restart)
+    private readonly ConcurrentDictionary<Hash, ushort> _blindedHopDeltas = new();
     private readonly ConcurrentDictionary<Task, byte> _backgroundTasks = new();
     private readonly CancellationTokenSource _disposeCts = new();
     private volatile bool _disposed;
@@ -97,7 +107,9 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
                                   ITrampolineFailureOnionService? trampolineFailureOnionService = null,
                                   IAttributionDataService? attributionDataService = null,
                                   IncomingOnionProcessor? onionProcessor = null,
-                                  INodeDrainState? nodeDrainState = null)
+                                  INodeDrainState? nodeDrainState = null,
+                                  IRetiredScidMap? retiredScidMap = null,
+                                  IChannelPolicyProvider? channelPolicyProvider = null)
     {
         _channelLockProvider = channelLockProvider;
         _channelMemoryRepository = channelMemoryRepository;
@@ -113,8 +125,9 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
         _attributionDataService = attributionDataService;
         _onionProcessor = onionProcessor;
         _nodeDrainState = nodeDrainState;
-        _forwardingCltvExpiryDelta = nodeOptions?.Value.Routing.CltvExpiryDelta
-                                  ?? new RoutingOptions().CltvExpiryDelta;
+        _retiredScidMap = retiredScidMap;
+        _channelPolicyProvider = channelPolicyProvider;
+        _nodeOptions = nodeOptions;
         _advertisesAttribution = (nodeOptions?.Value.Features.OptionAttributionData ?? FeatureSupport.Optional)
                               != FeatureSupport.No;
         var mppTimeout = switchOptions?.Value.MppTimeout ?? HtlcSwitchOptions.DefaultMppTimeout;
@@ -139,6 +152,9 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
     private ITrampolineLegSender? LegSender => _serviceProvider.GetService<ITrampolineLegSender>();
 
     private uint CurrentHeight => _blockchainMonitor?.LastProcessedBlockHeight ?? 0;
+
+    /// <summary><c>Node:Routing</c>, read on every use (as <c>HtlcForwardingPolicy</c>).</summary>
+    private RoutingOptions Routing => _nodeOptions?.Value.Routing ?? s_defaultRouting;
 
     #region Startup
 
@@ -186,7 +202,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
 
         var channelId = lockedIn.ChannelId;
         var htlc = lockedIn.Htlc;
-        _failureKeys[(channelId, htlc.Id)] = PartFailureKeys.From(onion);
+        _failureKeys[(channelId, htlc.Id)] = TrampolineFailureKeys.From(onion);
 
         TrampolineLegRequest? leg;
         using (await _paymentHashLocks.AcquireAsync(htlc.PaymentHash, cancellationToken))
@@ -217,6 +233,22 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
         // Saved meanwhile (a replay that raced the first handling): the relay decides as for any replay
         if (await relays.GetPartAsync(channelId, htlc.Id) is { } saved)
             return await ResumePartLockedAsync(unitOfWork, channelId, saved, cancellationToken);
+
+        // A blinded trampoline hop (NL-895): the HTLC must bring what the outer onion says it brings (BOLT 4 final
+        // node: amount and expiry), since payment_relay derived the next amount and expiry from the outer values; and
+        // the next node is the recipient data's next_node_id or the peer of the channel its short_channel_id names
+        var (nextNodeId, nextChannel) = ResolveNextHop(onion);
+        ushort blindedHopDelta = 0;
+        if (onion.Blinded is not null
+         && DescribeBlindedPartViolation(htlc, onion, nextNodeId, nextChannel, out blindedHopDelta) is { } violation)
+        {
+            _logger.LogInformation("Blinded trampoline part {HtlcId} of channel {ChannelId} for {PaymentHash} refused: "
+                                 + "{Reason}", htlc.Id, channelId, htlc.PaymentHash, violation);
+            await FailPartAsync(channelId, htlc.Id, null,
+                                FailureMessage.InvalidOnionBlinding(onion.TrampolineOnionSha256), null,
+                                cancellationToken);
+            return null;
+        }
 
         var stored = await relays.GetAsync(htlc.PaymentHash);
         if (stored is { Relay.Status: TrampolineRelayStatus.Failed } failedRelay
@@ -253,7 +285,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
                     return null;
             }
 
-            if (DescribeMismatch(relay, existing.Parts, onion) is { } mismatch)
+            if (DescribeMismatch(relay, existing.Parts, onion, nextNodeId) is { } mismatch)
             {
                 // BOLT 4 MPP: a part that does not belong to the set (other total, secret or instructions)
                 _logger.LogInformation("Part {HtlcId} of channel {ChannelId} does not match the trampoline relay "
@@ -267,6 +299,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
 
             await relays.AddPartAsync(CreatePart(channelId, htlc, onion));
             await unitOfWork.SaveChangesAsync();
+            KeepBlindedHopDelta(htlc.PaymentHash, onion, blindedHopDelta);
             return await CheckSetLockedAsync(unitOfWork, htlc.PaymentHash, cancellationToken);
         }
 
@@ -289,7 +322,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
             return null;
         }
 
-        if (CreateRelay(htlc, onion) is not { } created)
+        if (CreateRelay(htlc, onion, nextNodeId) is not { } created)
         {
             _logger.LogWarning("Trampoline part {HtlcId} of channel {ChannelId} for {PaymentHash} lacks its relay "
                              + "instructions: failing it", htlc.Id, channelId, htlc.PaymentHash);
@@ -301,6 +334,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
         await relays.AddAsync(created);
         await relays.AddPartAsync(CreatePart(channelId, htlc, onion));
         await unitOfWork.SaveChangesAsync();
+        KeepBlindedHopDelta(htlc.PaymentHash, onion, blindedHopDelta);
         _logger.LogInformation("Trampoline relay {PaymentHash} started: {AmountOut} msat to {NextNode}, {Total} msat "
                              + "expected in", htlc.PaymentHash, created.AmountOut.MilliSatoshi,
                                created.NextNodeId?.ToString() ?? "blinded paths", created.IncomingTotal.MilliSatoshi);
@@ -346,8 +380,115 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
             onion.OuterSharedSecret, onion.TrampolineSharedSecret,
             onion.OuterPayload.PaymentData?.PaymentSecret is { } secret ? (byte[])secret : null);
 
+    /// <summary>
+    /// The next trampoline node of a part: the onion's (<c>outgoing_node_id</c>, or the blinded recipient data's
+    /// <c>next_node_id</c>), or, when the blinded recipient data names a <c>short_channel_id</c>, the peer of that open
+    /// channel of ours, resolved as the switch resolves a blinded forward (real scid, aliases, a scid a splice retired;
+    /// <see cref="OutgoingChannelResolver"/>), with that channel; a null node when it names nothing we know (NL-895,
+    /// D-NL895-1).
+    /// </summary>
+    private (CompactPubKey? NodeId, ChannelModel? Channel) ResolveNextHop(IncomingOnionTrampolineRelay onion)
+    {
+        if (onion.NextShortChannelId is not { } shortChannelId)
+            return (onion.NextNodeId, null);
+
+        var channel = OutgoingChannelResolver.Resolve(_channelMemoryRepository, _retiredScidMap, shortChannelId);
+        return (channel?.RemoteNodeId, channel);
+    }
+
+    /// <summary>
+    /// Why a blinded trampoline part is refused before it joins a relay (answered with <c>invalid_onion_blinding</c>
+    /// as the blinded rules say), or null with the hop's delta to keep: its recipient data names a
+    /// <c>short_channel_id</c> that is none of our open channels (D-NL895-1); the HTLC breaks the outer onion's
+    /// final-hop rules (BOLT 4: <c>amount_msat</c> at least <c>amt_to_forward</c>, <c>cltv_expiry</c> at least
+    /// <c>outgoing_cltv_value</c>) or <c>payment_constraints.max_cltv_expiry</c>; or the <c>payment_relay</c> is below
+    /// our policy for the hop (NL-922, D-NL922-1: <see cref="TrampolineRelayPolicy.CheckBlindedHopPrice"/>). The next
+    /// amount and expiry were derived from the outer total and expiry with <c>payment_relay</c>; with these rules every
+    /// part's expiry is at least the outer one, so the next expiry is at most the lowest incoming expiry minus the
+    /// path's <c>cltv_expiry_delta</c> (D-NL895-2).
+    /// </summary>
+    private string? DescribeBlindedPartViolation(HtlcRecord htlc, IncomingOnionTrampolineRelay onion,
+                                                 CompactPubKey? nextNodeId, ChannelModel? nextChannel,
+                                                 out ushort keptCltvExpiryDelta)
+    {
+        keptCltvExpiryDelta = 0;
+        if (nextNodeId is null && onion.NextShortChannelId is { } shortChannelId)
+            return $"its recipient data names short_channel_id {shortChannelId}, which is none of our open channels";
+
+        if (onion.OuterPayload.AmtToForward is { } amount && htlc.AmountMsat < amount.MilliSatoshi)
+            return $"amount_msat {htlc.AmountMsat} is below the outer amt_to_forward {amount.MilliSatoshi}";
+
+        if (onion.OuterPayload.OutgoingCltvValue is { } cltv && htlc.CltvExpiry < cltv)
+            return $"cltv_expiry {htlc.CltvExpiry} is below the outer outgoing_cltv_value {cltv}";
+
+        var recipientData = onion.Blinded!.RecipientData;
+        if (recipientData.PaymentConstraints is { } constraints && htlc.CltvExpiry > constraints.MaxCltvExpiry)
+            return $"cltv_expiry {htlc.CltvExpiry} is above payment_constraints.max_cltv_expiry "
+                 + $"{constraints.MaxCltvExpiry}";
+
+        if (recipientData.PaymentRelay is not { } paymentRelay)
+            return "its recipient data has no payment_relay";
+
+        // Our policy for the hop: the named channel's (its setchannelpolicy override, else Node:Routing, with the
+        // policies a change replaced within the BOLT 7 grace period), or Node:Routing for a next_node_id hop
+        ConfiguredChannelPolicy policy;
+        IReadOnlyList<ConfiguredChannelPolicy> previous = [];
+        if (nextChannel is not null && _channelPolicyProvider is { } provider)
+        {
+            policy = provider.GetConfiguredPolicy(nextChannel.ChannelId);
+            if (!provider.IsLoaded)
+                return "the channel routing policies are not loaded";
+            previous = provider.GetPreviousPolicies(nextChannel.ChannelId);
+        }
+        else
+        {
+            policy = ConfiguredChannelPolicy.From(Routing, null);
+        }
+
+        var price = TrampolineRelayPolicy.CheckBlindedHopPrice(paymentRelay, policy, previous);
+        if (!price.IsAccepted)
+            return price.Reason;
+
+        keptCltvExpiryDelta = price.KeptCltvExpiryDelta;
+        return null;
+    }
+
+    /// <summary>
+    /// Remembers the delta a joined blinded part keeps until its relay leaves collecting (the largest of its parts': a
+    /// policy may change between them).
+    /// </summary>
+    private void KeepBlindedHopDelta(Hash paymentHash, IncomingOnionTrampolineRelay onion, ushort keptCltvExpiryDelta)
+    {
+        if (onion.Blinded is not null)
+            _blindedHopDeltas.AddOrUpdate(paymentHash, keptCltvExpiryDelta,
+                                          (_, kept) => Math.Max(kept, keptCltvExpiryDelta));
+    }
+
+    /// <summary>
+    /// The delta a blinded relay keeps at its completion: its parts' (<see cref="KeepBlindedHopDelta"/>), or, when
+    /// none joined since this process started (a restart between the last part's save and <c>Sending</c>), the most
+    /// that <c>Node:Routing</c> or any open channel of ours to the stored next node asks: the relay keeps the node,
+    /// not the channel its recipient data named, and the scid is never resolved again.
+    /// </summary>
+    private ushort KeptBlindedDeltaOf(TrampolineRelayModel relay)
+    {
+        if (_blindedHopDeltas.TryGetValue(relay.PaymentHash, out var kept))
+            return kept;
+
+        var delta = Routing.CltvExpiryDelta;
+        if (relay.NextNodeId is not { } nextNodeId || _channelPolicyProvider is not { } provider)
+            return delta;
+
+        foreach (var channel in _channelMemoryRepository.FindChannels(c => c.State == ChannelState.Open
+                                                                         && c.RemoteNodeId == nextNodeId))
+            delta = Math.Max(delta, provider.GetConfiguredPolicy(channel.ChannelId).CltvExpiryDelta);
+
+        return delta;
+    }
+
     /// <summary>The relay row of a first part, or null when the onion lacks an instruction.</summary>
-    private TrampolineRelayModel? CreateRelay(HtlcRecord htlc, IncomingOnionTrampolineRelay onion)
+    private TrampolineRelayModel? CreateRelay(HtlcRecord htlc, IncomingOnionTrampolineRelay onion,
+                                              CompactPubKey? nextNodeId)
     {
         if (onion.AmountToForward is not { IsZero: false } amountOut || onion.OutgoingCltvValue is not { } cltvOut
          || onion.IncomingTotal is not { } total)
@@ -356,7 +497,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
         var blindedPaths = onion.RecipientBlindedPaths is { Count: > 0 } paths
                                ? PaymentBlindedPathCodec.EncodeList(paths)
                                : null;
-        if (onion.NextNodeId is null && blindedPaths is null)
+        if (nextNodeId is null && blindedPaths is null)
             return null;
 
         // Inside a blinded trampoline route the next node gets the next path key; the encrypted recipient data we
@@ -365,18 +506,19 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
         var recipientData = nextPathKey is null
                                 ? null
                                 : onion.InnerPayload.EncryptedRecipientData?.ToArray() ?? [];
-        return new TrampolineRelayModel(htlc.PaymentHash, onion.NextNodeId, amountOut, cltvOut, total,
-                                        _timeProvider.GetUtcNow(), NextPacketOf(onion), recipientData, nextPathKey,
+        return new TrampolineRelayModel(htlc.PaymentHash, nextNodeId, amountOut, cltvOut, total,
+                                        _timeProvider.GetUtcNow(), NextPacketOf(onion, nextNodeId), recipientData,
+                                        nextPathKey,
                                         onion.RecipientFeatures?.Features.ToArray(), blindedPaths);
     }
 
-    private static byte[]? NextPacketOf(IncomingOnionTrampolineRelay onion) =>
-        onion.NextNodeId is null ? null : onion.NextTrampolinePacket?.ToBytes();
+    private static byte[]? NextPacketOf(IncomingOnionTrampolineRelay onion, CompactPubKey? nextNodeId) =>
+        nextNodeId is null ? null : onion.NextTrampolinePacket?.ToBytes();
 
     /// <summary>What makes a later part differ from the relay its payment hash started, or null when it belongs.
     /// </summary>
     private static string? DescribeMismatch(TrampolineRelayModel relay, IReadOnlyList<TrampolineRelayPartModel> parts,
-                                            IncomingOnionTrampolineRelay onion)
+                                            IncomingOnionTrampolineRelay onion, CompactPubKey? nextNodeId)
     {
         if (onion.IncomingTotal is not { } total || total != relay.IncomingTotal)
             return $"total_msat {onion.IncomingTotal?.MilliSatoshi} instead of {relay.IncomingTotal.MilliSatoshi}";
@@ -389,10 +531,10 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
          || onion.OutgoingCltvValue != relay.CltvExpiryOut)
             return "other amount or expiry to forward";
 
-        if (onion.NextNodeId != relay.NextNodeId)
+        if (nextNodeId != relay.NextNodeId)
             return "another next node";
 
-        if (!BytesEqual(NextPacketOf(onion), relay.NextTrampolinePacket))
+        if (!BytesEqual(NextPacketOf(onion, nextNodeId), relay.NextTrampolinePacket))
             return "another trampoline onion";
 
         var blindedPaths = onion.RecipientBlindedPaths is { Count: > 0 } paths
@@ -436,9 +578,20 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
             return null;
         }
 
+        var blindedHopDelta = relay.NextPathKey is not null ? KeptBlindedDeltaOf(relay) : (ushort)0;
         StopMppTimer(paymentHash);
         var height = CurrentHeight;
         var minCltvIn = waiting.Min(p => p.CltvExpiry);
+        var blindedPaths = relay.RecipientBlindedPaths is { } pathBytes
+                               ? PaymentBlindedPathCodec.DecodeList(pathBytes)
+                               : null;
+        var set = new TrampolineRelaySet(sumIn, minCltvIn, waiting.Max(p => p.CltvExpiry), relay.AmountOut,
+                                         relay.CltvExpiryOut, height)
+        {
+            RecipientPathCltvExpiryDelta = blindedPaths is { Count: > 0 }
+                                               ? blindedPaths.Min(p => p.PayInfo.CltvExpiryDelta)
+                                               : (ushort)0
+        };
         FailureMessage? failure = null;
         string? reason = null;
         TrampolineRelayDecision? decision = null;
@@ -452,8 +605,12 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
         }
         else
         {
-            decision = TrampolineRelayPolicy.Evaluate(_options, sumIn, minCltvIn, relay.AmountOut,
-                                                      relay.CltvExpiryOut, height, _forwardingCltvExpiryDelta);
+            // A blinded trampoline hop's price is the recipient's payment_relay, already applied to the amount and
+            // expiry out and checked against our policy for the hop as each part joined; our Node:Trampoline policy
+            // and NODE|26 are for the hops a payer prices (NL-895, D-NL895-2, NL-922)
+            decision = relay.NextPathKey is not null
+                           ? TrampolineRelayPolicy.EvaluateBlinded(_options, Routing, set, blindedHopDelta)
+                           : TrampolineRelayPolicy.Evaluate(_options, Routing, set);
             if (!decision.IsAccepted)
                 (failure, reason) = (decision.Failure, decision.Reason);
             else if (await CountSendingAsync(relays) >= _options.MaxRelaysInFlight)
@@ -488,9 +645,6 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
                            : null;
         var allowMpp = relay.NextTrampolinePacket is not null
                     || features?.IsFeatureSet(Feature.BasicMpp) == true;
-        var blindedPaths = relay.RecipientBlindedPaths is { } pathBytes
-                               ? PaymentBlindedPathCodec.DecodeList(pathBytes)
-                               : null;
         _logger.LogInformation("Trampoline relay {PaymentHash}: {Sum} msat in for {AmountOut} msat out, paying "
                              + "{NextNode} with at most {MaxFee} msat of fees", paymentHash, sumIn.MilliSatoshi,
                                relay.AmountOut.MilliSatoshi, relay.NextNodeId?.ToString() ?? "blinded paths",
@@ -923,6 +1077,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
 
     private void StopMppTimer(Hash paymentHash)
     {
+        _blindedHopDeltas.TryRemove(paymentHash, out _);
         if (_mppTimers.TryRemove(paymentHash, out var timer))
             timer.Dispose();
     }
@@ -954,6 +1109,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
         using var hashLock = await _paymentHashLocks.AcquireAsync(paymentHash, cancellationToken);
         _mppTimers.TryRemove(paymentHash, out var timer);
         timer?.Dispose();
+        _blindedHopDeltas.TryRemove(paymentHash, out _);
 
         using var scope = _serviceScopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -1128,7 +1284,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
         }
     }
 
-    private byte[] CreateReason(PartFailureKeys keys, FailureMessage? failure, byte[]? downstreamPacket)
+    private byte[] CreateReason(TrampolineFailureKeys keys, FailureMessage? failure, byte[]? downstreamPacket)
     {
         if (_trampolineFailureOnionService is { } trampolineFailures)
             return failure is not null
@@ -1146,24 +1302,25 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
 
     /// <summary>
     /// The keys of a part's failure: kept from its onion, else from its onion peeled again (no replay check), else
-    /// the stored secrets outside any blinded route.
+    /// the stored secrets (<see cref="TrampolineHtlcFailures.FromStoredPart"/>).
     /// </summary>
-    private async Task<PartFailureKeys?> GetFailureKeysAsync(ChannelId channelId, HtlcRecord incoming,
-                                                             TrampolineRelayPartModel? part)
+    private async Task<TrampolineFailureKeys?> GetFailureKeysAsync(ChannelId channelId, HtlcRecord incoming,
+                                                                   TrampolineRelayPartModel? part)
     {
         if (_failureKeys.TryGetValue((channelId, incoming.Id), out var kept))
             return kept;
 
+        IncomingOnionResult? result = null;
         if (_onionProcessor is not null)
         {
             try
             {
-                var result = await _onionProcessor.ProcessAsync(incoming.OnionRoutingPacket, incoming.PaymentHash,
-                                                                null, incoming.PathKey,
-                                                                LightningMoney.MilliSatoshis(incoming.AmountMsat),
-                                                                incoming.CltvExpiry);
+                result = await _onionProcessor.ProcessAsync(incoming.OnionRoutingPacket, incoming.PaymentHash,
+                                                            null, incoming.PathKey,
+                                                            LightningMoney.MilliSatoshis(incoming.AmountMsat),
+                                                            incoming.CltvExpiry);
                 if (result is IncomingOnionTrampolineRelay relay)
-                    return _failureKeys[(channelId, incoming.Id)] = PartFailureKeys.From(relay);
+                    return _failureKeys[(channelId, incoming.Id)] = TrampolineFailureKeys.From(relay);
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
@@ -1172,7 +1329,12 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
             }
         }
 
-        return part is null ? null : new PartFailureKeys(part.OuterSharedSecret, part.TrampolineSharedSecret, null, null);
+        // The stored secrets, outside any blinded route unless the onion peeled again says malformed
+        // invalid_onion_blinding (past a blinded introduction node with route blinding off since, NL-921), the same
+        // rule as the failures sent outside the engine
+        return part is null
+                   ? null
+                   : TrampolineHtlcFailures.FromStoredPart(part.OuterSharedSecret, part.TrampolineSharedSecret, result);
     }
 
     /// <summary>Fulfills one incoming part; a refusal is logged (its replay fulfills it from the relay).</summary>
@@ -1273,20 +1435,6 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
     }
 
     #endregion
-
-    /// <summary>How to fail one part (TR-R-14): its secrets and, inside a blinded trampoline route, the answer.</summary>
-    /// <param name="BlindedMalformedSha256">Past the introduction node: the trampoline packet's sha256 for
-    /// <c>update_fail_malformed_htlc</c>.</param>
-    /// <param name="IntroductionSha256">At the introduction node (not the route's final node): the trampoline packet's
-    /// sha256 for our own <c>invalid_onion_blinding</c>.</param>
-    private sealed record PartFailureKeys(Secret OuterSharedSecret, Secret TrampolineSharedSecret,
-                                          byte[]? BlindedMalformedSha256, byte[]? IntroductionSha256)
-    {
-        public static PartFailureKeys From(IncomingOnionTrampolineRelay onion) =>
-            new(onion.OuterSharedSecret, onion.TrampolineSharedSecret,
-                onion.IsBlindedPastIntroduction ? onion.TrampolineOnionSha256 : null,
-                onion.Blinded is { IsIntroduction: true } ? onion.TrampolineOnionSha256 : null);
-    }
 
     /// <summary>A relay's failure: our own message, or the downstream packet to re-wrap.</summary>
     private sealed record PendingFailure(FailureMessage? Failure, byte[]? DownstreamPacket);

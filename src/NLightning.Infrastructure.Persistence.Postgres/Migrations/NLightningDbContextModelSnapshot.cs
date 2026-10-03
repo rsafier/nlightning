@@ -2990,6 +2990,70 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.ToTable("payment_trampoline_hops", (string)null);
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayAttemptEntity", b =>
+                {
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("bytea")
+                        .HasColumnName("payment_hash");
+
+                    b.Property<int>("Attempt")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt");
+
+                    b.Property<long>("AmountOutMsat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("amount_out_msat");
+
+                    b.Property<long>("CltvExpiryOut")
+                        .HasColumnType("bigint")
+                        .HasColumnName("cltv_expiry_out");
+
+                    b.Property<long?>("CompletedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("completed_at");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("created_at");
+
+                    b.Property<int?>("FailureCode")
+                        .HasColumnType("integer")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureReason")
+                        .HasColumnType("text")
+                        .HasColumnName("failure_reason");
+
+                    b.Property<long>("IncomingAmountMsat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("incoming_amount_msat");
+
+                    b.Property<byte[]>("IncomingChannelIds")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("incoming_channel_ids");
+
+                    b.Property<long>("IncomingTotalMsat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("incoming_total_msat");
+
+                    b.Property<byte[]>("NextNodeId")
+                        .HasColumnType("bytea")
+                        .HasColumnName("next_node_id");
+
+                    b.Property<int>("Parts")
+                        .HasColumnType("integer")
+                        .HasColumnName("parts");
+
+                    b.HasKey("PaymentHash", "Attempt")
+                        .HasName("pk_trampoline_relay_attempts");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_trampoline_relay_attempts_created_at");
+
+                    b.ToTable("trampoline_relay_attempts", (string)null);
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity", b =>
                 {
                     b.Property<byte[]>("PaymentHash")

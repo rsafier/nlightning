@@ -271,6 +271,19 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Waits until one of our invoices is no longer open (ClientCommand 47, Cashu plan C0, NL-991).
+    /// </summary>
+    /// <param name="paymentHash">The invoice's payment hash.</param>
+    /// <param name="timeoutSeconds">How long the daemon waits, or null for its default.</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<WaitInvoiceIpcResponse> WaitInvoiceAsync(Hash paymentHash, uint? timeoutSeconds,
+                                                         CancellationToken ct = default)
+    {
+        var req = new WaitInvoiceIpcRequest { PaymentHash = paymentHash, TimeoutSeconds = timeoutSeconds };
+        return SendRequestAsync<WaitInvoiceIpcRequest, WaitInvoiceIpcResponse>(ClientCommand.WaitInvoice, req, ct);
+    }
+
+    /// <summary>
     /// Pays a BOLT 11 invoice and waits for the outcome (ClientCommand 10).
     /// </summary>
     /// <param name="bolt11">The invoice.</param>
@@ -472,7 +485,7 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Liquidity ads (ClientCommand 46, NL-850): our rates, the sellers we know of or our purchases.
+    /// Liquidity ads (ClientCommand 47, NL-850): our rates, the sellers we know of or our purchases.
     /// </summary>
     public Task<LiquidityAdsIpcResponse> LiquidityAdsAsync(LiquidityAdsIpcRequest request,
                                                            CancellationToken ct = default)
@@ -723,11 +736,13 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Lists a page of our outgoing payments, newest first (ClientCommand 12).
+    /// Lists a page of our outgoing payments, newest first (ClientCommand 12); the outgoing legs of trampoline relays
+    /// only with <paramref name="includeRelayLegs"/> (NL-899).
     /// </summary>
-    public Task<ListPaymentsIpcResponse> ListPaymentsAsync(int skip, int take, CancellationToken ct = default)
+    public Task<ListPaymentsIpcResponse> ListPaymentsAsync(int skip, int take, CancellationToken ct = default,
+                                                           bool includeRelayLegs = false)
     {
-        var req = new ListPaymentsIpcRequest { Skip = skip, Take = take };
+        var req = new ListPaymentsIpcRequest { Skip = skip, Take = take, IncludeRelayLegs = includeRelayLegs };
         return SendRequestAsync<ListPaymentsIpcRequest, ListPaymentsIpcResponse>(ClientCommand.ListPayments, req, ct);
     }
 

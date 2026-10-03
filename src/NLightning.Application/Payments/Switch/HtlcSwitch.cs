@@ -27,6 +27,7 @@ using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Onchain.Models;
 using Domain.Payments.Enums;
+using Domain.Payments.Events;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Payments.Trampoline;
@@ -182,6 +183,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private readonly CancellationTokenSource _disposeCts = new();
     private readonly ISecureKeyManager? _secureKeyManager;
     private readonly ITrampolineFailureOnionService? _trampolineFailureOnionService;
+    private readonly IPaymentEventPublisher? _paymentEventPublisher;
     private volatile bool _disposed;
 
     public HtlcSwitch(IChannelLockProvider channelLockProvider, IChannelMemoryRepository channelMemoryRepository,
@@ -198,9 +200,11 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                       INodeDrainState? nodeDrainState = null,
                       IRefusedHtlcCounter? refusedHtlcCounter = null, ISecureKeyManager? secureKeyManager = null,
                       ITrampolineHtlcHandler? trampolineHandler = null,
-                      ITrampolineFailureOnionService? trampolineFailureOnionService = null)
+                      ITrampolineFailureOnionService? trampolineFailureOnionService = null,
+                      IPaymentEventPublisher? paymentEventPublisher = null)
     {
         _trampolineHandler = trampolineHandler;
+        _paymentEventPublisher = paymentEventPublisher;
         _secureKeyManager = secureKeyManager;
         _trampolineFailureOnionService = trampolineFailureOnionService;
         _refusedHtlcCounter = refusedHtlcCounter;
@@ -402,9 +406,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             if (firstHandling)
                 _refusedHtlcCounter?.Count(RefusedHtlcReason.AddedAfterShutdown);
             await RecordSecretAsync(channelId, htlcId, sharedSecret, storedSecret, cancellationToken);
-            var trampolineKeys = result is IncomingOnionTrampolineResult trampolineOnion
-                                     ? TrampolineFailureKeys.From(trampolineOnion)
-                                     : null;
+            var trampolineKeys = TrampolineHtlcFailures.KeysFrom(result);
             await FailBackAsync(channelId, htlc, sharedSecret, FailureMessage.TemporaryNodeFailure(), cancellationToken,
                                 introduction, trampolineKeys);
             _logger.LogInformation("Failed back incoming HTLC {HtlcId} of channel {ChannelId}: added after our shutdown "
@@ -446,8 +448,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                         cancellationToken);
                 await FailBackAsync(channelId, htlc, trampolineFailed.OuterSharedSecret, trampolineFailed.Failure,
                                     cancellationToken, blindedIntroduction: false,
-                                    new TrampolineFailureKeys(trampolineFailed.OuterSharedSecret,
-                                                              trampolineFailed.TrampolineSharedSecret, null));
+                                    TrampolineHtlcFailures.KeysFrom(trampolineFailed));
                 return;
 
             case IncomingOnionTrampolineFinal trampolineFinal:
@@ -855,6 +856,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                 await FulfillFinalAsync(part.ChannelId, part.HtlcId, preimage, part.SharedSecret, Settle,
                                         cancellationToken);
                 LogFulfilled(part, set.PaymentHash);
+                PublishSettled(set.PaymentHash, amount);
                 return true;
             }
             catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
@@ -868,6 +870,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
         if (!await MarkPartAsync(part.ChannelId, part.HtlcId, preimage, Settle, cancellationToken))
             return false;
+
+        PublishSettled(set.PaymentHash, amount);
 
         _logger.LogInformation("Settled invoice {PaymentHash} with incoming HTLC {HtlcId} of channel {ChannelId}, "
                              + "which is {Resolution}", set.PaymentHash, part.HtlcId, part.ChannelId,
@@ -1116,6 +1120,13 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                                           IsOnchain(channelId), CurrentHeight, selfPayment);
         }, _logger);
     }
+
+    /// <summary>
+    /// Tells the payment event subscribers (Cashu plan C0, NL-991) that the invoice of <paramref name="paymentHash"/>
+    /// is settled: called after the save that settled it.
+    /// </summary>
+    private void PublishSettled(Hash paymentHash, LightningMoney amount) =>
+        _paymentEventPublisher?.Publish(new InvoiceSettledEvent(paymentHash, amount, _timeProvider.GetUtcNow()));
 
     /// <summary>
     /// Whether one of our own payments is paying <paramref name="invoice"/> (NL-609): its row is <c>InFlight</c> or
@@ -1977,6 +1988,11 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             return;
         }
 
+        // The introduction node of a blinded trampoline route that is not its final node replaces every error by its
+        // own (TR-R-14)
+        if (trampoline.IntroductionSha256 is { } introductionSha256)
+            failure = FailureMessage.InvalidOnionBlinding(introductionSha256);
+
         if (failure.Code == FailureCode.InvalidOnionBlinding)
             await DelayBlindedErrorAsync(cancellationToken);
 
@@ -2303,30 +2319,10 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             ? htlc
             : null;
 
-    /// <summary>
-    /// The open channel the onion's <c>short_channel_id</c> names: one of our aliases or the peer's alias, or the real
-    /// scid unless <c>option_scid_alias</c> is in the channel type (<c>Compulsory</c>): BOLT 2 forbids routing into
-    /// such a channel by its real scid. A channel that only negotiated the feature (<c>Optional</c>, e.g. a public
-    /// channel, announced by its real scid) accepts both (NL-348).
+    /// <summary>The open channel the onion's <c>short_channel_id</c> names (<see cref="OutgoingChannelResolver"/>).
     /// </summary>
-    /// <remarks>Splicing plan D12 (SP2-0 seam, lane SP2-B): a short channel id a splice lock retired resolves through
-    /// <see cref="IRetiredScidMap"/> for 72 blocks, after the live ones and the aliases.</remarks>
     private ChannelModel? ResolveOutgoingChannel(ShortChannelId shortChannelId) =>
-        _channelMemoryRepository.FindChannels(c => c.State == ChannelState.Open
-                                                && (c.LocalAliases?.Contains(shortChannelId) == true
-                                                 || c.RemoteAlias == shortChannelId
-                                                 || (c.ChannelParams.UseScidAlias != FeatureSupport.Compulsory
-                                                  && c.ShortChannelId != default
-                                                  && c.ShortChannelId == shortChannelId)))
-                                .FirstOrDefault()
-     ?? ResolveRetiredChannel(shortChannelId);
-
-    /// <summary>The open channel a retired short channel id still names (D12), or null.</summary>
-    private ChannelModel? ResolveRetiredChannel(ShortChannelId shortChannelId) =>
-        _retiredScidMap is not null && _retiredScidMap.TryResolve(shortChannelId, out var channelId)
-     && _channelMemoryRepository.TryGetChannel(channelId, out var channel) && channel.State == ChannelState.Open
-            ? channel
-            : null;
+        OutgoingChannelResolver.Resolve(_channelMemoryRepository, _retiredScidMap, shortChannelId);
 
     /// <summary>
     /// Inside a blinded route (M5), the open channel to <paramref name="nextNodeId"/> (the recipient data's

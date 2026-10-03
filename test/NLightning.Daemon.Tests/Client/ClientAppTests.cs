@@ -47,6 +47,7 @@ public class ClientAppTests
     [InlineData("pay-invoice", "lnbcrt1", "1000", "soon")]
     [InlineData("listinvoices", "0")]
     [InlineData("listpayments", "ten")]
+    [InlineData("listinvoices", "--include-relay-legs")]
     [InlineData("list-payments", "10", "-1")]
     [InlineData("listinvoices", "1001")]
     [InlineData("list-payments", "5000", "0")]
@@ -156,6 +157,8 @@ public class ClientAppTests
     [InlineData("listinvoices")]
     [InlineData("list-invoices", "10")]
     [InlineData("listpayments", "10", "20")]
+    [InlineData("listpayments", "--include-relay-legs")]
+    [InlineData("list-payments", "10", "--include-relay-legs", "20")]
     [InlineData("createinvoice", "any")]
     [InlineData("addinvoice", "50000123", "two words", "600")]
     [InlineData("payinvoice", "lnbcrt1")]
@@ -426,6 +429,22 @@ public class ClientAppTests
 
         // Assert
         Assert.Equal((take, skip), page);
+    }
+
+    [Theory]
+    [InlineData(new string[0], false, 100, 0)]
+    [InlineData(new[] { "--include-relay-legs" }, true, 100, 0)]
+    [InlineData(new[] { "25", "--include-relay-legs", "50" }, true, 25, 50)]
+    [InlineData(new[] { "25", "50" }, false, 25, 50)]
+    public void GivenListPaymentsArguments_WhenTheRelayLegFlagIsTaken_ThenThePageIsParsedWithoutIt(
+        string[] commandArgs, bool expected, int take, int skip)
+    {
+        // Act (NL-899)
+        var included = ClientApp.TakeIncludeRelayLegs(commandArgs, out var rest);
+
+        // Assert
+        Assert.Equal(expected, included);
+        Assert.Equal((take, skip), ClientApp.ParsePage(rest));
     }
 
     [Fact]

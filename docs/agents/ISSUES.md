@@ -4,9 +4,19 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-03 by the Cashu integrator (branch `wip/cashu-int` from `origin/wip/cashu` at `b38d2686`, merged with `wip/fafo`): the Cashu entries are renumbered because `wip/fafo` landed NL-900, NL-903, NL-904 and NL-905 first: NL-900 → NL-990 (epic), NL-901 → NL-991 (C0), NL-902 → NL-992 (C1), NL-903 → NL-993 (C2), NL-904 → NL-994 (C3), NL-905 → NL-995 (C4), NL-906 → NL-996 (IL2026), NL-907 → NL-997 (processor follow-ups), in every doc, code comment and test of the Cashu work (old commit messages keep the old IDs; the C0 commit `e5cb13a8` cites its first numbers NL-811 (epic, now NL-990) and NL-812 (C0, now NL-991), which stay unassigned as the harness note below says). The Cashu mint proof (NL-993) moved from Docker to the cluster harness (matrix suite `cashu`). NL-996 fixed in the merge (`12440f0b`). Integration review of the Cashu diff (listener security, payment event stream, `waitinvoice`, the processor against CDK v0.18.1, trampoline interplay): NL-998 (high), NL-999 and NL-1003 fixed; NL-1000, NL-1001 (medium) and NL-1002 open; rejected: none (the sub-sat melt note in the plan was a doc mismatch, fixed in `CASHU_PLAN.md`). Summary rows recounted from the entries after merging wip/fafo at `5d59c5f2`: 804 entries, no duplicate IDs.
+
+Updated 2026-10-03 by the NL-895 review lane (worktree branch from `wip/fafo` at `9418c968`): NL-922 (medium) new and fixed in dedff28c (blinded trampoline hop fee floor, per-channel CLTV delta, expiry bounds), NL-923 (low, open) new: the kept delta of a blinded relay after a restart. Summary: fixed medium 201 -> 202, open low 69 -> 70.
+
+Updated 2026-10-03 by the trampoline observability lane (worktree branch from `wip/fafo` at `9418c968`): NL-899 and NL-981 (low) fixed in d78d6e7e and 021dd228 (migration `AddTrampolineRelayAttempts`); NL-940 (low, open) added: a `getroute` quote through a trampoline node. Summary: open low 69 -> 68, fixed low 417 -> 419, total 788 -> 789.
+
+Updated 2026-10-03 by the trampoline payer lane (worktree branch `worktree-agent-aa579db4e7a99b37e` from `wip/fafo` at `9418c968`): NL-980 fixed (5fc1bfc3: the zero-fee split over our own channels to the payee before hint and graph routes), NL-982 fixed (e60f768c: a failed payment records no fee, ordinary payments included), NL-898 fixed (8239d5dd: the payer verifies the outer attribution_data of trampoline failures).
+
 Updated 2026-10-03 by the taproot wave t01 integrator (branch `wip/taproot-int` from `origin/wip/taproot-plan` at `ee682a23`, merged into `wip/fafo`): NL-913 fixed (cluster proof `tap-mx1`; CLN v26.06.8 does not signal simple close), NL-903 (low, fixed in 075a7920, f0ca4a5c and 5c14c684: review fixes) and NL-904 (medium, open: T3/T4 obligations from the review) new; NL-911 and NL-914 updated. NL-910 (low, open: a `ClnPeerStorageTests` cluster flake). Taproot NL-895..NL-899 renumbered to NL-911..NL-915 (collision with the trampoline follow-ups, which landed first).
 
 Updated 2026-10-03 by the namespace-cap lane (branch `wip/nscap`, owner decision 2026-10-03): NL-844 (fixed, b8362d19, 501bebd7: the harness cap on run namespaces is 12, set once in `RunAdmission.DefaultMaxRuns`; the matrix in 1,058 s at a peak of 11 namespaces) and NL-905 (open, low: the cln suite is the matrix long pole at 12 namespaces). Summary rows recounted from the entries after the merge of `wip/fafo` at bd1a0dc5 (NL-806 lane): 773 entries, no duplicate IDs.
+
+Updated 2026-10-03 by the NL-895 lane (worktree branch `worktree-agent-a5cefe035b538e693` from `wip/fafo` at `ed4d7e7a`): NL-895 (low) fixed in 3dcd390d (product `053bb672`); NL-920 (low, open) added: a dual-fund test that already fails at `ed4d7e7a`. Summary: open low 62 -> 61 -> 62, fixed low 411 -> 412, total 771 -> 772.
 
 Updated 2026-10-03 by the batch12 integrator (branch `wip/batch12` from `wip/fafo` at `fedb876b`; lanes b12-splice-htlc, b12-ux, b12-reconcile-drift, b12-reestablish-deadline and b12-trimmed-loss merged with `--no-ff`): NL-880 (high) and NL-881 (medium) fixed in d2d2a7e5, NL-882..NL-885 (low) in 730ff053, NL-886/NL-887 (low) in 24d3dc4c, NL-760 and NL-796 fixed, NL-890 (low flake, open); review fixes NL-891 (medium), NL-892 (medium), NL-893 and NL-894 (low), all fixed. NL-888 and NL-889 are unused. NL-776 (lane b12-anysegwit, cfafd698) fixed.
 
@@ -151,15 +161,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 68 | 71 |
-| in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 63 | 201 | 415 | 693 |
+| open | 0 | 0 | 5 | 71 | 76 |
+| in-progress | 0 | 0 | 2 | 0 | 2 |
+| fixed | 14 | 64 | 203 | 428 | 709 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
-| duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **212** | **495** | **784** |
+| duplicate | 0 | 0 | 2 | 3 | 5 |
+| **Total** | **14** | **64** | **217** | **512** | **807** |
 
 ### Epics
 
+- NL-990: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-991 (fixed), C1 CDK gRPC payment processor NL-992 (fixed, BOLT 11; follow-ups NL-997), C2 proof NL-993 (fixed, on the cluster harness), C3 native wallet NL-994, C4 hold invoices NL-995; integration review NL-998, NL-999, NL-1003 fixed, NL-1000..NL-1002 open)
 - NL-877: Simple taproot channels (`option_simple_taproot`) (open, medium; plan `docs/agents/TAPROOT_CHANNELS_PLAN.md` T0-T6; spec merged 2026-05-04, LND 0.21 and Eclair 0.14 run it as private channels; taproot gossip NL-878 waits for BOLTs #1059)
 - NL-875: Trampoline routing (BOLTs PR #836): client, relay and target (in-progress, medium; plan `docs/agents/TRAMPOLINE_PLAN.md`, TR0-TR5 built on `wip/fafo` 2026-10-03, merges `7f5c5d85` TR0, `e958b8eb` TR1, `9f0d1050` TR3-P, `165acd77` TR2, `fb2b07ca` TR5 phase 1, `1c09e718` TR4, `dd48b26d` TR3, `c1811bbf` TR5 phase 2; experimental until an owner decision; follow-ups NL-895..NL-899)
 - NL-850: Liquidity ads (BOLT PR #1153) (fixed, medium; plan `docs/agents/LIQUIDITY_ADS_PLAN.md`, LA0-LA7 done on `claude/youthful-hamilton-x4ngo7` at `10b8ba84`: both roles in the dual-funded open, its RBF, the splice and the splice RBF with restarts, `LiquidityPurchases`, the lease guard, `LiquidityFeePaid`/`LiquidityFeeEarned`, `liquidityads` (IPC 46); proven in-process in both roles and against Eclair 0.14.3 as seller (`EclairLiquidityAdsTests` 5/5; Eclair sells only in splices); open follow-ups NL-851..NL-859; integration review fixes NL-870, NL-871)
@@ -1945,6 +1956,57 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-394, NL-501
 - **Plan ref:** —
 
+
+### NL-980 The payer prefers a costly single-part route through strangers over a zero-fee split across its own direct channels
+- **Status:** fixed (5fc1bfc3)
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Routing/PaymentRoutePlanner.cs`, `Payments/Send/PaymentService.cs` (part selection before splitting)
+- **Evidence:** Mutinynet trampoline live test (2026-10-03, FAFO2 → FAFO → FAFO3, build 96a2fb0a). The outer leg to FAFO, a direct peer over two channels, first tried single-part routes through public third-party nodes (fee about 121,000 msat) before splitting across FAFO2's own two channels at fee 0. That cost about 10 s and exposed the attempts to strangers. The planner is general: this is not trampoline-specific.
+- **Fix sketch:** when the destination (or the trampoline) is a direct peer and the direct channels can carry the amount together, try the zero-fee split first, or weigh fee against part count.
+- **Fix (5fc1bfc3):** `PaymentRoutePlanner.TryPlan` tries, after the direct single parts and before any hint or graph path, a split over at least two of our direct channels to the payee (`TrySplit` over the direct paths only: no fee, no other node sees the payment; only with `PaymentTarget.SupportsMpp` and at least two parts allowed, so `MaxParts`/`MinPartMsat` apply). Generic: the outer leg to a trampoline peer (its target supports MPP) and any ordinary MPP payment to a direct peer benefit; non-MPP payees keep the old order. No existing planner or payment test changed expectation. Tests: `GraphRoutePlannerTests` (two 600k channels to the payee and a 1M graph route through Carol: split over both at fee 0; one channel that carries it: one direct part; no `basic_mpp`: the graph route as before) and `PaymentRoutePlannerTests` (the same against a hint through Carol, with and without `basic_mpp`).
+- **Blocks/Blocked-by:** Related NL-270, NL-875
+- **Plan ref:** —
+
+### NL-981 `listforwards` totals leave out trampoline relay fees, and the relay's outgoing leg shows in `listpayments` as a plain payment
+- **Status:** fixed (d78d6e7e)
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Daemon/Handlers/ListForwardsClientHandler.cs` (summary totals), `Payments.IsTrampolineRelay` consumers in the `listpayments` path
+- **Evidence:** Mutinynet trampoline live test (2026-10-03). FAFO earned 92,000 msat in 5 trampoline relays, booked correctly as `TrampolineRelaySettled` (income:lightning:routing 93,007 msat with 1,007 msat from a plain forward). But the `listforwards` "fees earned" total counts only the plain forward. FAFO's relay legs appear in `listpayments` without a marker. A failed relay row is replaced when the payer retries the same hash. The failed-row history and the listing gaps overlap NL-899; the totals gap is new.
+- **Fix sketch:** add the relay rows (key 2) to the totals, mark relay legs in `listpayments` (or hide them behind a flag), and keep failed relay attempts.
+- **Fix (d78d6e7e):** the `listforwards` summary (keys 0-4) counts the relays with the forwards (collecting = pending, sending = offered) and adds the fulfilled relays' `FeeEarned` to the fees earned; keys 7-11 carry the relays' share (`ITrampolineRelayDbRepository.SummarizeAsync`, replaced attempts counted as failed) and the client prints it as `of which trampoline relays: n - ...; fees earned x msat`. Relay legs are hidden from `listpayments` unless `--include-relay-legs` and marked when listed; the failed-attempt history is NL-899's fix. Tests: Daemon `ListForwardsClientHandlerTests`, `ListForwardsPrinterTests`, `PaymentsMessagePackTests.Given_TrampolineListings_*`; Integration `TrampolineRelayAttemptsSchemaRoundTrip` (totals on SQLite).
+- **Blocks/Blocked-by:** Related NL-899, NL-875
+- **Plan ref:** `TRAMPOLINE_PLAN.md`
+
+### NL-982 A failed trampoline payment shows its last attempt's fee budget as its fee
+- **Status:** fixed (e60f768c)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.TrampolinePayer.cs` (the payment row's fee on failure)
+- **Evidence:** Mutinynet trampoline live test (2026-10-03, test e2: recipient offline, 0x2019 from the trampoline): the failed payment's "Fee (msat)" read 10,000, the doubled budget of the last attempt, while nothing was paid. Cosmetic: the books recorded no fee.
+- **Fix sketch:** record 0 (or the budget in a separate field) for a payment that ends Failed.
+- **Fix (e60f768c):** `PaymentModel.Fail` clears `Fee` (a failed payment paid nothing), for trampoline and ordinary payments alike (ordinary failed rows had the same bug: the last attempt's routing fee). `PaymentDbRepository` writes `FeeMsat` with the mutable fields so `UpdateAsync` stores the zero; `FinishFailedAsync` restores an already failed row with zero and logs the offered fee only ("its last attempt offered N msat in fees, none paid"); the defensive late fulfill of a failed row (`WithPreimage`) takes the fee from the fulfilled HTLC's route when it carried the whole amount. `listpayments` shows 0; the books were already right (`PaymentFailed` books no fee). Tests: `PaymentModelTests`, `PaymentPersistenceTests.Given_AnInFlightPaymentWithAFee_When_ItFailsAndIsUpdated_*` (SQLite), `AttributionHarnessTests` (ordinary failure through Carol), `TrampolineAttributionHarnessTests.Given_AFailedPaymentThroughATrampoline_*` (row and accounting).
+- **Blocks/Blocked-by:** Related NL-875
+- **Plan ref:** —
+
+### NL-983 A late `closing_sig` replaces a mutual close that already confirmed, and the channel stays Closing
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Close/Simple/SimpleCloseCoordinator.cs` (`HandleClosingSig` → `RecordClosingTransactionAsync`; probably also the `closing_complete` path near line 270); the mutual-close spend and confirmation handling in `ChannelManager`
+- **Evidence:** cluster matrix `trreg-mx1` (wip/fafo 9418c968, 2026-10-03), `Day0FlowTests.Given_TwoNLightningNodes_When_TheyRunTheDay0Script_Then_LndSeesEveryStepAndEveryBackupIsCurrent`, step 8 (a simple close between two default nodes, `option_simple_close` Optional by default since NL-913/D-T1). The test timed out with `day0-b: channel 9428c344… Closed` (`Day0FlowTests.cs:467`).
+  - Each side had its own closing transaction: A's 418a9c1c and B's 78878e76.
+  - B signed and broadcast A's 418a, and the test mined it: confirmed at height 423, 22:04:13.241.
+  - 61 ms later B received A's `closing_sig` for 78878e. `HandleClosingSig` recorded 78878e as the channel's closing transaction, overwriting 418a, and watched it. Its broadcast then failed with `bad-txns-inputs-missingorspent`.
+  - At 418a's 6th confirmation B no longer recognised it as its close, never called `CompleteCloseAsync`, and the channel stayed Closing.
+  - A received the messages in the other order and reached Closed ("closed on chain by mutual close 418a (we had 78878e)").
+  - The class passed rerun alone, and on base 61889866, which still had legacy close, so the comparison says nothing about this bug.
+  - Diagnostics: `TestResults/cluster/trreg-mx1/day0/` in the main checkout (output.log.gz, diag, rerun-1).
+  - Funds are not at risk (the close confirmed). The channel row never reaches Closed.
+- **Fix sketch:** once the funding output is seen spent by one of the channel's mutual closes, in the mempool or confirmed, a later `closing_complete`/`closing_sig` must not replace the stored closing transaction. Alternatively, `CompleteCloseAsync` accepts the confirmed spend the funding watch recorded. Add a regression test that delivers `closing_sig` after the peer's closing transaction has confirmed.
+- **Blocks/Blocked-by:** Related NL-913, NL-859 (probably the same bug, seen against Eclair), NL-877
+- **Plan ref:** BOLT2 N11
 ### NL-056 HTLC-success / HTLC-timeout second-stage transactions not implemented
 - **Status:** fixed (dfe8866, b222896)
 - **Severity:** high
@@ -2776,12 +2838,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TRAMPOLINE_PLAN TR0-TR5
 
 ### NL-895 Blinded hops as trampoline hops (BOLT 12 recipient with bit 57) do not relay
-- **Status:** open
+- **Status:** fixed (3dcd390d; product `053bb672`, payer vector check `5e9042d8`)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Trampoline/TrampolineRelayService.cs`, `Payments/Onion/IncomingOnionProcessor.cs` (blinded trampoline relay data), `Payments/Send/PaymentService.Trampoline*.cs`
 - **Evidence:** TR5 phase 2 scenario 10(b) (2026-10-03): C's `BlindedPathBuilder` path names the X–C hop by `short_channel_id`, which the relay engine does not resolve to a node ("lacks its relay instructions"); with it resolved by hand, X applies its own `Node:Trampoline` fee/delta although the recipient fixed that hop's price in the path's `payment_relay`, so X refuses with NODE|26. TR-R-07/TR-R-10.
 - **Fix sketch:** resolve `short_channel_id` in blinded trampoline recipient data to the channel peer; use the path's `payment_relay`/constraints (not `Node:Trampoline`) as a blinded hop's policy; prove 10(b) in `TrampolineRelayE2ETests` (X running the relay engine).
+- **Fix (2026-10-03, owner-approved D-NL895-1/2):** the relay engine resolves a blinded hop's next node from `next_node_id` or from the recipient data's `short_channel_id` against our open channels (real scid, aliases, retired scids) through `Payments/Switch/OutgoingChannelResolver`, the switch's blinded-forward rule moved out of `HtlcSwitch`, and saves it as the relay's `NextNodeId`; an unknown scid, an HTLC below the outer `amt_to_forward` or an expiry below the outer `outgoing_cltv_value` refuse the part with `invalid_onion_blinding` (our own at the introduction node, malformed past it). A blinded hop is priced by `payment_relay` (already applied by `IncomingOnionProcessor` to the outer total and expiry) with `TrampolineRelayPolicy.EvaluateBlinded`, never `Node:Trampoline` or NODE|26; the leg's budget is sum in − amount out and the lowest incoming expiry − our forwarding delta. The payer side needed no change: its inner payloads, its whole trampoline onion and the leg's outer payload equal PR 836 vector [1] byte for byte (`TrampolineOnionFactoryTests`). Proofs: `Payments/Trampoline/BlindedTrampolineRelayTests` (10 cases on `ThreeNodeHarness`), `TrampolineRelayPolicyTests` (`EvaluateBlinded`), scenario 10(b) in `TrampolineRelayE2ETests` (with and without C's dummy hop; a `payment_constraints` violation read by A as X's own `invalid_onion_blinding`).
 - **Blocks/Blocked-by:** Follow-up of NL-875
 - **Plan ref:** TRAMPOLINE_PLAN TR5 scenario 10(b)
 
@@ -2796,34 +2859,88 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TRAMPOLINE_PLAN §7
 
 ### NL-897 Trampoline parts failed by the deadline monitor or the dust switch use the outer secret only
-- **Status:** open
+- **Status:** fixed (9c76b07f)
 - **Severity:** low
 - **Kind:** spec
 - **Location:** `src/NLightning.Application/Channels/Safety/HtlcExpiryMonitor.cs` (`FailBackAsync`), `Channels/Fees/DustExposureHtlcSwitch.cs`
 - **Evidence:** TR2/TR3 reports (2026-10-03): the switch and the relay engine double-wrap (trampoline then outer secret) every failure of a trampoline part, but the two failure paths outside them create the error with the outer secret only. The payer still decrypts it (outer layer, TR-R-15) but cannot attribute it to the trampoline layer.
 - **Fix sketch:** have both paths rebuild the trampoline keys (re-peel the stored onion as `HtlcSwitch` does) and use `TrampolineErrorPackets.CreateAttributed`.
+- **Fix (9c76b07f):** `Payments/Switch/TrampolineHtlcFailures`: `ResolveKeysAsync` peels the stored onion again (no replay owner) or reads the relay part's `TrampolineRelayParts` secrets; `FailAsync` creates the failure with the trampoline then the outer secret (outer-layer attribution when advertised; malformed `invalid_onion_blinding` past a blinded introduction node, our own `invalid_onion_blinding` at the introduction node of a relay, `TrampolineFailureKeys.IntroductionSha256`, also honored by the switch now). Used by `HtlcExpiryMonitor.FailBackAsync` and `DustExposureHtlcSwitch`; ordinary HTLCs unchanged. Tests in `HtlcExpiryMonitorTests` and `DustExposureHtlcSwitchTests` (the payer decrypts at the trampoline layer). Left as before: a held final trampoline part after a restart with trampoline routing turned off peels as an unknown TLV 20 and is failed with the outer secret only.
 - **Blocks/Blocked-by:** Follow-up of NL-875
 - **Plan ref:** TRAMPOLINE_PLAN TR-R-14
 
 ### NL-898 The payer does not verify attribution_data on trampoline failures
-- **Status:** open
+- **Status:** fixed (8239d5dd)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Send/PaymentService.Trampoline*.cs`
 - **Evidence:** TR4 report (2026-10-03): failures through a trampoline are decrypted with `DecryptTrampolineErrorPacket`, but the outer-layer `attribution_data` (which the relay and target create, TR2's `TrampolineErrorPackets.CreateAttributed`/`WrapAttributed`) is not verified as it is for ordinary payments (NL-326). PR 836 says nothing about attribution on the trampoline layer (TR1 finding).
 - **Fix sketch:** verify the outer layer's attribution over the outer route's hold times when `OptionAttributionData` is advertised.
+- **Fix (8239d5dd):** `PaymentService.HandleSessionFailureAsync` keeps the attribution `DescribeFailure` verified over the outer route (`IAttributionDataService.DecryptErrorPacket`: the hops up to the outer erring hop, every outer hop for a trampoline-layer error) instead of dropping it in the trampoline branch: the verified hold times go on the part and the row as for any payment, the reason names an outer hop whose HMAC failed (`DescribeOuterAttribution`), and when no hop of either route authenticated the error the blamed hop is the source index and goes to the retry policy (`attributionBlame`, mission control). `DescribeStoredFailure` (no session) verifies it too (`VerifyOuterAttribution`). Never throws; without attribution nothing changes. Tests: `Payments/Trampoline/TrampolineAttributionHarnessTests` (Bob → Carol → trampoline David → Erin over the graph; `HarnessTrampolineNode.UseAttribution` builds the failures with the production `TrampolineErrorPackets`): David's NODE|26 and Erin's failure re-wrapped by David verify with Carol's and David's hold times, a garbled attribution names outer hop 1 and keeps only Carol's hold time, no attribution leaves the result unchanged.
 - **Blocks/Blocked-by:** Follow-up of NL-875; related NL-326
 - **Plan ref:** TRAMPOLINE_PLAN R2
 
 ### NL-899 Trampoline observability gaps: `listpayments`/`getroute`, failed relay history
-- **Status:** open
+- **Status:** fixed (d78d6e7e, 021dd228)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `Daemon/Handlers/ListPaymentsClientHandler.cs`, `GetRouteClientHandler`, `ITrampolineRelayDbRepository.RemoveFailedAsync`
 - **Evidence:** TR3/TR4 reports (2026-10-03): `getroute` and `listpayments` know nothing of trampolines (a payer's inner route is in `PaymentTrampolineHops` only; a relay's outgoing leg shows in `listpayments` as a row with `IsTrampolineRelay` but no marker); a payer's retry of the same hash deletes the failed relay row and its parts, so `listforwards` loses that history; the channels report credits a relay's income to its first incoming channel only.
 - **Fix sketch:** show the trampoline node/inner route in `listpayments`, hide or mark relay legs, keep failed relay attempts (attempt column or history table), split relay income per incoming part.
+- **Fix (d78d6e7e, 021dd228):** (1) failed relay history: `RemoveFailedAsync` keeps the replaced relay as a row of the new table `TrampolineRelayAttempts` (migration `AddTrampolineRelayAttempts`, all three providers, compiled models; PK hash + attempt from 1; next node, amounts, part count, incoming channel ids, failure code/reason, times) in the same save, so the relay table stays keyed by hash and the engine's retry flow, the switch and the resolvers are unchanged; `listforwards` merges the attempts into the relay page newest first (relay IPC key 14 `ReplacedAttempt`, printed `attempt n, replaced by the payer's retry`) and counts them as failed. (2) `listpayments` hides relay legs unless `--include-relay-legs` (request key 2), says how many it hid (response key 1), marks a listed leg (payment key 18 `IsTrampolineRelay`) and shows a trampoline payment's node and its last attempt's inner route from `PaymentTrampolineHops` (keys 19-21; repository `ListAsync(skip, take, includeTrampolineRelays)`, `CountTrampolineRelaysAsync`). (3) the channels report splits a relay's income per incoming channel in proportion to its amount (021dd228: new detail `incomingAmountsMsat` on `TrampolineRelaySettled`; sealed events are not rewritten, so a relay booked before it stays on its first channel). (4) `getroute`: its help says trampoline routes are not planned there; quoting one is left open as NL-940. Known limit: a payment retried without a trampoline after a trampoline attempt with the same hash still shows the earlier attempt's trampoline route (the hops have no link to the payment row). Tests: Daemon `ListPaymentsClientHandlerTests`, `ListPaymentsPrinterTests`, `ListForwardsClientHandlerTests`, `ListForwardsPrinterTests`, `ClientAppTests`, `PaymentsMessagePackTests`; Integration `TrampolineRelayPersistenceTests.Given_SchemaFromBeforeAddTrampolineRelayAttempts_*` (also in `Docker/PostgresTests`, not run); Application `TrampolineRelayServiceTests` (the NODE|26 retry keeps attempt 1), `TrampolineAccountingEventsTests`, `AccountingReportServiceTests`.
 - **Blocks/Blocked-by:** Follow-up of NL-875
 - **Plan ref:** TRAMPOLINE_PLAN TR3/TR4
+
+### NL-940 `getroute` cannot quote a route through a trampoline node
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Daemon/Handlers/GetRouteClientHandler.cs`, `Application/Payments/Routing/` (`IRouteQueryService`)
+- **Evidence:** split off NL-899 (d78d6e7e): `getroute` plans our own routes only; a payment that `payinvoice --trampoline` or `Node:Payments:Trampoline=Auto` would send through a trampoline node has no quote. Only the help text says so.
+- **Fix sketch:** an optional `--trampoline <node>` on `getroute` that quotes the outer route to the trampoline node plus its cached (or default) trampoline policy and CLTV delta, printed as a two-layer route.
+- **Blocks/Blocked-by:** Related NL-899, NL-875
+- **Plan ref:** TRAMPOLINE_PLAN TR4
+
+### NL-920 `DualFundUpfrontShutdownScriptTests.Given_AP2TrScriptWithAnySegwit_*` fails on `wip/fafo` at `ed4d7e7a`
+- **Status:** duplicate of NL-903 (fixed upstream in `f0ca4a5c`/`5c14c684`: the test no longer runs on the 1 s open timeout; 4/4 on `wip/fafo` after the NL-895 merge)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Channels/DualFunding/DualFundUpfrontShutdownScriptTests.cs:92`, `src/NLightning.Application/Channels/DualFunding/`
+- **Evidence:** found by the NL-895 lane's gate (2026-10-03): the test fails every run, alone too, with "the dual-funded open timed out" after Bob's first `commitment_signed` (wire: OpenChannel2, AcceptChannel2, the tx_add/tx_complete exchange, Bob CommitmentSigned, then nothing). It fails identically with the base `ed4d7e7a` Application assembly, so it predates NL-895; the test came with NL-776 (`cfafd698`, batch12) and probably met the trampoline merges on `wip/fafo`. The other three cases of the class pass. Not diagnosed further (out of the NL-895 lane's scope).
+- **Fix sketch:** run the class with logs on, find why Alice does not answer Bob's `commitment_signed` when its accepter announced a P2TR `upfront_shutdown_script` with anysegwit negotiated (a validation or signing refusal swallowed into the open's timeout?); fix and keep the test green.
+- **Blocks/Blocked-by:** related NL-776
+- **Plan ref:** none
+
+### NL-921 NL-897 review follow-ups: blinded trampoline failure shapes outside the switch
+- **Status:** fixed (c7bc7ecf)
+- **Severity:** low
+- **Kind:** spec
+- **Location:** `src/NLightning.Application/Payments/Switch/TrampolineHtlcFailures.cs`, `Channels/Safety/HtlcExpiryMonitor.cs` (`FailBackAsync`), `Channels/Fees/DustExposureHtlcSwitch.cs`, `Payments/Trampoline/TrampolineRelayService.cs` (`GetFailureKeysAsync`)
+- **Evidence:** adversarial review of NL-897 (2026-10-03): (1) at the introduction node of a blinded trampoline route that is not ours to end, a recipient data the processor refuses gives `IncomingOnionTrampolineFailed(..., invalid_onion_blinding)`, but `KeysFrom` kept only the secrets, so the dust switch sent `temporary_channel_failure` and the monitor `temporary_node_failure` instead of our own `invalid_onion_blinding` (BOLT 4, TR-R-14); (2) a relay part past a blinded introduction node whose re-peel only answers malformed `invalid_onion_blinding` (route blinding turned off since) fell back to its `TrampolineRelayParts` row without the blinded answer and was failed double-wrapped (same in the relay engine); (3) the dust switch peeled without the HTLC's amount and expiry, so `payment_constraints` were not checked; (4) a zero secret (a damaged row) silently made a failure nobody can read; (5) the monitor peeled an ordinary HTLC up to three times. Missing tests: the blinded branches of both paths, the switch's added-after-shutdown relay at the introduction node, attribution off, attribution in the dust switch.
+- **Fix (c7bc7ecf):** `KeysFrom` keeps the processor's `invalid_onion_blinding` as `IntroductionSha256` (the switch builds its keys with it too); `TrampolineHtlcFailures.FromStoredPart`, shared with the relay engine (its `PartFailureKeys` removed), keeps a re-peel's malformed `invalid_onion_blinding` as `BlindedMalformedSha256`; a row without a usable outer secret (32 non-zero bytes) gives no keys (the caller's ordinary path, the HTLC's stored secret) and `FailAsync` never uses an unusable trampoline secret (outer-only failure, warning, no throw); `ResolveAsync` returns the re-peel, reused by the monitor for the secret and the introduction check; the dust switch passes the HTLC's amount and expiry. The BOLT 2/4 random delay before an introduction node's `invalid_onion_blinding` stays out of these paths (documented, as `BlindedHtlcFailures.FailAsync`). Tests: region NL-921 of `HtlcExpiryMonitorTests` and `DustExposureHtlcSwitchTests` (new `TrampolineFailureTestKit.BuildBlindedRelayAsync`/`BuildBlindedFinalAsync`/`CreateUsWithoutRouteBlinding`) and `BlindedTrampolineRelayTests.Given_ARelayPartAtTheIntroductionNodeAddedAfterOurShutdown_*`; the six covering a fix fail on 9418c968.
+- **Blocks/Blocked-by:** Follow-up of NL-897 (and NL-895)
+- **Plan ref:** TRAMPOLINE_PLAN TR-R-14
+
+### NL-922 NL-895 review follow-ups: blinded trampoline hop fee floor, per-channel CLTV delta, expiry bounds
+- **Status:** fixed (dedff28c)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Trampoline/TrampolineRelayPolicy.cs`, `TrampolineRelayService.cs` (policy-evaluation path), `Payments/Policy/HtlcForwardingPolicy.cs` (shared grace helpers)
+- **Evidence:** adversarial review of NL-895 (2026-10-03, at `9418c968`): (1) `EvaluateBlinded` accepted any `payment_relay`, (0, 0, 40) included, so anyone could route a free circular rebalance through us and take a `MaxRelaysInFlight` slot (a plain blinded forward requires `payment_relay` >= our policy; before NL-895 a `next_node_id` blinded hop was priced by `Node:Trampoline`); (2) the delta check and the leg's first-hop cap used the node's `Node:Routing:CltvExpiryDelta`, while recipients build `payment_relay` from our channel's `channel_update` (`setchannelpolicy`); (3) neither evaluator checked expiry_too_soon or expiry_too_far (the leg planner caps the first hop at `MaxCltvExpiryDistance`, so a far outgoing expiry found no route, but only after the relay took a slot and started the leg; incoming expiries were not bounded at all); (6) `max_cltv_expiry` was checked against the outer expiry only.
+- **Fix (D-NL922-1):** D-NL895-2 stands (the price is `payment_relay`), but each blinded part is checked before it joins by `TrampolineRelayPolicy.CheckBlindedHopPrice`: fee and `cltv_expiry_delta` against the scid-resolved channel's configured policy (optional `IChannelPolicyProvider`: override else `Node:Routing`, with `GetPreviousPolicies` for the 10-minute grace through the helpers `HtlcForwardingPolicy.PaymentRelayCoversFee`/`LenientCltvExpiryDelta` that the forward now uses too; an unloaded provider refuses), or `Node:Routing` for a `next_node_id` hop, never `Node:Trampoline`; a refusal is `invalid_onion_blinding` with no relay row. The accepted hop's delta (the most lenient in grace) is what `EvaluateBlinded` keeps between the lowest incoming expiry and the outgoing one and the leg's first-hop cap. Deviation from the review's "cap at lowest incoming − max(channel delta, node delta)": the cap is lowest incoming − the hop's delta, as a plain forward over that channel keeps; with `max` a channel delta below the node's would be accepted and then left the leg no route. Both evaluators take a `TrampolineRelaySet` and `RoutingOptions`: expiry_too_soon (outgoing expiry <= height + `ExpiryTooSoonBlocks`, inclusive; for `recipient_blinded_paths` the outgoing value plus the paths' smallest delta, since the payer sets it near the height) and expiry_too_far (an incoming expiry > height + `MaxCltvExpiryDistance`); unblinded they and the `MinCltvMarginBlocks` check answer `temporary_trampoline_failure` (NODE|26 only for the fee and the delta: a payer cannot fix an expiry with our policy), blinded always `invalid_onion_blinding`. Each part's HTLC expiry is bounded by `payment_constraints.max_cltv_expiry`.
+- **Tests:** `BlindedTrampolineRelayTests` (fee below the channel's policy past the grace, the free relay, below `Node:Routing` for `next_node_id`, a `next_node_id` hop priced by `Node:Routing` though the channel asks more, grace accepted, channel delta below the node's accepted with its own cap, above it refused, too far, too soon, HTLC above `max_cltv_expiry`, HTLC below the outer `amt_to_forward`, a retired scid, a Compulsory alias channel's real scid, the unknown-scid tests asserting the scid check's own log reason, and a crash after the last part's save replayed from the stored `NextNodeId`/`NextPathKey` with the scid lookup counted), `TrampolineRelayServiceTests` (unblinded too far/too soon), `TrampolineRelayPolicyTests`. 11 of them fail on `9418c968`.
+- **Blocks/Blocked-by:** follow-up of NL-895; NL-923
+- **Plan ref:** TRAMPOLINE_PLAN §10 (D-NL922-1)
+
+### NL-923 A blinded trampoline relay's kept delta after a restart is an upper bound
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Trampoline/TrampolineRelayService.cs` (`KeptBlindedDeltaOf`)
+- **Evidence:** NL-922 keeps the hop's delta (the scid-named channel's, grace included) in memory per collecting relay, since the relay row stores the next node, not the channel. After a restart between the last part's save and `Sending`, the Collecting replay uses the largest of `Node:Routing:CltvExpiryDelta` and the current deltas of our open channels to the stored node, never resolving the scid again. A set whose `payment_relay` paid a smaller channel delta (or a delta in grace) is then refused with `invalid_onion_blinding` (safe, rare).
+- **Fix sketch:** store the hop's kept delta (or the named channel id) on the relay row (migration), or re-derive it from a re-peeled part onion without resolving the next node.
+- **Blocks/Blocked-by:** follow-up of NL-922
+- **Plan ref:** TRAMPOLINE_PLAN §10
 
 ## BOLT 5: On-chain handling
 
@@ -8433,6 +8550,148 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Blocks/Blocked-by:** Related NL-844, NL-841
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Namespace cap 12 record"
 
+## Cashu (ecash)
+
+### NL-990 Cashu ecash integration (epic)
+- **Status:** in-progress
+- **Severity:** medium
+- **Kind:** feature
+- **Location:** `docs/agents/CASHU_PLAN.md`; branch `wip/cashu`
+- **Evidence:** NLightning has every Lightning piece a Cashu mint needs (BOLT 11/12 receive and pay, MPP, on-chain wallet), but no Cashu integration: no backend contract the reference mint (CDK `cdk-mintd`) can use, no native ecash wallet, no hold invoices for NUT-14 swaps. CDK has no C# bindings (`cdk-ffi`: Python, Swift, Kotlin), so the integration speaks CDK's wire contracts or implements the NUTs.
+- **Fix sketch:** Waves C0-C4 of `CASHU_PLAN.md`: C0 payment event stream (NL-991), C1 CDK gRPC payment processor (NL-992), C2 proof against `cdk-mintd` (NL-993), C3 native wallet (NL-994), C4 hold invoices + NUT-14 (NL-995).
+- **Blocks/Blocked-by:** NL-991..NL-995
+- **Plan ref:** `docs/agents/CASHU_PLAN.md`
+
+### NL-991 No notification when an invoice is settled or a payment finishes
+- **Status:** fixed (e5cb13a8)
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `src/NLightning.Domain/Payments/Events/`, `Domain/Payments/Interfaces/IPaymentEvent{Publisher,Source}.cs`, `src/NLightning.Application/Payments/Events/PaymentEventHub.cs`, `Payments/Switch/HtlcSwitch.cs` (`SettleWithAsync`), `Payments/Send/PaymentService.cs` (`LogSucceeded`/`LogFailed`), `src/NLightning.Daemon/Handlers/WaitInvoiceClientHandler.cs`, IPC 47
+- **Evidence:** Settlement and payment outcomes were only visible by polling `listinvoices`/`listpayments` or the accounting feed; a mint backend (C1), NWC or webhooks need a push. The IPC has no server push.
+- **Fix sketch:** In-process `PaymentEventHub` (`IPaymentEventPublisher`/`IPaymentEventSource`) with bounded per-subscriber queues (oldest dropped, `Overflowed` flag), published after the committing save by the switch (`InvoiceSettledEvent`, once per invoice) and the payment service (`PaymentSucceededEvent`/`PaymentFailedEvent`, only for final outcomes, not retried attempts); `waitinvoice <payment_hash> [--timeout]` (ClientCommand 47) subscribes, then reads, then waits (event or 5 s recheck; 1-300 s). Tests: `Application.Tests/Payments/Events/PaymentEventHubTests`, `PaymentHarnessTests.Given_ASubscriber_*`, `ThreeNodeSwitchTests.Given_ASubscriberAtCarol_*`, `Daemon.Tests/Handlers/WaitInvoiceClientHandlerTests`, `Client/WaitInvoiceCommandTests`.
+- **Blocks/Blocked-by:** Blocks NL-992
+- **Plan ref:** `CASHU_PLAN.md` C0
+
+### NL-992 Cashu mints cannot use NLightning as their Lightning backend
+- **Status:** fixed (f5f69d23; BOLT 11 scope, follow-ups NL-997)
+- **Severity:** low
+- **Kind:** feature
+- **Location:** new `src/NLightning.Cashu.PaymentProcessor`
+- **Evidence:** `cdk-mintd` talks to external Lightning backends through the `CdkPaymentProcessor` gRPC service (`cdk-payment-processor/src/proto/payment_processor.proto`); the shipped processors (Bark, LDK Server, LNbits, Spark) do not cover NLightning, and none does BOLT 11, BOLT 12 and on-chain together.
+- **Fix sketch:** Built (BOLT 11): `src/NLightning.Cashu.PaymentProcessor` (vendored CDK v0.18.1 proto, `CdkPaymentProcessorService`, `CashuPaymentProcessorHost` on its own Kestrel, HTTP/2, h2c on loopback or TLS/mTLS from `TlsDirectory`), `Cashu:PaymentProcessor` (default off, refused on mainnet unless `AllowMainnet`, refused off loopback without TLS), invoices and payments labelled `cashu-mint`, `WaitPaymentEvent` over NL-991's hub; `CASHU_PLAN.md` §6. Tests: `Daemon.Tests/Cashu/` (real gRPC round trips). Remaining before `fixed`: the proof against `cdk-mintd` (NL-993, done); BOLT 12 and on-chain methods are follow-ups.
+- **Blocks/Blocked-by:** Blocked by NL-991; blocks NL-993
+- **Plan ref:** `CASHU_PLAN.md` C1
+
+### NL-993 No proof of a CDK mint running on NLightning
+- **Status:** fixed (9dea34a2 on Docker; ported to the cluster harness in the wip/fafo integration, merge `wip/cashu-int`)
+- **Severity:** low
+- **Kind:** test-gap
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cashu/`, `Fixtures/Cashu/CashuMintFixture.cs`, `test/NLightning.Testing.Cluster/Nodes/Cashu/CdkNodes.cs`
+- **Evidence:** C1 is proven only by unit tests until a `cdk-mintd` runs on our processor.
+- **Fix sketch:** Done: `Docker/Interop/Cashu/CdkMintdInteropTests` (collection `cashu-mint`, trait `Interop.Cashu`, matrix suite `cashu`, `scripts/run-cluster.sh --matrix cashu`) on `Fixtures/Cashu/CashuMintFixture`: two in-process nodes, the mint's node runs the processor; `cdk-cli mint` 10,000 sat (our labelled invoice paid by the payer; quote UNPAID → PAID → ISSUED), `cdk-cli melt` 4,000 sat to the payer's invoice (fee reserve 20 sat = the processor's quote, paid by our node, change returned: wallet 6,000 sat). First proven on Docker (host-network `cashubtc/mintd:0.18.1` and `nltg-cdk-cli:0.18.1`, green twice, about 18 s); the wip/fafo integration moved it to the cluster harness (owner decision NL-866: every suite but Tor on the cluster; `DockerAbsenceTests` unchanged): a run namespace with bitcoind, `cdk-mintd` pinned by digest and deployed per test, `cdk-cli` as an idle pod (`nltg-cdk-cli:0.18.1`, pull policy `Never`, built from `test/Docker/cdk-cli`) driven by `kubectl exec`; the mint dials the processor on the host's loopback at `host.orb.internal`. Green on the cluster in 35 s. Found: `cdk-mintd` 0.18 needs `allow_insecure = true` for a plaintext processor even on loopback. Not covered: a BOLT 12 melt (C1 is BOLT 11 only, NL-997) and a mint restart with quotes pending.
+- **Blocks/Blocked-by:** Blocked by NL-992
+- **Plan ref:** `CASHU_PLAN.md` C2, §7
+
+### NL-994 No native Cashu wallet in the node
+- **Status:** open
+- **Severity:** low
+- **Kind:** feature
+- **Location:** Infrastructure.Bitcoin (hash-to-curve, BDHKE, DLEQ), Application (wallet), IPC
+- **Evidence:** Ecash cannot be received into or sent from the node's liquidity.
+- **Fix sketch:** NUT-00..05, 07, 09, 11, 12, 13, 17, 23 byte-exact against the NUT vectors; `nltg cashu receive|send`; proofs table and accounting bucket.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `CASHU_PLAN.md` C3
+
+### NL-995 No hold invoices (needed for NUT-14 LN/ecash atomic swaps)
+- **Status:** open
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `src/NLightning.Application/Payments/Switch/`
+- **Evidence:** The final hop settles as soon as the HTLC set is complete; there is no way to hold an HTLC until an external condition (a NUT-14 token redeemed) is met.
+- **Fix sketch:** An `IHtlcSwitch` decorator (the `DustExposureHtlcSwitch` pattern) holding sets of hold invoices until settle/cancel, failed back before the deadline monitor's CLTV limit.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `CASHU_PLAN.md` C4
+
+### NL-996 The AOT analyzer gate reports IL2026 in `IpcRequestLog` (`Exception.TargetSite`)
+- **Status:** fixed (12440f0b)
+- **Severity:** low
+- **Kind:** tooling
+- **Location:** `src/NLightning.Daemon/Ipc/Handlers/IpcRequestLog.cs:81`
+- **Evidence:** `dotnet build src/NLightning.Daemon -c Release.Native -f net10.0 -r linux-x64 -p:PublishAot=true` (SDK 10.0.401) on `wip/cashu` after merging `wip/fafo` `ed4d7e7a` reports `warning IL2026: Using member 'System.Exception.TargetSite.get' which has 'RequiresUnreferencedCodeAttribute'`; CLAUDE.md requires that analyzer build to stay at 0. The line came with NL-894 (`ed43ef68`); the Cashu code adds no warning.
+- **Fix sketch:** Done in the wip/fafo integration: `IpcRequestLog.IsFault` suppresses IL2026 with a justification (`TargetSite` is only a hint; without its metadata the exception is taken as a refusal, as the code already did). The daemon AOT analyzer build (`-r osx-arm64 -p:PublishAot=true`) is at 0 warnings again.
+- **Blocks/Blocked-by:** Related NL-894
+- **Plan ref:** —
+
+### NL-997 The CDK payment processor offers BOLT 11 only
+- **Status:** open
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `src/NLightning.Cashu.PaymentProcessor/CdkPaymentProcessorService.cs`
+- **Evidence:** C1 (NL-992) answers `UNIMPLEMENTED` for BOLT 12 (NUT-25) and on-chain (NUT-30) mint and melt, refuses partial (NUT-15 MPP) melts, and keeps the melt quote ids for `WaitPaymentEvent` in memory only (after a restart the mint learns outcomes through `CheckOutgoingPayment`). A mint restart with quotes pending is not proven in Docker.
+- **Fix sketch:** BOLT 12 through `IOfferService.CreateOfferAsync` (identifier `OFFER_ID`, `payment_received` per invoice of the offer) and `IOfferPaymentService.PayOfferAsync`; on-chain through `GetUnusedAddressAsync`/`IWalletSpendService` with the chain monitor's deposits; MPP melts as `PayInvoiceOptions` parts; persist quote ids with the payment label; extend `CdkMintdInteropTests`.
+- **Blocks/Blocked-by:** Related NL-992, NL-993
+- **Plan ref:** `CASHU_PLAN.md` §6
+
+
+### NL-998 The CDK payment processor authenticated no client (loopback h2c, server-only TLS) and took ambient Kestrel endpoints
+- **Status:** fixed (2ed1e71b)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Cashu.PaymentProcessor/CashuPaymentProcessorOptions.cs`, `CashuPaymentProcessorHost.cs`, `CashuPaymentProcessorServiceCollectionExtensions.cs`
+- **Evidence:** wip/fafo integration review of NL-992 (`SECURITY_REVIEW.md` SR-32, SR-33): the default loopback h2c listener and any TLS listener without `ca.pem` (allowed off loopback) checked no client, so any local process (or anyone reaching a non-loopback port) could call `MakePayment` and pay from the node's channels; `WebApplication.CreateSlimBuilder()` read `appsettings.json` of the working directory and the environment, and a `Kestrel__Endpoints__X__Url` variable added a second plaintext listener on `0.0.0.0` beside the checked one (reproduced by the reviewer); the mTLS chain check did not require the client-authentication EKU; the mainnet gate treated a missing `IOptions<NodeOptions>` as not mainnet.
+- **Fix sketch:** Done: client authentication (mutual TLS: `TlsDirectory` with `ca.pem`) is required off loopback and, on loopback, unless the new `AllowInsecureLoopback` (a start warning names the risk; `cdk-mintd` speaks only mTLS or plaintext, so no token is possible); the Kestrel instance has no configuration sources and fails a start that does not listen on exactly its address; `IsSignedBy` requires the TLS client EKU; unknown network = mainnet. Tests: `Daemon.Tests/Cashu/CashuPaymentProcessorOptionsTests` (loopback without client auth, non-loopback without `ca.pem`, no node options) and `CdkPaymentProcessorServiceTests` (`Given_AnAmbientKestrelEndpoint_*`, `Given_ClientCertificates_*`). Left: NL-1000.
+- **Blocks/Blocked-by:** Related NL-992, NL-1000
+- **Plan ref:** `CASHU_PLAN.md` §5.3, §6
+
+### NL-999 The CDK payment processor answered FAILED between two attempts and served payments and invoices that were not the mint's
+- **Status:** fixed (2ed1e71b)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Cashu.PaymentProcessor/CdkPaymentProcessorService.cs`, `src/NLightning.Domain/Payments/Interfaces/IPaymentService.cs` (`IsPaying`), `src/NLightning.Application/Payments/Send/PaymentService.cs`
+- **Evidence:** wip/fafo integration review of NL-992 against CDK v0.18.1 (`cdk-common` `check_outgoing_payment`: the mint takes Unpaid/Failed as final and may return the melt's proofs; a backend between attempts MUST answer Pending or Unknown): `PaymentService` saves the row `Failed` ("Retrying.") before a retry round, and a `MakePayment` timeout, `CheckOutgoingPayment` or the duplicate path then answered FAILED while the retry could still pay, so the mint could give the ecash back and the invoice be paid anyway. `CheckOutgoingPayment` and the duplicate `MakePayment` answered any payment of the node (preimage as `payment_proof`), a trampoline relay's leg included; `CheckIncomingPayment` any invoice. Smaller: quote ids leaked on refused melts and final answers, an overflowed event subscription went on silently, `CreatePayment` overflow and BOLT 11 refusals came back as `Unknown`.
+- **Fix sketch:** Done: `IPaymentService.IsPaying(hash)` (a live session; default false) and a Failed row of a payment still being paid reads PENDING; only rows with the processor's label and never a relay leg are answered (`UNKNOWN`, no proof; `FailedPrecondition` for a duplicate melt of a payment outside the mint); quote ids are forgotten on refusals and final answers; an overflowed stream ends `UNAVAILABLE` so the mint resubscribes; `CreatePayment` errors are `InvalidArgument`. Tests: `CdkPaymentProcessorServiceTests` `Given_APaymentNotOfTheMint_*`, `Given_AMeltBetweenTwoAttempts_*`, `Given_AnInvoiceThisNodePaidOutsideTheMint_*`, `Given_ASettledInvoiceNotOfTheMint_*`, `Given_AnAmountOrDescriptionOutOfRange_*`, `Given_AnOverflowedSubscription_*`. Left: NL-1001.
+- **Blocks/Blocked-by:** Related NL-992, NL-1001
+- **Plan ref:** `CASHU_PLAN.md` §6
+
+### NL-1000 The CDK payment processor has no spend cap or request limits
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Cashu.PaymentProcessor/`
+- **Evidence:** wip/fafo integration review (`SECURITY_REVIEW.md` SR-35): an authenticated client can pay up to the channels' balance with a fee limit of its choosing (`max_fee_amount`); Kestrel's connections, HTTP/2 streams, concurrent `MakePayment` calls and `WaitPaymentEvent` streams (one database read per event per stream) are unbounded; the server key's file mode is not checked.
+- **Fix sketch:** `MaxPaymentMsat` and/or a rolling budget, a cap on `max_fee_amount` relative to the quote, `MaxConcurrentConnections`, a stream cap (`ResourceExhausted`), a semaphore on `MakePayment`, and a warning or refusal for a group- or other-readable `server.key`.
+- **Blocks/Blocked-by:** Related NL-998
+- **Plan ref:** `CASHU_PLAN.md` §6
+
+### NL-1001 A payment failed for an unknown outcome at startup reads FAILED to the Cashu mint
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`ReconcileStoredPartsAsync`), `src/NLightning.Cashu.PaymentProcessor/CdkPaymentProcessorService.cs` (`ToMakePaymentResponse`)
+- **Evidence:** wip/fafo integration review: after a restart, a payment whose stored parts' HTLCs are gone is stored `Failed` with "their outcomes are unknown" and publishes `PaymentFailedEvent`, while a later fulfill with the preimage still marks it `Succeeded`. The processor maps that `Failed` to the final FAILED, which CDK takes as authoritative (the melt's proofs go back to the user). Not proven by a test yet.
+- **Fix sketch:** A structured marker for an unknown outcome on `PaymentModel` (or a distinct failure kind), published as such and mapped to `QuoteState.Unknown`/PENDING by the processor; a harness test with a restart, the HTLC gone, then a replayed fulfill.
+- **Blocks/Blocked-by:** Related NL-999
+- **Plan ref:** `CASHU_PLAN.md` §6
+
+### NL-1002 `waitinvoice` keeps waiting after its client disconnects; a nil payment hash is a server error
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Handlers/WaitInvoiceClientHandler.cs`
+- **Evidence:** wip/fafo integration review: the handler's token is the server's stop token, so after Ctrl-C the wait holds one of the 64 pipe instances and a hub subscription for up to 300 s (`payinvoice` behaves the same); a hand-crafted IPC request with a nil hash answers `server_error` instead of `invalid_operation` (the CLI checks 64 hex characters).
+- **Fix sketch:** Link the connection's disconnect token (`IpcClientConnectionAccessor`, as `ShutdownClientHandler` does) and refuse a default hash.
+- **Blocks/Blocked-by:** Related NL-991
+- **Plan ref:** `CASHU_PLAN.md` C0
+
+### NL-1003 Trampoline relay legs published payment events; a failure recorded for good could be published twice
+- **Status:** fixed (2ed1e71b)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`LogSucceeded`, `LogFailed`, `FinishFailedAsync`)
+- **Evidence:** wip/fafo integration of C0 (NL-991) with trampoline (NL-875): a relay's outgoing leg (`IsTrampolineRelay`) went through `LogSucceeded`/`LogFailed` and published `PaymentSucceededEvent` (preimage included) or `PaymentFailedEvent` as if it were one of the node's payments (the accounting already skipped those rows); `FinishFailedAsync` published again when another path had already recorded the failure for good. The trampoline client's payments and the trampoline target's settle already published once, after their saves.
+- **Fix sketch:** Done: no event for a relay leg (its relay hears of it through `ReportLegSucceeded`/`ReportLegFailed`), none for a failure recorded before. Tests: `Application.Tests/Payments/Trampoline/TrampolineRelayE2ETests` `Given_SubscribersOnEveryNode_When_APaysThroughT_*` (A succeeds once with the trampoline fee, C settles once, T publishes nothing; it fails without the guard) and `Given_CRefusesThePayment_When_ARelayedPaymentFails_*`.
+- **Blocks/Blocked-by:** Related NL-991, NL-875, NL-981
+- **Plan ref:** `CASHU_PLAN.md` C0
 ## Docs
 
 ### NL-182 REPO_MAP.md has stale pre-M1 claims

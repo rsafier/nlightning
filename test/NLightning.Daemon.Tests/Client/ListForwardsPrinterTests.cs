@@ -257,4 +257,85 @@ public class ListForwardsPrinterTests
         Assert.Contains("  Out:         1000000 msat to 03" + new string('4', 64) + "\n", text);
         Assert.Contains("  Fee:         5000 msat   Hash: aaaaaaaaaaaaaaaa…\n", text);
     }
+
+    [Fact]
+    public void Given_RelayTotalsAndAReplacedAttempt_When_Printed_Then_TheRelaysShareAndTheAttemptAreShown()
+    {
+        // Arrange (NL-981, NL-899): the totals include one fulfilled relay (5,000 msat) and two failed ones, one of
+        // them an attempt the payer's retry replaced
+        using var output = new StringWriter();
+        var response = new ListForwardsIpcResponse
+        {
+            Forwards = [],
+            Summary = new ForwardSummaryIpcResponse
+            {
+                Pending = 0,
+                Offered = 0,
+                Fulfilled = 3,
+                Failed = 2,
+                FulfilledFeesMsat = 8_000,
+                RefusedTotal = 0,
+                RefusedByReason = [],
+                TrampolineFulfilled = 1,
+                TrampolineFailed = 2,
+                TrampolineFulfilledFeesMsat = 5_000
+            },
+            TrampolineRelays =
+            [
+                new TrampolineRelayIpcResponse
+                {
+                    PaymentHash = new string('a', 64),
+                    Status = 3,
+                    Parts = 1,
+                    IncomingChannelIds = [new string('1', 64)],
+                    IncomingChannelScids = [null],
+                    IncomingAmountMsat = 1_001_000,
+                    IncomingTotalMsat = 1_001_000,
+                    AmountOutMsat = 1_000_000,
+                    CreatedAtUnixSeconds = 1_790_812_800,
+                    FailureCode = 0x2019,
+                    FailureCodeName = "TrampolineFeeOrExpiryInsufficient",
+                    ReplacedAttempt = 1
+                }
+            ]
+        };
+
+        // Act
+        new ListForwardsPrinter(output).Print(response);
+
+        // Assert
+        var text = output.ToString().ReplaceLineEndings("\n");
+        Assert.Contains("  Kind:        trampoline   Status: failed (TrampolineFeeOrExpiryInsufficient)   attempt 1, "
+                      + "replaced by the payer's retry\n", text);
+        Assert.Contains("  Totals over the filtered set: 5 forward(s) - pending 0, offered 0, fulfilled 3, failed 2; "
+                      + "fees earned 8000 msat\n", text);
+        Assert.Contains("  of which trampoline relays: 3 - collecting 0, sending 0, fulfilled 1, failed 2; fees "
+                      + "earned 5000 msat\n", text);
+    }
+
+    [Fact]
+    public void Given_NoRelays_When_Printed_Then_NoRelayLineIsAdded()
+    {
+        // Arrange
+        using var output = new StringWriter();
+
+        // Act
+        new ListForwardsPrinter(output).Print(new ListForwardsIpcResponse
+        {
+            Forwards = [],
+            Summary = new ForwardSummaryIpcResponse
+            {
+                Pending = 0,
+                Offered = 0,
+                Fulfilled = 0,
+                Failed = 0,
+                FulfilledFeesMsat = 0,
+                RefusedTotal = 0,
+                RefusedByReason = []
+            }
+        });
+
+        // Assert
+        Assert.DoesNotContain("trampoline", output.ToString());
+    }
 }

@@ -81,6 +81,9 @@ public static class SuiteCatalog
         new("postgres", "PostgresTests and ServerDatabaseClusterTests on Postgres pods", "integration",
             ["-class", $"{Docker}.PostgresTests", "-class", $"{Cluster}.ServerDatabaseClusterTests"],
             ["-trait", "Database=Postgres"], "on", 3, 2, TimeSpan.FromMinutes(10)),
+        // Cashu plan C2 (NL-993): CDK's cdk-mintd on our CDK payment processor, with cdk-cli as the wallet (pods)
+        new("cashu", "the Cashu mint proof (Category=Interop.Cashu)", "integration",
+            [], ["-trait", "Category=Interop.Cashu"], "off", 1, 1, TimeSpan.FromMinutes(20)),
         new("tor", "the Tor interop suite (Category=Interop.Tor)", "integration",
             [], ["-trait", "Category=Interop.Tor"], "off", 1, 1, TimeSpan.FromMinutes(30),
             DockerOnlyReason: "Tor interop stays on Docker (owner decision); run scripts/run-interop.sh tor")

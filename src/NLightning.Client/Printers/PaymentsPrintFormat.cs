@@ -99,8 +99,29 @@ internal static class PaymentsPrintFormat
             output.WriteLine("  Bolt11:             {0}", payment.Bolt11);
         if (payment.IsKeysend)
             output.WriteLine("  Keysend:            yes");
+        WriteTrampoline(output, payment);
         WriteCustomRecords(output, payment.CustomRecords);
         WriteLabels(output, payment.Label, payment.Tags);
+    }
+
+    /// <summary>
+    /// NL-899: a relay's outgoing leg is marked (it is not our spending), and a payment of ours through a trampoline
+    /// node shows the node and its last attempt's inner route; nothing for other payments.
+    /// </summary>
+    internal static void WriteTrampoline(TextWriter output, PaymentInfoIpcResponse payment)
+    {
+        if (payment.IsTrampolineRelay)
+            output.WriteLine("  Trampoline Relay:   outgoing leg of a payment we relayed (see listforwards)");
+
+        if (payment.TrampolineNodeId is { } node)
+            output.WriteLine("  Trampoline Node:    {0}{1}", node,
+                             payment.TrampolineAttempts > 1
+                                 ? $" ({Invariant((ulong)payment.TrampolineAttempts)} attempts, route of the last)"
+                                 : string.Empty);
+
+        foreach (var hop in payment.TrampolineRoute ?? [])
+            output.WriteLine("  Trampoline Hop:     {0} {1} msat cltv {2}", hop.NodeId, Invariant(hop.AmountMsat),
+                             Invariant(hop.CltvExpiry));
     }
 
     /// <summary>

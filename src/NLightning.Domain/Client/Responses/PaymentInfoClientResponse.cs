@@ -7,6 +7,7 @@ using Money;
 using Payments.Enums;
 using Payments.Keysend;
 using Payments.Models;
+using Payments.Trampoline;
 using Protocol.Onion.Enums;
 
 /// <summary>
@@ -71,9 +72,40 @@ public sealed class PaymentInfoClientResponse
     /// </summary>
     public IReadOnlyList<string> Tags { get; init; } = [];
 
-    public static PaymentInfoClientResponse FromModel(PaymentModel payment)
+    /// <summary>
+    /// True for the outgoing leg of a trampoline payment we relayed (NL-899): the relay's payment, not our spending;
+    /// <c>listforwards</c> lists the relay and its fee.
+    /// </summary>
+    public bool IsTrampolineRelay { get; init; }
+
+    /// <summary>
+    /// The trampoline node a payment of ours went through (NL-899): hop 0 of its last trampoline attempt; null for a
+    /// payment without one.
+    /// </summary>
+    public CompactPubKey? TrampolineNodeId { get; init; }
+
+    /// <summary>The inner (trampoline) route of the last trampoline attempt (NL-899); empty without one.</summary>
+    public IReadOnlyList<PaymentTrampolineHopClientResponse> TrampolineRoute { get; init; } = [];
+
+    /// <summary>How many trampoline attempts (inner routes) the payment built (NL-899); 0 without one.</summary>
+    public int TrampolineAttempts { get; init; }
+
+    public static PaymentInfoClientResponse FromModel(PaymentModel payment) => FromModel(payment, null);
+
+    /// <summary>
+    /// Maps a payment and the trampoline hops stored for its hash (every attempt's, NL-899); hops of a relay's
+    /// outgoing leg are ignored (a relay leg carries the payer's trampoline onion, not a route of ours).
+    /// </summary>
+    public static PaymentInfoClientResponse FromModel(PaymentModel payment,
+                                                      IReadOnlyList<PaymentTrampolineHopModel>? trampolineHops)
     {
         ArgumentNullException.ThrowIfNull(payment);
+        var hops = payment.IsTrampolineRelay ? [] : trampolineHops ?? [];
+        var lastAttempt = hops.Count == 0 ? (int?)null : hops.Max(h => h.Attempt);
+        var route = hops.Where(h => h.Attempt == lastAttempt)
+                        .OrderBy(h => h.HopIndex)
+                        .Select(PaymentTrampolineHopClientResponse.FromModel)
+                        .ToList();
         return new PaymentInfoClientResponse
         {
             PaymentHash = payment.PaymentHash,
@@ -93,7 +125,11 @@ public sealed class PaymentInfoClientResponse
             IsKeysend = payment.Keysend is not null,
             CustomRecords = payment.Keysend?.CustomRecords ?? [],
             Label = payment.Label,
-            Tags = SourceLabels.FromStored(null, payment.Tags).TagStrings
+            Tags = SourceLabels.FromStored(null, payment.Tags).TagStrings,
+            IsTrampolineRelay = payment.IsTrampolineRelay,
+            TrampolineNodeId = route.Count == 0 ? null : route[0].NodeId,
+            TrampolineRoute = route,
+            TrampolineAttempts = hops.Select(h => h.Attempt).Distinct().Count()
         };
     }
 }

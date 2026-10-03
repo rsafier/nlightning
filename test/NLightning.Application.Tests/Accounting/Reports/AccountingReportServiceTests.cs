@@ -1,5 +1,6 @@
 namespace NLightning.Application.Tests.Accounting.Reports;
 
+using Application.Accounting.Reports;
 using Domain.Accounting.Books;
 using Domain.Accounting.Books.Reports;
 using Domain.Accounting.Enums;
@@ -188,6 +189,61 @@ public class AccountingReportServiceTests
         Assert.Equal(3_000, peerA.RoutingInMsat);
         Assert.Equal(2, report.Peers.Count);
         Assert.Equal(report.Channels.Sum(c => c.NetMsat), report.Peers.Sum(p => p.NetMsat));
+    }
+
+    [Fact]
+    public async Task Given_ATrampolineRelayOverTwoChannels_When_TheChannelsViewIsRead_Then_TheIncomeIsSplitByAmount()
+    {
+        // Arrange (NL-899): 600,000 msat in on A, 400,000 on B, the leg out on C, 1,001 msat earned; and a relay sealed
+        // before the per-channel amounts, which stays on its first channel
+        var (a, b, c) = (Channel(0xA1), Channel(0xB2), Channel(0xC3));
+        _kit.Add(AccountingEventKind.TrampolineRelaySettled, T0.AddDays(1), 1_001, 0, a, Peer(0x11),
+                 AccountingDetailsCodec.Create(("kind", "trampoline"), ("incomingChannelId", a.ToString()),
+                                               ("incomingChannelIds", $"{a},{b}"),
+                                               ("incomingAmountsMsat", $"{a}:600000,{b}:400000"),
+                                               ("incomingAmountMsat", "1000000"), ("outgoingChannelId", c.ToString()),
+                                               ("outgoingAmountMsat", "998999")));
+        _kit.Add(AccountingEventKind.TrampolineRelaySettled, T0.AddDays(2), 500, 0, b, Peer(0x22),
+                 AccountingDetailsCodec.Create(("kind", "trampoline"), ("incomingChannelId", b.ToString()),
+                                               ("incomingChannelIds", $"{b},{a}"), ("incomingAmountMsat", "50000"),
+                                               ("outgoingChannelId", c.ToString()),
+                                               ("outgoingAmountMsat", "49500")));
+
+        // Act
+        var report = await _kit.CreateReports().GetChannelsReportAsync(null, null, null,
+                                                                       TestContext.Current.CancellationToken);
+
+        // Assert: the first relay's 1,001 msat as 601 + 400 (the rest of the rounding to the larger part), each
+        // channel one forward in with its own amount; the old one wholly on B
+        var lineA = report.Channels.Single(l => l.ChannelId == a);
+        Assert.Equal(601, lineA.RoutingInMsat);
+        Assert.Equal(1, lineA.ForwardsIn);
+        Assert.Equal(600_000, lineA.ForwardedInMsat);
+        var lineB = report.Channels.Single(l => l.ChannelId == b);
+        Assert.Equal(400 + 500, lineB.RoutingInMsat);
+        Assert.Equal(2, lineB.ForwardsIn);
+        Assert.Equal(400_000 + 50_000, lineB.ForwardedInMsat);
+        var lineC = report.Channels.Single(l => l.ChannelId == c);
+        Assert.Equal(1_501, lineC.RoutingOutMsat);
+        Assert.Equal(2, lineC.ForwardsOut);
+        Assert.Equal(report.Channels.Sum(l => l.RoutingInMsat), report.Channels.Sum(l => l.RoutingOutMsat));
+    }
+
+    [Theory]
+    [InlineData(1_001L, new[] { 600L, 400L }, new[] { 601L, 400L })]
+    [InlineData(-1_001L, new[] { 600L, 400L }, new[] { -601L, -400L })]
+    [InlineData(10L, new[] { 1L, 1L, 1L }, new[] { 4L, 3L, 3L })]
+    [InlineData(7L, new[] { 0L, 0L }, new[] { 7L, 0L })]
+    [InlineData(5L, new[] { 1L, 3L }, new[] { 1L, 4L })]
+    public void Given_AnAmountAndWeights_When_SplitProportionally_Then_TheSharesAddUp(long total, long[] weights,
+                                                                                     long[] expected)
+    {
+        // Act
+        var shares = AccountingReportService.SplitProportionally(total, weights);
+
+        // Assert
+        Assert.Equal(expected, shares);
+        Assert.Equal(total, shares.Sum());
     }
 
     [Fact]

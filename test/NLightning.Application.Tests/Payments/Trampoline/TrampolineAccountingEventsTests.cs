@@ -59,6 +59,9 @@ public class TrampolineAccountingEventsTests
         Assert.Equal("500000", settled.Details["routingFeePaidMsat"]);
         Assert.Equal(s_otherChannelId.ToString(), settled.Details["outgoingChannelId"]);
         Assert.Equal($"{TestChannelId},{s_otherChannelId}", settled.Details["incomingChannelIds"]);
+        // NL-899: what each incoming channel brought, for the channels report's split
+        Assert.Equal($"{TestChannelId}:60000000,{s_otherChannelId}:40000000",
+                     settled.Details[PaymentAccountingEvents.TrampolineIncomingAmountsDetail]);
 
         // Assert (the books): routing income, and nothing else moves
         var books = BooksSimulator.Of([settled]);
@@ -177,6 +180,24 @@ public class TrampolineAccountingEventsTests
         Assert.Equal(AccountingEventKeys.TrampolineRelaySettled(s_hash), lost.Details["settledKey"]);
         var books = BooksSimulator.Of([lost]);
         Assert.Equal(40_000_000, books[AccountRole.LossOnchain]);
+    }
+
+    [Fact]
+    public void Given_PartsOnTheSameChannel_When_Built_Then_TheirAmountsAreSummedPerChannelInPartOrder()
+    {
+        // Arrange (NL-899): two parts on the other channel around one on ours
+        TrampolineRelayPartModel[] parts =
+        [
+            Part(s_otherChannelId, 1, 30_000_000), Part(TestChannelId, 2, 50_000_000),
+            Part(s_otherChannelId, 3, 20_000_000)
+        ];
+
+        // Act
+        var settled = PaymentAccountingEvents.TrampolineRelaySettled(Fulfilled(), parts, null, null);
+
+        // Assert
+        Assert.Equal($"{s_otherChannelId}:50000000,{TestChannelId}:50000000",
+                     settled.Details[PaymentAccountingEvents.TrampolineIncomingAmountsDetail]);
     }
 
     private static TrampolineRelayModel Fulfilled(ulong feeEarnedMsat = 1_000)

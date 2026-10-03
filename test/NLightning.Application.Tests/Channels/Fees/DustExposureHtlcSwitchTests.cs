@@ -12,6 +12,7 @@ using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
@@ -26,6 +27,7 @@ using Domain.Protocol.Onion.Tlv;
 using Domain.Protocol.Onion.ValueObjects;
 using Domain.Serialization.Interfaces;
 using Handlers;
+using Payments.Switch;
 
 /// <summary>
 /// BOLT2 plan N9-T3, B2-DUST-01/02: an incoming trimmed HTLC that pushed a commitment over
@@ -313,6 +315,199 @@ public class DustExposureHtlcSwitchTests
         Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddChannelFeeServices());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_ATrampolineHtlcOverTheDustLimit_When_LockedIn_Then_ThePayerReadsTheFailureAtTheTrampolineLayer(
+        bool relay)
+    {
+        // Arrange (NL-897): a seventh dust HTLC carrying a real onion for which we are the final trampoline node or a
+        // trampoline relay
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = NormalOperationTestContext.SecretOf(6);
+        var hash = NormalOperationTestContext.HashOf(preimage);
+        var onion = relay
+                        ? await kit.BuildRelayAsync(hash, DustHtlcMsat, 600)
+                        : await kit.BuildFinalAsync(hash, DustHtlcMsat, 600);
+        var htlc = _context.LockIn(HtlcDirection.Incoming, DustHtlcMsat, preimage, onion: onion.Packet);
+        var reasons = new List<byte[]>();
+        _operations.Setup(o => o.FailHtlcAsync(NormalOperationTestContext.TestChannelId, htlc.Id,
+                                               It.IsAny<ReadOnlyMemory<byte>>(), It.IsAny<CancellationToken>()))
+                   .Callback((ChannelId _, ulong _, ReadOnlyMemory<byte> reason, CancellationToken _) =>
+                                 reasons.Add(reason.ToArray()))
+                   .Returns(Task.CompletedTask);
+
+        // Act
+        await CreateSwitch(kit.Us.FailureOnion, kit.Us.OnionProcessor)
+           .HandleAsync(new IncomingHtlcLockedIn(NormalOperationTestContext.TestChannelId, htlc),
+                        TestContext.Current.CancellationToken);
+
+        // Assert: created with the trampoline secret, then the outer one; the switch never saw it
+        kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.TemporaryChannelFailure);
+        _inner.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_AnOrdinaryHtlcOverTheDustLimitWithARealOnion_When_LockedIn_Then_FailedWithItsOuterSecretOnly()
+    {
+        // Arrange (NL-897 regression): a plain final-hop onion, the attribution service registered
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = NormalOperationTestContext.SecretOf(6);
+        var onion = await kit.BuildOrdinaryFinalAsync(NormalOperationTestContext.HashOf(preimage), DustHtlcMsat, 600);
+        var htlc = _context.LockIn(HtlcDirection.Incoming, DustHtlcMsat, preimage, onion: onion.Packet.ToBytes());
+        var reasons = new List<byte[]>();
+        _operations.Setup(o => o.FailHtlcAsync(NormalOperationTestContext.TestChannelId, htlc.Id,
+                                               It.IsAny<ReadOnlyMemory<byte>>(), It.IsAny<CancellationToken>()))
+                   .Callback((ChannelId _, ulong _, ReadOnlyMemory<byte> reason, CancellationToken _) =>
+                                 reasons.Add(reason.ToArray()))
+                   .Returns(Task.CompletedTask);
+
+        // Act
+        await CreateSwitch(kit.Us.FailureOnion, kit.Us.OnionProcessor, kit.Us.AttributionData)
+           .HandleAsync(new IncomingHtlcLockedIn(NormalOperationTestContext.TestChannelId, htlc),
+                        TestContext.Current.CancellationToken);
+
+        // Assert: the plain error onion, no attribution, as before
+        var decrypted = kit.Payer.FailureOnion.DecryptErrorPacket(onion.SharedSecrets, Assert.Single(reasons));
+        Assert.NotNull(decrypted);
+        Assert.Equal(0, decrypted.ErringHopIndex);
+        Assert.Equal(FailureCode.TemporaryChannelFailure, decrypted.Code);
+        _operations.Verify(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                                It.IsAny<AttributedErrorPacket>(), It.IsAny<CancellationToken>()),
+                           Times.Never);
+        _inner.VerifyNoOtherCalls();
+    }
+
+    #region NL-921: blinded trampoline failures, attribution
+
+    [Fact]
+    public async Task Given_AnIntroductionNodeRelayWhoseRecipientDataFails_When_OverTheDustLimit_Then_OurOwnInvalidOnionBlinding()
+    {
+        // Arrange: we introduce a blinded trampoline route that is not ours to end, our recipient data refuses the
+        // HTLC (max_cltv_expiry below its expiry)
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = NormalOperationTestContext.SecretOf(6);
+        var onion = await kit.BuildBlindedRelayAsync(NormalOperationTestContext.HashOf(preimage), DustHtlcMsat, 600,
+                                                     introduction: true, maxCltvExpiry: 599);
+        var htlc = _context.LockIn(HtlcDirection.Incoming, DustHtlcMsat, preimage, onion: onion.Packet);
+        var reasons = CaptureFailures(htlc.Id);
+
+        // Act
+        await CreateSwitch(kit.Us.FailureOnion, kit.Us.OnionProcessor)
+           .HandleAsync(new IncomingHtlcLockedIn(NormalOperationTestContext.TestChannelId, htlc),
+                        TestContext.Current.CancellationToken);
+
+        // Assert: never temporary_channel_failure (BOLT 4: the introduction node replaces every error by its own)
+        var failure = kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.InvalidOnionBlinding);
+        Assert.Equal(onion.TrampolineSha256, failure.Sha256OfOnion!.Value.ToArray());
+        _inner.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_ARelayPastTheIntroductionNode_When_OverTheDustLimit_Then_MalformedWithTheTrampolinePacketHash()
+    {
+        // Arrange: our path key came in the outer payload
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = NormalOperationTestContext.SecretOf(6);
+        var onion = await kit.BuildBlindedRelayAsync(NormalOperationTestContext.HashOf(preimage), DustHtlcMsat, 600,
+                                                     introduction: false);
+        var htlc = _context.LockIn(HtlcDirection.Incoming, DustHtlcMsat, preimage, onion: onion.Packet);
+
+        // Act
+        await CreateSwitch(kit.Us.FailureOnion, kit.Us.OnionProcessor)
+           .HandleAsync(new IncomingHtlcLockedIn(NormalOperationTestContext.TestChannelId, htlc),
+                        TestContext.Current.CancellationToken);
+
+        // Assert: update_fail_malformed_htlc + invalid_onion_blinding with the trampoline packet's sha256 (PR 836)
+        _operations.Verify(o => o.FailMalformedHtlcAsync(NormalOperationTestContext.TestChannelId, htlc.Id,
+                                                         FailureCode.InvalidOnionBlinding,
+                                                         It.Is<Hash>(h => ((byte[])h).SequenceEqual(
+                                                                         onion.TrampolineSha256)),
+                                                         It.IsAny<CancellationToken>()), Times.Once);
+        _operations.Verify(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                                It.IsAny<ReadOnlyMemory<byte>>(), It.IsAny<CancellationToken>()),
+                           Times.Never);
+        _inner.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_ABlindedTrampolineFinalWhoseConstraintsTheHtlcBreaks_When_OverTheDustLimit_Then_InvalidOnionBlinding()
+    {
+        // Arrange: we introduce and end a blinded trampoline route; only the HTLC's own expiry (600) breaks our
+        // payment_constraints (599), so the onion must be processed with the HTLC's amount and expiry
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = NormalOperationTestContext.SecretOf(6);
+        var onion = await kit.BuildBlindedFinalAsync(NormalOperationTestContext.HashOf(preimage), DustHtlcMsat, 600,
+                                                     maxCltvExpiry: 599);
+        var htlc = _context.LockIn(HtlcDirection.Incoming, DustHtlcMsat, preimage, onion: onion.Packet);
+        var reasons = CaptureFailures(htlc.Id);
+
+        // Act
+        await CreateSwitch(kit.Us.FailureOnion, kit.Us.OnionProcessor)
+           .HandleAsync(new IncomingHtlcLockedIn(NormalOperationTestContext.TestChannelId, htlc),
+                        TestContext.Current.CancellationToken);
+
+        // Assert: what the switch would answer for that onion, not temporary_channel_failure
+        kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.InvalidOnionBlinding);
+        _inner.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_ATrampolineHtlcOverTheDustLimitAndTheAttributionService_When_LockedIn_Then_AttributedOnlyWhenAdvertised(
+        bool advertised)
+    {
+        // Arrange
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = NormalOperationTestContext.SecretOf(6);
+        var onion = await kit.BuildFinalAsync(NormalOperationTestContext.HashOf(preimage), DustHtlcMsat, 600);
+        var htlc = _context.LockIn(HtlcDirection.Incoming, DustHtlcMsat, preimage, onion: onion.Packet);
+        var reasons = CaptureFailures(htlc.Id);
+        var attributed = new List<AttributedErrorPacket>();
+        _operations.Setup(o => o.FailHtlcAsync(NormalOperationTestContext.TestChannelId, htlc.Id,
+                                               It.IsAny<AttributedErrorPacket>(), It.IsAny<CancellationToken>()))
+                   .Callback((ChannelId _, ulong _, AttributedErrorPacket packet, CancellationToken _) =>
+                                 attributed.Add(packet))
+                   .Returns(Task.CompletedTask);
+        if (!advertised)
+            _nodeOptions.Features.OptionAttributionData = FeatureSupport.No;
+
+        // Act
+        await CreateSwitch(kit.Us.FailureOnion, kit.Us.OnionProcessor, kit.Us.AttributionData)
+           .HandleAsync(new IncomingHtlcLockedIn(NormalOperationTestContext.TestChannelId, htlc),
+                        TestContext.Current.CancellationToken);
+
+        // Assert: attribution on the outer layer while advertised, else the plain reason; read at the trampoline layer
+        if (advertised)
+        {
+            var packet = Assert.Single(attributed);
+            Assert.NotEmpty(packet.AttributionData);
+            kit.AssertTrampolineLayer(onion, packet.Reason, FailureCode.TemporaryChannelFailure);
+            Assert.Empty(reasons);
+        }
+        else
+        {
+            Assert.Empty(attributed);
+            kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.TemporaryChannelFailure);
+        }
+
+        _inner.VerifyNoOtherCalls();
+    }
+
+    private List<byte[]> CaptureFailures(ulong htlcId)
+    {
+        var reasons = new List<byte[]>();
+        _operations.Setup(o => o.FailHtlcAsync(NormalOperationTestContext.TestChannelId, htlcId,
+                                               It.IsAny<ReadOnlyMemory<byte>>(), It.IsAny<CancellationToken>()))
+                   .Callback((ChannelId _, ulong _, ReadOnlyMemory<byte> reason, CancellationToken _) =>
+                                 reasons.Add(reason.ToArray()))
+                   .Returns(Task.CompletedTask);
+        return reasons;
+    }
+
+    #endregion
+
     private IncomingHtlcLockedIn LockedIn(int index) =>
         new(NormalOperationTestContext.TestChannelId, _htlcs[index]);
 
@@ -325,6 +520,18 @@ public class DustExposureHtlcSwitchTests
                                           _failureOnion.Object, CreateOnionProcessor(),
                                           provider.GetRequiredService<IServiceScopeFactory>(),
                                           Options.Create(_nodeOptions), NullLogger<DustExposureHtlcSwitch>.Instance);
+    }
+
+    private DustExposureHtlcSwitch CreateSwitch(IFailureOnionService failureOnion, IncomingOnionProcessor processor,
+                                                IAttributionDataService? attribution = null)
+    {
+        var services = new ServiceCollection();
+        services.AddScoped(_ => _context.UnitOfWork.Object);
+        var provider = services.BuildServiceProvider();
+        return new DustExposureHtlcSwitch(_inner.Object, _context.ChannelMemoryRepository.Object, _operations.Object,
+                                          failureOnion, processor, provider.GetRequiredService<IServiceScopeFactory>(),
+                                          Options.Create(_nodeOptions), NullLogger<DustExposureHtlcSwitch>.Instance,
+                                          attribution);
     }
 
     private IncomingOnionProcessor CreateOnionProcessor()

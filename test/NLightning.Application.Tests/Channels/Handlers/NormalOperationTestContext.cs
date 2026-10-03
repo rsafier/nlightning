@@ -174,19 +174,20 @@ internal sealed class NormalOperationTestContext
     /// the fake ports (no persistence, no messages).
     /// </summary>
     public HtlcRecord LockIn(HtlcDirection direction, ulong amountMsat, Secret preimage,
-                             CompactPubKey? pathKey = null)
+                             CompactPubKey? pathKey = null, byte[]? onion = null)
     {
+        var onionPacket = onion ?? Onion;
         var state = State;
         if (direction == HtlcDirection.Outgoing)
         {
-            state = state.SendAdd(amountMsat, HashOf(preimage), 600, Onion).Next;
+            state = state.SendAdd(amountMsat, HashOf(preimage), 600, onionPacket).Next;
             state = state.SendCommit(Ports).Next;
             state = state.ReceiveRevoke(SecretOf(0x90), Point(0x22), Ports).Next;
             state = state.ReceiveCommit(Ports.SignaturesFor(state), Ports).Next;
         }
         else
         {
-            state = state.ReceiveAdd(state.RemoteNextHtlcId, amountMsat, HashOf(preimage), 600, Onion, pathKey)
+            state = state.ReceiveAdd(state.RemoteNextHtlcId, amountMsat, HashOf(preimage), 600, onionPacket, pathKey)
                          .Next;
             state = state.ReceiveCommit(Ports.SignaturesFor(state), Ports).Next;
             state = state.SendCommit(Ports).Next;

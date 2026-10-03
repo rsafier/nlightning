@@ -13,6 +13,7 @@ using Domain.Channels.Models;
 using Domain.Channels.Policies;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Node.Options;
 using Domain.Payments.Enums;
@@ -38,7 +39,9 @@ using Payments.Trampoline;
 ///   past <c>cltv_expiry - 18</c>) fails the channel through <see cref="IChannelFailureService"/> (broadcast);</item>
 ///   <item>an unresolved incoming HTLC (no preimage, nothing downstream) at <c>cltv_expiry - FailBackBlocks</c> is
 ///   failed back upstream through <see cref="IChannelOperations.FailHtlcAsync"/> with <c>temporary_node_failure</c>
-///   (or <c>update_fail_malformed_htlc</c> when its onion does not peel), encrypted with its stored shared secret.</item>
+///   (or <c>update_fail_malformed_htlc</c> when its onion does not peel), encrypted with its stored shared secret; an
+///   HTLC that reached us as a trampoline node (a held final part, a relay part) at the trampoline layer, with the
+///   trampoline secret then the outer one (<see cref="TrampolineHtlcFailures"/>, NL-897).</item>
 /// </list>
 /// </summary>
 /// <remarks>
@@ -61,6 +64,7 @@ using Payments.Trampoline;
 /// </remarks>
 public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
 {
+    private readonly IAttributionDataService? _attributionDataService;
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly IChannelFailureService _channelFailureService;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
@@ -86,8 +90,13 @@ public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
                              IFailureOnionService failureOnionService, ILogger<HtlcExpiryMonitor> logger,
                              IOptions<NodeOptions> nodeOptions, IServiceScopeFactory serviceScopeFactory,
                              IOptions<ChannelSafetyOptions>? safetyOptions = null,
-                             IncomingOnionProcessor? incomingOnionProcessor = null)
+                             IncomingOnionProcessor? incomingOnionProcessor = null,
+                             IAttributionDataService? attributionDataService = null)
     {
+        // attribution_data on a trampoline failure's outer layer only when we advertise it (as the switch, NL-897)
+        _attributionDataService = nodeOptions.Value.Features.OptionAttributionData != FeatureSupport.No
+                                      ? attributionDataService
+                                      : null;
         _blockchainMonitor = blockchainMonitor;
         _channelFailureService = channelFailureService;
         _channelMemoryRepository = channelMemoryRepository;
@@ -470,12 +479,27 @@ public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
                 return;
             }
 
-            var secret = await unitOfWork.ChannelStateDbRepository.GetOnionSharedSecretAsync(channelId, htlc.Key);
-            if (secret is null && _incomingOnionProcessor is not null && !htlc.OnionRoutingPacket.IsEmpty)
+            // NL-897: an HTLC that reached us as a trampoline node (a held final part, a relay part) is failed at the
+            // trampoline layer, as the switch and the relay engine fail it; any other HTLC as before, with the onion
+            // peeled here once (no replay check) for its secret and its blinded role (NL-921)
+            var (trampolineKeys, processed) =
+                await TrampolineHtlcFailures.ResolveAsync(_incomingOnionProcessor, unitOfWork, channelId, htlc,
+                                                          _logger);
+            if (trampolineKeys is not null)
             {
-                // Never processed (e.g. before a restart): peel again, without the replay check
-                var processed = await _incomingOnionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash,
-                                                                           replayOwner: null, htlc.PathKey);
+                LogFailedBack(channelId, htlc, height,
+                              await TrampolineHtlcFailures.FailAsync(_channelOperations, _failureOnionService,
+                                                                     _attributionDataService, channelId, htlc,
+                                                                     trampolineKeys,
+                                                                     FailureMessage.TemporaryNodeFailure(), _logger,
+                                                                     cancellationToken));
+                return;
+            }
+
+            var secret = await unitOfWork.ChannelStateDbRepository.GetOnionSharedSecretAsync(channelId, htlc.Key);
+            if (secret is null && processed is not null)
+            {
+                // Never processed (e.g. before a restart): the onion peeled again above
                 if (processed is IncomingOnionMalformed malformed)
                 {
                     await _channelOperations.FailMalformedHtlcAsync(channelId, htlc.Id, malformed.FailureCode,
@@ -495,10 +519,9 @@ public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
                 return;
             }
 
-            // Inside a blinded route the BOLT 2 invalid_onion_blinding rules replace temporary_node_failure (M5)
-            var isIntroductionForward = _incomingOnionProcessor is not null
-                                     && await BlindedHtlcFailures.IsIntroductionForwardAsync(_incomingOnionProcessor,
-                                                                                            htlc);
+            // Inside a blinded route the BOLT 2 invalid_onion_blinding rules replace temporary_node_failure (M5); the
+            // HTLC has no path_key here (failed malformed above), so the onion tells whether we are its introduction
+            var isIntroductionForward = processed is not null && BlindedHtlcFailures.IsIntroductionForward(processed);
             var sent = await BlindedHtlcFailures.FailAsync(_channelOperations, _failureOnionService, channelId, htlc,
                                                            sharedSecret, FailureMessage.TemporaryNodeFailure(),
                                                            isIntroductionForward, cancellationToken);

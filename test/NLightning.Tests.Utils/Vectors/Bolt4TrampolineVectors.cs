@@ -81,4 +81,47 @@ public static class Bolt4TrampolineVectors
       + "c80e3e6d7b5b984785b4dd67498f86a9afcfc0548837b87ce07ef524696b68dc5a42312588dd051ea608f46dec1613c558e1"
       + "1d64e32c5cfd6b0e1c93691c724b257033d93dc7fffebca7f494d2b6391492985eac16d6919dcf60f1ab49e6ae216c90776b"
       + "48ace0404128313220af7b6e546d1b89ab356cab83059301ae2d3a0eff524a610649c8";
+
+    /// <summary>trampoline-to-blinded-path-payment-onion-test.json [1], Eve's blinded path: the first path key.</summary>
+    public const string BlindedPathKey =
+        "02988face71e92c345a068f740191fd8e53be14f0bb957ef730d3c5f76087b960e";
+
+    /// <summary>trampoline-to-blinded-path-payment-onion-test.json [1], Eve's blinded path: Dave's encrypted_recipient_data.</summary>
+    public const string BlindedDaveEncryptedData =
+        "0ccf3c8a58deaa603f657ee2a5ed9d604eb5c8ca1e5f801989afa8f3ea6d789bbdde2c7e7a1ef9ca8c38d2c54760febad844"
+      + "6d3f273ddb537569ef56613846ccd3aba78a";
+
+    /// <summary>trampoline-to-blinded-path-payment-onion-test.json [1], Eve's blinded path: Dave's blinded node id.</summary>
+    public const string BlindedDaveBlindedNodeId =
+        "0295d40514096a8be54859e7dfe947b376eaafea8afe5cb4eb2c13ff857ed0b4be";
+
+    /// <summary>trampoline-to-blinded-path-payment-onion-test.json [1], Eve's blinded path: Eve's encrypted_recipient_data.</summary>
+    public const string BlindedEveEncryptedData =
+        "bcd747394fbd4d99588da075a623316e15a576df5bc785cccc7cd6ec7b398acce6faf520175f9ec920f2ef261cdb83dc28cc"
+      + "3a0eeb970107b3306489bf771ef5b1213bca811d345285405861d08a655b6c237fa247a8b4491beee20c878a60e981649202"
+      + "6d8feb9dafa84585b253978db6a0aa2945df5ef445c61e801fb82f43d5f00716baf9fc9b3de50bc22950a36bda8fc27bfb12"
+      + "42e5860c7e687438d4133e058770361a19b6c271a2a07788d34dccc27e39b9829b061a4d960eac4a2c2b0f4de506c24f9af3"
+      + "868c0aff6dda27281c";
+
+    /// <summary>trampoline-to-blinded-path-payment-onion-test.json [1], Eve's blinded path: Eve's blinded node id.</summary>
+    public const string BlindedEveBlindedNodeId =
+        "020e2dbadcc2005e859819ddebbe88a834ae8a6d2b049233c07335f15cd1dc5f22";
+
+    /// <summary>trampoline-to-blinded-path-payment-onion-test.json [1], the payer's trampoline session key.</summary>
+    public const string BlindedTrampolineSessionKey =
+        "a64feb81abd58e473df290e9e1c07dc3e56114495cadf33191f44ba5448ebe99";
+
+    /// <summary>trampoline-to-blinded-path-payment-onion-test.json [1], the payer's trampoline onion (Carol, Dave, blinded(Eve)).</summary>
+    public const string BlindedTrampolineOnion =
+        "0002bc59a9abc893d75a8d4f56a6572f9a3507323a8de22abe0496ea8d37da166a8b4bba0e560f1a9deb602bfd98fe916714"
+      + "1d0b61d669df90c0149096d505b85d3d02806e6c12caeb308b878b6bc7f1b15839c038a6443cd3bec3a94c2293165375555f"
+      + "6d7720862b525930f41fddcc02260d197abd93fb58e60835fd97d9dc14e7979c12f59df08517b02e3e4d50e1817de4271df6"
+      + "6d522c4e9675df71c635c4176a8381bc22b342ff4e9031cede87f74cc039fca74aa0a3786bc1db2e158a9a520ecb99667ef9"
+      + "a6bbfaf5f0e06f81c27ca48134ba2103229145937c5dc7b8ecc5201d6aeb592e78faa3c05d3a035df77628f0be9b1af3ef7d"
+      + "386dd5cc87b20778f47ebd40dbfcf12b9071c5d7112ab84c3e0c5c14867e684d09a18bc93ac47d73b7343e3403ef6e3b7036"
+      + "6835988920e7d772c3719d3596e53c29c4017cb6938421a557ce81b4bb26701c25bf622d4c69f1359dc85857a375c5c74987"
+      + "a4d3152f66987001c68a50c4bf9e0b1dab4ad1a64b0535319bbf6c4fbe4f9c50cb65f5ef887bfb91b0a57c0f86ba3d91cbee"
+      + "a1607fb0c12c6c75d03bbb0d3a3019c40597027f5eebca23083e50ec79d41b1152131853525bf3fc13fb0be62c2e3ce733f5"
+      + "9671eee5c4064863fb92ae74be9ca68b9c716f9519fd268478ee27d91d466b0de51404de3226b74217d28250ead9d2c95411"
+      + "e0230570f547d4cc7c1d589791623131aa73965dccc5aa17ec12b442215ce5d346df664d799190df5dd04a13";
 }

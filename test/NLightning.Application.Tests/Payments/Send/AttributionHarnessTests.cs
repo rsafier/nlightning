@@ -76,6 +76,10 @@ public class AttributionHarnessTests : IDisposable
         // Assert: the stored payment (what listpayments shows) has them too
         var stored = await _harness.Bob.PaymentService.GetPaymentAsync(invoice.PaymentHash, ct);
         Assert.Equal(payment.Route.Select(h => h.HoldTime), stored!.Route.Select(h => h.HoldTime));
+
+        // Assert (NL-982): Carol's fee was offered, not paid: the failed payment records none
+        Assert.True(payment.Route[0].Amount > s_amount);
+        Assert.True(stored.Fee.IsZero);
     }
 
     [Fact]

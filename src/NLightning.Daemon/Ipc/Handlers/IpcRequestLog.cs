@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Daemon.Ipc.Handlers;
@@ -64,6 +65,9 @@ internal static class IpcRequestLog
     /// operation was started on this context": both an <see cref="InvalidOperationException"/>). An exception thrown by
     /// our own code (a service's refusal) or of one of our own types is a refusal; null is a refusal.
     /// </summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+                                  Justification = "TargetSite is only a hint: without its metadata (trimmed, AOT) the "
+                                                + "exception is taken as a refusal, as the comment below says (NL-996)")]
     internal static bool IsFault(Exception? exception)
     {
         if (exception is null)

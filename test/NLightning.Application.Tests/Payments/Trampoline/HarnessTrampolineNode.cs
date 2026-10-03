@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace NLightning.Application.Tests.Payments.Trampoline;
 
 using Application.Payments.Send;
+using Application.Payments.Switch;
 using Application.Payments.Trampoline;
 using Domain.Channels.Commitments;
 using Domain.Channels.Interfaces;
@@ -24,7 +25,8 @@ using Send.Harness;
 /// the node's own <see cref="ITrampolineLegSender"/> (the production <see cref="PaymentService"/>) or receives it as
 /// the final trampoline recipient against the node's invoices. It is the leg's <see cref="ITrampolineLegObserver"/>:
 /// a successful leg fulfills every incoming part, a failed one fails them, re-wrapping a downstream error with both of
-/// the node's layers.
+/// the node's layers. With <see cref="UseAttribution"/> its failures carry <c>attribution_data</c> for the outer layer,
+/// built as the production relay and target build it (<see cref="TrampolineErrorPackets"/>, NL-898).
 /// </summary>
 [ExcludeFromCodeCoverage]
 internal sealed class HarnessTrampolineNode : ITrampolineLegObserver
@@ -35,6 +37,7 @@ internal sealed class HarnessTrampolineNode : ITrampolineLegObserver
     private readonly ITrampolineOnionService _trampolineOnion;
     private readonly ITrampolineFailureOnionService _trampolineFailure;
     private readonly IFailureOnionService _failureOnion;
+    private readonly IAttributionDataService _attribution;
     private readonly IChannelOperations _operations;
     private readonly Dictionary<Hash, List<IncomingPart>> _sets = [];
     private readonly Lock _lock = new();
@@ -47,6 +50,7 @@ internal sealed class HarnessTrampolineNode : ITrampolineLegObserver
         _trampolineOnion = node.Services.GetRequiredService<ITrampolineOnionService>();
         _trampolineFailure = node.Services.GetRequiredService<ITrampolineFailureOnionService>();
         _failureOnion = node.Services.GetRequiredService<IFailureOnionService>();
+        _attribution = node.Services.GetRequiredService<IAttributionDataService>();
         _operations = node.Operations;
         node.Switch.IncomingInterceptor = HandleAsync;
         PaymentService.LegObserver = this;
@@ -68,6 +72,16 @@ internal sealed class HarnessTrampolineNode : ITrampolineLegObserver
     /// <summary>When set, the final recipient fails every part with it on its outer layer only (an error the previous
     /// trampoline node, not the origin, can read).</summary>
     public FailureMessage? OuterFailure { get; set; }
+
+    /// <summary>When set, every trampoline failure this node sends (its own, or a downstream one re-wrapped) carries
+    /// <c>attribution_data</c> for the outer layer with its hold time (<see cref="TrampolineErrorPackets"/>).</summary>
+    public bool UseAttribution { get; set; }
+
+    /// <summary>Changes an attributed failure after it was built (a node that garbles its attribution).</summary>
+    public Func<AttributedErrorPacket, AttributedErrorPacket>? TamperAttribution { get; set; }
+
+    /// <summary>The hold times this node put in its attributed failures.</summary>
+    public ConcurrentQueue<uint> ReportedHoldTimes { get; } = new();
 
     /// <summary>The relay's CLTV delta for the leg's first-hop cap; the default is the policy's.</summary>
     public uint? LegCltvMargin { get; set; }
@@ -159,10 +173,7 @@ internal sealed class HarnessTrampolineNode : ITrampolineLegObserver
         if (failure is not null)
         {
             foreach (var part in parts)
-                await _operations.FailHtlcAsync(part.ChannelId, part.HtlcId,
-                                                _trampolineFailure.CreateTrampolineErrorPacket(
-                                                    part.TrampolineSecret, part.OuterSecret, failure),
-                                                cancellationToken);
+                await FailTrampolinePartAsync(part, failure, null, cancellationToken);
             return;
         }
 
@@ -221,9 +232,36 @@ internal sealed class HarnessTrampolineNode : ITrampolineLegObserver
                                       CancellationToken cancellationToken)
     {
         foreach (var part in parts)
-            await _operations.FailHtlcAsync(part.ChannelId, part.HtlcId,
-                                            _trampolineFailure.CreateTrampolineErrorPacket(
-                                                part.TrampolineSecret, part.OuterSecret, failure), cancellationToken);
+            await FailTrampolinePartAsync(part, failure, null, cancellationToken);
+    }
+
+    /// <summary>Fails a part with both of the node's layers: <paramref name="failure"/> created here, or
+    /// <paramref name="downstream"/> (an unwrapped downstream trampoline error) re-wrapped.</summary>
+    private async Task FailTrampolinePartAsync(IncomingPart part, FailureMessage? failure, byte[]? downstream,
+                                               CancellationToken cancellationToken)
+    {
+        if (UseAttribution)
+        {
+            var holdTime = await _operations.GetHoldTimeAsync(part.ChannelId, part.HtlcId, cancellationToken);
+            ReportedHoldTimes.Enqueue(holdTime);
+            var packet = failure is not null
+                             ? TrampolineErrorPackets.CreateAttributed(_failureOnion, _attribution,
+                                                                       part.TrampolineSecret, part.OuterSecret,
+                                                                       failure, holdTime)
+                             : TrampolineErrorPackets.WrapAttributed(_failureOnion, _attribution,
+                                                                     part.TrampolineSecret, part.OuterSecret,
+                                                                     downstream!, holdTime);
+            await _operations.FailHtlcAsync(part.ChannelId, part.HtlcId, TamperAttribution?.Invoke(packet) ?? packet,
+                                            cancellationToken);
+            return;
+        }
+
+        var reason = failure is not null
+                         ? _trampolineFailure.CreateTrampolineErrorPacket(part.TrampolineSecret, part.OuterSecret,
+                                                                          failure)
+                         : _trampolineFailure.WrapTrampolineErrorPacket(part.TrampolineSecret, part.OuterSecret,
+                                                                        downstream!);
+        await _operations.FailHtlcAsync(part.ChannelId, part.HtlcId, reason, cancellationToken);
     }
 
     public async Task OnLegSucceededAsync(Hash paymentHash, Secret preimage, LightningMoney totalSent,
@@ -246,16 +284,15 @@ internal sealed class HarnessTrampolineNode : ITrampolineLegObserver
             _relays.Remove(paymentHash, out parts);
         foreach (var part in parts ?? [])
         {
-            var packet = failure is
-            {
-                Kind: TrampolineLegFailureKind.DownstreamTrampolineError,
-                DownstreamPacketToRewrap: { } downstream
-            }
-                             ? _trampolineFailure.WrapTrampolineErrorPacket(part.TrampolineSecret, part.OuterSecret,
-                                                                            downstream)
-                             : _trampolineFailure.CreateTrampolineErrorPacket(
-                                 part.TrampolineSecret, part.OuterSecret, FailureMessage.TemporaryTrampolineFailure());
-            await _operations.FailHtlcAsync(part.ChannelId, part.HtlcId, packet, cancellationToken);
+            if (failure is
+                {
+                    Kind: TrampolineLegFailureKind.DownstreamTrampolineError,
+                    DownstreamPacketToRewrap: { } downstream
+                })
+                await FailTrampolinePartAsync(part, null, downstream, cancellationToken);
+            else
+                await FailTrampolinePartAsync(part, FailureMessage.TemporaryTrampolineFailure(), null,
+                                              cancellationToken);
         }
     }
 

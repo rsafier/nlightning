@@ -14,4 +14,11 @@ public sealed class ListPaymentsClientRequest
     /// The most payments to return.
     /// </summary>
     public int Take { get; init; } = 100;
+
+    /// <summary>
+    /// Also list the outgoing legs of the trampoline payments we relayed (NL-899). They are not our spending, so
+    /// <c>listpayments</c> leaves them out by default and says how many it left out; <c>listforwards</c> lists the
+    /// relays.
+    /// </summary>
+    public bool IncludeRelayLegs { get; init; }
 }

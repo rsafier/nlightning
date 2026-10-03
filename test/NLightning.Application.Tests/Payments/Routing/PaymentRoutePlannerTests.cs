@@ -105,6 +105,46 @@ public class PaymentRoutePlannerTests
     }
 
     [Fact]
+    public void Given_NoDirectChannelCarriesTheAmountAndAHintDoes_When_Planned_Then_TheDirectSplitAtNoFeeWins()
+    {
+        // Arrange (NL-980): David is our peer over two channels too small alone; his hint through Carol (our channel
+        // to her carries the whole amount) costs 2,000 msat + 500 ppm
+        _liquidity[s_toDavid1.ChannelId] = 600_000;
+        _liquidity[s_toDavid2.ChannelId] = 700_000;
+        _liquidity[s_toCarol1.ChannelId] = 5_000_000;
+
+        // Act
+        var planned = Planner().TryPlan(Request(Target(true, [CarolHint()]), 1_000_000, 100_000, 16, s_toDavid1,
+                                                s_toDavid2, s_toCarol1), out var parts, out var reason);
+
+        // Assert: the split over our own channels to David, before the dearer single part through Carol
+        Assert.True(planned, reason);
+        Assert.Equal(2, parts!.Count);
+        Assert.Equal((s_toDavid2, 700_000UL), (parts[0].Channel, parts[0].Route.Amount.MilliSatoshi));
+        Assert.Equal((s_toDavid1, 300_000UL), (parts[1].Channel, parts[1].Route.Amount.MilliSatoshi));
+        Assert.All(parts, p => Assert.True(p.Route.Fee.IsZero));
+    }
+
+    [Fact]
+    public void Given_NoDirectChannelCarriesTheAmountAndAHintDoesWithoutBasicMpp_When_Planned_Then_TheHintPart()
+    {
+        // Arrange: as above, but the invoice does not offer basic_mpp
+        _liquidity[s_toDavid1.ChannelId] = 600_000;
+        _liquidity[s_toDavid2.ChannelId] = 700_000;
+        _liquidity[s_toCarol1.ChannelId] = 5_000_000;
+
+        // Act
+        var planned = Planner().TryPlan(Request(Target(false, [CarolHint()]), 1_000_000, 100_000, 16, s_toDavid1,
+                                                s_toDavid2, s_toCarol1), out var parts, out var reason);
+
+        // Assert
+        Assert.True(planned, reason);
+        var part = Assert.Single(parts!);
+        Assert.Equal(s_toCarol1, part.Channel);
+        Assert.Equal(2_000UL + 1_000_000 * 500 / 1_000_000, part.Route.Fee.MilliSatoshi);
+    }
+
+    [Fact]
     public void Given_AnInvoiceWithoutBasicMpp_When_NoChannelCarriesTheAmount_Then_NotSplit()
     {
         // Arrange
