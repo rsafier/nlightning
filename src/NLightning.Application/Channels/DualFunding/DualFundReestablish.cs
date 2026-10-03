@@ -69,7 +69,7 @@ public sealed class DualFundReestablish
         ArgumentNullException.ThrowIfNull(channel);
         if (!IsPendingOpen(channel)
          || await _service.GetOrLoadAsync(channel.ChannelId, _unitOfWork, CancellationToken.None) is not
-                { } negotiation)
+         { } negotiation)
             return;
 
         negotiation.RemoteCurrentCommitNonce = nonce;

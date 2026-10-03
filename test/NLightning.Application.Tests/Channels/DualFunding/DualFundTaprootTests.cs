@@ -9,14 +9,12 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Enums;
-using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
 using Domain.Node;
 using Domain.Node.Options;
 using Domain.Protocol.InteractiveTx.Enums;
-using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
@@ -127,9 +125,9 @@ public class DualFundTaprootTests
             var channel = node.Channel(channelId);
             Assert.True(channel.State == ChannelState.Open, harness.Describe());
             var commitmentsState = Assert.IsType<ChannelCommitments>(channel.Commitments);
-            var peerNext = harness.Transcript.Last(t => t.From == harness.Other(node).Name
-                                                     && t.Message is TxCompleteMessage);
-            Assert.Equal(((TxCompleteMessage)peerNext.Message).CommitNoncesTlv!.NextCommitNonce,
+            var (_, peerNext) = harness.Transcript.Last(t => t.From == harness.Other(node).Name
+                                                          && t.Message is TxCompleteMessage);
+            Assert.Equal(((TxCompleteMessage)peerNext).CommitNoncesTlv!.NextCommitNonce,
                          commitmentsState.RemoteNextNonces[fundingTxId]);
             Assert.NotNull(commitmentsState.LocalCommit.RemoteSignatures!.PartialSignature);
         }
@@ -188,9 +186,9 @@ public class DualFundTaprootTests
 
         // Assert: Alice aborts (Eclair's MissingCommitNonce), signs nothing and forgets the open
         Assert.NotNull(result.FailureReason);
-        var abort = harness.Transcript.First(t => t is { From: "Alice", Message: TxAbortMessage });
+        var (_, abort) = harness.Transcript.First(t => t is { From: "Alice", Message: TxAbortMessage });
         Assert.Contains("MissingCommitNonce",
-                        System.Text.Encoding.ASCII.GetString(((TxAbortMessage)abort.Message).Payload.Data));
+                        System.Text.Encoding.ASCII.GetString(((TxAbortMessage)abort).Payload.Data));
         Assert.DoesNotContain(harness.Transcript, t => t is { From: "Alice", Message: CommitmentSignedMessage });
         Assert.Empty(harness.Alice.Published);
         Assert.Empty(harness.Bob.Published);
@@ -218,9 +216,9 @@ public class DualFundTaprootTests
 
         // Assert: refused with tx_abort before Alice's tx_signatures, nothing published
         Assert.NotNull(result.FailureReason);
-        var abort = harness.Transcript.First(t => t is { From: "Alice", Message: TxAbortMessage });
+        var (_, abort) = harness.Transcript.First(t => t is { From: "Alice", Message: TxAbortMessage });
         Assert.Contains("partial signature",
-                        System.Text.Encoding.ASCII.GetString(((TxAbortMessage)abort.Message).Payload.Data));
+                        System.Text.Encoding.ASCII.GetString(((TxAbortMessage)abort).Payload.Data));
         Assert.DoesNotContain(harness.Transcript, t => t is { From: "Alice", Message: TxSignaturesMessage });
         Assert.Empty(harness.Alice.Published);
     }
@@ -233,9 +231,9 @@ public class DualFundTaprootTests
         _ = harness.Alice.DualFund.OpenAsync(Request(harness), TestContext.Current.CancellationToken);
         var commitments = 0;
         await harness.PumpAsync((_, message) => message is CommitmentSignedMessage && ++commitments == 2);
-        var first = harness.Transcript.First(t => t.Message is CommitmentSignedMessage);
-        var channelId = first.Message.Payload.ChannelId;
-        var receiver = first.From == "Alice" ? harness.Alice : harness.Bob;
+        var (firstFrom, firstCommitment) = harness.Transcript.First(t => t.Message is CommitmentSignedMessage);
+        var channelId = firstCommitment.Payload.ChannelId;
+        var receiver = firstFrom == "Alice" ? harness.Alice : harness.Bob;
         var sender = harness.Other(receiver);
         var lost = Assert.IsType<CommitmentSignedMessage>(harness.TakeNext(sender));
 
@@ -253,6 +251,12 @@ public class DualFundTaprootTests
         var receiverSigner = receiver.Services.GetRequiredService<ILightningSigner>();
         Assert.Equal(receiverSigner.GetLocalVerificationNonce(channelId, fundingTxId, 0),
                      asking.CurrentCommitNonceTlv!.Nonce);
+
+        // The signer reloaded the channel from the database as dual-funded: the same nonce as its tx_complete before
+        var sentBeforeRestart = (TxCompleteMessage)harness.Transcript.Last(t => t.From == receiver.Name
+                                                                             && t.Message is TxCompleteMessage)
+                                                          .Message;
+        Assert.Equal(sentBeforeRestart.CommitNoncesTlv!.CommitNonce, asking.CurrentCommitNonceTlv.Nonce);
         Assert.Null(answering.CurrentCommitNonceTlv);
 
         // The commitment_signed went out again, signed again with a fresh nonce (never replayed byte for byte)
