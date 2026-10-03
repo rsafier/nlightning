@@ -39,7 +39,7 @@ using Utils;
 /// attributable failures and hold times; NL-326, NL-072, NL-022).
 /// </summary>
 /// <remarks>
-/// <para>LND 0.20 does not implement <c>option_attribution_data</c> (no feature bit 36/37, no TLV on its
+/// <para>LND 0.21 does not implement <c>option_attribution_data</c> (no feature bit 36/37, no TLV on its
 /// <c>update_fail_htlc</c>): the proof against LND is therefore that an <c>update_fail_htlc</c> carrying our 920-byte
 /// TLV 1 is accepted and its legacy return packet read, and that a failure from LND without attribution is read as
 /// before with no hold time. The attribution itself is proven between two NLightning nodes: the erring node creates it
@@ -50,7 +50,7 @@ using Utils;
 /// when the node advertises <c>option_attribution_data</c> (W7 integration): three NLightning nodes with the feature
 /// forward a payment, and the payer verifies the payee's and the forwarding node's hold times from the fulfill.</para>
 /// <para>Since NL-332 (owner decision 2026-10-02) every node advertises <c>option_attribution_data</c> Optional by
-/// default: a default node's production switch attributes its fulfill and its failure towards LND 0.20, which ignores
+/// default: a default node's production switch attributes its fulfill and its failure towards LND 0.21, which ignores
 /// the odd TLV 1 and stays connected with the channel usable.</para>
 /// </remarks>
 [Collection(LightningRegtestNetworkFixtureCollection.Name)]
@@ -86,7 +86,7 @@ public class AttributionFlowTests : IAsyncLifetime
         // Act
         var info = await alice.LightningClient.GetInfoAsync(new GetInfoRequest(), cancellationToken: ct);
 
-        // Assert: LND 0.20 does not advertise it; we do by default since NL-332, and LND ignores our odd TLV 1
+        // Assert: LND 0.21 does not advertise it; we do by default since NL-332, and LND ignores our odd TLV 1
         Console.WriteLine($"LND {info.Version}: features {string.Join(", ", info.Features.Keys.Order())}");
         Assert.DoesNotContain(36u, info.Features.Keys);
         Assert.DoesNotContain(37u, info.Features.Keys);

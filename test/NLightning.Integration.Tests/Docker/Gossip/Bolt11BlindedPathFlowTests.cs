@@ -17,7 +17,7 @@ using Fixtures;
 using Utils;
 
 /// <summary>
-/// NL-440 against LND 0.20: bLIP 39 BOLT 11 invoices with blinded paths (tagged field 20). (a) We decode LND's field 20
+/// NL-440 against LND 0.21: bLIP 39 BOLT 11 invoices with blinded paths (tagged field 20). (a) We decode LND's field 20
 /// ourselves (no <c>DecodePayReq</c> in the payment: the paths come from our decoder and are checked against LND's
 /// decode field by field) and pay david's blinded invoice with dummy hops through <c>payinvoice</c>; (b) LND bob pays
 /// our own blinded invoice (<c>Node:Invoices:BlindedPaths</c>), whose path runs through alice as introduction node to

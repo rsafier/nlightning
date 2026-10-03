@@ -3,7 +3,7 @@ namespace NLightning.Domain.Client.Requests;
 using Accounting.Prices;
 
 /// <summary>
-/// The arguments of <c>accounting prices import|list|fetch</c> (<c>ClientCommand.AccountingAdmin</c>, NL-602 A3-T2).
+/// The arguments of <c>accounting prices import|list|fetch|replace</c> (<c>ClientCommand.AccountingAdmin</c>, NL-602 A3-T2).
 /// </summary>
 public sealed class AccountingPricesClientRequest
 {
@@ -21,4 +21,13 @@ public sealed class AccountingPricesClientRequest
 
     /// <summary>The most prices listed.</summary>
     public int Limit { get; init; } = 100;
+
+    /// <summary>replace: the stored price's time and the right price (NL-693).</summary>
+    public AccountingPricePoint? Replacement { get; init; }
+
+    /// <summary>replace: where the right price comes from (the audit trail).</summary>
+    public string? Source { get; init; }
+
+    /// <summary>replace: why the price is replaced (the audit trail).</summary>
+    public string? Note { get; init; }
 }

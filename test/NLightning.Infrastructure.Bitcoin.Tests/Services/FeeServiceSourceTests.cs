@@ -22,8 +22,7 @@ public class FeeServiceSourceTests
         var (handler, requests) = CreateHandler("""{ "fastestFee": 10, "halfHourFee": 4, "hourFee": 2 }""");
         var service = CreateService(new FeeEstimationOptions
         {
-            Url = "https://mutinynet.com/api/v1/fees/recommended",
-            CacheFile = "fee-source-test.bin"
+            Url = "https://mutinynet.com/api/v1/fees/recommended"
         }, handler);
 
         // Act
@@ -42,8 +41,7 @@ public class FeeServiceSourceTests
         var service = CreateService(new FeeEstimationOptions
         {
             PreferredFeeRate = "hourFee",
-            RateUnit = FeeRateConverter.SatPerKvByte,
-            CacheFile = "fee-source-test.bin"
+            RateUnit = FeeRateConverter.SatPerKvByte
         }, handler);
 
         // Act
@@ -58,7 +56,7 @@ public class FeeServiceSourceTests
     {
         // Arrange: signets usually answer 1 sat/vB = 250 sat/kw, below the relay floor
         var (handler, _) = CreateHandler("""{ "fastestFee": 1 }""");
-        var service = CreateService(new FeeEstimationOptions { CacheFile = "fee-source-test.bin" }, handler);
+        var service = CreateService(new FeeEstimationOptions(), handler);
 
         // Act
         var feeRate = await service.GetFeeRatePerKwAsync(TestContext.Current.CancellationToken);
@@ -74,8 +72,7 @@ public class FeeServiceSourceTests
         var (handler, _) = CreateHandler("""{ "fastestFee": 10 }""");
         var service = CreateService(new FeeEstimationOptions
         {
-            RateMultiplier = "1000",
-            CacheFile = "fee-source-test.bin"
+            RateMultiplier = "1000"
         }, handler);
 
         // Act
@@ -93,8 +90,7 @@ public class FeeServiceSourceTests
         var service = CreateService(new FeeEstimationOptions
         {
             Source = "fixed",
-            FixedFeeRatePerKw = 1_234,
-            CacheFile = "fee-source-test.bin"
+            FixedFeeRatePerKw = 1_234
         }, handler.Object);
 
         // Act
@@ -114,8 +110,7 @@ public class FeeServiceSourceTests
         {
             Source = FeeEstimationOptions.SourceBitcoind,
             ConfirmationTarget = 3,
-            EstimateMode = "economical",
-            CacheFile = "fee-source-test.bin"
+            EstimateMode = "economical"
         }, new HttpClient(handler.Object), NullLogger<FeeService>.Instance,
                                      (target, mode, _) =>
                                      {
@@ -138,8 +133,7 @@ public class FeeServiceSourceTests
         var service = new FeeService(new FeeEstimationOptions
         {
             Source = FeeEstimationOptions.SourceBitcoind,
-            FallbackFeeRatePerKw = 3_000,
-            CacheFile = "fee-source-test.bin"
+            FallbackFeeRatePerKw = 3_000
         }, new HttpClient(new Mock<HttpMessageHandler>().Object),
                                      NullLogger<FeeService>.Instance,
                                      (_, _, _) => Task.FromResult<decimal?>(null));
@@ -166,7 +160,7 @@ public class FeeServiceSourceTests
         // Arrange (NL-296): one response, every bucket in it
         var (handler, requests) = CreateHandler(
             """{ "fastestFee": 40, "halfHourFee": 20, "hourFee": 10, "economyFee": 5, "minimumFee": 1 }""");
-        var service = CreateService(new FeeEstimationOptions { CacheFile = "fee-source-test.bin" }, handler);
+        var service = CreateService(new FeeEstimationOptions(), handler);
 
         // Act
         var feeRate = await service.GetFeeRatePerKwAsync(target, TestContext.Current.CancellationToken);
@@ -181,7 +175,7 @@ public class FeeServiceSourceTests
     {
         // Arrange: a custom API with only the preferred property
         var (handler, _) = CreateHandler("""{ "fastestFee": 8 }""");
-        var service = CreateService(new FeeEstimationOptions { CacheFile = "fee-source-test.bin" }, handler);
+        var service = CreateService(new FeeEstimationOptions(), handler);
 
         // Act
         var feeRate = await service.GetFeeRatePerKwAsync(36, TestContext.Current.CancellationToken);
@@ -198,8 +192,7 @@ public class FeeServiceSourceTests
         var service = new FeeService(new FeeEstimationOptions
         {
             Source = FeeEstimationOptions.SourceBitcoind,
-            ConfirmationTarget = 6,
-            CacheFile = "fee-source-test.bin"
+            ConfirmationTarget = 6
         }, new HttpClient(new Mock<HttpMessageHandler>(MockBehavior.Strict).Object),
                                      NullLogger<FeeService>.Instance,
                                      (target, _, _) =>
@@ -228,8 +221,7 @@ public class FeeServiceSourceTests
         var service = new FeeService(new FeeEstimationOptions
         {
             Source = FeeEstimationOptions.SourceBitcoind,
-            ConfirmationTarget = 6,
-            CacheFile = "fee-source-test.bin"
+            ConfirmationTarget = 6
         }, new HttpClient(new Mock<HttpMessageHandler>(MockBehavior.Strict).Object),
                                      NullLogger<FeeService>.Instance,
                                      (target, _, _) => Task.FromResult<decimal?>(target == 6 ? 4m : null));
@@ -248,8 +240,7 @@ public class FeeServiceSourceTests
         var service = CreateService(new FeeEstimationOptions
         {
             Source = "fixed",
-            FixedFeeRatePerKw = 777,
-            CacheFile = "fee-source-test.bin"
+            FixedFeeRatePerKw = 777
         }, new Mock<HttpMessageHandler>(MockBehavior.Strict).Object);
 
         // Act
@@ -263,7 +254,7 @@ public class FeeServiceSourceTests
     public void Given_ANeverStartedService_When_ReadingTheCachedRate_Then_ItIsTheDefaultFallback()
     {
         // Arrange
-        var service = CreateService(new FeeEstimationOptions { CacheFile = "fee-source-test.bin" },
+        var service = CreateService(new FeeEstimationOptions(),
                                     new Mock<HttpMessageHandler>(MockBehavior.Strict).Object);
 
         // Act
@@ -286,8 +277,7 @@ public class FeeServiceSourceTests
         logger.Setup(l => l.IsEnabled(It.IsAny<LogLevel>())).Returns(true);
         var service = new FeeService(new OptionsWrapper<FeeEstimationOptions>(new FeeEstimationOptions
         {
-            FallbackFeeRatePerKw = 1_000,
-            CacheFile = "fee-source-test.bin"
+            FallbackFeeRatePerKw = 1_000
         }), new HttpClient(handler.Object), logger.Object);
 
         // Act
@@ -309,8 +299,7 @@ public class FeeServiceSourceTests
         var service = new FeeService(new FeeEstimationOptions
         {
             Source = FeeEstimationOptions.SourceBitcoind,
-            FallbackFeeRatePerKw = 253,
-            CacheFile = "fee-source-test.bin"
+            FallbackFeeRatePerKw = 253
         }, new HttpClient(new Mock<HttpMessageHandler>().Object),
                                      NullLogger<FeeService>.Instance,
                                      (_, _, _) => Task.FromResult(answers.Dequeue()));
@@ -333,8 +322,7 @@ public class FeeServiceSourceTests
         logger.Setup(l => l.IsEnabled(It.IsAny<LogLevel>())).Returns(true);
         var service = new FeeService(new FeeEstimationOptions
         {
-            Source = FeeEstimationOptions.SourceBitcoind,
-            CacheFile = "fee-source-test.bin"
+            Source = FeeEstimationOptions.SourceBitcoind
         }, new HttpClient(new Mock<HttpMessageHandler>().Object), logger.Object,
                                      (_, _, ct) => Task.FromCanceled<decimal?>(ct));
 
@@ -365,8 +353,7 @@ public class FeeServiceSourceTests
         // Act
         var service = new FeeService(new OptionsWrapper<FeeEstimationOptions>(new FeeEstimationOptions
         {
-            Source = FeeEstimationOptions.SourceBitcoind,
-            CacheFile = "fee-source-test.bin"
+            Source = FeeEstimationOptions.SourceBitcoind
         }), new HttpClient(new Mock<HttpMessageHandler>().Object),
                                      NullLogger<FeeService>.Instance, bitcoinOptions, nodeOptions);
 
@@ -403,8 +390,7 @@ public class FeeServiceSourceTests
         // Arrange
         var service = CreateService(new FeeEstimationOptions
         {
-            Source = FeeEstimationOptions.SourceFixed,
-            CacheFile = "fee-source-test.bin"
+            Source = FeeEstimationOptions.SourceFixed
         }, new Mock<HttpMessageHandler>().Object);
 
         // Act
@@ -424,8 +410,7 @@ public class FeeServiceSourceTests
                                        + new string('x', FeeService.MaxResponseBytes) + "\" }");
         var service = CreateService(new FeeEstimationOptions
         {
-            FallbackFeeRatePerKw = 1_000,
-            CacheFile = Path.Combine(Path.GetTempPath(), $"fee-cap-{Guid.NewGuid():N}.bin")
+            FallbackFeeRatePerKw = 1_000
         }, handler);
 
         // Act
@@ -456,8 +441,7 @@ public class FeeServiceSourceTests
         var service = CreateService(new FeeEstimationOptions
         {
             Method = "POST",
-            Body = "{\"q\":1}",
-            CacheFile = Path.Combine(Path.GetTempPath(), $"fee-post-{Guid.NewGuid():N}.bin")
+            Body = "{\"q\":1}"
         }, handler.Object);
 
         // Act
@@ -494,7 +478,7 @@ public class FeeServiceSourceTests
         // Arrange (NL-732): the headers come at once, the body never ends; HttpClient.Timeout alone stops at the
         // headers with ResponseHeadersRead, so the refresh hung for the life of the process
         var handler = new StallingBodyHttpHandler();
-        var options = new FeeEstimationOptions { CacheFile = "fee-source-test.bin", FallbackFeeRatePerKw = 2_500 };
+        var options = new FeeEstimationOptions { FallbackFeeRatePerKw = 2_500 };
         var service = new FeeService(new OptionsWrapper<FeeEstimationOptions>(options),
                                      new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(200) },
                                      NullLogger<FeeService>.Instance);

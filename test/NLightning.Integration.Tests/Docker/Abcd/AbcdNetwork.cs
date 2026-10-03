@@ -47,7 +47,7 @@ public sealed class AbcdNetwork : IAsyncDisposable
     private const int NodeLogTailLines = 300;
 
     /// <summary>
-    /// The <c>to_self_delay</c> LND 0.20 asks for on a 2,000,000 sat channel.
+    /// The <c>to_self_delay</c> LND 0.21 asks for on a 2,000,000 sat channel.
     /// </summary>
     private const ushort LndToSelfDelayFor2MSatChannel = 240;
 
@@ -316,7 +316,7 @@ public sealed class AbcdNetwork : IAsyncDisposable
 
     /// <summary>
     /// The node options of Bob and Carol: their forwarding policy, and a <c>to_self_delay</c> that lets them accept
-    /// LND's. LND 0.20 scales the delay it asks for with the capacity (240 blocks for a 2,000,000 sat channel), and
+    /// LND's. LND 0.21 scales the delay it asks for with the capacity (240 blocks for a 2,000,000 sat channel), and
     /// our open validator refused more than 1.5 × our own (1.5 × 144 = 216) until NL-550 made the limit
     /// <c>Node:MaxAcceptedToSelfDelay</c> (2016); the pin stays so the suite keeps the delays it was proven with.
     /// </summary>

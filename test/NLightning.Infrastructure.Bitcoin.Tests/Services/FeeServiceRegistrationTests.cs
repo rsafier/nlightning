@@ -113,7 +113,6 @@ public class FeeServiceRegistrationTests
             o.Source = options.Source;
             o.FixedFeeRatePerKw = options.FixedFeeRatePerKw;
             o.FallbackFeeRatePerKw = options.FallbackFeeRatePerKw;
-            o.CacheFile = "fee-registration-test.bin";
         });
         configure?.Invoke(services);
         services.AddFeeServices(primaryHandler is null ? null : _ => primaryHandler);

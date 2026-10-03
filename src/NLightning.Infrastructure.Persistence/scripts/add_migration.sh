@@ -14,6 +14,11 @@ PostgresProject='../NLightning.Infrastructure.Persistence.Postgres'
 SqliteProject='../NLightning.Infrastructure.Persistence.Sqlite'
 SqlServerProject='../NLightning.Infrastructure.Persistence.SqlServer'
 
+# The compiled models first (NL-708): they follow the edited model, and stale ones may not even compile any more,
+# which would fail the builds below
+echo "Regenerating the compiled models..."
+"$(dirname "${BASH_SOURCE[0]}")/optimize_model.sh" || { echo "optimize_model.sh failed; no migration added." >&2; exit 1; }
+
 echo "Building projects first (Debug, the configuration dotnet ef runs)..."
 dotnet build -c Debug ../NLightning.Infrastructure.Persistence.Postgres --framework "$Framework"
 dotnet build -c Debug ../NLightning.Infrastructure.Persistence.Sqlite --framework "$Framework"

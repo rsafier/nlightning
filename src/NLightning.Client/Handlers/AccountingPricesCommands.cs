@@ -10,18 +10,21 @@ using Transport.Ipc.Requests;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// <c>accounting prices import|list|fetch</c> (ClientCommand 45, NL-602 A3-T2). <c>import &lt;file&gt;</c> reads the
+/// <c>accounting prices import|list|fetch|replace</c> (ClientCommand 45, NL-602 A3-T2, NL-693). <c>import &lt;file&gt;</c> reads the
 /// price file on the client's machine (<c>unixSeconds,price</c> per line, the format of the daemon's price file), refuses
 /// it with every bad line listed by number, and sends it in requests of
 /// <see cref="AccountingPricesIpcRequest.MaxRowsPerRequest"/> rows; <c>list</c> pages the stored prices with
-/// <c>--since</c>; <c>fetch --since</c> asks the node's price sources for every hour of the range.
+/// <c>--since</c>; <c>fetch --since</c> asks the node's price sources for every hour of the range; <c>replace &lt;time&gt;
+/// &lt;price&gt;</c> corrects the stored price of that time (to the second) and re-values what it priced, with
+/// <c>--source</c> and <c>--note</c> for the audit trail.
 /// </summary>
 internal static class AccountingPricesCommands
 {
     /// <summary>The usage of the <c>prices</c> subcommands.</summary>
     internal const string Usage =
         "accounting prices import <file> [--currency <code>] | accounting prices list [--since <time>] [--until "
-      + "<time>] [--limit <n>] [--currency <code>] | accounting prices fetch --since <time> [--until <time>]";
+      + "<time>] [--limit <n>] [--currency <code>] | accounting prices fetch --since <time> [--until <time>] | "
+      + "accounting prices replace <time> <price> [--currency <code>] [--source <text>] [--note <text>]";
 
     /// <summary>The largest list page.</summary>
     internal const int MaxLimit = 1_000;
@@ -35,7 +38,7 @@ internal static class AccountingPricesCommands
         error = null;
         if (args.Length == 0)
         {
-            error = "Missing prices subcommand: import, list or fetch.";
+            error = "Missing prices subcommand: import, list, fetch or replace.";
             return null;
         }
 
@@ -47,8 +50,10 @@ internal static class AccountingPricesCommands
                 return ParseList(args[1..], out error);
             case "fetch":
                 return ParseFetch(args[1..], out error);
+            case "replace":
+                return ParseReplace(args[1..], out error);
             default:
-                error = $"Unknown prices subcommand '{args[0]}': expected import, list or fetch.";
+                error = $"Unknown prices subcommand '{args[0]}': expected import, list, fetch or replace.";
                 return null;
         }
     }
@@ -210,6 +215,55 @@ internal static class AccountingPricesCommands
             "prices", Admin: new AccountingAdminIpcRequest
             {
                 Action = (int)AccountingAdminAction.PricesFetch,
+                Prices = prices
+            });
+    }
+
+    private static AccountingBooksCommands.AccountingArguments? ParseReplace(string[] args, out string? error)
+    {
+        error = null;
+        if (args.Length < 2 || args[0].StartsWith("--", StringComparison.Ordinal)
+                            || args[1].StartsWith("--", StringComparison.Ordinal))
+        {
+            error = "Missing the time or the price: accounting prices replace <time> <price> [--currency <code>] "
+                  + "[--source <text>] [--note <text>].";
+            return null;
+        }
+
+        if (!AccountingBooksCommands.TryParseTime("time", args[0], out var seconds, out error))
+            return null;
+
+        if (!decimal.TryParse(args[1], NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var price)
+         || price <= 0)
+        {
+            error = $"Invalid price '{args[1]}': expected a number above zero such as 86048.5.";
+            return null;
+        }
+
+        var options = AccountingBooksCommands.ParseOptions(args[2..], ["--currency", "--source", "--note"], out error);
+        if (options is null)
+            return null;
+
+        var prices = new AccountingPricesIpcRequest
+        {
+            ReplaceTimeUnixSeconds = seconds,
+            ReplacePrice = price.ToString(CultureInfo.InvariantCulture)
+        };
+        if (!ApplyCurrency(options, prices, out error))
+            return null;
+
+        foreach (var (name, value) in options)
+        {
+            if (name == "--source")
+                prices.Source = value;
+            else if (name == "--note")
+                prices.Note = value;
+        }
+
+        return new AccountingBooksCommands.AccountingArguments(
+            "prices", Admin: new AccountingAdminIpcRequest
+            {
+                Action = (int)AccountingAdminAction.PricesReplace,
                 Prices = prices
             });
     }

@@ -14,7 +14,7 @@ using Gossip;
 using Utils;
 
 /// <summary>
-/// NL-496 (splicing plan Proof SP2 (c) against LND): LND 0.20, which does not splice itself, learns a public channel
+/// NL-496 (splicing plan Proof SP2 (c) against LND): LND 0.21, which does not splice itself, learns a public channel
 /// that two NLightning nodes spliced. A and B share a public v1 channel (A funds it); A also has a public channel to
 /// LND alice, and B is alice's peer without a channel. A splices in; after the lock both ends announce the channel again
 /// under the splice's short channel id at 6 confirmations. Alice (a direct peer of both) and bob (who hears it only

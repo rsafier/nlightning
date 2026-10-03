@@ -40,7 +40,7 @@ using Utils;
 /// <remarks>
 /// The safety services are not in the daemon's composition yet (their registration and start are an integrator
 /// step), so the test builds them over the node's own service graph. LND cancels a held HTLC
-/// <c>invoices.holdexpirydelta</c> (12) blocks before its expiry, so the first test disconnects first: the HTLC then
+/// <c>invoices.holdexpirydelta</c> (18 since LND 0.21) blocks before its expiry, so the first test disconnects first: the HTLC then
 /// stays in both commitments and only our deadline can resolve it. Our node runs with a <c>cltv_expiry_delta</c> of
 /// <see cref="OurCltvExpiryDelta"/>, which is also its fail-back distance.
 /// </remarks>
@@ -54,9 +54,10 @@ public class ChannelSafetyFlowTests : IAsyncLifetime
     private const uint OurFeeProportionalMillionths = 100;
 
     /// <summary>
-    /// LND's default <c>invoices.holdexpirydelta</c>: it cancels a held HTLC this many blocks before its expiry.
+    /// LND's default <c>invoices.holdexpirydelta</c>: it cancels a held HTLC this many blocks before its expiry. It is
+    /// <c>DefaultIncomingBroadcastDelta + 2</c>, and LND 0.21 raised that delta from 10 to 16 (12 before, 18 since).
     /// </summary>
-    private const uint LndHoldExpiryDelta = 12;
+    private const uint LndHoldExpiryDelta = 18;
 
     private readonly LightningRegtestNetworkFixture _fixture;
     private NLightningTestNode? _node;

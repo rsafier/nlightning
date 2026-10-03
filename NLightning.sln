@@ -142,6 +142,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLightning.Testing.Lnd", "t
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLightning.Testing.Lnd.Tests", "test\NLightning.Testing.Lnd.Tests\NLightning.Testing.Lnd.Tests.csproj", "{E53450E0-E734-4026-A07E-1779E05D013B}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLightning.Infrastructure.Persistence.Design", "src\NLightning.Infrastructure.Persistence.Design\NLightning.Infrastructure.Persistence.Design.csproj", "{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Release|Any CPU = Release|Any CPU
@@ -1280,6 +1282,42 @@ Global
 		{E53450E0-E734-4026-A07E-1779E05D013B}.Debug.Wasm|x64.Build.0 = Debug.Wasm|Any CPU
 		{E53450E0-E734-4026-A07E-1779E05D013B}.Debug.Wasm|x86.ActiveCfg = Debug.Wasm|Any CPU
 		{E53450E0-E734-4026-A07E-1779E05D013B}.Debug.Wasm|x86.Build.0 = Debug.Wasm|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release|x64.ActiveCfg = Release|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release|x64.Build.0 = Release|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release|x86.ActiveCfg = Release|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release|x86.Build.0 = Release|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release.Native|Any CPU.ActiveCfg = Release.Native|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release.Native|Any CPU.Build.0 = Release.Native|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release.Native|x64.ActiveCfg = Release.Native|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release.Native|x64.Build.0 = Release.Native|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release.Native|x86.ActiveCfg = Release.Native|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release.Native|x86.Build.0 = Release.Native|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release.Wasm|Any CPU.ActiveCfg = Release.Wasm|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release.Wasm|Any CPU.Build.0 = Release.Wasm|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release.Wasm|x64.ActiveCfg = Release.Wasm|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release.Wasm|x64.Build.0 = Release.Wasm|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release.Wasm|x86.ActiveCfg = Release.Wasm|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Release.Wasm|x86.Build.0 = Release.Wasm|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug|x64.Build.0 = Debug|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug|x86.Build.0 = Debug|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug.Native|Any CPU.ActiveCfg = Debug.Native|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug.Native|Any CPU.Build.0 = Debug.Native|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug.Native|x64.ActiveCfg = Debug.Native|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug.Native|x64.Build.0 = Debug.Native|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug.Native|x86.ActiveCfg = Debug.Native|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug.Native|x86.Build.0 = Debug.Native|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug.Wasm|Any CPU.ActiveCfg = Debug.Wasm|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug.Wasm|Any CPU.Build.0 = Debug.Wasm|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug.Wasm|x64.ActiveCfg = Debug.Wasm|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug.Wasm|x64.Build.0 = Debug.Wasm|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug.Wasm|x86.ActiveCfg = Debug.Wasm|Any CPU
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C}.Debug.Wasm|x86.Build.0 = Debug.Wasm|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -1325,6 +1363,7 @@ Global
 		{8A3E6DBC-5F49-417A-BC2D-E3F405162739} = {AF4411D4-8EE9-423E-8213-1C9D35E47882}
 		{8403DA35-1BD5-4991-8453-40DC72495764} = {AF4411D4-8EE9-423E-8213-1C9D35E47882}
 		{E53450E0-E734-4026-A07E-1779E05D013B} = {AF4411D4-8EE9-423E-8213-1C9D35E47882}
+		{98F7DF68-6544-4B65-A6D0-5BEE7205F80C} = {123D0631-533C-447F-B7DA-D1D37E5E64BF}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {B11DB411-8F72-4829-AA0D-8E3908363026}

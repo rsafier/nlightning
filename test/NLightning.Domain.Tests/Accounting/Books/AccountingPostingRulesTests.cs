@@ -117,6 +117,19 @@ public class AccountingPostingRulesTests
         AssertPostings(postings, (AccountRole.Channels, -50_000_000), (AccountRole.LossOnchain, 50_000_000));
     }
 
+    [Fact]
+    public void Given_AnInvoiceLostOnchain_When_Posted_Then_TheHtlcAmountLeavesTheChannelsAsALoss()
+    {
+        // Act (NL-688): the HTLC of a settled invoice the peer timed out on chain
+        var accountingEvent = Event(AccountingEventKind.InvoiceLostOnchain, -30_000_000, 0, ("cause", "invoiceOnchain"),
+                                    (AccountingDetailKeys.Description, "coffee"));
+        var postings = Post(accountingEvent);
+
+        // Assert
+        AssertPostings(postings, (AccountRole.Channels, -30_000_000), (AccountRole.LossOnchain, 30_000_000));
+        Assert.Equal("Invoice payment lost on chain: coffee", AccountingPostingRules.Describe(accountingEvent));
+    }
+
     #endregion
 
     #region Channels

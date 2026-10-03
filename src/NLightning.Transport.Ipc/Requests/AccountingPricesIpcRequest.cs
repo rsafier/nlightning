@@ -9,7 +9,8 @@ using Domain.Client.Exceptions;
 using Domain.Client.Requests;
 
 /// <summary>
-/// The arguments of <c>accounting prices import|list|fetch</c> (ClientCommand 45 key 10, NL-602 A3-T2). Prices travel
+/// The arguments of <c>accounting prices import|list|fetch|replace</c> (ClientCommand 45 key 10, NL-602 A3-T2,
+/// NL-693). Prices travel
 /// as invariant decimal text. Keys are append-only.
 /// </summary>
 [MessagePackObject]
@@ -33,6 +34,18 @@ public sealed class AccountingPricesIpcRequest
     /// <summary>list: the most prices (100, at most 1,000).</summary>
     [Key(4)] public int Limit { get; set; } = 100;
 
+    /// <summary>replace: the stored price's time (Unix seconds) and the new price (key 6), NL-693.</summary>
+    [Key(5)] public long? ReplaceTimeUnixSeconds { get; set; }
+
+    /// <summary>replace: the new price of 1 BTC, invariant decimal text.</summary>
+    [Key(6)] public string? ReplacePrice { get; set; }
+
+    /// <summary>replace: where the new price comes from (the audit trail).</summary>
+    [Key(7)] public string? Source { get; set; }
+
+    /// <summary>replace: why the price is replaced (the audit trail).</summary>
+    [Key(8)] public string? Note { get; set; }
+
     /// <exception cref="ClientException">Too many rows, a bad price or a time out of range.</exception>
     public AccountingPricesClientRequest ToClientRequest()
     {
@@ -52,13 +65,27 @@ public sealed class AccountingPricesIpcRequest
             points.Add(new AccountingPricePoint(ToTime(row.TimeUnixSeconds, $"price row {i + 1}"), price));
         }
 
+        AccountingPricePoint? replacement = null;
+        if (ReplaceTimeUnixSeconds is { } replaceTime)
+        {
+            if (string.IsNullOrWhiteSpace(ReplacePrice)
+             || !decimal.TryParse(ReplacePrice.Trim(), NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture,
+                                  out var replacePrice))
+                throw new ClientException(ErrorCodes.InvalidOperation, "The new price is not a price.");
+
+            replacement = new AccountingPricePoint(ToTime(replaceTime, "the replaced price"), replacePrice);
+        }
+
         return new AccountingPricesClientRequest
         {
             Currency = Currency,
             Points = points,
             Since = SinceUnixSeconds is { } since ? ToTime(since, "since") : null,
             Until = UntilUnixSeconds is { } until ? ToTime(until, "until") : null,
-            Limit = Limit
+            Limit = Limit,
+            Replacement = replacement,
+            Source = string.IsNullOrWhiteSpace(Source) ? null : Source.Trim(),
+            Note = string.IsNullOrWhiteSpace(Note) ? null : Note.Trim()
         };
     }
 

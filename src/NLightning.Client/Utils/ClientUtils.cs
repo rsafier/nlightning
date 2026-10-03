@@ -228,6 +228,9 @@ public static class ClientUtils
         Console.WriteLine("                               The stored BTC prices, oldest first");
         Console.WriteLine("  accounting prices fetch --since <time> [--until <time>]");
         Console.WriteLine("                               Ask the price sources for every hour of the range (31 days max)");
+        Console.WriteLine("  accounting prices replace <time> <price> [--currency <code>] [--source <text>] [--note <text>]");
+        Console.WriteLine("                               Correct a wrong stored price and re-value what it priced");
+        Console.WriteLine("                               (closed periods: price adjustments in the open period)");
         Console.WriteLine("  accounting lots import <file> [--currency <code>]");
         Console.WriteLine("                               Replace the opening balances' estimated cost basis with");
         Console.WriteLine("                               time,sats,cost lots (before the first close only)");

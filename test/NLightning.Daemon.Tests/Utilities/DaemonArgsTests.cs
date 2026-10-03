@@ -285,6 +285,30 @@ public class DaemonArgsTests : IDisposable
     }
 
     [Fact]
+    public void Given_AFileWithoutOrWithAnEmptyFeeCacheFile_When_ReadInitialConfiguration_Then_DefaultInConfigDirOrOff()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Uses HOME to redirect the default config dir");
+
+        // Arrange (NL-706): an older file without the key, and one that turned the cache off with an empty value
+        Environment.SetEnvironmentVariable("HOME", _tempHome);
+        var missingDir = Path.Combine(_tempHome, "configs", "regtest-fee-missing");
+        Directory.CreateDirectory(missingDir);
+        File.WriteAllText(Path.Combine(missingDir, "appsettings.json"), "{ \"Node\": { \"Network\": \"regtest\" } }");
+        var emptyDir = Path.Combine(_tempHome, "configs", "regtest-fee-empty");
+        Directory.CreateDirectory(emptyDir);
+        File.WriteAllText(Path.Combine(emptyDir, "appsettings.json"),
+                          "{ \"Node\": { \"Network\": \"regtest\" }, \"FeeEstimation\": { \"CacheFile\": \"\" } }");
+
+        // Act
+        var (missing, _, _) = NodeConfigurationExtensions.ReadInitialConfiguration(["--config", missingDir]);
+        var (empty, _, _) = NodeConfigurationExtensions.ReadInitialConfiguration(["--config", emptyDir]);
+
+        // Assert
+        Assert.Equal(Path.Combine(missingDir, "fee_estimation_cache.bin"), missing["FeeEstimation:CacheFile"]);
+        Assert.True(string.IsNullOrEmpty(empty["FeeEstimation:CacheFile"]));
+    }
+
+    [Fact]
     public void Given_AbsoluteAndSpecialSqlitePaths_When_ReadInitialConfiguration_Then_TheyAreLeftAlone()
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "Uses HOME to redirect the default config dir");

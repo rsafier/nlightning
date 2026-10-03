@@ -37,9 +37,24 @@ public class AccountingPriceDbRepository : IAccountingPriceDbRepository
             Currency = currency,
             Time = price.Time,
             Price = price.Price,
-            Source = (byte)price.Source,
+            PriceSource = (byte)price.Source,
             FetchedAt = price.FetchedAt
         });
+        return true;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> ReplaceAsync(long id, decimal price, AccountingPriceSource source,
+                                         DateTimeOffset replacedAt, CancellationToken cancellationToken = default)
+    {
+        var entity = _context.AccountingPrices.Local.FirstOrDefault(p => p.Id == id)
+                  ?? await _context.AccountingPrices.FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
+        if (entity is null)
+            return false;
+
+        entity.Price = price;
+        entity.PriceSource = (byte)source;
+        entity.FetchedAt = replacedAt;
         return true;
     }
 
@@ -95,6 +110,6 @@ public class AccountingPriceDbRepository : IAccountingPriceDbRepository
     }
 
     private static AccountingPrice MapEntityToDomain(AccountingPriceEntity entity) =>
-        new(entity.Id, entity.Currency, entity.Time, entity.Price, (AccountingPriceSource)entity.Source,
+        new(entity.Id, entity.Currency, entity.Time, entity.Price, (AccountingPriceSource)entity.PriceSource,
             entity.FetchedAt);
 }

@@ -10,5 +10,9 @@ public enum AccountingPriceSource : byte
     Http = 2,
 
     /// <summary>Rows the operator sent with <c>nltg accounting prices import</c>.</summary>
-    Import = 3
+    Import = 3,
+
+    /// <summary>A stored price the operator corrected with <c>nltg accounting prices replace</c> (NL-693): the row keeps
+    /// its id and time, <c>FetchedAt</c> is when it was replaced.</summary>
+    Manual = 4
 }
