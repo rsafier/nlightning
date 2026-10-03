@@ -1,7 +1,7 @@
 namespace NLightning.Integration.Tests.Fixtures;
 
 /// <summary>
-/// The CLN, Eclair and LDK fixtures run on the cluster only (NL-866): without <c>NLTG_TEST_BACKEND=cluster</c> they start
+/// The CLN, Eclair, LDK and Cashu mint fixtures run on the cluster only (NL-866, NL-993): without <c>NLTG_TEST_BACKEND=cluster</c> they start
 /// nothing and every member a test uses skips it with the reason; under it without a Kubernetes configuration they fail
 /// (NL-860). The LND network's and Postgres' cases are <see cref="LightningRegtestNetworkFixtureTests"/> and
 /// <c>Postgres/PostgresBackendTests</c>.
@@ -80,6 +80,24 @@ public class ClusterFixtureAvailabilityTests
     }
 
     [Fact]
+    public async Task Given_NoClusterOptIn_When_TheCashuMintFixtureStarts_Then_ItStartsNothingAndItsTestsSkip()
+    {
+        // Arrange
+        var skips = new List<string>();
+        await using var fixture = new Cashu.CashuMintFixture(_ => null, s_kubeNotProbed, RecordingSkip(skips));
+
+        // Act
+        await fixture.InitializeAsync();
+
+        // Assert
+        Assert.Contains("The Cashu mint fixture runs on the cluster backend only (NL-993)", fixture.UnavailableReason);
+        Assert.Contains("scripts/run-cluster.sh --matrix cashu", fixture.UnavailableReason);
+        AssertSkips(fixture.SkipIfUnavailable);
+        Assert.Equal([fixture.UnavailableReason!], skips);
+        Assert.Equal("(no mint)", await fixture.GetMintLogAsync(10, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Given_TheClusterOptInWithoutAKubeConfiguration_When_TheFixturesStart_Then_TheyFailInsteadOfSkipping()
     {
         // Arrange (NL-860)
@@ -89,9 +107,13 @@ public class ClusterFixtureAvailabilityTests
         await using var cln = new ClnFixture(Cluster, noKube, noSkip);
         await using var eclair = new EclairFixture(Cluster, noKube, noSkip);
         await using var ldk = new LdkFixture(Cluster, noKube, noSkip);
+        await using var cashu = new Cashu.CashuMintFixture(Cluster, noKube, noSkip);
 
         // Act & Assert
-        foreach (var start in new Func<ValueTask>[] { cln.InitializeAsync, eclair.InitializeAsync, ldk.InitializeAsync })
+        foreach (var start in new Func<ValueTask>[]
+                 {
+                     cln.InitializeAsync, eclair.InitializeAsync, ldk.InitializeAsync, cashu.InitializeAsync
+                 })
         {
             var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await start());
             Assert.Contains("no Kubernetes cluster is configured", error.Message);

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The test runner of the Kubernetes harness (plan docs/agents/TEST_HARNESS_PLAN.md §5 step 5, R4, R13, R14) and the
-# only way to run the integration suites (LND, on-chain, gossip, ABCD, CLN, Eclair, LDK, Postgres, partitions) on a
+# only way to run the integration suites (LND, on-chain, gossip, ABCD, CLN, Eclair, LDK, Postgres, Cashu, partitions) on a
 # cluster (OrbStack's locally). Every test process gets its own NLTG_TEST_RUN_ID, so its own namespaces
 # (nltg-spike-<run>[-<n>]); it never starts Docker containers and needs no Docker lock. The cluster is the only backend
 # of the LND suites (lnd, onchain, anchors, gossip, day0, abcd) since NL-820 and of the CLN, Eclair, LDK and Postgres
@@ -9,7 +9,9 @@
 #   docker build -t custom_lnd:0.21.4-beta test/Docker/custom_lnd          (lnd, onchain, anchors, gossip, day0, abcd)
 #   docker build -t nltg-eclair:0.14.3 test/Docker/eclair                   (eclair, eclair2)
 #   docker build -t nltg-ldk-server:dc02b76c test/Docker/ldk_server         (ldk; a cold build takes 10-20 min)
-# A missing image fails its pod at once (ErrImageNeverPull). CLN, bitcoind and Postgres are pulled by digest.
+#   docker build -t nltg-cdk-cli:0.18.1 test/Docker/cdk-cli                 (cashu; about 10 min)
+# A missing image fails its pod at once (ErrImageNeverPull). CLN, bitcoind, Postgres and CDK's cdk-mintd are pulled by
+# digest.
 #
 # Two modes, both building once (the test project and the nltg-cluster CLI), never per run:
 #   --matrix [S,...]  runs the suites (default: every suite, see `nltg-cluster matrix list`) with at most -j suites in

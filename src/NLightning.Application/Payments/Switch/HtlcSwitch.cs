@@ -27,6 +27,7 @@ using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Onchain.Models;
 using Domain.Payments.Enums;
+using Domain.Payments.Events;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Payments.Trampoline;
@@ -182,6 +183,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private readonly CancellationTokenSource _disposeCts = new();
     private readonly ISecureKeyManager? _secureKeyManager;
     private readonly ITrampolineFailureOnionService? _trampolineFailureOnionService;
+    private readonly IPaymentEventPublisher? _paymentEventPublisher;
     private volatile bool _disposed;
 
     public HtlcSwitch(IChannelLockProvider channelLockProvider, IChannelMemoryRepository channelMemoryRepository,
@@ -198,9 +200,11 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                       INodeDrainState? nodeDrainState = null,
                       IRefusedHtlcCounter? refusedHtlcCounter = null, ISecureKeyManager? secureKeyManager = null,
                       ITrampolineHtlcHandler? trampolineHandler = null,
-                      ITrampolineFailureOnionService? trampolineFailureOnionService = null)
+                      ITrampolineFailureOnionService? trampolineFailureOnionService = null,
+                      IPaymentEventPublisher? paymentEventPublisher = null)
     {
         _trampolineHandler = trampolineHandler;
+        _paymentEventPublisher = paymentEventPublisher;
         _secureKeyManager = secureKeyManager;
         _trampolineFailureOnionService = trampolineFailureOnionService;
         _refusedHtlcCounter = refusedHtlcCounter;
@@ -852,6 +856,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                 await FulfillFinalAsync(part.ChannelId, part.HtlcId, preimage, part.SharedSecret, Settle,
                                         cancellationToken);
                 LogFulfilled(part, set.PaymentHash);
+                PublishSettled(set.PaymentHash, amount);
                 return true;
             }
             catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
@@ -865,6 +870,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
         if (!await MarkPartAsync(part.ChannelId, part.HtlcId, preimage, Settle, cancellationToken))
             return false;
+
+        PublishSettled(set.PaymentHash, amount);
 
         _logger.LogInformation("Settled invoice {PaymentHash} with incoming HTLC {HtlcId} of channel {ChannelId}, "
                              + "which is {Resolution}", set.PaymentHash, part.HtlcId, part.ChannelId,
@@ -1113,6 +1120,13 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                                           IsOnchain(channelId), CurrentHeight, selfPayment);
         }, _logger);
     }
+
+    /// <summary>
+    /// Tells the payment event subscribers (Cashu plan C0, NL-991) that the invoice of <paramref name="paymentHash"/>
+    /// is settled: called after the save that settled it.
+    /// </summary>
+    private void PublishSettled(Hash paymentHash, LightningMoney amount) =>
+        _paymentEventPublisher?.Publish(new InvoiceSettledEvent(paymentHash, amount, _timeProvider.GetUtcNow()));
 
     /// <summary>
     /// Whether one of our own payments is paying <paramref name="invoice"/> (NL-609): its row is <c>InFlight</c> or
