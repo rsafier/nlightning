@@ -37,7 +37,17 @@ public class ChannelSigningInfoDbRepository : IChannelSigningInfoDbRepository
     }
 
     /// <inheritdoc />
-    public async Task<ChannelSigningInfo?> GetAsync(ChannelId channelId)
+    /// <remarks>The channel row, its fundings and commitments are read from one snapshot of the database (NL-810): a
+    /// splice lock saved in between moves the funding columns and the funding rows together.</remarks>
+    public Task<ChannelSigningInfo?> GetAsync(ChannelId channelId) =>
+        _context.ReadConsistentlyAsync(() => ReadAsync(channelId));
+
+    /// <inheritdoc />
+    /// <remarks>Every row is read from one snapshot of the database (NL-810), as by <see cref="GetAsync"/>.</remarks>
+    public Task<IReadOnlyDictionary<ChannelId, ChannelSigningInfo>> GetAllAsync() =>
+        _context.ReadConsistentlyAsync(ReadAllAsync);
+
+    private async Task<ChannelSigningInfo?> ReadAsync(ChannelId channelId)
     {
         var channel = await _context.Channels.AsNoTracking()
                                     .Include(c => c.KeySets)
@@ -61,8 +71,7 @@ public class ChannelSigningInfoDbRepository : IChannelSigningInfoDbRepository
         return Map(channel, broadcastNumbers, fundings, localSlots);
     }
 
-    /// <inheritdoc />
-    public async Task<IReadOnlyDictionary<ChannelId, ChannelSigningInfo>> GetAllAsync()
+    private async Task<IReadOnlyDictionary<ChannelId, ChannelSigningInfo>> ReadAllAsync()
     {
         var channels = await _context.Channels.AsNoTracking()
                                      .Include(c => c.KeySets)

@@ -135,10 +135,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 45 | 46 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 186 | 373 | 635 |
+| fixed | 14 | 62 | 187 | 373 | 636 |
 | wontfix | 0 | 0 | 5 | 8 | 13 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **193** | **428** | **697** |
+| **Total** | **14** | **62** | **194** | **428** | **698** |
 
 ### Epics
 
@@ -4441,6 +4441,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** After NL-497 only loopback connections keep a saved dialable address; an inbound peer from any other host is saved with port 9735 (not the port it listens on) and each inbound connection overwrites the row, so a peer listening elsewhere cannot be redialed after a restart (reported by lane SPR-D).
 - **Fix sketch:** Keep a saved dialable row on inbound connections (update `LastSeenAt` only), and learn the listening address from the peer's `node_announcement` when it has one.
 - **Blocks/Blocked-by:** Related NL-497, NL-201
+- **Plan ref:** —
+
+### NL-810 Torn read of a channel's stored state: a save committing mid-load made `listchannels` fail
+- **Status:** fixed (wip/nl810)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Repositories/Database/Channel/ChannelDbRepository.cs` (`GetByIdAsync`, `GetAllAsync`, `GetReadyChannelsAsync`, `GetByPeerIdAsync`), `ChannelStateDbRepository.cs` (`LoadAsync`), `ChannelSigningInfoDbRepository.cs`, `RevokedCommitmentDbRepository.cs` (`GetAsync(channelId, number)`); new `src/NLightning.Infrastructure.Persistence/Contexts/ConsistentReadExtensions.cs`
+- **Evidence:** Seen once in the cluster harness's Eclair run (`EclairSpliceTests.Given_WeSpliceIn_When_TheSpliceLocks_*`; the class passed 7/7 alone): `listchannels` threw "The stored commitment state ... is inconsistent: Balances add up to 1100000000 msat, not 1000000000". `ChannelDbRepository` read the channel row (capacity, current funding) in one query and `ChannelStateDbRepository.LoadAsync` the channel row again and the HTLC, commitment, fee-update, shachain and funding rows in further queries, with no read transaction, so a save committing in between (here the splice lock: `IChannelFundingDbRepository.ApplyLockAsync` moves the funding columns and the capacity, `ApplyAsync` the commitments, one save) was seen half. The signer's `IChannelSigningInfoSource` had the same shape (the channel row before a lock, its funding rows after: the old funding current and the locked splice among the others). Callers that pass the parameters of a model in memory to `LoadAsync` (the switch's archived-record lookups `HtlcSwitch.FindOutgoingRecordAsync` (not under the channel lock), `LinkUpEventReplayer`, `ChannelManager` startup replay, the resolvers' `FindHtlcRecordAsync`/`ClosedChannelHtlcs`) threw the same error when a lock was saved after the memory was read. Reproduced on SQLite (file database, WAL and rollback journal) by committing the lock right before the load's `ChannelFundings` query: the listing threw the exact error, the signer view had `Current` among the other fundings, and a stale-params load threw. Write paths: every channel-mutating save (handlers, splice lock, funding confirmation) holds the channel lock and the loaders that write back (`ChannelManager.ConfirmFundingAsync`, the on-chain watcher and executor, which stage through `UpdateAsync`, whose snapshot and post-lock funding columns are protected) either hold that lock or load channels no peer updates; a torn read there surfaced as the `inconsistent` exception (a failed round, retried) rather than as acted-on state. The lock-free readers were affected: IPC (`listchannels`, `pendingsweeps`), static channel backups, the accounting snapshot and the switch's archived-record lookup (the switch would skip that resolution round). No path was found that saved or signed from a torn model.
+- **Fix:** Multi-query channel loads read one snapshot of the database through `DbContext.ReadConsistentlyAsync` (joins a transaction the context already has): PostgreSQL `REPEATABLE READ` (read-only, no locks, no serialization failures), SQLite a deferred `BEGIN` on the context's connection (never `IMMEDIATE`; in WAL mode, the mode EF creates databases in, writers commit beside the snapshot; in rollback-journal mode a writer's commit waits for the read as it waited for each query, and the reader takes no write lock, so no deadlock), SQL Server `SNAPSHOT` when the database allows it (checked once per connection string; the daemon's migration step runs `ALTER DATABASE CURRENT SET ALLOW_SNAPSHOT_ISOLATION ON`, a refusal is logged), otherwise query by query as before (a locking isolation could block or deadlock writers). The channel loads read the list of ids first and each channel (row, current funding, state) in its own short snapshot, so a long list never holds a SQLite writer for all of it; `LoadAsync`, the signing-info source and the revocation-log lookup read in one snapshot each. `LoadAsync` also puts the caller's parameters on the stored current funding (capacity and funding) when they are behind it (`ChannelStateDbRepository.WithStoredFunding`). No schema change. Tests: `Integration.Tests/Persistence/ChannelConsistentReadTests` (SQLite file database in WAL and rollback-journal mode, 6 cases over `ChannelConsistentReadRoundTrip`: the listing and the signer view are all before or all after a lock committed mid-load, a stale-params load follows the stored funding; all three fail without the fix), the same round trip in `Docker/PostgresTests` and `Docker/SqlServerTests` (`Given_A*SpliceLockCommittingMidLoad_*`).
+- **Blocks/Blocked-by:** Related NL-478, NL-495, NL-517 (current-funding readers)
 - **Plan ref:** —
 
 ## Daemon / IPC / Client

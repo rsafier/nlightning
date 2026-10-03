@@ -189,10 +189,20 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
     }
 
     /// <inheritdoc />
-    public async Task<PersistedChannelState?> LoadAsync(ChannelId channelId, CommitmentParams @params)
+    /// <remarks>
+    /// Every row is read from one snapshot of the database (NL-810): a save that commits between two of the queries (a
+    /// splice lock, a transition) is seen entirely or not at all. The funding part of <paramref name="params"/> follows
+    /// the stored current funding when the caller's (a model in memory, saved over since) is behind it.
+    /// </remarks>
+    public Task<PersistedChannelState?> LoadAsync(ChannelId channelId, CommitmentParams @params)
     {
         ArgumentNullException.ThrowIfNull(@params);
 
+        return _context.ReadConsistentlyAsync(() => LoadSnapshotAsync(channelId, @params));
+    }
+
+    private async Task<PersistedChannelState?> LoadSnapshotAsync(ChannelId channelId, CommitmentParams @params)
+    {
         // Checked first so that a channel with legacy HTLC rows is refused even when it has no snapshot (NL-025)
         var htlcs = await _context.Htlcs.AsNoTracking().Where(h => h.ChannelId == channelId).ToListAsync();
         ThrowIfLegacyHtlcs(channelId, htlcs);
@@ -219,6 +229,7 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
                                         .ToListAsync();
         var pendingRows = fundingRows.Where(f => f.Status == (byte)ChannelFundingStatus.Pending).ToList();
         var fundings = fundingRows.Select(ChannelFundingDbRepository.MapToDomain).ToList();
+        @params = WithStoredFunding(@params, channel, fundingRows);
 
         var state = MapToDomain(channel, commitments, htlcs, feeUpdates, shachain, @params, fundings: fundings,
                                 logger: _logger);
@@ -257,6 +268,33 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
             // the channel still loads on its current funding, as before any splice was restored
             return state;
         }
+    }
+
+    /// <summary>
+    /// <paramref name="params"/> on the channel's stored current funding (NL-810). A caller that passes the parameters
+    /// of its model in memory (the switch's and the resolvers' lookups of archived HTLCs) can be behind a splice lock
+    /// saved since; the stored commitments are on the new funding, and the engine refuses them against the old
+    /// capacity. The loader's own parameters (<c>ChannelDbRepository</c>, same snapshot) always match and are kept.
+    /// </summary>
+    internal static CommitmentParams WithStoredFunding(CommitmentParams @params, ChannelEntity channel,
+                                                       IReadOnlyCollection<ChannelFundingEntity> fundingRows)
+    {
+        var capacity = checked((ulong)channel.FundingAmountSatoshis);
+        if (@params.FundingSatoshis == capacity
+         && (@params.Funding is null || @params.Funding.FundingTxId == channel.FundingTxId))
+            return @params;
+
+        var current = fundingRows.FirstOrDefault(f => f.FundingTxId == channel.FundingTxId);
+        return @params with
+        {
+            FundingSatoshis = capacity,
+            Funding = current is null
+                          ? null
+                          : ChannelFundingDbRepository.MapToDomain(current) with
+                          {
+                              Status = ChannelFundingStatus.Current
+                          }
+        };
     }
 
     /// <summary>A pending funding of the engine snapshot with its per-funding signatures, as stored.</summary>
