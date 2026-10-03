@@ -95,7 +95,7 @@ public class DualFundUpfrontShutdownScriptTests
 
     private static async Task<DualFundHarness> CreateAsync(FeatureSupport anySegwit)
     {
-        var harness = await DualFundHarness.CreateAsync(0, TimeSpan.FromSeconds(1));
+        var harness = await DualFundHarness.CreateAsync(0);
         harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
         harness.NegotiatedFeatures = new FeatureOptions
         {

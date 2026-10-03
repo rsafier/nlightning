@@ -21,7 +21,7 @@ the BIP's reference implementation `reference.py`, whose semantics `Bip327` foll
 
 ## Simple taproot channels
 
-`simple-taproot-vectors.json` (SHA-256 `f0ff6d1f6b646b875ca4922da297a2fa7da86ed6857b1450f56788c42ea5a16e`): the test
-vectors of the simple taproot channels extension BOLT (`bolt-simple-taproot.md`, merged with lightning/bolts PR 995 on
-2026-05-04), fetched 2026-10-03. `SimpleTaprootMusig2VectorTests` uses its funding keys, nonces, partial signatures and
-signed commitment transactions.
+The simple taproot channels vectors (`bolt-simple-taproot.md`, lightning/bolts PR 995) are kept once, in
+`../../../Taproot/Vectors/simple-taproot-vectors.json` (see the README there). `SimpleTaprootMusig2VectorTests` reads
+them through `SimpleTaprootVectors` and uses their funding keys, nonces, partial signatures and signed commitment
+transactions.
