@@ -333,6 +333,7 @@ public class ListForwardsClientHandlerTests
         _forwardCircuitRepositoryMock
            .Setup(x => x.SummarizeAsync(It.IsAny<ForwardCircuitListQuery>(), It.IsAny<CancellationToken>()))
            .ReturnsAsync(new ForwardCircuitTotals(0, 0, 0, 0, 0));
+        _channelMemoryRepositoryMock.Setup(x => x.FindChannels(It.IsAny<Func<ChannelModel, bool>>())).Returns([]);
         var relays = new Mock<ITrampolineRelayDbRepository>(MockBehavior.Strict);
         var handler = new ListForwardsClientHandler(_forwardCircuitRepositoryMock.Object,
                                                     NullLogger<ListForwardsClientHandler>.Instance,
