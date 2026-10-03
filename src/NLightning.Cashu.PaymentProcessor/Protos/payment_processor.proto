@@ -1,0 +1,312 @@
+// Vendored from cashubtc/cdk v0.18.1, crates/cdk-payment-processor/src/proto/payment_processor.proto (MIT).
+// Only the csharp_namespace option was added; keep the rest byte-identical to the CDK release it names (NL-902).
+syntax = "proto3";
+
+package cdk_payment_processor;
+
+option csharp_namespace = "NLightning.Cashu.PaymentProcessor.Grpc";
+
+service CdkPaymentProcessor {
+    rpc GetSettings(EmptyRequest) returns (SettingsResponse) {}
+    rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse) {}
+    rpc GetPaymentQuote(PaymentQuoteRequest) returns (PaymentQuoteResponse) {}
+    rpc MakePayment(MakePaymentRequest) returns (MakePaymentResponse) {}
+    rpc CheckIncomingPayment(CheckIncomingPaymentRequest) returns (CheckIncomingPaymentResponse) {}
+    rpc CheckOutgoingPayment(CheckOutgoingPaymentRequest) returns (MakePaymentResponse) {}
+    rpc WaitPaymentEvent(EmptyRequest) returns (stream PaymentEventResponse) {}
+}
+
+message EmptyRequest {}
+
+message AmountMessage {
+  uint64 value = 1;
+  string unit = 2;
+}
+
+message SettingsResponse {
+  string unit = 1;
+  Bolt11Settings bolt11 = 2;
+  Bolt12Settings bolt12 = 3;
+  map<string, string> custom = 4;
+  OnchainSettings onchain = 5;
+}
+
+message OnchainSettings {
+    uint32 confirmations = 1;
+    uint64 min_receive_amount_sat = 2;
+    uint64 min_send_amount_sat = 3;
+}
+
+message Bolt12Settings {
+    bool amountless = 2;
+    bool invoice_description = 3;
+}
+
+message Bolt11Settings {
+    bool mpp = 1;
+    bool amountless = 2;
+    bool invoice_description = 5;
+}
+
+
+message Bolt11IncomingPaymentOptions {
+  optional string description = 1;
+  AmountMessage amount = 2;
+  optional uint64 unix_expiry = 3;
+}
+message CustomIncomingPaymentOptions {
+  optional string description = 1;
+  optional AmountMessage amount = 2;
+  optional uint64 unix_expiry = 3;
+  // Extra payment-method-specific fields as JSON string
+  // These fields are flattened into the JSON representation on the client side
+  optional string extra_json = 4;
+  // (field 5 is left free for the in-flight method-name addition, PR #2275)
+  // The mint's quote_id for this mint quote. Required. Custom backends that
+  // need a mint-side correlation key at quote-creation time should key their
+  // records on this value, as the onchain backend does.
+  string quote_id = 6;
+  // NUT-20 locking pubkey of the quote (hex), present when the wallet
+  // requested a locked quote.
+  optional string pubkey = 7;
+}
+message Bolt12IncomingPaymentOptions {
+  optional string description = 1;
+  optional AmountMessage amount = 2;
+  optional uint64 unix_expiry = 3;
+}
+
+enum PaymentMethodType {
+  PAYMENT_METHOD_TYPE_UNSPECIFIED = 0;
+  PAYMENT_METHOD_TYPE_BOLT11 = 1;
+  PAYMENT_METHOD_TYPE_BOLT12 = 2;
+  PAYMENT_METHOD_TYPE_CUSTOM = 3;
+}
+
+enum OutgoingPaymentRequestType {
+  OUTGOING_PAYMENT_REQUEST_TYPE_UNSPECIFIED = 0;
+  OUTGOING_PAYMENT_REQUEST_TYPE_BOLT11_INVOICE = 1;
+  OUTGOING_PAYMENT_REQUEST_TYPE_BOLT12_OFFER = 2;
+  OUTGOING_PAYMENT_REQUEST_TYPE_CUSTOM = 3;
+  OUTGOING_PAYMENT_REQUEST_TYPE_ONCHAIN = 4;
+}
+
+enum OutgoingPaymentOptionsType {
+  OUTGOING_PAYMENT_OPTIONS_TYPE_UNSPECIFIED = 0;
+  OUTGOING_PAYMENT_OPTIONS_TYPE_BOLT11 = 1;
+  OUTGOING_PAYMENT_OPTIONS_TYPE_BOLT12 = 2;
+  OUTGOING_PAYMENT_OPTIONS_TYPE_CUSTOM = 3;
+  OUTGOING_PAYMENT_OPTIONS_TYPE_ONCHAIN = 4;
+}
+
+message OnchainOutgoingPaymentOptions {
+  string address = 1;
+  AmountMessage amount = 2;
+  optional AmountMessage max_fee_amount = 3;
+  string quote_id = 4;
+  optional uint32 fee_index = 5;
+  optional string metadata = 6;
+}
+
+message OutgoingPaymentVariant {
+  oneof options {
+    Bolt11OutgoingPaymentOptions bolt11 = 1;
+    Bolt12OutgoingPaymentOptions bolt12 = 2;
+    CustomOutgoingPaymentOptions custom = 3;
+    OnchainOutgoingPaymentOptions onchain = 4;
+  }
+}
+
+enum PaymentIdentifierType {
+  PAYMENT_IDENTIFIER_TYPE_UNSPECIFIED = 0;
+  PAYMENT_IDENTIFIER_TYPE_PAYMENT_HASH = 1;
+  PAYMENT_IDENTIFIER_TYPE_OFFER_ID = 2;
+  PAYMENT_IDENTIFIER_TYPE_LABEL = 3;
+  PAYMENT_IDENTIFIER_TYPE_BOLT12_PAYMENT_HASH = 4;
+  PAYMENT_IDENTIFIER_TYPE_CUSTOM_ID = 5;
+  PAYMENT_IDENTIFIER_TYPE_PAYMENT_ID = 6;
+  PAYMENT_IDENTIFIER_TYPE_QUOTE_ID = 7;
+}
+
+message PaymentIdentifier {
+  PaymentIdentifierType type = 1;
+
+  oneof value {
+    string hash = 2; // Used for PAYMENT_HASH and BOLT12_PAYMENT_HASH
+    string id = 3;   // Used for OFFER_ID, LABEL, CUSTOM_ID and QUOTE_ID
+  }
+}
+
+message OnchainIncomingPaymentOptions {
+  string quote_id = 1;
+}
+
+message IncomingPaymentOptions {
+  oneof options {
+    Bolt11IncomingPaymentOptions bolt11 = 1;
+    Bolt12IncomingPaymentOptions bolt12 = 2;
+    CustomIncomingPaymentOptions custom = 3;
+    OnchainIncomingPaymentOptions onchain = 4;
+  }
+}
+
+message CreatePaymentRequest {
+  IncomingPaymentOptions options = 2;
+}
+
+message CreatePaymentResponse {
+  PaymentIdentifier request_identifier = 1;
+  string request = 2;
+  optional uint64 expiry = 3;
+  // Extra payment-method-specific fields as JSON string
+  // For custom payment methods, these fields are flattened into the response
+  optional string extra_json = 4;
+}
+
+message Mpp {
+    uint64 amount = 1;
+}
+
+message Amountless {
+    uint64 amount_msat = 1;
+}
+
+message MeltOptions {
+    oneof options {
+        Mpp mpp = 1;
+        Amountless amountless = 2;
+    }
+}
+
+message PaymentQuoteRequest {
+  string request = 1;
+  string unit = 2;
+  optional MeltOptions options = 3;
+  OutgoingPaymentRequestType request_type = 4;
+  // Extra payment-method-specific fields as JSON string
+  // For custom payment methods, these fields are passed through for validation
+  optional string extra_json = 5;
+  // The mint's quote_id for the melt this payment-quote is for. Required;
+  // backends should use this as the stable correlation key between
+  // get_payment_quote and the eventual make_payment.
+  string quote_id = 6;
+  // Structured options for onchain quote requests. Onchain processors need the
+  // mint-generated quote_id and amount when preparing fee_options.
+  optional OnchainOutgoingPaymentOptions onchain_options = 7;
+  // Optional amount the wallet would like to pay for custom payment methods.
+  optional AmountMessage amount = 8;
+}
+
+enum QuoteState {
+    QUOTE_STATE_UNSPECIFIED = 0;
+    QUOTE_STATE_UNPAID = 1;
+    QUOTE_STATE_PAID = 2;
+    QUOTE_STATE_PENDING = 3;
+    QUOTE_STATE_UNKNOWN = 4;
+    QUOTE_STATE_FAILED = 5;
+    QUOTE_STATE_ISSUED = 6;
+}
+
+
+message PaymentQuoteResponse {
+  PaymentIdentifier request_identifier = 1;
+  AmountMessage amount = 2;
+  AmountMessage fee = 3;
+  QuoteState state = 4;
+  optional uint32 estimated_blocks = 6;
+  repeated OnchainFeeOption fee_options = 7;
+  // Extra payment-method-specific fields as JSON string
+  // For custom payment methods, these fields are flattened into the response
+  optional string extra_json = 5;
+}
+
+message OnchainFeeOption {
+  uint64 fee_reserve = 1;
+  uint32 estimated_blocks = 2;
+  uint32 fee_index = 3;
+}
+
+message Bolt11OutgoingPaymentOptions {
+  string bolt11 = 1;
+  optional AmountMessage max_fee_amount = 2;
+  optional uint64 timeout_secs = 3;
+  optional MeltOptions melt_options = 4;
+  // The mint's quote_id for this melt. Required.
+  string quote_id = 5;
+}
+
+message Bolt12OutgoingPaymentOptions {
+  string offer = 1;
+  optional AmountMessage max_fee_amount = 2;
+  optional uint64 timeout_secs = 3;
+  optional MeltOptions melt_options = 5;
+  // The mint's quote_id for this melt. Required.
+  string quote_id = 6;
+}
+message CustomOutgoingPaymentOptions {
+  string offer = 1;
+  optional AmountMessage max_fee_amount = 2;
+  optional uint64 timeout_secs = 3;
+  // Optional amount the wallet would like to pay (from the melt quote request)
+  optional AmountMessage amount = 4;
+  optional MeltOptions melt_options = 5;
+  // Extra payment-method-specific fields as JSON string
+  // These fields are flattened into the JSON representation on the client side
+  optional string extra_json = 6;
+  // The mint's quote_id for this melt. Required. Custom backends should use
+  // this as the stable correlation key with the earlier get_payment_quote call.
+  string quote_id = 7;
+}
+
+message MakePaymentRequest {
+  OutgoingPaymentVariant payment_options = 1;
+  optional AmountMessage partial_amount = 2;
+  optional AmountMessage max_fee_amount = 3;
+  string unit = 4;
+}
+
+message MakePaymentResponse {
+  PaymentIdentifier payment_identifier = 1;
+  optional string payment_proof = 2;
+  QuoteState status = 3;
+  AmountMessage total_spent = 4;
+  // Extra payment-method-specific fields as JSON string
+  // For custom payment methods, these fields are flattened into the response
+  optional string extra_json = 5;
+}
+
+message CheckIncomingPaymentRequest {
+  PaymentIdentifier request_identifier = 1;
+}
+
+message CheckIncomingPaymentResponse {
+  repeated WaitIncomingPaymentResponse payments = 1;
+}
+
+message CheckOutgoingPaymentRequest {
+  PaymentIdentifier request_identifier = 1;
+}
+
+message WaitIncomingPaymentResponse {
+  PaymentIdentifier payment_identifier = 1;
+  AmountMessage payment_amount = 2;
+  string payment_id = 3;
+}
+
+message PaymentSuccessfulResponse {
+  string quote_id = 1;
+  MakePaymentResponse details = 2;
+}
+
+message PaymentFailedResponse {
+  string quote_id = 1;
+  string reason = 2;
+}
+
+message PaymentEventResponse {
+  oneof event {
+    WaitIncomingPaymentResponse payment_received = 1;
+    PaymentSuccessfulResponse payment_successful = 2;
+    PaymentFailedResponse payment_failed = 3;
+  }
+}

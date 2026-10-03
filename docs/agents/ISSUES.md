@@ -147,12 +147,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 65 | 66 |
+| open | 0 | 0 | 1 | 66 | 67 |
 | in-progress | 0 | 0 | 2 | 2 | 4 |
 | fixed | 14 | 63 | 201 | 411 | 689 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **211** | **489** | **777** |
+| **Total** | **14** | **63** | **211** | **490** | **778** |
 
 ### Epics
 
@@ -8075,7 +8075,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Kind:** feature
 - **Location:** new `src/NLightning.Cashu.PaymentProcessor`
 - **Evidence:** `cdk-mintd` talks to external Lightning backends through the `CdkPaymentProcessor` gRPC service (`cdk-payment-processor/src/proto/payment_processor.proto`); the shipped processors (Bark, LDK Server, LNbits, Spark) do not cover NLightning, and none does BOLT 11, BOLT 12 and on-chain together.
-- **Fix sketch:** Implement the service in the daemon on Kestrel behind `Cashu:PaymentProcessor` (default off, loopback, TLS required off loopback, refused on mainnet unless `AllowMainnet`): BOLT 11 create/quote/pay/check and `WaitPaymentEvent` over NL-901's hub first; BOLT 12 and on-chain after.
+- **Fix sketch:** Built (BOLT 11): `src/NLightning.Cashu.PaymentProcessor` (vendored CDK v0.18.1 proto, `CdkPaymentProcessorService`, `CashuPaymentProcessorHost` on its own Kestrel, HTTP/2, h2c on loopback or TLS/mTLS from `TlsDirectory`), `Cashu:PaymentProcessor` (default off, refused on mainnet unless `AllowMainnet`, refused off loopback without TLS), invoices and payments labelled `cashu-mint`, `WaitPaymentEvent` over NL-901's hub; `CASHU_PLAN.md` §6. Tests: `Daemon.Tests/Cashu/` (real gRPC round trips). Remaining before `fixed`: the Docker proof against `cdk-mintd` (NL-903); BOLT 12 and on-chain methods are follow-ups.
 - **Blocks/Blocked-by:** Blocked by NL-901; blocks NL-903
 - **Plan ref:** `CASHU_PLAN.md` C1
 
@@ -8108,6 +8108,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** An `IHtlcSwitch` decorator (the `DustExposureHtlcSwitch` pattern) holding sets of hold invoices until settle/cancel, failed back before the deadline monitor's CLTV limit.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** `CASHU_PLAN.md` C4
+
+### NL-906 The AOT analyzer gate reports IL2026 in `IpcRequestLog` (`Exception.TargetSite`)
+- **Status:** open
+- **Severity:** low
+- **Kind:** tooling
+- **Location:** `src/NLightning.Daemon/Ipc/Handlers/IpcRequestLog.cs:81`
+- **Evidence:** `dotnet build src/NLightning.Daemon -c Release.Native -f net10.0 -r linux-x64 -p:PublishAot=true` (SDK 10.0.401) on `wip/cashu` after merging `wip/fafo` `ed4d7e7a` reports `warning IL2026: Using member 'System.Exception.TargetSite.get' which has 'RequiresUnreferencedCodeAttribute'`; CLAUDE.md requires that analyzer build to stay at 0. The line came with NL-894 (`ed43ef68`); the Cashu code adds no warning.
+- **Fix sketch:** Drop `TargetSite` from the log line (use the exception type and stack), or suppress with a justification if the member name is needed.
+- **Blocks/Blocked-by:** Related NL-894
+- **Plan ref:** —
 
 ## Docs
 

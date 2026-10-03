@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Version>0.0.1</Version>
+    <Description>Cashu CDK payment processor (gRPC) over an NLightning node: lets cdk-mintd use the node as its Lightning backend</Description>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(Configuration.Contains('Debug'))">
+    <DefineConstants>DEBUG;$(DefineConstants)</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(Configuration.Contains('Release'))">
+    <Optimize Condition=" '$(Optimize)' == '' ">true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The versions the in-tree LND test client uses (test/NLightning.Testing.Lnd) -->
+    <PackageReference Include="Google.Protobuf" Version="3.34.0"/>
+    <PackageReference Include="Grpc.AspNetCore.Server" Version="2.76.0"/>
+    <PackageReference Include="Grpc.Tools" Version="2.76.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Server for the daemon, client for the tests and the Docker proof (NL-903) -->
+    <Protobuf Include="Protos\payment_processor.proto" GrpcServices="Both" Access="Public"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NLightning.Application\NLightning.Application.csproj"/>
+    <ProjectReference Include="..\NLightning.Bolt11\NLightning.Bolt11.csproj"/>
+    <ProjectReference Include="..\NLightning.Domain\NLightning.Domain.csproj"/>
+  </ItemGroup>
+
+</Project>

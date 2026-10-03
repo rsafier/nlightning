@@ -142,7 +142,7 @@ Before C0 there was no "invoice paid" or "payment finished" notification, only p
 | Wave | Content | Issue | Status |
 |---|---|---|---|
 | C0 | `IPaymentEventSource` / `IPaymentEventPublisher` (Domain), `PaymentEventHub` (Application), published after commit by `HtlcSwitch` (invoice settled) and `PaymentService` (payment succeeded/failed); `waitinvoice` (IPC 47) | NL-901 | in progress |
-| C1 | `NLightning.Cashu.PaymentProcessor`: the `CdkPaymentProcessor` gRPC service on Kestrel in the daemon, behind `Cashu:PaymentProcessor` | NL-902 | in progress |
+| C1 | `NLightning.Cashu.PaymentProcessor`: the `CdkPaymentProcessor` gRPC service on Kestrel in the daemon, behind `Cashu:PaymentProcessor` (BOLT 11) | NL-902 | built, unit-proven over real gRPC; Docker proof is C2 |
 | C2 | Docker proof against `cdk-mintd` + `cdk-cli` | NL-903 | open |
 | C3 | Native Cashu wallet | NL-904 | open |
 | C4 | Hold invoices + NUT-14 | NL-905 | open |
@@ -223,3 +223,71 @@ Before C0 there was no "invoice paid" or "payment finished" notification, only p
 5. **Accounting.**
    - The first cut labels mint invoices and payments `cashu-mint` (A3 labels), so their books show the mint's flows.
    - A liabilities role for outstanding ecash belongs to C3/embedded-mint work.
+
+
+## 6. C1 as built (NL-902)
+
+**Project:** `src/NLightning.Cashu.PaymentProcessor` (references Application, Bolt11, Domain; `FrameworkReference Microsoft.AspNetCore.App`, `Grpc.AspNetCore.Server` 2.76.0).
+- `Protos/payment_processor.proto` is CDK v0.18.1's, byte-identical apart from `option csharp_namespace`. Both server and client are generated; the client serves the tests and the C2 proof.
+- `CashuPaymentProcessorOptions`: section `Cashu:PaymentProcessor`, settable properties only (AOT binder).
+- `CdkPaymentProcessorService`: the RPC mapping.
+- `CashuPaymentProcessorHost`: its own `WebApplication.CreateSlimBuilder` Kestrel instance with HTTP/2 only, started as a hosted service after `NltgDaemonService`. It does nothing while disabled.
+- `AddCashuPaymentProcessor(configuration)` is called in `AddNltgNodeServices`; `ValidateOnStart` runs against the node's network. `AddCashuPaymentProcessorHost()` is called in `ConfigureNltgServices`.
+
+**Behavior**
+- `GetSettings`: unit `sat` or `msat`; bolt11 `{mpp: false, amountless: true, invoice_description: true}`; bolt12 and onchain unset.
+- `CreatePayment` (bolt11): `IInvoiceService.CreateInvoiceAsync` with the label `cashu-mint`. The identifier is `PAYMENT_HASH` hex. `expiry` is the invoice's absolute expiry.
+- `GetPaymentQuote` (bolt11):
+  - Decodes the invoice for the node's network and refuses an expired one.
+  - Takes the amount from the invoice, or from the `amountless` option.
+  - Fee reserve = max(`MinFeeReserveMsat` 5,000, amount × `FeeReservePpm` 5,000 / 10^6). These are the node's default fee limit.
+  - Both values are rounded up to the unit.
+  - Refuses `mpp` options, and a unit other than ours.
+- `MakePayment` (bolt11):
+  - `PayInvoiceAsync`, with `MaxFee` = `max_fee_amount` (or the reserve), the label, and a wait of `PaymentTimeoutSeconds` (60). Payment states map as Succeeded→PAID, Failed→FAILED, in flight→PENDING.
+  - `total_spent` = amount + fee, rounded up. `payment_proof` = the preimage hex.
+  - A duplicate hash answers with the stored payment.
+  - A bad invoice or amount is `InvalidArgument`.
+  - The request's `quote_id` is remembered for the event stream.
+- `CheckIncomingPayment`: a Settled invoice gives one payment. The received amount is rounded down. `payment_id` is the hash.
+- `CheckOutgoingPayment`: the stored payment, or `UNKNOWN`.
+- `WaitPaymentEvent`: one `IPaymentEventSource` subscription per stream.
+  - `payment_received` for invoices settled with our label.
+  - `payment_successful` / `payment_failed` for payments with a remembered quote id.
+
+**Startup refusals**
+- An enabled processor on mainnet without `AllowMainnet`.
+- A non-loopback `ListenAddress` without `TlsDirectory`.
+- A `TlsDirectory` without `server.pem`/`server.key`.
+- A unit other than `sat`/`msat`.
+
+**TLS**
+- `ca.pem` in the `TlsDirectory` turns on mTLS: every client certificate must chain to that CA alone.
+- `cdk-mintd`'s `tls_dir` holds `ca.pem`, `client.pem` and `client.key`.
+
+**Not yet**
+- BOLT 12 (`OfferService`/`IOfferPaymentService`), on-chain (NUT-30) and MPP melts (NUT-15).
+- Quote ids for `WaitPaymentEvent` are kept in memory. After a restart the mint learns outcomes through `CheckOutgoingPayment`.
+
+**Tests:** `test/NLightning.Daemon.Tests/Cashu/`. `CdkPaymentProcessorServiceTests` (10) run a real Kestrel server on a free loopback port and call it with the generated client; `CashuPaymentProcessorOptionsTests` cover the startup checks.
+
+### Running a mint on NLightning
+
+`appsettings.json` of the node:
+
+```json
+"Cashu": { "PaymentProcessor": { "Enabled": true, "ListenAddress": "127.0.0.1", "Port": 50051, "Unit": "sat" } }
+```
+
+`cdk-mintd` `config.toml` (v0.18):
+
+```toml
+[payment_backend]
+backend = "grpcprocessor"
+unit = "sat"
+
+[grpc_processor]
+address = "127.0.0.1"
+port = 50051
+# tls_dir = "/path/to/tls"   # ca.pem, client.pem, client.key (mTLS); then set the node's TlsDirectory too
+```

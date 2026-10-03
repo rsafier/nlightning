@@ -32,6 +32,7 @@ using Application.Payments.Routing.Interfaces;
 using Application.Payments.Send;
 using Application.Payments.Switch;
 using Application.Payments.Trampoline;
+using Cashu.PaymentProcessor;
 using Contracts.Utilities;
 using Daemon.Ipc.Handlers;
 using Daemon.Ipc.Interfaces;
@@ -91,6 +92,10 @@ public static class NodeServiceExtensions
 
             // Expired unpaid BOLT 12 invoice rows pruned on a timer (NL-448)
             services.AddExpiredBolt12InvoicePruning();
+
+            // Cashu plan C1 (NL-902): the CDK payment processor's gRPC server, after the node started (off unless
+            // Cashu:PaymentProcessor:Enabled)
+            services.AddCashuPaymentProcessorHost();
 
             // IPC server pieces that need the config path
             services.AddSingleton<INamedPipeIpcService>(sp =>
@@ -241,6 +246,9 @@ public static class NodeServiceExtensions
         services.AddOperatorIpcServices();
         // On-chain withdraw (wave m6 W1, ClientCommand 25)
         services.AddWithdrawIpcServices();
+
+        // Cashu plan C1 (NL-902): the CDK payment processor (Cashu:PaymentProcessor, off by default)
+        services.AddCashuPaymentProcessor(configuration);
         // BOLT 12 offers (wave B12): createoffer/listoffers/disableoffer (ClientCommand 26-28) and payoffer/
         // fetchinvoice (29-30); the Application registers the offer services themselves (AddApplicationServices)
         services.AddOfferIpcServices();
