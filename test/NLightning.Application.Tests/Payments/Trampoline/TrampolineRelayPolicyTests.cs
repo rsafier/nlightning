@@ -17,6 +17,7 @@ public class TrampolineRelayPolicyTests
     // 1,000,000 msat out: our fee is 1000 + 1000 ppm = 2,000 msat
     private static readonly LightningMoney s_amountOut = LightningMoney.MilliSatoshis(1_000_000);
     private const uint CltvOut = Height + 100;
+    private const ushort ForwardingDelta = 40;
 
     [Fact]
     public void Given_DefaultOptions_When_Read_Then_TheyAreThePlanDefaults()
@@ -53,34 +54,50 @@ public class TrampolineRelayPolicyTests
     }
 
     [Fact]
-    public void Given_ASetPayingTheFeeAndDelta_When_Evaluated_Then_AcceptedWithTheLegBudget()
+    public void Given_ASetPayingTheFeeAndDelta_When_Evaluated_Then_TheLegMayUseTheWholeDifference()
     {
-        // Arrange: 2,000 msat of our fee plus 5,000 msat for the leg's routing
+        // Arrange: 2,000 msat of our fee plus 5,000 msat more
         var sumIn = LightningMoney.MilliSatoshis(1_007_000);
         var minCltvIn = CltvOut + 576;
 
         // Act
-        var decision = TrampolineRelayPolicy.Evaluate(s_options, sumIn, minCltvIn, s_amountOut, CltvOut, Height);
+        var decision = TrampolineRelayPolicy.Evaluate(s_options, sumIn, minCltvIn, s_amountOut, CltvOut, Height,
+                                                      ForwardingDelta);
 
-        // Assert
+        // Assert: our fee and delta pay for the route (D-TR6); only our forwarding delta is kept
         Assert.True(decision.IsAccepted);
-        Assert.Equal(LightningMoney.MilliSatoshis(5_000), decision.MaxFee);
+        Assert.Equal(LightningMoney.MilliSatoshis(7_000), decision.MaxFee);
         Assert.Equal(LightningMoney.MilliSatoshis(2_000), decision.OurFee);
-        Assert.Equal(CltvOut, decision.MaxFirstHopCltvExpiry);
+        Assert.Equal(minCltvIn - ForwardingDelta, decision.MaxFirstHopCltvExpiry);
         Assert.Null(decision.Failure);
     }
 
     [Fact]
-    public void Given_ExactlyOurFee_When_Evaluated_Then_AcceptedWithNoRoutingBudget()
+    public void Given_ExactlyOurPolicy_When_Evaluated_Then_TheLegCanStillRoute()
     {
-        // Act
+        // Act: what a payer sends after our NODE|26 (NL-875 TR5: it used to leave the leg no budget at all)
         var decision = TrampolineRelayPolicy.Evaluate(s_options, LightningMoney.MilliSatoshis(1_002_000),
-                                                      CltvOut + 600, s_amountOut, CltvOut, Height);
+                                                      CltvOut + 576, s_amountOut, CltvOut, Height, ForwardingDelta);
 
         // Assert
         Assert.True(decision.IsAccepted);
-        Assert.Equal(LightningMoney.Zero, decision.MaxFee);
-        Assert.Equal(CltvOut + 24, decision.MaxFirstHopCltvExpiry);
+        Assert.Equal(LightningMoney.MilliSatoshis(2_000), decision.MaxFee);
+        Assert.Equal(CltvOut + 576 - ForwardingDelta, decision.MaxFirstHopCltvExpiry);
+    }
+
+    [Fact]
+    public void Given_AForwardingDeltaAboveOurTrampolineDelta_When_Evaluated_Then_TheTrampolineDeltaIsKept()
+    {
+        // Arrange
+        var options = new TrampolineOptions { CltvExpiryDelta = 100, MinCltvMarginBlocks = 48 };
+
+        // Act
+        var decision = TrampolineRelayPolicy.Evaluate(options, LightningMoney.MilliSatoshis(1_010_000), CltvOut + 100,
+                                                      s_amountOut, CltvOut, Height, 144);
+
+        // Assert
+        Assert.True(decision.IsAccepted);
+        Assert.Equal(CltvOut, decision.MaxFirstHopCltvExpiry);
     }
 
     [Theory]
@@ -94,7 +111,7 @@ public class TrampolineRelayPolicyTests
     {
         // Act
         var decision = TrampolineRelayPolicy.Evaluate(s_options, LightningMoney.MilliSatoshis(sumInMsat), minCltvIn,
-                                                      s_amountOut, cltvOut, Height);
+                                                      s_amountOut, cltvOut, Height, ForwardingDelta);
 
         // Assert: NODE|26 carries fee_base_msat, fee_proportional_millionths and cltv_expiry_delta
         Assert.False(decision.IsAccepted);
@@ -116,9 +133,9 @@ public class TrampolineRelayPolicyTests
 
         // Act
         var refused = TrampolineRelayPolicy.Evaluate(options, LightningMoney.MilliSatoshis(1_010_000), Height + 45,
-                                                     s_amountOut, Height + 5, Height);
+                                                     s_amountOut, Height + 5, Height, ForwardingDelta);
         var accepted = TrampolineRelayPolicy.Evaluate(options, LightningMoney.MilliSatoshis(1_010_000), Height + 61,
-                                                      s_amountOut, Height + 5, Height);
+                                                      s_amountOut, Height + 5, Height, ForwardingDelta);
 
         // Assert
         Assert.False(refused.IsAccepted);
