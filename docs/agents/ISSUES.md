@@ -6057,6 +6057,47 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** lanes V2 (dual-funded taproot opens: `tx_complete` nonces, `channel_reestablish` TLV 24) and CLOSE (splice refusal until splicing taproot channels is planned) take these paths over; lift `AllowSimpleTaproot` in the dual-funded flow and the daemon's refusal together.
 - **Blocks/Blocked-by:** Related NL-877, NL-953
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
+
+### NL-976 A late `closing_sig` replaced a confirmed taproot simple close against LND (the NL-983 race)
+- **Status:** duplicate of NL-983
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Close/Simple/SimpleCloseCoordinator.cs` (the `closing_sig` path)
+- **Evidence:** taproot wave t02 lane LND, cluster run `tap2lnd-2` (`LndTaprootFlowTests.Given_WeOpenAPrivateTaprootChannel_*`). LND 0.21.4 with `--protocol.simple-taproot-chans` always answers our `closing_complete` with its own (its RBF close), so both sides sign. We signed LND's 0eac41f2 and broadcast it; the test mined it at once. LND's `closing_sig` for our 9b5c71db arrived after that, replaced the stored closing transaction, and its broadcast failed with `bad-txns-inputs-missingorspent`. 0eac41f2 reached 6 confirmations, but the channel stayed Closing. Same race as NL-983, here on a MuSig2 close. Funds are not at risk.
+- **Fix sketch:** see NL-983. Until it is fixed, `LndTaprootFlowTests` waits for both exchanges ("The peer signed our taproot closing transaction" and "Signed the peer's taproot closing transaction") before it mines, as `CooperativeCloseFlowTests` does.
+- **Blocks/Blocked-by:** Duplicate of NL-983; related NL-877
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T6
+
+### NL-977 `LndTestHelpers.FunderAnchorsSat` left out the anchors of LND's final taproot type
+- **Status:** fixed (taproot wave t02 lane LND)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Utils/LndTestHelpers.cs`
+- **Evidence:** the helper counted 2 x 330 sat only for `CommitmentType.ANCHORS` and the staging `SIMPLE_TAPROOT` (5). A final taproot channel (`SIMPLE_TAPROOT_FINAL` = 7, which LND's `ListChannels` reports under its alias `TAPROOT`) has the same two anchors, so the funder-side balance check failed by 660 sat.
+- **Fix sketch:** done: types 5 and 7 both count.
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T6
+
+### NL-978 The LND taproot interop proof covers no force close, no on-chain HTLC and no LND restart with an HTLC in flight
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `test/NLightning.Integration.Tests/Docker/Taproot/LndTaprootFlowTests.cs` (suite `taproot`)
+- **Evidence:** the wave t02 proof (runs `tap2lnd-3` and `tap2lnd-4`, 3/3 green) covers the following, all against LND 0.21.4:
+  - both v1 opens of a private `{80}` channel;
+  - payments both ways;
+  - a restart of our node with an HTLC that LND holds and settles while we are down;
+  - an idle LND restart;
+  - LND's RBF cooperative close, started by either side, with key-path closes confirmed.
+
+  It does not cover:
+  - a force close by either side or the sweeps (T4 still lacks the taproot HTLC paths, NL-966);
+  - an LND restart with an HTLC in flight;
+  - a crash between our `commitment_signed` and LND's `revoke_and_ack`, the taproot analogue of `ReestablishFlowTests` (c).
+- **Fix sketch:** add these cases to `LndTaprootFlowTests` as T4 lands: our force close and LND's, with sweeps and `ClosedChannels` checks, and the crash-after-`commitment_signed` case with `CrashableTcpService`.
+- **Blocks/Blocked-by:** Blocked by NL-966; related NL-877
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T4, T6
+
 ### NL-158 Key file encryption: fixed Argon2 salt, all-zero XChaCha nonce, 64 KiB Argon2 memory
 - **Status:** fixed (953a33b, b999208)
 - **Severity:** critical

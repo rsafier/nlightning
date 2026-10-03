@@ -311,7 +311,12 @@ public class LndTaprootFlowTests : IAsyncLifetime
     private async Task LndPaysUsAsync(LndNodeConnection lnd, ChannelId channelId, ulong chanId, LightningMoney amount,
                                       CancellationToken ct)
     {
-        var before = await Node.GetChannelAsync(channelId, ct);
+        // Our balance is gross (it counts our offered HTLCs): read it once an earlier payment's dance has ended
+        var before = await Poll.ForAsync(async () =>
+        {
+            var channel = await Node.GetChannelAsync(channelId, ct);
+            return channel.OfferedHtlcCount + channel.ReceivedHtlcCount == 0 ? channel : null;
+        }, s_timeout, "no HTLC pending on our side", ct);
         var invoice = await Node.CreateInvoiceAsync(amount, $"taproot lnd pays {amount.Satoshi} sat", ct);
         var retryUntil = DateTime.UtcNow + s_timeout;
         while (true)
@@ -438,7 +443,14 @@ public class LndTaprootFlowTests : IAsyncLifetime
                                                       string channelPoint, (long Ours, long Lnd) shares,
                                                       LightningMoney walletBefore, CancellationToken ct)
     {
-        // Both sides may have signed a closing transaction (RBF close): bitcoind keeps one
+        // LND's RBF close: each side sends its closing_complete and the other signs it, MuSig2 both ways. Wait for both
+        // exchanges before a block is mined: a closing_sig that arrives after the other transaction confirmed replaces
+        // our record of the close and the channel stays Closing (NL-983, also seen here in run tap2lnd-2)
+        await Poll.UntilAsync(() => Node.CountLogLines("The peer signed our taproot closing transaction") >= 1
+                                  && Node.CountLogLines("Signed the peer's taproot closing transaction") >= 1,
+                              s_timeout, "both taproot closing transactions signed", ct);
+
+        // Conflicting transactions: bitcoind keeps one
         var parts = channelPoint.Split(':');
         var fundingOutPoint = new NBitcoin.OutPoint(uint256.Parse(parts[0]), uint.Parse(parts[1]));
         var closingTx = await Poll.ForAsync(async () =>
