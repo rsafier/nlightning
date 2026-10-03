@@ -151,12 +151,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 67 | 70 |
+| open | 0 | 0 | 3 | 68 | 71 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
 | fixed | 14 | 63 | 201 | 415 | 693 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **212** | **494** | **783** |
+| **Total** | **14** | **63** | **212** | **495** | **784** |
 
 ### Epics
 
@@ -1848,6 +1848,18 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Log which assertion failed (the message), read the full test output of the run, and make the polls wait for the blob naming the test's channel.
 - **Blocks/Blocked-by:** Related NL-428, NL-010
 - **Plan ref:** —
+- **Second occurrence:** cluster run `nscap-mx1` (wip/nscap, 2026-10-03, the full matrix at 12 namespaces): the same test failed once and the class rerun alone was green (`/Users/ms/nlightning-nscap/TestResults/cluster/nscap-mx1/cln/diag/`). Two of the day's three full or cln matrices hit it, so treat it as a race rather than noise.
+
+### NL-916 `GossipSyncManagerTests.Given_ATimedOutScidQuery_When_ItsLateEndNeverArrives_*` failed once in a loaded Application.Tests run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Gossip/Sync/GossipSyncManagerTests.cs`
+- **Evidence:** taproot t01 integration (wip/taproot-int, 2026-10-03): one failure in a full Application.Tests run on a loaded machine; the class passed 45/45 three times alone. Same family as the fixed timing flakes NL-394/NL-501.
+- **Fix sketch:** find the remaining wall-clock wait in the late-end path and drive it from the stepped clock or a bounded event.
+- **Blocks/Blocked-by:** Related NL-394, NL-501
+- **Plan ref:** —
+
 ### NL-056 HTLC-success / HTLC-timeout second-stage transactions not implemented
 - **Status:** fixed (dfe8866, b222896)
 - **Severity:** high
