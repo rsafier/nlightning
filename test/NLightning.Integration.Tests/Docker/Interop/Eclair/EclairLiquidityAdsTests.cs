@@ -1,4 +1,3 @@
-using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
 
@@ -27,10 +26,13 @@ using Utils;
 /// fixture's second Eclair (<see cref="EclairFixture.GetSellerAsync"/>) sells at
 /// <see cref="EclairFixture.SellerRates"/>, paid from the channel balance, and our node buys through the daemon's own
 /// client handlers: (a) we see its rates in its <c>init</c> and through <c>liquidityads sellers</c>; (b)
-/// <c>openchannel --request-inbound</c> (a dual-funded open): Eclair contributes at least what we asked, both ends'
-/// balances carry the fee and <c>liquidityads purchases</c> lists it; (c) <c>splicein --request-inbound</c>; (d) a
-/// <c>bumpopen</c> that buys again; (e) a payment each way on each channel. (f), <c>Explicit</c>, records Eclair's
-/// <c>init</c> rates and <c>provide_funding</c> as <c>VECTOR</c> lines for <c>LiquidityAdsEclairVectors</c>.
+/// <c>openchannel --request-inbound</c> is not sold (Eclair 0.14.3 sells in a new channel only through an
+/// open-channel interceptor plugin or to an on-the-fly-funding wallet), so we refuse the open without an answer and
+/// nothing is bought; (c) <c>splicein --request-inbound</c>: Eclair contributes at least what we asked, both ends'
+/// balances carry the fee and <c>liquidityads purchases</c> lists it; (d) a <c>bumpsplice</c> that buys again (BOLT
+/// PR #1153: the RBF repeats the purchase); (e) a payment each way. (f), <c>Explicit</c>, records Eclair's <c>init</c>
+/// rates and its <c>provide_funding</c> in <c>splice_ack</c> as <c>VECTOR</c> lines for
+/// <c>LiquidityAdsEclairVectors</c>.
 /// </summary>
 /// <remarks>
 /// Eclair 0.14.3's API can only sell (<c>open</c>, <c>rbfopen</c> and <c>splicein</c> never request funding), so
@@ -118,42 +120,54 @@ public sealed class EclairLiquidityAdsTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// (b) + (e) <c>openchannel --request-inbound 400000</c> of 500k sat (no <c>--dual-fund</c>: the purchase makes
-    /// it v2): Eclair contributes at least 400k sat, our balance is our 500k less the fee, Eclair's is its contribution
-    /// plus the fee (both from its <c>channel</c> JSON), <c>liquidityads purchases</c> lists the purchase, and payments
-    /// go both ways.
+    /// (b) Eclair 0.14.3 without an open-channel interceptor plugin does not sell in a new channel
+    /// (<c>OpenChannelInterceptor.checkLiquidityAdsRequest</c>: "We don't honor liquidity ads for new channels: node
+    /// operators should use plugin for that", the default sells only to on-the-fly-funding wallets): it answers our
+    /// <c>openchannel --request-inbound</c> with an <c>accept_channel2</c> without <c>provide_funding</c>, our buyer
+    /// refuses the open (the answer is missing) and nothing is bought. The same open without the request then goes
+    /// through, and payments go both ways (e).
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
-    public async Task Given_ASellerEclair_When_WeOpenRequestingInbound_Then_EclairContributesAndBothBalancesCarryTheFee()
+    public async Task Given_ASellerEclairWithoutAPlugin_When_WeOpenRequestingInbound_Then_ItDoesNotSellAndWeRefuse()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
         var session = await ConnectAsync("nltg-la-b", LightningMoney.Satoshis(2_000_000), ct);
 
         // Act
+        var refused = await Assert.ThrowsAnyAsync<Exception>(
+                          () => HandleAsync<OpenChannelClientRequest, OpenChannelClientResponse>(
+                              session, new OpenChannelClientRequest(session.EclairAddress,
+                                                                    LightningMoney.Satoshis(500_000))
+                              {
+                                  RequestInboundSat = 400_000
+                              }, ct));
+        Console.WriteLine($"[proof] our open with request_funding: {refused.Message}");
+
+        // Assert: Eclair accepted without provide_funding, we refused, nothing bought
+        Assert.Contains(nameof(LiquidityAdsRefusal.Missing), refused.Message);
+        var accepts = _wire.Of(MessageTypes.AcceptChannel2, inbound: true).ToList();
+        Assert.NotEmpty(accepts);
+        Assert.All(accepts, a => Assert.Null(LiquidityAdsWireRecorder.FindTlv(
+                                                 a.Wire, v => LiquidityAdsCodec.TryDecodeWillFund(v, out _))));
+        Assert.Contains(_wire.Of(MessageTypes.OpenChannel2, inbound: false),
+                        o => LiquidityAdsWireRecorder.FindTlv(
+                                 o.Wire, v => LiquidityAdsCodec.TryDecodeRequestFunding(v, out _)) is not null);
+        var listed = await HandleAsync<LiquidityAdsClientRequest, LiquidityAdsClientResponse>(
+                         session, new LiquidityAdsClientRequest(LiquidityAdsAction.Purchases), ct);
+        Assert.Empty(listed.Purchases);
+
+        // Act: the same open without the request
         var opened = await HandleAsync<OpenChannelClientRequest, OpenChannelClientResponse>(
                          session, new OpenChannelClientRequest(session.EclairAddress, LightningMoney.Satoshis(500_000))
                          {
-                             RequestInboundSat = 400_000
+                             IsDualFunded = true
                          }, ct);
         session.ChannelId = opened.ChannelId;
-        PrintThroughClient(opened);
-
-        // Assert: the purchase and the funding
-        var purchase = AssertBought(opened.Purchase, LiquidityPurchaseKind.ChannelOpen, 400_000);
+        Assert.Null(opened.Purchase);
         await session.MineUntilUsableAsync(ct);
-        await AssertBalancesAsync(session, 500_000, purchase, ct);
-        var listed = await HandleAsync<LiquidityAdsClientRequest, LiquidityAdsClientResponse>(
-                         session, new LiquidityAdsClientRequest(LiquidityAdsAction.Purchases)
-                         {
-                             Role = LiquidityPurchaseRole.Buyer
-                         }, ct);
-        PrintThroughClient(listed);
-        var row = Assert.Single(listed.Purchases, p => p.ChannelId == session.ChannelId);
-        Assert.Equal(LiquidityPurchaseStatus.Active, row.Status);
-        Assert.Equal(purchase.TotalFeeMsat, row.TotalFeeMsat);
 
-        // (e) payments both ways
+        // (e)
         await session.AssertWePayEclairAsync(LightningMoney.Satoshis(30_000), ct);
         await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(20_000), ct);
     }
@@ -192,6 +206,15 @@ public sealed class EclairLiquidityAdsTests : IAsyncLifetime
         var purchase = AssertBought(spliced.Purchase, LiquidityPurchaseKind.Splice, 300_000);
         Assert.NotNull(spliced.SpliceTxId);
         await MineUntilLockedAsync(session, spliced.SpliceTxId.Value, ct);
+        var listed = await HandleAsync<LiquidityAdsClientRequest, LiquidityAdsClientResponse>(
+                         session, new LiquidityAdsClientRequest(LiquidityAdsAction.Purchases)
+                         {
+                             Role = LiquidityPurchaseRole.Buyer
+                         }, ct);
+        PrintThroughClient(listed);
+        var row = Assert.Single(listed.Purchases, p => p.ChannelId == session.ChannelId);
+        Assert.Equal(LiquidityPurchaseStatus.Active, row.Status);
+        Assert.Equal(purchase.TotalFeeMsat, row.TotalFeeMsat);
         var after = Channel(session);
         Assert.Equal(capacityBefore + 100_000 + (long)purchase.ContributedSat, after.FundingOutput!.Amount.Satoshi);
         Assert.Equal(localBefore.MilliSatoshi + 100_000_000UL - purchase.TotalFeeMsat, after.LocalBalance.MilliSatoshi);
@@ -204,13 +227,13 @@ public sealed class EclairLiquidityAdsTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// (d) + (e) <c>openchannel --request-inbound 400000</c> at 1,000 sat/kw, then, after Eclair's three-block delta,
-    /// <c>bumpopen</c> at 5,000 sat/kw with <c>--request-inbound 400000</c>: the replacement buys again (an
-    /// <c>OpenRbf</c> purchase whose mining fee is at the new feerate), it confirms, both balances carry its fee, and
-    /// payments go both ways.
+    /// (d) + (e) <c>splicein 100000 --request-inbound 300000</c> at 1,000 sat/kw, then, after Eclair's three-block
+    /// delta (empty blocks, the splice left in the mempool), <c>bumpsplice</c> at 5,000 sat/kw: the RBF requests the
+    /// funding again on its own (BOLT PR #1153), Eclair sells again (a <c>SpliceRbf</c> purchase whose mining fee is at
+    /// the new feerate), the bump locks, and payments go both ways.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
-    public async Task Given_OurUnconfirmedPurchase_When_WeBumpTheOpen_Then_TheReplacementBuysAgain()
+    public async Task Given_OurUnconfirmedSplicePurchase_When_WeBumpTheSplice_Then_TheReplacementBuysAgain()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
@@ -218,29 +241,42 @@ public sealed class EclairLiquidityAdsTests : IAsyncLifetime
         var opened = await HandleAsync<OpenChannelClientRequest, OpenChannelClientResponse>(
                          session, new OpenChannelClientRequest(session.EclairAddress, LightningMoney.Satoshis(500_000))
                          {
-                             RequestInboundSat = 400_000,
-                             FeeRatePerKw = LightningMoney.Satoshis(1_000)
+                             IsDualFunded = true
                          }, ct);
         session.ChannelId = opened.ChannelId;
-        var first = AssertBought(opened.Purchase, LiquidityPurchaseKind.ChannelOpen, 400_000);
-        Assert.NotNull(opened.FundingTxId);
-        await WaitInMempoolAsync(Display(opened.FundingTxId.Value), ct);
+        await session.MineUntilUsableAsync(ct);
+        var spliced = await HandleAsync<SpliceInClientRequest, SpliceClientResponse>(
+                          session, new SpliceInClientRequest(session.ChannelId, 100_000)
+                          {
+                              RequestInboundSat = 300_000,
+                              FeeRatePerKw = 1_000
+                          }, ct);
+        PrintThroughClient(spliced);
+        Assert.Equal(SpliceNegotiationState.Signed, spliced.State);
+        var first = AssertBought(spliced.Purchase, LiquidityPurchaseKind.Splice, 300_000);
+        Assert.NotNull(spliced.SpliceTxId);
+        await WaitInMempoolAsync(Display(spliced.SpliceTxId.Value), ct);
         await MineEmptyBlocksAsync(session, EclairRbfDeltaBlocks, ct);
 
         // Act
-        var bumped = await HandleAsync<BumpOpenClientRequest, BumpOpenClientResponse>(
-                         session, new BumpOpenClientRequest(session.ChannelId, 5_000) { RequestInboundSat = 400_000 },
-                         ct);
-        Console.WriteLine($"[proof] bumpopen replaced {Display(opened.FundingTxId.Value)} with "
-                        + Display(bumped.FundingTxId));
+        var bumped = await HandleAsync<BumpSpliceClientRequest, SpliceClientResponse>(
+                         session, new BumpSpliceClientRequest(session.ChannelId, 5_000), ct);
+        PrintThroughClient(bumped);
 
         // Assert
-        var second = AssertBought(bumped.Purchase, LiquidityPurchaseKind.OpenRbf, 400_000);
+        Assert.Equal(SpliceNegotiationState.Signed, bumped.State);
+        var second = AssertBought(bumped.Purchase, LiquidityPurchaseKind.SpliceRbf, 300_000);
         Assert.True(second.MiningFeeSat > first.MiningFeeSat,
                     $"the bump's mining fee {second.MiningFeeSat} is at the higher feerate (first {first.MiningFeeSat})");
-        await session.MineUntilUsableAsync(ct);
-        Assert.Equal(Display(bumped.FundingTxId), Display(Channel(session).FundingOutput!.TransactionId!.Value));
-        await AssertBalancesAsync(session, 500_000, second, ct);
+        Assert.NotNull(bumped.SpliceTxId);
+        Console.WriteLine($"[proof] bumpsplice replaced {Display(spliced.SpliceTxId.Value)} with "
+                        + Display(bumped.SpliceTxId.Value));
+        await MineUntilLockedAsync(session, bumped.SpliceTxId.Value, ct);
+        var listed = await HandleAsync<LiquidityAdsClientRequest, LiquidityAdsClientResponse>(
+                         session, new LiquidityAdsClientRequest(LiquidityAdsAction.Purchases), ct);
+        PrintThroughClient(listed);
+        Assert.Contains(listed.Purchases, p => p.Status == LiquidityPurchaseStatus.Active
+                                            && p.TotalFeeMsat == second.TotalFeeMsat);
 
         // (e)
         await session.AssertWePayEclairAsync(LightningMoney.Satoshis(30_000), ct);
@@ -249,7 +285,7 @@ public sealed class EclairLiquidityAdsTests : IAsyncLifetime
 
     /// <summary>
     /// (f) Records Eclair's <c>init</c> rates (TLV 1339 value) and its <c>provide_funding</c> answering our
-    /// <c>request_funding</c> (in <c>accept_channel2</c>), with our <c>request_funding</c>, as <c>VECTOR</c> lines for
+    /// <c>request_funding</c> (in <c>splice_ack</c>), with our <c>request_funding</c>, as <c>VECTOR</c> lines for
     /// <c>Tests.Utils/Vectors/LiquidityAdsEclairVectors</c>, and checks that <c>will_fund.funding_script</c> is the new
     /// funding output's script. Explicit: it only records (<c>-explicit only</c>, from the host).
     /// </summary>
@@ -273,39 +309,42 @@ public sealed class EclairLiquidityAdsTests : IAsyncLifetime
                 Console.WriteLine($"VECTOR {tag} init_rates {Convert.ToHexStringLower(rates)}");
         }
 
-        // Act: a purchase at the open
+        // Act: a purchase in a splice (Eclair sells in splices by default, not in new channels)
         var opened = await HandleAsync<OpenChannelClientRequest, OpenChannelClientResponse>(
                          session, new OpenChannelClientRequest(session.EclairAddress, LightningMoney.Satoshis(500_000))
                          {
-                             RequestInboundSat = 400_000
+                             IsDualFunded = true
                          }, ct);
         session.ChannelId = opened.ChannelId;
-        foreach (var open in _wire.Of(MessageTypes.OpenChannel2, inbound: false))
-            if (LiquidityAdsWireRecorder.FindTlv(open.Wire, v => LiquidityAdsCodec.TryDecodeRequestFunding(v, out _))
+        await session.MineUntilUsableAsync(ct);
+        var spliced = await HandleAsync<SpliceInClientRequest, SpliceClientResponse>(
+                          session, new SpliceInClientRequest(session.ChannelId, 100_000) { RequestInboundSat = 300_000 },
+                          ct);
+        foreach (var init in _wire.Of(MessageTypes.SpliceInit, inbound: false))
+            if (LiquidityAdsWireRecorder.FindTlv(init.Wire, v => LiquidityAdsCodec.TryDecodeRequestFunding(v, out _))
                 is { } request)
-                Console.WriteLine($"VECTOR nltg open_request_funding {Convert.ToHexStringLower(request)}");
+                Console.WriteLine($"VECTOR nltg splice_request_funding {Convert.ToHexStringLower(request)}");
 
         WillFund? willFund = null;
-        foreach (var accept in _wire.Of(MessageTypes.AcceptChannel2, inbound: true))
+        foreach (var ack in _wire.Of(MessageTypes.SpliceAck, inbound: true))
         {
-            Console.WriteLine($"VECTOR {tag} accept_channel2 {Convert.ToHexStringLower(accept.Wire.AsSpan(2))}");
-            if (LiquidityAdsWireRecorder.FindTlv(accept.Wire, v => LiquidityAdsCodec.TryDecodeWillFund(v, out _))
+            Console.WriteLine($"VECTOR {tag} splice_ack {Convert.ToHexStringLower(ack.Wire.AsSpan(2))}");
+            if (LiquidityAdsWireRecorder.FindTlv(ack.Wire, v => LiquidityAdsCodec.TryDecodeWillFund(v, out _))
                 is not { } provide)
                 continue;
 
-            Console.WriteLine($"VECTOR {tag} accept_provide_funding {Convert.ToHexStringLower(provide)}");
+            Console.WriteLine($"VECTOR {tag} splice_provide_funding {Convert.ToHexStringLower(provide)}");
             LiquidityAdsCodec.TryDecodeWillFund(provide, out willFund);
         }
 
-        // Assert: what funding_script is (expected: the new funding output's P2WSH script)
+        // Assert: funding_script is the new funding output's P2WSH script
         Assert.NotNull(willFund);
-        Assert.NotNull(opened.FundingTxId);
-        var funding = await _fixture.Bitcoin.Rpc.GetRawTransactionAsync(new uint256((byte[])opened.FundingTxId.Value),
-                                                                        true, ct);
-        var output = funding.Outputs[(int)(opened.FundingOutputIndex ?? 0)];
-        Console.WriteLine($"[capture] funding output script {output.ScriptPubKey.ToHex()}, will_fund.funding_script "
-                        + Convert.ToHexStringLower(willFund.FundingScript));
-        Assert.Equal(output.ScriptPubKey.ToBytes(), willFund.FundingScript);
+        Assert.NotNull(spliced.SpliceTxId);
+        var splice = await _fixture.Bitcoin.Rpc.GetRawTransactionAsync(new uint256((byte[])spliced.SpliceTxId.Value),
+                                                                       true, ct);
+        Console.WriteLine($"[capture] splice outputs {string.Join(", ", splice.Outputs.Select(o => o.ScriptPubKey.ToHex()))}, "
+                        + $"will_fund.funding_script {Convert.ToHexStringLower(willFund.FundingScript)}");
+        Assert.Contains(splice.Outputs, o => o.ScriptPubKey.ToBytes().AsSpan().SequenceEqual(willFund.FundingScript));
     }
 
     private async Task<EclairChannelSession> ConnectAsync(string nodeName, LightningMoney walletSat,
@@ -341,29 +380,6 @@ public sealed class EclairLiquidityAdsTests : IAsyncLifetime
         Assert.True(purchase.TotalFeeMsat > 0);
         return purchase;
     }
-
-    /// <summary>
-    /// Our balance is our contribution less the purchase's fee; Eclair's (its <c>channel</c> JSON, its local
-    /// commitment's spec) is its contribution plus the fee, and ours there is the same as ours here.
-    /// </summary>
-    private static async Task AssertBalancesAsync(EclairChannelSession session, ulong ourContributionSat,
-                                                  LiquidityPurchaseModel purchase, CancellationToken ct)
-    {
-        var ours = Channel(session);
-        Assert.Equal((long)(ourContributionSat + purchase.ContributedSat), ours.FundingOutput!.Amount.Satoshi);
-        Assert.Equal(ourContributionSat * 1_000 - purchase.TotalFeeMsat, ours.LocalBalance.MilliSatoshi);
-        Assert.Equal(purchase.ContributedSat * 1_000 + purchase.TotalFeeMsat, ours.RemoteBalance.MilliSatoshi);
-
-        var eclair = await session.GetEclairChannelAsync(ct);
-        var spec = EclairJson.Active(eclair)?["localCommit"]?["spec"];
-        Console.WriteLine($"[proof] Eclair's channel: {EclairChannelSession.DescribeEclair(eclair)}");
-        Assert.NotNull(spec);
-        Assert.Equal((long)(purchase.ContributedSat * 1_000 + purchase.TotalFeeMsat), ReadMsat(spec["toLocal"]));
-        Assert.Equal((long)(ourContributionSat * 1_000 - purchase.TotalFeeMsat), ReadMsat(spec["toRemote"]));
-    }
-
-    private static long ReadMsat(JsonNode? node) =>
-        node?.GetValue<long>() ?? throw new InvalidOperationException("Eclair's spec has no balance");
 
     /// <summary>Mines one block at a time until both ends moved to the splice's funding, then waits until usable.</summary>
     private async Task MineUntilLockedAsync(EclairChannelSession session, TxId spliceTxId, CancellationToken ct)
