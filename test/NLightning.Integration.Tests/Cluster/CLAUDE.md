@@ -62,6 +62,25 @@ the library's existing seams: `NodeKind.NLightning`, `ILightningNodeDeployer`, `
   `NLTG_TEST_BACKEND=cluster NLTG_KUBE_CONTEXT=orbstack dotnet test/NLightning.Integration.Tests/bin/Release/net10.0/NLightning.Integration.Tests.dll -trait Category=Interop.Cln`.
   `scripts/run-interop.sh cln` is unchanged and runs the Docker backend (under the machine's Docker lock).
 
+## The Eclair interop suite on the cluster (phase 4)
+
+- `Fixtures/EclairFixture` keeps its members and delegates to `Fixtures/Eclair/IEclairBackend`: `DockerEclairBackend`
+  (the former fixture: `InteropChainHost`, the same image, container, config and fixed host ports; its `eclair.conf` is
+  pinned by `EclairBackendTests`) and `ClusterEclairBackend` (a warm `ClusterTopologyFixture`, suite `eclair-interop`:
+  bitcoind `miner` on Bitcoin Core 31.1 (Eclair 0.14.3 refuses older) on `emptyDir`, and Eclair `nltg-eclair` from the
+  same local `nltg-eclair:0.14.3` image (never pulled, never rebuilt) with the same `eclair.conf` apart from the chain's
+  alias and ZMQ ports (asserted by `EclairBackendTests`), on a PVC because two tests restart it).
+- Addresses: bitcoind by pod IP (`ClusterChainEndpoint`); Eclair's p2p port at its stable ClusterIP name
+  (`nltg-eclair-p2p.<ns>.svc.cluster.local:9735`, `EclairFixture.EclairAddress`), which our nodes store and redial after
+  `RestartEclairAsync`, as the Docker backend's fixed host port; Eclair's API at the pod IP, moved to the new pod after a
+  restart (`EclairClient.Retarget`); Eclair dials us at `EclairFixture.HostAddressForEclair` (`host.orb.internal`).
+- Test bodies changed only where they named Docker: `HostAddressForEclair` instead of `host.docker.internal`,
+  `DumpEclairLogAsync` instead of container log dumps, `EclairFixture.MineAsync` instead of `Chain.MineAsync`
+  (`EclairFixture.Chain`, the Docker-only `InteropChainHost`, is gone from the fixture).
+- Run: `scripts/run-cluster.sh -n 1 --suite eclair` (no Docker lock; `--class` for one class, `--explicit on` adds the
+  Explicit E-X1 open). `scripts/run-interop.sh eclair` is unchanged and runs the Docker backend (under the machine's
+  Docker lock).
+
 ## Reachability (OrbStack, host-side tests)
 
 - Our node listens on 127.0.0.1 (all interfaces when `NLTG_HOST_ADDRESS` names another host) and is announced to the

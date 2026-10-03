@@ -56,7 +56,7 @@ public sealed class EclairCloseTests : IAsyncLifetime
         if (DockerDiagnostics.CurrentTestFailed)
         {
             Console.WriteLine($"[eclair] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
-            await DockerDiagnostics.DumpContainerLogsAsync([EclairFixture.EclairContainerName], 400);
+            await _fixture.DumpEclairLogAsync(400);
         }
 
         await _session.DisposeAsync();
@@ -294,7 +294,7 @@ public sealed class EclairCloseTests : IAsyncLifetime
     {
         for (var left = blocks; left > 0; left -= 100)
         {
-            await _fixture.Chain.MineAsync(Math.Min(100, left), ct);
+            await _fixture.MineAsync(Math.Min(100, left), ct);
             await _fixture.WaitAllAtTipAsync([session.Node], ct, TimeSpan.FromMinutes(3));
         }
     }

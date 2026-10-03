@@ -1,31 +1,35 @@
 using Docker.DotNet;
-using NLightning.Tests.Utils;
 
 namespace NLightning.Integration.Tests.Fixtures;
 
 using Docker.Utils;
 using Domain.Money;
+using Eclair;
 
 /// <summary>
-/// An Eclair regtest node for the interop tests (NL-180), on its own bitcoind in its own Docker network
-/// (<see cref="InteropChainHost"/>), so it never shares containers, names or chain state with the LND or CLN
-/// fixtures.
+/// An Eclair regtest node for the interop tests (NL-180), on its own bitcoind, never sharing containers, names or chain
+/// state with the LND or CLN fixtures. Where they run is <see cref="TestBackend"/>'s (<c>NLTG_TEST_BACKEND</c>): Docker
+/// by default (<see cref="DockerEclairBackend"/>: its own Docker network, <see cref="InteropChainHost"/>, ports
+/// published on <c>127.0.0.1</c>), or a run namespace of the Kubernetes harness (<see cref="ClusterEclairBackend"/>,
+/// test harness phase 4). The tests see the same members either way.
 /// </summary>
 /// <remarks>
-/// <para>ACINQ publishes no pinned multi-arch image of a recent release (NL-553), so the fixture builds
+/// <para>ACINQ publishes no pinned multi-arch image of a recent release (NL-553), so the Docker backend builds
 /// <see cref="EclairImage"/> from <c>test/Docker/eclair</c> (the v0.14.3 release zip, sha256-checked, on a pinned
-/// Temurin 21 JRE) when the tag is missing (about 15 s).</para>
+/// Temurin 21 JRE) when the tag is missing (about 15 s); the cluster backend runs the same local tag (never pulled).</para>
 /// <para>Eclair funds channels from the bitcoind wallet <c>eclair</c>, follows blocks over ZMQ <c>hashblock</c> and
-/// answers its JSON API on <c>127.0.0.1</c> (password <see cref="ApiPassword"/>). Its p2p and API ports are published
-/// on fixed ports from <see cref="PortPoolUtil"/> (Docker gives a restarted container new random ones), so its address
-/// survives <see cref="RestartEclairAsync"/>. Eclair runs with its default channel policy, the <c>to_self_delay</c> of
-/// <see cref="EclairDefaultToRemoteDelayBlocks"/> it asks of us included (accepted since NL-550).</para>
+/// answers its JSON API (password <see cref="ApiPassword"/>). Its p2p address (<see cref="EclairAddress"/>) survives
+/// <see cref="RestartEclairAsync"/> on both backends. Eclair runs with its default channel policy, the
+/// <c>to_self_delay</c> of <see cref="EclairDefaultToRemoteDelayBlocks"/> it asks of us included (accepted since
+/// NL-550).</para>
 /// </remarks>
 // ReSharper disable once ClassNeverInstantiated.Global
 public sealed class EclairFixture : IAsyncLifetime
 {
     public const string NetworkName = "nltg-eclair-net";
     public const string BitcoinContainerName = "nltg-eclair-bitcoind";
+
+    /// <summary>The fixture Eclair's container (Docker) or node (cluster) name, also its alias.</summary>
     public const string EclairContainerName = "nltg-eclair";
 
     public const string EclairImage = "nltg-eclair";
@@ -38,47 +42,51 @@ public sealed class EclairFixture : IAsyncLifetime
     /// </summary>
     public const int EclairDefaultToRemoteDelayBlocks = 720;
 
-    private const int P2PPort = 9735;
-    private const int ApiPort = 8080;
+    private readonly IEclairBackend _backend =
+        TestBackend.Current == TestBackendKind.Cluster ? new ClusterEclairBackend() : new DockerEclairBackend();
 
-    private static readonly TimeSpan s_readyTimeout = TimeSpan.FromMinutes(2);
-
-    private readonly DockerClient _client = new DockerClientConfiguration().CreateClient();
     private readonly SharedObjectCache _shared = new();
-    private readonly InteropChainHost _chain;
 
-    private EclairClient? _eclair;
-    private int _p2pHostPort;
-    private int _apiHostPort;
+    /// <summary>Where the fixture runs (<see cref="TestBackend.Current"/> when xunit created it).</summary>
+    public TestBackendKind Backend => _backend.Kind;
 
-    public EclairFixture()
-    {
-        _chain = new InteropChainHost(_client, NetworkName, BitcoinContainerName);
-    }
+    public RegtestBitcoinEndpoint Bitcoin => _backend.Bitcoin;
 
-    public RegtestBitcoinEndpoint Bitcoin => _chain.Bitcoin;
-
-    public InteropChainHost Chain => _chain;
-
-    public EclairClient Eclair => _eclair ?? throw new InvalidOperationException("The Eclair fixture is not running");
+    public EclairClient Eclair => _backend.Eclair;
 
     /// <summary>Eclair's node id (hex, lower case).</summary>
-    public string EclairNodeId { get; private set; } = string.Empty;
+    public string EclairNodeId => _backend.EclairNodeId;
 
-    /// <summary>Eclair's p2p port on <c>127.0.0.1</c> (fixed for the fixture's lifetime).</summary>
-    public int EclairHostPort => _p2pHostPort;
+    /// <summary>
+    /// The host this process dials Eclair at (<c>127.0.0.1</c> for Docker, Eclair's stable ClusterIP name for the
+    /// cluster); fixed for the fixture's lifetime.
+    /// </summary>
+    public string EclairHost => _backend.EclairHost;
 
-    /// <summary>The <c>pubkey@127.0.0.1:port</c> an in-process node connects to.</summary>
-    public string EclairAddress => $"{EclairNodeId}@127.0.0.1:{_p2pHostPort}";
+    /// <summary>Eclair's p2p port at <see cref="EclairHost"/> (fixed for the fixture's lifetime).</summary>
+    public int EclairHostPort => _backend.EclairPort;
+
+    /// <summary>The <c>pubkey@host:port</c> an in-process node connects to.</summary>
+    public string EclairAddress => $"{EclairNodeId}@{EclairHost}:{EclairHostPort}";
+
+    /// <summary>
+    /// The host Eclair dials to reach a listener of this process (<see cref="ClnFixture.HostAddressFromContainers"/>
+    /// for Docker, <c>host.orb.internal</c> on OrbStack's cluster); listen on every interface.
+    /// </summary>
+    public string HostAddressForEclair => _backend.HostAddressForPeers;
 
     public Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory) where T : class =>
         _shared.GetOrCreateAsync(key, factory);
 
     public async ValueTask InitializeAsync()
     {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            await StartAsync();
+            await _backend.StartAsync(TestContext.Current.CancellationToken);
+            await WaitAllAtTipAsync([], CancellationToken.None);
+            // One comparable line per backend (test harness: fixture start, Docker against the cluster)
+            Console.WriteLine($"[fixture] Eclair fixture ({Backend}) ready in {watch.Elapsed.TotalSeconds:F1} s");
         }
         catch
         {
@@ -90,14 +98,20 @@ public sealed class EclairFixture : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         _shared.DisposeAll();
-        _eclair?.Dispose();
-        await DockerContainerUtils.RemoveContainerAsync(_client, EclairContainerName);
-        await _chain.RemoveAsync();
-        if (_p2pHostPort != 0)
-            PortPoolUtil.ReleasePort(_p2pHostPort);
-        if (_apiHostPort != 0)
-            PortPoolUtil.ReleasePort(_apiHostPort);
-        _client.Dispose();
+        await _backend.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Writes the last <paramref name="tail"/> lines of Eclair's log to <see cref="Console"/> (the test output). On the
+    /// cluster backend a failed test also gets a full dump of the namespace under <c>TestResults/cluster/</c>.
+    /// </summary>
+    public Task DumpEclairLogAsync(int tail = 300) => _backend.DumpEclairLogAsync(tail);
+
+    /// <summary>Mines <paramref name="blocks"/> blocks to the miner wallet.</summary>
+    public async Task MineAsync(int blocks, CancellationToken cancellationToken)
+    {
+        var rpc = Bitcoin.Rpc;
+        await rpc.GenerateToAddressAsync(blocks, await rpc.GetNewAddressAsync(cancellationToken), cancellationToken);
     }
 
     /// <summary>
@@ -112,7 +126,7 @@ public sealed class EclairFixture : IAsyncLifetime
         var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(60));
         while (true)
         {
-            var tip = await _chain.GetTipAsync(cancellationToken);
+            var tip = (uint)await Bitcoin.Rpc.GetBlockCountAsync(cancellationToken);
             var eclairHeights = new List<long>();
             foreach (var eclair in extra.Prepend(Eclair))
                 eclairHeights.Add(await eclair.GetBlockHeightAsync(cancellationToken));
@@ -134,7 +148,7 @@ public sealed class EclairFixture : IAsyncLifetime
     public async Task<uint> MineAndWaitAsync(int blocks, IEnumerable<NLightningTestNode> nodes,
                                              CancellationToken cancellationToken, params EclairClient[] extra)
     {
-        await _chain.MineAsync(blocks, cancellationToken);
+        await MineAsync(blocks, cancellationToken);
         return await WaitAllAtTipAsync(nodes, cancellationToken, null, extra);
     }
 
@@ -148,7 +162,9 @@ public sealed class EclairFixture : IAsyncLifetime
         eclair ??= Eclair;
         var before = (await eclair.OnchainBalanceAsync(cancellationToken))["confirmed"]!.GetValue<long>();
         var address = await eclair.GetNewAddressAsync(cancellationToken);
-        await _chain.SendToAddressAsync(address, (long)amount.Satoshi, cancellationToken);
+        await Bitcoin.Rpc.SendToAddressAsync(NBitcoin.BitcoinAddress.Create(address, NBitcoin.Network.RegTest),
+                                             NBitcoin.Money.Satoshis((long)amount.Satoshi),
+                                             cancellationToken: cancellationToken);
         await MineAndWaitAsync(6, nodes, cancellationToken, eclair == Eclair ? [] : [eclair]);
         await Poll.UntilAsync(async () =>
                                   (await eclair.OnchainBalanceAsync(cancellationToken))["confirmed"]!
@@ -157,96 +173,11 @@ public sealed class EclairFixture : IAsyncLifetime
     }
 
     /// <summary>
-    /// Restarts the Eclair container (its <c>/data</c> is kept) on the same host ports and waits until it is at the tip.
+    /// Restarts Eclair (its data is kept) at the same address (<see cref="EclairAddress"/>) and waits until it is at
+    /// the tip.
     /// </summary>
-    public async Task RestartEclairAsync(CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        await _chain.RestartContainerAsync(EclairContainerName);
-        await WaitReadyAsync(EclairContainerName, Eclair);
-    }
-
-    private async Task StartAsync()
-    {
-        await EnsureEclairImageAsync();
-        await DockerContainerUtils.RemoveContainerAsync(_client, EclairContainerName);
-        await _chain.StartAsync();
-        await _chain.CreateWalletAsync("eclair");
-
-        _p2pHostPort = await PortPoolUtil.GetAvailablePortAsync();
-        _apiHostPort = await PortPoolUtil.GetAvailablePortAsync();
-        var (client, nodeId) = await StartEclairContainerAsync(EclairContainerName, "eclair", _p2pHostPort,
-                                                               _apiHostPort);
-        _eclair = client;
-        EclairNodeId = nodeId;
-        Console.WriteLine($"[eclair] {EclairAddress}: {(await client.GetInfoAsync(CancellationToken.None))
-           .ToJsonString()}");
-    }
-
-    private async Task<(EclairClient Client, string NodeId)> StartEclairContainerAsync(
-        string containerName, string wallet, int p2pHostPort, int apiHostPort)
-    {
-        // Both host ports fixed: Docker gives a restarted container new random ones
-        var ports = await _chain.StartContainerAsync(
-                        $"{EclairImage}:{EclairTag}", containerName, ["JAVA_OPTS=-Xmx512m -Declair.printToConsole=true"], [],
-                        [P2PPort, ApiPort],
-                        new Dictionary<int, int> { [P2PPort] = p2pHostPort, [ApiPort] = apiHostPort },
-                        new Dictionary<string, string>
-                        {
-                            ["/data/eclair.conf"] = BuildConfig(containerName, wallet)
-                        });
-        var client = new EclairClient(ports[ApiPort], ApiPassword);
-        try
-        {
-            await WaitReadyAsync(containerName, client);
-            var nodeId = (await client.GetInfoAsync(CancellationToken.None))["nodeId"]!.GetValue<string>();
-            return (client, nodeId);
-        }
-        catch
-        {
-            client.Dispose();
-            throw;
-        }
-    }
-
-    private async Task WaitReadyAsync(string containerName, EclairClient client)
-    {
-        await DockerContainerUtils.WaitUntilReadyAsync(containerName, async ct =>
-        {
-            var height = await client.GetBlockHeightAsync(ct);
-            var tip = await _chain.GetTipAsync(ct);
-            if (height != tip)
-                throw new InvalidOperationException($"Eclair at {height}, tip {tip}");
-        }, s_readyTimeout);
-    }
-
-    private static string BuildConfig(string containerName, string wallet) =>
-        $"""
-         eclair.chain = "regtest"
-         eclair.server.port = {P2PPort}
-         eclair.api.enabled = true
-         eclair.api.binding-ip = "0.0.0.0"
-         eclair.api.port = {ApiPort}
-         eclair.api.password = "{ApiPassword}"
-         eclair.bitcoind.host = "{BitcoinContainerName}"
-         eclair.bitcoind.rpcport = {InteropChainHost.RpcPort}
-         eclair.bitcoind.rpcuser = "{InteropChainHost.RpcUser}"
-         eclair.bitcoind.rpcpassword = "{InteropChainHost.RpcPassword}"
-         eclair.bitcoind.wallet = "{wallet}"
-         eclair.bitcoind.zmqblock = "tcp://{BitcoinContainerName}:{InteropChainHost.ZmqHashBlockPort}"
-         eclair.bitcoind.zmqtx = "tcp://{BitcoinContainerName}:{InteropChainHost.ZmqTxPort}"
-         eclair.node-alias = "{containerName}"
-         eclair.channel.min-depth-blocks = 6
-         """;
-
-    private async Task EnsureEclairImageAsync()
-    {
-        if (await InteropChainHost.ImageExistsAsync(_client, $"{EclairImage}:{EclairTag}"))
-            return;
-
-        var dockerfileDir = FindDockerDirectory("eclair");
-        await BuildImageAsync(_client, dockerfileDir, $"{EclairImage}:{EclairTag}", TimeSpan.FromMinutes(15));
-    }
+    public Task RestartEclairAsync(CancellationToken cancellationToken) =>
+        _backend.RestartEclairAsync(cancellationToken);
 
     /// <summary>
     /// <c>test/Docker/&lt;name&gt;</c>, found by walking up from the test assembly.
