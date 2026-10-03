@@ -5,8 +5,10 @@ using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.LiquidityAds.Models;
 using Domain.Money;
 using Domain.Protocol.InteractiveTx;
+using LiquidityAds;
 
 /// <summary>
 /// One dual-funded open (<c>open_channel2</c> to <c>channel_ready</c>) as <see cref="DualFundedOpenService"/> tracks it:
@@ -87,6 +89,29 @@ internal sealed class DualFundNegotiation
     /// </summary>
     public InteractiveTxContribution? FreshRbfContribution { get; set; }
 
+    /// <summary>
+    /// Our <c>request_funding</c> waiting for the seller's answer (<c>accept_channel2</c> of our open, <c>tx_ack_rbf</c>
+    /// of our RBF; liquidity ads, NL-771). Memory only.
+    /// </summary>
+    public DualFundLiquidityRequest? LiquidityRequest { get; set; }
+
+    /// <summary>
+    /// The liquidity purchase of the attempt being negotiated, from the request and its answer until the attempt's
+    /// commitment step records it (<see cref="Purchases"/>); null when the attempt buys nothing. Memory only.
+    /// </summary>
+    public DualFundLiquidity? AttemptLiquidity { get; set; }
+
+    /// <summary>
+    /// The liquidity purchases recorded with the open's attempts, by funding txid (rebuilt from
+    /// <c>LiquidityPurchases</c> after a restart): the fee of an attempt moves its balances.
+    /// </summary>
+    public Dictionary<TxId, LiquidityPurchaseModel> Purchases { get; } = [];
+
+    /// <summary>
+    /// The sale slot (griefing cap, D-L5) the attempt we sell liquidity in holds until its negotiation ends. Memory only.
+    /// </summary>
+    public LiquidityAdsService.LiquiditySale? Sale { get; set; }
+
     /// <summary>Whether an anchors channel counts toward the anchors reserve while it is being opened.</summary>
     public bool HoldsAnchorReserve { get; set; }
 
@@ -98,6 +123,26 @@ internal sealed class DualFundNegotiation
     public (LightningMoney Local, LightningMoney Remote)? SharesBeforeRbf { get; set; }
 
     public LightningMoney Total => LightningMoney.MilliSatoshis(LocalShare.MilliSatoshi + RemoteShare.MilliSatoshi);
+
+    /// <summary>
+    /// Our fee (msat, + we buy, − we sell) of the attempt <paramref name="fundingTxId"/>: 0 when it bought nothing.
+    /// </summary>
+    public long GetLocalLiquidityFeeMsat(TxId? fundingTxId) =>
+        fundingTxId is { } txId ? DualFundLiquidity.GetLocalFeeMsat(Purchases.GetValueOrDefault(txId)) : 0;
+
+    /// <summary>
+    /// The purchase of the latest fully signed attempt, or null when it bought nothing (BOLT PR #1153: an RBF of an
+    /// attempt with a purchase must carry <c>request_funding</c> again).
+    /// </summary>
+    public LiquidityPurchaseModel? LatestSignedPurchase =>
+        CompletedTxIds.Count == 0 ? null : Purchases.GetValueOrDefault(CompletedTxIds[^1]);
+
+    /// <summary>Gives the sale slot of the attempt back (idempotent).</summary>
+    public void EndSale()
+    {
+        Sale?.Dispose();
+        Sale = null;
+    }
 
     /// <summary>
     /// The attempt's shares become <paramref name="local"/> and <paramref name="remote"/>; the signed attempt's are
