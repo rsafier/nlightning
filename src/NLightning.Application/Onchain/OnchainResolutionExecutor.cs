@@ -1226,22 +1226,38 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                                                             TxId? spenderTxId, uint height, DateTimeOffset now,
                                                             CancellationToken cancellationToken)
     {
-        if (!IsIncomingHtlcOfTheClose(row, close) || data?.Htlc is not { Direction: HtlcDirection.Incoming } htlc
-                                                  || unitOfWork.ForwardCircuitDbRepository is not { } circuits)
+        if (!IsIncomingHtlcOfTheClose(row, close) || data?.Htlc is not { Direction: HtlcDirection.Incoming } htlc)
             return;
 
-        var circuit = await circuits.GetByIncomingAsync(channel.ChannelId, htlc.Id);
+        await StageForwardLossAsync(unitOfWork, accounting, channel, close.CommitmentTransactionId, htlc.Id,
+                                    spenderTxId, height, now, false, cancellationToken);
+    }
+
+    /// <summary>
+    /// Stages the <see cref="AccountingEventKind.ForwardLostOnchain"/> of incoming HTLC <paramref name="htlcId"/> of
+    /// the close <paramref name="closeTxId"/> when its forward was booked as settled (the circuit is
+    /// <see cref="ForwardCircuitStatus.Fulfilled"/>): its output was taken by the peer or given up (NL-608), or it had
+    /// none (<paramref name="trimmed"/>, NL-760). Nothing when the fact stands already.
+    /// </summary>
+    internal static async Task StageForwardLossAsync(IUnitOfWork unitOfWork, IAccountingEventDbRepository accounting,
+                                                     ChannelModel channel, TxId closeTxId, ulong htlcId,
+                                                     TxId? spenderTxId, uint height, DateTimeOffset now, bool trimmed,
+                                                     CancellationToken cancellationToken)
+    {
+        if (unitOfWork.ForwardCircuitDbRepository is not { } circuits)
+            return;
+
+        var circuit = await circuits.GetByIncomingAsync(channel.ChannelId, htlcId);
         if (circuit is not { Status: ForwardCircuitStatus.Fulfilled })
             return;
 
         var key = await OnchainAccounting.NewKeyAsync(
-                      accounting, AccountingEventKeys.ForwardLostOnchain(channel.ChannelId, htlc.Id), cancellationToken);
+                      accounting, AccountingEventKeys.ForwardLostOnchain(channel.ChannelId, htlcId), cancellationToken);
         if (key is null)
             return;
 
-        accounting.Add(PaymentAccountingEvents.ForwardUpstreamLostOnchain(key, circuit, channel,
-                                                                          close.CommitmentTransactionId, spenderTxId,
-                                                                          now, height));
+        accounting.Add(PaymentAccountingEvents.ForwardUpstreamLostOnchain(key, circuit, channel, closeTxId, spenderTxId,
+                                                                          now, height, trimmed));
     }
 
     /// <summary>
@@ -1257,29 +1273,15 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         if (!IsIncomingHtlcOfTheClose(resolved, close) || resolved.HtlcId is not { } htlcId)
             return;
 
-        var baseKey = AccountingEventKeys.ForwardLostOnchain(channelId, htlcId);
-        var standing = AccountingConfirmations.FindStanding(
-            baseKey, await accounting.GetByKeyPrefixAsync(baseKey, cancellationToken));
-        if (standing is null
-         || !standing.Details.TryGetValue("cause", out var cause) || cause != PaymentAccountingEvents.UpstreamOnchainCause
-         || !standing.Details.TryGetValue(AccountingDetailKeys.CloseTxId, out var closeTxId)
-         || closeTxId != close.CommitmentTransactionId.ToString()
-         || (resolved.ResolvedHeight is { } height && standing.BlockHeight != height))
-            return;
-
-        await OnchainAccounting.StageReversalAsync(accounting, standing, standing.BlockHeight ?? 0, now,
-                                                   cancellationToken);
+        await StageLossReversalAsync(accounting, AccountingEventKeys.ForwardLostOnchain(channelId, htlcId),
+                                     PaymentAccountingEvents.UpstreamOnchainCause, close.CommitmentTransactionId,
+                                     resolved.ResolvedHeight, now, cancellationToken);
     }
 
     /// <summary>
     /// Stages the <see cref="AccountingEventKind.InvoiceLostOnchain"/> of an incoming HTLC output of the close
-    /// (<paramref name="row"/>) that the peer took or we gave up (NL-688) when the HTLC was a part of one of our invoices
-    /// booked as settled: the invoice is <see cref="InvoiceStatus.Settled"/> and the HTLC's record carries its preimage
-    /// (the switch's mark of a part it committed to, <see cref="HtlcRecord.KnownPreimage"/>, or its fulfill) and no
-    /// failure. Its <c>InvoiceSettled</c> booked the amount into the channels, and the close never took it out (an
-    /// incoming HTLC is not in our balance at the close), so the HTLC's amount is a loss. Keyed per HTLC
-    /// (<see cref="AccountingEventKeys.InvoiceLostOnchain"/>, by generation after a reorg's reversal). A forward (a
-    /// circuit on the HTLC) is NL-608's.
+    /// (<paramref name="row"/>) that the peer took or we gave up (NL-688); see
+    /// <see cref="StageInvoiceLossAsync(IUnitOfWork, IAccountingEventDbRepository, ChannelModel, TxId, ulong, Hash, TxId?, uint, DateTimeOffset, bool, ILogger, CancellationToken)"/>.
     /// </summary>
     private async Task StageInvoiceLossAsync(IUnitOfWork unitOfWork, IAccountingEventDbRepository accounting,
                                              ChannelModel channel, ChannelCloseModel close, OutputResolutionModel row,
@@ -1289,47 +1291,68 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         if (!IsIncomingHtlcOfTheClose(row, close) || data?.Htlc is not { Direction: HtlcDirection.Incoming } htlc)
             return;
 
+        await StageInvoiceLossAsync(unitOfWork, accounting, channel, close.CommitmentTransactionId, htlc.Id,
+                                    htlc.PaymentHash, spenderTxId, height, now, false, _logger, cancellationToken);
+    }
+
+    /// <summary>
+    /// Stages the <see cref="AccountingEventKind.InvoiceLostOnchain"/> of incoming HTLC <paramref name="htlcId"/> of
+    /// the close <paramref name="closeTxId"/> when the HTLC was a part of one of our invoices booked as settled: the
+    /// invoice is <see cref="InvoiceStatus.Settled"/> and the HTLC's record carries its preimage (the switch's mark of a
+    /// part it committed to, <see cref="HtlcRecord.KnownPreimage"/>, or its fulfill) and no failure. Its
+    /// <c>InvoiceSettled</c> booked the amount into the channels, and the close never took it out (an incoming HTLC is
+    /// not in our balance at the close), so the HTLC's amount is a loss: its output was taken by the peer or given up
+    /// (NL-688), or it had none (<paramref name="trimmed"/>, NL-760). Keyed per HTLC
+    /// (<see cref="AccountingEventKeys.InvoiceLostOnchain"/>, by generation after a reorg's reversal). A forward (a
+    /// circuit on the HTLC) is NL-608's.
+    /// </summary>
+    internal static async Task StageInvoiceLossAsync(IUnitOfWork unitOfWork, IAccountingEventDbRepository accounting,
+                                                     ChannelModel channel, TxId closeTxId, ulong htlcId,
+                                                     Hash paymentHash, TxId? spenderTxId, uint height,
+                                                     DateTimeOffset now, bool trimmed, ILogger logger,
+                                                     CancellationToken cancellationToken)
+    {
         // The lookups never cost the round its other events: a failure is logged and the loss is not recorded
         InvoiceModel? invoice;
         try
         {
             if (unitOfWork.ForwardCircuitDbRepository is { } circuits
-             && await circuits.GetByIncomingAsync(channel.ChannelId, htlc.Id) is not null)
+             && await circuits.GetByIncomingAsync(channel.ChannelId, htlcId) is not null)
                 return;
 
             invoice = unitOfWork.InvoiceDbRepository is { } invoices
-                          ? await invoices.GetByPaymentHashAsync(htlc.PaymentHash)
+                          ? await invoices.GetByPaymentHashAsync(paymentHash)
                           : null;
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            _logger.LogWarning(e, "Channel {ChannelId}: whether incoming HTLC {HtlcId} paid a settled invoice of ours "
-                                + "could not be read; its loss on chain is not recorded", channel.ChannelId, htlc.Id);
+            logger.LogWarning(e, "Channel {ChannelId}: whether incoming HTLC {HtlcId} paid a settled invoice of ours "
+                               + "could not be read; its loss on chain is not recorded", channel.ChannelId, htlcId);
             return;
         }
 
         if (invoice is not { Status: InvoiceStatus.Settled }
-         || channel.Commitments?.GetHtlc(HtlcDirection.Incoming, htlc.Id) is not { } record
-         || record.PaymentHash != htlc.PaymentHash
+         || channel.Commitments?.GetHtlc(HtlcDirection.Incoming, htlcId) is not { } record
+         || record.PaymentHash != paymentHash
          || record.Removal is { IsFulfill: false }
          || (record.KnownPreimage ?? record.Removal?.PaymentPreimage) is not { } preimage
          || preimage != invoice.Preimage)
             return;
 
         var key = await OnchainAccounting.NewKeyAsync(
-                      accounting, AccountingEventKeys.InvoiceLostOnchain(htlc.PaymentHash, channel.ChannelId, htlc.Id),
+                      accounting, AccountingEventKeys.InvoiceLostOnchain(paymentHash, channel.ChannelId, htlcId),
                       cancellationToken);
         if (key is null)
             return;
 
-        accounting.Add(PaymentAccountingEvents.InvoiceLostOnchain(key, invoice, htlc.Id, record.AmountMsat, channel,
-                                                                  close.CommitmentTransactionId, spenderTxId, now,
-                                                                  height));
+        accounting.Add(PaymentAccountingEvents.InvoiceLostOnchain(key, invoice, htlcId, record.AmountMsat, channel,
+                                                                  closeTxId, spenderTxId, now, height, trimmed));
     }
 
     /// <summary>
-    /// Stages the reversal of the <see cref="StageInvoiceLossAsync"/> event recorded with the resolution of
-    /// <paramref name="resolved"/> that a reorg undid, or of a close replaced by another (NL-688).
+    /// Stages the reversal of the <see cref="StageInvoiceLossAsync(IUnitOfWork, IAccountingEventDbRepository, ChannelModel, ChannelCloseModel, OutputResolutionModel, OutputDescriptorData?, TxId?, uint, DateTimeOffset, CancellationToken)"/>
+    /// event recorded with the resolution of <paramref name="resolved"/> that a reorg undid, or of a close replaced by
+    /// another (NL-688).
     /// </summary>
     internal static async Task StageInvoiceLossReversalAsync(IAccountingEventDbRepository accounting,
                                                              ChannelId channelId, ChannelCloseModel close,
@@ -1340,13 +1363,52 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
          || OutputDescriptorData.TryDecode(resolved)?.Htlc is not { Direction: HtlcDirection.Incoming } htlc)
             return;
 
-        var baseKey = AccountingEventKeys.InvoiceLostOnchain(htlc.PaymentHash, channelId, htlc.Id);
+        await StageLossReversalAsync(accounting,
+                                     AccountingEventKeys.InvoiceLostOnchain(htlc.PaymentHash, channelId, htlc.Id),
+                                     null, close.CommitmentTransactionId, resolved.ResolvedHeight, now,
+                                     cancellationToken);
+    }
+
+    /// <summary>
+    /// Stages the reversals of the losses of the trimmed incoming HTLCs <paramref name="closeEvent"/> lists (NL-760:
+    /// recorded in the close's save, see
+    /// <see cref="OnchainAccounting.TrimmedIncomingHtlcsOf(Domain.Accounting.Models.AccountingEventModel?)"/>), for a
+    /// close another transaction replaced.
+    /// </summary>
+    internal static async Task StageTrimmedIncomingLossReversalsAsync(IAccountingEventDbRepository accounting,
+                                                                      ChannelId channelId, ChannelCloseModel close,
+                                                                      AccountingEventModel? closeEvent,
+                                                                      DateTimeOffset now,
+                                                                      CancellationToken cancellationToken)
+    {
+        foreach (var (htlcId, paymentHash) in OnchainAccounting.TrimmedIncomingHtlcsOf(closeEvent))
+        {
+            await StageLossReversalAsync(accounting, AccountingEventKeys.ForwardLostOnchain(channelId, htlcId),
+                                         PaymentAccountingEvents.UpstreamOnchainCause, close.CommitmentTransactionId,
+                                         null, now, cancellationToken);
+            await StageLossReversalAsync(accounting,
+                                         AccountingEventKeys.InvoiceLostOnchain(paymentHash, channelId, htlcId), null,
+                                         close.CommitmentTransactionId, null, now, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Stages the reversal of the standing loss <paramref name="baseKey"/> recorded for the close
+    /// <paramref name="closeTxId"/> (with the <c>cause</c> <paramref name="cause"/> when given) at
+    /// <paramref name="height"/> (any height when null).
+    /// </summary>
+    private static async Task StageLossReversalAsync(IAccountingEventDbRepository accounting, string baseKey,
+                                                     string? cause, TxId closeTxId, uint? height, DateTimeOffset now,
+                                                     CancellationToken cancellationToken)
+    {
         var standing = AccountingConfirmations.FindStanding(
             baseKey, await accounting.GetByKeyPrefixAsync(baseKey, cancellationToken));
         if (standing is null
-         || !standing.Details.TryGetValue(AccountingDetailKeys.CloseTxId, out var closeTxId)
-         || closeTxId != close.CommitmentTransactionId.ToString()
-         || (resolved.ResolvedHeight is { } height && standing.BlockHeight != height))
+         || (cause is not null
+          && (!standing.Details.TryGetValue("cause", out var standingCause) || standingCause != cause))
+         || !standing.Details.TryGetValue(AccountingDetailKeys.CloseTxId, out var standingCloseTxId)
+         || standingCloseTxId != closeTxId.ToString()
+         || (height is { } at && standing.BlockHeight != at))
             return;
 
         await OnchainAccounting.StageReversalAsync(accounting, standing, standing.BlockHeight ?? 0, now,
