@@ -147,9 +147,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 62 | 63 |
+| open | 0 | 0 | 1 | 61 | 62 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 63 | 201 | 411 | 689 |
+| fixed | 14 | 63 | 201 | 412 | 690 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
 | **Total** | **14** | **63** | **210** | **484** | **771** |
@@ -2623,12 +2623,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TRAMPOLINE_PLAN §7
 
 ### NL-897 Trampoline parts failed by the deadline monitor or the dust switch use the outer secret only
-- **Status:** open
+- **Status:** fixed (9c76b07f)
 - **Severity:** low
 - **Kind:** spec
 - **Location:** `src/NLightning.Application/Channels/Safety/HtlcExpiryMonitor.cs` (`FailBackAsync`), `Channels/Fees/DustExposureHtlcSwitch.cs`
 - **Evidence:** TR2/TR3 reports (2026-10-03): the switch and the relay engine double-wrap (trampoline then outer secret) every failure of a trampoline part, but the two failure paths outside them create the error with the outer secret only. The payer still decrypts it (outer layer, TR-R-15) but cannot attribute it to the trampoline layer.
 - **Fix sketch:** have both paths rebuild the trampoline keys (re-peel the stored onion as `HtlcSwitch` does) and use `TrampolineErrorPackets.CreateAttributed`.
+- **Fix (9c76b07f):** `Payments/Switch/TrampolineHtlcFailures`: `ResolveKeysAsync` peels the stored onion again (no replay owner) or reads the relay part's `TrampolineRelayParts` secrets; `FailAsync` creates the failure with the trampoline then the outer secret (outer-layer attribution when advertised; malformed `invalid_onion_blinding` past a blinded introduction node, our own `invalid_onion_blinding` at the introduction node of a relay, `TrampolineFailureKeys.IntroductionSha256`, also honored by the switch now). Used by `HtlcExpiryMonitor.FailBackAsync` and `DustExposureHtlcSwitch`; ordinary HTLCs unchanged. Tests in `HtlcExpiryMonitorTests` and `DustExposureHtlcSwitchTests` (the payer decrypts at the trampoline layer). Left as before: a held final trampoline part after a restart with trampoline routing turned off peels as an unknown TLV 20 and is failed with the outer secret only.
 - **Blocks/Blocked-by:** Follow-up of NL-875
 - **Plan ref:** TRAMPOLINE_PLAN TR-R-14
 
