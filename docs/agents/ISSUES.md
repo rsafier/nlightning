@@ -8080,7 +8080,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `CASHU_PLAN.md` C1
 
 ### NL-903 No Docker proof of a CDK mint running on NLightning
-- **Status:** fixed (wip/cashu C2 commit)
+- **Status:** fixed (9dea34a2)
 - **Severity:** low
 - **Kind:** test-gap
 - **Location:** `test/NLightning.Integration.Tests/Docker/` (new `Cashu/`)
