@@ -40,6 +40,7 @@ using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.ValueObjects;
 using Domain.Protocol.Tlv;
 using Domain.Routing.Pathfinding;
+using Domain.Serialization.Interfaces;
 using Gossip.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
@@ -47,6 +48,7 @@ using Invoices;
 using Keysend;
 using Routing;
 using Routing.Interfaces;
+using Trampoline;
 
 /// <summary>
 /// Sends our payments (BOLT2 plan N8-T3, ONION M4-T6 through route hints; <see cref="IPaymentService"/>), retries and
@@ -123,8 +125,12 @@ using Routing.Interfaces;
 /// <para>Singleton; thread-safe. The lock is per payment hash (refcounted), so a slow payment never delays the outcome
 /// of another hash. Persistence goes through a fresh DI scope per step (scoped <see cref="IPaymentDbRepository"/>
 /// sharing the scope's <see cref="IUnitOfWork"/>).</para>
+/// <para>Trampoline (NL-875): it also sends the outgoing legs of trampoline relays (<see cref="ITrampolineLegSender"/>,
+/// <c>PaymentService.Trampoline.cs</c>) and pays through a trampoline node (<see cref="PayInvoiceOptions.TrampolineNode"/>,
+/// <c>Node:Payments:Trampoline</c>).</para>
 /// </remarks>
-public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IRouteQueryService
+public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHandler, IRouteQueryService,
+                                             ITrampolineLegSender
 {
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
@@ -144,6 +150,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
     private readonly GraphPathSource? _graphPathSource;
     private readonly IRouteBlindingService? _routeBlindingService;
     private readonly IChannelUpdateService? _channelUpdateService;
+    private readonly ITrampolineFailureOnionService? _trampolineFailureOnionService;
+    private readonly TrampolineOnionFactory? _trampolineOnionFactory;
 
     /// <summary>
     /// The engine's sender rules (<c>UpdateValidator.ValidateSendAdd</c>) that a smaller HTLC on the same channel may
@@ -174,8 +182,15 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                           IAttributionDataService? attributionDataService = null,
                           GraphPathSource? graphPathSource = null, IGossipScidRefresher? scidRefresher = null,
                           IRouteBlindingService? routeBlindingService = null,
-                          IChannelUpdateService? channelUpdateService = null)
+                          IChannelUpdateService? channelUpdateService = null,
+                          ITrampolineOnionService? trampolineOnionService = null,
+                          ITrampolineFailureOnionService? trampolineFailureOnionService = null,
+                          IHopPayloadSerializer? hopPayloadSerializer = null)
     {
+        _trampolineFailureOnionService = trampolineFailureOnionService;
+        _trampolineOnionFactory = trampolineOnionService is not null && hopPayloadSerializer is not null
+                                      ? new TrampolineOnionFactory(trampolineOnionService, hopPayloadSerializer)
+                                      : null;
         _routeBlindingService = routeBlindingService;
         _channelUpdateService = channelUpdateService;
         _attributionDataService = attributionDataService;
@@ -282,6 +297,9 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                       + "rebalance).", nameof(options));
         }
 
+        if (circular && options.TrampolineNode is not null)
+            throw new ArgumentException("A rebalance is not sent through a trampoline node.", nameof(options));
+
         ThrowUnlessOurChannel(options.OutgoingChannelId, "outgoing");
         ThrowUnlessOurChannel(options.IncomingChannelId, "incoming");
         if (_blockchainMonitor.LastProcessedBlockHeight == 0)
@@ -290,6 +308,25 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         var sendOptions = _sendOptions.Value;
         var now = _timeProvider.GetUtcNow();
         DateTimeOffset? deadline = options.Timeout == Timeout.InfiniteTimeSpan ? null : now + options.Timeout;
+
+        // NL-875: through a trampoline node when the call names one or the node's mode picks one
+        var trampolineNode = circular
+                                 ? null
+                                 : await ResolveTrampolineNodeAsync(options, target, paymentAmount, invoice.Features,
+                                                                    cancellationToken);
+        if (trampolineNode is { } trampoline)
+        {
+            var recipient = new Bolt11TrampolineRecipient(paymentAmount, target.PayeeNodeId, target.PaymentSecret,
+                                                          target.MinFinalCltvExpiryDelta, target.PaymentMetadata);
+            var trampolineSession = await CreateTrampolineSessionAsync(
+                                        trampoline, recipient, target.PaymentHash, target.PayeeNodeId, bolt11,
+                                        options.MaxFee ?? sendOptions.GetMaxFee(paymentAmount),
+                                        options.MaxParts ?? Math.Clamp(sendOptions.MaxParts, 1,
+                                                                       PaymentSendOptions.MaxPartsLimit),
+                                        deadline, now, options, null);
+            return await RunSessionAsync(trampolineSession, options.Timeout, cancellationToken);
+        }
+
         var session = new PaymentSession(target, bolt11, paymentAmount,
                                          options.MaxFee ?? sendOptions.GetMaxFee(paymentAmount),
                                          options.MaxParts ?? Math.Clamp(sendOptions.MaxParts, 1,
@@ -382,6 +419,19 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             Bolt12 = request.Bolt12,
             Labels = options.Labels
         };
+
+        // NL-875: through a trampoline node when the call names one or the node's mode picks one
+        if (await ResolveBlindedTrampolineNodeAsync(options, session, paths, cancellationToken) is { } trampoline)
+        {
+            var recipient = CreateBlindedTrampolineRecipient(request, trampoline, _secureKeyManager.GetNodePubKey());
+            var trampolineSession = await CreateTrampolineSessionAsync(
+                                        trampoline, recipient, request.PaymentHash, session.PayeeNodeId,
+                                        request.Invoice, session.MaxFee,
+                                        options.MaxParts ?? Math.Clamp(sendOptions.MaxParts, 1,
+                                                                       PaymentSendOptions.MaxPartsLimit),
+                                        deadline, now, options, request.Bolt12);
+            return await RunSessionAsync(trampolineSession, options.Timeout, cancellationToken);
+        }
 
         return await RunSessionAsync(session, options.Timeout, cancellationToken);
     }
@@ -585,7 +635,13 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             }
 
             if (payment.Status == PaymentStatus.Succeeded)
+            {
+                // A relay leg's fulfill replayed (a restart before the relay recorded it): report it again
+                if (payment.IsTrampolineRelay)
+                    ReportLegSucceeded(null, payment.PaymentHash, fulfilled.PaymentPreimage,
+                                       payment.Amount + payment.Fee);
                 return false;
+            }
 
             var now = _timeProvider.GetUtcNow();
             AttributionVerification? verification;
@@ -615,6 +671,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             await StagePaymentSucceededAsync(scope, payment, parts);
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
             LogSucceeded(payment);
+            if (payment.IsTrampolineRelay)
+                ReportLegSucceeded(null, payment.PaymentHash, fulfilled.PaymentPreimage, payment.Amount + payment.Fee);
         }
 
         return true;
@@ -656,6 +714,15 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                 return true;
             }
 
+            if (payment is { IsTrampolineRelay: true, Status: PaymentStatus.Failed } && match == OutcomeMatch.Unmatched
+             && await FindStoredPartAsync(scope, payment.PaymentHash, failed.ChannelId, failed.HtlcId) is { } replayed)
+            {
+                // A relay leg's failure replayed (a restart before the relay recorded the end): report it again
+                ReportLegFailed(null, payment.PaymentHash,
+                                DescribeStoredLegFailure(replayed.Hops, failed.Removal, payment.FailureReason));
+                return false;
+            }
+
             if (payment is null || match != OutcomeMatch.Match)
             {
                 if (payment is { Status: PaymentStatus.InFlight } && match == OutcomeMatch.Unmatched)
@@ -672,9 +739,15 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             int? sourceIndex = null;
             string reason;
             var attribution = AttributionVerification.Absent;
+            var trampolineHops = payment.IsTrampolineRelay
+                                     ? []
+                                     : await GetTrampolineHopsAsync(scope, payment.PaymentHash);
+            IReadOnlyList<PaymentHop>? failedRoute = null;
             if (payment.OutgoingChannelId == failed.ChannelId && payment.OutgoingHtlcId == failed.HtlcId)
             {
-                (code, sourceIndex, reason, _, attribution) = DescribeFailure(payment.Route, failed.Removal);
+                failedRoute = payment.Route;
+                (code, sourceIndex, reason, _, attribution) = DescribeStoredFailure(payment, payment.Route,
+                                                                                    failed.Removal, trampolineHops);
                 reason += "; not retried.";
                 payment.RecordHoldTimes(ToDurations(attribution));
             }
@@ -689,8 +762,10 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                                                      failed.HtlcId);
                     if (storedPart is not null)
                     {
-                        (code, sourceIndex, reason, _, attribution) = DescribeFailure(storedPart.Hops,
-                                                                                      failed.Removal);
+                        failedRoute = storedPart.Hops;
+                        (code, sourceIndex, reason, _, attribution) = DescribeStoredFailure(payment, storedPart.Hops,
+                                                                                            failed.Removal,
+                                                                                            trampolineHops);
                         reason += "; not retried.";
                         storedPart.State = PaymentPartState.Failed;
                         storedPart.RecordHoldTimes(ToDurations(attribution));
@@ -717,6 +792,9 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             StagePaymentFailed(scope, payment);
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
             LogFailed(payment);
+            if (payment.IsTrampolineRelay)
+                ReportLegFailed(null, payment.PaymentHash,
+                                DescribeStoredLegFailure(failedRoute ?? [], failed.Removal, reason));
         }
 
         return true;
@@ -745,6 +823,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                 if (payment.Status != PaymentStatus.InFlight)
                 {
                     reconciled++;
+                    ReportReconciledLeg(payment);
                     continue;
                 }
 
@@ -755,6 +834,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                               payment, "The HTLC was never offered (no HTLC found for the payment at startup).");
                 if (payment.Status != PaymentStatus.InFlight || payment.OutgoingHtlcId is not null)
                     reconciled++;
+                ReportReconciledLeg(payment);
             }
         }
 
@@ -780,7 +860,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             return payment;
 
         var byOrigin = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().ChannelStateDbRepository
-                                  .FindHtlcsByOriginAsync(HtlcOrigin.Local(payment.PaymentHash))
+                                  .FindHtlcsByOriginAsync(OriginOf(payment))
                       ?? [];
         var ambiguous = byOrigin.Any(o => !_channelMemoryRepository.TryGetChannel(o.ChannelId, out _));
         var livePart = false;
@@ -909,6 +989,11 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
     {
         while (!session.IsCompleted)
         {
+            // A payment through a trampoline node starts its next attempt (new onion, secret and total) first
+            if (session.Trampoline is { } trampoline
+             && !await PrepareTrampolineAttemptAsync(session, trampoline, _blockchainMonitor.LastProcessedBlockHeight))
+                return;
+
             var remaining = session.RemainingMsat;
             if (remaining == 0)
                 return;
@@ -926,9 +1011,9 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             if (partsAllowed <= 0)
                 return;
 
-            var feeLeft = session.MaxFee.MilliSatoshi > session.FeesInFlightMsat
-                              ? session.MaxFee.MilliSatoshi - session.FeesInFlightMsat
-                              : 0;
+            // A payment through a trampoline node pays its fee too: the routes get what is left of the limit
+            var feesCommitted = session.FeesInFlightMsat + session.TrampolineFeeMsat;
+            var feeLeft = session.MaxFee.MilliSatoshi > feesCommitted ? session.MaxFee.MilliSatoshi - feesCommitted : 0;
             var height = _blockchainMonitor.LastProcessedBlockHeight;
             var channels = await GetUsableChannelsAsync(CancellationToken.None);
             var incomingChannels = session.IsCircular
@@ -954,14 +1039,15 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             }
             else
             {
-                var request = new PaymentPlanRequest(session.Target, remaining, session.Amount.MilliSatoshi, feeLeft,
+                var request = new PaymentPlanRequest(session.Target, remaining, session.SendAmountMsat, feeLeft,
                                                      partsAllowed, height, _secureKeyManager.GetNodePubKey(),
                                                      outgoingChannels.Select(ToCandidate).ToList(),
                                                      CreateLiquidityProbe(channels, height), session.Constraints,
                                                      _sendOptions.Value.MinPartMsat,
                                                      PaymentRoutePlanner.SumHintForwards(
                                                          session.InFlightParts.Select(p => p.Route)), graph,
-                                                     incomingChannels);
+                                                     incomingChannels, session.AbsoluteFinalCltv,
+                                                     session.MaxFirstHopCltvExpiry);
                 _planner.TryPlan(request, out planned, out noRouteReason);
             }
 
@@ -994,14 +1080,39 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                 return;
             }
 
+            var finalHop = await GetTrampolineFinalHopAsync(session, planned);
+            if (session.Trampoline is not null && finalHop is null)
+            {
+                // The attempt's trampoline onion could not be built (the reason is terminal)
+                if (!session.HasPartsInFlight)
+                    await FinishFailedAsync(session, session.TerminalReason ?? "no trampoline onion");
+                return;
+            }
+
+            if (finalHop is not null && await FindOversizedTrampolineRouteAsync(planned, finalHop) is { } tooLongOuter)
+            {
+                if (session.HasPartsInFlight)
+                {
+                    session.TerminalReason ??= tooLongOuter;
+                    return;
+                }
+
+                await FinishFailedAsync(session, tooLongOuter);
+                return;
+            }
+
             var round = new List<(PaymentPart Part, OnionPacket Packet)>(planned.Count);
             foreach (var plannedPart in planned)
             {
-                var onion = await _onionFactory.CreateAsync(plannedPart.Route, session.Keysend);
+                var onion = await _onionFactory.CreateAsync(plannedPart.Route, session.Keysend, finalHop);
                 round.Add((new PaymentPart(plannedPart.Channel, plannedPart.Route,
                                            BuildHops(plannedPart.Route, onion.SharedSecrets,
-                                                     plannedPart.Channel.ShortChannelId,
-                                                     session.Target.PayeeNodeId), plannedPart.Description),
+                                                     plannedPart.Channel.ShortChannelId, session.PayeeNodeId,
+                                                     session.Trampoline is not null), plannedPart.Description)
+                {
+                    TrampolineAttempt = session.Trampoline?.Attempt,
+                    TrampolineSecrets = session.Trampoline?.Onion?.SharedSecrets
+                },
                            onion.Packet));
             }
 
@@ -1221,7 +1332,12 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                                    path.PayInfo.CltvExpiryDelta, []);
             var request = new PaymentPlanRequest(toIntroduction, introAmount, introAmount, feeBudgetMsat - pathFee, 1,
                                                  height, ourNodeId, channels.Select(ToCandidate).ToList(), probe,
-                                                 session.Constraints, _sendOptions.Value.MinPartMsat, null, graph);
+                                                 session.Constraints, _sendOptions.Value.MinPartMsat, null, graph,
+                                                 null,
+                                                 session.AbsoluteFinalCltv is { } absolute
+                                                     ? checked(absolute + path.PayInfo.CltvExpiryDelta)
+                                                     : null,
+                                                 session.MaxFirstHopCltvExpiry);
             if (!_planner.TryPlan(request, out var toIntro, out var noRoute))
             {
                 why = $"no route to its introduction node {path.Path.FirstNodeId} ({noRoute})";
@@ -1236,11 +1352,19 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         }
 
         // B12-PAY-02: we are the introduction node; the HTLC goes to the next hop with the next path_key
-        var introCltv = checked(height + path.PayInfo.CltvExpiryDelta + HintRouteBuilder.FinalCltvSafetyOffset
-                              + session.Constraints.ExtraCltvDelta);
+        var introCltv = session.AbsoluteFinalCltv is { } absoluteFinal
+                            ? checked(absoluteFinal + session.Constraints.ExtraCltvDelta + path.PayInfo.CltvExpiryDelta)
+                            : checked(height + path.PayInfo.CltvExpiryDelta + HintRouteBuilder.FinalCltvSafetyOffset
+                                    + session.Constraints.ExtraCltvDelta);
         var finalCltv = introCltv - path.PayInfo.CltvExpiryDelta;
         if (!self.TryComputeFirstHop(introAmount, introCltv, amountMsat, finalCltv, out var firstAmount, out var firstCltv, out why))
             return false;
+
+        if (session.MaxFirstHopCltvExpiry is { } cap && firstCltv > cap)
+        {
+            why = $"we introduce it, and its first hop's expiry {firstCltv} is above the cap {cap}";
+            return false;
+        }
 
         var toNext = new PaymentTarget(self.NextNodeId, session.PaymentHash, session.Target.PaymentSecret,
                                        LightningMoney.MilliSatoshis(firstAmount), 0, []);
@@ -1322,12 +1446,14 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             return;
 
         var first = round[0];
-        var fee = LightningMoney.MilliSatoshis(round.Aggregate(0UL, (sum, p) => sum + p.Route.Fee.MilliSatoshi));
-        var row = new PaymentModel(session.PaymentHash, session.Bolt11, session.Target.PayeeNodeId, session.Amount,
+        var fee = LightningMoney.MilliSatoshis(round.Aggregate(session.TrampolineFeeMsat,
+                                                               (sum, p) => sum + p.Route.Fee.MilliSatoshi));
+        var row = new PaymentModel(session.PaymentHash, session.Bolt11, session.PayeeNodeId, session.Amount,
                                    fee, session.CreatedAt, first.Hops, session.Bolt12, session.KeysendDetails)
         {
             Label = session.Labels.Label,
-            Tags = session.Labels.CanonicalTags
+            Tags = session.Labels.CanonicalTags,
+            IsTrampolineRelay = session.IsTrampolineRelay
         };
 
         using var scope = _serviceScopeFactory.CreateScope();
@@ -1364,8 +1490,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                                              route.FirstHopPathKey is { } pathKey
                                                                  ? new BlindedPathTlv(pathKey)
                                                                  : null,
-                                                             HtlcOrigin.Local(session.PaymentHash),
-                                                             CancellationToken.None);
+                                                             session.Origin, CancellationToken.None);
         }
         catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
         {
@@ -1410,7 +1535,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             _logger.LogInformation(
                 "Paying {PaymentHash}: {Amount} of {Total} msat to {Payee} over {Hops} hop(s) ({Path}), fee {Fee} msat, "
               + "HTLC {HtlcId} on channel {ChannelId}", session.PaymentHash, route.Amount.MilliSatoshi,
-                session.Amount.MilliSatoshi, session.Target.PayeeNodeId, route.Hops.Count, part.Description,
+                session.SendAmountMsat, session.Target.PayeeNodeId, route.Hops.Count, part.Description,
                 route.Fee.MilliSatoshi, htlcId, channelId);
         return OfferOutcome.Offered;
     }
@@ -1610,12 +1735,13 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             var recordFailure = true;
             if (!session.RowCreated)
             {
-                payment = new PaymentModel(session.PaymentHash, session.Bolt11, session.Target.PayeeNodeId,
+                payment = new PaymentModel(session.PaymentHash, session.Bolt11, session.PayeeNodeId,
                                            session.Amount, LightningMoney.Zero, session.CreatedAt,
                                            bolt12: session.Bolt12, keysend: session.KeysendDetails)
                 {
                     Label = session.Labels.Label,
-                    Tags = session.Labels.CanonicalTags
+                    Tags = session.Labels.CanonicalTags,
+                    IsTrampolineRelay = session.IsTrampolineRelay
                 };
                 payment.Fail(code, sourceIndex, reason, now);
                 await repository.AddAsync(payment);
@@ -1627,6 +1753,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                           ?? throw new InvalidOperationException($"Payment {session.PaymentHash} is not stored.");
                 if (stored.Status == PaymentStatus.Succeeded)
                 {
+                    if (session.IsTrampolineRelay && stored.Preimage is { } preimage)
+                        ReportLegSucceeded(session, stored.PaymentHash, preimage, stored.Amount + stored.Fee);
                     CompleteSession(session);
                     return;
                 }
@@ -1666,6 +1794,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             LogFailed(payment);
         }
 
+        if (session.IsTrampolineRelay)
+            ReportLegFailed(session, session.PaymentHash, BuildLegFailure(session, reason));
         CompleteSession(session);
     }
 
@@ -1710,7 +1840,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                 return;
 
             var row = PaymentModel.Restore(stored.PaymentHash, stored.Bolt11, stored.PayeeNodeId, stored.Amount,
-                                           LightningMoney.MilliSatoshis(session.FeesInFlightMsat), stored.CreatedAt,
+                                           LightningMoney.MilliSatoshis(session.RecordedFeesInFlightMsat),
+                                           stored.CreatedAt,
                                            PaymentStatus.InFlight, next.Channel.ChannelId, next.HtlcId!.Value, null,
                                            null, null, null, null, next.Hops, stored.Bolt12, stored.Keysend,
                                            stored.IsTrampolineRelay);
@@ -1761,7 +1892,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             var origin = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().ChannelStateDbRepository
                                     .GetHtlcOriginAsync(fulfilled.ChannelId,
                                                         new HtlcKey(HtlcDirection.Outgoing, fulfilled.HtlcId));
-            if (origin is { } stored && stored != HtlcOrigin.Local(fulfilled.PaymentHash))
+            if (origin is { } stored && stored != session.Origin)
                 return false;
         }
 
@@ -1777,7 +1908,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         AttributionVerification? verification;
         // The parts in flight are the ones the payee settles: the row's fee is theirs, and its route the fulfilled
         // part's (the parts of earlier rounds that failed are not paid for)
-        var settledFee = LightningMoney.MilliSatoshis(session.FeesInFlightMsat);
+        var settledFee = LightningMoney.MilliSatoshis(session.RecordedFeesInFlightMsat);
         if (part is { Status: PaymentPartStatus.InFlight }
          && (settledFee != payment.Fee || !ReferenceEquals(part, session.PrimaryPart)
                                        || payment.OutgoingHtlcId != part.HtlcId))
@@ -1820,6 +1951,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         if (part is not null)
             _graphPathSource?.MissionControl.RecordSuccess(part.Route);
         LogSucceeded(payment);
+        if (session.IsTrampolineRelay)
+            ReportLegSucceeded(session, payment.PaymentHash, fulfilled.PaymentPreimage, payment.Amount + payment.Fee);
         CompleteSession(session);
         return true;
     }
@@ -1837,8 +1970,24 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
 
         part.Status = PaymentPartStatus.Failed;
         var (code, sourceIndex, reason, interpretation, attribution) = DescribeFailure(part.Hops, failed.Removal);
-        var (retry, note) = _retryPolicy.Decide(part, failed.Removal.Kind, interpretation, session.Constraints,
+        bool retry;
+        string note;
+        if (DecideTrampolineFailure(session, part, failed.Removal) is { } trampoline)
+        {
+            (code, sourceIndex, reason, interpretation) = (trampoline.Code, trampoline.SourceIndex, trampoline.Reason,
+                                                           trampoline.Interpretation);
+            attribution = AttributionVerification.Absent;
+            (retry, note) = trampoline.Retry is { } decided
+                                ? (decided, trampoline.Note!)
+                                : _retryPolicy.Decide(part, failed.Removal.Kind, interpretation, session.Constraints);
+        }
+        else
+        {
+            (retry, note) = _retryPolicy.Decide(part, failed.Removal.Kind, interpretation, session.Constraints,
                                                 attribution.InvalidHopIndex);
+        }
+
+        session.LastFailureMessage = interpretation?.Message;
         session.LastFailure = (code, sourceIndex, $"{reason} ({note}).");
         session.LastFailureHoldTimes = attribution.IsPresent
                                            ? (failed.ChannelId, failed.HtlcId, ToDurations(attribution))
@@ -2055,7 +2204,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         var request = new PayBlindedRequest(PaymentTarget.ToWireBytes(paymentHash), paymentAmount,
                                             invoice.BlindedPaymentPaths, bolt11.Trim())
         {
-            AllowMpp = invoice.Features?.IsFeatureSet(Feature.BasicMpp) ?? false
+            AllowMpp = invoice.Features?.IsFeatureSet(Feature.BasicMpp) ?? false,
+            RecipientFeatures = invoice.Features
         };
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Paying invoice {PaymentHash} over its {Count} blinded path(s) (bLIP 39)",
@@ -2133,7 +2283,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var unknownChannels = false;
         var byOrigin = await unitOfWork.ChannelStateDbRepository
-                                       .FindHtlcsByOriginAsync(HtlcOrigin.Local(payment.PaymentHash))
+                                       .FindHtlcsByOriginAsync(OriginOf(payment))
                     ?? [];
         foreach (var (channelId, key) in byOrigin)
         {
@@ -2209,6 +2359,12 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
 
         return found;
     }
+
+    /// <summary>The origin every HTLC of <paramref name="payment"/> carries (a relay leg's are origin 3, NL-875).</summary>
+    private static HtlcOrigin OriginOf(PaymentModel payment) =>
+        payment.IsTrampolineRelay
+            ? HtlcOrigin.Trampoline(payment.PaymentHash)
+            : HtlcOrigin.Local(payment.PaymentHash);
 
     private static bool MatchesFirstHop(PaymentHop firstHop, ChannelModel channel, HtlcRecord htlc) =>
         channel.RemoteNodeId == firstHop.NodeId && htlc.AmountMsat == firstHop.Amount.MilliSatoshi
@@ -2294,16 +2450,21 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
     /// <remarks>
     /// The last hop of a route that ends in a blinded path is stored under <paramref name="payee"/> (the recipient's
     /// real id when the caller knew it, e.g. a BOLT 12 <c>invoice_node_id</c>), not under its blinded id, so the row
-    /// names its payee; the shared secret is the one of the blinded hop.
+    /// names its payee; the shared secret is the one of the blinded hop. So is the last hop of a route to a trampoline
+    /// node (<paramref name="toTrampoline"/>, NL-875): the row names the payee behind it, the shared secret is the
+    /// trampoline node's outer one, and the trampoline node is hop 0 of the payment's <c>PaymentTrampolineHops</c>.
     /// </remarks>
     private static List<PaymentHop> BuildHops(PaymentRoute route, IReadOnlyList<Secret> sharedSecrets,
-                                              ShortChannelId firstChannel, CompactPubKey payee)
+                                              ShortChannelId firstChannel, CompactPubKey payee,
+                                              bool toTrampoline = false)
     {
         var hops = new List<PaymentHop>(route.Hops.Count);
         for (var i = 0; i < route.Hops.Count; i++)
         {
             var previous = i == 0 ? null : route.Hops[i - 1];
-            var nodeId = i == route.Hops.Count - 1 && route.BlindedStartIndex is not null ? payee : route.Hops[i].NodeId;
+            var nodeId = i == route.Hops.Count - 1 && (route.BlindedStartIndex is not null || toTrampoline)
+                             ? payee
+                             : route.Hops[i].NodeId;
             hops.Add(new PaymentHop(nodeId, previous?.OutgoingShortChannelId ?? firstChannel,
                                     previous?.AmountToForward ?? route.FirstHopAmount,
                                     previous?.OutgoingCltvValue ?? route.FirstHopCltvExpiry, sharedSecrets[i]));
@@ -2326,7 +2487,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
 
         var origin = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().ChannelStateDbRepository
                                 .GetHtlcOriginAsync(channelId, new HtlcKey(HtlcDirection.Outgoing, htlcId));
-        if (origin is { } stored && stored != HtlcOrigin.Local(paymentHash))
+        if (origin is { } stored && stored != OriginOf(payment))
             return (payment, OutcomeMatch.NotOurs);
 
         if (payment.Status != PaymentStatus.InFlight)

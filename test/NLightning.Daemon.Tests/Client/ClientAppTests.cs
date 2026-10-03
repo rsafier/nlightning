@@ -332,6 +332,34 @@ public class ClientAppTests
     }
 
     [Fact]
+    public void GivenATrampolineNode_WhenPayInvoiceParsed_ThenItIsRead()
+    {
+        // Act - NL-875: --trampoline <node_id>
+        var nodeId = "02" + new string('1', 64);
+        var parsed = ClientApp.ParsePayInvoiceOptions(["lnbcrt1", "--trampoline", nodeId], out var error);
+        var inline = ClientApp.ParsePayInvoiceOptions(["lnbcrt1", $"--trampoline={nodeId}"], out _);
+
+        // Assert
+        Assert.Null(error);
+        Assert.Equal(nodeId, Convert.ToHexStringLower(parsed!.TrampolineNode!.Value));
+        Assert.Equal(parsed.TrampolineNode, inline!.TrampolineNode);
+        Assert.Null(ClientApp.ParsePayInvoiceOptions(["lnbcrt1"], out _)!.TrampolineNode);
+    }
+
+    [Theory]
+    [InlineData("nope")]
+    [InlineData("021111")]
+    public void GivenAMalformedTrampolineNode_WhenPayInvoiceParsed_ThenAnError(string value)
+    {
+        // Act
+        var parsed = ClientApp.ParsePayInvoiceOptions(["lnbcrt1", "--trampoline", value], out var error);
+
+        // Assert
+        Assert.Null(parsed);
+        Assert.Contains("Invalid trampoline node", error);
+    }
+
+    [Fact]
     public void GivenTheSameChannelOutAndIn_WhenParsed_ThenAnError()
     {
         // Act

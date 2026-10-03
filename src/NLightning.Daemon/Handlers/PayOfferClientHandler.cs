@@ -63,6 +63,7 @@ public sealed class PayOfferClientHandler : IClientCommandHandler<PayOfferClient
                 Timeout = TimeSpan.FromSeconds(timeoutSeconds),
                 MaxFee = request.MaxFee,
                 MaxParts = request.MaxParts is { } maxParts ? (int)maxParts : null,
+                TrampolineNode = request.TrampolineNode,
                 Labels = labels
             }
         };

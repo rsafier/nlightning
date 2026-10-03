@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Offers.Send;
 
 using Domain.Crypto.ValueObjects;
+using Domain.Node;
 using Domain.Node.Options;
 using Domain.Offers;
 using Domain.Offers.Constants;
@@ -90,6 +91,9 @@ public sealed class OfferPaymentService : IOfferPaymentService
         {
             PayeeNodeId = invoice.NodeId,
             AllowMpp = verified.AllowsMpp,
+            RecipientFeatures = verified.Features.IsEmpty
+                                    ? null
+                                    : FeatureSet.DeserializeFromBytes(verified.Features.ToArray()),
             Bolt12 = new Bolt12PaymentDetails(request.Offer.Trim(), invoice.InvoiceBytes, invoiceRequest.Metadata,
                                               request.PayerNote)
         };

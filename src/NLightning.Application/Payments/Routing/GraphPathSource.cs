@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Payments.Routing;
 
 using Domain.Crypto.ValueObjects;
+using Domain.Gossip.Graph;
 using Domain.Node.Options;
 using Domain.Routing.Pathfinding;
 using Gossip.Graph;
@@ -48,6 +49,9 @@ public sealed class GraphPathSource
     public bool IsAvailable =>
         _graphStore is not null && _sendOptions.Value.UseGraph
                                 && (_graphOptions?.Value.IsEnabledFor(_nodeOptions.Value.BitcoinNetwork) ?? true);
+
+    /// <summary>The current graph snapshot, or null when the graph is not available.</summary>
+    public IGraphView? GetGraph() => IsAvailable ? _graphStore!.GetSnapshot() : null;
 
     /// <summary>
     /// The context of one round, or null when the graph is not available.
