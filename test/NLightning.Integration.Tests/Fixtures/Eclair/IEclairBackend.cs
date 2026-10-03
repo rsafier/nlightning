@@ -47,4 +47,15 @@ public interface IEclairBackend : IAsyncDisposable
 
     /// <summary>Writes the last <paramref name="tail"/> lines of Eclair's log to <see cref="Console"/>.</summary>
     Task DumpEclairLogAsync(int tail);
+
+    /// <summary>
+    /// Starts the liquidity seller (NL-850): a second Eclair <see cref="EclairFixture.SellerContainerName"/> on the same
+    /// bitcoind, with a wallet <c>eclair-seller</c> of its own (unfunded) and <see cref="EclairFixture.SellerConfigLines"/>
+    /// of <paramref name="rate"/> after the common configuration, at the tip when this returns. Called once per fixture
+    /// (<see cref="EclairFixture.GetSellerAsync"/>); the backend removes it on disposal.
+    /// </summary>
+    Task<EclairEndpoint> StartSellerAsync(EclairSellerRate rate, CancellationToken cancellationToken);
+
+    /// <summary>Writes the last <paramref name="tail"/> lines of the seller's log to <see cref="Console"/>, if it runs.</summary>
+    Task DumpSellerLogAsync(int tail);
 }

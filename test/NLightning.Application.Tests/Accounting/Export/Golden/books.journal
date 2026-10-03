@@ -8,10 +8,12 @@ account income:lightning:received
 account income:lightning:routing
 account income:lightning:push
 account income:onchain:gain
+account income:liquidity
 account expenses:lightning:sent
 account expenses:lightning:routing-fees
 account expenses:lightning:rebalance
 account expenses:lightning:push
+account expenses:fees:liquidity
 account expenses:onchain:fees:funding
 account expenses:onchain:fees:splice
 account expenses:onchain:fees:close

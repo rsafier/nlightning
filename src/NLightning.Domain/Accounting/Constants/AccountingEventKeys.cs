@@ -39,6 +39,15 @@ public static class AccountingEventKeys
 
     public static string SpliceLocked(ChannelId channelId, TxId spliceTxId) => $"chan:{channelId}:splice:{spliceTxId}";
 
+    /// <summary>The liquidity fee of a purchase made in the funding or splice <paramref name="fundingTxId"/> of
+    /// <paramref name="channelId"/> (liquidity ads, NL-850), paid or earned.</summary>
+    public static string LiquidityFee(ChannelId channelId, TxId fundingTxId) =>
+        $"chan:{channelId}:liquidity:{fundingTxId}";
+
+    /// <summary>The reversal of <paramref name="originalKey"/>, a liquidity fee whose attempt an RBF replaced before it
+    /// confirmed (no block to key it by, unlike <see cref="Reversal"/>).</summary>
+    public static string Replaced(string originalKey) => $"{originalKey}:replaced";
+
     public static string ChannelClosedMutual(ChannelId channelId, TxId closingTxId) =>
         $"chan:{channelId}:closed:{closingTxId}";
 

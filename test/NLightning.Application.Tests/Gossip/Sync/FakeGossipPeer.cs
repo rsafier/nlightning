@@ -7,6 +7,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Gossip.Addresses;
+using Domain.LiquidityAds.Models;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
@@ -50,6 +51,7 @@ internal sealed class FakeGossipPeer : IPeerService
 
     public DateTimeOffset? LastMessageReceivedAt => null;
     public AddressDescriptor? ObservedAddress => null;
+    public WillFundRates? LiquidityRates => null;
     public List<WarningException> Warnings { get; } = [];
 
     /// <summary>Everything sent so far (gossip and warnings, as <see cref="WarningMessage"/> stand-ins).</summary>

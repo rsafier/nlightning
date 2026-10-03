@@ -575,7 +575,7 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("numeric(28,8)")
                         .HasColumnName("price");
 
-                    b.Property<byte>("Source")
+                    b.Property<byte>("PriceSource")
                         .HasColumnType("smallint")
                         .HasColumnName("source");
 
@@ -2091,6 +2091,132 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasName("pk_graph_nodes");
 
                     b.ToTable("graph_nodes", (string)null);
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.LiquidityAds.LiquidityPurchaseEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<byte[]>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("channel_id");
+
+                    b.Property<long?>("ClosedAtHeight")
+                        .HasColumnType("bigint")
+                        .HasColumnName("closed_at_height");
+
+                    b.Property<bool>("ClosedEarly")
+                        .HasColumnType("boolean")
+                        .HasColumnName("closed_early");
+
+                    b.Property<long>("ContributedSat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("contributed_sat");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("created_at");
+
+                    b.Property<byte[]>("FundingScript")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("funding_script");
+
+                    b.Property<byte[]>("FundingTxId")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("funding_tx_id");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("smallint")
+                        .HasColumnName("kind");
+
+                    b.Property<long>("LeaseBlocks")
+                        .HasColumnType("bigint")
+                        .HasColumnName("lease_blocks");
+
+                    b.Property<long?>("LeaseStartHeight")
+                        .HasColumnType("bigint")
+                        .HasColumnName("lease_start_height");
+
+                    b.Property<long>("MiningFeeSat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("mining_fee_sat");
+
+                    b.Property<byte>("PaymentType")
+                        .HasColumnType("smallint")
+                        .HasColumnName("payment_type");
+
+                    b.Property<byte[]>("PeerNodeId")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("peer_node_id");
+
+                    b.Property<long>("RateChannelCreationFeeSat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("rate_channel_creation_fee_sat");
+
+                    b.Property<long>("RateFeeBaseSat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("rate_fee_base_sat");
+
+                    b.Property<int>("RateFeeBasis")
+                        .HasColumnType("integer")
+                        .HasColumnName("rate_fee_basis");
+
+                    b.Property<int>("RateFundingWeight")
+                        .HasColumnType("integer")
+                        .HasColumnName("rate_funding_weight");
+
+                    b.Property<long>("RateMaxAmountSat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("rate_max_amount_sat");
+
+                    b.Property<long>("RateMinAmountSat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("rate_min_amount_sat");
+
+                    b.Property<long>("RequestedSat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("requested_sat");
+
+                    b.Property<byte>("Role")
+                        .HasColumnType("smallint")
+                        .HasColumnName("role");
+
+                    b.Property<long>("ServiceFeeSat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("service_fee_sat");
+
+                    b.Property<byte[]>("Signature")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("signature");
+
+                    b.Property<byte>("Status")
+                        .HasColumnType("smallint")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id")
+                        .HasName("pk_liquidity_purchases");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_liquidity_purchases_created_at");
+
+                    b.HasIndex("Status")
+                        .HasDatabaseName("ix_liquidity_purchases_status");
+
+                    b.HasIndex("ChannelId", "FundingTxId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_liquidity_purchases_channel_id_funding_tx_id");
+
+                    b.ToTable("liquidity_purchases", (string)null);
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", b =>

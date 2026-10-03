@@ -110,6 +110,10 @@ public sealed class AccountingReportPrinter : IPrinter<AccountingReportIpcRespon
                                                 Amount(channel.RebalancedOutMsat), Amount(channel.RebalanceCostMsat)));
             if (channel.PushMsat != 0)
                 _output.WriteLine(string.Format(s_inv, "    Push:            {0}", Amount(channel.PushMsat)));
+            if (channel.LiquidityFeesEarnedMsat != 0 || channel.LiquidityFeesPaidMsat != 0)
+                _output.WriteLine(string.Format(s_inv, "    Liquidity fees:  earned {0}, paid {1}",
+                                                Amount(channel.LiquidityFeesEarnedMsat),
+                                                Amount(channel.LiquidityFeesPaidMsat)));
             _output.WriteLine(string.Format(s_inv, "    On-chain fees:   {0} (funding {1}, splice {2}, close {3}, "
                                                  + "commitment {4}, sweep {5}, cpfp {6})",
                                             Amount(channel.OnchainFeesMsat), channel.FundingFeeMsat,
@@ -145,6 +149,10 @@ public sealed class AccountingReportPrinter : IPrinter<AccountingReportIpcRespon
             _output.WriteLine(string.Format(s_inv, "    Costs:           rebalance {0}, on-chain fees {1}, loss {2}",
                                             Amount(peer.RebalanceCostMsat), Amount(peer.OnchainFeesMsat),
                                             Amount(peer.OnchainLossMsat)));
+            if (peer.LiquidityFeesEarnedMsat != 0 || peer.LiquidityFeesPaidMsat != 0)
+                _output.WriteLine(string.Format(s_inv, "    Liquidity fees:  earned {0}, paid {1}",
+                                                Amount(peer.LiquidityFeesEarnedMsat),
+                                                Amount(peer.LiquidityFeesPaidMsat)));
             _output.WriteLine(string.Format(s_inv, "    Net:             {0}", Amount(peer.NetMsat)));
         }
     }

@@ -175,7 +175,9 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
                                                                string? pushSats = null,
                                                                CancellationToken ct = default,
                                                                bool isPublic = false, bool isDualFunded = false,
-                                                               bool forceV1 = false, LabelArguments? labels = null)
+                                                               bool forceV1 = false, LabelArguments? labels = null,
+                                                               ulong? requestInboundSat = null,
+                                                               ulong? maxLiquidityFeeSat = null)
     {
         var req = new OpenChannelIpcRequest
         {
@@ -186,7 +188,9 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
             IsDualFunded = isDualFunded,
             ForceV1 = forceV1,
             Label = labels?.Label,
-            Tags = labels?.TagsOrNull
+            Tags = labels?.TagsOrNull,
+            RequestInboundSat = requestInboundSat,
+            MaxLiquidityFeeSat = maxLiquidityFeeSat
         };
         var payload = MessagePackSerializer.Serialize(req, cancellationToken: ct);
         var env = new IpcEnvelope
@@ -308,15 +312,18 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// <param name="noFeeRange">Negotiate without <c>fee_range</c>.</param>
     /// <param name="waitSeconds">How long the daemon waits for the closing transaction, or null for its default.</param>
     /// <param name="ct">Cancels the call (the close itself goes on in the daemon).</param>
+    /// <param name="force">Close even while a liquidity lease we sold on the channel is in force (NL-850).</param>
     public Task<CloseChannelIpcResponse> CloseChannelAsync(ChannelId channelId, uint? feeRatePerKw, bool noFeeRange,
-                                                           uint? waitSeconds, CancellationToken ct = default)
+                                                           uint? waitSeconds, CancellationToken ct = default,
+                                                           bool force = false)
     {
         var req = new CloseChannelIpcRequest
         {
             ChannelId = channelId,
             FeeRatePerKw = feeRatePerKw,
             NoFeeRange = noFeeRange,
-            WaitSeconds = waitSeconds
+            WaitSeconds = waitSeconds,
+            Force = force
         };
         return SendRequestAsync<CloseChannelIpcRequest, CloseChannelIpcResponse>(ClientCommand.CloseChannel, req,
                                                                                  ct);
@@ -376,10 +383,20 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// <param name="amountSat">The amount added to our channel balance, in sats.</param>
     /// <param name="feeRatePerKw">The splice transaction's feerate in sat/kw; null for the node's estimate.</param>
     /// <param name="ct">Cancels the call.</param>
+    /// <param name="requestInboundSat">Inbound liquidity to buy with the splice (NL-850), or null.</param>
+    /// <param name="maxLiquidityFeeSat">The most we pay for it, or null for the node's limit.</param>
     public Task<SpliceIpcResponse> SpliceInAsync(ChannelId channelId, ulong amountSat, uint? feeRatePerKw,
-                                                 CancellationToken ct = default)
+                                                 CancellationToken ct = default, ulong? requestInboundSat = null,
+                                                 ulong? maxLiquidityFeeSat = null)
     {
-        var req = new SpliceInIpcRequest { ChannelId = channelId, AmountSat = amountSat, FeeRatePerKw = feeRatePerKw };
+        var req = new SpliceInIpcRequest
+        {
+            ChannelId = channelId,
+            AmountSat = amountSat,
+            FeeRatePerKw = feeRatePerKw,
+            RequestInboundSat = requestInboundSat,
+            MaxLiquidityFeeSat = maxLiquidityFeeSat
+        };
         return SendRequestAsync<SpliceInIpcRequest, SpliceIpcResponse>(ClientCommand.SpliceIn, req, ct);
     }
 
@@ -435,15 +452,29 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// <param name="contributionSat">Our new contribution in sats; null keeps it.</param>
     /// <param name="ct">Cancels the call.</param>
     public Task<BumpOpenIpcResponse> BumpOpenAsync(ChannelId channelId, uint feeRatePerKw, ulong? contributionSat,
-                                                   CancellationToken ct = default)
+                                                   CancellationToken ct = default, ulong? requestInboundSat = null,
+                                                   ulong? maxLiquidityFeeSat = null)
     {
         var req = new BumpOpenIpcRequest
         {
             ChannelId = channelId,
             FeeRatePerKw = feeRatePerKw,
-            ContributionSat = contributionSat
+            ContributionSat = contributionSat,
+            RequestInboundSat = requestInboundSat,
+            MaxLiquidityFeeSat = maxLiquidityFeeSat
         };
         return SendRequestAsync<BumpOpenIpcRequest, BumpOpenIpcResponse>(ClientCommand.BumpOpen, req, ct);
+    }
+
+    /// <summary>
+    /// Liquidity ads (ClientCommand 46, NL-850): our rates, the sellers we know of or our purchases.
+    /// </summary>
+    public Task<LiquidityAdsIpcResponse> LiquidityAdsAsync(LiquidityAdsIpcRequest request,
+                                                           CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return SendRequestAsync<LiquidityAdsIpcRequest, LiquidityAdsIpcResponse>(ClientCommand.LiquidityAds, request,
+                                                                                 ct);
     }
 
     /// <summary>

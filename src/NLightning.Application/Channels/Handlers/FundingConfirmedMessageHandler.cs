@@ -13,6 +13,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Enums;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
+using DualFunding;
 
 public class FundingConfirmedMessageHandler
 {
@@ -215,13 +216,18 @@ public class FundingConfirmedMessageHandler
 
     /// <summary>
     /// Persists the channel's move out of V1FundingSigned/ReadyForThem: the one transition per channel at which its
-    /// funding confirmed for us, so the accounting feed's ChannelFunded (and push) ride in this save (NL-602).
+    /// funding confirmed for us, so the accounting feed's ChannelFunded (and push) ride in this save (NL-602), and so do
+    /// a dual-funded open's liquidity purchase (lease start, the fee event) with the same fee (NL-850).
     /// </summary>
     private async Task PersistChannelAsync(ChannelModel channel)
     {
         _channelMemoryRepository.UpdateChannel(channel);
         await _uow.ChannelDbRepository.UpdateAsync(channel);
-        await ChannelAccountingEvents.StageChannelFundedAsync(_uow, channel, _timeProvider.GetUtcNow(), _logger);
+        var occurredAt = _timeProvider.GetUtcNow();
+        var liquidityFeeMsat = await DualFundLiquidityAccounting.StageFundingConfirmedAsync(
+                                   _uow, channel, channel.FundingCreatedAtBlockHeight, channel.ShortChannelId,
+                                   occurredAt, _logger);
+        await ChannelAccountingEvents.StageChannelFundedAsync(_uow, channel, occurredAt, _logger, liquidityFeeMsat);
 
         await _uow.SaveChangesAsync();
     }

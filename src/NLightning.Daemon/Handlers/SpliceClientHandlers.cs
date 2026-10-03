@@ -37,6 +37,12 @@ public sealed class SpliceInClientHandler : IClientCommandHandler<SpliceInClient
     public Task<SpliceClientResponse> HandleAsync(SpliceInClientRequest request, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (request.RequestInboundSat is 0 or > SpliceCommand.MaxAmountSat)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      $"The inbound liquidity to buy must be 1 to {SpliceCommand.MaxAmountSat} sat.");
+        if (request.MaxLiquidityFeeSat is not null && request.RequestInboundSat is null)
+            throw new ClientException(ErrorCodes.InvalidOperation, "--max-liquidity-fee needs --request-inbound.");
+
         return _command.RunAsync(request.ChannelId, request.AmountSat, request.FeeRatePerKw, null,
                                  request.ToSpliceRequest, ct);
     }
@@ -287,7 +293,8 @@ internal sealed class SpliceCommand
             SpliceTxId = result.SpliceTxId,
             NewCapacitySat = result.NewCapacitySatoshis,
             FailureReason = failureReason,
-            Note = note
+            Note = note,
+            Purchase = result.Purchase
         };
     }
 

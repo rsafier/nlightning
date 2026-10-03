@@ -110,6 +110,8 @@ public static class DependencyInjection
         services.AddSingleton<IChannelManager>(sp => sp.GetRequiredService<ChannelManager>());
         services.AddSingleton<IChannelMessagePublisher>(sp => sp.GetRequiredService<ChannelManager>());
         services.AddSingleton<IMessageFactory, MessageFactory>();
+        // Liquidity ads (NL-850): the seller and buyer rules shared by the dual-funded open and the splice
+        services.TryAddSingleton<LiquidityAds.LiquidityAdsService>();
         services.AddCommitmentEngineServices();
         services.AddChannelStateTransitionServices();
         services.AddReestablishServices();

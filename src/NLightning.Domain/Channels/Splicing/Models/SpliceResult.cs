@@ -2,6 +2,7 @@ namespace NLightning.Domain.Channels.Splicing.Models;
 
 using Bitcoin.ValueObjects;
 using Enums;
+using LiquidityAds.Models;
 using ValueObjects;
 
 /// <summary>
@@ -19,4 +20,10 @@ public sealed record SpliceResult(
     SpliceNegotiationState State,
     TxId? SpliceTxId = null,
     ulong? NewCapacitySatoshis = null,
-    string? FailureReason = null);
+    string? FailureReason = null)
+{
+    /// <summary>
+    /// The liquidity purchase made with this attempt (as buyer or seller; liquidity ads, NL-850), or null.
+    /// </summary>
+    public LiquidityPurchaseModel? Purchase { get; init; }
+}

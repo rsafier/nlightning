@@ -37,10 +37,12 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
     private const string CacheKey = "eclair-channel-session";
 
     private readonly EclairFixture _fixture;
+    private readonly EclairEndpoint? _eclair;
 
-    private EclairChannelSession(EclairFixture fixture, NLightningTestNode node)
+    private EclairChannelSession(EclairFixture fixture, NLightningTestNode node, EclairEndpoint? eclair = null)
     {
         _fixture = fixture;
+        _eclair = eclair;
         Node = node;
         Sent = new ChannelMessageRecorder(node.Name);
     }
@@ -53,11 +55,15 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
 
     public string ChannelIdHex => ChannelId.ToString();
 
-    public EclairClient Eclair => _fixture.Eclair;
+    /// <summary>The Eclair of the session: the fixture's, or the one given at creation (e.g. its liquidity seller).</summary>
+    public EclairClient Eclair => _eclair?.Client ?? _fixture.Eclair;
 
-    public CompactPubKey EclairPubKey => Convert.FromHexString(_fixture.EclairNodeId);
+    public CompactPubKey EclairPubKey => Convert.FromHexString(EclairPubKeyHex);
 
-    public string EclairPubKeyHex => _fixture.EclairNodeId;
+    public string EclairPubKeyHex => _eclair?.NodeId ?? _fixture.EclairNodeId;
+
+    /// <summary>The session's Eclair as <c>pubkey@127.0.0.1:port</c>.</summary>
+    public string EclairAddress => _eclair?.Address ?? _fixture.EclairAddress;
 
     /// <summary>The shared channel we fund, built once per fixture on its own token.</summary>
     public static Task<EclairChannelSession> GetAsync(EclairFixture fixture, CancellationToken cancellationToken) =>
@@ -274,12 +280,13 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
     /// </summary>
     public static async Task<EclairChannelSession> CreateConnectedAsync(
         EclairFixture fixture, string nodeName, LightningMoney walletSat, CancellationToken cancellationToken,
-        Action<NodeOptions>? configureNodeOptions = null, Action<NLightningTestNode>? configureNode = null)
+        Action<NodeOptions>? configureNodeOptions = null, Action<NLightningTestNode>? configureNode = null,
+        EclairEndpoint? eclair = null)
     {
         var node = await NLightningTestNode.CreateAsync(fixture.Bitcoin, nodeName,
                                                         configureNodeOptions: configureNodeOptions);
         configureNode?.Invoke(node);
-        var session = new EclairChannelSession(fixture, node);
+        var session = new EclairChannelSession(fixture, node, eclair);
         try
         {
             await session.StartNodeAsync(cancellationToken);
@@ -376,7 +383,7 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
 
     private async Task ConnectAsync(CancellationToken cancellationToken)
     {
-        await Node.PeerManager.ConnectToPeerAsync(new PeerAddressInfo(_fixture.EclairAddress))
+        await Node.PeerManager.ConnectToPeerAsync(new PeerAddressInfo(EclairAddress))
                   .WaitAsync(cancellationToken);
         await Poll.UntilAsync(async () => Node.IsConnectedTo(EclairPubKey)
                                        && await Eclair.IsConnectedAsync(Node.NodeIdHex, cancellationToken),

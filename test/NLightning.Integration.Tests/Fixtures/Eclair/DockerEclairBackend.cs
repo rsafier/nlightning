@@ -17,14 +17,20 @@ public sealed class DockerEclairBackend : IEclairBackend
     private const int P2PPort = 9735;
     private const int ApiPort = 8080;
 
+    /// <summary>The seller's bitcoind wallet (NL-850).</summary>
+    private const string SellerWallet = "eclair-seller";
+
     private static readonly TimeSpan s_readyTimeout = TimeSpan.FromMinutes(2);
 
     private readonly DockerClient _client = new DockerClientConfiguration().CreateClient();
     private readonly InteropChainHost _chain;
 
     private EclairClient? _eclair;
+    private EclairClient? _seller;
     private int _p2pHostPort;
     private int _apiHostPort;
+    private int _sellerP2PHostPort;
+    private int _sellerApiHostPort;
 
     public DockerEclairBackend()
     {
@@ -72,9 +78,37 @@ public sealed class DockerEclairBackend : IEclairBackend
     public Task DumpEclairLogAsync(int tail) =>
         DockerDiagnostics.DumpContainerLogsAsync([EclairFixture.EclairContainerName], tail);
 
+    public async Task<EclairEndpoint> StartSellerAsync(EclairSellerRate rate, CancellationToken cancellationToken)
+    {
+        if (_seller is not null)
+            throw new InvalidOperationException("The seller Eclair already runs");
+
+        cancellationToken.ThrowIfCancellationRequested();
+        _sellerP2PHostPort = await PortPoolUtil.GetAvailablePortAsync();
+        _sellerApiHostPort = await PortPoolUtil.GetAvailablePortAsync();
+        await DockerContainerUtils.RemoveContainerAsync(_client, EclairFixture.SellerContainerName);
+        await _chain.CreateWalletAsync(SellerWallet);
+        var (client, nodeId) = await StartEclairContainerAsync(EclairFixture.SellerContainerName, SellerWallet,
+                                                               _sellerP2PHostPort, _sellerApiHostPort,
+                                                               EclairFixture.SellerConfigLines(rate));
+        _seller = client;
+        return new EclairEndpoint(client, nodeId, $"{nodeId}@127.0.0.1:{_sellerP2PHostPort}");
+    }
+
+    public Task DumpSellerLogAsync(int tail) =>
+        _seller is null
+            ? Task.CompletedTask
+            : DockerDiagnostics.DumpContainerLogsAsync([EclairFixture.SellerContainerName], tail);
+
     public async ValueTask DisposeAsync()
     {
         _eclair?.Dispose();
+        _seller?.Dispose();
+        await DockerContainerUtils.RemoveContainerAsync(_client, EclairFixture.SellerContainerName);
+        if (_sellerP2PHostPort != 0)
+            PortPoolUtil.ReleasePort(_sellerP2PHostPort);
+        if (_sellerApiHostPort != 0)
+            PortPoolUtil.ReleasePort(_sellerApiHostPort);
         await DockerContainerUtils.RemoveContainerAsync(_client, EclairFixture.EclairContainerName);
         await _chain.RemoveAsync();
         if (_p2pHostPort != 0)
@@ -85,7 +119,8 @@ public sealed class DockerEclairBackend : IEclairBackend
     }
 
     private async Task<(EclairClient Client, string NodeId)> StartEclairContainerAsync(
-        string containerName, string wallet, int p2pHostPort, int apiHostPort)
+        string containerName, string wallet, int p2pHostPort, int apiHostPort,
+        IReadOnlyList<string>? extraConfig = null)
     {
         // Both host ports fixed: Docker gives a restarted container new random ones
         var ports = await _chain.StartContainerAsync(
@@ -95,7 +130,7 @@ public sealed class DockerEclairBackend : IEclairBackend
                         new Dictionary<int, int> { [P2PPort] = p2pHostPort, [ApiPort] = apiHostPort },
                         new Dictionary<string, string>
                         {
-                            ["/data/eclair.conf"] = BuildConfig(containerName, wallet)
+                            ["/data/eclair.conf"] = BuildConfig(containerName, wallet, extraConfig)
                         });
         var client = new EclairClient(ports[ApiPort], EclairFixture.ApiPassword);
         try
@@ -122,8 +157,16 @@ public sealed class DockerEclairBackend : IEclairBackend
         }, s_readyTimeout);
     }
 
-    /// <summary>The <c>eclair.conf</c> of the Docker container (pinned by a unit test).</summary>
-    internal static string BuildConfig(string containerName, string wallet) =>
+    /// <summary>
+    /// The <c>eclair.conf</c> of a Docker container (pinned by a unit test), with <paramref name="extraConfig"/> lines
+    /// after the common ones (the seller's <see cref="EclairFixture.SellerConfigLines"/>), as the cluster's
+    /// <c>EclairNode.BuildConfig</c> appends <c>ExtraConfig</c>.
+    /// </summary>
+    internal static string BuildConfig(string containerName, string wallet, IReadOnlyList<string>? extraConfig = null) =>
+        BuildBaseConfig(containerName, wallet)
+      + (extraConfig is { Count: > 0 } ? "\n" + string.Join('\n', extraConfig) : string.Empty);
+
+    private static string BuildBaseConfig(string containerName, string wallet) =>
         $"""
          eclair.chain = "regtest"
          eclair.server.port = {P2PPort}

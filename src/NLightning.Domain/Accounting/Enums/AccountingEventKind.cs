@@ -61,6 +61,22 @@ public enum AccountingEventKind
     /// <summary>The extra fee of a confirmed sweep replacement.</summary>
     SweepFeeBump = 20,
 
+    /// <summary>
+    /// We bought inbound liquidity (liquidity ads, NL-850): the seller's fee (its mining fee plus its service fee) moved
+    /// from our channel balance to the peer's in the commitment of a dual-funded open, its RBF or a splice. An expense
+    /// paid out of the channels; the funding's <see cref="ChannelFunded"/> or <see cref="SpliceLocked"/> books our
+    /// contribution without it.
+    /// </summary>
+    LiquidityFeePaid = 21,
+
+    /// <summary>
+    /// We sold liquidity (liquidity ads, NL-850): the buyer's fee (our mining fee refund plus our service fee) moved
+    /// from the peer's channel balance to ours in the commitment of a dual-funded open, its RBF or a splice. Income into
+    /// the channels; the funding's <see cref="ChannelFunded"/> or <see cref="SpliceLocked"/> books our contribution
+    /// without it.
+    /// </summary>
+    LiquidityFeeEarned = 22,
+
     /// <summary>An external deposit to our on-chain wallet confirmed.</summary>
     WalletReceived = 30,
 

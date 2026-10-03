@@ -11,6 +11,7 @@ using Domain.Channels.DualFunding.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
+using Domain.LiquidityAds.Models;
 using Domain.Money;
 using NLightning.Client;
 using NLightning.Client.Handlers;
@@ -21,7 +22,7 @@ using Transport.Ipc.Responses;
 
 /// <summary>
 /// <c>bumpopen</c> (ClientCommand 38, lane dfrbf) over IPC: the request reaches
-/// <see cref="IDualFundedOpenService.BumpAsync(ChannelId, uint, LightningMoney?, CancellationToken)"/> with its
+/// <see cref="IDualFundedOpenService.BumpAsync(ChannelId, uint, LightningMoney?, LiquidityRequest?, CancellationToken)"/> with its
 /// feerate and contribution, the new attempt's txid comes back, the service's refusals and a failed RBF carry the error
 /// code the CLI shows, and the CLI parses its arguments before any IPC. The dual-funding service is a mock.
 /// </summary>
@@ -35,15 +36,21 @@ public class BumpOpenIpcHandlerTests
 
     private readonly Mock<IDualFundedOpenService> _service = new();
     private (uint Feerate, LightningMoney? Contribution)? _call;
+    private LiquidityRequest? _liquidity;
+    private LiquidityPurchaseModel? _purchase;
 
     public BumpOpenIpcHandlerTests()
     {
         MessagePackSerializer.DefaultOptions = s_options;
         _service.Setup(s => s.BumpAsync(It.IsAny<ChannelId>(), It.IsAny<uint>(), It.IsAny<LightningMoney?>(),
-                                        It.IsAny<CancellationToken>()))
-                .Callback<ChannelId, uint, LightningMoney?, CancellationToken>((_, f, c, _) => _call = (f, c))
-                .ReturnsAsync((ChannelId id, uint _, LightningMoney? _, CancellationToken _) =>
-                                  new DualFundedOpenResult(id, s_txId));
+                                        It.IsAny<LiquidityRequest?>(), It.IsAny<CancellationToken>()))
+                .Callback<ChannelId, uint, LightningMoney?, LiquidityRequest?, CancellationToken>((_, f, c, l, _) =>
+                {
+                    _call = (f, c);
+                    _liquidity = l;
+                })
+                .ReturnsAsync((ChannelId id, uint _, LightningMoney? _, LiquidityRequest? _, CancellationToken _) =>
+                                  new DualFundedOpenResult(id, s_txId) { Purchase = _purchase });
     }
 
     [Fact]
@@ -104,7 +111,7 @@ public class BumpOpenIpcHandlerTests
     {
         // Arrange
         _service.Setup(s => s.BumpAsync(It.IsAny<ChannelId>(), It.IsAny<uint>(), It.IsAny<LightningMoney?>(),
-                                        It.IsAny<CancellationToken>()))
+                                        It.IsAny<LiquidityRequest?>(), It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new InvalidOperationException(reason));
 
         // Act
@@ -123,7 +130,7 @@ public class BumpOpenIpcHandlerTests
     {
         // Arrange
         _service.Setup(s => s.BumpAsync(It.IsAny<ChannelId>(), It.IsAny<uint>(), It.IsAny<LightningMoney?>(),
-                                        It.IsAny<CancellationToken>()))
+                                        It.IsAny<LiquidityRequest?>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new DualFundedOpenResult(s_channelId, null, "peer sent tx_abort: not today"));
 
         // Act
@@ -230,6 +237,31 @@ public class BumpOpenIpcHandlerTests
         Assert.StartsWith("Dual-funded open RBF signed", printed);
         Assert.Contains("Funding TxId:    c2", printed);
         Assert.Contains("follows the one that does", printed);
+    }
+
+    [Fact]
+    public async Task Given_RequestInbound_When_Handled_Then_TheServiceBuysAndThePurchaseComesBack()
+    {
+        // Arrange (liquidity ads, NL-850: keys 3/4 of the request, key 2 of the response)
+        _purchase = LiquidityAdsTestData.Purchase(s_channelId, kind: Domain.LiquidityAds.Enums.LiquidityPurchaseKind.OpenRbf);
+
+        // Act
+        var response = await GetHandler().HandleAsync(
+                           CreateEnvelope(new BumpOpenIpcRequest
+                           {
+                               ChannelId = s_channelId,
+                               FeeRatePerKw = 2_604,
+                               RequestInboundSat = 400_000,
+                               MaxLiquidityFeeSat = 9_000
+                           }), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(IpcEnvelopeKind.Response, response.Kind);
+        Assert.Equal(new LiquidityRequest(400_000, null, 9_000), _liquidity);
+        var payload = MessagePackSerializer.Deserialize<BumpOpenIpcResponse>(response.Payload, s_options,
+                                                                            TestContext.Current.CancellationToken);
+        Assert.NotNull(payload.Purchase);
+        Assert.Equal(410_000UL, payload.Purchase.ContributedSat);
     }
 
     [Fact]

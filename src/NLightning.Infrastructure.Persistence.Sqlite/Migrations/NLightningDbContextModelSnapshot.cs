@@ -439,8 +439,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasPrecision(28, 8)
                         .HasColumnType("TEXT");
 
-                    b.Property<byte>("Source")
-                        .HasColumnType("INTEGER");
+                    b.Property<byte>("PriceSource")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("Source");
 
                     b.Property<long>("Time")
                         .HasColumnType("INTEGER");
@@ -1607,6 +1608,101 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.HasKey("NodeId");
 
                     b.ToTable("GraphNodes");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.LiquidityAds.LiquidityPurchaseEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<uint?>("ClosedAtHeight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("ClosedEarly")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("ContributedSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("FundingScript")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("FundingTxId")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("LeaseBlocks")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint?>("LeaseStartHeight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("MiningFeeSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte>("PaymentType")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("PeerNodeId")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<uint>("RateChannelCreationFeeSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("RateFeeBaseSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ushort>("RateFeeBasis")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ushort>("RateFundingWeight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("RateMaxAmountSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("RateMinAmountSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("RequestedSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte>("Role")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("ServiceFeeSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("Signature")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte>("Status")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("ChannelId", "FundingTxId")
+                        .IsUnique();
+
+                    b.ToTable("LiquidityPurchases");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", b =>

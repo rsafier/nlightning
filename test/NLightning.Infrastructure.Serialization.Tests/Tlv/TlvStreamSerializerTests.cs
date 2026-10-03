@@ -6,6 +6,8 @@ namespace NLightning.Infrastructure.Serialization.Tests.Tlv;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.LiquidityAds.Enums;
+using Domain.LiquidityAds.Models;
 using Domain.Protocol.Models;
 using Domain.Protocol.Onion.Tlv;
 using Domain.Protocol.Tlv;
@@ -216,6 +218,8 @@ public class TlvStreamSerializerTests
         Assert.False(tlvStream.Any());
     }
 
+    private static readonly FundingRate s_liquidityRate = new(25_000, 250_000, 750, 150, 50, 500);
+
     private static Dictionary<Type, BaseTlv> CreateSampleTlvs()
     {
         var pubKey = Convert.FromHexString("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb");
@@ -233,6 +237,9 @@ public class TlvStreamSerializerTests
             new NextFundingTlv(Enumerable.Range(0, 32).Select(i => (byte)i).ToArray()),
             new RemoteAddressTlv(1, "192.168.0.1", 9735),
             new RequireConfirmedInputsTlv(),
+            new RequestFundingTlv(new RequestFunding(50_000, s_liquidityRate, LiquidityPaymentDetails.FromChannelBalance)),
+            new ProvideFundingTlv(new WillFund(s_liquidityRate, [0xde, 0xad, 0xbe, 0xef], new byte[64])),
+            new WillFundRatesTlv(WillFundRates.Create([s_liquidityRate], [LiquidityPaymentType.FromChannelBalance])),
             new SharedInputSignatureTlv(Enumerable.Range(0, SharedInputSignatureTlv.ValueLength).Select(i => (byte)(i + 2))
                                                   .ToArray()),
             new SharedInputTxIdTlv(Enumerable.Range(0, 32).Select(i => (byte)(i + 3)).ToArray()),

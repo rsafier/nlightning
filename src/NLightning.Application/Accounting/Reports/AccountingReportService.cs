@@ -441,7 +441,7 @@ public sealed class AccountingReportService : IAccountingReports
         }
     }
 
-    // The on-chain fees and losses of a channel; false for a kind that has none
+    // The on-chain fees and losses of a channel, and its liquidity fees (NL-850); false for a kind that has none
     private static bool ApplyOnchain(ChannelAccumulator channel, AccountingEventKind kind,
                                      AccountingEventModel accountingEvent)
     {
@@ -476,6 +476,14 @@ public sealed class AccountingReportService : IAccountingReports
             case AccountingEventKind.InvoiceLostOnchain:
                 // Only a reorg's reversal comes here (NL-688): the loss comes off again
                 channel.OnchainLossMsat -= accountingEvent.AmountMsat;
+                return true;
+            case AccountingEventKind.LiquidityFeePaid:
+                // NL-850: AmountMsat is the channel's change (-fee); a reversal (an RBF that replaced the attempt, a
+                // reorg) negates it
+                channel.LiquidityFeesPaidMsat -= accountingEvent.AmountMsat;
+                return true;
+            case AccountingEventKind.LiquidityFeeEarned:
+                channel.LiquidityFeesEarnedMsat += accountingEvent.AmountMsat;
                 return true;
             default:
                 return false;
@@ -516,7 +524,9 @@ public sealed class AccountingReportService : IAccountingReports
                  RebalanceCostMsat = g.Sum(l => l.RebalanceCostMsat),
                  OnchainFeesMsat = g.Sum(l => l.OnchainFeesMsat),
                  OnchainLossMsat = g.Sum(l => l.OnchainLossMsat),
-                 NetMsat = g.Sum(l => l.NetMsat)
+                 NetMsat = g.Sum(l => l.NetMsat),
+                 LiquidityFeesPaidMsat = g.Sum(l => l.LiquidityFeesPaidMsat),
+                 LiquidityFeesEarnedMsat = g.Sum(l => l.LiquidityFeesEarnedMsat)
              })
              .ToList();
 
@@ -601,6 +611,8 @@ public sealed class AccountingReportService : IAccountingReports
         public long SweepFeeMsat { get; set; }
         public long CpfpFeeMsat { get; set; }
         public long OnchainLossMsat { get; set; }
+        public long LiquidityFeesPaidMsat { get; set; }
+        public long LiquidityFeesEarnedMsat { get; set; }
 
         // The channel's own scid and peer, from an event that is about this channel
         public void Observe(AccountingEventModel accountingEvent)
@@ -660,7 +672,9 @@ public sealed class AccountingReportService : IAccountingReports
                 CommitmentFeeMsat = CommitmentFeeMsat,
                 SweepFeeMsat = SweepFeeMsat,
                 CpfpFeeMsat = CpfpFeeMsat,
-                OnchainLossMsat = OnchainLossMsat
+                OnchainLossMsat = OnchainLossMsat,
+                LiquidityFeesPaidMsat = LiquidityFeesPaidMsat,
+                LiquidityFeesEarnedMsat = LiquidityFeesEarnedMsat
             };
             if (CapacityMsat is not > 0)
                 return line;

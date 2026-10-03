@@ -10,6 +10,7 @@ using Domain.Channels.Quiescence;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
+using Domain.LiquidityAds.Models;
 using Domain.Money;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
@@ -194,7 +195,8 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
     /// <inheritdoc />
     public Task<IReadOnlyList<IChannelMessage>> RequestRbfAsync(InteractiveTxTerms terms,
                                                                 LightningMoney fundingOutputContribution,
-                                                                CancellationToken cancellationToken = default)
+                                                                CancellationToken cancellationToken = default,
+                                                                RequestFunding? requestFunding = null)
     {
         ArgumentNullException.ThrowIfNull(terms);
 
@@ -218,7 +220,8 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
         var message = new TxInitRbfMessage(new TxInitRbfPayload(terms.ChannelId, terms.FeeratePerKw, terms.Locktime),
                                            CreateContributionTlv(fundingOutputContribution),
-                                           terms.LocalRequiresConfirmedInputs ? new RequireConfirmedInputsTlv() : null);
+                                           terms.LocalRequiresConfirmedInputs ? new RequireConfirmedInputsTlv() : null,
+                                           requestFunding is null ? null : new RequestFundingTlv(requestFunding));
         return Task.FromResult<IReadOnlyList<IChannelMessage>>([message]);
     }
 
@@ -611,7 +614,8 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         [
             new TxAckRbfMessage(new TxAckRbfPayload(channelId),
                                 CreateContributionTlv(decision.FundingOutputContribution),
-                                terms.LocalRequiresConfirmedInputs ? new RequireConfirmedInputsTlv() : null)
+                                terms.LocalRequiresConfirmedInputs ? new RequireConfirmedInputsTlv() : null,
+                                decision.WillFund is null ? null : new ProvideFundingTlv(decision.WillFund))
         ];
     }
 

@@ -1,5 +1,6 @@
 namespace NLightning.Application.InteractiveTx.Models;
 
+using Domain.LiquidityAds.Models;
 using Domain.Money;
 
 /// <summary>
@@ -19,23 +20,32 @@ public sealed record InteractiveTxRbfDecision
     /// <summary>Why the attempt is rejected with <c>tx_abort</c>, or null when accepted.</summary>
     public string? RejectReason { get; }
 
+    /// <summary>
+    /// Our liquidity ads answer to the peer's <c>request_funding</c> (NL-850), sent as <c>provide_funding</c> in
+    /// <c>tx_ack_rbf</c>; null for none.
+    /// </summary>
+    public WillFund? WillFund { get; }
+
     private InteractiveTxRbfDecision(InteractiveTxTerms? terms, LightningMoney fundingOutputContribution,
-                                     string? rejectReason)
+                                     string? rejectReason, WillFund? willFund = null)
     {
         Terms = terms;
         FundingOutputContribution = fundingOutputContribution;
         RejectReason = rejectReason;
+        WillFund = willFund;
     }
 
-    /// <summary>Accepts the attempt with <paramref name="terms"/>.</summary>
-    public static InteractiveTxRbfDecision Accept(InteractiveTxTerms terms, LightningMoney fundingOutputContribution)
+    /// <summary>Accepts the attempt with <paramref name="terms"/>; <paramref name="willFund"/> answers the peer's
+    /// liquidity request, if any.</summary>
+    public static InteractiveTxRbfDecision Accept(InteractiveTxTerms terms, LightningMoney fundingOutputContribution,
+                                                  WillFund? willFund = null)
     {
         ArgumentNullException.ThrowIfNull(terms);
         if (terms.IsInitiator)
             throw new ArgumentException("The recipient of tx_init_rbf is not the initiator of the new attempt",
                                         nameof(terms));
 
-        return new InteractiveTxRbfDecision(terms, fundingOutputContribution, null);
+        return new InteractiveTxRbfDecision(terms, fundingOutputContribution, null, willFund);
     }
 
     /// <summary>Rejects the attempt with <c>tx_abort</c>.</summary>

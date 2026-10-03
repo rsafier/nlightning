@@ -6,6 +6,7 @@ using NLightning.Domain.Bitcoin.ValueObjects;
 using NLightning.Domain.Bitcoin.Wallet.Models;
 using NLightning.Domain.Channels.Interfaces;
 using NLightning.Domain.Gossip.Interfaces;
+using NLightning.Domain.LiquidityAds.Interfaces;
 using NLightning.Domain.Node.Interfaces;
 using NLightning.Domain.Node.Models;
 using NLightning.Domain.Node.PeerStorage;
@@ -88,6 +89,7 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IAccountingOverrideDbRepository AccountingOverrideDbRepository => inner.AccountingOverrideDbRepository;
     public IAccountingLotDbRepository AccountingLotDbRepository => inner.AccountingLotDbRepository;
     public IAccountingPeriodDbRepository AccountingPeriodDbRepository => inner.AccountingPeriodDbRepository;
+    public ILiquidityPurchaseDbRepository LiquidityPurchaseDbRepository => inner.LiquidityPurchaseDbRepository;
 
     public Task<ICollection<PeerModel>> GetPeersForStartupAsync() => inner.GetPeersForStartupAsync();
 

@@ -517,6 +517,13 @@ public static class NodeConfigurationExtensions
                      "MatchOpenerContribution": true,
                      "OpenTimeout": "00:02:00",
                      "AllowRbf": true
+                   },
+                   "LiquidityAds": {
+                     "FundingRates": [],
+                     "MaxConcurrentSales": 4,
+                     "MaxSalesPerPeer": 1,
+                     "LeaseBlocks": 4032,
+                     "MaxFeeSat": null
                    }
                  },
                  "Splice": {

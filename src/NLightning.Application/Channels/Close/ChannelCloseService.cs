@@ -8,7 +8,10 @@ using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Persistence.Interfaces;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using LiquidityAds;
 
 /// <summary>
 /// <see cref="IChannelCloseService"/> (IPC <c>closechannel</c>, BOLT2 plan N10-T3): takes the channel's lock, checks
@@ -95,6 +98,11 @@ public sealed class ChannelCloseService : IChannelCloseService
                     _registry.Get(channelId).Request ??= request;
                     break;
                 case ChannelState.Open:
+                    // Liquidity ads D-L4 (NL-850): a channel we sold inbound liquidity on is not closed by us inside
+                    // its lease unless forced; the peer's close and force closes are never held back
+                    if (!request.Force)
+                        await ThrowIfLeaseInForceAsync(scope, channelId);
+
                     if (!await _peerLivenessProbe.IsAliveAsync(channelId, channel.RemoteNodeId, cancellationToken))
                         throw new InvalidOperationException(
                             $"The peer of channel {channelId} is not connected on the channel's link");
@@ -128,6 +136,24 @@ public sealed class ChannelCloseService : IChannelCloseService
         }
 
         return ToResult(channel);
+    }
+
+    /// <summary>
+    /// Refuses our cooperative close while a liquidity lease we sold on the channel is in force at the chain monitor's
+    /// height (liquidity ads D-L4, NL-850).
+    /// </summary>
+    private async Task ThrowIfLeaseInForceAsync(IServiceScope scope, ChannelId channelId)
+    {
+        if (scope.ServiceProvider.GetService<IUnitOfWork>() is not { } unitOfWork)
+            return;
+
+        var height = scope.ServiceProvider.GetService<IBlockchainMonitor>()?.LastProcessedBlockHeight ?? 0;
+        if (await LiquidityLeases.GetActiveSaleLeaseAsync(unitOfWork, channelId, height) is not { } lease)
+            return;
+
+        var refusal = LiquidityLeases.DescribeCloseRefusal(channelId, lease, height);
+        _logger.LogWarning("Refusing to close channel {ChannelId}: {Reason}", channelId, refusal);
+        throw new InvalidOperationException(refusal);
     }
 
     private static ChannelCloseResult ToResult(ChannelModel channel) =>

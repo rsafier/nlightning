@@ -73,6 +73,9 @@ internal sealed class SpliceNegotiation
     /// as much).</summary>
     public ulong? PreviousAttemptFeeSatoshis { get; set; }
 
+    /// <summary>The liquidity purchase this attempt carries (liquidity ads, NL-850), or null.</summary>
+    public SpliceLiquidity? Liquidity { get; set; }
+
     /// <summary>The shared input and output (set once both funding keys are known).</summary>
     public SharedFundingSpec? SharedFunding { get; set; }
 
@@ -107,7 +110,10 @@ internal sealed class SpliceNegotiation
 
     /// <summary>The negotiation's result now.</summary>
     public SpliceResult ToResult(string? failureReason = null) =>
-        new(ChannelId, State, Model.SpliceTxId, NewFunding?.CapacitySatoshis, failureReason);
+        new(ChannelId, State, Model.SpliceTxId, NewFunding?.CapacitySatoshis, failureReason)
+        {
+            Purchase = Liquidity?.Purchase
+        };
 
     /// <summary>The writes the completion staged, for the memory update after the save.</summary>
     internal sealed record StagedCompletion(

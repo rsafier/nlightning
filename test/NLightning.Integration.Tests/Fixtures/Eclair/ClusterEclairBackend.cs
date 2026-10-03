@@ -4,6 +4,7 @@ using Cluster;
 using Docker.Utils;
 using Testing.Cluster.Images;
 using Testing.Cluster.Kube;
+using Testing.Cluster.Nodes;
 using Testing.Cluster.Nodes.Eclair;
 using Testing.Cluster.Reach;
 using Testing.Cluster.Run;
@@ -34,6 +35,8 @@ public sealed class ClusterEclairBackend : IEclairBackend
     private RegtestBitcoinEndpoint? _bitcoin;
     private EclairClient? _eclair;
     private EclairTestPeer? _peer;
+    private EclairTestPeer? _sellerPeer;
+    private EclairClient? _seller;
 
     public TestBackendKind Kind => TestBackendKind.Cluster;
 
@@ -103,10 +106,101 @@ public sealed class ClusterEclairBackend : IEclairBackend
         }
     }
 
+    public async Task<EclairEndpoint> StartSellerAsync(EclairSellerRate rate, CancellationToken cancellationToken)
+    {
+        if (_seller is not null)
+            throw new InvalidOperationException("The seller Eclair already runs");
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var run = _topology.Run;
+        var name = EclairFixture.SellerContainerName;
+        var options = BuildSellerOptions(_topology.Topology.Chain, rate);
+        try
+        {
+            var handle = await run.DeployAsync(EclairNode.Workload(name, options), s_readyTimeout, cancellationToken);
+            // Never restarted (emptyDir), so its pod IP stays; no DNS lookup and no ClusterIP routing delay
+            var host = handle.PodIp ?? throw new InvalidOperationException($"{handle} has no pod IP");
+            _sellerPeer = new EclairTestPeer(handle, options.ApiPassword, host);
+            var client = new EclairClient(_sellerPeer.Api.BaseAddress, options.ApiPassword);
+            _seller = client;
+            var nodeId = await _sellerPeer.GetNodeIdAsync(cancellationToken);
+            await Testing.Cluster.Poll.UntilDoneAsync(async ct =>
+            {
+                var tip = await Bitcoin.Rpc.GetBlockCountAsync(ct);
+                var height = await client.GetBlockHeightAsync(ct);
+                return height == tip ? null : $"Eclair at {height}, tip {tip}";
+            }, s_readyTimeout, $"{name} at the tip", cancellationToken);
+            await WaitReachableAsync(host, EclairNode.P2PPort, cancellationToken);
+            Console.WriteLine($"[cluster] {run.Namespace}: Eclair {name} {nodeId} at {host} ready in "
+                            + $"{watch.Elapsed.TotalSeconds:F1} s");
+            return new EclairEndpoint(client, nodeId, $"{nodeId}@{host}:{EclairNode.P2PPort}");
+        }
+        catch
+        {
+            await RemoveSellerQuietlyAsync();
+            throw;
+        }
+    }
+
+    public async Task DumpSellerLogAsync(int tail)
+    {
+        if (_sellerPeer is null)
+            return;
+
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var log = await _sellerPeer.Node.ReadLogAsync(tail, timeout.Token);
+            Console.WriteLine($"===== kubectl logs {_sellerPeer.Node.Namespace}/{_sellerPeer.Node.PodName} (last {tail} lines) =====");
+            Console.WriteLine(log);
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"===== kubectl logs {_sellerPeer.Node.Namespace}/{_sellerPeer.Node.PodName}: unavailable ({e.Message}) =====");
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         _eclair?.Dispose();
+        // The run namespace's deletion removes the seller's pod with the rest
+        _seller?.Dispose();
+        _sellerPeer?.Dispose();
         await _topology.DisposeAsync();
+    }
+
+    /// <summary>
+    /// The seller's options (NL-850): the fixture Eclair's settings on <paramref name="chain"/> with the wallet
+    /// <c>eclair-seller</c> (created by the node's init container), <see cref="EclairFixture.SellerConfigLines"/> of
+    /// <paramref name="rate"/> as more <c>eclair.conf</c> lines, on an <c>emptyDir</c> (never restarted).
+    /// </summary>
+    internal static EclairNodeOptions BuildSellerOptions(ITopologyChainEndpoint chain, EclairSellerRate rate)
+    {
+        var spec = new TopologyNodeSpec(EclairFixture.SellerContainerName, NodeKind.Eclair);
+        return EclairNodeDeployer.BuildOptions(chain, spec) with
+        {
+            Wallet = "eclair-seller",
+            ExtraConfig = EclairFixture.SellerConfigLines(rate),
+            Storage = NodeStorage.Ephemeral
+        };
+    }
+
+    private async Task RemoveSellerQuietlyAsync()
+    {
+        _seller?.Dispose();
+        _seller = null;
+        _sellerPeer?.Dispose();
+        _sellerPeer = null;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+            await _topology.Run.RemoveNodeAsync(EclairFixture.SellerContainerName, timeout.Token);
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"[cluster] removing {EclairFixture.SellerContainerName} failed (the namespace's deletion "
+                            + $"removes it): {e.Message}");
+        }
     }
 
     /// <summary>

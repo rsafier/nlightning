@@ -452,8 +452,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .HasPrecision(28, 8)
                         .HasColumnType("decimal(28,8)");
 
-                    b.Property<byte>("Source")
-                        .HasColumnType("tinyint");
+                    b.Property<byte>("PriceSource")
+                        .HasColumnType("tinyint")
+                        .HasColumnName("Source");
 
                     b.Property<long>("Time")
                         .HasColumnType("bigint");
@@ -1626,6 +1627,103 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.HasKey("NodeId");
 
                     b.ToTable("GraphNodes");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.LiquidityAds.LiquidityPurchaseEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<byte[]>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long?>("ClosedAtHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("ClosedEarly")
+                        .HasColumnType("bit");
+
+                    b.Property<long>("ContributedSat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("FundingScript")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("FundingTxId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("tinyint");
+
+                    b.Property<long>("LeaseBlocks")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("LeaseStartHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("MiningFeeSat")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("PaymentType")
+                        .HasColumnType("tinyint");
+
+                    b.Property<byte[]>("PeerNodeId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<long>("RateChannelCreationFeeSat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("RateFeeBaseSat")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("RateFeeBasis")
+                        .HasColumnType("int");
+
+                    b.Property<int>("RateFundingWeight")
+                        .HasColumnType("int");
+
+                    b.Property<long>("RateMaxAmountSat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("RateMinAmountSat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("RequestedSat")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("Role")
+                        .HasColumnType("tinyint");
+
+                    b.Property<long>("ServiceFeeSat")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("Signature")
+                        .IsRequired()
+                        .HasColumnType("varbinary(64)");
+
+                    b.Property<byte>("Status")
+                        .HasColumnType("tinyint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("ChannelId", "FundingTxId")
+                        .IsUnique();
+
+                    b.ToTable("LiquidityPurchases");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", b =>

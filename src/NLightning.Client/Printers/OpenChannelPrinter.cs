@@ -27,6 +27,8 @@ public sealed class OpenChannelPrinter : IPrinter<OpenChannelIpcResponse>
         _output.WriteLine("Dual-funded open negotiated with the peer; both signed the funding transaction.");
         _output.WriteLine("Funding transaction published. TxId: {0}, Index: {1}", DisplayOrder.ToHex(txId),
                           item.FundingOutputIndex?.ToString(CultureInfo.InvariantCulture) ?? "-");
+        if (item.Purchase is { } purchase)
+            LiquidityAdsPrinter.WritePurchase(_output, purchase);
         _output.WriteLine("Bump its fee before it confirms with: bumpopen {0} <feerate_per_kw>", item.ChannelId);
     }
 }

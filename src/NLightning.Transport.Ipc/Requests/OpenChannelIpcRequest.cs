@@ -46,6 +46,15 @@ public sealed class OpenChannelIpcRequest
     /// </summary>
     [Key(8)] public List<string>? Tags { get; init; }
 
+    /// <summary>
+    /// Inbound liquidity to buy from the peer with a dual-funded open (liquidity ads, NL-850,
+    /// <c>--request-inbound</c>), in satoshis, or null; an older client sends none.
+    /// </summary>
+    [Key(9)] public ulong? RequestInboundSat { get; init; }
+
+    /// <summary>The most we pay for the purchase, in satoshis (<c>--max-liquidity-fee</c>), or null.</summary>
+    [Key(10)] public ulong? MaxLiquidityFeeSat { get; init; }
+
     public OpenChannelClientRequest ToClientRequest()
     {
         return new OpenChannelClientRequest(NodeInfo, Amount)
@@ -55,7 +64,9 @@ public sealed class OpenChannelIpcRequest
             IsDualFunded = IsDualFunded,
             ForceV1 = ForceV1,
             Label = Label,
-            Tags = Tags ?? []
+            Tags = Tags ?? [],
+            RequestInboundSat = RequestInboundSat,
+            MaxLiquidityFeeSat = MaxLiquidityFeeSat
         };
     }
 }

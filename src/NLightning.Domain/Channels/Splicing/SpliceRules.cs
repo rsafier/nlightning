@@ -478,21 +478,62 @@ public static class SpliceRules
                            $"the RBF attempt pays {facts.TotalFeeSatoshis} sat, less than the previous "
                          + $"{previousFee} sat");
 
+        // A liquidity purchase (NL-850) moves its fee from the buyer's balance to the seller's on the new funding
         var newCapacity = facts.FundingOutputSatoshis;
         if (facts.LocalAddedOtherOutput
-         && !KeepsReserve(facts.LocalBalanceMsat, facts.LocalContributionSatoshis, facts.LocalReserveSatoshis,
-                          newCapacity))
+         && !KeepsReserve(facts.LocalBalanceMsat, facts.LocalContributionSatoshis, -facts.LiquidityFeeMsat,
+                          facts.LocalReserveSatoshis, newCapacity))
             return TxAbort("SP-TX-05",
                            $"we take funds out but keep less than the reserve of "
                          + $"{GetReserveSatoshis(facts.LocalReserveSatoshis, newCapacity)} sat");
         if (facts.RemoteAddedOtherOutput
-         && !KeepsReserve(facts.RemoteBalanceMsat, facts.RemoteContributionSatoshis, facts.RemoteReserveSatoshis,
-                          newCapacity))
+         && !KeepsReserve(facts.RemoteBalanceMsat, facts.RemoteContributionSatoshis, facts.LiquidityFeeMsat,
+                          facts.RemoteReserveSatoshis, newCapacity))
             return TxAbort("SP-TX-05",
                            $"the peer takes funds out but keeps less than the reserve of "
                          + $"{GetReserveSatoshis(facts.RemoteReserveSatoshis, newCapacity)} sat");
 
-        return null;
+        return facts.LiquidityFeeMsat switch
+        {
+            > 0 => CheckLiquidityFeeReserve(facts.LocalBalanceMsat, facts.LocalContributionSatoshis,
+                                            (ulong)facts.LiquidityFeeMsat, facts.LocalReserveSatoshis, newCapacity,
+                                            true),
+            < 0 => CheckLiquidityFeeReserve(facts.RemoteBalanceMsat, facts.RemoteContributionSatoshis,
+                                            (ulong)-facts.LiquidityFeeMsat, facts.RemoteReserveSatoshis, newCapacity,
+                                            false),
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// LA-RES-01 (liquidity ads, NL-850): the buyer of a purchase made with a splice pays its fee (mining plus service)
+    /// from its balance on the new funding and must keep at least the reserve that matches the new capacity (D9) after
+    /// paying it, so the fee never eats into the reserve. A violation is a <c>tx_abort</c> (BOLT 2: MAY send
+    /// <c>tx_abort</c> for any reason); the seller checks it on the request, the buyer before it asks and on the answer,
+    /// and both on the constructed transaction (<see cref="CheckTxComplete"/>).
+    /// </summary>
+    /// <param name="buyerBalanceMsat">The buyer's main balance on the current funding.</param>
+    /// <param name="buyerContributionSatoshis">The buyer's signed contribution to the splice.</param>
+    /// <param name="liquidityFeeMsat">The fee the buyer pays the seller.</param>
+    /// <param name="announcedReserveSatoshis">The reserve the seller requires of the buyer.</param>
+    /// <param name="newCapacitySatoshis">The new funding's capacity.</param>
+    /// <param name="buyerIsLocal">Whether we are the buyer (only the message changes).</param>
+    public static SpliceRuleViolation? CheckLiquidityFeeReserve(ulong buyerBalanceMsat, long buyerContributionSatoshis,
+                                                                ulong liquidityFeeMsat, ulong announcedReserveSatoshis,
+                                                                ulong newCapacitySatoshis, bool buyerIsLocal)
+    {
+        if (liquidityFeeMsat == 0
+         || KeepsReserve(buyerBalanceMsat, buyerContributionSatoshis, -(Int128)liquidityFeeMsat,
+                         announcedReserveSatoshis, newCapacitySatoshis))
+            return null;
+
+        var reserve = GetReserveSatoshis(announcedReserveSatoshis, newCapacitySatoshis);
+        return TxAbort("LA-RES-01",
+                       buyerIsLocal
+                           ? $"we cannot pay the liquidity fee of {liquidityFeeMsat} msat and keep the reserve of "
+                           + $"{reserve} sat"
+                           : $"the buyer cannot pay the liquidity fee of {liquidityFeeMsat} msat and keep the "
+                           + $"reserve of {reserve} sat");
     }
 
     /// <summary>
@@ -507,12 +548,18 @@ public static class SpliceRules
 
     #endregion
 
-    private static bool KeepsReserve(ulong balanceMsat, long contributionSatoshis, ulong announcedReserveSatoshis,
-                                     ulong newCapacitySatoshis)
+    /// <param name="balanceMsat">The side's main balance on the current funding.</param>
+    /// <param name="contributionSatoshis">Its signed contribution.</param>
+    /// <param name="adjustmentMsat">What it gains (+) or pays (−) besides its contribution: a liquidity fee (NL-850).
+    /// </param>
+    /// <param name="announcedReserveSatoshis">The reserve the other side requires of it.</param>
+    /// <param name="newCapacitySatoshis">The new funding's capacity.</param>
+    private static bool KeepsReserve(ulong balanceMsat, long contributionSatoshis, Int128 adjustmentMsat,
+                                     ulong announcedReserveSatoshis, ulong newCapacitySatoshis)
     {
-        var after = GetBalanceAfterMsat(balanceMsat, contributionSatoshis);
+        var after = (Int128)balanceMsat + (Int128)contributionSatoshis * 1_000 + adjustmentMsat;
         var reserveMsat = (Int128)GetReserveSatoshis(announcedReserveSatoshis, newCapacitySatoshis) * 1_000;
-        return after is { } value && value >= reserveMsat;
+        return after >= 0 && after >= reserveMsat;
     }
 
     private static bool IsSpliceOutAboveBalance(long contributionSatoshis, ulong balanceMsat) =>
@@ -578,6 +625,8 @@ public sealed record SpliceRbfConditions(
 /// <param name="TotalFeeSatoshis">The transaction's total fee (inputs minus outputs).</param>
 /// <param name="PreviousAttemptFeeSatoshis">For an RBF attempt, the last negotiated attempt's total fee; null
 /// otherwise.</param>
+/// <param name="LiquidityFeeMsat">The fee of a liquidity purchase made with the splice (NL-850), signed from our point
+/// of view: positive when we buy (it leaves our balance for the peer's), negative when we sell, 0 for none.</param>
 public sealed record SpliceTxCompleteFacts(
     int SharedInputCount,
     int FundingOutputCount,
@@ -592,4 +641,5 @@ public sealed record SpliceTxCompleteFacts(
     bool LocalAddedOtherOutput,
     bool RemoteAddedOtherOutput,
     ulong TotalFeeSatoshis,
-    ulong? PreviousAttemptFeeSatoshis = null);
+    ulong? PreviousAttemptFeeSatoshis = null,
+    long LiquidityFeeMsat = 0);

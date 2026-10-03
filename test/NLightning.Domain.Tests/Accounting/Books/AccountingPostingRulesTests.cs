@@ -572,7 +572,9 @@ public class AccountingPostingRulesTests
         Resolution(AccountingEventKind.OutputResolved, amount: 29_600_000, fee: 400_000, pendingOut: 0, pendingIn: 0,
                    wallet: 29_600_000, counted: false, by: "us", ("valueBookedBy", "invoice")),
         Event(AccountingEventKind.ChannelClosedMutual, -1_000_000_000, 1_000_000, "chan:a:closed:b"),
-        Event(AccountingEventKind.AnchorCpfpFee, 0, 2_000_000, "cpfp:a")
+        Event(AccountingEventKind.AnchorCpfpFee, 0, 2_000_000, "cpfp:a"),
+        Event(AccountingEventKind.LiquidityFeePaid, -4_500_000, 4_500_000, "chan:a:liquidity:b", ("role", "buyer")),
+        Event(AccountingEventKind.LiquidityFeeEarned, 4_500_000, 0, "chan:c:liquidity:d", ("role", "seller"))
     ];
 
     [Fact]

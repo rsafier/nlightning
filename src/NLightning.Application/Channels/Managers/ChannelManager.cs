@@ -40,6 +40,7 @@ using Handlers.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using InteractiveTx.Interfaces;
 using Interfaces;
+using LiquidityAds;
 using Onchain.Interfaces;
 using Quiescence;
 using Reestablish;
@@ -826,6 +827,11 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         // BOLT 2 interactive-tx (NL-470): the closed channel's negotiations can never finish, and the table has no FK
         // to Channels, so its rows go in the same save as the Closed state
         await unitOfWork.InteractiveTxSessionDbRepository.DeleteByChannelIdAsync(channel.ChannelId);
+
+        // Liquidity ads (NL-850): the channel's purchases end with it, a close inside a lease noted
+        await LiquidityLeases.StageChannelClosedAsync(unitOfWork, channel.ChannelId,
+                                                      closingTxHeight ?? _blockchainMonitor.LastProcessedBlockHeight,
+                                                      _logger);
         await unitOfWork.SaveChangesAsync();
 
         _channelMemoryRepository.TryRemoveChannel(channel.ChannelId);
@@ -2230,10 +2236,14 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
              && channel.FundingOutput is { TransactionId: { } fundingTxId, Index: { } fundingIndex }
              && fundingTxId == fundedTxId)
             {
+                // NL-850: a dual-funded open's liquidity purchase is booked with it, with the same fee
+                var lateUnitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                var lateScid = new ShortChannelId(firstSeenAtHeight, transactionIndex, fundingIndex);
+                var occurredAt = (_serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow();
+                var liquidityFeeMsat = await DualFunding.DualFundLiquidityAccounting.StageFundingConfirmedAsync(
+                                           lateUnitOfWork, channel, firstSeenAtHeight, lateScid, occurredAt, _logger);
                 await ChannelAccountingEvents.RecordLateChannelFundedAsync(
-                    scope.ServiceProvider.GetRequiredService<IUnitOfWork>(), channel, firstSeenAtHeight,
-                    new ShortChannelId(firstSeenAtHeight, transactionIndex, fundingIndex),
-                    (_serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow(), _logger);
+                    lateUnitOfWork, channel, firstSeenAtHeight, lateScid, occurredAt, _logger, liquidityFeeMsat);
                 return;
             }
 

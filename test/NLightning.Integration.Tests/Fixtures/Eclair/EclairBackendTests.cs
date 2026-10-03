@@ -1,6 +1,7 @@
 namespace NLightning.Integration.Tests.Fixtures.Eclair;
 
 using Testing.Cluster.Images;
+using Testing.Cluster.Kube;
 using Testing.Cluster.Nodes;
 using Testing.Cluster.Nodes.Eclair;
 using Testing.Cluster.Topology;
@@ -62,5 +63,67 @@ public class EclairBackendTests
         Assert.Equal(EclairFixture.ApiPassword, options.ApiPassword);
         Assert.Equal($"{EclairFixture.EclairImage}:{EclairFixture.EclairTag}", options.Image.Reference);
         Assert.Equal(ImagePullPolicy.Never, options.Image.PullPolicy);
+    }
+
+    [Fact]
+    public void Given_TheSellerRates_When_TheDockerSellerConfigIsBuilt_Then_ItIsTheCommonConfigPlusTheLiquidityAdsSection()
+    {
+        // Arrange
+        var common = DockerEclairBackend.BuildConfig(EclairFixture.SellerContainerName, "eclair-seller")
+                                        .ReplaceLineEndings("\n");
+        const string section = """
+                               eclair.liquidity-ads {
+                                 funding-rates = [
+                                   {
+                                     min-funding-amount-satoshis = 10000
+                                     max-funding-amount-satoshis = 5000000
+                                     funding-weight = 400
+                                     fee-base-satoshis = 500
+                                     fee-basis-points = 100
+                                     channel-creation-fee-satoshis = 1000
+                                   }
+                                 ]
+                                 payment-types = ["from_channel_balance"]
+                                 lock-utxos-during-funding = true
+                               }
+                               """;
+
+        // Act
+        var config = DockerEclairBackend.BuildConfig(EclairFixture.SellerContainerName, "eclair-seller",
+                                                     EclairFixture.SellerConfigLines(EclairFixture.SellerRates))
+                                        .ReplaceLineEndings("\n");
+
+        // Assert
+        Assert.Equal(common + "\n" + section.ReplaceLineEndings("\n"), config);
+        Assert.Contains("eclair.bitcoind.wallet = \"eclair-seller\"", config);
+        Assert.Contains("eclair.node-alias = \"nltg-eclair-seller\"", config);
+    }
+
+    [Fact]
+    public void Given_TheClusterTopology_When_TheSellersConfigIsBuilt_Then_OnlyTheChainsAddressDiffersFromDocker()
+    {
+        // Arrange: the seller on the cluster topology's chain (alias miner, the harness's ZMQ ports)
+        var endpoint = BitcoinCoreTopologyChain.EndpointFor(new TopologyNodeSpec("miner", NodeKind.BitcoinCore,
+                                                                                 ImageVersions.BitcoinCore31));
+        var options = ClusterEclairBackend.BuildSellerOptions(endpoint, EclairFixture.SellerRates);
+
+        // Act
+        var cluster = EclairNode.BuildConfig(EclairFixture.SellerContainerName, options).Split('\n');
+        var docker = DockerEclairBackend.BuildConfig(EclairFixture.SellerContainerName, "eclair-seller",
+                                                     EclairFixture.SellerConfigLines(EclairFixture.SellerRates))
+                                        .ReplaceLineEndings("\n").Split('\n');
+
+        // Assert: the same seller section and wallet on both backends; the seller is never restarted
+        Assert.Equal(docker.Length, cluster.Length);
+        var differing = docker.Zip(cluster).Where(p => p.First != p.Second).Select(p => p.Second).ToList();
+        Assert.Equal(
+        [
+            "eclair.bitcoind.host = \"miner\"",
+            "eclair.bitcoind.zmqblock = \"tcp://miner:28334\"",
+            "eclair.bitcoind.zmqtx = \"tcp://miner:28333\""
+        ], differing);
+        Assert.Equal("eclair-seller", options.Wallet);
+        Assert.Equal(NodeStorage.Ephemeral, options.Storage);
+        Assert.Equal($"{EclairFixture.EclairImage}:{EclairFixture.EclairTag}", options.Image.Reference);
     }
 }

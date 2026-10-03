@@ -5,6 +5,8 @@ namespace NLightning.Infrastructure.Tests.Node.Services;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
+using Domain.LiquidityAds.Enums;
+using Domain.LiquidityAds.Models;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
@@ -251,6 +253,57 @@ public class PeerServiceTests
                                      new ShortChannelId(103, 1, 0), timestamp,
                                      ChannelUpdatePayload.MessageFlagMustBeOne, 0, 40, 1_000, 1_000, 1,
                                      990_000_000));
+    }
+
+    [Fact]
+    public void Given_InitWithLiquidityRates_When_InitReceived_Then_ThePeersRatesAreKept()
+    {
+        // Arrange (liquidity ads, NL-850: the peer sells at these rates)
+        var peerService = CreatePeerService();
+        var rates = WillFundRates.Create([new FundingRate(100_000, 500_000, 550, 100, 5_000, 1_000)],
+                                         [LiquidityPaymentType.FromChannelBalance]);
+        Assert.Null(peerService.LiquidityRates);
+
+        // Act
+        RaiseMessage(new InitMessage(new InitPayload(_features.GetNodeFeatures()),
+                                     new NetworksTlv([ChainConstants.Regtest]), null, new WillFundRatesTlv(rates)));
+
+        // Assert
+        Assert.Equal(rates, peerService.LiquidityRates);
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public void Given_InitWithoutLiquidityRates_When_InitReceived_Then_ThePeerSellsNothing()
+    {
+        // Arrange
+        var peerService = CreatePeerService();
+
+        // Act
+        RaiseMessage(CreateInitMessage(ChainConstants.Regtest));
+
+        // Assert
+        Assert.Null(peerService.LiquidityRates);
+    }
+
+    [Fact]
+    public void Given_InitWithUndecodableLiquidityRates_When_InitReceived_Then_TheyAreDroppedAndTheInitStands()
+    {
+        // Arrange: the serializer keeps the raw bytes of an option_will_fund it cannot decode (odd, advisory)
+        var peerService = CreatePeerService();
+        var init = new InitMessage(new InitPayload(_features.GetNodeFeatures()),
+                                   new NetworksTlv([ChainConstants.Regtest]))
+        {
+            UndecodableWillFundRates = [0x00, 0x05, 0xaa]
+        };
+
+        // Act
+        RaiseMessage(init);
+
+        // Assert
+        Assert.Null(peerService.LiquidityRates);
+        Assert.True(peerService.WaitForInitAsync(TestContext.Current.CancellationToken).IsCompletedSuccessfully);
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
     }
 
     [Fact]

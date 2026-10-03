@@ -19,6 +19,8 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.LiquidityAds.Enums;
+using Domain.LiquidityAds.Models;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
@@ -243,6 +245,31 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
                       "interactive-tx sessions deleted"], save);
         Assert.Equal([_channel.ChannelId], _store.DeletedInteractiveTxSessions);
         _memory.Verify(m => m.TryRemoveChannel(_channel.ChannelId), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ABoughtLease_When_TheChannelClosesOnChain_Then_ThePurchaseIsClosedAtTheSpendInTheSave()
+    {
+        // Arrange (liquidity ads, NL-850): a purchase active from block 900 (lease to 4,932); the funding was spent
+        // at SpentAt
+        var purchase = LiquidityPurchaseModel.Restore(
+            5, _channel.ChannelId, new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray()), LiquidityPurchaseRole.Buyer,
+            LiquidityPurchaseKind.ChannelOpen, 400_000, 400_000, new FundingRate(1, 1_000_000, 500, 100, 10, 1_000),
+            LiquidityPaymentType.FromChannelBalance, 1_250, 5_000, new CompactSignature(new byte[64]), [0x00],
+            _channel.RemoteNodeId, 4_032, DateTimeOffset.UnixEpoch, LiquidityPurchaseStatus.Active, 900, null, false);
+        _store.Purchases.Add(purchase);
+        var executor = CreateExecutor();
+
+        // Act
+        await executor.RunRoundAsync(SpentAt + 99, TestContext.Current.CancellationToken);
+
+        // Assert: in the Closed save, at the funding spend's height, before the lease ended
+        Assert.Equal(ChannelState.Closed, _channel.State);
+        var save = Assert.Single(_store.Saves);
+        Assert.Contains("channel Closed", save);
+        Assert.Contains("liquidity purchase 5 Closed", save);
+        Assert.Equal(SpentAt, purchase.ClosedAtHeight);
+        Assert.True(purchase.ClosedEarly);
     }
 
     [Fact]
