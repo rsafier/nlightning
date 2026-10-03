@@ -7945,12 +7945,12 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Blocks/Blocked-by:** Related NL-886
 - **Plan ref:** ACCOUNTING_PLAN A2
 
-### NL-890 `QuiescenceServiceTests.Given_OurRequestNotSentYet_When_ThePeerSendsStfuWithInitiatorZero_Then_WarningAndTheRequestIsKept` can time out under a loaded full Application run
+### NL-890 Wall-clock waits in `QuiescenceServiceTests` and `SpliceConformanceTests` can time out under a loaded full Application run
 - **Status:** open
 - **Severity:** low
 - **Kind:** test
-- **Location:** `test/NLightning.Application.Tests/Channels/Quiescence/QuiescenceServiceTests.cs`
-- **Evidence:** Failed once (10 s) in the full Application.Tests run on net10.0 (3767/3768, batch12 lane trimmed-loss) while other lanes ran test hosts on the same machine; the class passes 19/19 alone. The lane did not touch quiescence code.
+- **Location:** `test/NLightning.Application.Tests/Channels/Quiescence/QuiescenceServiceTests.cs`, `Channels/Splicing/SpliceConformanceTests.cs`
+- **Evidence:** Failed once (10 s) in the full Application.Tests run on net10.0 (3767/3768, batch12 lane trimmed-loss) while other lanes ran test hosts on the same machine; the class passes 19/19 alone. The lane did not touch quiescence code. The batch12 integrator's run on the merged `wip/fafo` (3872/3873) timed out `SpliceConformanceTests.Given_ACrashAtEverySpliceSave_When_TheNodeRestarts_Then_BothSidesAgreeAndTheChannelWorks(crashing: "Bob")` at its 10 s `start.WaitAsync` (line 750; 12 s under load, 3 s alone); the class passed 17/17 three times alone.
 - **Fix sketch:** Find its wall-clock wait or deadline and make it stepped or event-driven, like NL-512 and NL-565.
 - **Blocks/Blocked-by:** Related NL-512, NL-565
 - **Plan ref:** none
