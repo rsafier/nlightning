@@ -31,7 +31,12 @@
 #       --explicit M      xunit's -explicit mode: only (default: the Cluster tests are Explicit), on or off
 #       --suite S         a ported suite on the cluster backend (NLTG_TEST_BACKEND=cluster): cln = the CLN interop
 #                         suite (-p integration, --trait Category=Interop.Cln, --explicit off; its 4 Explicit capture
-#                         tests stay out unless --explicit on is given); each run gets its own namespace(s)
+#                         tests stay out unless --explicit on is given); postgres = Docker/PostgresTests and the
+#                         Explicit Cluster/Live/ServerDatabaseClusterTests on a Postgres pod (--trait Database=Postgres,
+#                         --explicit on; MultiNodeHarnessTests' Postgres fact needs the LND fixture and stays out);
+#                         faults = the partition and ZMQ-loss tests (Cluster/Live/PartitionClusterTests,
+#                         ChainMonitorZmqClusterTests); --class/--method replace a suite's classes; each run gets its
+#                         own namespace(s)
 #
 # Example: the scaffold's namespace test 3 times at once
 #   scripts/run-cluster.sh -n 3 --method '*ARunDeploysABusyboxStatefulSet*'
@@ -39,6 +44,8 @@
 #   scripts/run-cluster.sh -n 3 -p integration --class NLightning.Integration.Tests.Cluster.Live.InProcessNodeClusterTests
 # Example: the whole CLN interop suite on the cluster, 3 runs at once (one CLN class: add --class)
 #   scripts/run-cluster.sh -n 3 --suite cln
+# Example: the Postgres round trips on a Postgres pod, and the partition tests (test harness phase 4)
+#   scripts/run-cluster.sh -n 1 --suite postgres; scripts/run-cluster.sh -n 1 --suite faults
 #
 # Never runs Docker suites and never touches namespaces outside nltg-spike-*: the test processes create only their
 # own namespaces, and the reaper only deletes harness run namespaces (nltg-cluster reap, RunReaper).
@@ -59,6 +66,7 @@ diag="${NLTG_CLUSTER_DIAG:-failure}"
 trait="Category=Cluster"
 explicit=only
 suite=""
+suite_classes=()
 backend=""
 filters=()
 extra=()
@@ -88,13 +96,25 @@ while [[ $# -gt 0 ]]; do
       case "$suite" in
         cln) project=integration; trait="Category=Interop.Cln"; backend=cluster
              [[ -n "${explicit_set:-}" ]] || explicit=off ;;
-        *) die "--suite $suite: unknown suite (cln)" ;;
+        postgres) project=integration; trait="Database=Postgres"; backend=cluster
+                  suite_classes=(NLightning.Integration.Tests.Docker.PostgresTests
+                                 NLightning.Integration.Tests.Cluster.Live.ServerDatabaseClusterTests)
+                  [[ -n "${explicit_set:-}" ]] || explicit=on ;;
+        faults) project=integration; trait="Category=Cluster"; backend=cluster
+                suite_classes=(NLightning.Integration.Tests.Cluster.Live.PartitionClusterTests
+                               NLightning.Integration.Tests.Cluster.Live.ChainMonitorZmqClusterTests) ;;
+        *) die "--suite $suite: unknown suite (cln, postgres, faults)" ;;
       esac ;;
-    -h|--help) sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,51p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --) shift; extra=("$@"); break ;;
     *) die "unknown argument $1 (see --help)" ;;
   esac
 done
+
+# A suite's own classes, unless --class/--method narrowed it
+if (( ${#filters[@]} == 0 )) && [[ -n "${suite_classes[*]:-}" ]]; then
+  for class in "${suite_classes[@]}"; do filters+=(-class "$class"); done
+fi
 
 [[ "$runs" =~ ^[0-9]+$ && "$runs" -ge 1 ]] || die "--runs must be a positive number"
 jobs="${jobs:-$runs}"
