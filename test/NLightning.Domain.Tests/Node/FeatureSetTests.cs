@@ -281,8 +281,6 @@ public class FeatureSetTests
     [InlineData(Feature.ZeroFeeCommitments, Feature.OptionChannelType)]
     [InlineData(Feature.OptionSimpleClose, Feature.OptionShutdownAnySegwit)]
     [InlineData(Feature.OptionOnionMessagesOnlyChannels, Feature.OptionOnionMessages)]
-    [InlineData(Feature.OptionSimpleTaproot, Feature.OptionSimpleClose)]
-    [InlineData(Feature.OptionSimpleTaproot, Feature.OptionChannelType)]
     public void Given_OtherSetsFeatureWithoutDependency_When_IsCompatible_Then_ReturnFalse(Feature feature,
         Feature dependency)
     {
@@ -647,5 +645,72 @@ public class FeatureSetTests
         Assert.Equal(FeatureContext.Init | FeatureContext.NodeAnnouncement | FeatureContext.ChannelType, contexts);
         Assert.Equal([Feature.OptionChannelType, Feature.OptionSimpleClose],
                      FeatureSet.GetDependencies(Feature.OptionSimpleTaproot));
+    }
+
+    [Theory]
+    [InlineData(Feature.OptionSimpleClose)]
+    [InlineData(Feature.OptionChannelType)]
+    public void Given_WeSupportTaproot_When_PeerSetsTaprootWithoutADependency_Then_ReturnFalse(Feature dependency)
+    {
+        // Arrange (bolt-simple-taproot.md: 81 depends on option_channel_type and option_simple_close)
+        var features = new FeatureSet();
+        features.SetFeature(Feature.OptionSimpleTaproot, false);
+        var other = new FeatureSet();
+        other.SetFeature(Feature.OptionSimpleTaproot, false);
+        other.SetFeature(dependency, true, false);
+        other.SetFeature(dependency, false, false);
+        other.SetFeature((int)Feature.OptionSimpleTaproot, true);
+
+        // Act
+        var result = features.IsCompatible(other, out var negotiated);
+
+        // Assert
+        Assert.False(result);
+        Assert.Null(negotiated);
+    }
+
+    [Theory]
+    [InlineData(Feature.OptionSimpleClose)]
+    [InlineData(Feature.OptionChannelType)]
+    public void Given_WeDoNotSupportTaproot_When_PeerSetsTaprootWithoutADependency_Then_ItIsAnIgnoredOddBit(
+        Feature dependency)
+    {
+        // Arrange (NL-973: LND with taproot overlay channels, litd, sets 81 without option_simple_close; before 81 was
+        // known to us it was an unknown odd bit and the connection was kept)
+        var features = new FeatureSet();
+        features.SetFeature(Feature.OptionSimpleClose, false);
+        var other = new FeatureSet();
+        other.SetFeature(Feature.OptionSimpleTaproot, false);
+        other.SetFeature(dependency, true, false);
+        other.SetFeature(dependency, false, false);
+        other.SetFeature((int)Feature.OptionSimpleTaproot, true);
+
+        // Act
+        var result = features.IsCompatible(other, out var negotiated);
+
+        // Assert
+        Assert.True(result);
+        Assert.NotNull(negotiated);
+        Assert.False(negotiated.HasFeature(Feature.OptionSimpleTaproot));
+    }
+
+    [Fact]
+    public void Given_WeDoNotSupportTaproot_When_PeerMissesAnotherDependency_Then_ReturnFalse()
+    {
+        // Arrange: only taproot's own dependencies are read leniently
+        var features = new FeatureSet();
+        var other = new FeatureSet();
+        other.SetFeature(Feature.OptionSimpleTaproot, false);
+        other.SetFeature(Feature.OptionShutdownAnySegwit, true, false);
+        other.SetFeature(Feature.OptionShutdownAnySegwit, false, false);
+        other.SetFeature((int)Feature.OptionSimpleClose, true);
+        other.SetFeature((int)Feature.OptionSimpleTaproot, true);
+
+        // Act
+        var result = features.IsCompatible(other, out _);
+
+        // Assert: option_simple_close without shutdown_anysegwit still fails the connection
+        Assert.False(result);
+        Assert.Contains((Feature.OptionSimpleClose, Feature.OptionShutdownAnySegwit), other.GetMissingDependencies());
     }
 }

@@ -361,9 +361,11 @@ public interface ILightningSigner
     /// secret half only to sign that commitment for broadcast.
     /// </summary>
     /// <param name="channelKeyIndex">The channel's key index (usable before the channel id exists: open/accept).</param>
-    /// <param name="fundingTxId">The funding the commitment spends. Ignored for commitment 0, whose nonce is sent in
-    /// <c>open_channel</c>/<c>accept_channel</c> before the funding txid is known: commitment 0 always uses the context
-    /// without a txid (only one commitment 0 is ever signed for broadcast, invariant S1).</param>
+    /// <param name="fundingTxId">The funding the commitment spends, the nonce's context. Null only for commitment 0 of a
+    /// v1 open, whose nonce is sent in <c>open_channel</c>/<c>accept_channel</c> before the funding txid is known (a v1
+    /// open has one funding transaction). Commitment 0 of a dual-funded open's attempt passes that attempt's txid: the
+    /// attempts are different transactions and must not share a nonce (NL-972). The channel id overload picks the
+    /// context itself (<c>ChannelSigningInfo.IsDualFunded</c>, splices always bound).</param>
     /// <param name="localCommitmentNumber">Our local commitment number the nonce verifies.</param>
     MusigPublicNonce GetLocalVerificationNonce(uint channelKeyIndex, TxId? fundingTxId, ulong localCommitmentNumber) =>
         throw new NotImplementedException("Taproot wave t02 lane SIG");

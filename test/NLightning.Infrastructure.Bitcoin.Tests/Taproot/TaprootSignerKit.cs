@@ -41,8 +41,9 @@ internal sealed class TaprootSignerKit
     public Musig2Service Musig { get; } = new();
 
     public TaprootSignerKit(ulong aliceLocalNumber = 0, ulong bobLocalNumber = 0, bool isSimpleTaproot = true,
-                            bool register = true)
+                            bool register = true, bool isDualFunded = false)
     {
+        IsDualFunded = isDualFunded;
         Alice = CreateSigner(0xa1);
         Bob = CreateSigner(0xb0);
         AliceBasepoints = Alice.GetChannelBasepoints(0u);
@@ -59,6 +60,9 @@ internal sealed class TaprootSignerKit
         Bob.RegisterChannel(ChannelId, SigningInfo(alice: false, bobLocalNumber, isSimpleTaproot));
     }
 
+    /// <summary>Whether the channel is registered as a dual-funded (v2) open.</summary>
+    public bool IsDualFunded { get; }
+
     /// <summary>The funding output (P2TR of the MuSig2 key path) as NBitcoin sees it.</summary>
     public TxOut FundingTxOut => FundingTx.Outputs[0];
 
@@ -70,7 +74,8 @@ internal sealed class TaprootSignerKit
             alice ? BobBasepoints.HtlcBasepoint : AliceBasepoints.HtlcBasepoint, localCommitmentNumber,
             dataLossDetected)
         {
-            IsSimpleTaproot = isSimpleTaproot
+            IsSimpleTaproot = isSimpleTaproot,
+            IsDualFunded = IsDualFunded
         };
 
     /// <summary>A transaction spending the funding output (a stand-in commitment or closing transaction).</summary>
