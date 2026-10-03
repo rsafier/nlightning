@@ -209,7 +209,7 @@ A relay is N incoming HTLCs → one outgoing payment of M HTLCs. It is its own e
 **Consumers of origin 3:**
 - `HtlcExpiryMonitor`, `HtlcUpstreamOutcomeReader`, `OnchainResolutionExecutor`, `RemoteCommitResolver`, `FinalHopClaims`, `DustExposureHtlcSwitch`.
 - Accounting: `TrampolineRelaySettled`, booked as relay income. The outgoing leg is never our spend.
-- `listforwards`: rows of kind `trampoline`.
+- `listforwards`: rows of kind `trampoline`, counted in the totals; failed attempts a payer's retry replaced kept as history (NL-899, NL-981). `listpayments`: relay legs hidden unless `--include-relay-legs`.
 
 ### TR4: client (payer)
 **Selection:** `Node:Payments:Trampoline` = `Never` (default) / `Auto` / `Always`, and `payinvoice`/`payoffer --trampoline <node>` (a new key on the existing requests).
@@ -316,4 +316,4 @@ Lanes ran in parallel worktrees, were merged with `--no-ff` into `wip/fafo` and 
 
 **NL-895 (lane `worktree-agent-a5cefe035b538e693`, 2026-10-03):** blinded hops as trampoline hops relay: the relay engine resolves a blinded hop's `short_channel_id` to our channel's peer (the switch's `OutgoingChannelResolver`, aliases and retired scids included; D-NL895-1) and prices it with the path's `payment_relay`/`payment_constraints`, never `Node:Trampoline` or NODE|26 (`TrampolineRelayPolicy.EvaluateBlinded`; D-NL895-2); the payer's inner payloads, its whole trampoline onion and the leg's outer payload (TLV 12 next to 20) equal vector [1] byte for byte; scenario 10(b) proven end to end (with and without C's dummy hop, and X's own `invalid_onion_blinding` on a constraint).
 
-**Not done:** interop proofs (NL-896); outer-only failures from the deadline monitor and dust switch (NL-897); attribution verification on trampoline failures (NL-898); listing gaps (NL-899). Owner decision pending: take `OptionTrampolineRouting` out of `ExperimentalFeatures`.
+**Not done:** interop proofs (NL-896); outer-only failures from the deadline monitor and dust switch (NL-897); attribution verification on trampoline failures (NL-898). The listing gaps (NL-899, NL-981) are fixed: `listforwards` counts the relays in its totals and keeps the failed attempts a retry replaced (migration `AddTrampolineRelayAttempts`), `listpayments` hides relay legs unless `--include-relay-legs` and shows a trampoline payment's node and inner route, and the channels report splits a relay's income per incoming channel; `getroute` stays our own routes only (help note; a trampoline route quote is NL-940). Owner decision pending: take `OptionTrampolineRouting` out of `ExperimentalFeatures`.

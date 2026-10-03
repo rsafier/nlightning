@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-03 by the trampoline observability lane (worktree branch from `wip/fafo` at `9418c968`): NL-899 and NL-981 (low) fixed in d78d6e7e and 021dd228 (migration `AddTrampolineRelayAttempts`); NL-940 (low, open) added: a `getroute` quote through a trampoline node. Summary: open low 69 -> 68, fixed low 417 -> 419, total 788 -> 789.
+
 Updated 2026-10-03 by the taproot wave t01 integrator (branch `wip/taproot-int` from `origin/wip/taproot-plan` at `ee682a23`, merged into `wip/fafo`): NL-913 fixed (cluster proof `tap-mx1`; CLN v26.06.8 does not signal simple close), NL-903 (low, fixed in 075a7920, f0ca4a5c and 5c14c684: review fixes) and NL-904 (medium, open: T3/T4 obligations from the review) new; NL-911 and NL-914 updated. NL-910 (low, open: a `ClnPeerStorageTests` cluster flake). Taproot NL-895..NL-899 renumbered to NL-911..NL-915 (collision with the trampoline follow-ups, which landed first).
 
 Updated 2026-10-03 by the namespace-cap lane (branch `wip/nscap`, owner decision 2026-10-03): NL-844 (fixed, b8362d19, 501bebd7: the harness cap on run namespaces is 12, set once in `RunAdmission.DefaultMaxRuns`; the matrix in 1,058 s at a peak of 11 namespaces) and NL-905 (open, low: the cln suite is the matrix long pole at 12 namespaces). Summary rows recounted from the entries after the merge of `wip/fafo` at bd1a0dc5 (NL-806 lane): 773 entries, no duplicate IDs.
@@ -153,12 +155,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 69 | 72 |
+| open | 0 | 0 | 3 | 68 | 71 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 63 | 201 | 417 | 695 |
+| fixed | 14 | 63 | 201 | 419 | 697 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 3 | 5 |
-| **Total** | **14** | **63** | **212** | **499** | **788** |
+| **Total** | **14** | **63** | **212** | **500** | **789** |
 
 ### Epics
 
@@ -1874,12 +1876,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-981 `listforwards` totals leave out trampoline relay fees, and the relay's outgoing leg shows in `listpayments` as a plain payment
-- **Status:** open
+- **Status:** fixed (d78d6e7e)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Daemon/Handlers/ListForwardsClientHandler.cs` (summary totals), `Payments.IsTrampolineRelay` consumers in the `listpayments` path
 - **Evidence:** Mutinynet trampoline live test (2026-10-03). FAFO earned 92,000 msat in 5 trampoline relays, booked correctly as `TrampolineRelaySettled` (income:lightning:routing 93,007 msat with 1,007 msat from a plain forward). But the `listforwards` "fees earned" total counts only the plain forward. FAFO's relay legs appear in `listpayments` without a marker. A failed relay row is replaced when the payer retries the same hash. The failed-row history and the listing gaps overlap NL-899; the totals gap is new.
 - **Fix sketch:** add the relay rows (key 2) to the totals, mark relay legs in `listpayments` (or hide them behind a flag), and keep failed relay attempts.
+- **Fix (d78d6e7e):** the `listforwards` summary (keys 0-4) counts the relays with the forwards (collecting = pending, sending = offered) and adds the fulfilled relays' `FeeEarned` to the fees earned; keys 7-11 carry the relays' share (`ITrampolineRelayDbRepository.SummarizeAsync`, replaced attempts counted as failed) and the client prints it as `of which trampoline relays: n - ...; fees earned x msat`. Relay legs are hidden from `listpayments` unless `--include-relay-legs` and marked when listed; the failed-attempt history is NL-899's fix. Tests: Daemon `ListForwardsClientHandlerTests`, `ListForwardsPrinterTests`, `PaymentsMessagePackTests.Given_TrampolineListings_*`; Integration `TrampolineRelayAttemptsSchemaRoundTrip` (totals on SQLite).
 - **Blocks/Blocked-by:** Related NL-899, NL-875
 - **Plan ref:** `TRAMPOLINE_PLAN.md`
 
@@ -2765,14 +2768,25 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TRAMPOLINE_PLAN R2
 
 ### NL-899 Trampoline observability gaps: `listpayments`/`getroute`, failed relay history
-- **Status:** open
+- **Status:** fixed (d78d6e7e, 021dd228)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `Daemon/Handlers/ListPaymentsClientHandler.cs`, `GetRouteClientHandler`, `ITrampolineRelayDbRepository.RemoveFailedAsync`
 - **Evidence:** TR3/TR4 reports (2026-10-03): `getroute` and `listpayments` know nothing of trampolines (a payer's inner route is in `PaymentTrampolineHops` only; a relay's outgoing leg shows in `listpayments` as a row with `IsTrampolineRelay` but no marker); a payer's retry of the same hash deletes the failed relay row and its parts, so `listforwards` loses that history; the channels report credits a relay's income to its first incoming channel only.
 - **Fix sketch:** show the trampoline node/inner route in `listpayments`, hide or mark relay legs, keep failed relay attempts (attempt column or history table), split relay income per incoming part.
+- **Fix (d78d6e7e, 021dd228):** (1) failed relay history: `RemoveFailedAsync` keeps the replaced relay as a row of the new table `TrampolineRelayAttempts` (migration `AddTrampolineRelayAttempts`, all three providers, compiled models; PK hash + attempt from 1; next node, amounts, part count, incoming channel ids, failure code/reason, times) in the same save, so the relay table stays keyed by hash and the engine's retry flow, the switch and the resolvers are unchanged; `listforwards` merges the attempts into the relay page newest first (relay IPC key 14 `ReplacedAttempt`, printed `attempt n, replaced by the payer's retry`) and counts them as failed. (2) `listpayments` hides relay legs unless `--include-relay-legs` (request key 2), says how many it hid (response key 1), marks a listed leg (payment key 18 `IsTrampolineRelay`) and shows a trampoline payment's node and its last attempt's inner route from `PaymentTrampolineHops` (keys 19-21; repository `ListAsync(skip, take, includeTrampolineRelays)`, `CountTrampolineRelaysAsync`). (3) the channels report splits a relay's income per incoming channel in proportion to its amount (021dd228: new detail `incomingAmountsMsat` on `TrampolineRelaySettled`; sealed events are not rewritten, so a relay booked before it stays on its first channel). (4) `getroute`: its help says trampoline routes are not planned there; quoting one is left open as NL-940. Known limit: a payment retried without a trampoline after a trampoline attempt with the same hash still shows the earlier attempt's trampoline route (the hops have no link to the payment row). Tests: Daemon `ListPaymentsClientHandlerTests`, `ListPaymentsPrinterTests`, `ListForwardsClientHandlerTests`, `ListForwardsPrinterTests`, `ClientAppTests`, `PaymentsMessagePackTests`; Integration `TrampolineRelayPersistenceTests.Given_SchemaFromBeforeAddTrampolineRelayAttempts_*` (also in `Docker/PostgresTests`, not run); Application `TrampolineRelayServiceTests` (the NODE|26 retry keeps attempt 1), `TrampolineAccountingEventsTests`, `AccountingReportServiceTests`.
 - **Blocks/Blocked-by:** Follow-up of NL-875
 - **Plan ref:** TRAMPOLINE_PLAN TR3/TR4
+
+### NL-940 `getroute` cannot quote a route through a trampoline node
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Daemon/Handlers/GetRouteClientHandler.cs`, `Application/Payments/Routing/` (`IRouteQueryService`)
+- **Evidence:** split off NL-899 (d78d6e7e): `getroute` plans our own routes only; a payment that `payinvoice --trampoline` or `Node:Payments:Trampoline=Auto` would send through a trampoline node has no quote. Only the help text says so.
+- **Fix sketch:** an optional `--trampoline <node>` on `getroute` that quotes the outer route to the trampoline node plus its cached (or default) trampoline policy and CLTV delta, printed as a two-layer route.
+- **Blocks/Blocked-by:** Related NL-899, NL-875
+- **Plan ref:** TRAMPOLINE_PLAN TR4
 
 ### NL-920 `DualFundUpfrontShutdownScriptTests.Given_AP2TrScriptWithAnySegwit_*` fails on `wip/fafo` at `ed4d7e7a`
 - **Status:** duplicate of NL-903 (fixed upstream in `f0ca4a5c`/`5c14c684`: the test no longer runs on the 1 s open timeout; 4/4 on `wip/fafo` after the NL-895 merge)
