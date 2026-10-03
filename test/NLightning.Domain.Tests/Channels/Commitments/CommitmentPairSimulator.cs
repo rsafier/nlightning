@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 
 namespace NLightning.Domain.Tests.Channels.Commitments;
 
+using Domain.Bitcoin.Transactions.Extensions;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.ValueObjects;
@@ -1144,7 +1145,7 @@ internal sealed class CommitmentPairSimulator
             {
                 var localSpec = state.LocalCommit.Spec;
                 var funderCost = CommitmentFeeCalculator.FunderCostMsat(localSpec, state.Params.Local.DustLimitSatoshis,
-                                                                        state.Params.OptionAnchors);
+                                                                        state.Params.Format);
                 Check(localSpec.RemoteMsat >= funderCost,
                       $"{node.Name} holds local commitment {state.LocalCommit.Number} whose funder has {localSpec.RemoteMsat} msat for a {funderCost} msat fee");
             }
@@ -1276,7 +1277,7 @@ internal sealed class CommitmentPairSimulator
             {
                 var localSpec = ChannelCommitments.SpecFor(state.LocalCommit.Spec, funding);
                 var funderCost = CommitmentFeeCalculator.FunderCostMsat(localSpec, state.Params.Local.DustLimitSatoshis,
-                                                                        state.Params.OptionAnchors);
+                                                                        state.Params.Format);
                 Check(localSpec.RemoteMsat >= funderCost,
                       $"{node.Name} local commitment {state.LocalCommit.Number} on {funding.FundingTxId}: the funder has {localSpec.RemoteMsat} msat for a {funderCost} msat fee (SP-I6)");
             }
@@ -1342,7 +1343,7 @@ internal sealed class CommitmentPairSimulator
                                                           state.LocalCommit.Spec.RemoteMsat,
                                                           state.LocalCommit.Spec.Htlcs),
                                        Math.Max(state.Params.Local.DustLimitSatoshis,
-                                                state.Params.Remote.DustLimitSatoshis), state.Params.OptionAnchors)
+                                                state.Params.Remote.DustLimitSatoshis), state.Params.Format)
                                  : 0;
             var reserveMsat = Math.Max(state.Params.LocalReserveMsat, capacitySat * 1_000 / 100);
             var spare = (long)balanceMsat - (long)reserveMsat - (long)funderCost - 1_000_000;
@@ -1592,7 +1593,8 @@ internal sealed record RevokeMessage(ulong RevokedNumber, Secret Secret, Compact
 internal sealed class DigestCommitmentSigner(SimNode node) : ICommitmentSigner
 {
     public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
-                                                     CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint)
+                                                     CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint,
+                                                     MusigPublicNonce? remoteVerificationNonce = null)
     {
         var state = node.State;
 
@@ -1658,7 +1660,7 @@ internal static class CommitmentDigest
         }
 
         var digest = SHA256.HashData(buffer);
-        var untrimmed = htlcs.Where(h => !CommitmentFeeCalculator.IsHtlcTrimmed(spec, h, holderDustSat, anchors))
+        var untrimmed = htlcs.Where(h => !CommitmentFeeCalculator.IsHtlcTrimmed(spec, h, holderDustSat, CommitmentFormatExtensions.FromOptionAnchors(anchors)))
                              .Select((h, i) => ToSignature(SHA256.HashData([.. digest, (byte)i, .. BitConverter.GetBytes(h.Id)])))
                              .ToList();
         return new CommitmentSignatures(ToSignature(digest), untrimmed);

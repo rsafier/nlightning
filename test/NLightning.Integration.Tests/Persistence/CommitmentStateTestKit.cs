@@ -4,6 +4,7 @@ using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Integration.Tests.Persistence;
 
+using Domain.Bitcoin.Transactions.Extensions;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.ValueObjects;
@@ -284,7 +285,7 @@ internal sealed class CommitmentDanceDriver
     {
         var htlcCount = CommitmentFeeCalculator.UntrimmedHtlcCount(Us.BuildSpec(CommitmentSide.Local, funding),
                                                                    Us.Params.Local.DustLimitSatoshis,
-                                                                   Us.Params.OptionAnchors);
+                                                                   Us.Params.Format);
         var result = Us.ReceiveSpliceCommitment(funding, Signatures(0x5C, htlcCount), _verifier);
         Us = result.Next;
         return result;
@@ -363,8 +364,9 @@ internal sealed class CommitmentDanceDriver
     private sealed class FakeCommitmentSigner(ulong remoteDustSat, bool anchors) : ICommitmentSigner
     {
         public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
-                                                         CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint) =>
-            Signatures((byte)number, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, remoteDustSat, anchors));
+                                                         CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint,
+                                                         MusigPublicNonce? remoteVerificationNonce = null) =>
+            Signatures((byte)number, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, remoteDustSat, CommitmentFormatExtensions.FromOptionAnchors(anchors)));
     }
 
     private sealed class FakeCommitmentVerifier : ICommitmentVerifier

@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Tests.Channels.Commitments;
 
+using Domain.Bitcoin.Transactions.Extensions;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.ValueObjects;
@@ -88,10 +89,11 @@ internal sealed class BindingCommitmentSigner(ulong remoteDustSat, bool anchors)
     public List<(TxId? FundingTxId, ulong Number, CommitmentSpec Spec)> Calls { get; } = [];
 
     public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
-                                                     CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint)
+                                                     CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint,
+                                                     MusigPublicNonce? remoteVerificationNonce = null)
     {
         Calls.Add((funding?.FundingTxId, number, spec));
-        var count = CommitmentFeeCalculator.UntrimmedHtlcCount(spec, remoteDustSat, anchors);
+        var count = CommitmentFeeCalculator.UntrimmedHtlcCount(spec, remoteDustSat, CommitmentFormatExtensions.FromOptionAnchors(anchors));
         return new CommitmentSignatures(Sign(funding, number, spec), Enumerable.Range(0, count)
                                                                               .Select(i => CommitmentsTestKit.Signature((byte)(i + 1)))
                                                                               .ToList());
