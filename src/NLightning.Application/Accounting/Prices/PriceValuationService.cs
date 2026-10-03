@@ -115,6 +115,8 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
     private long _totalValued;
     private long _totalFetched;
     private volatile bool _catchingUp;
+    private int _sourceFailures;
+    private string? _lastSourceFailure;
 
     public PriceValuationService(IServiceScopeFactory scopeFactory, ILogger<PriceValuationService> logger,
                                  IOptions<AccountingOptions>? accountingOptions = null,
@@ -356,6 +358,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
         {
             var currency = Currency;
             int requested = 0, stored = 0, unavailable = 0;
+            ResetSourceFailures();
             await using (var scope = _scopeFactory.CreateAsyncScope())
             {
                 var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -393,6 +396,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                 _logger.LogInformation(
                     "Fetched {Currency} prices for {Requested} of {Hours} hours from {Since:O}: {Stored} stored, "
                   + "{Unavailable} unavailable", currency, requested, hours.Count, first, stored, unavailable);
+                ReportSourceFailures(currency, requested);
                 var valuation = IsEnabled ? await RoundAsync(0, true, cancellationToken) : null;
                 return new AccountingPriceFetchResult(currency, first, end, hours.Count, hours.Count - requested,
                                                       requested, stored, unavailable, valuation);
@@ -583,6 +587,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
         var fetchBudget = canFetch ? Math.Max(0, maxFetches) : 0;
         int listed = 0, valued = 0, fetched = 0, stored = 0, late = 0, closedLeft = 0, unpriced = 0, deferred = 0;
         var budgetLeftOver = false;
+        ResetSourceFailures();
 
         for (var page = 0; page < MaxPagesPerRound; page++)
         {
@@ -764,6 +769,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
         {
             _fetchedCounter.Add(fetched);
             Interlocked.Add(ref _totalFetched, fetched);
+            ReportSourceFailures(currency, fetched);
         }
 
         if (late > 0)
@@ -1062,10 +1068,36 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
         return resolved;
     }
 
+    private void ResetSourceFailures()
+    {
+        _sourceFailures = 0;
+        _lastSourceFailure = null;
+    }
+
+    /// <summary>
+    /// One warning for the source's failures of a round or <c>prices fetch</c> (NL-868): the HTTP source logs each at
+    /// Debug, so an unreachable source no longer warns once per hour asked.
+    /// </summary>
+    private void ReportSourceFailures(string currency, int asked)
+    {
+        if (_sourceFailures == 0)
+            return;
+
+        _logger.LogWarning("The price source failed for {Failed} of {Asked} {Currency} hours asked this round; the "
+                         + "postings stay unvalued until a later round gets their price. Last failure: {Failure}",
+                           _sourceFailures, asked, currency, _lastSourceFailure);
+    }
+
     private async Task<AccountingPrice?> AskSourceAsync(string currency, DateTimeOffset at,
                                                         CancellationToken cancellationToken)
     {
         var price = await _priceSource!.GetPriceAsync(currency, at, cancellationToken);
+        if (_priceSource.LastFailure is { } failure)
+        {
+            _sourceFailures++;
+            _lastSourceFailure = failure;
+        }
+
         if (price is null || !AccountingPriceOptions.IsCurrencyCode(price.Currency?.Trim().ToUpperInvariant())
                           || price.Price <= 0 || price.Price > AccountingPriceCsv.MaxPrice)
             return null;

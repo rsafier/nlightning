@@ -649,6 +649,44 @@ public class NodeServiceExtensionsTests
         Assert.Contains(exception.Failures, f => f.Contains(expectedFailure) && f.Contains("AssumeChannelValid"));
     }
 
+    [Theory]
+    [InlineData("Off", null, null)]
+    [InlineData("Off", "true", "Node:Tor:Mode is Off")]
+    [InlineData("Off", "false", null)]
+    [InlineData("Hybrid", null, null)]
+    [InlineData("Hybrid", "true", null)]
+    [InlineData("Hybrid", "false", null)]
+    [InlineData("TorOnly", null, null)]
+    [InlineData("TorOnly", "true", null)]
+    [InlineData("TorOnly", "false", "Node:Tor:Mode is TorOnly")]
+    public void Given_PricesThroughTor_When_AccountingPriceOptionsResolved_Then_ItIsBoundAndAContradictionIsRefused(
+        string torMode, string? throughTor, string? expectedFailure)
+    {
+        // Arrange: ValidateOnStart runs this check when the daemon's host starts (NL-868)
+        var extra = new List<(string, string)>
+        {
+            ("Node:Tor:Mode", torMode), ("Node:ListenAddresses:0", "127.0.0.1:9735")
+        };
+        if (throughTor is not null)
+            extra.Add(("Accounting:Prices:ThroughTor", throughTor));
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(extra.ToArray()), new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        AccountingPriceOptions Resolve() => provider.GetRequiredService<IOptions<AccountingPriceOptions>>().Value;
+
+        // Assert
+        if (expectedFailure is null)
+        {
+            Assert.Equal(throughTor is null ? null : bool.Parse(throughTor), Resolve().ThroughTor);
+            return;
+        }
+
+        var exception = Assert.Throws<OptionsValidationException>(Resolve);
+        Assert.Contains(exception.Failures, f => f.Contains(expectedFailure) && f.Contains("ThroughTor"));
+    }
+
     [Fact]
     public void Given_AssumeChannelValidUnset_When_GossipGraphOptionsResolvedOnMainnet_Then_ItIsOffAndValid()
     {

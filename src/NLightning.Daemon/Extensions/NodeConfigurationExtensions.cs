@@ -344,7 +344,8 @@ public static class NodeConfigurationExtensions
     /// sealer and snapshot defaults, <c>Profile</c> <c>Operational</c> (the financial book is opt-in, D-A5),
     /// <c>CostBasis</c> <c>Fifo</c> (D-A2) and every <see cref="AccountingPriceOptions"/> default under <c>Prices</c>
     /// (D-A1, D-A11: USD, the operator's <c>prices.csv</c> first, then mempool.space's historical price API, through
-    /// Tor whenever Tor is on (NL-677); nothing is asked while the financial book has no unvalued posting; plain
+    /// Tor whenever Tor is on (NL-677; <c>ThroughTor</c> null: unset follows the Tor mode, NL-868, and with Tor
+    /// <see cref="AccountingPriceOptions.MempoolOnionUrl"/> is the recommended <c>Url</c>); nothing is asked while the financial book has no unvalued posting; plain
     /// <c>http://</c> refused and fetched prices sanity-bounded, NL-678). <c>FeeEstimation:AllowPlainHttp</c> is false
     /// (NL-678).
     /// </remarks>
@@ -595,6 +596,7 @@ public static class NodeConfigurationExtensions
                      "Source": "{{AC_PRICE_SOURCE}}",
                      "Url": "{{AC_PRICE_URL}}",
                      "AllowPlainHttp": false,
+                     "ThroughTor": null,
                      "MaxPriceJumpFactor": {{AC_PRICE_MAX_JUMP}},
                      "CsvFile": "{{AC_PRICE_CSV}}",
                      "MaxAge": "{{AC_PRICE_MAX_AGE}}",

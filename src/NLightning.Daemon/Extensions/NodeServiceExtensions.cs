@@ -269,8 +269,21 @@ public static class NodeServiceExtensions
         services.Configure<AccountingOptions>(configuration.GetSection(AccountingOptions.SectionName));
         services.AddAccountingIpcServices();
         // The financial books' prices (NL-602 A3-T2, Accounting:Prices): the price file and mempool.space's historical
-        // price, asked only by the back-valuation job (PriceValuationService, from AddApplicationServices)
-        services.Configure<AccountingPriceOptions>(configuration.GetSection(AccountingPriceOptions.SectionName));
+        // price, asked only by the back-valuation job (PriceValuationService, from AddApplicationServices). Other invalid
+        // price options only keep the job off (logged); a ThroughTor that contradicts Node:Tor:Mode refuses the start
+        // (NL-868: true with Tor Off, false in TorOnly), never a silent change of route
+        services.AddOptions<AccountingPriceOptions>()
+                .Bind(configuration.GetSection(AccountingPriceOptions.SectionName))
+                .Validate<IOptions<NodeOptions>>((options, nodeOptions) =>
+                 {
+                     var errors = options.GetTorRoutingErrors(nodeOptions.Value.Tor);
+                     if (errors.Count > 0)
+                         throw new OptionsValidationException(AccountingPriceOptions.SectionName,
+                                                              typeof(AccountingPriceOptions), errors);
+
+                     return true;
+                 })
+                .ValidateOnStart();
 
         // One started fee service shared by every consumer (DustService, the close coordinator, ChannelFactory,
         // FeeUpdateScheduler); a transient typed HttpClient left all but the started instance without an estimate

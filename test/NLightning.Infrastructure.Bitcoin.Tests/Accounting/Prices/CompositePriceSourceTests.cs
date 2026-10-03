@@ -66,6 +66,25 @@ public class CompositePriceSourceTests
         Assert.Equal(2m, price?.Price);
     }
 
+    [Fact]
+    public async Task Given_TheHttpSourceFails_When_Asked_Then_ItsFailureIsTheCompositesUntilTheNextAsk()
+    {
+        // Arrange (NL-868: the back-valuation sums a round's failures in one warning)
+        var file = new StubSource(Price(s_at.AddDays(-3), 1m));
+        var http = new StubSource(null, "unreachable");
+        var source = new CompositePriceSource([file, http], MsOptions.Create(new AccountingPriceOptions()));
+        var fileOnly = new CompositePriceSource([file], MsOptions.Create(new AccountingPriceOptions()));
+
+        // Act
+        var price = await source.GetPriceAsync("USD", s_at, TestContext.Current.CancellationToken);
+        await fileOnly.GetPriceAsync("USD", s_at, TestContext.Current.CancellationToken);
+
+        // Assert: the old file price is still answered, and the failure is reported; a file without a price is none
+        Assert.Equal(1m, price?.Price);
+        Assert.Equal("unreachable", source.LastFailure);
+        Assert.Null(fileOnly.LastFailure);
+    }
+
     [Theory]
     [InlineData(AccountingPriceSourceMode.None, 0)]
     [InlineData(AccountingPriceSourceMode.Csv, 1)]
@@ -119,9 +138,11 @@ public class CompositePriceSourceTests
     private static AccountingPrice Price(DateTimeOffset time, decimal price) =>
         new(0, "USD", time, price, AccountingPriceSource.Http, time);
 
-    private sealed class StubSource(AccountingPrice? price) : IPriceSource
+    private sealed class StubSource(AccountingPrice? price, string? failure = null) : IPriceSource
     {
         public int Calls { get; private set; }
+
+        public string? LastFailure => Calls > 0 ? failure : null;
 
         public Task<AccountingPrice?> GetPriceAsync(string currency, DateTimeOffset time,
                                                     CancellationToken cancellationToken = default)

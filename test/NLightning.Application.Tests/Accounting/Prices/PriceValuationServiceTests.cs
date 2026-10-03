@@ -334,6 +334,61 @@ public sealed class PriceValuationServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Given_TheSourceFailsForSeveralHours_When_ARoundRuns_Then_OneWarningCountsThem()
+    {
+        // Arrange (NL-868): three hours, two of them failing at the source, one answered
+        var logger = new RecordingLogger<PriceValuationService>();
+        var source = new StubPriceSource(at => at.Hour == 12 ? Price(AccountingValuationHour(at), 80_000m) : null,
+                                         at => at.Hour == 12 ? null : $"unreachable at {at:HH}");
+        await AddEntryAsync(s_hour.AddMinutes(10), 1_000);
+        await AddEntryAsync(s_hour.AddHours(1).AddMinutes(10), 1_000);
+        await AddEntryAsync(s_hour.AddHours(2).AddMinutes(10), 1_000);
+        await using var service = CreateService(new AccountingPriceOptions(), source, logger: logger);
+
+        // Act
+        var round = await service.ValueNowAsync(TestContext.Current.CancellationToken);
+
+        // Assert: one warning with the count and the last failure
+        Assert.Equal(3, round.Fetched);
+        var warning = Assert.Single(logger.At(LogLevel.Warning));
+        Assert.Contains("2 of 3 USD hours", warning);
+        Assert.Contains("unreachable at 11", warning);
+    }
+
+    [Fact]
+    public async Task Given_HoursTheFileHasNoPriceFor_When_ARoundRuns_Then_ThereIsNoWarning()
+    {
+        // Arrange (NL-868): "no price" without a failure of the source is not a warning
+        var logger = new RecordingLogger<PriceValuationService>();
+        await AddEntryAsync(s_hour.AddMinutes(10), 1_000);
+        await using var service = CreateService(new AccountingPriceOptions(), new StubPriceSource(_ => null),
+                                                logger: logger);
+
+        // Act
+        await service.ValueNowAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(logger.At(LogLevel.Warning));
+    }
+
+    [Fact]
+    public async Task Given_AFetchWithFailures_When_Fetched_Then_OneWarningCountsThem()
+    {
+        // Arrange (NL-868)
+        var logger = new RecordingLogger<PriceValuationService>();
+        var source = new StubPriceSource(_ => null, _ => "unreachable");
+        await using var service = CreateService(new AccountingPriceOptions(), source, logger: logger);
+
+        // Act
+        var result = await service.FetchAsync(s_hour, s_hour.AddHours(3), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(3, result.Unavailable);
+        var warning = Assert.Single(logger.At(LogLevel.Warning));
+        Assert.Contains("3 of 3 USD hours", warning);
+    }
+
+    [Fact]
     public async Task Given_MorePostingsThanAPageThatCannotBeValued_When_ARoundRuns_Then_LaterPagesAreStillValued()
     {
         // Arrange: three old entries (six postings) with no price, then one with a price; pages of two postings
@@ -579,8 +634,9 @@ public sealed class PriceValuationServiceTests : IAsyncLifetime
 
     private PriceValuationService CreateService(AccountingPriceOptions options, IPriceSource? source = null,
                                                 IAccountingAdjustmentSink? sink = null, bool booksEnabled = true,
-                                                int pageSize = PriceValuationService.DefaultPageSize) =>
-        new(Provider.GetRequiredService<IServiceScopeFactory>(), NullLogger<PriceValuationService>.Instance,
+                                                int pageSize = PriceValuationService.DefaultPageSize,
+                                                ILogger<PriceValuationService>? logger = null) =>
+        new(Provider.GetRequiredService<IServiceScopeFactory>(), logger ?? NullLogger<PriceValuationService>.Instance,
             MsOptions.Create(new AccountingOptions { Enabled = booksEnabled }), MsOptions.Create(options), source,
             sink, _time)
         {
@@ -668,10 +724,13 @@ public sealed class PriceValuationServiceTests : IAsyncLifetime
         return services.BuildServiceProvider();
     }
 
-    private sealed class StubPriceSource(Func<DateTimeOffset, AccountingPrice?> answer) : IPriceSource
+    private sealed class StubPriceSource(Func<DateTimeOffset, AccountingPrice?> answer,
+                                         Func<DateTimeOffset, string?>? failure = null) : IPriceSource
     {
         private readonly Lock _gate = new();
         private readonly List<DateTimeOffset> _asked = [];
+
+        public string? LastFailure { get; private set; }
 
         public IReadOnlyList<DateTimeOffset> Asked
         {
@@ -687,6 +746,7 @@ public sealed class PriceValuationServiceTests : IAsyncLifetime
         {
             lock (_gate)
                 _asked.Add(time);
+            LastFailure = failure?.Invoke(time);
             return Task.FromResult(answer(time));
         }
     }
