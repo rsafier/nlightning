@@ -48,9 +48,11 @@ internal sealed class TrampolineOnionService : ITrampolineOnionService
                 throw new ArgumentException($"Trampoline hop {i} is null.", nameof(hops));
 
             framedLength += GetFramedPayloadLength(hops[i].Payload.Length);
-            if (framedLength > OnionConstants.MaxErrorPacketLength)
-                throw new ArgumentException($"The trampoline payloads exceed {OnionConstants.MaxErrorPacketLength} bytes.",
-                                            nameof(hops));
+            // The packet travels inside the outer onion's 1300 bytes of payloads, so it can never be longer
+            if (framedLength > OnionConstants.HopPayloadsLength)
+                throw new ArgumentException(
+                    $"The framed trampoline payloads exceed the outer onion's {OnionConstants.HopPayloadsLength} bytes.",
+                    nameof(hops));
         }
 
         var hopPayloadsLength = sizePolicy.ResolveHopPayloadsLength((int)framedLength);

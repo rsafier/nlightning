@@ -38,7 +38,9 @@ public readonly record struct TrampolineOnionSizePolicy
     /// <summary>
     /// A fixed <c>hop_payloads</c> length; building fails when the framed payloads do not fit.
     /// </summary>
-    /// <exception cref="ArgumentOutOfRangeException">If <paramref name="hopPayloadsLength"/> is not positive.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// If <paramref name="hopPayloadsLength"/> is not positive.
+    /// </exception>
     public static TrampolineOnionSizePolicy Fixed(int hopPayloadsLength)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(hopPayloadsLength);
@@ -54,7 +56,9 @@ public readonly record struct TrampolineOnionSizePolicy
     /// The largest length the caller can carry, typically
     /// <see cref="Interfaces.ITrampolineOnionService.GetMaxHopPayloadsLength"/> for its outer route.
     /// </param>
-    /// <exception cref="ArgumentOutOfRangeException">If <paramref name="maxHopPayloadsLength"/> is not positive.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// If <paramref name="maxHopPayloadsLength"/> is not positive.
+    /// </exception>
     public static TrampolineOnionSizePolicy Auto(int maxHopPayloadsLength)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxHopPayloadsLength);

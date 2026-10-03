@@ -51,8 +51,8 @@ public interface ITrampolineOnionService
     /// <returns>
     /// The peeled layer: <see cref="PeeledOnion.Payload"/> is this node's trampoline payload,
     /// <see cref="PeeledOnion.SharedSecret"/> the trampoline shared secret (to create or wrap trampoline failures),
-    /// and <see cref="PeeledOnion.NextPacket"/> the packet for the next trampoline node (null when final), with the same
-    /// <c>hop_payloads</c> length.
+    /// and <see cref="PeeledOnion.NextPacket"/> the packet for the next trampoline node (null when final), with the
+    /// same <c>hop_payloads</c> length.
     /// </returns>
     /// <exception cref="OnionException">
     /// <para>

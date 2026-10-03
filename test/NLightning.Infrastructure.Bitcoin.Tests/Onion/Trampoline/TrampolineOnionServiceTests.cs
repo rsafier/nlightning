@@ -334,10 +334,13 @@ public class TrampolineOnionServiceTests
 
         // Act
         var onionService = provider.GetRequiredService<ITrampolineOnionService>();
+        var failureService = provider.GetRequiredService<ITrampolineFailureOnionService>();
 
         // Assert
         Assert.IsType<TrampolineOnionService>(onionService);
         Assert.Same(onionService, provider.GetRequiredService<ITrampolineOnionService>());
+        Assert.IsType<TrampolineFailureOnionService>(failureService);
+        Assert.Same(failureService, provider.GetRequiredService<ITrampolineFailureOnionService>());
     }
 
     /// <summary>
