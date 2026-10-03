@@ -1656,7 +1656,8 @@ cb5c258f merge).
   classes (`SpliceLiquidityAdsTests`, `DualFundLiquidityAdsTests`, `DualFundLiquidityAdsRefusalTests`,
   `SpliceHarnessTests`, `SpliceRbfHarnessTests`, `LiquidityLeasesTests`, Domain `LiquidityPurchaseModelTests`),
   the non-Docker persistence tests (incl. `CompiledModelTests`, `PersistenceConfigurationTests`) and Docker
-  `PostgresTests` 25/25 with the new migration's round trip.
+  `PostgresTests` 25/25 with the new migration's round trip, and Docker `EclairLiquidityAdsTests` 4/4 + 1 `Explicit`
+  not run (158 s, the splice purchase and its RBF against Eclair 0.14.3). Fixes in `fc3f52ab`.
 
 ## 6. Risks and open questions
 

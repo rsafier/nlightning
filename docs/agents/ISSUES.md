@@ -7013,7 +7013,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-870 A splice aborted after our `commitment_signed` left its liquidity purchase Pending, so the lease guard refused `closechannel` for good
-- **Status:** fixed (SHA_NL870)
+- **Status:** fixed (fc3f52ab)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Splicing/SpliceService.cs` (`OnSpliceAbortedAsync`, `DiscardStoredFundingAsync`), `SpliceService.Liquidity.cs` (`StagePurchaseAsync`, new `StageAbandonedPurchaseAsync`)
@@ -7023,7 +7023,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** LIQUIDITY_ADS_PLAN LA3/LA4
 
 ### NL-871 An RBF that repeated a liquidity purchase dropped the buyer's `--max-liquidity-fee`, so by default nothing checked its fee
-- **Status:** fixed (SHA_NL870)
+- **Status:** fixed (fc3f52ab)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`CreateRbfLiquidityRequest`, `CheckWillFund`, `RecordPurchase`), `Channels/Splicing/SpliceService.Liquidity.cs` (`CreateRbfPurchaseRequest`, `StagePurchaseAsync`), `Domain/LiquidityAds/Models/LiquidityPurchaseModel.cs`, `LiquidityPurchases` (migration `AddLiquidityPurchaseMaxFee`)
