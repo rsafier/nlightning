@@ -239,7 +239,7 @@ The same topology model, sized up, on a multi-node cluster.
    - **Prepared: in-tree LND client (wip/lnd-grpc).** The generated clients, `LndNodeConnection` and `LndNodePool`
      exist and are proven against LND 0.21.4; the swap is a `using`/type rename (record below).
 4. **Eclair, LDK, Tor, Postgres, faults (≈2–3 days).** Port the remaining fixtures; Tor closes NL-572; NetworkPolicy partition tests are new coverage.
-   Done apart from Tor ("Phase 3/4 record"); phase 3's fixture wiring and `lnunit` removal remain.
+   Done apart from Tor ("Phase 3/4 record"); phase 3's fixture wiring is done ("Phase 3 completion record"); the `lnunit` removal remains.
 5. **Runner (≈1–2 days).**
    - `run-cluster` replaces `run-{onchain,gossip,abcd,interop}.sh` and the hand-made LND runs.
    - It builds once, then runs the suite matrix with N runs in flight, reruns one failed class alone, prints a summary and collects diagnostics.
@@ -1088,6 +1088,52 @@ Fixture ready, cluster against Docker: CLN 6.3 s / 3.0 s, Eclair 25.8 s (21.8-36
 5. **Phase 6 full-matrix proof (about 1 day plus reruns):** the whole matrix twice concurrently, then at the tuned N;
    wall time against today's serial pass; NL-262 and NL-276 closed.
 Open items carried: NL-780, NL-796, NL-806, and the NL-805/NL-810 merge.
+
+### Phase 3 completion record: the LND fixture on the cluster backend (2026-10-03, branch `hf-lnd-wire` from 7593fdda)
+
+What remained as item 1 of the "Phase 3/4 record": `LightningRegtestNetworkFixture` behind `NLTG_TEST_BACKEND` and
+the LND Docker suite on the cluster.
+
+- **Fixture.** `LightningRegtestNetworkFixture` (collections `regtest`, `onchain-regtest`, `gossip-regtest`) keeps its
+  members and delegates to `Fixtures/Lnd/ILndNetworkBackend`, picked by `TestBackend.Current` when xunit creates it;
+  it is now an `IAsyncLifetime` (the network starts in `InitializeAsync`, not in the constructor).
+  `Fixtures/Lnd/DockerLndBackend` is the former fixture moved over unchanged (LNUnit's builder, the same containers,
+  flags, channels and image; it removes containers on dispose only once it got to the builder, so a backend that never
+  started never removes another process's containers); `ClusterLndBackend` is the warm `LndRegtestNetwork`. New
+  members on both: `GetLndPeerEndpointAsync(lnd)`, `HostAddressForLnd` (`HOST_ADDRESS`/`host.docker.internal`, or
+  `host.orb.internal`), `DumpLndLogsAsync(aliases)` (container or pod logs), `Backend`, `Cluster`.
+- **NL-780 fixed.** `NLightningTestNode`s made from the fixture dial LND at `GetLndPeerEndpointAsync`: the resolved
+  container IP on Docker (as before), the Service name `alias.<ns>.svc.cluster.local:9735` on the cluster. Our node
+  stores that name, so after a cluster restart of alice (new pod IP) its reconnect backoff reaches the new pod
+  (`ReestablishFlowTests` (b): "Unable to reconnect ... retrying in 2 s", then "Reconnected" about 2 s later and the
+  channel reestablished). The NL-262 address-hold containers stay in `ReestablishFlowTests` on Docker only.
+- **Test bodies** changed only where they named Docker: `AbcNetworkTests` (LND dials us at `HostAddressForLnd`),
+  `ReestablishFlowTests` (the address hold and its assertion on Docker only) and the 12 classes that dumped container
+  logs on failure (`_fixture.DumpLndLogsAsync`).
+- **Runner.** `scripts/run-cluster.sh --suite lnd`: the `Docker`, `Docker.Utils` and `Docker.Mock` namespaces, no trait
+  filter, `-notrait Database=SqlServer -parallel none` (the collections one after the other, so one process holds at
+  most 2 namespaces: a collection's network and `MultiNodeHarnessTests`' own Postgres pod).
+- Nothing in the product changed: the suite was green on the cluster at the first full run.
+
+Evidence (OrbStack, Release, net10.0; cluster logs `TestResults/cluster/hfl-*`, Docker log
+`TestResults/proof/docker-lnd.log`; the LND suite is now 90 tests: `PostgresTests` gained the NL-810 round trip):
+
+| Run | Result | Time |
+|---|---|---|
+| `--no-incremental` Release build, `dotnet format`, `check-sln-configs.py` | 0 warnings, clean, OK | |
+| Integration.Tests non-Docker (`FullyQualifiedName!~Docker&Category!=Cluster`) | 1121/1121 (new: `DockerLndBackendTests` 3, `ClusterLndBackendTests` +1) | 58 s |
+| `AbcNetworkTests` on the cluster (`hfl-abc`) | 3/3 (alice dialled, bob dials us at `host.orb.internal`) | 39 s |
+| LND suite on the cluster, alone (`hfl-lnd1`) | 90/90: regtest 56, postgres 24, onchain-regtest 6, gossip-regtest 2, Utils 2; network ready 36.5 s | 638 s |
+| LND suite on the cluster again (`hfl-lnd2`, while the Docker run below ran) | 90/90; network ready 28.0 s | 607 s |
+| LND suite on Docker (SDK container, `--network host`, machine lock) | 90/90; network ready 14.1 s | 497 s |
+
+Per collection, cluster (`hfl-lnd2`) against Docker: regtest 357 / 338 s, gossip-regtest 89 / 90 s, postgres 36 / 30 s,
+onchain-regtest 28 / 27 s.
+
+What remains of phase 3: the per-suite cluster proofs of on-chain, gossip and ABCD (their fixtures now take the cluster
+backend too, but `run-onchain.sh`/`run-gossip.sh`/`run-abcd.sh` still run Docker, and some of their bodies name Docker:
+`GraphStoreFlowTests` resolves LND's IP, the anchors relay bitcoind is a container), the LND suite 3 at once, and the
+`lnunit` removal (the Docker backend still needs LNUnit's builder).
 
 ## 6. Risks and open questions
 

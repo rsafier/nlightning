@@ -6,6 +6,8 @@ namespace NLightning.Integration.Tests.Fixtures.Lnd;
 using Cluster;
 using Docker.Utils;
 using Testing.Cluster.Nodes;
+using Testing.Cluster.Nodes.Lnd;
+using Testing.Cluster.Reach;
 using Testing.Cluster.Run;
 using Testing.Cluster.Topology;
 using Testing.Cluster.Topology.Lnd;
@@ -72,7 +74,46 @@ public sealed class ClusterLndBackend : ILndNetworkBackend
     /// <summary>What the start logged (each step with its time).</summary>
     public IReadOnlyCollection<string> StartLog => _fixture.StartLog;
 
+    /// <summary>
+    /// <see cref="HostEndpoints.ForPods"/>: <c>host.orb.internal</c> on OrbStack (or <c>NLTG_HOST_ADDRESS</c>); a listener
+    /// on loopback is enough there.
+    /// </summary>
+    public string HostAddressForPeers { get; } = HostEndpoints.ForPods();
+
     public LndNodeConnection GetLndNode(string alias) => Network.GetLndNode(alias);
+
+    /// <summary>
+    /// <see cref="LndPeerHost"/> of the node behind <paramref name="lnd"/> and LND's p2p port: the Service name, which
+    /// our node stores and redials after a restart of the pod (a pod IP would go stale, NL-780).
+    /// </summary>
+    public Task<string> GetLndPeerEndpointAsync(LndNodeConnection lnd, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(lnd);
+        var node = Network.Nodes.FirstOrDefault(n => ReferenceEquals(n.Connection, lnd))
+                ?? Network.Node(lnd.LocalAlias);
+        return Task.FromResult($"{LndPeerHost(node.Alias)}:{LndWorkload.P2pPort}");
+    }
+
+    public async Task DumpLndLogsAsync(IEnumerable<string> aliases, int tail)
+    {
+        foreach (var alias in aliases)
+        {
+            var handle = _bitcoin is not null ? Network.Node(alias).Handle : null;
+            if (handle is null)
+                continue;
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                var log = await handle.ReadLogAsync(tail, timeout.Token);
+                Console.WriteLine($"===== kubectl logs {handle.Namespace}/{handle.PodName} (last {tail} lines) =====");
+                Console.WriteLine(log);
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"===== kubectl logs {handle.Namespace}/{handle.PodName}: unavailable ({e.Message}) =====");
+            }
+        }
+    }
 
     /// <summary>
     /// The host a node of this process dials to reach the LND node <paramref name="alias"/>: its Service's DNS name,

@@ -61,7 +61,7 @@ public sealed class SpliceLndObserverTests : IAsyncLifetime
                     Console.WriteLine(line);
             }
 
-            await DockerDiagnostics.DumpContainerLogsAsync(["alice", "bob"]);
+            await _fixture.DumpLndLogsAsync(["alice", "bob"]);
         }
 
         foreach (var node in _nodes)

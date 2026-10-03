@@ -57,7 +57,8 @@ public class AbcNetworkTests : IAsyncLifetime
     public async Task NLightning_BOLT8_Test_Bob_Connect()
     {
         // Arrange
-        var hostAddress = Environment.GetEnvironmentVariable("HOST_ADDRESS") ?? "host.docker.internal";
+        // HOST_ADDRESS or host.docker.internal on Docker, host.orb.internal on the cluster
+        var hostAddress = _lightningRegtestNetworkFixture.HostAddressForLnd;
         var hex = Convert.ToHexString(_node.SecureKeyManager.GetNodePubKey());
 
         var bob = _lightningRegtestNetworkFixture.GetLndNode("bob");

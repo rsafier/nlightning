@@ -65,21 +65,29 @@ the library's existing seams: `NodeKind.NLightning`, `ILightningNodeDeployer`, `
 
 ## The LND regtest network on the cluster (phase 3)
 
-- `Fixtures/Lnd/ClusterLndBackend` (the cluster backend of `LightningRegtestNetworkFixture`; the next step wires the
-  fixture to it through `Fixtures/Lnd/ILndNetworkBackend`, whose members are the ones the LND Docker tests call:
-  `Bitcoin` (the miner's RPC with its `miner` wallet, by pod IP), `BitcoinZmqPorts` (28332/28333 on that host),
-  `LndNodes`, `GetLndNode(alias)` (in-tree `LndNodeConnection`s, the same objects across restarts),
-  `RestartLndAsync(alias)`). It is a warm `LndRegtestNetworkFixture` (the library's `Topology/Lnd/LndRegtestNetwork`:
-  the Docker fixture's nodes, flags, channels and policies on `custom_lnd:0.21.4-beta`, PVCs) plus `Network` (restart,
-  join, open, routed payments), `BitcoinEndpoint` (for an `NLightningTestNode`), `LndPeerHost(alias)` and
-  `JoinInProcessNodeAsync(name, fundSat)`: our node on the network's chain through its own `InProcessNodeDeployer`,
-  stopped before the namespace goes.
+- `Fixtures/LightningRegtestNetworkFixture` (collections `regtest`, `onchain-regtest`, `gossip-regtest`) keeps its
+  members and delegates to `Fixtures/Lnd/ILndNetworkBackend`, picked by `NLTG_TEST_BACKEND` when xunit creates it
+  (`IAsyncLifetime`; the network starts in `InitializeAsync`): `DockerLndBackend` (the former fixture: LNUnit's
+  builder, the same containers, flags, channels and image) or `ClusterLndBackend`. Members: `Bitcoin` (the miner's
+  RPC with its `miner` wallet, by pod IP on the cluster), `BitcoinZmqPorts` (28332/28333 on that host), `LndNodes`,
+  `GetLndNode(alias)` (in-tree `LndNodeConnection`s, the same objects across restarts), `RestartLndAsync(alias)`,
+  `GetLndPeerEndpointAsync(lnd)`, `HostAddressForLnd` (where LND dials us: `HOST_ADDRESS`/`host.docker.internal` or
+  `host.orb.internal`), `DumpLndLogsAsync(aliases)` (container or pod logs; the test bodies call it instead of
+  `DockerDiagnostics`), `Backend` and `Cluster` (the `ClusterLndBackend`, null on Docker).
+- `ClusterLndBackend` is a warm `LndRegtestNetworkFixture` (the library's `Topology/Lnd/LndRegtestNetwork`: the Docker
+  fixture's nodes, flags, channels and policies on `custom_lnd:0.21.4-beta`, PVCs) plus `Network` (restart, join,
+  open, routed payments), `BitcoinEndpoint`, `LndPeerHost(alias)` and `JoinInProcessNodeAsync(name, fundSat)`: our
+  node on the network's chain through its own `InProcessNodeDeployer`, stopped before the namespace goes.
 - Restart: a StatefulSet restart keeps the DNS names and PVC, the pod IP changes. `RestartLndAsync` has the LND peers
   dial the new pod IP and joined nodes the Service name, and waits until those channels are active again (no NL-262
-  address-hold containers). A node a test started by itself and connected to LND by **IP** (the Docker helper
-  `NLightningTestNode.ConnectToAsync(LndNodeConnection)` resolves the connection's host to an IP) keeps the stale IP
-  after that restart and keeps redialling it (LND cannot dial back: it only saw our ephemeral port): on the cluster,
-  dial `LndPeerHost(alias)` (NL-780).
+  address-hold containers: `ReestablishFlowTests` holds addresses on Docker only). `NLightningTestNode`s made from the
+  fixture dial LND at `GetLndPeerEndpointAsync` (`NLightningTestNode.ConnectToAsync(LndNodeConnection)`): the
+  container IP on Docker, the Service name `alias.<ns>.svc.cluster.local:9735` on the cluster, which our node stores
+  and redials after the restart (NL-780; LND cannot dial back, it only saw our ephemeral port).
+- The LND suite (the `Docker`, `Docker.Utils` and `Docker.Mock` namespaces, SQL Server left out):
+  `scripts/run-cluster.sh -n 1 --suite lnd` (`-notrait Database=SqlServer -parallel none`: its collections one after
+  the other, so at most 2 namespaces: a collection's network and `MultiNodeHarnessTests`' own Postgres pod; `--class`
+  for one class). On Docker it runs as before (SDK container, `--network host`, under the machine's Docker lock).
 - `Live/LndRegtestNetworkClusterTests` (`Category=Cluster`, `Explicit`): the backend's members answer, our node joins
   (2M sat), opens 1M sat to alice by her Service name, pays carol through alice and is paid by alice, alice restarts,
   and both payments work again. `scripts/run-cluster.sh -n 2 -p integration --class

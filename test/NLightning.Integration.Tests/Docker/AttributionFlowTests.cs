@@ -398,7 +398,7 @@ public class AttributionFlowTests : IAsyncLifetime
             foreach (var node in _nodes)
                 foreach (var line in node.NodeLog.TakeLast(200))
                     Console.WriteLine(line);
-            await DockerDiagnostics.DumpContainerLogsAsync(["alice"]);
+            await _fixture.DumpLndLogsAsync(["alice"]);
         }
 
         foreach (var node in _nodes)

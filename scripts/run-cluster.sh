@@ -37,8 +37,12 @@
 #                         Docker/PostgresTests and the Explicit Cluster/Live/ServerDatabaseClusterTests on a Postgres
 #                         pod (--trait Database=Postgres, --explicit on; MultiNodeHarnessTests' Postgres fact needs the
 #                         LND fixture and stays out); faults = the partition and ZMQ-loss tests
-#                         (Cluster/Live/PartitionClusterTests, ChainMonitorZmqClusterTests); --class/--method replace
-#                         a suite's classes; each run gets its own namespace(s)
+#                         (Cluster/Live/PartitionClusterTests, ChainMonitorZmqClusterTests); lnd = the LND suite
+#                         (the Docker, Docker.Utils and Docker.Mock namespaces, no trait filter, SQL Server left out
+#                         with -notrait Database=SqlServer, --explicit off) on LightningRegtestNetworkFixture's cluster
+#                         backend, its collections one at a time (-parallel none: at most 2 namespaces, the
+#                         collection's network and MultiNodeHarnessTests' own Postgres); --class/--method replace
+#                         a suite's classes (or namespaces); each run gets its own namespace(s)
 #
 # Example: the scaffold's namespace test 3 times at once
 #   scripts/run-cluster.sh -n 3 --method '*ARunDeploysABusyboxStatefulSet*'
@@ -52,6 +56,9 @@
 #   scripts/run-cluster.sh -n 1 --suite ldk
 # Example: the Postgres round trips on a Postgres pod, and the partition tests (test harness phase 4)
 #   scripts/run-cluster.sh -n 1 --suite postgres; scripts/run-cluster.sh -n 1 --suite faults
+# Example: the LND suite on the cluster, alone (test harness phase 3); one class of it
+#   scripts/run-cluster.sh -n 1 --suite lnd
+#   scripts/run-cluster.sh -n 1 --suite lnd --class NLightning.Integration.Tests.Docker.ReestablishFlowTests
 #
 # Never runs Docker suites and never touches namespaces outside nltg-spike-*: the test processes create only their
 # own namespaces, and the reaper only deletes harness run namespaces (nltg-cluster reap, RunReaper).
@@ -73,6 +80,8 @@ trait="Category=Cluster"
 explicit=only
 suite=""
 suite_classes=()
+suite_namespaces=()
+suite_args=()
 backend=""
 filters=()
 extra=()
@@ -113,7 +122,12 @@ while [[ $# -gt 0 ]]; do
         faults) project=integration; trait="Category=Cluster"; backend=cluster
                 suite_classes=(NLightning.Integration.Tests.Cluster.Live.PartitionClusterTests
                                NLightning.Integration.Tests.Cluster.Live.ChainMonitorZmqClusterTests) ;;
-        *) die "--suite $suite: unknown suite (cln, eclair, ldk, postgres, faults)" ;;
+        lnd) project=integration; trait=""; backend=cluster
+             suite_namespaces=(NLightning.Integration.Tests.Docker NLightning.Integration.Tests.Docker.Utils
+                               NLightning.Integration.Tests.Docker.Mock)
+             suite_args=(-notrait Database=SqlServer -parallel none)
+             [[ -n "${explicit_set:-}" ]] || explicit=off ;;
+        *) die "--suite $suite: unknown suite (cln, eclair, ldk, postgres, faults, lnd)" ;;
       esac ;;
     -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
     --) shift; extra=("$@"); break ;;
@@ -125,6 +139,11 @@ done
 if (( ${#filters[@]} == 0 )) && [[ -n "${suite_classes[*]:-}" ]]; then
   for class in "${suite_classes[@]}"; do filters+=(-class "$class"); done
 fi
+if (( ${#filters[@]} == 0 )) && [[ -n "${suite_namespaces[*]:-}" ]]; then
+  for ns in "${suite_namespaces[@]}"; do filters+=(-namespace "$ns"); done
+fi
+trait_args=()
+[[ -n "$trait" ]] && trait_args=(-trait "$trait")
 
 [[ "$runs" =~ ^[0-9]+$ && "$runs" -ge 1 ]] || die "--runs must be a positive number"
 jobs="${jobs:-$runs}"
@@ -183,7 +202,8 @@ start_run() {
     set +e
     NLTG_TEST_RUN_ID="$id" NLTG_KEEP_NAMESPACE="$keep" NLTG_CLUSTER_DIAG="$diag" NLTG_CLUSTER_DIAG_DIR="$dir/diag" \
       NLTG_TEST_BACKEND="${backend:-${NLTG_TEST_BACKEND:-}}" \
-      dotnet "$test_dll" -explicit "$explicit" -trait "$trait" ${filters[@]+"${filters[@]}"} -xml "$dir/results.xml" \
+      dotnet "$test_dll" -explicit "$explicit" ${trait_args[@]+"${trait_args[@]}"} ${filters[@]+"${filters[@]}"} \
+      ${suite_args[@]+"${suite_args[@]}"} -xml "$dir/results.xml" \
       -showLiveOutput -noColor "${extra[@]}" > "$dir/output.log" 2>&1
     code=$?
     echo "$code $(( $(date +%s) - start )) $start" > "$dir/exit"
