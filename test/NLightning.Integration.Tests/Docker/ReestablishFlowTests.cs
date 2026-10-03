@@ -76,16 +76,23 @@ public class ReestablishFlowTests : IAsyncLifetime
         await AssertSettledAtTwoTwoAsync(alice, channel, ct);
     }
 
-    /// <summary>Proof N7 (b): LND restarts (the alice container) and we reconnect with backoff.</summary>
+    /// <summary>Proof N7 (b): LND restarts (alice) and we reconnect with backoff.</summary>
     /// <remarks>
-    /// <see cref="LightningRegtestNetworkFixture.RestartLndAsync"/> (LNUnit's <c>RestartByAlias</c> with its defaults,
-    /// <c>isLND: false</c>) is a plain container restart: same container,
-    /// network, data and, in practice, address. With <c>isLND: true</c> it reopens alice's fixture channels and can
-    /// hang in <c>WaitUntilAliasIsServerReady</c> (it waits on the stale connection when the address changed), so that
-    /// mode is not used. Docker hands a restarted container the lowest free address of its network, so a container
-    /// removed earlier (another test's database, say) would move alice, and every later test of the collection would
-    /// lose her: <see cref="HoldAddressesBelowAsync"/> fills those gaps with idle containers for the restart, and the
-    /// address is asserted unchanged.
+    /// <para>
+    /// Docker: <see cref="LightningRegtestNetworkFixture.RestartLndAsync"/> (LNUnit's <c>RestartByAlias</c> with its
+    /// defaults, <c>isLND: false</c>) is a plain container restart: same container, network, data and, in practice,
+    /// address. With <c>isLND: true</c> it reopens alice's fixture channels and can hang in
+    /// <c>WaitUntilAliasIsServerReady</c> (it waits on the stale connection when the address changed), so that mode is
+    /// not used. Docker hands a restarted container the lowest free address of its network, so a container removed
+    /// earlier (another test's database, say) would move alice, and every later test of the collection would lose her:
+    /// <see cref="HoldAddressesBelowAsync"/> fills those gaps with idle containers for the restart, and the address is
+    /// asserted unchanged (NL-262).
+    /// </para>
+    /// <para>
+    /// Cluster: a StatefulSet restart (same DNS name and PVC, a new pod IP). Our node dialled alice's Service name
+    /// (<see cref="LightningRegtestNetworkFixture.GetLndPeerEndpointAsync"/>, NL-780), so its reconnect reaches the new
+    /// pod; no address is held.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task Given_LndRestarts_When_Reconnected_Then_ReestablishedAndHtlcsFlowAgain()
@@ -93,22 +100,13 @@ public class ReestablishFlowTests : IAsyncLifetime
         // Arrange
         var ct = TestContext.Current.CancellationToken;
         var (channel, _) = await OpenChannelAndWaitUntilActiveAsync(GetAlice(), ct);
-        using var docker = new DockerClientConfiguration().CreateClient();
-        var addressBefore = await GetAddressAsync(docker, "alice", ct);
 
         // Act
-        var placeholders = await HoldAddressesBelowAsync(docker, "alice", ct);
-        try
-        {
+        if (_fixture.Backend == TestBackendKind.Docker)
+            await RestartAliceHoldingHerAddressAsync(ct);
+        else
             await _fixture.RestartLndAsync("alice").WaitAsync(s_activeTimeout, ct);
-        }
-        finally
-        {
-            foreach (var placeholder in placeholders)
-                await DockerContainerUtils.RemoveContainerAsync(docker, placeholder);
-        }
 
-        Assert.Equal(addressBefore, await GetAddressAsync(docker, "alice", ct));
         var alice = await WaitUntilLndSyncedAsync(ct);
         await WaitUntilReestablishedAsync(alice, channel, ct);
 
@@ -167,6 +165,28 @@ public class ReestablishFlowTests : IAsyncLifetime
     }
 
     private string OurNodeIdHex => Node.NodeIdHex;
+
+    /// <summary>
+    /// The Docker restart of alice: the free addresses below hers are held for the restart (<see cref="HoldAddressesBelowAsync"/>)
+    /// and her address is asserted unchanged.
+    /// </summary>
+    private async Task RestartAliceHoldingHerAddressAsync(CancellationToken ct)
+    {
+        using var docker = new DockerClientConfiguration().CreateClient();
+        var addressBefore = await GetAddressAsync(docker, "alice", ct);
+        var placeholders = await HoldAddressesBelowAsync(docker, "alice", ct);
+        try
+        {
+            await _fixture.RestartLndAsync("alice").WaitAsync(s_activeTimeout, ct);
+        }
+        finally
+        {
+            foreach (var placeholder in placeholders)
+                await DockerContainerUtils.RemoveContainerAsync(docker, placeholder);
+        }
+
+        Assert.Equal(addressBefore, await GetAddressAsync(docker, "alice", ct));
+    }
 
     private static async Task<IPAddress> GetAddressAsync(DockerClient docker, string container, CancellationToken ct)
     {

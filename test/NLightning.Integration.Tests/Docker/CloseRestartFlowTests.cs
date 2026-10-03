@@ -62,7 +62,7 @@ public sealed class CloseRestartFlowTests : IAsyncLifetime
     {
         Console.WriteLine($"[close] wire: {_wire.Describe()}");
         if (DockerDiagnostics.CurrentTestFailed)
-            await DockerDiagnostics.DumpContainerLogsAsync(["alice"]);
+            await _fixture.DumpLndLogsAsync(["alice"]);
 
         if (_heldPaymentHash is not null)
         {

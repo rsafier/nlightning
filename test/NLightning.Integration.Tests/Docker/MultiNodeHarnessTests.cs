@@ -254,7 +254,7 @@ public class MultiNodeHarnessTests : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         if (DockerDiagnostics.CurrentTestFailed)
-            await DockerDiagnostics.DumpContainerLogsAsync(["alice", "david"]);
+            await _fixture.DumpLndLogsAsync(["alice", "david"]);
 
         foreach (var node in _nodes)
         {

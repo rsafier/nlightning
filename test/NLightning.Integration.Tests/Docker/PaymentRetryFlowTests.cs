@@ -60,7 +60,7 @@ public class PaymentRetryFlowTests : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         if (DockerDiagnostics.CurrentTestFailed)
-            await DockerDiagnostics.DumpContainerLogsAsync(["alice", "bob", "david"]);
+            await _fixture.DumpLndLogsAsync(["alice", "bob", "david"]);
 
         await _node.DisposeAsync();
         _node.DeleteFiles();

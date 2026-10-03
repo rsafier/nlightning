@@ -122,7 +122,7 @@ public class MppFlowTests : IAsyncLifetime
         {
             foreach (var line in _node?.NodeLog.TakeLast(300) ?? [])
                 Console.WriteLine(line);
-            await DockerDiagnostics.DumpContainerLogsAsync(["alice"]);
+            await _fixture.DumpLndLogsAsync(["alice"]);
         }
 
         if (_node is not null)

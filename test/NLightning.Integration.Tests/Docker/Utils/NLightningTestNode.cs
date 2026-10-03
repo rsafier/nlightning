@@ -103,6 +103,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
     private static readonly TimeSpan s_bothEndsConnectedTimeout = TimeSpan.FromSeconds(10);
 
     private readonly Lazy<RegtestBitcoinEndpoint> _bitcoinEndpoint;
+    private readonly Func<LndNodeConnection, CancellationToken, Task<string>>? _lndPeerEndpoint;
     private readonly Action<NodeOptions>? _configureNodeOptions;
     private readonly bool _ownsResources;
 
@@ -224,19 +225,21 @@ public sealed class NLightningTestNode : IAsyncDisposable
                               ISecureKeyManager secureKeyManager, int port,
                               Action<NodeOptions>? configureNodeOptions = null)
         : this(() => RegtestBitcoinEndpoint.FromFixture(fixture), name, database, secureKeyManager, port,
-               configureNodeOptions, ownsResources: false)
+               configureNodeOptions, ownsResources: false, fixture.GetLndPeerEndpointAsync)
     {
     }
 
     private NLightningTestNode(Func<RegtestBitcoinEndpoint> bitcoinEndpoint, string name, TestNodeDatabase database,
                                ISecureKeyManager secureKeyManager, int port,
-                               Action<NodeOptions>? configureNodeOptions, bool ownsResources)
+                               Action<NodeOptions>? configureNodeOptions, bool ownsResources,
+                               Func<LndNodeConnection, CancellationToken, Task<string>>? lndPeerEndpoint = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         // Resolved once (a failed resolution is not cached, so a node built before its fixture was ready retries)
         _bitcoinEndpoint = new Lazy<RegtestBitcoinEndpoint>(bitcoinEndpoint, LazyThreadSafetyMode.PublicationOnly);
         _configureNodeOptions = configureNodeOptions;
         _ownsResources = ownsResources;
+        _lndPeerEndpoint = lndPeerEndpoint;
         Name = name;
         Database = database;
         SecureKeyManager = secureKeyManager;
@@ -254,7 +257,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
     public static Task<NLightningTestNode> CreateAsync(LightningRegtestNetworkFixture fixture, string name,
                                                        TestNodeDatabase? database = null,
                                                        Action<NodeOptions>? configureNodeOptions = null) =>
-        CreateAsync(() => RegtestBitcoinEndpoint.FromFixture(fixture), name, database, configureNodeOptions);
+        CreateAsync(() => RegtestBitcoinEndpoint.FromFixture(fixture), name, database, configureNodeOptions,
+                    fixture.GetLndPeerEndpointAsync);
 
     /// <summary>
     /// As <see cref="CreateAsync(LightningRegtestNetworkFixture, string, TestNodeDatabase?, Action{NodeOptions}?)"/>,
@@ -267,12 +271,14 @@ public sealed class NLightningTestNode : IAsyncDisposable
 
     private static async Task<NLightningTestNode> CreateAsync(Func<RegtestBitcoinEndpoint> bitcoinEndpoint,
                                                               string name, TestNodeDatabase? database,
-                                                              Action<NodeOptions>? configureNodeOptions)
+                                                              Action<NodeOptions>? configureNodeOptions,
+                                                              Func<LndNodeConnection, CancellationToken, Task<string>>?
+                                                                  lndPeerEndpoint = null)
     {
         var port = await PortPoolUtil.GetAvailablePortAsync();
         database ??= TestNodeDatabase.Sqlite($"nlightning_{name}_{Guid.NewGuid():N}.db");
         return new NLightningTestNode(bitcoinEndpoint, name, database, new FakeSecureKeyManager(), port,
-                                      configureNodeOptions, ownsResources: true)
+                                      configureNodeOptions, ownsResources: true, lndPeerEndpoint)
         {
             ReconnectInitialDelay = FastReconnectInitialDelay
         };
@@ -496,14 +502,20 @@ public sealed class NLightningTestNode : IAsyncDisposable
     }
 
     /// <summary>
-    /// Connects to an LND node of the fixture over its container address.
+    /// Connects to an LND node of the fixture at the address its backend names
+    /// (<see cref="LightningRegtestNetworkFixture.GetLndPeerEndpointAsync"/>: the container IP on Docker, the Service
+    /// name on the cluster, which our node stores and redials after the pod restarted, NL-780). A node made without the
+    /// fixture dials the IP behind the gRPC host.
     /// </summary>
     /// <returns>The <c>pubkey@host:port</c> address used.</returns>
     public async Task<string> ConnectToAsync(LndNodeConnection lndNode, CancellationToken cancellationToken)
     {
-        var host = new IPEndPoint(
-            (await Dns.GetHostAddressesAsync(lndNode.Host.SplitOnFirst("//")[1].SplitOnFirst(":")[0],
-                                             cancellationToken)).First(), 9735);
+        ArgumentNullException.ThrowIfNull(lndNode);
+        var host = _lndPeerEndpoint is not null
+                       ? await _lndPeerEndpoint(lndNode, cancellationToken)
+                       : new IPEndPoint(
+                             (await Dns.GetHostAddressesAsync(lndNode.Host.SplitOnFirst("//")[1].SplitOnFirst(":")[0],
+                                                              cancellationToken)).First(), 9735).ToString();
         var address = $"{Convert.ToHexString(lndNode.LocalNodePubKeyBytes)}@{host}";
 
         await PeerManager.ConnectToPeerAsync(new PeerAddressInfo(address)).WaitAsync(cancellationToken);
