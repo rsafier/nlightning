@@ -50,6 +50,8 @@ public static class DependencyInjection
             sp.GetRequiredService<IUnitOfWork>().PaymentPartDbRepository);
         services.AddScoped<IForwardCircuitDbRepository>(sp =>
             sp.GetRequiredService<IUnitOfWork>().ForwardCircuitDbRepository);
+        services.AddScoped<ITrampolineRelayDbRepository>(sp =>
+            sp.GetRequiredService<IUnitOfWork>().TrampolineRelayDbRepository);
 
         // The signer loads a channel it has not registered from the database (NL-067)
         services.AddSingleton<IChannelSigningInfoSource, ChannelSigningInfoSource>();

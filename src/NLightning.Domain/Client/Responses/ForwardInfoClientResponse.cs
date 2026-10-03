@@ -90,7 +90,7 @@ public sealed class ForwardInfoClientResponse
             FailureSourceScid = failureSourceScid
         };
 
-    private static string? FailureCodeNameOf(ushort? code) =>
+    internal static string? FailureCodeNameOf(ushort? code) =>
         code is not { } value ? null
             : Enum.IsDefined(typeof(Protocol.Onion.Enums.FailureCode), value)
                 ? ((Protocol.Onion.Enums.FailureCode)value).ToString()

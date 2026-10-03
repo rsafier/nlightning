@@ -168,7 +168,8 @@ public static class NodeServiceExtensions
             new ListForwardsClientHandler(GetPaymentLayerService<IForwardCircuitDbRepository>(sp),
                                           sp.GetRequiredService<ILogger<ListForwardsClientHandler>>(),
                                           sp.GetService<IChannelMemoryRepository>(),
-                                          sp.GetService<IRefusedHtlcCounter>()));
+                                          sp.GetService<IRefusedHtlcCounter>(),
+                                          sp.GetService<ITrampolineRelayDbRepository>()));
         services.TryAddSingleton(TimeProvider.System);
 
         // Cooperative close (ClientCommand 13, BOLT2 plan N10); IChannelCloseService comes from AddApplicationServices

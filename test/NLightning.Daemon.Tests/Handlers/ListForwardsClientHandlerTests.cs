@@ -15,6 +15,7 @@ using Domain.Money;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
+using Domain.Payments.Trampoline;
 using Domain.Protocol.Onion.Enums;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -265,6 +266,87 @@ public class ListForwardsClientHandlerTests
         Assert.Null(forward.IncomingChannelScid);
         Assert.Null(forward.OutgoingChannelScid);
         Assert.Null(forward.FailureSourceScid);
+    }
+
+    [Fact]
+    public async Task Given_TrampolineRelays_When_Handled_Then_TheyAreListedWithTheForwardFilters()
+    {
+        // Arrange (NL-875 TR3-T3): a fulfilled relay of two parts on one channel
+        _forwardCircuitRepositoryMock
+           .Setup(x => x.ListAsync(It.IsAny<ForwardCircuitListQuery>(), It.IsAny<CancellationToken>()))
+           .ReturnsAsync([]);
+        _forwardCircuitRepositoryMock
+           .Setup(x => x.SummarizeAsync(It.IsAny<ForwardCircuitListQuery>(), It.IsAny<CancellationToken>()))
+           .ReturnsAsync(new ForwardCircuitTotals(0, 0, 0, 0, 0));
+        var nextNode = new CompactPubKey([0x03, .. Enumerable.Repeat((byte)0x44, 32)]);
+        var relay = new TrampolineRelayModel(s_paymentHash, nextNode, LightningMoney.MilliSatoshis(1_000_000), 600,
+                                             LightningMoney.MilliSatoshis(1_010_000), s_createdAt);
+        relay.MarkSending();
+        relay.MarkFulfilled(s_sharedSecret, LightningMoney.MilliSatoshis(5_000), s_createdAt.AddSeconds(3));
+        TrampolineRelayPartModel[] parts =
+        [
+            new(s_paymentHash, s_incomingChannelId, 1, LightningMoney.MilliSatoshis(400_000), 1_200, s_sharedSecret,
+                s_sharedSecret, null),
+            new(s_paymentHash, s_incomingChannelId, 2, LightningMoney.MilliSatoshis(610_000), 1_200, s_sharedSecret,
+                s_sharedSecret, null)
+        ];
+        var queries = new List<TrampolineRelayListQuery>();
+        var relays = new Mock<ITrampolineRelayDbRepository>();
+        relays.Setup(x => x.ListAsync(It.IsAny<TrampolineRelayListQuery>(), It.IsAny<CancellationToken>()))
+              .Callback((TrampolineRelayListQuery query, CancellationToken _) => queries.Add(query))
+              .ReturnsAsync([relay]);
+        relays.Setup(x => x.GetPartsAsync(s_paymentHash)).ReturnsAsync(parts);
+        var handler = new ListForwardsClientHandler(_forwardCircuitRepositoryMock.Object,
+                                                    NullLogger<ListForwardsClientHandler>.Instance,
+                                                    trampolineRelayRepository: relays.Object);
+
+        // Act
+        var response = await handler.HandleAsync(new ListForwardsClientRequest
+        {
+            Take = 10,
+            Status = ForwardCircuitStatus.Fulfilled,
+            ChannelId = s_incomingChannelId
+        }, TestContext.Current.CancellationToken);
+
+        // Assert
+        var query = Assert.Single(queries);
+        Assert.Equal(new TrampolineRelayListQuery(0, 10, null, null, TrampolineRelayStatus.Fulfilled,
+                                                  s_incomingChannelId), query);
+        var listed = Assert.Single(response.TrampolineRelays);
+        Assert.Equal(TrampolineRelayStatus.Fulfilled, listed.Status);
+        Assert.Equal(2, listed.Parts);
+        Assert.Equal([s_incomingChannelId], listed.IncomingChannelIds);
+        Assert.Equal(LightningMoney.MilliSatoshis(1_010_000), listed.IncomingAmount);
+        Assert.Equal(LightningMoney.MilliSatoshis(1_000_000), listed.AmountOut);
+        Assert.Equal(LightningMoney.MilliSatoshis(5_000), listed.FeeEarned);
+        Assert.Equal(nextNode, listed.NextNodeId);
+        Assert.Empty(response.Forwards);
+    }
+
+    [Fact]
+    public async Task Given_AScidNamingNoChannel_When_Handled_Then_NoRelayIsListed()
+    {
+        // Arrange: a relay has no outgoing channel, so only an incoming channel can match it
+        _forwardCircuitRepositoryMock
+           .Setup(x => x.ListAsync(It.IsAny<ForwardCircuitListQuery>(), It.IsAny<CancellationToken>()))
+           .ReturnsAsync([]);
+        _forwardCircuitRepositoryMock
+           .Setup(x => x.SummarizeAsync(It.IsAny<ForwardCircuitListQuery>(), It.IsAny<CancellationToken>()))
+           .ReturnsAsync(new ForwardCircuitTotals(0, 0, 0, 0, 0));
+        var relays = new Mock<ITrampolineRelayDbRepository>(MockBehavior.Strict);
+        var handler = new ListForwardsClientHandler(_forwardCircuitRepositoryMock.Object,
+                                                    NullLogger<ListForwardsClientHandler>.Instance,
+                                                    _channelMemoryRepositoryMock.Object,
+                                                    trampolineRelayRepository: relays.Object);
+
+        // Act
+        var response = await handler.HandleAsync(new ListForwardsClientRequest
+        {
+            ChannelScid = new ShortChannelId(900_000, 1, 0)
+        }, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(response.TrampolineRelays);
     }
 
     private ListForwardsClientHandler CreateHandler(IRefusedHtlcCounter? refusedCounter = null,
