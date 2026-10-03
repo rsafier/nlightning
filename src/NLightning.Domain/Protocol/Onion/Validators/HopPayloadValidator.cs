@@ -98,10 +98,12 @@ public static class HopPayloadValidator
         // tell a final hop); repeat it here for payloads built by hand. Custom records (65536 and up) are accepted
         // whatever their parity at the final hop only, as LND does: they are for the final node's application
         // (keysend's preimage is one, and even). A forwarding hop has no use for them and keeps BOLT 1's rule
-        var unknownEven = payload.UnknownTlvs.FirstOrDefault(tlv => tlv.Type.Value % 2 == 0
-                                                                 && (!isFinalHop
-                                                                  || tlv.Type < OnionPayloadTlvTypes
-                                                                                .CustomRecordTypeStart));
+        // The trampoline types are parsed, but count as unknown here: a node that does not process trampoline payloads
+        // refuses them exactly as before they were known (NL-875)
+        var unknownEven = payload.Tlvs.FirstOrDefault(tlv => IsUnknown(tlv.Type)
+                                                          && tlv.Type.Value % 2 == 0
+                                                          && (!isFinalHop
+                                                           || tlv.Type < OnionPayloadTlvTypes.CustomRecordTypeStart));
 
         return unknownEven is null
                    ? null
@@ -170,6 +172,9 @@ public static class HopPayloadValidator
                    ? Missing(payload, OnionPayloadTlvTypes.PaymentData, "payment_data (total_msat)")
                    : null;
     }
+
+    private static bool IsUnknown(BigSize type) =>
+        !OnionPayloadTlvTypes.KnownTypes.Contains(type) || OnionPayloadTlvTypes.TrampolineTypes.Contains(type);
 
     private static OnionException Missing(HopPayload payload, BigSize type, string name)
     {

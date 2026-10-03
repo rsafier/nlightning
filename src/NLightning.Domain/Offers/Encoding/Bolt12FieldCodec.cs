@@ -6,6 +6,7 @@ namespace NLightning.Domain.Offers.Encoding;
 
 using Crypto.ValueObjects;
 using Models;
+using Protocol.Onion.Codecs;
 using Protocol.Onion.Models;
 using Protocol.OnionMessages;
 using Protocol.Tlv;
@@ -22,7 +23,7 @@ public static class Bolt12FieldCodec
     /// <summary>
     /// The encoded length of one <c>blinded_payinfo</c> without its features.
     /// </summary>
-    public const int PayInfoFixedLength = 4 + 4 + 2 + 8 + 8 + 2;
+    public const int PayInfoFixedLength = BlindedPayInfoCodec.FixedLength;
 
     private const int ChainHashLength = 32;
     private const int PointLength = 33;
@@ -59,24 +60,13 @@ public static class Bolt12FieldCodec
     {
         ArgumentNullException.ThrowIfNull(payInfos);
 
-        var bytes = new byte[payInfos.Sum(p => PayInfoFixedLength + p.Features.Length)];
+        if (payInfos.Any(payInfo => payInfo.Features.Length > ushort.MaxValue))
+            throw new ArgumentException("A blinded_payinfo's features must fit in a u16 length.", nameof(payInfos));
+
+        var bytes = new byte[payInfos.Sum(BlindedPayInfoCodec.GetLength)];
         var offset = 0;
         foreach (var payInfo in payInfos)
-        {
-            if (payInfo.Features.Length > ushort.MaxValue)
-                throw new ArgumentException("A blinded_payinfo's features must fit in a u16 length.",
-                                            nameof(payInfos));
-
-            var span = bytes.AsSpan(offset);
-            BinaryPrimitives.WriteUInt32BigEndian(span, payInfo.FeeBaseMsat);
-            BinaryPrimitives.WriteUInt32BigEndian(span[4..], payInfo.FeeProportionalMillionths);
-            BinaryPrimitives.WriteUInt16BigEndian(span[8..], payInfo.CltvExpiryDelta);
-            BinaryPrimitives.WriteUInt64BigEndian(span[10..], payInfo.HtlcMinimumMsat);
-            BinaryPrimitives.WriteUInt64BigEndian(span[18..], payInfo.HtlcMaximumMsat);
-            BinaryPrimitives.WriteUInt16BigEndian(span[26..], (ushort)payInfo.Features.Length);
-            payInfo.Features.Span.CopyTo(span[PayInfoFixedLength..]);
-            offset += PayInfoFixedLength + payInfo.Features.Length;
-        }
+            offset += BlindedPayInfoCodec.Write(payInfo, bytes.AsSpan(offset));
 
         return bytes;
     }
@@ -251,21 +241,11 @@ public static class Bolt12FieldCodec
         var offset = 0;
         while (offset < data.Length)
         {
-            var rest = data[offset..];
-            if (rest.Length < PayInfoFixedLength)
-                throw Malformed(record, $"payinfo {payInfos.Count} is truncated");
+            if (!BlindedPayInfoCodec.TryRead(data[offset..], out var payInfo, out var bytesRead, out var reason))
+                throw Malformed(record, $"payinfo {payInfos.Count} {reason}");
 
-            var featuresLength = BinaryPrimitives.ReadUInt16BigEndian(rest[26..]);
-            if (rest.Length - PayInfoFixedLength < featuresLength)
-                throw Malformed(record, $"payinfo {payInfos.Count} features run past the end");
-
-            payInfos.Add(new BlindedPayInfo(BinaryPrimitives.ReadUInt32BigEndian(rest),
-                                            BinaryPrimitives.ReadUInt32BigEndian(rest[4..]),
-                                            BinaryPrimitives.ReadUInt16BigEndian(rest[8..]),
-                                            BinaryPrimitives.ReadUInt64BigEndian(rest[10..]),
-                                            BinaryPrimitives.ReadUInt64BigEndian(rest[18..]),
-                                            rest.Slice(PayInfoFixedLength, featuresLength).ToArray()));
-            offset += PayInfoFixedLength + featuresLength;
+            payInfos.Add(payInfo);
+            offset += bytesRead;
         }
 
         return payInfos;

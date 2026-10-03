@@ -9,7 +9,9 @@ using Domain.Crypto.ValueObjects;
 using Domain.LiquidityAds.Enums;
 using Domain.LiquidityAds.Models;
 using Domain.Protocol.Models;
+using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.Tlv;
+using Domain.Protocol.OnionMessages;
 using Domain.Protocol.Tlv;
 using Domain.Protocol.ValueObjects;
 using Helpers;
@@ -254,7 +256,16 @@ public class TlvStreamSerializerTests
             new EncryptedRecipientDataTlv([0xde, 0xad, 0xbe, 0xef]),
             new CurrentPathKeyTlv(new CompactPubKey(pubKey)),
             new PaymentMetadataTlv([0x01, 0x02, 0x03]),
-            new TotalAmountMsatTlv(LightningMoney.MilliSatoshis(10_000_000))
+            new TotalAmountMsatTlv(LightningMoney.MilliSatoshis(10_000_000)),
+            new OutgoingNodeIdTlv(new CompactPubKey(pubKey)),
+            new TrampolineOnionPacketTlv([0x00, .. pubKey, .. new byte[64]]),
+            new RecipientFeaturesTlv([0x02, 0x00, 0x00]),
+            new RecipientBlindedPathsTlv([
+                new WireBlindedPaymentPath(
+                    new WireBlindedPath(SciddirOrPubkey.FromNodeId(new CompactPubKey(pubKey)), new CompactPubKey(pubKey),
+                                        [new BlindedPathHop(new CompactPubKey(pubKey), new byte[] { 0x01, 0x02 })]),
+                    new BlindedPayInfo(1_000, 100, 40, 1, 1_000_000))
+            ])
         ];
 
         return samples.ToDictionary(t => t.GetType());

@@ -55,7 +55,12 @@ public class HopPayloadSerializer : IHopPayloadSerializer
                 GetConverter<EncryptedRecipientDataTlv>(tlvConverterFactory),
             [OnionPayloadTlvTypes.CurrentPathKey] = GetConverter<CurrentPathKeyTlv>(tlvConverterFactory),
             [OnionPayloadTlvTypes.PaymentMetadata] = GetConverter<PaymentMetadataTlv>(tlvConverterFactory),
-            [OnionPayloadTlvTypes.TotalAmountMsat] = GetConverter<TotalAmountMsatTlv>(tlvConverterFactory)
+            [OnionPayloadTlvTypes.TotalAmountMsat] = GetConverter<TotalAmountMsatTlv>(tlvConverterFactory),
+            [OnionPayloadTlvTypes.OutgoingNodeId] = GetConverter<OutgoingNodeIdTlv>(tlvConverterFactory),
+            [OnionPayloadTlvTypes.TrampolineOnionPacket] =
+                GetConverter<TrampolineOnionPacketTlv>(tlvConverterFactory),
+            [OnionPayloadTlvTypes.RecipientFeatures] = GetConverter<RecipientFeaturesTlv>(tlvConverterFactory),
+            [OnionPayloadTlvTypes.RecipientBlindedPaths] = GetConverter<RecipientBlindedPathsTlv>(tlvConverterFactory)
         };
     }
 
