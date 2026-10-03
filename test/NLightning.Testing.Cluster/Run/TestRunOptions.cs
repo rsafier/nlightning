@@ -31,6 +31,13 @@ public sealed record TestRunOptions
     /// </summary>
     public const string AdoptNamespaceVariable = "NLTG_ADOPT_NAMESPACE";
 
+    /// <summary>
+    /// Set to <c>1</c> or <c>true</c> to make disposing a run wait until its namespace is gone
+    /// (<see cref="WaitForDeletion"/>): <c>scripts/run-cluster.sh</c> sets it for a matrix suite it runs with
+    /// <c>-parallel none</c>, so its collections' namespaces never overlap and the suite stays within its count.
+    /// </summary>
+    public const string WaitForDeletionVariable = "NLTG_WAIT_NAMESPACE_DELETION";
+
     /// <summary>The longest namespace prefix (the run id gets the rest of the 63 characters).</summary>
     public const int MaxPrefixLength = 22;
 
@@ -113,7 +120,8 @@ public sealed record TestRunOptions
     /// <summary>
     /// Options for <paramref name="suite"/> with the environment applied: <see cref="TestRunId.EnvironmentVariable"/>,
     /// <see cref="NamespacePrefixVariable"/>, <see cref="KubeClientFactory.ContextVariable"/>,
-    /// <see cref="KeepNamespaceVariable"/>, <see cref="AdoptNamespaceVariable"/>, the diagnostics variables
+    /// <see cref="KeepNamespaceVariable"/>, <see cref="AdoptNamespaceVariable"/>, <see cref="WaitForDeletionVariable"/>,
+    /// the diagnostics variables
     /// (<see cref="DiagnosticsSettings.FromEnvironment"/>) and
     /// <see cref="RunAdmission.MaxRunsVariable"/> (default <see cref="RunAdmission.DefaultMaxRuns"/>).
     /// </summary>
@@ -133,6 +141,7 @@ public sealed record TestRunOptions
             KeepNamespaceOnFailure = keep?.Trim().Equals(KeepOnFailureValue, StringComparison.OrdinalIgnoreCase) == true,
             Diagnostics = DiagnosticsSettings.FromEnvironment(environment),
             AdoptNamespace = IsSet(adopt),
+            WaitForDeletion = IsSet(environment(WaitForDeletionVariable)),
             MaxConcurrentRuns = RunAdmission.ParseMaxRuns(environment(RunAdmission.MaxRunsVariable))
         };
     }

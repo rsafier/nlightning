@@ -244,6 +244,7 @@ The same topology model, sized up, on a multi-node cluster.
    - `run-cluster` replaces `run-{onchain,gossip,abcd,interop}.sh` and the hand-made LND runs.
    - It builds once, then runs the suite matrix with N runs in flight, reruns one failed class alone, prints a summary and collects diagnostics.
    - Update `test/CLAUDE.md` and root `CLAUDE.md`.
+   - Done ("Phase 5 runner record"): `scripts/run-cluster.sh --matrix`; the LND suites in it wait for the fixture wiring.
 6. **Proof.**
    - The full matrix twice concurrently, then at the tuned N, green apart from documented flakes.
    - Wall time compared with today's serial pass (target ≈15 min instead of ≈75).
@@ -1088,6 +1089,76 @@ Fixture ready, cluster against Docker: CLN 6.3 s / 3.0 s, Eclair 25.8 s (21.8-36
 5. **Phase 6 full-matrix proof (about 1 day plus reruns):** the whole matrix twice concurrently, then at the tuned N;
    wall time against today's serial pass; NL-262 and NL-276 closed.
 Open items carried: NL-780, NL-796, NL-806, and the NL-805/NL-810 merge.
+
+### Phase 5 runner record: `run-cluster.sh --matrix` (2026-10-03, branch `hf-runner` from 7593fdda)
+
+`scripts/run-cluster.sh` is the one runner of the Docker-class suites on the cluster; the Docker scripts
+(`run-{onchain,gossip,abcd,interop}.sh`) stay as the fallback and for Tor.
+
+- **Matrix mode.** `--matrix [s1,s2,...]` (default every suite) builds the integration project and `nltg-cluster` once,
+  plans (`nltg-cluster matrix plan`), and runs the suites longest first through an admission queue: at most `-j`
+  suites (default 3) and `--max-namespaces` run namespaces (default and cap 6) at once, each suite weighing the
+  namespaces it declares. A suite is one test process (`NLTG_TEST_RUN_ID=<batch>-<suite>`, `NLTG_TEST_BACKEND=cluster`,
+  `-trait- Database=SqlServer` always) with a hang timeout (per suite, 10-90 min, or `--timeout`; TERM, KILL 30 s
+  later, marked TIMEOUT). When it ends, its namespaces are reaped and the runner waits until they are gone,
+  terminating ones included, before the slot is free. Then each failed class (1 to `--rerun-max`, default 3; none
+  after a timeout, a crash or a fixture error) is rerun alone as `<batch>-<suite>-r<n>`: green marks the suite
+  `rerun-green` and names the flake, red is a real failure. The summary (`summary.txt`): suite, result, tests,
+  passed/failed/skipped/not run, rerun, start, wall, fixture ready, namespaces created/planned, dumps, first error;
+  then the flakes, the skips, the log and `diag/` folders of every failed suite, the totals and the batch's sampled
+  namespace peak; exit 1 on a real failure. Green runs' logs are gzipped after the summary (`--keep-logs` keeps them).
+  Ctrl-C stops the batch's processes and reaps their namespaces. `-n N --suite S` and the `--class/--method/--trait`
+  runs keep working, now with the same hang timeout.
+- **The catalog** (`NLightning.Testing.Cluster/Run/Matrix/`, `nltg-cluster matrix list|plan|rerun-classes|summary`;
+  the script keeps only processes, admission, timeouts and reaping): `lnd` (the `regtest` collection's classes of
+  the `Docker` namespace and `Docker.Utils`), `onchain` (`Docker.Onchain.Onchain*` + `BackupRestoreFlowTests`),
+  `anchors` (`Docker.Onchain.Anchors`), `gossip` (`Docker.Gossip.*` without `Capture`, `Docker.Day0.*`,
+  `ChannelPolicyPublicFlowTests`, `SpliceLndObserverTests`), `eclair`, `cln`, `abcd`, `ldk`, `faults`, `postgres` and
+  `tor` (listed as skipped: Docker only). Namespaces per process: postgres 3 (2 serially), faults 2 (1), lnd 2, the
+  rest 1. A suite whose parallel collections exceed the budget runs with `-parallel none`, and then
+  `NLTG_WAIT_NAMESPACE_DELETION=1` makes each collection's run wait until its namespace is gone
+  (`TestRunOptions.WaitForDeletion`), so the serial count holds. The LND suites (`lnd`, `onchain`, `anchors`,
+  `gossip`, `abcd`) are planned as skipped, and refused by `--suite`, until `LightningRegtestNetworkFixture` names
+  `ILndNetworkBackend` (`LndBackendProbe`): the unwired fixture ignores `NLTG_TEST_BACKEND` and would start Docker
+  containers outside the Docker lock.
+- **Tests without a cluster:** `Testing.Cluster.Tests/Run/Matrix/` (catalog, planner, an evaluator of xunit v3's simple
+  filters, results, judgement, summary, CLI), `Integration.Tests/Cluster/SuiteCatalogMembershipTests` (every class of
+  the container namespaces runs in exactly one suite unless all its tests are Explicit or SQL Server, and each suite
+  holds only the classes of its fixture collection) and `scripts/tests/run-cluster-tests.sh` (32 checks of the bash
+  side against `scripts/tests/fake-xunit.sh`: the admission queue never over the budget, the flake rule, the hang
+  timeout, crashes, skips, log compression, option errors; about 35 s).
+
+Findings (ledger IDs for the integrator):
+- **NL-816 (fixed here):** `ClnChannelSessionTests` and `ClnSpliceRbfHelperTests` (13 container-free tests in
+  `Docker.Interop.Cln`) had no `Interop.Cln` trait, so neither CI (`FullyQualifiedName!~Docker`) nor
+  `run-interop.sh cln`/`--suite cln` ran them. Found by the membership test; tagged `Interop.Cln`, all 13 pass (the
+  CLN suite grows from 81 to 94 tests; the proofs below ran before the tag).
+- **NL-817 (fixed here, harness):** a finished run's namespaces outlived its slot. `nltg-cluster reap --wait` waits only
+  for namespaces it deletes, and `TestRun` disposal deletes in the background, so after a suite ended its namespaces
+  were still terminating when the next suite started; within a `-parallel none` suite the next collection's namespace
+  was created while the previous one terminated (the first proof's postgres created 3 namespaces under a serial count
+  of 2). Fixed by the runner's wait until gone and `NLTG_WAIT_NAMESPACE_DELETION`; the second proof's sampled peak was
+  2 of 2.
+- **NL-818 (open, observation):** suite logs are huge: one `output.log` held 0.8 GB for CLN (3.3 M lines, 0.82 M of
+  them Debug) and 0.3 GB for LDK, so a full matrix writes several GB per pass. The runner now gzips green runs' logs
+  (about 4x); the volume itself (Debug logging of every in-process node into the test output) is a harness choice
+  left to phase 6 (per-node log files, or Information by default).
+
+Evidence (OrbStack, Release, net10.0, at most 2 namespaces of this lane at once; `TestResults/cluster/hfr-*`):
+
+| Run | Result | Time |
+|---|---|---|
+| `--no-incremental` Release build, `dotnet format`, `check-sln-configs.py` | 0 warnings, clean, OK | |
+| `Testing.Cluster.Tests` (`Category!=Cluster`), `Integration.Tests` (`FullyQualifiedName!~Docker&Category!=Cluster`) | 659/659, 1,122/1,122 | |
+| `scripts/tests/run-cluster-tests.sh` | 32/32 | 35 s |
+| `--matrix cln,ldk,postgres -j 2 --max-namespaces 2` (`hfr-proof1`, before the NL-817 fix) | cln 81 (77 passed, 4 Explicit not run), ldk 27/27, postgres 25/25 (serial; 3 namespaces created) | 967 s |
+| The same with the final runner (`hfr-proof2`) | cln 77/77 (+4 not run), ldk 27/27, postgres 25/25 serial in 2 namespaces; peak 2 of 2; nothing left | cln 901 s, ldk 558 s, postgres 91 s from +915 s; matrix 1,008 s |
+| Hang timeout live (`hfr-timeout`: `--matrix postgres --timeout 25s`) | TIMEOUT after 25 s, process stopped, its 2 namespaces reaped | 42 s |
+| Single-suite mode (`hfr-single`: `-n 1 --suite postgres --class ...PostgresTests`) | 24/24 | 46 s |
+
+Fixture ready: CLN 6.1-7.5 s, LDK 14.6-14.7 s, Postgres 5.0-5.4 s (each in line with the phase 3/4 record).
+Next: the LND fixture's cluster backend (lane `hf-lnd-wire`) turns the five LND suites on in the matrix without a
+runner change; phase 6 runs the full matrix twice concurrently.
 
 ## 6. Risks and open questions
 

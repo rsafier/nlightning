@@ -4,7 +4,10 @@ using Fixtures;
 
 /// <summary>
 /// Container-free tests of the shared-build helper of <see cref="ClnChannelSession"/>.
+/// Tagged <c>Interop.Cln</c> so the CLN suite runs them: their names hold "Docker", which CI's
+/// <c>FullyQualifiedName!~Docker</c> leaves out (NL-816).
 /// </summary>
+[Trait("Category", ClnInteropCollection.Category)]
 public class ClnChannelSessionTests
 {
     [Fact]

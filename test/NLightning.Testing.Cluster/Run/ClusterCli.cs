@@ -4,9 +4,12 @@ using k8s;
 
 namespace NLightning.Testing.Cluster.Run;
 
+using Matrix;
+
 /// <summary>
 /// The harness's command line (<c>nltg-cluster</c>, project <c>test/NLightning.Testing.Cluster.Cli</c>): <c>list</c>
-/// shows the run namespaces and what the reaper would do with each, <c>reap</c> deletes the reapable ones.
+/// shows the run namespaces and what the reaper would do with each, <c>reap</c> deletes the reapable ones, and
+/// <c>matrix ...</c> is the pure half of <c>scripts/run-cluster.sh</c>'s suite matrix (<see cref="MatrixCli"/>).
 /// </summary>
 public static class ClusterCli
 {
@@ -21,6 +24,7 @@ public static class ClusterCli
         Usage:
           nltg-cluster list [options]    the run namespaces, oldest first, with the reaper's verdict
           nltg-cluster reap [options]    delete runs whose owner process is gone or that are older than their TTL
+          nltg-cluster matrix ...        the suite matrix of scripts/run-cluster.sh (nltg-cluster matrix help)
 
         Options:
           --prefix <p>     namespace prefix (default nltg-spike; must start with nltg)
@@ -47,6 +51,9 @@ public static class ClusterCli
             await output.WriteLineAsync(UsageText).ConfigureAwait(false);
             return args.Count == 0 ? Usage : Ok;
         }
+
+        if (args[0] == "matrix")
+            return await MatrixCli.RunAsync(args.Skip(1).ToList(), output, error).ConfigureAwait(false);
 
         ParsedArgs parsed;
         try
