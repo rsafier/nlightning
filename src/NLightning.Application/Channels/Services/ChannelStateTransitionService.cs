@@ -485,16 +485,26 @@ public sealed class ChannelStateTransitionService
     /// <param name="maxDustHtlcExposureMsat">Our <c>max_dust_htlc_exposure_msat</c> policy
     /// (<c>NodeOptions.MaxDustHtlcExposureMsat</c>), stored with the snapshot (NL-242, NL-254); null disables the
     /// check.</param>
+    /// <param name="remoteNextNonce">Simple taproot channels (NL-877 T3): the peer's <c>channel_ready</c>
+    /// <c>next_local_nonce</c>, its verification nonce for its next commitment (null when not received yet). The
+    /// peer's signature of our first commitment is then <see cref="ChannelModel.LastReceivedPartialSignature"/>.</param>
     /// <exception cref="InvalidOperationException">The funding output is not known.</exception>
     /// <exception cref="ArgumentException">The balances do not add up to the funding amount.</exception>
     public static ChannelCommitments CreateInitialCommitments(ChannelModel channel,
                                                               CompactPubKey remoteCurrentPerCommitmentPoint,
                                                               CompactPubKey remoteNextPerCommitmentPoint,
-                                                              ulong? maxDustHtlcExposureMsat = null)
+                                                              ulong? maxDustHtlcExposureMsat = null,
+                                                              MusigPublicNonce? remoteNextNonce = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
 
-        var signatures = channel.LastReceivedSignature is { } signature
+        CommitmentSignatures? signatures;
+        if (channel.ChannelParams.OptionSimpleTaproot)
+            signatures = channel.LastReceivedPartialSignature is { } partial
+                             ? CommitmentSignatures.Taproot(partial, [])
+                             : null;
+        else
+            signatures = channel.LastReceivedSignature is { } signature
                              ? new CommitmentSignatures(signature, [])
                              : null;
         return ChannelCommitments.Create(channel.ChannelId,
@@ -502,7 +512,8 @@ public sealed class ChannelStateTransitionService
                                          channel.LocalBalance.MilliSatoshi, channel.RemoteBalance.MilliSatoshi,
                                          checked((uint)channel.ChannelParams.FeeRateAmountPerKw.Satoshi),
                                          remoteCurrentPerCommitmentPoint, remoteNextPerCommitmentPoint, signatures,
-                                         channel.LocalCommitmentNumber, channel.RemoteCommitmentNumber);
+                                         channel.LocalCommitmentNumber, channel.RemoteCommitmentNumber,
+                                         remoteNextNonce);
     }
 
     #endregion

@@ -31,16 +31,31 @@ public readonly record struct ChannelParams
     /// <summary>The funding depth the accepter asked for.</summary>
     public uint MinimumDepth { get; }
 
-    /// <summary>Whether the channel type has <c>option_anchors</c>.</summary>
-    public bool OptionAnchorOutputs { get; }
+    private readonly bool _optionAnchorOutputs;
+
+    /// <summary>
+    /// Whether the commitment has the anchors semantics (BOLT 3): <c>option_anchors</c> in the channel type, and always
+    /// for an <see cref="OptionSimpleTaproot"/> channel, which keeps them (two 330 sat anchors, zero-fee HTLC
+    /// transactions with <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> peer signatures, the 1-CSV to_remote; NL-904 item
+    /// 2). Where the scripts or weights matter, read <see cref="CommitmentFormat"/> instead.
+    /// </summary>
+    public bool OptionAnchorOutputs => _optionAnchorOutputs || OptionSimpleTaproot;
+
+    /// <summary>
+    /// Whether the channel type is <c>option_simple_taproot</c> (bolt-simple-taproot.md, NL-877 T3): a MuSig2 funding
+    /// output and P2TR commitment outputs. Such a channel also has <see cref="OptionAnchorOutputs"/>.
+    /// </summary>
+    public bool OptionSimpleTaproot { get; init; }
 
     /// <summary>
     /// The BOLT 3 commitment format of the channel type: the one place the commitment factory reads it from.
-    /// <c>option_simple_taproot</c> channels are not stored yet (NL-877 T3), so this is
-    /// <see cref="Bitcoin.Transactions.Enums.CommitmentFormat.Anchors"/> or
+    /// <see cref="Bitcoin.Transactions.Enums.CommitmentFormat.SimpleTaproot"/> for an <see cref="OptionSimpleTaproot"/>
+    /// channel, else <see cref="Bitcoin.Transactions.Enums.CommitmentFormat.Anchors"/> or
     /// <see cref="Bitcoin.Transactions.Enums.CommitmentFormat.StaticRemoteKey"/>.
     /// </summary>
-    public CommitmentFormat CommitmentFormat => CommitmentFormatExtensions.FromOptionAnchors(OptionAnchorOutputs);
+    public CommitmentFormat CommitmentFormat => OptionSimpleTaproot
+                                                    ? CommitmentFormat.SimpleTaproot
+                                                    : CommitmentFormatExtensions.FromOptionAnchors(OptionAnchorOutputs);
 
     /// <summary>Whether <c>option_scid_alias</c> is in the channel type (Compulsory) or only negotiated (Optional).</summary>
     public FeatureSupport UseScidAlias { get; }
@@ -70,7 +85,7 @@ public readonly record struct ChannelParams
         Remote = remote;
         FeeRateAmountPerKw = feeRateAmountPerKw;
         MinimumDepth = minimumDepth;
-        OptionAnchorOutputs = optionAnchorOutputs;
+        _optionAnchorOutputs = optionAnchorOutputs;
         UseScidAlias = useScidAlias;
     }
 
@@ -79,7 +94,8 @@ public readonly record struct ChannelParams
         new(local, Remote, FeeRateAmountPerKw, MinimumDepth, OptionAnchorOutputs, UseScidAlias)
         {
             HasInferredParams = HasInferredParams,
-            AnnounceChannel = AnnounceChannel
+            AnnounceChannel = AnnounceChannel,
+            OptionSimpleTaproot = OptionSimpleTaproot
         };
 
     /// <summary>
@@ -89,18 +105,31 @@ public readonly record struct ChannelParams
         new(Local, remote, FeeRateAmountPerKw, MinimumDepth, OptionAnchorOutputs, UseScidAlias)
         {
             HasInferredParams = HasInferredParams,
-            AnnounceChannel = AnnounceChannel
+            AnnounceChannel = AnnounceChannel,
+            OptionSimpleTaproot = OptionSimpleTaproot
         };
 
     /// <summary>
     /// The <c>channel_type</c> these parameters describe: <c>option_static_remotekey</c>, plus <c>option_anchors</c>,
-    /// <c>option_scid_alias</c> (only when it is part of the type) and <c>option_zeroconf</c> (minimum depth 0).
+    /// <c>option_scid_alias</c> (only when it is part of the type) and <c>option_zeroconf</c> (minimum depth 0). A simple
+    /// taproot channel is bit 80 without <c>option_static_remotekey</c> and <c>option_anchors</c> (bolt-simple-taproot.md;
+    /// LND accepts exactly {80}, {80, 46}, {80, 50} and {80, 46, 50}), plus the same scid_alias and zeroconf bits.
     /// </summary>
     public FeatureSet ToChannelType()
     {
-        var channelType = FeatureSet.NewBasicChannelType();
-        if (OptionAnchorOutputs)
-            channelType.SetFeature(Feature.OptionAnchors, true);
+        FeatureSet channelType;
+        if (OptionSimpleTaproot)
+        {
+            // Raw bit 80 until lane WIRE's Feature.OptionSimpleTaproot (81) is merged; the integrator switches it
+            channelType = FeatureSet.DeserializeFromBytes([]);
+            channelType.SetFeature(TaprootChannelType.CompulsoryBit, true);
+        }
+        else
+        {
+            channelType = FeatureSet.NewBasicChannelType();
+            if (OptionAnchorOutputs)
+                channelType.SetFeature(Feature.OptionAnchors, true);
+        }
 
         if (UseScidAlias == FeatureSupport.Compulsory)
             channelType.SetFeature(Feature.OptionScidAlias, true);

@@ -16,7 +16,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
     public partial class NLightningDbContextModel
     {
         private NLightningDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("b895af1e-e637-439e-981d-9372f3dec338"), entityTypeCount: 53)
+            : base(skipDetectChanges: false, modelId: new Guid("f8c701d8-0db4-4872-b71b-6614feea62ac"), entityTypeCount: 53)
         {
         }
 
@@ -2624,6 +2624,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityTableBase.Columns.Add("MinimumDepth", minimumDepthColumnBase);
             var optionAnchorOutputsColumnBase = new ColumnBase<ColumnMappingBase>("OptionAnchorOutputs", "bit", nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityTableBase.Columns.Add("OptionAnchorOutputs", optionAnchorOutputsColumnBase);
+            var optionSimpleTaprootColumnBase = new ColumnBase<ColumnMappingBase>("OptionSimpleTaproot", "bit", nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityTableBase.Columns.Add("OptionSimpleTaproot", optionSimpleTaprootColumnBase);
             var remoteChannelReserveAmountSatsColumnBase = new ColumnBase<ColumnMappingBase>("RemoteChannelReserveAmountSats", "bigint", nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityTableBase.Columns.Add("RemoteChannelReserveAmountSats", remoteChannelReserveAmountSatsColumnBase);
             var remoteDustLimitAmountSatsColumnBase = new ColumnBase<ColumnMappingBase>("RemoteDustLimitAmountSats", "bigint", nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityTableBase);
@@ -2660,6 +2662,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)localUpfrontShutdownScriptColumnBase, channelConfigEntity.FindProperty("LocalUpfrontShutdownScript")!, nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)minimumDepthColumnBase, channelConfigEntity.FindProperty("MinimumDepth")!, nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)optionAnchorOutputsColumnBase, channelConfigEntity.FindProperty("OptionAnchorOutputs")!, nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)optionSimpleTaprootColumnBase, channelConfigEntity.FindProperty("OptionSimpleTaproot")!, nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)remoteChannelReserveAmountSatsColumnBase, channelConfigEntity.FindProperty("RemoteChannelReserveAmountSats")!, nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)remoteDustLimitAmountSatsColumnBase, channelConfigEntity.FindProperty("RemoteDustLimitAmountSats")!, nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)remoteHtlcMinimumMsatColumnBase, channelConfigEntity.FindProperty("RemoteHtlcMinimumMsat")!, nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase);
@@ -2714,6 +2717,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             var optionAnchorOutputsColumn = new Column("OptionAnchorOutputs", "bit", channelConfigsTable);
             channelConfigsTable.Columns.Add("OptionAnchorOutputs", optionAnchorOutputsColumn);
             optionAnchorOutputsColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<bool>(optionAnchorOutputsColumn);
+            var optionSimpleTaprootColumn = new Column("OptionSimpleTaproot", "bit", channelConfigsTable);
+            channelConfigsTable.Columns.Add("OptionSimpleTaproot", optionSimpleTaprootColumn);
+            optionSimpleTaprootColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<bool>(optionSimpleTaprootColumn);
             var remoteChannelReserveAmountSatsColumn = new Column("RemoteChannelReserveAmountSats", "bigint", channelConfigsTable);
             channelConfigsTable.Columns.Add("RemoteChannelReserveAmountSats", remoteChannelReserveAmountSatsColumn);
             remoteChannelReserveAmountSatsColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(remoteChannelReserveAmountSatsColumn);
@@ -2758,6 +2764,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             RelationalModel.CreateColumnMapping(localUpfrontShutdownScriptColumn, channelConfigEntity.FindProperty("LocalUpfrontShutdownScript")!, channelConfigsTableMapping);
             RelationalModel.CreateColumnMapping(minimumDepthColumn, channelConfigEntity.FindProperty("MinimumDepth")!, channelConfigsTableMapping);
             RelationalModel.CreateColumnMapping(optionAnchorOutputsColumn, channelConfigEntity.FindProperty("OptionAnchorOutputs")!, channelConfigsTableMapping);
+            RelationalModel.CreateColumnMapping(optionSimpleTaprootColumn, channelConfigEntity.FindProperty("OptionSimpleTaproot")!, channelConfigsTableMapping);
             RelationalModel.CreateColumnMapping(remoteChannelReserveAmountSatsColumn, channelConfigEntity.FindProperty("RemoteChannelReserveAmountSats")!, channelConfigsTableMapping);
             RelationalModel.CreateColumnMapping(remoteDustLimitAmountSatsColumn, channelConfigEntity.FindProperty("RemoteDustLimitAmountSats")!, channelConfigsTableMapping);
             RelationalModel.CreateColumnMapping(remoteHtlcMinimumMsatColumn, channelConfigEntity.FindProperty("RemoteHtlcMinimumMsat")!, channelConfigsTableMapping);
@@ -2842,6 +2849,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 IsNullable = true
             };
             nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("Label", labelColumnBase0);
+            var lastReceivedPartialSignatureColumnBase = new ColumnBase<ColumnMappingBase>("LastReceivedPartialSignature", "varbinary(98)", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("LastReceivedPartialSignature", lastReceivedPartialSignatureColumnBase);
             var lastReceivedSignatureColumnBase = new ColumnBase<ColumnMappingBase>("LastReceivedSignature", "varbinary(64)", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
             {
                 IsNullable = true
@@ -2918,6 +2930,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("RemoteFundingContributionSatoshis", remoteFundingContributionSatoshisColumnBase);
             var remoteNextHtlcIdColumnBase = new ColumnBase<ColumnMappingBase>("RemoteNextHtlcId", "decimal(20,0)", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("RemoteNextHtlcId", remoteNextHtlcIdColumnBase);
+            var remoteNextNoncesColumnBase = new ColumnBase<ColumnMappingBase>("RemoteNextNonces", "varbinary(max)", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("RemoteNextNonces", remoteNextNoncesColumnBase);
             var remoteNextPerCommitmentPointColumnBase = new ColumnBase<ColumnMappingBase>("RemoteNextPerCommitmentPoint", "varbinary(33)", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
             {
                 IsNullable = true
@@ -2977,6 +2994,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)isDualFundedColumnBase, channelEntity.FindProperty("IsDualFunded")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)isInitiatorColumnBase, channelEntity.FindProperty("IsInitiator")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)labelColumnBase0, channelEntity.FindProperty("Label")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lastReceivedPartialSignatureColumnBase, channelEntity.FindProperty("LastReceivedPartialSignature")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lastReceivedSignatureColumnBase, channelEntity.FindProperty("LastReceivedSignature")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lastSentOrderColumnBase, channelEntity.FindProperty("LastSentOrder")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lastSentSignatureColumnBase, channelEntity.FindProperty("LastSentSignature")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
@@ -2997,6 +3015,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)remoteCommitmentNumberColumnBase, channelEntity.FindProperty("RemoteCommitmentNumber")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)remoteFundingContributionSatoshisColumnBase, channelEntity.FindProperty("RemoteFundingContributionSatoshis")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)remoteNextHtlcIdColumnBase, channelEntity.FindProperty("RemoteNextHtlcId")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)remoteNextNoncesColumnBase, channelEntity.FindProperty("RemoteNextNonces")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)remoteNextPerCommitmentPointColumnBase, channelEntity.FindProperty("RemoteNextPerCommitmentPoint")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)remoteNodeIdColumnBase, channelEntity.FindProperty("RemoteNodeId")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)remoteRevocationNumberColumnBase, channelEntity.FindProperty("RemoteRevocationNumber")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
@@ -3089,6 +3108,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             };
             channelsTable.Columns.Add("Label", labelColumn0);
             labelColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<string>(labelColumn0);
+            var lastReceivedPartialSignatureColumn = new Column("LastReceivedPartialSignature", "varbinary(98)", channelsTable)
+            {
+                IsNullable = true
+            };
+            channelsTable.Columns.Add("LastReceivedPartialSignature", lastReceivedPartialSignatureColumn);
+            lastReceivedPartialSignatureColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(lastReceivedPartialSignatureColumn);
             var lastReceivedSignatureColumn = new Column("LastReceivedSignature", "varbinary(64)", channelsTable)
             {
                 IsNullable = true
@@ -3185,6 +3210,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             var remoteNextHtlcIdColumn = new Column("RemoteNextHtlcId", "decimal(20,0)", channelsTable);
             channelsTable.Columns.Add("RemoteNextHtlcId", remoteNextHtlcIdColumn);
             remoteNextHtlcIdColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<decimal>(remoteNextHtlcIdColumn);
+            var remoteNextNoncesColumn = new Column("RemoteNextNonces", "varbinary(max)", channelsTable)
+            {
+                IsNullable = true
+            };
+            channelsTable.Columns.Add("RemoteNextNonces", remoteNextNoncesColumn);
+            remoteNextNoncesColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(remoteNextNoncesColumn);
             var remoteNextPerCommitmentPointColumn = new Column("RemoteNextPerCommitmentPoint", "varbinary(33)", channelsTable)
             {
                 IsNullable = true
@@ -3254,6 +3285,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             RelationalModel.CreateColumnMapping(isDualFundedColumn, channelEntity.FindProperty("IsDualFunded")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(isInitiatorColumn, channelEntity.FindProperty("IsInitiator")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(labelColumn0, channelEntity.FindProperty("Label")!, channelsTableMapping);
+            RelationalModel.CreateColumnMapping(lastReceivedPartialSignatureColumn, channelEntity.FindProperty("LastReceivedPartialSignature")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(lastReceivedSignatureColumn, channelEntity.FindProperty("LastReceivedSignature")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(lastSentOrderColumn, channelEntity.FindProperty("LastSentOrder")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(lastSentSignatureColumn, channelEntity.FindProperty("LastSentSignature")!, channelsTableMapping);
@@ -3274,6 +3306,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             RelationalModel.CreateColumnMapping(remoteCommitmentNumberColumn, channelEntity.FindProperty("RemoteCommitmentNumber")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(remoteFundingContributionSatoshisColumn, channelEntity.FindProperty("RemoteFundingContributionSatoshis")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(remoteNextHtlcIdColumn, channelEntity.FindProperty("RemoteNextHtlcId")!, channelsTableMapping);
+            RelationalModel.CreateColumnMapping(remoteNextNoncesColumn, channelEntity.FindProperty("RemoteNextNonces")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(remoteNextPerCommitmentPointColumn, channelEntity.FindProperty("RemoteNextPerCommitmentPoint")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(remoteNodeIdColumn, channelEntity.FindProperty("RemoteNodeId")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(remoteRevocationNumberColumn, channelEntity.FindProperty("RemoteRevocationNumber")!, channelsTableMapping);
@@ -3775,6 +3808,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityTableBase.Columns.Add("LocalMsat", localMsatColumnBase);
             var numberColumnBase = new ColumnBase<ColumnMappingBase>("Number", "decimal(20,0)", nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityTableBase.Columns.Add("Number", numberColumnBase);
+            var partialSignatureColumnBase = new ColumnBase<ColumnMappingBase>("PartialSignature", "varbinary(98)", nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityTableBase.Columns.Add("PartialSignature", partialSignatureColumnBase);
             var perCommitmentPointColumnBase = new ColumnBase<ColumnMappingBase>("PerCommitmentPoint", "varbinary(33)", nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityTableBase)
             {
                 IsNullable = true
@@ -3806,6 +3844,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)htlcsColumnBase, commitmentEntity.FindProperty("Htlcs")!, nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)localMsatColumnBase, commitmentEntity.FindProperty("LocalMsat")!, nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)numberColumnBase, commitmentEntity.FindProperty("Number")!, nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)partialSignatureColumnBase, commitmentEntity.FindProperty("PartialSignature")!, nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)perCommitmentPointColumnBase, commitmentEntity.FindProperty("PerCommitmentPoint")!, nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)remoteMsatColumnBase, commitmentEntity.FindProperty("RemoteMsat")!, nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)signatureColumnBase0, commitmentEntity.FindProperty("Signature")!, nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase);
@@ -3841,6 +3880,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             var numberColumn = new Column("Number", "decimal(20,0)", commitmentsTable);
             commitmentsTable.Columns.Add("Number", numberColumn);
             numberColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<decimal>(numberColumn);
+            var partialSignatureColumn = new Column("PartialSignature", "varbinary(98)", commitmentsTable)
+            {
+                IsNullable = true
+            };
+            commitmentsTable.Columns.Add("PartialSignature", partialSignatureColumn);
+            partialSignatureColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(partialSignatureColumn);
             var perCommitmentPointColumn = new Column("PerCommitmentPoint", "varbinary(33)", commitmentsTable)
             {
                 IsNullable = true
@@ -3874,6 +3919,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             RelationalModel.CreateColumnMapping(htlcsColumn, commitmentEntity.FindProperty("Htlcs")!, commitmentsTableMapping);
             RelationalModel.CreateColumnMapping(localMsatColumn, commitmentEntity.FindProperty("LocalMsat")!, commitmentsTableMapping);
             RelationalModel.CreateColumnMapping(numberColumn, commitmentEntity.FindProperty("Number")!, commitmentsTableMapping);
+            RelationalModel.CreateColumnMapping(partialSignatureColumn, commitmentEntity.FindProperty("PartialSignature")!, commitmentsTableMapping);
             RelationalModel.CreateColumnMapping(perCommitmentPointColumn, commitmentEntity.FindProperty("PerCommitmentPoint")!, commitmentsTableMapping);
             RelationalModel.CreateColumnMapping(remoteMsatColumn, commitmentEntity.FindProperty("RemoteMsat")!, commitmentsTableMapping);
             RelationalModel.CreateColumnMapping(signatureColumn0, commitmentEntity.FindProperty("Signature")!, commitmentsTableMapping);

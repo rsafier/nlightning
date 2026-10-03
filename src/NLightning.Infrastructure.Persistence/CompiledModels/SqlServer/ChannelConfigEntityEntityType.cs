@@ -32,7 +32,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 "NLightning.Infrastructure.Persistence.Entities.Channel.ChannelConfigEntity",
                 typeof(ChannelConfigEntity),
                 baseEntityType,
-                propertyCount: 21,
+                propertyCount: 22,
                 foreignKeyCount: 1,
                 keyCount: 1);
 
@@ -715,6 +715,53 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     bool (bool v) => v));
             optionAnchorOutputs.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
+            var optionSimpleTaproot = runtimeEntityType.AddProperty(
+                "OptionSimpleTaproot",
+                typeof(bool),
+                propertyInfo: typeof(ChannelConfigEntity).GetProperty("OptionSimpleTaproot", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(ChannelConfigEntity).GetField("<OptionSimpleTaproot>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                sentinel: false);
+            optionSimpleTaproot.SetGetter(
+                bool (ChannelConfigEntity instance) => ChannelConfigEntityUnsafeAccessors.OptionSimpleTaproot(instance),
+                bool (ChannelConfigEntity instance) => ChannelConfigEntityUnsafeAccessors.OptionSimpleTaproot(instance) == false);
+            optionSimpleTaproot.SetSetter(
+                ChannelConfigEntity (ChannelConfigEntity instance, bool value) =>
+                {
+                    ChannelConfigEntityUnsafeAccessors.OptionSimpleTaproot(instance) = value;
+                    return instance;
+                });
+            optionSimpleTaproot.SetMaterializationSetter(
+                ChannelConfigEntity (ChannelConfigEntity instance, bool value) =>
+                {
+                    ChannelConfigEntityUnsafeAccessors.OptionSimpleTaproot(instance) = value;
+                    return instance;
+                });
+            optionSimpleTaproot.SetAccessors(
+                bool (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.OptionSimpleTaproot(((ChannelConfigEntity)(entry.Entity))),
+                bool (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.OptionSimpleTaproot(((ChannelConfigEntity)(entry.Entity))),
+                bool (IInternalEntry entry) => entry.ReadOriginalValue<bool>(optionSimpleTaproot, 13),
+                bool (IInternalEntry entry) => entry.GetCurrentValue<bool>(optionSimpleTaproot));
+            optionSimpleTaproot.SetPropertyIndexes(
+                index: 13,
+                originalValueIndex: 13,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            optionSimpleTaproot.TypeMapping = SqlServerBoolTypeMapping.Default.Clone(
+                comparer: new ValueComparer<bool>(
+                    bool (bool v1, bool v2) => v1 == v2,
+                    int (bool v) => ((object)v).GetHashCode(),
+                    bool (bool v) => v),
+                keyComparer: new ValueComparer<bool>(
+                    bool (bool v1, bool v2) => v1 == v2,
+                    int (bool v) => ((object)v).GetHashCode(),
+                    bool (bool v) => v),
+                providerValueComparer: new ValueComparer<bool>(
+                    bool (bool v1, bool v2) => v1 == v2,
+                    int (bool v) => ((object)v).GetHashCode(),
+                    bool (bool v) => v));
+            optionSimpleTaproot.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
+
             var remoteChannelReserveAmountSats = runtimeEntityType.AddProperty(
                 "RemoteChannelReserveAmountSats",
                 typeof(long),
@@ -739,11 +786,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             remoteChannelReserveAmountSats.SetAccessors(
                 long (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.RemoteChannelReserveAmountSats(((ChannelConfigEntity)(entry.Entity))),
                 long (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.RemoteChannelReserveAmountSats(((ChannelConfigEntity)(entry.Entity))),
-                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(remoteChannelReserveAmountSats, 13),
+                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(remoteChannelReserveAmountSats, 14),
                 long (IInternalEntry entry) => entry.GetCurrentValue<long>(remoteChannelReserveAmountSats));
             remoteChannelReserveAmountSats.SetPropertyIndexes(
-                index: 13,
-                originalValueIndex: 13,
+                index: 14,
+                originalValueIndex: 14,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -786,11 +833,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             remoteDustLimitAmountSats.SetAccessors(
                 long (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.RemoteDustLimitAmountSats(((ChannelConfigEntity)(entry.Entity))),
                 long (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.RemoteDustLimitAmountSats(((ChannelConfigEntity)(entry.Entity))),
-                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(remoteDustLimitAmountSats, 14),
+                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(remoteDustLimitAmountSats, 15),
                 long (IInternalEntry entry) => entry.GetCurrentValue<long>(remoteDustLimitAmountSats));
             remoteDustLimitAmountSats.SetPropertyIndexes(
-                index: 14,
-                originalValueIndex: 14,
+                index: 15,
+                originalValueIndex: 15,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -832,11 +879,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             remoteHtlcMinimumMsat.SetAccessors(
                 ulong (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.RemoteHtlcMinimumMsat(((ChannelConfigEntity)(entry.Entity))),
                 ulong (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.RemoteHtlcMinimumMsat(((ChannelConfigEntity)(entry.Entity))),
-                ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(remoteHtlcMinimumMsat, 15),
+                ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(remoteHtlcMinimumMsat, 16),
                 ulong (IInternalEntry entry) => entry.GetCurrentValue<ulong>(remoteHtlcMinimumMsat));
             remoteHtlcMinimumMsat.SetPropertyIndexes(
-                index: 15,
-                originalValueIndex: 15,
+                index: 16,
+                originalValueIndex: 16,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -891,11 +938,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             remoteMaxAcceptedHtlcs.SetAccessors(
                 ushort (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.RemoteMaxAcceptedHtlcs(((ChannelConfigEntity)(entry.Entity))),
                 ushort (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.RemoteMaxAcceptedHtlcs(((ChannelConfigEntity)(entry.Entity))),
-                ushort (IInternalEntry entry) => entry.ReadOriginalValue<ushort>(remoteMaxAcceptedHtlcs, 16),
+                ushort (IInternalEntry entry) => entry.ReadOriginalValue<ushort>(remoteMaxAcceptedHtlcs, 17),
                 ushort (IInternalEntry entry) => entry.GetCurrentValue<ushort>(remoteMaxAcceptedHtlcs));
             remoteMaxAcceptedHtlcs.SetPropertyIndexes(
-                index: 16,
-                originalValueIndex: 16,
+                index: 17,
+                originalValueIndex: 17,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -946,11 +993,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             remoteMaxHtlcValueInFlightMsat.SetAccessors(
                 ulong (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.RemoteMaxHtlcValueInFlightMsat(((ChannelConfigEntity)(entry.Entity))),
                 ulong (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.RemoteMaxHtlcValueInFlightMsat(((ChannelConfigEntity)(entry.Entity))),
-                ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(remoteMaxHtlcValueInFlightMsat, 17),
+                ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(remoteMaxHtlcValueInFlightMsat, 18),
                 ulong (IInternalEntry entry) => entry.GetCurrentValue<ulong>(remoteMaxHtlcValueInFlightMsat));
             remoteMaxHtlcValueInFlightMsat.SetPropertyIndexes(
-                index: 17,
-                originalValueIndex: 17,
+                index: 18,
+                originalValueIndex: 18,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1005,11 +1052,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             remoteToSelfDelay.SetAccessors(
                 ushort (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.RemoteToSelfDelay(((ChannelConfigEntity)(entry.Entity))),
                 ushort (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.RemoteToSelfDelay(((ChannelConfigEntity)(entry.Entity))),
-                ushort (IInternalEntry entry) => entry.ReadOriginalValue<ushort>(remoteToSelfDelay, 18),
+                ushort (IInternalEntry entry) => entry.ReadOriginalValue<ushort>(remoteToSelfDelay, 19),
                 ushort (IInternalEntry entry) => entry.GetCurrentValue<ushort>(remoteToSelfDelay));
             remoteToSelfDelay.SetPropertyIndexes(
-                index: 18,
-                originalValueIndex: 18,
+                index: 19,
+                originalValueIndex: 19,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1061,11 +1108,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             remoteUpfrontShutdownScript.SetAccessors(
                 byte[] (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.RemoteUpfrontShutdownScript(((ChannelConfigEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.RemoteUpfrontShutdownScript(((ChannelConfigEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(remoteUpfrontShutdownScript, 19),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(remoteUpfrontShutdownScript, 20),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(remoteUpfrontShutdownScript));
             remoteUpfrontShutdownScript.SetPropertyIndexes(
-                index: 19,
-                originalValueIndex: 19,
+                index: 20,
+                originalValueIndex: 20,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1113,11 +1160,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             useScidAlias.SetAccessors(
                 byte (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.UseScidAlias(((ChannelConfigEntity)(entry.Entity))),
                 byte (IInternalEntry entry) => ChannelConfigEntityUnsafeAccessors.UseScidAlias(((ChannelConfigEntity)(entry.Entity))),
-                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(useScidAlias, 20),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(useScidAlias, 21),
                 byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(useScidAlias));
             useScidAlias.SetPropertyIndexes(
-                index: 20,
-                originalValueIndex: 20,
+                index: 21,
+                originalValueIndex: 21,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1203,6 +1250,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             var localUpfrontShutdownScript = runtimeEntityType.FindProperty("LocalUpfrontShutdownScript");
             var minimumDepth = runtimeEntityType.FindProperty("MinimumDepth");
             var optionAnchorOutputs = runtimeEntityType.FindProperty("OptionAnchorOutputs");
+            var optionSimpleTaproot = runtimeEntityType.FindProperty("OptionSimpleTaproot");
             var remoteChannelReserveAmountSats = runtimeEntityType.FindProperty("RemoteChannelReserveAmountSats");
             var remoteDustLimitAmountSats = runtimeEntityType.FindProperty("RemoteDustLimitAmountSats");
             var remoteHtlcMinimumMsat = runtimeEntityType.FindProperty("RemoteHtlcMinimumMsat");
@@ -1218,7 +1266,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType = ((ChannelConfigEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<ChannelId, bool, long, bool, long, long, ulong, ushort, ulong, ushort, byte[], uint, bool, long, long, ulong, ushort, ulong, ushort, byte[], byte>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<bool>)(((IProperty)announceChannel).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(announceChannel)), ((ValueComparer<long>)(((IProperty)feeRatePerKwSatoshis).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(feeRatePerKwSatoshis)), ((ValueComparer<bool>)(((IProperty)hasInferredParams).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(hasInferredParams)), ((ValueComparer<long>)(((IProperty)localChannelReserveAmountSats).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(localChannelReserveAmountSats)), ((ValueComparer<long>)(((IProperty)localDustLimitAmountSats).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(localDustLimitAmountSats)), ((ValueComparer<ulong>)(((IProperty)localHtlcMinimumMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(localHtlcMinimumMsat)), ((ValueComparer<ushort>)(((IProperty)localMaxAcceptedHtlcs).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(localMaxAcceptedHtlcs)), ((ValueComparer<ulong>)(((IProperty)localMaxHtlcValueInFlightMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(localMaxHtlcValueInFlightMsat)), ((ValueComparer<ushort>)(((IProperty)localToSelfDelay).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(localToSelfDelay)), (source.GetCurrentValue<byte[]>(localUpfrontShutdownScript) == null ? null : ((ValueComparer<byte[]>)(((IProperty)localUpfrontShutdownScript).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(localUpfrontShutdownScript))), ((ValueComparer<uint>)(((IProperty)minimumDepth).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(minimumDepth)), ((ValueComparer<bool>)(((IProperty)optionAnchorOutputs).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(optionAnchorOutputs)), ((ValueComparer<long>)(((IProperty)remoteChannelReserveAmountSats).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(remoteChannelReserveAmountSats)), ((ValueComparer<long>)(((IProperty)remoteDustLimitAmountSats).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(remoteDustLimitAmountSats)), ((ValueComparer<ulong>)(((IProperty)remoteHtlcMinimumMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(remoteHtlcMinimumMsat)), ((ValueComparer<ushort>)(((IProperty)remoteMaxAcceptedHtlcs).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(remoteMaxAcceptedHtlcs)), ((ValueComparer<ulong>)(((IProperty)remoteMaxHtlcValueInFlightMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(remoteMaxHtlcValueInFlightMsat)), ((ValueComparer<ushort>)(((IProperty)remoteToSelfDelay).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(remoteToSelfDelay)), (source.GetCurrentValue<byte[]>(remoteUpfrontShutdownScript) == null ? null : ((ValueComparer<byte[]>)(((IProperty)remoteUpfrontShutdownScript).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(remoteUpfrontShutdownScript))), ((ValueComparer<byte>)(((IProperty)useScidAlias).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(useScidAlias)))));
+                    return ((ISnapshot)(new Snapshot<ChannelId, bool, long, bool, long, long, ulong, ushort, ulong, ushort, byte[], uint, bool, bool, long, long, ulong, ushort, ulong, ushort, byte[], byte>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<bool>)(((IProperty)announceChannel).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(announceChannel)), ((ValueComparer<long>)(((IProperty)feeRatePerKwSatoshis).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(feeRatePerKwSatoshis)), ((ValueComparer<bool>)(((IProperty)hasInferredParams).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(hasInferredParams)), ((ValueComparer<long>)(((IProperty)localChannelReserveAmountSats).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(localChannelReserveAmountSats)), ((ValueComparer<long>)(((IProperty)localDustLimitAmountSats).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(localDustLimitAmountSats)), ((ValueComparer<ulong>)(((IProperty)localHtlcMinimumMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(localHtlcMinimumMsat)), ((ValueComparer<ushort>)(((IProperty)localMaxAcceptedHtlcs).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(localMaxAcceptedHtlcs)), ((ValueComparer<ulong>)(((IProperty)localMaxHtlcValueInFlightMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(localMaxHtlcValueInFlightMsat)), ((ValueComparer<ushort>)(((IProperty)localToSelfDelay).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(localToSelfDelay)), (source.GetCurrentValue<byte[]>(localUpfrontShutdownScript) == null ? null : ((ValueComparer<byte[]>)(((IProperty)localUpfrontShutdownScript).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(localUpfrontShutdownScript))), ((ValueComparer<uint>)(((IProperty)minimumDepth).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(minimumDepth)), ((ValueComparer<bool>)(((IProperty)optionAnchorOutputs).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(optionAnchorOutputs)), ((ValueComparer<bool>)(((IProperty)optionSimpleTaproot).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(optionSimpleTaproot)), ((ValueComparer<long>)(((IProperty)remoteChannelReserveAmountSats).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(remoteChannelReserveAmountSats)), ((ValueComparer<long>)(((IProperty)remoteDustLimitAmountSats).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(remoteDustLimitAmountSats)), ((ValueComparer<ulong>)(((IProperty)remoteHtlcMinimumMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(remoteHtlcMinimumMsat)), ((ValueComparer<ushort>)(((IProperty)remoteMaxAcceptedHtlcs).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(remoteMaxAcceptedHtlcs)), ((ValueComparer<ulong>)(((IProperty)remoteMaxHtlcValueInFlightMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(remoteMaxHtlcValueInFlightMsat)), ((ValueComparer<ushort>)(((IProperty)remoteToSelfDelay).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(remoteToSelfDelay)), (source.GetCurrentValue<byte[]>(remoteUpfrontShutdownScript) == null ? null : ((ValueComparer<byte[]>)(((IProperty)remoteUpfrontShutdownScript).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(remoteUpfrontShutdownScript))), ((ValueComparer<byte>)(((IProperty)useScidAlias).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(useScidAlias)))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => ((ISnapshot)(new Snapshot<ChannelId>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(default(ChannelId))))));
@@ -1235,11 +1283,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     return ((ISnapshot)(new Snapshot<ChannelId>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 21,
+                propertyCount: 22,
                 navigationCount: 0,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 21,
+                originalValueCount: 22,
                 shadowCount: 0,
                 relationshipCount: 1,
                 storeGeneratedCount: 1));

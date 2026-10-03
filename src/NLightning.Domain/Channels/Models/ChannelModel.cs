@@ -172,6 +172,14 @@ public class ChannelModel
     public CompactSignature? LastSentSignature { get; private set; }
     public CompactSignature? LastReceivedSignature { get; private set; }
 
+    /// <summary>
+    /// Simple taproot channels (NL-877 T3): the peer's MuSig2 partial signature of our first commitment, with its
+    /// signing nonce (<c>funding_created</c>/<c>funding_signed</c> <c>partial_signature_with_nonce</c>), kept as
+    /// <see cref="LastReceivedSignature"/> is for the other channel types (which then holds no usable signature). Null
+    /// for every other channel type.
+    /// </summary>
+    public MusigPartialSignatureWithNonce? LastReceivedPartialSignature { get; private set; }
+
     #endregion
 
     #region Local Information
@@ -411,6 +419,12 @@ public class ChannelModel
         LastReceivedSignature = lastReceivedSignature;
     }
 
+    /// <summary>Sets <see cref="LastReceivedPartialSignature"/> (simple taproot channels).</summary>
+    public void UpdateLastReceivedPartialSignature(MusigPartialSignatureWithNonce? lastReceivedPartialSignature)
+    {
+        LastReceivedPartialSignature = lastReceivedPartialSignature;
+    }
+
     /// <summary>
     /// Swaps in the snapshot produced by a transition, after that transition was saved (invariant I2), together with
     /// the extras saved with it (same rules as <c>IChannelStateDbRepository.ApplyAsync</c>: a null member is unchanged,
@@ -578,7 +592,8 @@ public class ChannelModel
             RemoteNodeId = RemoteNodeId,
             ShortChannelId = ((byte[]?)ShortChannelId)?.Length > 0 ? ShortChannelId : (ShortChannelId?)null,
             AnnounceChannel = AnnounceChannel,
-            LocalFundingKeyIndex = LocalFundingKeyIndex
+            LocalFundingKeyIndex = LocalFundingKeyIndex,
+            IsSimpleTaproot = ChannelParams.OptionSimpleTaproot
         };
     }
 }

@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Channels.Factories;
 
 using Bitcoin.Interfaces;
+using Bitcoin.Transactions.Extensions;
 using Bitcoin.Transactions.Factories;
 using Bitcoin.Transactions.Outputs;
 using Bitcoin.ValueObjects;
@@ -200,8 +201,11 @@ public class ChannelFactory : IChannelFactory
         var currentFeeRatePerKw = request.FeeRatePerKw
                                ?? LightningMoney.Satoshis(_nodeOptions.GetCommitmentFeeRatePerKw(
                                                               (await _feeService.GetFeeRatePerKwAsync()).Satoshi));
+        // Our own opens are never simple taproot yet (plan D-T2: anchors stay the type of our opens)
         var hasAnchors = negotiatedFeatures.OptionAnchors > FeatureSupport.No;
-        var expectedFee = CommitmentFeeCalculator.FunderCost((ulong)currentFeeRatePerKw.Satoshi, hasAnchors, 0);
+        var expectedFee = CommitmentFeeCalculator.FunderCost((ulong)currentFeeRatePerKw.Satoshi,
+                                                             CommitmentFormatExtensions.FromOptionAnchors(hasAnchors),
+                                                             0);
         if (request.FundingAmount < expectedFee + channelReserveAmount)
             throw new ChannelErrorException($"Funding amount is too small to cover fees: {request.FundingAmount}");
 

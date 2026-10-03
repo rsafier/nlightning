@@ -92,6 +92,14 @@ public class CommitmentEntity
     public byte[]? HtlcSignatures { get; set; }
 
     /// <summary>
+    /// Simple taproot channels (migration <c>AddSimpleTaprootChannels</c>, NL-877 T3): the MuSig2 partial signature of
+    /// the commitment with its signer's nonce (98 bytes, <c>CommitmentSignatures.PartialSignature</c>), the peer's for our
+    /// commitment and ours for an unacked remote one; <see cref="Signature"/> then holds the zero signature. Null for
+    /// every other channel type.
+    /// </summary>
+    public byte[]? PartialSignature { get; set; }
+
+    /// <summary>
     /// The fundings a remote commitment of the state machine was signed on when splices were pending at signing
     /// (<c>RemoteCommit.SignedOnFundings</c>, migration <c>AddSpliceHardening</c>, NL-494): per funding its txid (32
     /// bytes) and the engine's local and remote balance deltas against the current funding (8 bytes each, big-endian

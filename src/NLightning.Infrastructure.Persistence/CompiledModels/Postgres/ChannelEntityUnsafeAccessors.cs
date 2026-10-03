@@ -67,6 +67,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Label>k__BackingField")]
         public static extern ref string Label(ChannelEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<LastReceivedPartialSignature>k__BackingField")]
+        public static extern ref byte[] LastReceivedPartialSignature(ChannelEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<LastReceivedSignature>k__BackingField")]
         public static extern ref byte[] LastReceivedSignature(ChannelEntity @this);
 
@@ -126,6 +129,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<RemoteNextHtlcId>k__BackingField")]
         public static extern ref ulong RemoteNextHtlcId(ChannelEntity @this);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<RemoteNextNonces>k__BackingField")]
+        public static extern ref byte[] RemoteNextNonces(ChannelEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<RemoteNextPerCommitmentPoint>k__BackingField")]
         public static extern ref CompactPubKey? RemoteNextPerCommitmentPoint(ChannelEntity @this);
