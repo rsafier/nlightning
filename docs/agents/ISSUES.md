@@ -4,7 +4,7 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
-Updated 2026-10-03 by the taproot wave t01 integrator (branch `wip/taproot-int` from `origin/wip/taproot-plan` at `ee682a23`, merged into `wip/fafo`): NL-897 fixed (cluster proof `tap-mx1`; CLN v26.06.8 does not signal simple close), NL-903 (low, fixed in 075a7920, f0ca4a5c and 5c14c684: review fixes) and NL-904 (medium, open: T3/T4 obligations from the review) new; NL-895 and NL-898 updated. Summary: open 64, fixed 691, total 775.
+Updated 2026-10-03 by the taproot wave t01 integrator (branch `wip/taproot-int` from `origin/wip/taproot-plan` at `ee682a23`, merged into `wip/fafo`): NL-913 fixed (cluster proof `tap-mx1`; CLN v26.06.8 does not signal simple close), NL-903 (low, fixed in 075a7920, f0ca4a5c and 5c14c684: review fixes) and NL-904 (medium, open: T3/T4 obligations from the review) new; NL-911 and NL-914 updated. NL-910 (low, open: a `ClnPeerStorageTests` cluster flake). Taproot NL-895..NL-899 renumbered to NL-911..NL-915 (collision with the trampoline follow-ups, which landed first).
 
 Updated 2026-10-03 by the batch12 integrator (branch `wip/batch12` from `wip/fafo` at `fedb876b`; lanes b12-splice-htlc, b12-ux, b12-reconcile-drift, b12-reestablish-deadline and b12-trimmed-loss merged with `--no-ff`): NL-880 (high) and NL-881 (medium) fixed in d2d2a7e5, NL-882..NL-885 (low) in 730ff053, NL-886/NL-887 (low) in 24d3dc4c, NL-760 and NL-796 fixed, NL-890 (low flake, open); review fixes NL-891 (medium), NL-892 (medium), NL-893 and NL-894 (low), all fixed. NL-888 and NL-889 are unused. NL-776 (lane b12-anysegwit, cfafd698) fixed.
 
@@ -149,12 +149,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 61 | 64 |
+| open | 0 | 0 | 3 | 62 | 65 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
 | fixed | 14 | 63 | 201 | 413 | 691 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **212** | **486** | **775** |
+| **Total** | **14** | **63** | **212** | **487** | **776** |
 
 ### Epics
 
@@ -1784,7 +1784,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-556, NL-021
 - **Plan ref:** `docs/agents/SPLICING_PLAN.md` (IT-R-04)
 
-### NL-897 `option_simple_close` on by default: cluster proof of the changed close flows pending
+### NL-913 `option_simple_close` on by default: cluster proof of the changed close flows pending
 - **Status:** fixed (a2e7d6bc; cluster proof `tap-mx1` on 78907b32)
 - **Severity:** low
 - **Kind:** test
@@ -1794,7 +1794,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** TAPROOT_CHANNELS_PLAN D-T1
 
-### NL-898 Simple taproot spec (`bolt-simple-taproot.md`) text and vectors disagree in four places
+### NL-914 Simple taproot spec (`bolt-simple-taproot.md`) text and vectors disagree in four places
 - **Status:** open
 - **Severity:** low
 - **Kind:** spec-violation
@@ -1804,7 +1804,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** TAPROOT_CHANNELS_PLAN "Spec errata", wave t01 record
 
-### NL-899 `AnchorOutputInfo.FundingPubKey` holds a taproot anchor's internal key
+### NL-915 `AnchorOutputInfo.FundingPubKey` holds a taproot anchor's internal key
 - **Status:** open
 - **Severity:** low
 - **Kind:** tech-debt
@@ -1816,13 +1816,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 
 ### NL-903 Taproot wave t01 integration review: MuSig2 blame, nonce Clear race, format/anchors contradiction, a dual-fund test flake
-- **Status:** fixed (075a7920, f0ca4a5c, 5c14c684)
+- **Status:** fixed (075a7920, f0ca4a5c, 5c14c684, e82293ac)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Crypto/Musig2/Bip327.cs` (`PartialSigAgg`, `NonceAgg`'s `Half`, `NonceGen`/`DeterministicSign`), `src/NLightning.Domain/Crypto/ValueObjects/MusigSecretNonce.cs` (`Clear`), `src/NLightning.Domain/Bitcoin/Transactions/Models/CommitmentTransactionModel.cs` (`HasAnchors`), `test/NLightning.Application.Tests/Channels/DualFunding/DualFundUpfrontShutdownScriptTests.cs`
 - **Evidence:** The t01 integration review (three reviewers: MuSig2 against BIP 327 `reference.py`, scripts/signatures against BIP 340-342, the spec and LND master, transactions/fees against the spec and the legacy/anchors paths): (1) a 31-byte or default partial signature threw `IndexOutOfRangeException` and a default public nonce `NullReferenceException` instead of `MusigInvalidContributionException` blaming that signer (the reference raises `InvalidContributionError`); (2) `MusigSecretNonce.Clear` zeroed the buffer unconditionally, so a `Clear` racing a `Consume` that had won its compare-and-swap could zero `k1` while `Consume` copied it and the signer would sign with a wrong nonce; (3) `CommitmentTransactionModel` accepted `HasAnchors` contradicting `Format` (`HtlcTransactionModel` then threw); (4) the signer's comment said `SIGHASH_ALL` and `SIGHASH_DEFAULT` give one digest. Integration gate: `DualFundUpfrontShutdownScriptTests.Given_AP2TrScriptWithAnySegwit_*` (batch12) failed once in the loaded full run (Alice's `tx_abort` after the test's 1 s open timeout), green 3/3 alone. No legacy or anchors regression was found (byte-identity of every shared path checked; BOLT 3 248/248).
 - **Fix:** (1) length/null checked before the scalar is built, a null nonce half is an invalid contribution; (2) `Clear` zeroes only when it wins the compare-and-swap from live; the `MuSig/aux` hash is zeroed after use; (3) `HasAnchors` follows `Format` when it is set; (4) comment corrected; the dual-fund test's opens that complete use the harness's default open timeout (the refused ones keep 1 s: they end at Alice's deadline on the stepped clock, and a 60 s deadline is out of the harness's 1,000 rounds of 10 ms, so a first fix that moved them hung the test host; `DualFundHarness.RunAsync` now bounds its final wait at 30 s, so such a test fails instead of hanging). Tests (fail without the fix): `Musig2ServiceTests.Given_ADefaultPublicNonce_*`, `Given_ADefaultPartialSignature_*`, `Given_APartialSignatureOfAWrongLength_*`, `MusigValueObjectTests.Given_AConsumedSecretNonce_When_Cleared_Then_ItWritesNothing`, `HtlcTransactionModelFactoryTests.Given_ACommitmentWhoseHasAnchorsContradictsItsFormat_*`; plus `Bip327SignVectorTests.Given_AnAggregateNonceWithOneInfinityHalf_*` (regression vectors from `reference.py`). Rejected: "the pubkey-mismatch throw in `Sign` leaves the secret key scalar uncleared" (it is cleared before the throw).
-- **Blocks/Blocked-by:** Related NL-877, NL-895
+- **Blocks/Blocked-by:** Related NL-877, NL-911
 - **Plan ref:** TAPROOT_CHANNELS_PLAN wave t01 integration
 
 ### NL-904 Simple taproot T3/T4 obligations found by the t01 review (fees by format, the format switch, nonce binding per funding, HTLC fee inputs)
@@ -1836,6 +1836,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T3, T4
 ## BOLT 3: Transactions and scripts
 
+
+### NL-910 `ClnPeerStorageTests` reconnect case failed once on the cluster (Assert.NotNull), green rerun alone
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnPeerStorageTests.cs` (`Given_AChannelWithCln_When_Reconnected_Then_BothSidesHandBackTheOthersBlob`; `Assert.NotNull` at the blob CLN keeps, the retrieval's contents or the stored blob after our restart)
+- **Evidence:** Cluster run `tap-mx1` (wip/taproot-plan 78907b32, 2026-10-03, cln suite run alongside lnd/eclair): `Xunit.Sdk.NotNullException: Assert.NotNull() Failure: Value is null` at 18:50:06 UTC; the class rerun alone was green. Diagnostics in `/Users/ms/nlightning-taproot/TestResults/cluster/tap-mx1/cln/diag/ClnPeerStorageTests.Given_AChannelWithCln_When_Reconnected_Then_BothSidesHandBackTheOthersBlob/` (CLN log, `listpeerchannels`, `getinfo`). Which of the three `NotNull`s failed is not in the summary; a likely candidate is CLN's datastore holding an earlier blob of ours that `TryReadBlobAsync` does not decode, or a retrieval without contents, as in NL-428's ordering.
+- **Fix sketch:** Log which assertion failed (the message), read the full test output of the run, and make the polls wait for the blob naming the test's channel.
+- **Blocks/Blocked-by:** Related NL-428, NL-010
+- **Plan ref:** —
 ### NL-056 HTLC-success / HTLC-timeout second-stage transactions not implemented
 - **Status:** fixed (dfe8866, b222896)
 - **Severity:** high
@@ -2065,7 +2075,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Plan T0 MuSig2 (BIP 327 vectors) → T1 scripts/txs (spec vectors) → T2 wire TLVs → T3 signer, nonces (counter scheme, never reused across a crash), persistence, reestablish → T4 BOLT 5 resolvers → T5 simple close, dual fund, splicing, backups → T6 cluster proofs against LND 0.21.4 and Eclair 0.14.3; experimental until T6 and an owner decision (D-T1 `option_simple_close` default, D-T2 taproot default).
 - **Blocks/Blocked-by:** Blocks NL-878
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T0-T6
-- **Update (wave t01, 2026-10-03, branch `wip/taproot-plan`):** T0 merged (`795ae14b`): BIP 327 MuSig2 behind `IMusig2Service` (our own module, D-T3; NBitcoin's MuSig2 refused, NL-896), every BIP 327 vector and the spec's signed commitment (partial and aggregated signatures) byte-exact. D-T1 done (lane SC, `a2e7d6bc`): `option_simple_close` Optional by default on every network; cluster re-run pending (NL-897). T1 (scripts and transactions) in progress. T1 merged (`c7da7b8b`): `CommitmentFormat` with the simple taproot weights and 354 sat dust in the one fee calculator, `Infrastructure.Bitcoin/Taproot/` scripts, tapscript trees, outputs, builders and BIP 340 HTLC signatures; every spec script vector, the three signed commitment transactions and the 9 HTLC resolution transactions byte-exact. Library only, not wired. Hand-off and wave t02 (T2 wire, T3 signer/state) in `TAPROOT_CHANNELS_PLAN.md` "Wave t01 hand-off". Integrated into `wip/fafo` (2026-10-03): review fixes NL-903, T3/T4 obligations NL-904, NL-897 proven on the cluster.
+- **Update (wave t01, 2026-10-03, branch `wip/taproot-plan`):** T0 merged (`795ae14b`): BIP 327 MuSig2 behind `IMusig2Service` (our own module, D-T3; NBitcoin's MuSig2 refused, NL-912), every BIP 327 vector and the spec's signed commitment (partial and aggregated signatures) byte-exact. D-T1 done (lane SC, `a2e7d6bc`): `option_simple_close` Optional by default on every network; cluster re-run pending (NL-913). T1 (scripts and transactions) in progress. T1 merged (`c7da7b8b`): `CommitmentFormat` with the simple taproot weights and 354 sat dust in the one fee calculator, `Infrastructure.Bitcoin/Taproot/` scripts, tapscript trees, outputs, builders and BIP 340 HTLC signatures; every spec script vector, the three signed commitment transactions and the 9 HTLC resolution transactions byte-exact. Library only, not wired. Hand-off and wave t02 (T2 wire, T3 signer/state) in `TAPROOT_CHANNELS_PLAN.md` "Wave t01 hand-off". Integrated into `wip/fafo` (2026-10-03): review fixes NL-903, T3/T4 obligations NL-904, NL-913 proven on the cluster.
 
 ---
 
@@ -5807,7 +5817,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 ## Crypto providers and key management
 
-### NL-895 MuSig2 secrets are zeroed on a best-effort basis only
+### NL-911 MuSig2 secrets are zeroed on a best-effort basis only
 - **Status:** open
 - **Severity:** low
 - **Kind:** tech-debt
@@ -5817,7 +5827,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-877, NL-437
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T0, T3
 
-### NL-896 NBitcoin.Secp256k1 3.2.0's MuSig2 accepts the point at infinity in a signer's public nonce
+### NL-912 NBitcoin.Secp256k1 3.2.0's MuSig2 accepts the point at infinity in a signer's public nonce
 - **Status:** wontfix (we do not use NBitcoin's MuSig2: D-T3 chose our own BIP 327 module; it stays only as a cross-check in tests)
 - **Severity:** low
 - **Kind:** bug
