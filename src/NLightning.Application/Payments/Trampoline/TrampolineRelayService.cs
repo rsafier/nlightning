@@ -81,7 +81,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
     private readonly KeyedAsyncLock<Hash> _paymentHashLocks = new();
     private readonly ConcurrentDictionary<Hash, ITimer> _mppTimers = new();
     private readonly ConcurrentDictionary<Hash, ITimer> _watchdogs = new();
-    private readonly ConcurrentDictionary<(ChannelId, ulong), PartFailureKeys> _failureKeys = new();
+    private readonly ConcurrentDictionary<(ChannelId, ulong), TrampolineFailureKeys> _failureKeys = new();
     private readonly ConcurrentDictionary<Hash, PendingFailure> _failures = new();
     private readonly ConcurrentDictionary<Task, byte> _backgroundTasks = new();
     private readonly CancellationTokenSource _disposeCts = new();
@@ -190,7 +190,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
 
         var channelId = lockedIn.ChannelId;
         var htlc = lockedIn.Htlc;
-        _failureKeys[(channelId, htlc.Id)] = PartFailureKeys.From(onion);
+        _failureKeys[(channelId, htlc.Id)] = TrampolineFailureKeys.From(onion);
 
         TrampolineLegRequest? leg;
         using (await _paymentHashLocks.AcquireAsync(htlc.PaymentHash, cancellationToken))
@@ -1193,7 +1193,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
         }
     }
 
-    private byte[] CreateReason(PartFailureKeys keys, FailureMessage? failure, byte[]? downstreamPacket)
+    private byte[] CreateReason(TrampolineFailureKeys keys, FailureMessage? failure, byte[]? downstreamPacket)
     {
         if (_trampolineFailureOnionService is { } trampolineFailures)
             return failure is not null
@@ -1211,24 +1211,25 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
 
     /// <summary>
     /// The keys of a part's failure: kept from its onion, else from its onion peeled again (no replay check), else
-    /// the stored secrets outside any blinded route.
+    /// the stored secrets (<see cref="TrampolineHtlcFailures.FromStoredPart"/>).
     /// </summary>
-    private async Task<PartFailureKeys?> GetFailureKeysAsync(ChannelId channelId, HtlcRecord incoming,
-                                                             TrampolineRelayPartModel? part)
+    private async Task<TrampolineFailureKeys?> GetFailureKeysAsync(ChannelId channelId, HtlcRecord incoming,
+                                                                   TrampolineRelayPartModel? part)
     {
         if (_failureKeys.TryGetValue((channelId, incoming.Id), out var kept))
             return kept;
 
+        IncomingOnionResult? result = null;
         if (_onionProcessor is not null)
         {
             try
             {
-                var result = await _onionProcessor.ProcessAsync(incoming.OnionRoutingPacket, incoming.PaymentHash,
-                                                                null, incoming.PathKey,
-                                                                LightningMoney.MilliSatoshis(incoming.AmountMsat),
-                                                                incoming.CltvExpiry);
+                result = await _onionProcessor.ProcessAsync(incoming.OnionRoutingPacket, incoming.PaymentHash,
+                                                            null, incoming.PathKey,
+                                                            LightningMoney.MilliSatoshis(incoming.AmountMsat),
+                                                            incoming.CltvExpiry);
                 if (result is IncomingOnionTrampolineRelay relay)
-                    return _failureKeys[(channelId, incoming.Id)] = PartFailureKeys.From(relay);
+                    return _failureKeys[(channelId, incoming.Id)] = TrampolineFailureKeys.From(relay);
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
@@ -1237,7 +1238,12 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
             }
         }
 
-        return part is null ? null : new PartFailureKeys(part.OuterSharedSecret, part.TrampolineSharedSecret, null, null);
+        // The stored secrets, outside any blinded route unless the onion peeled again says malformed
+        // invalid_onion_blinding (past a blinded introduction node with route blinding off since, NL-921), the same
+        // rule as the failures sent outside the engine
+        return part is null
+                   ? null
+                   : TrampolineHtlcFailures.FromStoredPart(part.OuterSharedSecret, part.TrampolineSharedSecret, result);
     }
 
     /// <summary>Fulfills one incoming part; a refusal is logged (its replay fulfills it from the relay).</summary>
@@ -1338,20 +1344,6 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
     }
 
     #endregion
-
-    /// <summary>How to fail one part (TR-R-14): its secrets and, inside a blinded trampoline route, the answer.</summary>
-    /// <param name="BlindedMalformedSha256">Past the introduction node: the trampoline packet's sha256 for
-    /// <c>update_fail_malformed_htlc</c>.</param>
-    /// <param name="IntroductionSha256">At the introduction node (not the route's final node): the trampoline packet's
-    /// sha256 for our own <c>invalid_onion_blinding</c>.</param>
-    private sealed record PartFailureKeys(Secret OuterSharedSecret, Secret TrampolineSharedSecret,
-                                          byte[]? BlindedMalformedSha256, byte[]? IntroductionSha256)
-    {
-        public static PartFailureKeys From(IncomingOnionTrampolineRelay onion) =>
-            new(onion.OuterSharedSecret, onion.TrampolineSharedSecret,
-                onion.IsBlindedPastIntroduction ? onion.TrampolineOnionSha256 : null,
-                onion.Blinded is { IsIntroduction: true } ? onion.TrampolineOnionSha256 : null);
-    }
 
     /// <summary>A relay's failure: our own message, or the downstream packet to re-wrap.</summary>
     private sealed record PendingFailure(FailureMessage? Failure, byte[]? DownstreamPacket);

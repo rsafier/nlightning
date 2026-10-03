@@ -8,8 +8,10 @@ using Application.Payments.Routing;
 using Application.Payments.Switch;
 using Application.Payments.Trampoline;
 using Channels.Harness;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
+using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
@@ -277,6 +279,41 @@ public class BlindedTrampolineRelayTests
             Assert.Contains(harness.Sent, s => s is { From: "Carol", To: "Bob" }
                                             && s.Message is UpdateFailMalformedHtlcMessage);
         }
+    }
+
+    #endregion
+
+    #region Added after our shutdown (NL-921)
+
+    [Fact]
+    public async Task Given_ARelayPartAtTheIntroductionNodeAddedAfterOurShutdown_When_Handled_Then_OurOwnInvalidOnionBlinding()
+    {
+        // Arrange: the part is locked in at Carol while her switch waits, then Carol is found to have sent shutdown
+        // on Bob-Carol before Bob added it (NL-279): it is failed back, never relayed
+        await using var harness = await CreateHarnessAsync(carolAlice: true);
+        var payment = await NewPaymentAsync(harness, CarolData(ThreeNodeHarness.CarolAliceScid), introduction: true);
+        harness.Carol.SwitchSuspended = true;
+        var onion = await PayPartAsync(harness, payment, s_total);
+        await harness.PumpAsync();
+        var channel = harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId);
+        var incoming = Assert.Single(channel.Commitments!.Htlcs.Values, h => h.Direction == HtlcDirection.Incoming);
+        channel.SetLocalShutdownScript(new BitcoinScript([0x00, 0x14, .. Enumerable.Repeat((byte)0xC0, 20)]));
+        channel.SetFirstRemoteHtlcIdAfterLocalShutdown(incoming.Id);
+        Assert.True(channel.IsRemoteHtlcAddedAfterLocalShutdown(incoming.Id));
+
+        // Act
+        harness.Carol.SwitchSuspended = false;
+        await harness.Carol.ReplayPendingEventsAsync();
+        await harness.PumpAsync();
+
+        // Assert: the introduction node's own invalid_onion_blinding at the trampoline layer (TR-R-14), not
+        // temporary_node_failure; no relay, no leg
+        var decrypted = Decrypt(harness, onion, payment.Trampoline);
+        Assert.Equal(TrampolineFailureLayer.Trampoline, decrypted.Layer);
+        Assert.Equal(0, decrypted.ErringHopIndex);
+        Assert.Equal(FailureCode.InvalidOnionBlinding, decrypted.Code);
+        Assert.Empty(_legSender.Started);
+        Assert.Null(await harness.Carol.InScopeAsync(u => u.TrampolineRelayDbRepository.GetAsync(payment.Hash)));
     }
 
     #endregion

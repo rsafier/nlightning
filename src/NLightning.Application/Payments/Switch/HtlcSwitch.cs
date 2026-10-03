@@ -402,9 +402,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             if (firstHandling)
                 _refusedHtlcCounter?.Count(RefusedHtlcReason.AddedAfterShutdown);
             await RecordSecretAsync(channelId, htlcId, sharedSecret, storedSecret, cancellationToken);
-            var trampolineKeys = result is IncomingOnionTrampolineResult trampolineOnion
-                                     ? TrampolineFailureKeys.From(trampolineOnion)
-                                     : null;
+            var trampolineKeys = TrampolineHtlcFailures.KeysFrom(result);
             await FailBackAsync(channelId, htlc, sharedSecret, FailureMessage.TemporaryNodeFailure(), cancellationToken,
                                 introduction, trampolineKeys);
             _logger.LogInformation("Failed back incoming HTLC {HtlcId} of channel {ChannelId}: added after our shutdown "
@@ -446,8 +444,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                         cancellationToken);
                 await FailBackAsync(channelId, htlc, trampolineFailed.OuterSharedSecret, trampolineFailed.Failure,
                                     cancellationToken, blindedIntroduction: false,
-                                    new TrampolineFailureKeys(trampolineFailed.OuterSharedSecret,
-                                                              trampolineFailed.TrampolineSharedSecret, null));
+                                    TrampolineHtlcFailures.KeysFrom(trampolineFailed));
                 return;
 
             case IncomingOnionTrampolineFinal trampolineFinal:
