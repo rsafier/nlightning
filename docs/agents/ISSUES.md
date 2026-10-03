@@ -8352,7 +8352,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Kind:** bug
 - **Location:** `src/NLightning.Cashu.PaymentProcessor/CashuPaymentProcessorOptions.cs`, `CashuPaymentProcessorHost.cs`, `CashuPaymentProcessorServiceCollectionExtensions.cs`
 - **Evidence:** wip/fafo integration review of NL-992 (`SECURITY_REVIEW.md` SR-32, SR-33): the default loopback h2c listener and any TLS listener without `ca.pem` (allowed off loopback) checked no client, so any local process (or anyone reaching a non-loopback port) could call `MakePayment` and pay from the node's channels; `WebApplication.CreateSlimBuilder()` read `appsettings.json` of the working directory and the environment, and a `Kestrel__Endpoints__X__Url` variable added a second plaintext listener on `0.0.0.0` beside the checked one (reproduced by the reviewer); the mTLS chain check did not require the client-authentication EKU; the mainnet gate treated a missing `IOptions<NodeOptions>` as not mainnet.
-- **Fix sketch:** Done: client authentication (mutual TLS: `TlsDirectory` with `ca.pem`) is required off loopback and, on loopback, unless the new `AllowInsecureLoopback` (a start warning names the risk; `cdk-mintd` speaks only mTLS or plaintext, so no token is possible); the Kestrel instance has no configuration sources and fails a start that does not listen on exactly its address; `IsSignedBy` requires the TLS client EKU; unknown network = mainnet. Tests: `Daemon.Tests/Cashu/CashuPaymentProcessorOptionsTests` (loopback without client auth, non-loopback without `ca.pem`, no node options) and `CdkPaymentProcessorServiceTests` (`Given_AnAmbientKestrelEndpoint_*`, `Given_ClientCertificates_*`). Left: NL-1000. Integration round 2 (SHA_FIX2, after merging the cloud agent's BOLT 12 and on-chain processor): the start log says `mTLS` or `insecure loopback`, with a warning naming every local process; `CashuPaymentProcessorHostTests` proves a real mutual-TLS handshake (a client certificate of the mint's CA served; none, or one of another CA, refused) and the EKU check (a self-signed client certificate and the server's own certificate refused); both fail without the fix.
+- **Fix sketch:** Done: client authentication (mutual TLS: `TlsDirectory` with `ca.pem`) is required off loopback and, on loopback, unless the new `AllowInsecureLoopback` (a start warning names the risk; `cdk-mintd` speaks only mTLS or plaintext, so no token is possible); the Kestrel instance has no configuration sources and fails a start that does not listen on exactly its address; `IsSignedBy` requires the TLS client EKU; unknown network = mainnet. Tests: `Daemon.Tests/Cashu/CashuPaymentProcessorOptionsTests` (loopback without client auth, non-loopback without `ca.pem`, no node options) and `CdkPaymentProcessorServiceTests` (`Given_AnAmbientKestrelEndpoint_*`, `Given_ClientCertificates_*`). Left: NL-1000. Integration round 2 (f8bfadad, after merging the cloud agent's BOLT 12 and on-chain processor): the start log says `mTLS` or `insecure loopback`, with a warning naming every local process; `CashuPaymentProcessorHostTests` proves a real mutual-TLS handshake (a client certificate of the mint's CA served; none, or one of another CA, refused) and the EKU check (a self-signed client certificate and the server's own certificate refused); both fail without the fix.
 - **Blocks/Blocked-by:** Related NL-992, NL-1000
 - **Plan ref:** `CASHU_PLAN.md` §5.3, §6
 
@@ -8362,7 +8362,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Kind:** bug
 - **Location:** `src/NLightning.Cashu.PaymentProcessor/CdkPaymentProcessorService.cs`, `src/NLightning.Domain/Payments/Interfaces/IPaymentService.cs` (`IsPaying`), `src/NLightning.Application/Payments/Send/PaymentService.cs`
 - **Evidence:** wip/fafo integration review of NL-992 against CDK v0.18.1 (`cdk-common` `check_outgoing_payment`: the mint takes Unpaid/Failed as final and may return the melt's proofs; a backend between attempts MUST answer Pending or Unknown): `PaymentService` saves the row `Failed` ("Retrying.") before a retry round, and a `MakePayment` timeout, `CheckOutgoingPayment` or the duplicate path then answered FAILED while the retry could still pay, so the mint could give the ecash back and the invoice be paid anyway. `CheckOutgoingPayment` and the duplicate `MakePayment` answered any payment of the node (preimage as `payment_proof`), a trampoline relay's leg included; `CheckIncomingPayment` any invoice. Smaller: quote ids leaked on refused melts and final answers, an overflowed event subscription went on silently, `CreatePayment` overflow and BOLT 11 refusals came back as `Unknown`.
-- **Fix sketch:** Done: `IPaymentService.IsPaying(hash)` (a live session; default false) and a Failed row of a payment still being paid reads PENDING; only rows with the processor's label and never a relay leg are answered (`UNKNOWN`, no proof; `FailedPrecondition` for a duplicate melt of a payment outside the mint); quote ids are forgotten on refusals and final answers; an overflowed stream ends `UNAVAILABLE` so the mint resubscribes; `CreatePayment` errors are `InvalidArgument`. Tests: `CdkPaymentProcessorServiceTests` `Given_APaymentNotOfTheMint_*`, `Given_AMeltBetweenTwoAttempts_*`, `Given_AnInvoiceThisNodePaidOutsideTheMint_*`, `Given_ASettledInvoiceNotOfTheMint_*`, `Given_AnAmountOrDescriptionOutOfRange_*`, `Given_AnOverflowedSubscription_*`. Left: NL-1001. Integration round 2 (SHA_FIX2): the same rules on the cloud agent's rewrite (BOLT 11 and BOLT 12 melts through `LightningState`, `RecordPaymentAsync` keeps a quote Pending instead of Failed, `CheckOfferAsync` lists only the mint's invoices), and the processor's own dropped node events end every mint stream (`ProcessorEventHub.AbortAll`); tests moved to `CdkPaymentProcessorSafetyTests`.
+- **Fix sketch:** Done: `IPaymentService.IsPaying(hash)` (a live session; default false) and a Failed row of a payment still being paid reads PENDING; only rows with the processor's label and never a relay leg are answered (`UNKNOWN`, no proof; `FailedPrecondition` for a duplicate melt of a payment outside the mint); quote ids are forgotten on refusals and final answers; an overflowed stream ends `UNAVAILABLE` so the mint resubscribes; `CreatePayment` errors are `InvalidArgument`. Tests: `CdkPaymentProcessorServiceTests` `Given_APaymentNotOfTheMint_*`, `Given_AMeltBetweenTwoAttempts_*`, `Given_AnInvoiceThisNodePaidOutsideTheMint_*`, `Given_ASettledInvoiceNotOfTheMint_*`, `Given_AnAmountOrDescriptionOutOfRange_*`, `Given_AnOverflowedSubscription_*`. Left: NL-1001. Integration round 2 (f8bfadad): the same rules on the cloud agent's rewrite (BOLT 11 and BOLT 12 melts through `LightningState`, `RecordPaymentAsync` keeps a quote Pending instead of Failed, `CheckOfferAsync` lists only the mint's invoices), and the processor's own dropped node events end every mint stream (`ProcessorEventHub.AbortAll`); tests moved to `CdkPaymentProcessorSafetyTests`.
 - **Blocks/Blocked-by:** Related NL-992, NL-1001
 - **Plan ref:** `CASHU_PLAN.md` §6
 
@@ -8377,7 +8377,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `CASHU_PLAN.md` §6
 
 ### NL-1001 A payment failed for an unknown outcome at startup reads FAILED to the Cashu mint
-- **Status:** fixed (SHA_FIX2)
+- **Status:** fixed (f8bfadad)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`ReconcileStoredPartsAsync`), `src/NLightning.Cashu.PaymentProcessor/CdkPaymentProcessorService.cs` (`ToMakePaymentResponse`)
@@ -8387,7 +8387,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `CASHU_PLAN.md` §6
 
 ### NL-1002 `waitinvoice` keeps waiting after its client disconnects; a nil payment hash is a server error
-- **Status:** fixed (SHA_FIX2)
+- **Status:** fixed (f8bfadad)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Daemon/Handlers/WaitInvoiceClientHandler.cs`
@@ -8406,7 +8406,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Blocks/Blocked-by:** Related NL-991, NL-875, NL-981
 - **Plan ref:** `CASHU_PLAN.md` C0
 ### NL-1004 The CDK payment processor had no spend cap and took the mint's fee limit as given
-- **Status:** fixed (SHA_FIX2)
+- **Status:** fixed (f8bfadad)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `src/NLightning.Cashu.PaymentProcessor/CashuPaymentProcessorOptions.cs`, `CdkPaymentProcessorService*.cs`, `CashuPaymentProcessorHost.cs`
