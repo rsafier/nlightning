@@ -78,6 +78,28 @@ public sealed class PaymentSendOptions
     public TimeSpan NodeFailurePenalty { get; set; } = TimeSpan.FromHours(1);
 
     /// <summary>
+    /// When our payments go through a trampoline node (NL-875): <see cref="TrampolinePaymentMode.Never"/> (default),
+    /// <see cref="TrampolinePaymentMode.Auto"/> or <see cref="TrampolinePaymentMode.Always"/>.
+    /// </summary>
+    public TrampolinePaymentMode Trampoline { get; set; } = TrampolinePaymentMode.Never;
+
+    /// <summary>
+    /// The trampoline node's fee base we offer first when it has not told us its policy (decision D-TR6, default 1000
+    /// msat).
+    /// </summary>
+    public uint TrampolineFeeBaseMsat { get; set; } = 1_000;
+
+    /// <summary>
+    /// The trampoline node's proportional fee we offer first when it has not told us its policy (default 1000 ppm).
+    /// </summary>
+    public uint TrampolineFeeProportionalMillionths { get; set; } = 1_000;
+
+    /// <summary>
+    /// The CLTV delta we give the trampoline node first when it has not told us its policy (default 576 blocks).
+    /// </summary>
+    public ushort TrampolineCltvExpiryDelta { get; set; } = 576;
+
+    /// <summary>
     /// The largest part limit a call may ask for.
     /// </summary>
     public const int MaxPartsLimit = 128;

@@ -297,6 +297,9 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                                       + "rebalance).", nameof(options));
         }
 
+        if (circular && options.TrampolineNode is not null)
+            throw new ArgumentException("A rebalance is not sent through a trampoline node.", nameof(options));
+
         ThrowUnlessOurChannel(options.OutgoingChannelId, "outgoing");
         ThrowUnlessOurChannel(options.IncomingChannelId, "incoming");
         if (_blockchainMonitor.LastProcessedBlockHeight == 0)
@@ -305,6 +308,25 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         var sendOptions = _sendOptions.Value;
         var now = _timeProvider.GetUtcNow();
         DateTimeOffset? deadline = options.Timeout == Timeout.InfiniteTimeSpan ? null : now + options.Timeout;
+
+        // NL-875: through a trampoline node when the call names one or the node's mode picks one
+        var trampolineNode = circular
+                                 ? null
+                                 : await ResolveTrampolineNodeAsync(options, target, paymentAmount, invoice.Features,
+                                                                    cancellationToken);
+        if (trampolineNode is { } trampoline)
+        {
+            var recipient = new Bolt11TrampolineRecipient(paymentAmount, target.PayeeNodeId, target.PaymentSecret,
+                                                          target.MinFinalCltvExpiryDelta, target.PaymentMetadata);
+            var trampolineSession = await CreateTrampolineSessionAsync(
+                                        trampoline, recipient, target.PaymentHash, target.PayeeNodeId, bolt11,
+                                        options.MaxFee ?? sendOptions.GetMaxFee(paymentAmount),
+                                        options.MaxParts ?? Math.Clamp(sendOptions.MaxParts, 1,
+                                                                       PaymentSendOptions.MaxPartsLimit),
+                                        deadline, now, options, null);
+            return await RunSessionAsync(trampolineSession, options.Timeout, cancellationToken);
+        }
+
         var session = new PaymentSession(target, bolt11, paymentAmount,
                                          options.MaxFee ?? sendOptions.GetMaxFee(paymentAmount),
                                          options.MaxParts ?? Math.Clamp(sendOptions.MaxParts, 1,
@@ -397,6 +419,19 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             Bolt12 = request.Bolt12,
             Labels = options.Labels
         };
+
+        // NL-875: through a trampoline node when the call names one or the node's mode picks one
+        if (await ResolveBlindedTrampolineNodeAsync(options, session, paths, cancellationToken) is { } trampoline)
+        {
+            var recipient = CreateBlindedTrampolineRecipient(request, trampoline, _secureKeyManager.GetNodePubKey());
+            var trampolineSession = await CreateTrampolineSessionAsync(
+                                        trampoline, recipient, request.PaymentHash, session.PayeeNodeId,
+                                        request.Invoice, session.MaxFee,
+                                        options.MaxParts ?? Math.Clamp(sendOptions.MaxParts, 1,
+                                                                       PaymentSendOptions.MaxPartsLimit),
+                                        deadline, now, options, request.Bolt12);
+            return await RunSessionAsync(trampolineSession, options.Timeout, cancellationToken);
+        }
 
         return await RunSessionAsync(session, options.Timeout, cancellationToken);
     }
@@ -2169,7 +2204,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         var request = new PayBlindedRequest(PaymentTarget.ToWireBytes(paymentHash), paymentAmount,
                                             invoice.BlindedPaymentPaths, bolt11.Trim())
         {
-            AllowMpp = invoice.Features?.IsFeatureSet(Feature.BasicMpp) ?? false
+            AllowMpp = invoice.Features?.IsFeatureSet(Feature.BasicMpp) ?? false,
+            RecipientFeatures = invoice.Features
         };
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Paying invoice {PaymentHash} over its {Count} blinded path(s) (bLIP 39)",
