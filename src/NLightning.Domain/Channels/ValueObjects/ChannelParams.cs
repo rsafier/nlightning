@@ -132,7 +132,7 @@ public readonly record struct ChannelParams
         FeatureSet channelType;
         if (OptionSimpleTaproot)
         {
-            // Raw bit 80 until lane WIRE's Feature.OptionSimpleTaproot (81) is merged; the integrator switches it
+            // Only the compulsory bit: SetFeature(Feature) would add the BOLT 9 dependencies, not part of the type
             channelType = FeatureSet.DeserializeFromBytes([]);
             channelType.SetFeature(TaprootChannelType.CompulsoryBit, true);
         }

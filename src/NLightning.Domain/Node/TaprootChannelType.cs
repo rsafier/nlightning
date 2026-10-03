@@ -2,6 +2,7 @@ namespace NLightning.Domain.Node;
 
 using Bitcoin.Transactions.Enums;
 using Bitcoin.Transactions.Extensions;
+using Enums;
 
 /// <summary>
 /// The <c>option_simple_taproot</c> channel type (bolt-simple-taproot.md, NL-877 T3): feature bit 80 in
@@ -9,14 +10,10 @@ using Bitcoin.Transactions.Extensions;
 /// <c>option_scid_alias</c> (46) and <c>option_zeroconf</c> (50). LND 0.21 accepts exactly {80}, {80, 46}, {80, 50} and
 /// {80, 46, 50}.
 /// </summary>
-/// <remarks>
-/// The bit is raw while the <c>Feature</c> enum has no <c>OptionSimpleTaproot</c> member yet (wave t02 lane WIRE adds
-/// <c>OptionSimpleTaproot = 81</c>; the integrator switches these to it).
-/// </remarks>
 public static class TaprootChannelType
 {
     /// <summary>The compulsory (even) bit of <c>option_simple_taproot</c>, the one a <c>channel_type</c> carries.</summary>
-    public const int CompulsoryBit = 80;
+    public const int CompulsoryBit = (int)Feature.OptionSimpleTaproot - 1;
 
     /// <summary>The compulsory bit of <c>option_static_remotekey</c>.</summary>
     private const int StaticRemoteKeyBit = 12;
