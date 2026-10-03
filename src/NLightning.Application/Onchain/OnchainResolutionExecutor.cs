@@ -27,6 +27,7 @@ using Domain.Onchain.Models;
 using Domain.Onchain.Parsers;
 using Domain.Payments.Enums;
 using Domain.Payments.Models;
+using Domain.Payments.Trampoline;
 using Domain.Persistence.Interfaces;
 using Fees;
 using Infrastructure.Bitcoin.Onchain;
@@ -1069,6 +1070,9 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                     // NL-608: a settled forward's incoming HTLC we gave up is lost
                     await StageUpstreamForwardLossAsync(unitOfWork, accounting, channel, close, row, data, null,
                                                         height, now, cancellationToken);
+                    // NL-875: so is a settled trampoline relay's incoming part
+                    await StageTrampolinePartLossAsync(unitOfWork, accounting, channel, close, row, data, null,
+                                                       height, now, cancellationToken);
                     // NL-688: so is a settled invoice's
                     await StageInvoiceLossAsync(unitOfWork, accounting, channel, close, row, data, null, height, now,
                                                 cancellationToken);
@@ -1140,6 +1144,8 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                 {
                     await StageUpstreamForwardLossAsync(unitOfWork, accounting, channel, close, row, data,
                                                         spender.TxId, spent.BlockHeight, now, cancellationToken);
+                    await StageTrampolinePartLossAsync(unitOfWork, accounting, channel, close, row, data,
+                                                       spender.TxId, spent.BlockHeight, now, cancellationToken);
                     await StageInvoiceLossAsync(unitOfWork, accounting, channel, close, row, data, spender.TxId,
                                                 spent.BlockHeight, now, cancellationToken);
                 }
@@ -1250,6 +1256,45 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         accounting.Add(PaymentAccountingEvents.ForwardUpstreamLostOnchain(key, circuit, channel,
                                                                           close.CommitmentTransactionId, spenderTxId,
                                                                           now, height));
+    }
+
+    /// <summary>
+    /// Stages the loss of an incoming part of a trampoline relay booked as settled (NL-875, as NL-608 for a forward): the
+    /// part's HTLC output of the close (<paramref name="row"/>) the peer took or we gave up, the relay
+    /// <c>Fulfilled</c> and its <c>TrampolineRelaySettled</c> in the feed (a live event: it booked the part's amount into
+    /// the channels, which the close never took out), the part not failed off chain. A
+    /// <see cref="AccountingEventKind.ForwardLostOnchain"/> under the incoming HTLC's key, so
+    /// <see cref="StageUpstreamForwardLossReversalAsync"/> reverses it after a reorg as a forward's.
+    /// </summary>
+    private static async Task StageTrampolinePartLossAsync(IUnitOfWork unitOfWork,
+                                                           IAccountingEventDbRepository accounting,
+                                                           ChannelModel channel, ChannelCloseModel close,
+                                                           OutputResolutionModel row, OutputDescriptorData? data,
+                                                           TxId? spenderTxId, uint height, DateTimeOffset now,
+                                                           CancellationToken cancellationToken)
+    {
+        if (!IsIncomingHtlcOfTheClose(row, close) || data?.Htlc is not { Direction: HtlcDirection.Incoming } htlc
+         || await TrampolineRelayReads.GetPartAsync(unitOfWork, channel.ChannelId, htlc.Id) is not { } part
+         || part.PaymentHash != htlc.PaymentHash
+         || await TrampolineRelayReads.GetAsync(unitOfWork, part.PaymentHash) is not
+         { Relay.Status: TrampolineRelayStatus.Fulfilled }
+         || channel.Commitments?.GetHtlc(HtlcDirection.Incoming, htlc.Id) is { Removal.IsFulfill: false })
+            return;
+
+        var settled = await accounting.GetByKeyAsync(AccountingEventKeys.TrampolineRelaySettled(part.PaymentHash),
+                                                     cancellationToken);
+        if (settled is null
+         || (settled.Details.TryGetValue(AccountingDetailKeys.Memo, out var memo) && memo == AccountingDetailKeys.True))
+            return;
+
+        var key = await OnchainAccounting.NewKeyAsync(
+                      accounting, AccountingEventKeys.ForwardLostOnchain(channel.ChannelId, htlc.Id), cancellationToken);
+        if (key is null)
+            return;
+
+        accounting.Add(PaymentAccountingEvents.TrampolinePartLostOnchain(key, part, channel,
+                                                                         close.CommitmentTransactionId, spenderTxId,
+                                                                         now, height));
     }
 
     /// <summary>

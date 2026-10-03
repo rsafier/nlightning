@@ -59,6 +59,7 @@ public static class AccountingPostingRules
                 AccountingEventKind.PaymentSucceeded => PostPaymentSucceeded(accountingEvent, lines),
                 AccountingEventKind.PaymentFailed => null,
                 AccountingEventKind.ForwardSettled => PostForwardSettled(accountingEvent, lines),
+                AccountingEventKind.TrampolineRelaySettled => PostTrampolineRelaySettled(accountingEvent, lines),
                 AccountingEventKind.ForwardLostOnchain or AccountingEventKind.InvoiceLostOnchain =>
                     PostForwardLostOnchain(accountingEvent, lines),
                 AccountingEventKind.ChannelFunded => PostWalletToChannel(accountingEvent, AccountRole.FeeFunding, lines),
@@ -114,6 +115,7 @@ public static class AccountingPostingRules
             AccountingEventKind.PaymentFailed => WithDetail("Payment failed",
                                                             Text(accountingEvent, AccountingDetailKeys.Reason)),
             AccountingEventKind.ForwardSettled => WithDetail("Forward settled", Route(accountingEvent)),
+            AccountingEventKind.TrampolineRelaySettled => WithDetail("Trampoline relay settled", Route(accountingEvent)),
             AccountingEventKind.ForwardLostOnchain => WithDetail("Forward lost on chain", Route(accountingEvent)),
             AccountingEventKind.InvoiceLostOnchain => WithDetail("Invoice payment lost on chain", description),
             AccountingEventKind.ChannelFunded => IsSet(accountingEvent, AccountingDetailKeys.DualFunded)
@@ -189,6 +191,18 @@ public static class AccountingPostingRules
     {
         lines.Add(AccountRole.Channels, e.AmountMsat);
         lines.Add(AccountRole.Routing, -e.AmountMsat);
+        return null;
+    }
+
+    /// <summary>
+    /// A trampoline relay (NL-875), AmountMsat = what the incoming parts brought minus what the outgoing payment took: Dr
+    /// Channels a; Cr Routing a, the relay's fee, as a forward's. A relay that cost more than it brought (negative) is an
+    /// expense of routing: Cr Channels |a|; Dr RoutingFees |a|.
+    /// </summary>
+    private static string? PostTrampolineRelaySettled(AccountingEventModel e, Lines lines)
+    {
+        lines.Add(AccountRole.Channels, e.AmountMsat);
+        lines.Add(e.AmountMsat >= 0 ? AccountRole.Routing : AccountRole.RoutingFees, -e.AmountMsat);
         return null;
     }
 

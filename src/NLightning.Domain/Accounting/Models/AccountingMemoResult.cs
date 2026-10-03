@@ -7,7 +7,7 @@ namespace NLightning.Domain.Accounting.Models;
 /// written by an earlier run).</param>
 /// <param name="Invoices">Memo <c>InvoiceSettled</c> events written.</param>
 /// <param name="Payments">Memo <c>PaymentSucceeded</c>/<c>PaymentFailed</c> events written.</param>
-/// <param name="Forwards">Memo <c>ForwardSettled</c> events written.</param>
+/// <param name="Forwards">Memo <c>ForwardSettled</c> and <c>TrampolineRelaySettled</c> (NL-875) events written.</param>
 /// <param name="Channels">Memo channel events written (<c>ChannelFunded</c> with its push, <c>ChannelClosedMutual</c>).
 /// </param>
 /// <param name="Skipped">Facts whose key was already in the feed (a live event or an earlier run).</param>

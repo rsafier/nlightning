@@ -332,6 +332,9 @@ public sealed class AccountingReportService : IAccountingReports
         switch (accountingEvent.Kind)
         {
             case AccountingEventKind.ForwardSettled:
+            // NL-875: a trampoline relay is routing income of its (first) incoming and its outgoing channel, as a
+            // forward; it carries the same details
+            case AccountingEventKind.TrampolineRelaySettled:
                 {
                     var fee = accountingEvent.AmountMsat;
                     var incoming = GetOrAdd(channels, ChannelDetail(accountingEvent, "incomingChannelId")

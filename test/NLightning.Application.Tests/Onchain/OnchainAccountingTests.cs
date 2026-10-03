@@ -41,6 +41,7 @@ using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
 using Domain.Payments.Models;
+using Domain.Payments.Trampoline;
 using Domain.Payments.ValueObjects;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -553,6 +554,62 @@ public sealed class OnchainAccountingTests : IDisposable
                                             && e.Details[OnchainAccounting.OriginalKindKey]
                                             == nameof(AccountingEventKind.ForwardLostOnchain)))
                                   .Sum(e => e.AmountMsat));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_ASettledTrampolineRelaysIncomingPart_When_ThePeerTimesItOutOnChain_Then_ItsAmountIsLost(
+        bool relayBooked)
+    {
+        // Arrange (NL-875): the peer's HTLC to us is a part of a trampoline relay fulfilled and booked (its
+        // TrampolineRelaySettled is in the feed); our upstream fulfill never got through
+        var remote = _pair.Alice.State.RemoteCommit;
+        var commitment = BuildCommitment(CommitmentSide.Remote, remote.Spec, remote.Number,
+                                         remote.PerCommitmentPoint);
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+        var theirHtlc = Row(OutputDescriptorKind.RemoteOfferedHtlc);
+        var preimage = RealSigningCommitmentPair.Preimage(2);
+        var hash = RealSigningCommitmentPair.Hash(preimage);
+        var relay = new TrampolineRelayModel(hash, _channel.RemoteNodeId,
+                                             LightningMoney.Satoshis(TheirHtlcSat - 10), 660,
+                                             LightningMoney.Satoshis(TheirHtlcSat), s_now);
+        relay.MarkSending();
+        relay.MarkFulfilled(preimage, LightningMoney.Satoshis(5), s_now);
+        var part = new TrampolineRelayPartModel(hash, _channel.ChannelId, theirHtlc.HtlcId!.Value,
+                                                LightningMoney.Satoshis(TheirHtlcSat), 700, new Secret(new byte[32]),
+                                                new Secret(new byte[32]), null);
+        _store.TrampolineRelays.Setup(r => r.GetPartAsync(_channel.ChannelId, part.HtlcId)).ReturnsAsync(part);
+        _store.TrampolineRelays.Setup(r => r.GetAsync(hash)).ReturnsAsync((relay, [part]));
+        if (relayBooked)
+            _store.AccountingEvents.Add((PaymentAccountingEvents.TrampolineRelaySettled(relay, [part], null, null), 0));
+        var executor = CreateExecutor();
+
+        // Act: the peer's HTLC-timeout transaction takes it
+        var timeout = Spend([(commitment.TxId, theirHtlc.OutputIndex)], TheirHtlcSat - 300);
+        await MineSpendAsync(executor, timeout, commitment.TxId, theirHtlc.OutputIndex, SpendHeight + 40);
+
+        // Assert: the part's amount, which the relay's settlement left in the channels, is a loss
+        var lost = _store.Events.Where(e => e.Kind == AccountingEventKind.ForwardLostOnchain).ToList();
+        if (!relayBooked)
+        {
+            Assert.Empty(lost);
+            return;
+        }
+
+        var loss = Assert.Single(lost);
+        Assert.Equal(AccountingEventKeys.ForwardLostOnchain(_channel.ChannelId, part.HtlcId), loss.EventKey);
+        Assert.Equal(-(long)TheirHtlcSat * 1_000, loss.AmountMsat);
+        Assert.Equal(PaymentAccountingEvents.TrampolineKind, loss.Details["kind"]);
+        Assert.Equal(PaymentAccountingEvents.UpstreamOnchainCause, loss.Details["cause"]);
+
+        // Act: a reorg rolls the timeout back
+        _store.Watches[(commitment.TxId, theirHtlc.OutputIndex)].ClearSpend();
+        await executor.RunRoundAsync(SpendHeight + 41, TestContext.Current.CancellationToken);
+
+        // Assert: reversed as a forward's loss
+        Assert.Contains(_store.Events, e => e.Kind == AccountingEventKind.Reversal
+                                         && e.Details[OnchainAccounting.ReversesKey] == loss.EventKey);
     }
 
     [Fact]
