@@ -424,7 +424,7 @@ detailed evidence is in the three records above; this section is the verdict.
   locally. Multi-machine clusters push to a registry (in-cluster or GHCR) under digests and switch the policy to
   `IfNotPresent`; the runner image takes `NLTG_RUNNER_IMAGE` for that. The spike built only `nltg-spike-runner`.
 - **Shape.** StatefulSet (1 replica) + headless Service + PVC per node, one namespace per run with labels, owner
-  annotations, a ResourceQuota sized from the pod specs, an admission cap (`NLTG_MAX_CONCURRENT_RUNS`, default 6) and
+  annotations, a ResourceQuota sized from the pod specs, an admission cap (`NLTG_MAX_CONCURRENT_RUNS`, default 6; 12 since NL-844) and
   a reaper (`nltg-cluster reap`). LND uses LNUnit.LND's generated gRPC clients for now with the server certificate
   pinned (the plan's own Grpc.Tools generation is still to do).
 
@@ -1706,6 +1706,24 @@ Docker suite left is Tor (it needs the public Tor network). SQL Server tests are
   902 s, peak 6 namespaces, none left: cln 90/90 + 4 `Explicit` not run (847 s), eclair 25/25 + 2 (897 s, incl.
   `EclairLiquidityAdsTests` with the cluster seller), eclair2 7/7 (445 s), ldk 27/27 (621 s), postgres 26/26 (62 s).
   Docker under the machine lock: `scripts/run-interop.sh tor Release`: 2/3 in the full run, `Given_ATorOnlyNodeWithAChannelToCln_When_TorRestarts_*` timed out waiting 4 min for CLN's onion to be reachable again on the public Tor network after the Tor restart; rerun alone green (1/1, 137 s); no container left.
+
+### Namespace cap 12 record (NL-844, 2026-10-03, branch `wip/nscap`)
+
+Owner decision 2026-10-03: the machine's cap on run namespaces goes from 6 to 12 (with 5 namespaces OrbStack used
+about 10 GB and little CPU; host 28 CPUs / 96 GB, VM 28 CPUs / 64 GiB). The cap is set once,
+`RunAdmission.DefaultMaxRuns` = 12 (`MatrixPlanner.MaxNamespaces` uses it); `scripts/run-cluster.sh` reads it through
+`nltg-cluster matrix cap` for `--max-namespaces` (default and limit) and the `-j` cap, and the matrix's `-j` now
+defaults to the namespace budget. `NLTG_MAX_CONCURRENT_RUNS` still lowers the test processes' admission. The other
+isolation rules are unchanged (only labelled `nltg-spike-*` namespaces, pod requests at most 1 CPU / 1 GiB, nothing
+cluster-scoped). The records above keep the 6 they were run with.
+
+Proof `nscap-mx1` (`--matrix -j 12 --max-namespaces 12`, Release, net10.0, the cluster otherwise empty): 12 suites,
+11 green + `cln` rerun-green (`ClnPeerStorageTests` timed out once, green alone: NL-910), **1,058 s (17.6 min)** against
+1,088 s at 6 namespaces (`p6-tuned1`). Peak 11 run namespaces sampled (12 of 12 admitted at the start). Sampled every
+minute: OrbStack's helper process peaked at 12.4 GB RSS and 318 % CPU (of 2,800 %), the macOS test hosts at 15.1 GB
+RSS and 163 % CPU, host memory in use 31.0 GB idle to 35.3 GB at the peak: far below the 48 GB bound. At 12 the
+matrix wall is the longest suite's: cln 1,052 s, eclair 943 s, gossip 840 s, ldk 658 s, the rest at most 501 s; a
+shorter matrix needs those split (NL-905), not more namespaces.
 
 ## 6. Risks and open questions
 

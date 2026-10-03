@@ -161,8 +161,11 @@ if run_case tor 2 -- -n 1 --suite tor; then expect tor "refused as Docker only" 
 if run_case pending 0 FAKE_SLEEP=1 -- -n 1 --suite abcd; then
   expect pending "a suite whose cluster proof is pending runs when named" has "1/1 run\(s\) green"
 fi
-if run_case lndjobs 0 FAKE_SLEEP=1 -- -n 4 --suite lnd; then
-  expect lndjobs "lnd's 2 namespaces per run cap the jobs at 3" has "capping --jobs at 3"
+if run_case lndjobs 0 FAKE_SLEEP=1 -- -n 7 --suite lnd; then
+  expect lndjobs "lnd's 2 namespaces per run cap the jobs at 6" has "capping --jobs at 6"
+fi
+if run_case jobcap 0 FAKE_SLEEP=1 -- -n 1 -j 13 --suite cln; then
+  expect jobcap "-j is capped at the machine's 12 namespaces (NL-844)" has "capping --jobs at 12"
 fi
 if run_case unknown 2 -- --matrix cln,bogus; then expect unknown "names the unknown suite" has "unknown suite 'bogus'"; fi
 
@@ -170,7 +173,10 @@ if run_case unknown 2 -- --matrix cln,bogus; then expect unknown "names the unkn
 if run_case both 2 -- --matrix --suite cln; then expect both "--matrix with --suite refused" has "exclude each other"; fi
 if run_case runs 2 -- --matrix -n 2; then expect runs "--matrix with -n refused" has "runs each suite once"; fi
 if run_case keep 2 -- --matrix --keep; then expect keep "--matrix with --keep refused" has "takes no --keep"; fi
-if run_case budget 2 -- --matrix --max-namespaces 7; then expect budget "budget over 6 refused" has "1-6"; fi
+if run_case budget 2 -- --matrix --max-namespaces 13; then expect budget "budget over 12 refused" has "1-12"; fi
+if run_case defjobs 0 FAKE_SLEEP=1 -- --matrix cln,ldk --max-namespaces 2; then
+  expect defjobs "-j defaults to the namespace budget (NL-844)" has "2/2 in use"
+fi
 if run_case tight 2 -- --matrix postgres --max-namespaces 1; then
   expect tight "a suite that never fits is refused" has "needs 2 namespace"
 fi

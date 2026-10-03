@@ -35,11 +35,13 @@
 # Usage: scripts/run-cluster.sh [options] [-- extra xunit v3 runner args]
 #       --matrix [S,...]  the suite matrix (lnd, cln, gossip, eclair, ldk, eclair2, day0, onchain, anchors, faults,
 #                         abcd, postgres, tor; default all). Not with -n, --suite, --class/--method, --project or --trait
-#       --max-namespaces M  matrix: run namespaces its suites may hold at once (default 6 = the machine's cap; a suite
+#       --max-namespaces M  matrix: run namespaces its suites may hold at once (default 12 = the machine's cap,
+#                         RunAdmission.DefaultMaxRuns, read through `nltg-cluster matrix cap`, NL-844; a suite
 #                         whose parallel collections need more runs with -parallel none when that fits)
 #       --rerun-max N     matrix: rerun at most N failed classes of a suite alone (default 3; 0 = no reruns)
 #   -n, --runs N          default mode: runs (default 3)
-#   -j, --jobs J          runs (default mode, default N) or suites (matrix, default 3) in flight at once; at most 6
+#   -j, --jobs J          runs (default mode, default N) or suites (matrix, default the --max-namespaces budget) in
+#                         flight at once; at most the machine's cap (12)
 #   -c, --config C        build configuration (default Release)
 #   -f, --framework F     target framework (default net10.0)
 #   -p, --project P       the test project: cluster (default, test/NLightning.Testing.Cluster.Tests), integration
@@ -52,7 +54,7 @@
 #                         postgres = Docker/PostgresTests and the Explicit Cluster/Live/ServerDatabaseClusterTests on
 #                         Postgres pods, faults = the partition and ZMQ-loss tests, lnd/gossip/day0/onchain/anchors/abcd
 #                         = the LND suites on LightningRegtestNetworkFixture's cluster backend (lnd = its regtest
-#                         collection, 2 namespaces per run, so -j is capped at 3; day0 = the gossip-regtest classes
+#                         collection, 2 namespaces per run, so -j is capped at 6; day0 = the gossip-regtest classes
 #                         outside Docker.Gossip, split from gossip);
 #                         --class/--method replace a suite's classes; tor is refused (Docker)
 #       --class X         a test class to run (repeatable; default: every Category=Cluster test)
@@ -73,7 +75,7 @@
 #       --keep-logs       leave the logs of green runs as they are (by default they are gzipped once the summary is
 #                         written: a suite's output.log reaches 0.3-0.8 GB, NL-818)
 #
-# Example: the default matrix, 3 suites at once within the 6-namespace cap
+# Example: the default matrix, every suite that fits started at once within the 12-namespace cap (18 min)
 #   scripts/run-cluster.sh --matrix
 # Example: a small matrix within 2 namespaces (postgres then runs its two collections one after the other)
 #   scripts/run-cluster.sh --matrix cln,ldk,postgres -j 2 --max-namespaces 2
@@ -117,7 +119,7 @@ explicit_set=""
 suite=""
 matrix=0
 matrix_suites=""
-max_namespaces=6
+max_namespaces="" # default: the machine's cap (nltg-cluster matrix cap)
 rerun_max=3
 timeout=""
 timeout_seconds=""
@@ -180,25 +182,24 @@ if (( matrix )); then
   [[ -z "$suite" ]] || die "--matrix and --suite exclude each other (--matrix $suite runs one suite)"
   (( ${#filters[@]} == 0 )) || die "--matrix takes no --class/--method (use --suite S --class X)"
   [[ -z "$project_set" && -z "$trait_set" ]] || die "--matrix takes no --project/--trait (the suites set them)"
-  [[ "$max_namespaces" =~ ^[0-9]+$ && "$max_namespaces" -ge 1 && "$max_namespaces" -le 6 ]] \
-    || die "--max-namespaces must be 1-6"
+  [[ -z "$max_namespaces" || "$max_namespaces" =~ ^[0-9]+$ ]] || die "--max-namespaces must be a number"
   [[ "$rerun_max" =~ ^[0-9]+$ ]] || die "--rerun-max must be a number"
   # Kept namespaces hold machine slots until their TTL (6 h), so a matrix that keeps all of them could never start its
   # later suites; --keep-on-failure is fine (the queue counts the namespaces failed suites keep)
   [[ "$keep" != 1 ]] || die "--matrix takes no --keep (use --keep-on-failure, or --suite S --keep for one suite)"
-  jobs="${jobs:-3}"
+  # -j defaults to the namespace budget below (every suite that fits starts at once; NL-844)
 else
   runs="${runs:-3}"
   [[ "$runs" =~ ^[0-9]+$ && "$runs" -ge 1 ]] || die "--runs must be a positive number"
   jobs="${jobs:-$runs}"
 fi
-[[ "$jobs" =~ ^[0-9]+$ && "$jobs" -ge 1 ]] || die "--jobs must be a positive number"
+[[ ( -z "$jobs" && "$matrix" == 1 ) || ( "$jobs" =~ ^[0-9]+$ && "$jobs" -ge 1 ) ]] \
+  || die "--jobs must be a positive number"
 [[ "$diag" =~ ^(failure|always|off)$ ]] || die "--diag must be failure, always or off"
 [[ "$explicit" =~ ^(only|on|off)$ ]] || die "--explicit must be only, on or off"
 if [[ -n "$timeout" ]]; then
   timeout_seconds="$(seconds_of "$timeout")" || die "--timeout must be like 90s, 30m or 2h"
 fi
-if (( jobs > 6 )); then echo "run-cluster: capping --jobs at 6 (the harness's namespace cap)"; jobs=6; fi
 if (( matrix )); then
   batch="${batch:-mx-$(date -u +%Y%m%d%H%M%S)}"
   max_batch=24 # <batch>-<suite>-r<n> must stay a 40-character run id with room for a "-<n>" suffix
@@ -243,6 +244,19 @@ else
   test_cmd=(dotnet "$test_dll")
 fi
 
+# The machine's cap on run namespaces, set in one place (RunAdmission.DefaultMaxRuns, NL-844): --max-namespaces and
+# -j stay within it, as the test processes' own admission (NLTG_MAX_CONCURRENT_RUNS) does.
+machine_cap="$(matrix_cli cap)" && [[ "$machine_cap" =~ ^[0-9]+$ ]] || die "nltg-cluster matrix cap failed"
+if (( matrix )); then
+  max_namespaces="${max_namespaces:-$machine_cap}"
+  (( max_namespaces >= 1 && max_namespaces <= machine_cap )) || die "--max-namespaces must be 1-$machine_cap"
+  jobs="${jobs:-$max_namespaces}"
+fi
+if (( jobs > machine_cap )); then
+  echo "run-cluster: capping --jobs at $machine_cap (the harness's namespace cap)"
+  jobs=$machine_cap
+fi
+
 # 2. The selection. A suite comes from the catalog (nltg-cluster matrix plan), never from this script. Plan line
 #    fields: run|skip, name, project, explicit, namespaces, parallel, timeout s, selection, constraints, note.
 select_args=()     # replaced by --class/--method, and by a rerun's class
@@ -253,10 +267,11 @@ if [[ -n "$suite" ]]; then
   plan_line="$(matrix_cli plan --suites "$suite" --repo "$repo_root")" || die "--suite $suite: see above"
   IFS='|' read -r st _ _ s_explicit s_namespaces _ s_timeout s_selection s_constraints s_note <<< "$plan_line"
   [[ "$st" == run ]] || die "--suite $suite: $s_note"
-  # Each run holds the suite's namespaces at once: runs in flight x namespaces stay within the machine's cap of 6
-  if (( s_namespaces > 1 && jobs * s_namespaces > 6 )); then
-    echo "run-cluster: --suite $suite holds $s_namespaces namespaces per run; capping --jobs at $(( 6 / s_namespaces ))"
-    jobs=$(( 6 / s_namespaces ))
+  # Each run holds the suite's namespaces at once: runs in flight x namespaces stay within the machine's cap
+  if (( s_namespaces > 1 && jobs * s_namespaces > machine_cap )); then
+    echo "run-cluster: --suite $suite holds $s_namespaces namespaces per run; capping --jobs at" \
+         "$(( machine_cap / s_namespaces ))"
+    jobs=$(( machine_cap / s_namespaces ))
   fi
   [[ -n "$explicit_set" ]] || explicit="$s_explicit"
   [[ "$s_selection" == - ]] || read -ra select_args <<< "$s_selection"
