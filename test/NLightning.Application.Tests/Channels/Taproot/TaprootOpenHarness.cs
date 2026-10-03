@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -29,10 +30,13 @@ using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.Commitments;
+using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Factories;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
 using Domain.Channels.Validators;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
@@ -59,6 +63,7 @@ using Infrastructure.Persistence.Contexts;
 using Infrastructure.Protocol.Onion;
 using Infrastructure.Repositories;
 using Infrastructure.Serialization;
+using NLightning.Tests.Utils.Mocks;
 using TestUtils;
 
 /// <summary>
@@ -85,6 +90,12 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
 
     /// <summary>Every message delivered, in order.</summary>
     public List<(string From, IChannelMessage Message)> Transcript { get; } = [];
+
+    /// <summary>Every message a node raised for its peer, delivered, lost with the link or dropped, in order.</summary>
+    public List<(string From, IChannelMessage Message)> Sent { get; } = [];
+
+    /// <summary>How many times a crashed node was restarted.</summary>
+    public int Restarts { get; private set; }
 
     /// <summary>When set, messages are dropped (a link that is down).</summary>
     public bool LinkDown { get; set; }
@@ -141,15 +152,21 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
     {
         for (var steps = 0; steps < 10_000; steps++)
         {
+            await RecoverAsync();
             await WhenIdleAsync();
+            await RecoverAsync();
             var delivered = false;
             foreach (var key in _links.Keys.OrderBy(k => k.From).ToList())
+            {
                 delivered |= await DeliverNextAsync(key);
+                await RecoverAsync();
+            }
 
             if (delivered)
                 continue;
 
             await WhenIdleAsync();
+            await RecoverAsync();
             if (_links.Values.All(q => q.IsEmpty))
                 return;
         }
@@ -195,12 +212,34 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
         return (opened.ChannelId, funding);
     }
 
+    /// <summary>
+    /// Restarts every node whose database "crashed" (<see cref="TaprootOpenNode.Crash"/>: a save refused, and every one
+    /// after it): the link drops, the node starts again from what it saved and the link comes back (both sides send
+    /// channel_reestablish). Nothing happens when no node crashed.
+    /// </summary>
+    public async Task RecoverAsync()
+    {
+        if (!Nodes.Any(n => n.Crash.Crashed))
+            return;
+
+        await DisconnectAsync();
+        foreach (var node in Nodes.Where(n => n.Crash.Crashed))
+        {
+            Restarts++;
+            await node.StopAsync();
+            await node.StartAsync(migrate: false);
+            await node.LoadStoredChannelsAsync();
+        }
+
+        await ReconnectAsync();
+    }
+
     /// <summary>The link drops: queued messages are lost and both channel managers are told.</summary>
     public async Task DisconnectAsync()
     {
         LinkDown = true;
         _links.Clear();
-        foreach (var node in Nodes.Where(n => n.IsRunning))
+        foreach (var node in Nodes.Where(n => n.IsRunning && !n.Crash.Crashed))
         {
             node.ChannelManager.OnPeerConnectionChanged(Other(node).NodeId);
             await node.ChannelManager.OnPeerDisconnectedAsync(Other(node).NodeId);
@@ -253,6 +292,8 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
 
     internal void Route(TaprootOpenNode from, IChannelMessage message)
     {
+        lock (Sent)
+            Sent.Add((from.Name, message));
         if (LinkDown)
             return;
 
@@ -271,7 +312,15 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
         lock (Transcript)
             Transcript.Add((from.Name, message));
         to.Received.Add(message);
-        await to.ChannelManager.HandleChannelMessageAsync(message, NegotiatedFeatures, from.NodeId);
+        try
+        {
+            await to.ChannelManager.HandleChannelMessageAsync(message, NegotiatedFeatures, from.NodeId);
+        }
+        catch (Exception) when (to.Crash.Crashed)
+        {
+            // The receiver died while handling it: RecoverAsync restarts it
+        }
+
         return true;
     }
 
@@ -297,6 +346,12 @@ internal sealed class TaprootOpenNode
     public Mock<IBlockchainMonitor> ChainMonitor { get; private set; } = new();
     public HarnessLinkProbe Probe { get; } = new();
     public RecordingPaymentHandler PaymentHandler { get; } = new();
+
+    /// <summary>The database's crash switch of the running process (a new one at every start).</summary>
+    public CrashOnSaveInterceptor Crash { get; private set; } = new();
+
+    /// <summary>Local commitments this node accepted: (number, txid). Kept across restarts.</summary>
+    public List<(ulong Number, TxId TxId)> Verified { get; } = [];
 
     /// <summary>Every transaction this node handed to its chain monitor, in order (kept across restarts).</summary>
     public List<BroadcastTransactionModel> Published { get; } = [];
@@ -353,6 +408,7 @@ internal sealed class TaprootOpenNode
                      })
                     .ReturnsAsync(true);
 
+        Crash = new CrashOnSaveInterceptor();
         _provider = BuildProvider();
         if (migrate)
         {
@@ -460,6 +516,10 @@ internal sealed class TaprootOpenNode
         services.AddSingleton<ICommitmentTransactionModelFactory, CommitmentTransactionModelFactory>();
         services.AddSingleton<IFundingTransactionModelFactory, FundingTransactionModelFactory>();
         services.AddCommitmentEngineServices();
+        services.AddSingleton<ICommitmentVerifier>(sp => new RecordingVerifier(
+                                                       sp.GetRequiredService<CommitmentSigningService>(),
+                                                       sp.GetRequiredService<IChannelMemoryRepository>(), Verified));
+        services.ConfigureDbContext<NLightningDbContext>(o => o.AddInterceptors(Crash));
         services.AddChannelStateTransitionServices();
         services.AddSingleton<IMessageFactory, MessageFactory>();
         services.AddSingleton<IChannelLockProvider, ChannelLockProvider>();
@@ -502,6 +562,79 @@ internal sealed class TaprootOpenNode
     {
         public void Publish(CompactPubKey peerPubKey, IReadOnlyList<IChannelMessage> messages) =>
             node.ChannelManager.Publish(peerPubKey, messages);
+    }
+
+    /// <summary>The production verifier port, recording the txid of every commitment it accepts.</summary>
+    private sealed class RecordingVerifier(CommitmentSigningService service, IChannelMemoryRepository channels,
+                                           List<(ulong, TxId)> verified) : ICommitmentVerifier
+    {
+        private readonly EngineCommitmentVerifierPort _inner =
+            new(service, channels, NullLogger<EngineCommitmentVerifierPort>.Instance);
+
+        public bool VerifyLocalCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
+                                          CommitmentSpec spec, CommitmentSignatures signatures)
+        {
+            if (!_inner.VerifyLocalCommitment(channelId, funding, number, spec, signatures))
+                return false;
+
+            channels.TryGetChannel(channelId, out var channel);
+            var txId = service.VerifyLocalCommitment(channel!, funding, CommitmentTxSpec.FromCommitmentSpec(spec),
+                                                     number, signatures.Signature, signatures.HtlcSignatures,
+                                                     signatures.PartialSignature)
+                              .CommitmentTxId;
+            lock (verified)
+                verified.Add((number, txId));
+            return true;
+        }
+    }
+}
+
+/// <summary>
+/// A database that dies: the <see cref="CrashAtSave"/>-th save (counted from <see cref="Arm"/>) and every save after
+/// it throw <see cref="SimulatedCrashException"/> before anything is written, as a process killed before its commit.
+/// </summary>
+[ExcludeFromCodeCoverage]
+internal sealed class CrashOnSaveInterceptor : SaveChangesInterceptor
+{
+    private int _saves;
+
+    /// <summary>The save (1-based, from <see cref="Arm"/>) that crashes; null never crashes.</summary>
+    public int? CrashAtSave { get; private set; }
+
+    public bool Crashed { get; private set; }
+
+    /// <summary>Saves since <see cref="Arm"/> (or the start).</summary>
+    public int Saves => _saves;
+
+    public void Arm(int? crashAtSave)
+    {
+        _saves = 0;
+        CrashAtSave = crashAtSave;
+    }
+
+    public override InterceptionResult<int> SavingChanges(DbContextEventData eventData,
+                                                          InterceptionResult<int> result)
+    {
+        Check();
+        return result;
+    }
+
+    public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+                                                                         InterceptionResult<int> result,
+                                                                         CancellationToken cancellationToken = default)
+    {
+        Check();
+        return ValueTask.FromResult(result);
+    }
+
+    private void Check()
+    {
+        var save = Interlocked.Increment(ref _saves);
+        if (!Crashed && save != CrashAtSave)
+            return;
+
+        Crashed = true;
+        throw new SimulatedCrashException(save);
     }
 }
 
