@@ -77,6 +77,20 @@ public class NodeStateCommandsTests
                                                                              or "printmacaroon"));
     }
 
+    [Fact]
+    public void Given_AnEclairPod_When_CommandsAreBuilt_Then_TheyAreApiReadsWithThePasswordFromTheEnvironment()
+    {
+        // Act
+        var commands = NodeStateCommands.For(Pod("carol", NodeKind.Eclair));
+
+        // Assert
+        Assert.Equal(["getinfo.json", "channels.json", "peers.json", "onchainbalance.json"],
+                     commands.Select(c => c.FileName));
+        Assert.All(commands, c => Assert.Equal(["sh", "-c"], c.Command.Take(2)));
+        Assert.All(commands, c => Assert.Contains("-u \":$NLTG_API_PASSWORD\"", c.Command[2], StringComparison.Ordinal));
+        Assert.All(commands, c => Assert.Contains("http://127.0.0.1:8080/", c.Command[2], StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData(NodeKind.Other)]
     [InlineData(NodeKind.Postgres)]

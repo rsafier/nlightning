@@ -27,6 +27,12 @@ public interface ITopologyChainEndpoint
     int ZmqRawTxPort { get; }
 
     /// <summary>
+    /// bitcoind's <c>zmqpubhashblock</c> port on <see cref="RpcHost"/> (Eclair follows blocks over it), or null when the
+    /// chain publishes none.
+    /// </summary>
+    int? ZmqHashBlockPort => null;
+
+    /// <summary>
     /// An init container that holds a Lightning node's start until the chain answers RPC (it gives up after a while
     /// and lets the node start anyway), or null when the nodes need not wait. LND exits when bitcoind does not answer
     /// at start (the pod would go into <c>CrashLoopBackOff</c>), so the deployers add it to every node they start

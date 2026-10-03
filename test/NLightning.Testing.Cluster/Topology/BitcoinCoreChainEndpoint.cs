@@ -25,6 +25,8 @@ public sealed class BitcoinCoreChainEndpoint(BitcoinCoreOptions options) : ITopo
 
     public int ZmqRawTxPort => BitcoinCorePorts.ZmqRawTx;
 
+    public int? ZmqHashBlockPort => BitcoinCorePorts.ZmqHashBlock;
+
     public V1Container CreateStartupWait() => BitcoinCoreWorkload.StartupWaitContainer(Options);
 
     public override string ToString() => $"{RpcHost}:{RpcPort}";

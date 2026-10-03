@@ -4,6 +4,7 @@ using Images;
 using Kube;
 using Nodes;
 using Nodes.Cln;
+using Nodes.Eclair;
 using Nodes.Lnd;
 using Run;
 
@@ -30,7 +31,8 @@ public sealed class TopologyBuilder
     private readonly Dictionary<NodeKind, ILightningNodeDeployer> _deployers = new()
     {
         [NodeKind.Cln] = new ClnNodeDeployer(),
-        [NodeKind.Lnd] = new LndNodeDeployer()
+        [NodeKind.Lnd] = new LndNodeDeployer(),
+        [NodeKind.Eclair] = new EclairNodeDeployer()
     };
 
     private ChainFactory _chainFactory = BitcoinCoreTopologyChain.DeployAsync;
@@ -103,6 +105,14 @@ public sealed class TopologyBuilder
     public TopologyBuilder AddLnd(string name, ImageRef? image = null, IReadOnlyList<string>? extraArgs = null,
                                   NodeStorage? storage = null) =>
         AddNode(name, NodeKind.Lnd, image, extraArgs, storage);
+
+    /// <summary>
+    /// An Eclair node (<see cref="EclairNode"/>; its <paramref name="extraConfig"/> are more <c>eclair.conf</c> lines).
+    /// Eclair 0.14.3 needs the chain node on <see cref="ImageVersions.BitcoinCore31"/>.
+    /// </summary>
+    public TopologyBuilder AddEclair(string name, ImageRef? image = null, IReadOnlyList<string>? extraConfig = null,
+                                     NodeStorage? storage = null) =>
+        AddNode(name, NodeKind.Eclair, image, extraConfig, storage);
 
     /// <summary>Sends <paramref name="amountSat"/> to <paramref name="node"/>'s wallet (confirmed before the opens).</summary>
     public TopologyBuilder FundWallet(string node, long amountSat)

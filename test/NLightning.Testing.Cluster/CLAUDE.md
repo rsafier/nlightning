@@ -127,6 +127,15 @@ every implementation, our own node included, is driven through the same seams.
   fully synced") and reconnects after `RestartAsync`/`KillAsync`; `LndNodeDeployer` puts LND in a declarative topology (`AddLnd`); `LndMapping` (txids,
   `chan_id` → `BxTxO`, channel points). `LndNodeOptions` defaults follow the shared bitcoind (`miner`, `nltg`, ZMQ
   28332/28333).
+- `Nodes/Eclair/` (phase 4): `EclairNode.Workload` (`nltg-eclair:0.14.3` Never, the `EclairFixture` settings as
+  `eclair.conf`, carried in `NLTG_ECLAIR_CONF` and written to `/data/eclair.conf` by the container's command before it
+  `exec`s the image's start script; data on a PVC at `/data`; init containers: the chain's startup wait, then
+  `eclair-wallet` (curl + jq in Eclair's image) that creates or loads the bitcoind wallet `eclair` and waits until
+  bitcoind left IBD; readiness = not draining and the API answers `getinfo`; `preStop` = drain 5 s, then the JVM stops
+  on SIGTERM), `EclairApi` (form POSTs, basic auth, `Retarget` after a restart), `EclairTestPeer` (the facade over the
+  API at the pod IP from the host, the pod DNS name in the cluster; `RestartAsync` moves the API to the new pod),
+  `EclairNodeDeployer` (`DeploysWithChain`, a `StableNodeAddress`; needs the chain's `ZmqHashBlockPort`) and
+  `EclairJson`. Eclair 0.14.3 refuses Bitcoin Core older than 31: `AddBitcoinCore("miner", ImageVersions.BitcoinCore31)`.
 - `Topology/Lnd/` (LND lane): `LndPairTopology.BuildAsync` = the shared bitcoind `miner`
   (`BitcoinCoreTopologyChain`) + `alice`/`bob` (started in bitcoind's wave, `Settings.DeployNodesWithChain`;
   `Settings.Storage`) with an active alice → bob channel; `PayAsync` retries a failed
@@ -157,7 +166,8 @@ every implementation, our own node included, is driven through the same seams.
     container state and last state, exit codes, restarts, probes, env names), `<container>.log` and, after a restart,
     `<container>.previous.log`, and the node's own state `state/*.json` by its `nltg.kind` label
     (`NodeStateCommands`: bitcoind `getblockchaininfo`/`getpeerinfo`/`getmempoolinfo`, CLN `getinfo`/
-    `listpeerchannels`/`listfunds`, LND `getinfo`/`listchannels`/`pendingchannels`/`listpeers`); `summary.txt` lists
+    `listpeerchannels`/`listfunds`, LND `getinfo`/`listchannels`/`pendingchannels`/`listpeers`, Eclair `getinfo`/
+    `channels`/`peers`/`onchainbalance` over its API with the password from the container's environment); `summary.txt` lists
     the files and what could not be collected; `failure.txt` the reasons. No secret file is ever read (macaroons,
     `hsm_secret`, keys) and every file goes through `SecretRedactor` (passwords, tokens, `rpcauth` masked).
   - When (`NLTG_CLUSTER_DIAG`, `DiagnosticsSettings`): `failure` (default), `always` (also after every test and before
@@ -185,7 +195,10 @@ every implementation, our own node included, is driven through the same seams.
 
 - The suites keep their fixtures; `NLTG_TEST_BACKEND=docker|cluster` (Integration.Tests `Fixtures/TestBackend`, Docker
   when unset, an unknown value throws) picks the backend per process. Ported so far: the CLN interop suite
-  (`ClnFixture` -> `ClusterClnBackend`, a warm `ClusterTopologyFixture`).
+  (`ClnFixture` -> `ClusterClnBackend`, a warm `ClusterTopologyFixture`) and the Eclair interop suite (`EclairFixture`
+  -> `ClusterEclairBackend`, phase 4).
+- `scripts/run-cluster.sh -n 1 --suite eclair` runs the Eclair interop suite the same way (`--trait
+  Category=Interop.Eclair`).
 - `scripts/run-cluster.sh -n 3 --suite cln` builds once and runs 3 processes of `-p integration --trait
   Category=Interop.Cln`, each with `NLTG_TEST_BACKEND=cluster` and its own run id and namespace (`--class X` narrows it,
   `--explicit on` adds the captures, `--keep-on-failure` keeps a failed run's namespace). No Docker lock is needed.
