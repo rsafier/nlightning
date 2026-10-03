@@ -775,6 +775,33 @@ public class NodeServiceExtensionsTests
     }
 
     [Theory]
+    [InlineData("regtest", 15)]
+    [InlineData("mainnet", 60)]
+    [InlineData("testnet", 60)]
+    [InlineData("testnet4", 60)]
+    [InlineData("signet", 60)]
+    [InlineData("mutinynet", 60)]
+    public void Given_DefaultConfigJson_When_Bound_Then_ThePingIntervalIsTheNetworksDefault(string network, int seconds)
+    {
+        // Arrange (NL-806: the template writes the network's keep-alive interval)
+        var json = NodeConfigurationExtensions.CreateDefaultConfigJson(network);
+        var configuration = new ConfigurationBuilder()
+                           .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                           .Build();
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+
+        // Assert
+        Assert.Equal(TimeSpan.FromSeconds(seconds), options.PingInterval);
+        Assert.Equal(TimeSpan.FromSeconds(seconds), options.GetEffectivePingInterval());
+        Assert.DoesNotContain(options.GetValidationErrors(), e => e.Contains(nameof(NodeOptions.PingInterval)));
+    }
+
+    [Theory]
     [InlineData("mainnet", false)]
     [InlineData("testnet", true)]
     [InlineData("regtest", true)]

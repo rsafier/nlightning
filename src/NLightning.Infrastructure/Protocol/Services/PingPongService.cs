@@ -39,7 +39,11 @@ internal class PingPongService : IPingPongService
         _messageFactory = messageFactory;
         _lastPing = messageFactory.CreatePingMessage();
         PongTimeout = nodeOptions.Value.NetworkTimeout;
+        PingInterval = nodeOptions.Value.GetEffectivePingInterval();
     }
+
+    /// <summary>The share of <see cref="PingInterval"/> each wait may move either way: 10 %.</summary>
+    internal const double PingJitter = 0.1;
 
     /// <summary>
     /// How long the keep-alive loop waits for a pong: <c>Node:NetworkTimeout</c>, or the Tor network timeout for a
@@ -47,10 +51,32 @@ internal class PingPongService : IPingPongService
     /// </summary>
     internal TimeSpan PongTimeout { get; set; }
 
+    /// <summary>
+    /// The keep-alive interval: <c>Node:PingInterval</c>, by default 15 s on regtest and 60 s elsewhere (NL-806).
+    /// </summary>
+    internal TimeSpan PingInterval { get; }
+
+    /// <summary>The wait between two keep-alive pings (<see cref="Task.Delay(TimeSpan, CancellationToken)"/>; tests
+    /// replace it to step the loop).</summary>
+    internal Func<TimeSpan, CancellationToken, Task> DelayAsync { get; set; } = Task.Delay;
+
+    /// <summary>
+    /// The next wait between two keep-alive pings: <see cref="PingInterval"/> moved by up to <see cref="PingJitter"/>
+    /// either way, so the pings of many connections do not line up.
+    /// </summary>
+    internal TimeSpan NextPingDelay()
+    {
+        double factor;
+        lock (_lock)
+            factor = 1 + (_random.NextDouble() * 2 - 1) * PingJitter;
+        return TimeSpan.FromTicks((long)(PingInterval.Ticks * factor));
+    }
+
     /// <inheritdoc />
     /// <remarks>
-    /// Ping messages are sent to the peer at random intervals ranging from 30 seconds to 5 minutes.
-    /// If a pong message is not received within the network timeout, DisconnectEvent is raised.
+    /// A ping goes out at once and then every <see cref="PingInterval"/> (±<see cref="PingJitter"/>, NL-806). If a pong
+    /// message is not received within the network timeout, DisconnectEvent is raised: the connection closes and the
+    /// reconnect backoff dials again (BOLT 1: MUST NOT fail the channels).
     /// </remarks>
     public async Task StartPingAsync(CancellationToken cancellationToken)
     {
@@ -79,7 +105,7 @@ internal class PingPongService : IPingPongService
 
             try
             {
-                await Task.Delay(_random.Next(30_000, 300_000), cancellationToken);
+                await DelayAsync(NextPingDelay(), cancellationToken);
             }
             catch (OperationCanceledException)
             {

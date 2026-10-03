@@ -365,6 +365,9 @@ public static class NodeConfigurationExtensions
         // Regtest and signets switch HTLCs on explicitly; mainnet, testnet and testnet4 leave the switch to NodeOptions'
         // code default (null binds as unset), so the BOLT 5 O6-T4 gate decides them
         var enableHtlcs = resolved == BitcoinNetwork.Regtest || isSignet ? "true" : "null";
+        // NL-806: the network's keep-alive interval (15 s on regtest, 60 s elsewhere), written so the operator sees it
+        var pingInterval = new NodeOptions { BitcoinNetwork = resolved }.GetEffectivePingInterval()
+                                                                        .ToString("c", CultureInfo.InvariantCulture);
         // BOLT 7 plan D12 (decided in wave d12): the graph and gossip sync are on everywhere, mainnet included; the
         // relay of others' gossip too since the NL-417 mainnet relay proof (owner decision 2026-09-28); public channels
         // on mainnet are gated by AllowPublicChannelsOnMainnet alone (AcceptPublicChannels keeps its code default, true)
@@ -490,6 +493,7 @@ public static class NodeConfigurationExtensions
                    "Features": {
                      "AllowExperimentalFeatures": false
                    },
+                   "PingInterval": "{{PING_INTERVAL}}",
                    "EnableHtlcs": {{ENABLE_HTLCS}},
                    "MaxAcceptedToSelfDelay": 2016,
                    "MinAcceptedMaxHtlcValueInFlightPercent": 1,
@@ -667,6 +671,7 @@ public static class NodeConfigurationExtensions
                   .Replace("{{BOOTSTRAP_STARTUP_DELAY}}", Invariant(bootstrap.StartupDelay))
                   .Replace("{{BOOTSTRAP_FAMILIES}}", bootstrap.AddressFamilies.ToString())
                   .Replace("{{ENABLE_HTLCS}}", enableHtlcs)
+                  .Replace("{{PING_INTERVAL}}", pingInterval)
                   .Replace("{{GOSSIP_ON}}", gossipOn)
                   .Replace("{{GOSSIP_RELAY_ON}}", gossipRelayOn)
                   .Replace("{{FEE_BASE_MSAT}}", Invariant(routing.FeeBaseMsat))

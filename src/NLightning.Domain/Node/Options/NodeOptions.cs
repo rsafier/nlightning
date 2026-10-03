@@ -228,6 +228,48 @@ public class NodeOptions
     /// </remarks>
     public TimeSpan ReestablishTimeout { get; set; } = DefaultReestablishTimeout;
 
+    /// <summary>The default <see cref="PingInterval"/> on regtest: 15 s.</summary>
+    public static readonly TimeSpan RegtestDefaultPingInterval = TimeSpan.FromSeconds(15);
+
+    /// <summary>The default <see cref="PingInterval"/> on every other network: 60 s (LND pings every minute).</summary>
+    public static readonly TimeSpan DefaultPingInterval = TimeSpan.FromSeconds(60);
+
+    /// <summary>The smallest <see cref="PingInterval"/> accepted on any network: 5 s.</summary>
+    public static readonly TimeSpan MinPingInterval = TimeSpan.FromSeconds(5);
+
+    /// <summary>The largest <see cref="PingInterval"/>, a timer's limit: 4,294,967,294 ms (about 49.7 days).</summary>
+    public static readonly TimeSpan MaxPingInterval = TimeSpan.FromMilliseconds(uint.MaxValue - 1.0);
+
+    /// <summary>
+    /// How often the keep-alive loop pings each connected peer, with ±10 % jitter (NL-806). Each <c>ping</c> waits
+    /// <see cref="NetworkTimeout"/> (or the Tor network timeout) for its <c>pong</c>; without one the connection is
+    /// closed, never the channels failed (BOLT 1: "if it doesn't receive a corresponding <c>pong</c>: MAY close the
+    /// network connection, and MUST NOT fail the channels in this case"), and the reconnect backoff
+    /// (<see cref="ReconnectInitialDelay"/>) dials the peer again, so a connection that died silently (a half-open TCP
+    /// connection, a NAT timeout, a dead Tor circuit) is noticed within about the interval plus the pong timeout.
+    /// Null (the default) is <see cref="RegtestDefaultPingInterval"/> on regtest and <see cref="DefaultPingInterval"/>
+    /// elsewhere (<see cref="GetEffectivePingInterval"/>); at least <see cref="MinPingInterval"/> on every network.
+    /// </summary>
+    /// <remarks>
+    /// <para>Configuration key <c>Node:PingInterval</c> (a <see cref="TimeSpan"/>, e.g. <c>"00:01:00"</c>).</para>
+    /// <para>BOLT 1 has had no ping-rate rule since PR #918 (2021, commit 49e1c1cba9), which removed "SHOULD NOT send
+    /// <c>ping</c> messages more often than once every 30 seconds" and "SHOULD fail the channels if it has received
+    /// significantly in excess of one <c>ping</c> per 30 seconds". Its rationale keeps only "Limited precautions are
+    /// recommended against <c>ping</c> flooding, however some latitude is given because of network delays." Our receive
+    /// side answers every <c>ping</c> and enforces no rate, so the 15 s regtest default between two of our nodes is
+    /// never punished.</para>
+    /// </remarks>
+    public TimeSpan? PingInterval { get; set; }
+
+    /// <summary>
+    /// <see cref="PingInterval"/> when set, else the default of <see cref="BitcoinNetwork"/>: 15 s on regtest, 60 s
+    /// elsewhere.
+    /// </summary>
+    public TimeSpan GetEffectivePingInterval() =>
+        PingInterval ?? (BitcoinNetwork.Name == NetworkConstants.Regtest
+                             ? RegtestDefaultPingInterval
+                             : DefaultPingInterval);
+
     /// <summary>
     /// Our forwarding policy and invoice defaults.
     /// </summary>
@@ -323,7 +365,7 @@ public class NodeOptions
 
     /// <summary>
     /// Returns every configuration error of the options this class owns (currently <see cref="Routing"/>,
-    /// <see cref="FeeUpdates"/>, <see cref="Anchors"/>, <see cref="LiquidityAds"/>, <see cref="Bootstrap"/>, <see cref="CustomSignet"/>, the reconnect delays, <see cref="ReestablishTimeout"/>, the accepted open limits, <see cref="Alias"/> and <see cref="Color"/>); empty when valid. Feature errors are reported by
+    /// <see cref="FeeUpdates"/>, <see cref="Anchors"/>, <see cref="LiquidityAds"/>, <see cref="Bootstrap"/>, <see cref="CustomSignet"/>, the reconnect delays, <see cref="ReestablishTimeout"/>, <see cref="PingInterval"/>, the accepted open limits, <see cref="Alias"/> and <see cref="Color"/>); empty when valid. Feature errors are reported by
     /// <see cref="FeatureOptions.GetValidationErrors"/>.
     /// </summary>
     public IReadOnlyList<string> GetValidationErrors()
@@ -337,6 +379,10 @@ public class NodeOptions
             errors.Add($"{nameof(ReestablishTimeout)} must not be negative (zero turns it off).");
         if (ReestablishTimeout > MaxReestablishTimeout)
             errors.Add($"{nameof(ReestablishTimeout)} must be at most {MaxReestablishTimeout} (zero turns it off).");
+        if (PingInterval is { } pingInterval && (pingInterval < MinPingInterval || pingInterval > MaxPingInterval))
+            errors.Add($"{nameof(PingInterval)} ({pingInterval}) must be between {MinPingInterval} and "
+                     + $"{MaxPingInterval} (unset: {RegtestDefaultPingInterval} on regtest, {DefaultPingInterval} "
+                     + "elsewhere).");
         if (MaxAcceptedToSelfDelay == 0)
             errors.Add($"{nameof(MaxAcceptedToSelfDelay)} must be positive.");
         if (MinAcceptedMaxHtlcValueInFlightPercent > 100)
