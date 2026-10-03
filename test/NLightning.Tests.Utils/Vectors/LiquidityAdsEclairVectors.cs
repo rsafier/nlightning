@@ -28,6 +28,14 @@ public static class LiquidityAdsEclairVectors
     /// <summary>init TLV 1339 with one rate (100k..500k, 550, 100, 5000, 1000) and from_channel_balance.</summary>
     public const string InitRatesOne = "0001000186a00007a1200226006400001388000003e8000101";
 
+    /// <summary>
+    /// init TLV 1339 captured live from Eclair 0.14.3 in Docker (2026-10-03, the <c>Explicit</c>
+    /// <c>EclairLiquidityAdsTests</c> capture, seller configured as <c>EclairFixture.SellerRates</c>): one rate
+    /// (10k..5M, 400, 100, 500, 1000) and from_channel_balance. Same layout as <see cref="InitRatesOne"/>: Eclair's
+    /// running node encodes its configured rates exactly as its unit tests do.
+    /// </summary>
+    public const string LiveInitRates = "000100002710004c4b4001900064000001f4000003e8000101";
+
     /// <summary>init TLV 1339 with two rates and the payment types 0, 128, 129, 130 and an unknown 211 (a 27-byte bitfield).</summary>
     public const string InitRatesTwo =
         "0002000186a00007a1200226006400001388000003e80007a120004c4b40044c004b00000000000005dc"

@@ -25,6 +25,23 @@ public class LiquidityAdsCodecTests
     }
 
     [Fact]
+    public void Given_RatesCapturedFromALiveEclair_When_Decoded_Then_TheyAreItsConfiguredRateAndReencode()
+    {
+        // Arrange
+        var bytes = Convert.FromHexString(LiquidityAdsEclairVectors.LiveInitRates);
+
+        // Act
+        var decoded = LiquidityAdsCodec.TryDecodeWillFundRates(bytes, out var rates);
+
+        // Assert
+        Assert.True(decoded);
+        Assert.Equal([new FundingRate(10_000, 5_000_000, 400, 100, 500, 1_000)], rates!.Rates);
+        Assert.True(rates.Supports(LiquidityPaymentType.FromChannelBalance));
+        Assert.False(rates.Supports(LiquidityPaymentType.FromFutureHtlc));
+        Assert.Equal(bytes, LiquidityAdsCodec.EncodeWillFundRates(rates));
+    }
+
+    [Fact]
     public void Given_EclairsTwoRatesWithFivePaymentTypes_When_Decoded_Then_EveryTypeIsSupportedAndItReencodes()
     {
         // Arrange
