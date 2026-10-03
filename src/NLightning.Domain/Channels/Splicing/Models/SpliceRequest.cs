@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Channels.Splicing.Models;
 
+using LiquidityAds.Models;
 using ValueObjects;
 
 /// <summary>
@@ -16,4 +17,10 @@ public sealed record SpliceRequest(
     ChannelId ChannelId,
     long ContributionSatoshis,
     uint? FeeratePerKw = null,
-    string? SpliceOutAddress = null);
+    string? SpliceOutAddress = null)
+{
+    /// <summary>
+    /// Inbound liquidity bought from the peer with this attempt (liquidity ads, NL-771); null buys none.
+    /// </summary>
+    public LiquidityRequest? Liquidity { get; init; }
+}

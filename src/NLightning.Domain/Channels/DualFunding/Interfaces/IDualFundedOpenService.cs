@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Channels.DualFunding.Interfaces;
 
 using Crypto.ValueObjects;
+using LiquidityAds.Models;
 using Models;
 using Money;
 using Node.Options;
@@ -78,4 +79,17 @@ public interface IDualFundedOpenService
         localContribution is null
             ? BumpAsync(channelId, feeratePerKw, cancellationToken)
             : throw new NotSupportedException("Changing our contribution in an RBF is not supported");
+
+    /// <summary>
+    /// <see cref="BumpAsync(ChannelId, uint, LightningMoney?, CancellationToken)"/> buying
+    /// <paramref name="liquidity"/> with the new attempt (liquidity ads, NL-771). Null repeats the purchase of the
+    /// attempt it replaces, if any: BOLT PR #1153 fails an RBF that drops a purchase made before. The default serves
+    /// implementations without liquidity ads.
+    /// </summary>
+    /// <exception cref="NotSupportedException">A purchase and an implementation that cannot make one.</exception>
+    Task<DualFundedOpenResult> BumpAsync(ChannelId channelId, uint feeratePerKw, LightningMoney? localContribution,
+                                         LiquidityRequest? liquidity, CancellationToken cancellationToken = default) =>
+        liquidity is null
+            ? BumpAsync(channelId, feeratePerKw, localContribution, cancellationToken)
+            : throw new NotSupportedException("Buying liquidity in an RBF is not supported");
 }
