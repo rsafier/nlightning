@@ -92,6 +92,17 @@ public class SimpleTaprootCommitmentVectorTests
         Assert.Equal(64, witness[0].Length);
         var fundingKey = new TaprootPubKey(fundingTxOut.ScriptPubKey.ToBytes()[2..]);
         Assert.True(fundingKey.VerifySignature(new uint256(sigHash), new SchnorrSignature(witness[0])));
+
+        // The returned 32 bytes are the BIP 340 message as is (what the MuSig2 signers sign, lane T0)
+        Assert.True(TaprootSignatures.Verify(new PubKey([0x02, .. fundingTxOut.ScriptPubKey.ToBytes()[2..]]),
+                                             new uint256(sigHash), witness[0]));
+        Assert.True(NBitcoin.Secp256k1.ECXOnlyPubKey.Create(fundingTxOut.ScriptPubKey.ToBytes()[2..])
+                                                    .SigVerifyBIP340(
+                                                        NBitcoin.Secp256k1.SecpSchnorrSignature.TryCreate(
+                                                            witness[0], out var schnorr)
+                                                            ? schnorr!
+                                                            : throw new InvalidOperationException(),
+                                                        sigHash));
         Assert.Null(tx.CreateValidator([fundingTxOut]).ValidateInput(0).Error);
     }
 
