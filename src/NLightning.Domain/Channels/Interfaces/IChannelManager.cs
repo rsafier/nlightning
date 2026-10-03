@@ -65,11 +65,13 @@ public interface IChannelManager
     void OnPeerConnectionChanged(CompactPubKey peerPubKey);
 
     /// <summary>
-    /// The channels of <paramref name="peerPubKey"/> that should carry updates (ReadyForThem, ReadyForUs, Open,
-    /// ShuttingDown, Negotiating) whose <c>channel_reestablish</c> we sent on the peer's current connection and that
-    /// are still not reestablished on it: the peer has not answered (NL-796; the peer manager's reestablish deadline).
-    /// A channel waiting for its funding (V1FundingSigned) or whose close is agreed (Closing) is never listed: a peer
-    /// may have forgotten it or stopped its link, and nothing waits on its reestablish.
+    /// The channels of <paramref name="peerPubKey"/> that should carry updates (ReadyForThem, Open, ShuttingDown,
+    /// Negotiating) whose <c>channel_reestablish</c> we sent on the peer's current connection and that are still not
+    /// reestablished on it: the peer has not answered (NL-796; the peer manager's reestablish deadline).
+    /// A channel waiting for its funding (V1FundingSigned), one where only we sent channel_ready (ReadyForUs: the
+    /// funding may still be pending on the peer's side, and LND sends no reestablish for it until it sees the
+    /// confirmation, NL-891) or whose close is agreed (Closing) is never listed: a peer may have forgotten it, not
+    /// confirmed it yet or stopped its link, and nothing waits on its reestablish.
     /// </summary>
     IReadOnlyList<ChannelId> GetChannelsAwaitingPeerReestablish(CompactPubKey peerPubKey) => [];
 

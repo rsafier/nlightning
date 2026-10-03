@@ -212,13 +212,17 @@ public class NodeOptions
     /// <summary>The default <see cref="ReestablishTimeout"/>: 60 s.</summary>
     public static readonly TimeSpan DefaultReestablishTimeout = TimeSpan.FromSeconds(60);
 
+    /// <summary>The largest <see cref="ReestablishTimeout"/> a timer accepts: 4,294,967,294 ms (about 49.7 days).</summary>
+    public static readonly TimeSpan MaxReestablishTimeout = TimeSpan.FromMilliseconds(uint.MaxValue - 1.0);
+
     /// <summary>
     /// How long a new connection waits for the peer's <c>channel_reestablish</c> (NL-796). When a channel of the peer
-    /// that should carry updates (ReadyForThem, ReadyForUs, Open, ShuttingDown or Negotiating) is still not
-    /// reestablished then, we send one <c>warning</c> and close the connection, and the reconnect backoff
+    /// that should carry updates (ReadyForThem, Open, ShuttingDown or Negotiating; not ReadyForUs, whose funding the
+    /// peer may not have seen confirmed yet, NL-891) is still not reestablished then, we send one <c>warning</c> and close the connection, and the reconnect backoff
     /// (<see cref="ReconnectInitialDelay"/>) dials the peer again: a peer whose transport answers but whose channel
     /// daemon hangs recovers without the operator. Until the peer's <c>channel_reestablish</c> arrives the channel stays
-    /// gated (BOLT 2 sets no deadline). <see cref="TimeSpan.Zero"/> turns the deadline off.
+    /// gated (BOLT 2 sets no deadline). <see cref="TimeSpan.Zero"/> turns the deadline off; at most
+    /// <see cref="MaxReestablishTimeout"/> (a timer's limit, NL-891).
     /// </summary>
     /// <remarks>Configuration key <c>Node:ReestablishTimeout</c> (a <see cref="TimeSpan"/>, e.g. <c>"00:01:00"</c>).
     /// </remarks>
@@ -331,6 +335,8 @@ public class NodeOptions
             errors.Add($"{nameof(ReconnectMaxDelay)} must be at least {nameof(ReconnectInitialDelay)}.");
         if (ReestablishTimeout < TimeSpan.Zero)
             errors.Add($"{nameof(ReestablishTimeout)} must not be negative (zero turns it off).");
+        if (ReestablishTimeout > MaxReestablishTimeout)
+            errors.Add($"{nameof(ReestablishTimeout)} must be at most {MaxReestablishTimeout} (zero turns it off).");
         if (MaxAcceptedToSelfDelay == 0)
             errors.Add($"{nameof(MaxAcceptedToSelfDelay)} must be positive.");
         if (MinAcceptedMaxHtlcValueInFlightPercent > 100)

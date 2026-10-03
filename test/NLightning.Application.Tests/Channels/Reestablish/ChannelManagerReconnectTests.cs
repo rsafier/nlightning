@@ -309,13 +309,15 @@ public class ChannelManagerReconnectTests
     public async Task Given_ChannelsWhoseReestablishWentOut_When_AskedWhichAwaitThePeer_Then_OnlyThoseThatShouldCarryUpdates()
     {
         // Arrange (NL-796): channels that should carry updates, one waiting for its funding, one whose close is agreed,
-        // and another peer's
+        // one only we sent channel_ready for (NL-891: the peer may not have seen its funding confirmed), and another
+        // peer's
         _channels.Add(CreateChannel(0x01, ChannelState.Open, s_peer));
-        _channels.Add(CreateChannel(0x02, ChannelState.ReadyForUs, s_peer));
+        _channels.Add(CreateChannel(0x02, ChannelState.ReadyForThem, s_peer));
         _channels.Add(CreateChannel(0x03, ChannelState.ShuttingDown, s_peer));
         _channels.Add(CreateChannel(0x04, ChannelState.V1FundingSigned, s_peer));
         _channels.Add(CreateChannel(0x05, ChannelState.Closing, s_peer));
         _channels.Add(CreateChannel(0x06, ChannelState.Open, s_otherPeer));
+        _channels.Add(CreateChannel(0x07, ChannelState.ReadyForUs, s_peer));
         var manager = CreateManager();
         await manager.OnPeerConnectedAsync(s_peer);
         await manager.OnPeerConnectedAsync(s_otherPeer);
@@ -327,6 +329,7 @@ public class ChannelManagerReconnectTests
         Assert.Equal([_channels[0].ChannelId, _channels[1].ChannelId, _channels[2].ChannelId], awaiting);
         Assert.Equal(ReestablishStatus.Sent, _tracker.GetStatus(_channels[3].ChannelId));
         Assert.Equal(ReestablishStatus.Sent, _tracker.GetStatus(_channels[4].ChannelId));
+        Assert.Equal(ReestablishStatus.Sent, _tracker.GetStatus(_channels[6].ChannelId));
     }
 
     [Fact]

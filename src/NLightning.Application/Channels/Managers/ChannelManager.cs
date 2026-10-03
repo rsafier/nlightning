@@ -706,8 +706,8 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             return [];
 
         return GetPeerChannels(peerPubKey)
-              .Where(c => c.State is ChannelState.ReadyForThem or ChannelState.ReadyForUs or ChannelState.Open
-                                  or ChannelState.ShuttingDown or ChannelState.Negotiating
+              .Where(c => c.State is ChannelState.ReadyForThem or ChannelState.Open or ChannelState.ShuttingDown
+                                  or ChannelState.Negotiating
                        && tracker.GetStatus(c.ChannelId) == ReestablishStatus.Sent
                        && !tracker.IsReestablished(c.ChannelId))
               .Select(c => c.ChannelId)

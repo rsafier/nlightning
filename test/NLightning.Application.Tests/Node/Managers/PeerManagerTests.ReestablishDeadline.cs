@@ -161,6 +161,40 @@ public partial class PeerManagerTests
                                    Times.Never);
     }
 
+    [Fact]
+    public async Task Given_ADeadlineThatCannotBeArmed_When_APeerConnects_Then_ItsMessagesAreStillHandled()
+    {
+        // Arrange - NL-891: the timer refuses the deadline (a timer's own limit); the inbound loop must go on
+        _fakeServiceProvider.AddService(typeof(TimeProvider), new ThrowingTimerProvider());
+        var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockChannelManager
+           .Setup(cm => cm.HandleChannelMessageAsync(_mockChannelMessage.Object, It.IsAny<FeatureOptions>(),
+                                                     It.IsAny<CompactPubKey>()))
+           .Callback(() => handled.TrySetResult())
+           .Returns(Task.CompletedTask);
+        var peerManager = CreatePeerManager();
+        peerManager.ReestablishTimeout = s_reestablishTimeout;
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
+                       .ReturnsAsync(() => new ConnectedPeer(_compactPubKey, ExpectedHost, ExpectedPort,
+                                                             new Mock<System.Net.Sockets.TcpClient>().Object));
+        await peerManager.ConnectToPeerAsync(new PeerAddressInfo($"{_compactPubKey}@127.0.0.1:9735"));
+
+        // Act
+        RaiseChannelMessage(_mockChannelMessage.Object);
+        await handled.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+
+        // Assert - the message went through and the connection stays
+        Assert.NotNull(peerManager.GetPeer(_compactPubKey));
+        _mockPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    /// <summary>A clock whose timers cannot be created, as <see cref="TimeProvider.System"/> past its limit.</summary>
+    private sealed class ThrowingTimerProvider : TimeProvider
+    {
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =>
+            throw new ArgumentOutOfRangeException(nameof(dueTime));
+    }
+
     /// <summary>
     /// Connects the mock peer to a manager whose deadline runs on <paramref name="clock"/>.
     /// </summary>

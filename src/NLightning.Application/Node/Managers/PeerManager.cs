@@ -1212,9 +1212,19 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         if (timeout <= TimeSpan.Zero || timeout == Timeout.InfiniteTimeSpan || session.IsDisconnected)
             return;
 
-        var timeProvider = _serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System;
-        session.SetReestablishDeadline(timeProvider.CreateTimer(_ => OnReestablishDeadline(session, timeout), null,
-                                                                timeout, Timeout.InfiniteTimeSpan));
+        // A failure to arm the deadline must never fault the connection's inbound loop (NL-891): log it and go on
+        // without one
+        try
+        {
+            var timeProvider = _serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System;
+            session.SetReestablishDeadline(timeProvider.CreateTimer(_ => OnReestablishDeadline(session, timeout), null,
+                                                                    timeout, Timeout.InfiniteTimeSpan));
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not arm the channel_reestablish deadline ({Timeout}) of peer {Peer}", timeout,
+                             session.Peer.NodeId);
+        }
     }
 
     /// <summary>

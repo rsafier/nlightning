@@ -254,23 +254,29 @@ public class NodeOptionsTests
     }
 
     [Fact]
-    public void Given_ReestablishTimeouts_When_GetValidationErrors_Then_OnlyANegativeOneIsAnError()
+    public void Given_ReestablishTimeouts_When_GetValidationErrors_Then_OnlyANegativeOrTooLargeOneIsAnError()
     {
-        // Arrange (NL-796: 60 s by default, zero turns the deadline off)
+        // Arrange (NL-796: 60 s by default, zero turns the deadline off; NL-891: at most a timer's limit)
         var defaults = new NodeOptions();
         var off = new NodeOptions { ReestablishTimeout = TimeSpan.Zero };
         var negative = new NodeOptions { ReestablishTimeout = TimeSpan.FromSeconds(-1) };
+        var largest = new NodeOptions { ReestablishTimeout = NodeOptions.MaxReestablishTimeout };
+        var tooLarge = new NodeOptions { ReestablishTimeout = TimeSpan.FromDays(60) };
 
         // Act
         var defaultErrors = defaults.GetValidationErrors();
         var offErrors = off.GetValidationErrors();
         var negativeErrors = negative.GetValidationErrors();
+        var largestErrors = largest.GetValidationErrors();
+        var tooLargeErrors = tooLarge.GetValidationErrors();
 
         // Assert
         Assert.Equal(TimeSpan.FromSeconds(60), defaults.ReestablishTimeout);
         Assert.Empty(defaultErrors);
         Assert.Empty(offErrors);
         Assert.Contains(negativeErrors, e => e.Contains(nameof(NodeOptions.ReestablishTimeout)));
+        Assert.Empty(largestErrors);
+        Assert.Contains(tooLargeErrors, e => e.Contains(nameof(NodeOptions.ReestablishTimeout)));
     }
 
     [Fact]

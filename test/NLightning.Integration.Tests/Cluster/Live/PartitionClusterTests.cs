@@ -222,9 +222,27 @@ public class PartitionClusterTests
                 var refusedAt = sinceRedial.Elapsed;
 
                 // Act: past the deadline our node drops the connection and its backoff dials CLN again (a new connection),
-                // while the channel stays gated the whole time
-                var gated = await HoldAsync(pair, ct, c => c is { State: ChannelState.Open, IsReestablished: false },
-                                            s_reestablishTimeout + TimeSpan.FromSeconds(2));
+                // while the channel stays gated the whole time; the first moment the first connection is gone is recorded,
+                // so dropping CLN before the deadline fails the test (NL-891)
+                var gateWatch = Stopwatch.StartNew();
+                TimeSpan? firstConnectionGoneAt = null;
+                while (sinceRedial.Elapsed < s_reestablishTimeout + s_reconnectMaxDelay + s_stepTimeout)
+                {
+                    if (!ReferenceEquals(pair.Nltg.TestNode.PeerManager.GetPeer(clnPeerId), firstConnection))
+                    {
+                        firstConnectionGoneAt = sinceRedial.Elapsed;
+                        break;
+                    }
+
+                    var ours = await FindOurChannelAsync(pair, ct);
+                    Assert.True(ours is { State: ChannelState.Open, IsReestablished: false },
+                                $"after {sinceRedial.Elapsed.TotalSeconds:F1} s: our channel {ours.State}, reestablished "
+                              + $"{ours.IsReestablished}");
+                    await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+                }
+
+                var gated = gateWatch.Elapsed;
+                Assert.True(firstConnectionGoneAt is not null, "our node never dropped the first connection to CLN");
                 var secondConnection = await ClusterPoll.ForAsync(
                     _ => Task.FromResult(pair.Nltg.TestNode.PeerManager.GetPeer(clnPeerId) is { } current
                                       && !ReferenceEquals(current, firstConnection)
@@ -255,8 +273,9 @@ public class PartitionClusterTests
                 Assert.True(afterRefusal.IsPeerConnected, "the transport dropped before the deadline");
                 Assert.False(afterRefusal.IsReestablished);
                 Assert.Equal(0, afterRefusal.OfferedHtlcCount);
-                Assert.True(redialedIn >= s_reestablishTimeout - TimeSpan.FromSeconds(1),
-                            $"our node redialed {redialedIn} after the first connection, before the deadline");
+                Assert.True(firstConnectionGoneAt >= s_reestablishTimeout - TimeSpan.FromSeconds(1),
+                            $"our node dropped the first connection {firstConnectionGoneAt} after the redial, before the "
+                          + "deadline");
                 Assert.True(redialedIn < s_reestablishTimeout + s_reconnectMaxDelay + TimeSpan.FromSeconds(20),
                             $"our node redialed only {redialedIn} after the first connection");
                 Assert.NotNull(secondConnection);
@@ -269,7 +288,7 @@ public class PartitionClusterTests
 
                 Log($"{pair.Namespace}: redial to the frozen CLN connected ({clnSockets} established on CLN's p2p port), "
                   + $"payment refused ({refused.FailureReason}) {refusedAt.TotalSeconds:F1} s in, gated "
-                  + $"{gated.TotalSeconds:F1} s, dropped and redialed by our node {redialedIn.TotalSeconds:F1} s after the "
+                  + $"{gated.TotalSeconds:F1} s, first connection gone {firstConnectionGoneAt?.TotalSeconds:F1} s, dropped and redialed by our node {redialedIn.TotalSeconds:F1} s after the "
                   + $"redial (deadline {s_reestablishTimeout.TotalSeconds:F0} s), active {activeIn.TotalSeconds:F1} s after "
                   + "the heal");
                 foreach (var fault in pair.Faults.Events)
