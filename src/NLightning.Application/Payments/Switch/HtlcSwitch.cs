@@ -1977,6 +1977,11 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             return;
         }
 
+        // The introduction node of a blinded trampoline route that is not its final node replaces every error by its
+        // own (TR-R-14)
+        if (trampoline.IntroductionSha256 is { } introductionSha256)
+            failure = FailureMessage.InvalidOnionBlinding(introductionSha256);
+
         if (failure.Code == FailureCode.InvalidOnionBlinding)
             await DelayBlindedErrorAsync(cancellationToken);
 
