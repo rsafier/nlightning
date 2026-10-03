@@ -258,7 +258,8 @@ public class FeatureOptionsTests
     public static TheoryData<Feature> GatedFeatures =>
     [
         Feature.OptionAttributionData,
-        Feature.OptionSplice
+        Feature.OptionSplice,
+        Feature.OptionTrampolineRouting
     ];
 
     [Fact]
@@ -297,11 +298,125 @@ public class FeatureOptionsTests
     }
 
     [Fact]
-    public void Given_TheShippedOptions_When_CheckingExperimentalFeatures_Then_NoneIsLeft()
+    public void Given_TheShippedOptions_When_CheckingExperimentalFeatures_Then_OnlyTrampolineRoutingIsLeft()
     {
-        // Act & Assert (NL-332: attribution_data was the last one)
-        Assert.Empty(FeatureOptions.ExperimentalFeatures);
+        // Act & Assert (NL-332: attribution_data left the set; NL-875: trampoline_routing is gated while it is built)
+        Assert.Equal(new HashSet<Feature> { Feature.OptionTrampolineRouting },
+                     FeatureOptions.ExperimentalFeatures.ToHashSet());
         Assert.Same(FeatureOptions.ExperimentalFeatures, new FeatureOptions().ExperimentalFeatureSet);
+    }
+
+    [Fact]
+    public void Given_DefaultOptions_When_GetNodeFeatures_Then_TrampolineRoutingIsNotAdvertised()
+    {
+        // Arrange (NL-875: trampoline_routing, BOLT 9 bits 56/57, defaults to No)
+        var options = new FeatureOptions();
+
+        // Act
+        var init = options.GetNodeFeatures(FeatureContext.Init);
+        var nodeAnnouncement = options.GetNodeFeatures(FeatureContext.NodeAnnouncement);
+        var invoice = options.GetNodeFeatures(FeatureContext.Invoice);
+
+        // Assert
+        Assert.Equal(FeatureSupport.No, options.OptionTrampolineRouting);
+        Assert.False(init.HasFeature(Feature.OptionTrampolineRouting));
+        Assert.False(nodeAnnouncement.HasFeature(Feature.OptionTrampolineRouting));
+        Assert.False(invoice.HasFeature(Feature.OptionTrampolineRouting));
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_TrampolineRoutingEnabledWithoutOptIn_When_Validating_Then_ErrorAndNotAdvertised()
+    {
+        // Arrange (the shipped experimental set, not a test override)
+        var options = new FeatureOptions { OptionTrampolineRouting = FeatureSupport.Optional };
+
+        // Act
+        var errors = options.GetValidationErrors();
+        var init = options.GetNodeFeatures(FeatureContext.Init);
+        var invoice = options.GetNodeFeatures(FeatureContext.Invoice);
+
+        // Assert
+        var error = Assert.Single(errors);
+        Assert.Contains(nameof(Feature.OptionTrampolineRouting), error);
+        Assert.Contains(nameof(FeatureOptions.AllowExperimentalFeatures), error);
+        Assert.False(init.HasFeature(Feature.OptionTrampolineRouting));
+        Assert.False(invoice.HasFeature(Feature.OptionTrampolineRouting));
+    }
+
+    [Theory]
+    [InlineData(FeatureSupport.Optional, false)]
+    [InlineData(FeatureSupport.Compulsory, true)]
+    public void Given_TrampolineRoutingEnabledWithOptIn_When_GetNodeFeatures_Then_AdvertisedInInitNodeAndInvoice(
+        FeatureSupport support, bool compulsory)
+    {
+        // Arrange
+        var options = new FeatureOptions
+        {
+            AllowExperimentalFeatures = true,
+            OptionTrampolineRouting = support
+        };
+
+        // Act
+        var errors = options.GetValidationErrors();
+        var init = options.GetNodeFeatures(FeatureContext.Init);
+        var nodeAnnouncement = options.GetNodeFeatures(FeatureContext.NodeAnnouncement);
+        var invoice = options.GetNodeFeatures(FeatureContext.Invoice);
+        var channelAnnouncement = options.GetNodeFeatures(FeatureContext.ChannelAnnouncement);
+
+        // Assert (bit 56 compulsory, 57 optional)
+        Assert.Empty(errors);
+        Assert.True(init.IsFeatureSet(Feature.OptionTrampolineRouting, compulsory));
+        Assert.False(init.IsFeatureSet(Feature.OptionTrampolineRouting, !compulsory));
+        Assert.Contains(compulsory ? 56 : 57, init.GetSetBits());
+        Assert.True(nodeAnnouncement.IsFeatureSet(Feature.OptionTrampolineRouting, compulsory));
+        Assert.True(invoice.IsFeatureSet(Feature.OptionTrampolineRouting, compulsory));
+        Assert.False(channelAnnouncement.HasFeature(Feature.OptionTrampolineRouting));
+        Assert.True(init.AreDependenciesSet());
+    }
+
+    [Fact]
+    public void Given_TwoTrampolineNodes_When_Negotiating_Then_TrampolineRoutingIsNegotiatedOptional()
+    {
+        // Arrange
+        var local = new FeatureOptions
+        {
+            AllowExperimentalFeatures = true,
+            OptionTrampolineRouting = FeatureSupport.Optional
+        }.GetNodeFeatures();
+        var remote = new FeatureOptions
+        {
+            AllowExperimentalFeatures = true,
+            OptionTrampolineRouting = FeatureSupport.Optional
+        }.GetNodeFeatures();
+
+        // Act
+        var result = local.IsCompatible(remote, out var negotiatedFeatureSet);
+        var negotiated = FeatureOptions.GetNodeOptions(negotiatedFeatureSet!, null);
+
+        // Assert
+        Assert.True(result);
+        Assert.Equal(FeatureSupport.Optional, negotiated.OptionTrampolineRouting);
+    }
+
+    [Fact]
+    public void Given_APeerWithoutTrampolineRouting_When_Negotiating_Then_ItIsNotNegotiated()
+    {
+        // Arrange
+        var local = new FeatureOptions
+        {
+            AllowExperimentalFeatures = true,
+            OptionTrampolineRouting = FeatureSupport.Optional
+        }.GetNodeFeatures();
+        var remote = new FeatureOptions().GetNodeFeatures();
+
+        // Act
+        var result = local.IsCompatible(remote, out var negotiatedFeatureSet);
+        var negotiated = FeatureOptions.GetNodeOptions(negotiatedFeatureSet!, null);
+
+        // Assert
+        Assert.True(result);
+        Assert.Equal(FeatureSupport.No, negotiated.OptionTrampolineRouting);
     }
 
     [Fact]
@@ -577,6 +692,9 @@ public class FeatureOptionsTests
                 break;
             case Feature.OptionProvideStorage:
                 options.OptionProvideStorage = support;
+                break;
+            case Feature.OptionTrampolineRouting:
+                options.OptionTrampolineRouting = support;
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(feature), feature, null);

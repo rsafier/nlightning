@@ -185,6 +185,16 @@ public enum Feature
     OptionZeroconf = 51,
 
     /// <summary>
+    /// 56 is for the compulsory bit, 57 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Trampoline routing (BOLT 4 "Trampoline Payments", BOLTs PR 836): the node relays payments to the next trampoline
+    /// node named in a <c>trampoline_onion_packet</c> and finds the route itself. Contexts I, N and 9 (and the BOLT 12
+    /// invoice features). Not supported yet (NL-875; experimental, see <c>FeatureOptions.ExperimentalFeatures</c>).
+    /// </remarks>
+    OptionTrampolineRouting = 57,
+
+    /// <summary>
     /// 60 is for the compulsory bit, 61 is for the optional bit.
     /// </summary>
     /// <remarks>
