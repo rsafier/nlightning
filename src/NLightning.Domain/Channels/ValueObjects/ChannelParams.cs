@@ -39,13 +39,25 @@ public readonly record struct ChannelParams
     /// transactions with <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> peer signatures, the 1-CSV to_remote; NL-904 item
     /// 2). Where the scripts or weights matter, read <see cref="CommitmentFormat"/> instead.
     /// </summary>
-    public bool OptionAnchorOutputs => _optionAnchorOutputs || OptionSimpleTaproot;
+    public bool OptionAnchorOutputs => _optionAnchorOutputs;
 
     /// <summary>
     /// Whether the channel type is <c>option_simple_taproot</c> (bolt-simple-taproot.md, NL-877 T3): a MuSig2 funding
     /// output and P2TR commitment outputs. Such a channel also has <see cref="OptionAnchorOutputs"/>.
     /// </summary>
-    public bool OptionSimpleTaproot { get; init; }
+    public bool OptionSimpleTaproot
+    {
+        get => _optionSimpleTaproot;
+        init
+        {
+            _optionSimpleTaproot = value;
+            // Normalized here, so equality and the stored OptionAnchorOutputs never depend on how it was built
+            if (value)
+                _optionAnchorOutputs = true;
+        }
+    }
+
+    private readonly bool _optionSimpleTaproot;
 
     /// <summary>
     /// The BOLT 3 commitment format of the channel type: the one place the commitment factory reads it from.

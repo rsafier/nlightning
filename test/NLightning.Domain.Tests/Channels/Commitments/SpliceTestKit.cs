@@ -1,7 +1,7 @@
 namespace NLightning.Domain.Tests.Channels.Commitments;
 
-using Domain.Bitcoin.Transactions.Extensions;
 using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.Transactions.Extensions;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;

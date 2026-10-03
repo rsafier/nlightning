@@ -4,7 +4,6 @@ using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Integration.Tests.Persistence;
 
-using Domain.Bitcoin.Transactions.Extensions;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.ValueObjects;

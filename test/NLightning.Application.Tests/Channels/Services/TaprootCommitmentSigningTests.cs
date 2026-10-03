@@ -1,10 +1,8 @@
 namespace NLightning.Application.Tests.Channels.Services;
 
 using Application.Channels.Safety;
-using Application.Channels.Services;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Interfaces;
-using Domain.Bitcoin.Transactions.Models;
 using Domain.Channels.Commitments;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;

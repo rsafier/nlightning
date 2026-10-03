@@ -42,12 +42,15 @@ public class SimpleTaprootCommitmentsTests
                                   remoteNextNonce: nonce);
 
     private static ChannelCommitments CreateAnchors(ulong localSat, ulong remoteSat, uint feeratePerKw,
-                                                    bool localIsFunder) =>
-        ChannelCommitments.Create(s_channelId, Params(localSat, remoteSat, localIsFunder, anchors: true) with
-                                  {
-                                      Funding = SpliceTestKit.Initial(localSat + remoteSat)
-                                  }, localSat * Sat, remoteSat * Sat, feeratePerKw, Point(BobTag, 0),
-                                  Point(BobTag, 1));
+                                                    bool localIsFunder)
+    {
+        var parameters = Params(localSat, remoteSat, localIsFunder, anchors: true) with
+        {
+            Funding = SpliceTestKit.Initial(localSat + remoteSat)
+        };
+        return ChannelCommitments.Create(s_channelId, parameters, localSat * Sat, remoteSat * Sat, feeratePerKw,
+                                         Point(BobTag, 0), Point(BobTag, 1));
+    }
 
     #region Nonces and signing
 

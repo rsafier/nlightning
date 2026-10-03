@@ -18,9 +18,10 @@ public class SimpleTaprootChannelParamsTests
         // Arrange: even built with optionAnchorOutputs false, the taproot type keeps the anchors semantics
         var channelParams = CreateParams(3, false, FeatureSupport.No) with { OptionSimpleTaproot = true };
 
-        // Act / Assert
+        // Act / Assert: normalized, so it equals the same type reloaded with the stored anchors flag
         Assert.True(channelParams.OptionAnchorOutputs);
         Assert.Equal(CommitmentFormat.SimpleTaproot, channelParams.CommitmentFormat);
+        Assert.Equal(CreateParams(3, true, FeatureSupport.No) with { OptionSimpleTaproot = true }, channelParams);
     }
 
     [Fact]

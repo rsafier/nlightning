@@ -4,11 +4,10 @@ using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Application.Tests.Channels.Handlers;
 
-using Domain.Bitcoin.Transactions.Enums;
-
 using Application.Channels.Services;
 using Application.Protocol.Factories;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
