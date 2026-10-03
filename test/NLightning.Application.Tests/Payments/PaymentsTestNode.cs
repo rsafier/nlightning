@@ -45,6 +45,10 @@ internal sealed class PaymentsTestNode : IDisposable
     public IFailureOnionService FailureOnion => _provider.GetRequiredService<IFailureOnionService>();
     public IHopPayloadSerializer HopPayloadSerializer => _provider.GetRequiredService<IHopPayloadSerializer>();
     public IRouteBlindingService RouteBlinding => _provider.GetRequiredService<IRouteBlindingService>();
+    public ITrampolineOnionService TrampolineOnion => _provider.GetRequiredService<ITrampolineOnionService>();
+
+    public ITrampolineFailureOnionService TrampolineFailureOnion =>
+        _provider.GetRequiredService<ITrampolineFailureOnionService>();
 
     public PaymentsTestNode(string name, byte seed, RoutingOptions? routing = null)
     {

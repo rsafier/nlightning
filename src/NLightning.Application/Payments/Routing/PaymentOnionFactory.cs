@@ -23,6 +23,11 @@ using Keysend;
 /// or the whole payment's amount for one part of a multi-part payment) and, when the invoice has one,
 /// <c>payment_metadata</c>. A keysend payment's payee gets <c>keysend_preimage</c> and the custom records instead of
 /// <c>payment_data</c> (<see cref="KeysendFinalRecords"/>; no invoice, so no <c>payment_secret</c>).</para>
+/// <para>Trampoline (NL-875, BOLTs PR 836): when the route's last hop is a trampoline node, its payload also carries the
+/// <c>trampoline_onion_packet</c> (TLV 20) and, for a blinded trampoline path, the next <c>current_path_key</c> (TLV 12)
+/// (<see cref="TrampolineFinalHop"/>). Its <c>payment_data</c> is then the route's <see cref="PaymentRoute.PaymentSecret"/>
+/// and <see cref="PaymentRoute.TotalAmount"/>, which the caller chooses (a random outer secret, never the invoice's, and
+/// what the trampoline node receives in total); it is always sent, also for a single part.</para>
 /// <para>The session key is 32 bytes from the OS CSPRNG, drawn again until it is a valid secp256k1 scalar, used for
 /// this onion only and zeroed afterwards.</para>
 /// </remarks>
@@ -47,12 +52,14 @@ public sealed class PaymentOnionFactory
     /// <exception cref="ArgumentException">If the payloads do not fit in the 1300-byte onion.</exception>
     /// <param name="route">The route.</param>
     /// <param name="keysend">The keysend records of the payee's payload, for a keysend payment.</param>
-    public async Task<PaymentOnion> CreateAsync(PaymentRoute route, KeysendFinalRecords? keysend = null)
+    /// <param name="trampoline">The trampoline records of the last hop's payload, when it is a trampoline node.</param>
+    public async Task<PaymentOnion> CreateAsync(PaymentRoute route, KeysendFinalRecords? keysend = null,
+                                                TrampolineFinalHop? trampoline = null)
     {
         var sessionKey = CreateSessionKey();
         try
         {
-            return await CreateAsync(route, new PrivKey(sessionKey), keysend);
+            return await CreateAsync(route, new PrivKey(sessionKey), keysend, trampoline);
         }
         finally
         {
@@ -66,7 +73,8 @@ public sealed class PaymentOnionFactory
     /// </summary>
     /// <exception cref="ArgumentException">If the payloads do not fit in the 1300-byte onion.</exception>
     public async Task<PaymentOnion> CreateAsync(PaymentRoute route, PrivKey sessionKey,
-                                                KeysendFinalRecords? keysend = null)
+                                                KeysendFinalRecords? keysend = null,
+                                                TrampolineFinalHop? trampoline = null)
     {
         ArgumentNullException.ThrowIfNull(route);
 
@@ -74,7 +82,7 @@ public sealed class PaymentOnionFactory
         foreach (var hop in route.Hops)
         {
             using var stream = new MemoryStream();
-            await _hopPayloadSerializer.SerializeAsync(CreatePayload(hop, route, keysend), stream);
+            await _hopPayloadSerializer.SerializeAsync(CreatePayload(hop, route, keysend, trampoline), stream);
             hops.Add(new OnionHop(hop.NodeId, stream.ToArray()));
         }
 
@@ -86,15 +94,47 @@ public sealed class PaymentOnionFactory
     /// The bytes the hop payloads of <paramref name="route"/> take in the onion, framed as Sphinx frames them (BigSize
     /// length, payload, HMAC); the onion holds <see cref="OnionConstants.HopPayloadsLength"/>.
     /// </summary>
-    public async Task<int> GetFramedLengthAsync(PaymentRoute route, KeysendFinalRecords? keysend = null)
+    public async Task<int> GetFramedLengthAsync(PaymentRoute route, KeysendFinalRecords? keysend = null,
+                                                TrampolineFinalHop? trampoline = null)
     {
         ArgumentNullException.ThrowIfNull(route);
 
         var total = 0;
         foreach (var hop in route.Hops)
-            total += await GetFramedLengthAsync(CreatePayload(hop, route, keysend));
+            total += await GetFramedLengthAsync(CreatePayload(hop, route, keysend, trampoline));
 
         return total;
+    }
+
+    /// <summary>
+    /// The framed bytes (as <see cref="GetFramedLengthAsync(PaymentRoute, KeysendFinalRecords?, TrampolineFinalHop?)"/>)
+    /// of every hop of <paramref name="route"/> but the last: what the outer onion of a trampoline payment spends before
+    /// the trampoline node's layer (<c>ITrampolineOnionService.GetMaxHopPayloadsLength</c>).
+    /// </summary>
+    public async Task<int> GetIntermediateFramedLengthAsync(PaymentRoute route)
+    {
+        ArgumentNullException.ThrowIfNull(route);
+
+        var total = 0;
+        for (var i = 0; i < route.Hops.Count - 1; i++)
+            total += await GetFramedLengthAsync(CreatePayload(route.Hops[i], route));
+
+        return total;
+    }
+
+    /// <summary>
+    /// The length of the TLV records of the route's last payload other than <c>trampoline_onion_packet</c> (its
+    /// <c>amt_to_forward</c>, <c>outgoing_cltv_value</c>, <c>payment_data</c> and, with <paramref name="nextPathKey"/>,
+    /// <c>current_path_key</c>), without the payload's length prefix.
+    /// </summary>
+    public async Task<int> GetTrampolineFinalOtherTlvsLengthAsync(PaymentRoute route, CompactPubKey? nextPathKey)
+    {
+        ArgumentNullException.ThrowIfNull(route);
+
+        using var stream = new MemoryStream();
+        var tlvs = CreateTrampolineFinalTlvs(route.Hops[^1], route, null, nextPathKey);
+        await _hopPayloadSerializer.SerializeAsync(new HopPayload(tlvs.ToArray()), stream);
+        return (int)stream.Length;
     }
 
     /// <summary>
@@ -127,18 +167,31 @@ public sealed class PaymentOnionFactory
     /// <param name="hop">The hop.</param>
     /// <param name="route">The route.</param>
     /// <param name="keysend">For a keysend payment, what the payee gets instead of <c>payment_data</c>.</param>
-    public static HopPayload CreatePayload(RouteHop hop, PaymentRoute route, KeysendFinalRecords? keysend = null)
+    /// <param name="trampoline">For a route to a trampoline node, the records its (last) payload adds.</param>
+    /// <exception cref="ArgumentException">A keysend or trampoline payment through a blinded path, or a keysend payment
+    /// to a trampoline node.</exception>
+    public static HopPayload CreatePayload(RouteHop hop, PaymentRoute route, KeysendFinalRecords? keysend = null,
+                                           TrampolineFinalHop? trampoline = null)
     {
         ArgumentNullException.ThrowIfNull(hop);
         ArgumentNullException.ThrowIfNull(route);
+        if (keysend is not null && trampoline is not null)
+            throw new ArgumentException("A keysend payment is not sent through a trampoline node.", nameof(trampoline));
 
         if (hop.EncryptedRecipientData is { } encryptedRecipientData)
         {
             if (keysend is not null)
                 throw new ArgumentException("A keysend payment is not paid through a blinded path.", nameof(keysend));
+            if (trampoline is not null)
+                throw new ArgumentException("A route to a trampoline node does not end in a blinded path.",
+                                            nameof(trampoline));
 
             return CreateBlindedPayload(hop, encryptedRecipientData, route);
         }
+
+        if (trampoline is not null && hop.IsFinal)
+            return new HopPayload(CreateTrampolineFinalTlvs(hop, route, trampoline.TrampolinePacket,
+                                                            trampoline.NextPathKey).ToArray());
 
         var tlvs = new List<BaseTlv>
         {
@@ -163,6 +216,29 @@ public sealed class PaymentOnionFactory
         }
 
         return new HopPayload(tlvs.ToArray());
+    }
+
+    /// <summary>
+    /// The outer payload of a trampoline node (BOLTs PR 836): <c>amt_to_forward</c>, <c>outgoing_cltv_value</c>,
+    /// <c>payment_data</c> (the route's secret and total), the next <c>current_path_key</c> when given and the
+    /// <c>trampoline_onion_packet</c> when given (its length is measured without it).
+    /// </summary>
+    private static List<BaseTlv> CreateTrampolineFinalTlvs(RouteHop hop, PaymentRoute route,
+                                                           ReadOnlyMemory<byte>? trampolinePacket,
+                                                           CompactPubKey? nextPathKey)
+    {
+        var tlvs = new List<BaseTlv>
+        {
+            new AmtToForwardTlv(hop.AmountToForward),
+            new OutgoingCltvValueTlv(hop.OutgoingCltvValue),
+            new PaymentDataTlv(route.PaymentSecret, route.TotalAmount)
+        };
+        if (nextPathKey is { } pathKey)
+            tlvs.Add(new CurrentPathKeyTlv(pathKey));
+        if (trampolinePacket is { } packet)
+            tlvs.Add(new TrampolineOnionPacketTlv(packet.Span));
+
+        return tlvs;
     }
 
     /// <summary>
