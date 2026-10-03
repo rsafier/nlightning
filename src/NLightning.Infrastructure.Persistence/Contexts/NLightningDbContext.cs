@@ -74,6 +74,9 @@ public class NLightningDbContext : DbContext
     public DbSet<ForwardCircuitEntity> ForwardCircuits { get; set; }
     public DbSet<OnionReplayEntryEntity> OnionReplayEntries { get; set; }
     public DbSet<OfferEntity> Offers { get; set; }
+    public DbSet<TrampolineRelayEntity> TrampolineRelays { get; set; }
+    public DbSet<TrampolineRelayPartEntity> TrampolineRelayParts { get; set; }
+    public DbSet<PaymentTrampolineHopEntity> PaymentTrampolineHops { get; set; }
 
     // Accounting feed (NL-602)
     public DbSet<AccountingEventEntity> AccountingEvents { get; set; }
@@ -145,6 +148,7 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureForwardCircuitEntity(_databaseType);
         modelBuilder.ConfigureOnionReplayEntryEntity(_databaseType);
         modelBuilder.ConfigureOfferEntity(_databaseType);
+        modelBuilder.ConfigureTrampolineRelayEntities(_databaseType);
 
         // Accounting feed (NL-602)
         modelBuilder.ConfigureAccountingEventEntity(_databaseType);
