@@ -10,7 +10,7 @@ public class SuiteCatalogTests
         // Assert
         Assert.Equal([
                          "lnd", "cln", "gossip", "eclair", "ldk", "eclair2", "day0", "onchain", "anchors", "faults",
-                         "abcd", "postgres", "tor"
+                         "abcd", "postgres", "cashu", "tor"
                      ],
                      SuiteCatalog.Names);
     }

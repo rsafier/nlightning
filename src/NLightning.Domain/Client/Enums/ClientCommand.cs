@@ -4,7 +4,7 @@ namespace NLightning.Domain.Client.Enums;
 /// Commands sent by a client.
 /// </summary>
 /// <remarks>
-/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 46.
+/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 48.
 /// </remarks>
 public enum ClientCommand
 {
@@ -114,5 +114,11 @@ public enum ClientCommand
     /// Liquidity ads (<c>liquidityads rates|sellers|purchases</c>, NL-850): our rates, the sellers we know of (their
     /// <c>init</c> and <c>node_announcement</c>) and the purchases we made and sold with their lease status.
     /// </summary>
-    LiquidityAds = 46
+    LiquidityAds = 46,
+
+    /// <summary>
+    /// Waits until one of our invoices leaves <c>Open</c> (<c>waitinvoice</c>, Cashu plan C0, NL-991), at most the
+    /// request's timeout; answers with the invoice either way.
+    /// </summary>
+    WaitInvoice = 47
 }

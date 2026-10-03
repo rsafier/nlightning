@@ -376,6 +376,9 @@ internal sealed class PaymentHarnessNode : IDisposable
     public IPaymentService PaymentService => _provider.GetRequiredService<IPaymentService>();
     public IInvoiceService InvoiceService => _provider.GetRequiredService<IInvoiceService>();
 
+    /// <summary>The node's payment event bus (Cashu plan C0, NL-991).</summary>
+    public IPaymentEventSource PaymentEvents => _provider.GetRequiredService<IPaymentEventSource>();
+
     /// <summary>
     /// A second <see cref="PaymentService"/> over the same channels and stores (NL-321 proofs): a restart simulation,
     /// with no sending session for any hash, so outcomes are matched through the stored rows only.

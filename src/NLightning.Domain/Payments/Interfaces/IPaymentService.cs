@@ -121,6 +121,13 @@ public interface IPaymentService
     Task<PaymentModel?> GetPaymentAsync(Hash paymentHash, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Whether a call of this process is still paying <paramref name="paymentHash"/>: parts in flight or a retry to
+    /// come. Its stored row can then read <c>Failed</c> between two attempts, which is not the payment's outcome
+    /// (NL-999).
+    /// </summary>
+    bool IsPaying(Hash paymentHash) => false;
+
+    /// <summary>
     /// Payments, newest first.
     /// </summary>
     Task<IReadOnlyList<PaymentModel>> ListPaymentsAsync(int skip, int take,

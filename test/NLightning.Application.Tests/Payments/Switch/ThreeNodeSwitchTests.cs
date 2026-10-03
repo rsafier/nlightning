@@ -19,12 +19,15 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
 using Domain.Payments.Enums;
+using Domain.Payments.Events;
+using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Factories;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
+using Events;
 
 /// <summary>
 /// ABCD W2-B lane proof: <c>HtlcSwitch</c> on three in-process nodes Alice → Bob → Carol with real Sphinx onions,
@@ -90,6 +93,34 @@ public class ThreeNodeSwitchTests
         Assert.Equal((long)after.BobAb - (long)before.BobAb + ((long)after.BobBc - (long)before.BobBc),
                      bobBooks[AccountRole.Channels]);
         Assert.Equal(-(long)fee.MilliSatoshi, bobBooks[AccountRole.Routing]);
+    }
+
+    [Fact]
+    public async Task Given_ASubscriberAtCarol_When_AlicePaysThroughBob_Then_CarolPublishesTheSettleOnce()
+    {
+        // Arrange - Cashu plan C0 (NL-991): the settle is published after its save, once per invoice
+        await using var harness = await ThreeNodeHarness.CreateAsync();
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "coffee", null,
+                                                                      TestContext.Current.CancellationToken);
+        var route = harness.RouteToCarol(s_amount, invoice.PaymentHash, invoice.PaymentSecret);
+        using var carolEvents = harness.Carol.Services.GetRequiredService<IPaymentEventSource>().Subscribe();
+        using var bobEvents = harness.Bob.Services.GetRequiredService<IPaymentEventSource>().Subscribe();
+
+        // Act
+        await harness.AlicePaysAsync(route);
+        await harness.PumpAsync();
+
+        // Assert: Carol's invoice is Settled when the event arrives; Bob only forwarded, so he publishes nothing
+        var settled = Assert.IsType<InvoiceSettledEvent>(await PaymentEventHubTests.ReadOneAsync(carolEvents));
+        Assert.Equal(invoice.PaymentHash, settled.PaymentHash);
+        Assert.Equal(s_amount, settled.Amount);
+        var stored = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
+                                                            .GetByPaymentHashAsync(invoice.PaymentHash));
+        Assert.Equal(InvoiceStatus.Settled, stored!.Status);
+        harness.Carol.Services.GetRequiredService<IPaymentEventPublisher>()
+               .Publish(new PaymentFailedEvent(invoice.PaymentHash, "marker", DateTimeOffset.UnixEpoch));
+        Assert.IsType<PaymentFailedEvent>(await PaymentEventHubTests.ReadOneAsync(carolEvents));
+        Assert.False(bobEvents.Overflowed);
     }
 
     [Fact]

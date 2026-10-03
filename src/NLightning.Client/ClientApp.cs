@@ -321,6 +321,11 @@ internal static class ClientApp
                 case "liquidity-ads":
                     await LiquidityAdsCommands.RunAsync(commandArgs, client, Console.Out, cancellationToken);
                     break;
+                case "waitinvoice":
+                case "wait-invoice":
+                    if (!await WaitInvoiceCommands.RunAsync(commandArgs, client, cancellationToken))
+                        return Failure;
+                    break;
                 case "listinvoices":
                 case "list-invoices":
                     var (invoiceTake, invoiceSkip) = ParsePage(commandArgs);
@@ -558,6 +563,9 @@ internal static class ClientApp
             case "listpeerstorage":
             case "list-peer-storage":
                 return PeerStorageCommands.Validate(cmd, commandArgs);
+            case "waitinvoice":
+            case "wait-invoice":
+                return WaitInvoiceCommands.Validate(cmd, commandArgs);
             case "setchannelpolicy":
             case "set-channel-policy":
             case "getchannelpolicy":
