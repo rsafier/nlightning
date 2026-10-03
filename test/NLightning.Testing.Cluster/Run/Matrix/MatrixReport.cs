@@ -58,16 +58,23 @@ public static class MatrixReport
     public const int DefaultRerunMax = 3;
 
     /// <summary>
+    /// The runner's exit code when no suite failed but nothing ran, or a suite the caller named was skipped: a run of
+    /// no tests must not read as green.
+    /// </summary>
+    public const int NothingRanExitCode = 3;
+
+    /// <summary>
     /// The classes to rerun alone after <paramref name="first"/>: its failed classes when there are 1 to
     /// <paramref name="rerunMax"/> of them, the run was not killed by the hang timeout and reported no error outside
-    /// its tests; none otherwise.
+    /// its tests and no fixture failure (a fixture that threw fails every test of its collection or class, and is the
+    /// harness's own reliability signal, never a test flake); none otherwise.
     /// </summary>
     public static IReadOnlyList<string> ClassesToRerun(SuiteAttempt first, int rerunMax)
     {
         ArgumentNullException.ThrowIfNull(first);
         var failed = first.Results.FailedClasses;
         return first.TimedOut || first.ExitCode is null || !first.Results.Found || first.Results.Errors > 0
-            || failed.Count == 0 || failed.Count > rerunMax
+            || first.Results.FixtureFailures > 0 || failed.Count == 0 || failed.Count > rerunMax
                    ? []
                    : failed;
     }
@@ -199,6 +206,8 @@ public static class MatrixReport
                 notes.AddRange(dumps.Select(d => $"{r.Name}: diag {Relative(d, repoRoot)}"));
             }
 
+            if (r.Outcome == SuiteOutcome.Failed && first?.Results.FixtureFailures > 0)
+                notes.Add($"{r.Name}: {first.Results.FixtureFailures} test(s) failed in a fixture (no rerun)");
             if (r.IsFailure && first is not null && dumps.Count == 0)
                 notes.Add($"{r.Name}: no diagnostics collected");
         }
@@ -247,9 +256,20 @@ public static class MatrixReport
                    : null;
     }
 
-    /// <summary>The runner's exit code: 1 when a suite really failed (rerun-green suites and skips are fine).</summary>
-    public static int ExitCode(IReadOnlyList<SuiteReport> reports) =>
-        reports.Any(r => r.IsFailure) ? 1 : 0;
+    /// <summary>
+    /// The runner's exit code: 1 when a suite really failed (rerun-green suites are fine); otherwise
+    /// <see cref="NothingRanExitCode"/> when no suite ran or, with <paramref name="suitesNamed"/> (the caller named the
+    /// suites, <c>--matrix S,...</c>), one of them was skipped; 0 otherwise (the default matrix lists its skips).
+    /// </summary>
+    public static int ExitCode(IReadOnlyList<SuiteReport> reports, bool suitesNamed = false)
+    {
+        ArgumentNullException.ThrowIfNull(reports);
+        if (reports.Any(r => r.IsFailure))
+            return 1;
+
+        var skipped = reports.Count(r => r.Outcome == SuiteOutcome.Skipped);
+        return skipped == reports.Count || (suitesNamed && skipped > 0) ? NothingRanExitCode : 0;
+    }
 
     private static string OutcomeText(SuiteOutcome outcome) => outcome switch
     {

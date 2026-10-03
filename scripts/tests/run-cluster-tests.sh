@@ -117,6 +117,36 @@ if run_case crash 1 FAKE_SLEEP=1 FAKE_BEHAVIOR_cln=crash FAKE_BEHAVIOR_ldk=manyf
   expect crash "ldk FAILED without rerun" bash -c "grep -Eq '^ldk +FAILED' '$results/summary.txt' && ! test -d '$results/ldk/rerun-1'"
 fi
 
+# 4b. A fixture failure is not a flake: no rerun even though the class would pass alone; FAILED, exit 1.
+if run_case fixture 1 FAKE_SLEEP=1 FAKE_BEHAVIOR_cln=fixture:A -- --matrix cln; then
+  expect fixture "cln FAILED without rerun" \
+    bash -c "grep -Eq '^cln +FAILED' '$results/summary.txt' && ! test -d '$results/cln/rerun-1'"
+  expect fixture "the summary says it was a fixture" has "cln: 2 test\(s\) failed in a fixture \(no rerun\)"
+fi
+
+# 4c. A run that exits 0 without tests is FAILED and its log is kept (not gzipped): the summary links it.
+if run_case empty 1 FAKE_SLEEP=1 FAKE_BEHAVIOR_ldk=empty -- --matrix ldk,cln; then
+  expect empty "ldk FAILED: no tests ran" grep -Eq "^ldk +FAILED .*no tests ran" "$results/summary.txt"
+  expect empty "its log stays where the summary points" \
+    bash -c "test -f '$results/ldk/output.log' && test ! -f '$results/ldk/output.log.gz'"
+  expect empty "the green suite's log is gzipped" test -f "$results/cln/output.log.gz"
+fi
+
+# 4d. Suites named explicitly but skipped (or nothing to run) are not green: exit 3.
+if run_case named-skip 3 -- --matrix tor; then expect named-skip "tor listed as skipped" has "tor: skipped: Docker only"; fi
+if run_case named-skip2 3 FAKE_SLEEP=1 -- --matrix cln,tor; then
+  expect named-skip2 "cln still ran green" grep -Eq "^cln +green" "$results/summary.txt"
+fi
+
+# 4e. Namespaces that ended suites still hold (kept on failure) count against the budget: with 1 of 2 held, a
+#     2-namespace suite is never started (NOT RUN, exit 1) and the queue never exceeds the budget.
+if run_case held 1 FAKE_SLEEP=1 FAKE_HELD=1 "FAKE_WEIGHTS=faults=2" FAKE_BUDGET=2 \
+     -- --matrix ldk,faults -j 1 --max-namespaces 2 --keep-on-failure; then
+  expect held "faults not started" has "not starting faults: 1 namespace\(s\) of ended suites"
+  expect held "faults reads NOT RUN" grep -Eq "^faults +NOT RUN" "$results/summary.txt"
+  expect held "admission never exceeded the budget" no_violations
+fi
+
 # 5. The single-suite mode: N runs of a catalog suite on the cluster backend; tor and unknown suites are refused.
 if run_case single 0 FAKE_SLEEP=1 -- -n 2 --suite cln; then
   expect single "2 runs green" has "2/2 run\(s\) green"
@@ -128,15 +158,43 @@ if run_case single-class 0 FAKE_SLEEP=1 -- -n 1 --suite postgres --class Some.Cl
     grep -Eq -- "-explicit on -class Some.Class -trait Database=Postgres" "$fake_dir/args.log"
 fi
 if run_case tor 2 -- -n 1 --suite tor; then expect tor "refused as Docker only" has "Docker only"; fi
+if run_case pending 0 FAKE_SLEEP=1 -- -n 1 --suite abcd; then
+  expect pending "a suite whose cluster proof is pending runs when named" has "1/1 run\(s\) green"
+fi
+if run_case lndjobs 0 FAKE_SLEEP=1 -- -n 4 --suite lnd; then
+  expect lndjobs "lnd's 2 namespaces per run cap the jobs at 3" has "capping --jobs at 3"
+fi
 if run_case unknown 2 -- --matrix cln,bogus; then expect unknown "names the unknown suite" has "unknown suite 'bogus'"; fi
 
 # 6. Option checks.
 if run_case both 2 -- --matrix --suite cln; then expect both "--matrix with --suite refused" has "exclude each other"; fi
 if run_case runs 2 -- --matrix -n 2; then expect runs "--matrix with -n refused" has "runs each suite once"; fi
+if run_case keep 2 -- --matrix --keep; then expect keep "--matrix with --keep refused" has "takes no --keep"; fi
 if run_case budget 2 -- --matrix --max-namespaces 7; then expect budget "budget over 6 refused" has "1-6"; fi
 if run_case tight 2 -- --matrix postgres --max-namespaces 1; then
   expect tight "a suite that never fits is refused" has "needs 2 namespace"
 fi
+
+# 7. Stopping the runner (TERM, as Ctrl-C's INT): its test processes get TERM, one that ignores it is KILLed 30 s later,
+#    and the runner exits 130.
+fake_dir="$work/stop"
+mkdir -p "$fake_dir"
+batch="t-stop-$$"
+batches+=("$batch")
+env FAKE_DIR="$fake_dir" NLTG_RUN_CLUSTER_FAKE_TESTS="bash $fake" FAKE_BEHAVIOR_cln=stubborn \
+  "$runner" --no-build -c "$config" --id "$batch" --matrix cln > "$fake_dir/runner.out" 2>&1 &
+runner_pid=$!
+for _ in $(seq 1 40); do if [[ -s "$fake_dir/args.log" ]]; then break; fi; sleep 0.5; done
+sleep 1
+kill -TERM "$runner_pid"
+set +e
+wait "$runner_pid"
+code=$?
+set -e
+out="$(cat "$fake_dir/runner.out")"
+expect stop "the runner exits 130" test "$code" -eq 130
+expect stop "the test process that ignored TERM was killed" has "ignored TERM for 30 s; killing it"
+expect stop "no test process of the batch is left" bash -c "! pgrep -f '[f]ake-xunit.sh.*$batch' > /dev/null"
 
 echo "$passed passed, $failed failed"
 (( failed == 0 ))

@@ -248,7 +248,7 @@ public sealed class AbcdNetwork : IAsyncDisposable
                 Console.WriteLine(line);
         }
 
-        await DockerDiagnostics.DumpContainerLogsAsync(["alice", "david"]);
+        await _fixture.DumpLndLogsAsync(["alice", "david"]);
     }
 
     public async ValueTask DisposeAsync()

@@ -1,10 +1,8 @@
 using System.Globalization;
-using System.Net;
 using Google.Protobuf;
 using NBitcoin;
 using NLightning.Testing.Lnd;
 using NLightning.Testing.Lnd.Lnrpc;
-using ServiceStack;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
@@ -336,12 +334,12 @@ public class GraphStoreFlowTests
         LndNodeConnection funder, LndNodeConnection peer, NLightningTestNode node, CancellationToken ct)
     {
         await EnsureLndFundsAsync(funder, node, ct);
-        var peerHost = (await Dns.GetHostAddressesAsync(peer.Host.SplitOnFirst("//")[1].SplitOnFirst(":")[0], ct))
-           .First();
+        // The container IP on Docker, the Service name on the cluster (LND resolves it)
+        var peerEndpoint = await _fixture.GetLndPeerEndpointAsync(peer, ct);
         if (!await LndTestHelpers.IsConnectedToAsync(funder, peer.LocalNodePubKey, ct))
             await funder.LightningClient.ConnectPeerAsync(new ConnectPeerRequest
             {
-                Addr = new LightningAddress { Pubkey = peer.LocalNodePubKey, Host = $"{peerHost}:9735" }
+                Addr = new LightningAddress { Pubkey = peer.LocalNodePubKey, Host = peerEndpoint }
             }, cancellationToken: ct);
 
         var point = await funder.LightningClient.OpenChannelSyncAsync(new OpenChannelRequest

@@ -15,8 +15,11 @@
 #                     -parallel none waits for each collection's namespace to go (NLTG_WAIT_NAMESPACE_DELETION). Prints
 #                     a summary table (suite, result, tests, passed/failed/skipped/not run, rerun, start, wall, fixture
 #                     ready, namespaces created/planned at once, dumps, first error), the log and diagnostics folders
-#                     of every failed suite and the batch's sampled namespace peak; exits 1 on a real failure.
-#                     Docker-only suites (tor) and suites not ported yet are listed as skipped, with the reason.
+#                     of every failed suite and the batch's sampled namespace peak; exits 1 on a real failure, 3 when
+#                     nothing ran or a suite named in --matrix S,... was skipped. Docker-only suites (tor) are listed
+#                     as skipped, with the reason; suites whose cluster proof is pending (onchain, anchors, gossip,
+#                     abcd) are left out of the default matrix and run when named. The namespaces of ended suites
+#                     that are still there (kept on failure, or still terminating) count against the budget.
 #   default (-n N)    runs one selection (a --suite, or --class/--method/--trait tests) N times concurrently.
 # Every run has a hang timeout (the suite's, or --timeout): its process is stopped (TERM, KILL 30 s later) and the run
 # is marked TIMEOUT. Results go to TestResults/cluster/<batch>/ (matrix: <suite>/ and <suite>/rerun-<n>/, plan.txt;
@@ -41,8 +44,10 @@
 #                         CLN interop suite (--explicit off: its 4 Explicit capture tests stay out unless --explicit on
 #                         is given; eclair and ldk likewise), postgres = Docker/PostgresTests and the Explicit
 #                         Cluster/Live/ServerDatabaseClusterTests on Postgres pods, faults = the partition and ZMQ-loss
-#                         tests, lnd/onchain/anchors/gossip/abcd = the LND Docker suites (refused until their fixture
-#                         has its cluster backend); --class/--method replace a suite's classes; tor is refused (Docker)
+#                         tests, lnd/onchain/anchors/gossip/abcd = the LND Docker suites on LightningRegtestNetworkFixture's
+#                         cluster backend (lnd = its regtest collection, 2 namespaces per run, so -j is capped at 3;
+#                         the tests that drive Docker containers by name skip themselves on the cluster);
+#                         --class/--method replace a suite's classes; tor is refused (Docker)
 #       --class X         a test class to run (repeatable; default: every Category=Cluster test)
 #       --method X        a test method (repeatable; xunit v3 wildcards allowed)
 #       --trait T         the xunit trait filter instead of Category=Cluster (with --suite: instead of its trait)
@@ -53,7 +58,8 @@
 #                         matrix suite <id>-<suite> and its reruns <id>-<suite>-r<n>
 #       --no-build        use the existing build
 #       --reap-orphans    first reap runs whose owner process is gone or which are past their TTL
-#       --keep            keep the namespaces (NLTG_KEEP_NAMESPACE=1; the reaper then leaves them until their TTL)
+#       --keep            keep the namespaces (NLTG_KEEP_NAMESPACE=1; the reaper then leaves them until their TTL; not
+#                         with --matrix)
 #       --keep-on-failure keep only the namespaces of failed runs (NLTG_KEEP_NAMESPACE=failure; reaped after their
 #                         TTL; kept namespaces count against the machine's cap until then)
 #       --diag M          when to collect diagnostics: failure (default), always or off (NLTG_CLUSTER_DIAG)
@@ -68,13 +74,17 @@
 #   scripts/run-cluster.sh -n 3 --suite cln
 # Example: the Eclair, LDK, Postgres or partition suite alone
 #   scripts/run-cluster.sh -n 1 --suite eclair; scripts/run-cluster.sh -n 1 --suite postgres
+# Example: the LND suite (the regtest collection), alone; one class of the on-chain suite
+#   scripts/run-cluster.sh -n 1 --suite lnd
+#   scripts/run-cluster.sh -n 1 --suite onchain --class NLightning.Integration.Tests.Docker.BackupRestoreFlowTests
 # Example: the scaffold's namespace test 3 times at once; our in-process node against CLN and LND pods
 #   scripts/run-cluster.sh -n 3 --method '*ARunDeploysABusyboxStatefulSet*'
 #   scripts/run-cluster.sh -n 3 -p integration --class NLightning.Integration.Tests.Cluster.Live.InProcessNodeClusterTests
 #
 # Never runs Docker suites and never touches namespaces outside nltg-spike-*: the test processes create only their
 # own namespaces, and the reaper only deletes harness run namespaces (nltg-cluster reap, RunReaper). Stopping the
-# runner (Ctrl-C, TERM) stops its test processes and reaps their namespaces.
+# runner (Ctrl-C, TERM) stops its test processes (TERM, KILL after 30 s) and then reaps their namespaces. Every kubectl
+# call of the runner has a 15 s request timeout.
 # Test hook (scripts/tests/run-cluster-tests.sh only): NLTG_RUN_CLUSTER_FAKE_TESTS=<command> runs <command> instead of
 # the test assembly and skips its build check, the cluster check and the reaper.
 set -euo pipefail
@@ -166,6 +176,9 @@ if (( matrix )); then
   [[ "$max_namespaces" =~ ^[0-9]+$ && "$max_namespaces" -ge 1 && "$max_namespaces" -le 6 ]] \
     || die "--max-namespaces must be 1-6"
   [[ "$rerun_max" =~ ^[0-9]+$ ]] || die "--rerun-max must be a number"
+  # Kept namespaces hold machine slots until their TTL (6 h), so a matrix that keeps all of them could never start its
+  # later suites; --keep-on-failure is fine (the queue counts the namespaces failed suites keep)
+  [[ "$keep" != 1 ]] || die "--matrix takes no --keep (use --keep-on-failure, or --suite S --keep for one suite)"
   jobs="${jobs:-3}"
 else
   runs="${runs:-3}"
@@ -231,8 +244,13 @@ suite_timeout=3600
 backend="${NLTG_TEST_BACKEND:-}"
 if [[ -n "$suite" ]]; then
   plan_line="$(matrix_cli plan --suites "$suite" --repo "$repo_root")" || die "--suite $suite: see above"
-  IFS='|' read -r st _ _ s_explicit _ _ s_timeout s_selection s_constraints s_note <<< "$plan_line"
+  IFS='|' read -r st _ _ s_explicit s_namespaces _ s_timeout s_selection s_constraints s_note <<< "$plan_line"
   [[ "$st" == run ]] || die "--suite $suite: $s_note"
+  # Each run holds the suite's namespaces at once: runs in flight x namespaces stay within the machine's cap of 6
+  if (( s_namespaces > 1 && jobs * s_namespaces > 6 )); then
+    echo "run-cluster: --suite $suite holds $s_namespaces namespaces per run; capping --jobs at $(( 6 / s_namespaces ))"
+    jobs=$(( 6 / s_namespaces ))
+  fi
   [[ -n "$explicit_set" ]] || explicit="$s_explicit"
   [[ "$s_selection" == - ]] || read -ra select_args <<< "$s_selection"
   read -ra constraint_args <<< "$s_constraints"
@@ -315,49 +333,80 @@ reap_run() {
   cli reap --run "$1" --wait > "$2/reap-after.txt" 2>&1 || echo "run-cluster: reap of $1 failed"
 }
 
-# "<all> <active>": the harness namespaces whose name starts with $1 (terminating ones hold an admission slot too).
+# The harness namespaces (name and status, one per line); fails (no output) when the API server does not answer within
+# 15 s, so a stalled cluster never hangs the runner and an error is never read as "no namespaces".
+list_namespaces() {
+  kubectl --context "$context" --request-timeout=15s get ns -l app.kubernetes.io/managed-by=nltg-test-harness \
+    --no-headers 2> /dev/null
+}
+
+# "<all> <active>": the harness namespaces whose name starts with $1 (terminating ones hold an admission slot too);
+# fails (no output) when the cluster does not answer.
 count_namespaces() {
-  kubectl --context "$context" get ns -l app.kubernetes.io/managed-by=nltg-test-harness --no-headers 2> /dev/null \
-    | awk -v p="$1" 'index($1, p) == 1 { n++; if ($2 == "Active") a++ } END { print n + 0, a + 0 }'
+  local listing
+  listing="$(list_namespaces)" || return 1
+  awk -v p="$1" 'index($1, p) == 1 { n++; if ($2 == "Active") a++ } END { print n + 0, a + 0 }' <<< "$listing"
 }
 
 # Matrix: until run $1's namespaces are gone (terminating ones included; at most 3 min), so the slot it frees is free.
+# A failed listing is retried until the deadline, never taken for "gone". Namespaces the run kept on failure
+# (--keep-on-failure; its log $2/output.log says so) are not waited for: the queue counts them (held_by_finished).
 wait_namespaces_gone() {
   if [[ -n "$fake_tests" || "$keep" == 1 ]]; then return 0; fi
-  local deadline=$(( $(date +%s) + 180 )) all active
+  if [[ "$keep" == failure && -f "$2/output.log" ]] && grep -q "kept on failure" "$2/output.log"; then return 0; fi
+  local deadline=$(( $(date +%s) + 180 )) all active counts
   while (( $(date +%s) < deadline )); do
-    read -r all active < <(count_namespaces "nltg-spike-$1")
-    if (( all == 0 )); then return 0; fi
+    if counts="$(count_namespaces "nltg-spike-$1")"; then
+      read -r all active <<< "$counts"
+      if (( all == 0 )); then return 0; fi
+    fi
     sleep 2
   done
-  echo "run-cluster: namespaces of $1 still there after 3 min; freeing its slot anyway"
+  echo "run-cluster: namespaces of $1 still there after 3 min (or the cluster did not answer); freeing its slot" \
+       "(the queue keeps counting them)"
 }
 
-# After the summary: gzip the logs of runs that exited 0 (output.log -> output.log.gz; failed runs keep theirs as they
-# are, the summary links them).
+# After the summary: gzip the logs of the green runs (output.log -> output.log.gz), judged as the summary judges them
+# (nltg-cluster matrix green-attempts: exit 0, no timeout, results green); every other run keeps its log as it is,
+# the summary links it.
 compress_green_logs() {
   if (( keep_logs )); then return 0; fi
-  local f dir
-  while IFS= read -r f; do
-    dir="$(dirname "$f")"
-    if [[ "$(cut -d' ' -f1 "$f")" == 0 && ! -e "$dir/timedout" && -f "$dir/output.log" ]]; then
-      gzip -f "$dir/output.log" &
-    fi
-  done < <(find "$results" -name exit -type f)
+  local dir
+  while IFS= read -r dir; do
+    if [[ -f "$dir/output.log" ]]; then gzip -f "$dir/output.log" & fi
+  done < <(matrix_cli green-attempts "$results")
   wait
 }
 
-# Stopping the runner stops its suites, their watchdogs and test processes; their namespaces are reaped (owner gone).
+# Stopping the runner stops its suites, their watchdogs and test processes (TERM; KILL after 30 s, as the hang timeout
+# does), then reaps the batch's namespaces once their owners are gone (kept ones stay, as --keep* asked).
 pids=()
 on_signal() {
   trap - INT TERM
   echo "run-cluster: stopping batch $batch"
-  local pid f
+  local pid f tests=() alive deadline
+  # The suites first (so none starts another attempt), then the watchdogs, then the test processes themselves
   for pid in ${pids[@]+"${pids[@]}"}; do kill -TERM "$pid" 2> /dev/null || true; done
   while IFS= read -r f; do kill -TERM "$(cat "$f")" 2> /dev/null || true; done \
-    < <(find "$results" \( -name pid -o -name watchdog \) -type f 2> /dev/null)
-  sleep 2
-  cli reap --run "$batch" > /dev/null 2>&1 || true
+    < <(find "$results" -name watchdog -type f 2> /dev/null)
+  while IFS= read -r f; do tests+=("$(cat "$f" 2> /dev/null)"); done \
+    < <(find "$results" -name pid -type f 2> /dev/null)
+  for pid in ${tests[@]+"${tests[@]}"}; do kill -TERM "$pid" 2> /dev/null || true; done
+  deadline=$(( $(date +%s) + 30 ))
+  while (( $(date +%s) < deadline )); do
+    alive=0
+    for pid in ${tests[@]+"${tests[@]}"}; do if kill -0 "$pid" 2> /dev/null; then alive=1; fi; done
+    if (( ! alive )); then break; fi
+    sleep 1
+  done
+  for pid in ${tests[@]+"${tests[@]}"}; do
+    if kill -0 "$pid" 2> /dev/null; then
+      echo "run-cluster: test process $pid ignored TERM for 30 s; killing it"
+      kill -KILL "$pid" 2> /dev/null || true
+    fi
+  done
+  echo "run-cluster: reaping the batch's namespaces"
+  cli reap --run "$batch" --wait > "$results/reap-on-stop.txt" 2>&1 || echo "run-cluster: reap of $batch failed"
   exit 130
 }
 trap on_signal INT TERM
@@ -398,7 +447,7 @@ if (( matrix )); then
     run_attempt "$results/$name" "$id" "$limit" "$mode" "$parallel" cluster \
       ${sel[@]+"${sel[@]}"} ${con[@]+"${con[@]}"}
     reap_run "$id" "$results/$name"
-    wait_namespaces_gone "$id"
+    wait_namespaces_gone "$id" "$results/$name"
     if (( rerun_max == 0 )); then return 0; fi
     local k=0 class
     while IFS= read -r class; do
@@ -410,7 +459,7 @@ if (( matrix )); then
       run_attempt "$results/$name/rerun-$k" "$id-r$k" "$limit" "$mode" "$parallel" cluster \
         -class "$class" ${con[@]+"${con[@]}"}
       reap_run "$id-r$k" "$results/$name/rerun-$k"
-      wait_namespaces_gone "$id-r$k"
+      wait_namespaces_gone "$id-r$k" "$results/$name/rerun-$k"
     done < <(matrix_cli rerun-classes "$results/$name" --max "$rerun_max")
   }
 
@@ -426,12 +475,31 @@ if (( matrix )); then
   tick=0
   sample_peak() {
     if [[ -n "$fake_tests" ]]; then return 0; fi
-    local all active
-    read -r all active < <(count_namespaces "nltg-spike-$batch-")
+    local all active counts
+    counts="$(count_namespaces "nltg-spike-$batch-")" || return 0 # the cluster did not answer: no sample
+    read -r all active <<< "$counts"
     if (( all > peak_all )); then peak_all=$all; fi
     if (( active > peak_active )); then peak_active=$active; fi
     echo "$peak_all $peak_active $max_namespaces" > "$results/peak-namespaces"
   }
+  # The namespaces that suites which already ended still hold (kept on failure, or still terminating after the 3-min
+  # wait): they count against the budget until they are gone. Test hook: FAKE_HELD (a number) stands in for them.
+  finished=()
+  held=0
+  held_by_finished() {
+    if [[ -n "$fake_tests" ]]; then
+      if (( ${#finished[@]} > 0 )); then held="${FAKE_HELD:-0}"; fi
+      return 0
+    fi
+    if (( ${#finished[@]} == 0 )); then held=0; return 0; fi
+    local listing
+    listing="$(list_namespaces)" || return 0 # the cluster did not answer: keep the last count
+    held="$(awk -v b="nltg-spike-$batch-" -v names="${finished[*]}" '
+      BEGIN { k = split(names, n, " ") }
+      { for (i = 1; i <= k; i++) { p = b n[i]; if ($1 == p || index($1, p "-") == 1) { c++; break } } }
+      END { print c + 0 }' <<< "$listing")"
+  }
+  stalled_since=""
   while (( ${#queued[@]} > 0 || ${#pids[@]} > 0 )); do
     if (( tick % 3 == 0 )); then sample_peak; fi
     tick=$((tick + 1))
@@ -447,16 +515,20 @@ if (( matrix )); then
       else
         wait "${pids[$k]}" 2> /dev/null || true
         used=$((used - slot_weights[k]))
+        finished+=("${slot_names[$k]}")
         echo "run-cluster: $(date -u +%H:%M:%S) ${slot_names[$k]} done, $(( $(date +%s) - batch_start ))s into the matrix"
       fi
     done
     pids=(${still[@]+"${still[@]}"})
     slot_weights=(${still_w[@]+"${still_w[@]}"})
     slot_names=(${still_n[@]+"${still_n[@]}"})
-    # Admit what fits
+    # Admit what fits, counting what ended suites still hold
+    if (( ${#queued[@]} > 0 )); then held_by_finished; fi
     rest=()
+    admitted=0
     for q in ${queued[@]+"${queued[@]}"}; do
-      if (( ${#pids[@]} < jobs && used + weights[q] <= max_namespaces )); then
+      if (( ${#pids[@]} < jobs && used + held + weights[q] <= max_namespaces )); then
+        admitted=1
         run_suite "${lines[$q]}" > "$results/${names[$q]}.runner.log" 2>&1 &
         pids+=("$!")
         slot_weights+=("${weights[$q]}")
@@ -469,12 +541,27 @@ if (( matrix )); then
       fi
     done
     queued=(${rest[@]+"${rest[@]}"})
+    # Nothing runs and nothing fits: the namespaces ended suites hold block the rest. Kept ones (--keep-on-failure)
+    # stay for their TTL, so give up at once; terminating ones get 10 min. The suites given up on read NOT RUN.
+    if (( ${#pids[@]} == 0 && ${#queued[@]} > 0 && ! admitted )); then
+      stalled_since="${stalled_since:-$(date +%s)}"
+      if [[ "$keep" == failure ]] || (( $(date +%s) - stalled_since >= 600 )); then
+        for q in "${queued[@]}"; do
+          echo "run-cluster: not starting ${names[$q]}: $held namespace(s) of ended suites still hold the budget of" \
+               "$max_namespaces"
+        done
+        queued=()
+      fi
+    else
+      stalled_since=""
+    fi
     if (( ${#queued[@]} > 0 || ${#pids[@]} > 0 )); then sleep 2; fi
   done
 
   set +e
-  matrix_cli summary "$results" --repo "$repo_root" --started "$batch_start" --rerun-max "$rerun_max" \
-    | tee "$results/summary.txt"
+  summary_args=(--repo "$repo_root" --started "$batch_start" --rerun-max "$rerun_max")
+  if [[ -n "$matrix_suites" ]]; then summary_args+=(--named); fi
+  matrix_cli summary "$results" "${summary_args[@]}" | tee "$results/summary.txt"
   status=${PIPESTATUS[0]}
   set -e
   compress_green_logs

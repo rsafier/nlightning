@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
 
@@ -8,6 +9,11 @@ namespace NLightning.Testing.Cluster.Run.Matrix;
 /// <param name="Found">The file exists and parses.</param>
 /// <param name="FailedClasses">The classes (<c>test/@type</c>) with a failed test, in the file's order.</param>
 /// <param name="FirstError">The first failed test and the first line of its message.</param>
+/// <param name="FixtureFailures">
+/// Failed tests whose failure is a fixture's (an assembly, collection or class fixture that threw in its constructor
+/// or <c>InitializeAsync</c>, or could not be built): xunit v3 reports those as a failure of every test of the
+/// collection or class, not as an error.
+/// </param>
 public sealed record XunitRunResult(
     bool Found,
     int Total,
@@ -17,7 +23,8 @@ public sealed record XunitRunResult(
     int NotRun,
     int Errors,
     IReadOnlyList<string> FailedClasses,
-    string? FirstError)
+    string? FirstError,
+    int FixtureFailures = 0)
 {
     public static XunitRunResult Missing { get; } = new(false, 0, 0, 0, 0, 0, 0, [], null);
 
@@ -26,8 +33,16 @@ public sealed record XunitRunResult(
 }
 
 /// <summary>Reads xunit v3 XML result files.</summary>
-public static class XunitResults
+public static partial class XunitResults
 {
+    /// <summary>
+    /// Whether a failure <paramref name="message"/> is a fixture's, as xunit v3's <c>FixtureMappingManager</c> words it
+    /// ("Collection fixture type 'X' threw in InitializeAsync", "... threw in its constructor", "... had one or more
+    /// unresolved constructor arguments", "The following constructor parameters did not have matching fixture data").
+    /// </summary>
+    public static bool IsFixtureFailure(string? message) =>
+        message is not null && FixtureFailure().IsMatch(message);
+
     /// <summary>The result in <paramref name="path"/>; <see cref="XunitRunResult.Missing"/> when absent or broken.</summary>
     public static XunitRunResult Read(string path)
     {
@@ -81,9 +96,15 @@ public static class XunitResults
                        + $"{((string?)error?.Attribute("name") is { } n ? $" {n}" : "")}: {message ?? "error"}";
         }
 
+        var fixtureFailures = failed.Count(t => IsFixtureFailure(t.Element("failure")?.Element("message")?.Value));
         return new XunitRunResult(true, Sum("total"), Sum("passed"), Sum("failed"), Sum("skipped"), Sum("not-run"),
-                                  errors, classes, firstError);
+                                  errors, classes, firstError, fixtureFailures);
     }
+
+    [GeneratedRegex(@"(?:Assembly|Collection|Class) fixture type '[^']*' (?:threw in (?:its constructor|InitializeAsync)"
+                  + @"|had one or more unresolved constructor arguments|may only define a single public constructor)"
+                  + @"|constructor parameters did not have matching fixture data")]
+    private static partial Regex FixtureFailure();
 
     private static string ClassOf(XElement test)
     {

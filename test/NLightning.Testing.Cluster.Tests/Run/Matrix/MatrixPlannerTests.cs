@@ -12,8 +12,34 @@ public class MatrixPlannerTests
 
         // Assert
         Assert.Equal(SuiteCatalog.Names, plan.Select(p => p.Suite.Name));
-        Assert.Equal(["tor"], plan.Where(p => !p.Runs).Select(p => p.Suite.Name));
+        Assert.Equal(["onchain", "anchors", "gossip", "abcd", "tor"], plan.Where(p => !p.Runs).Select(p => p.Suite.Name));
         Assert.All(plan.Where(p => p.Runs), p => Assert.False(p.Serial));
+    }
+
+    [Fact]
+    public void Given_ASuiteWhoseClusterProofIsPending_When_PlannedByDefault_Then_ItIsSkippedWithTheReason()
+    {
+        // Act
+        var plan = MatrixPlanner.Plan(null, 6, lndClusterBackendWired: true);
+
+        // Assert: left out of the default matrix, with how to run it
+        var onchain = plan.Single(p => p.Suite.Name == "onchain");
+        Assert.False(onchain.Runs);
+        Assert.Equal(0, onchain.Namespaces);
+        Assert.Contains("not in the default matrix until its cluster proof is made", onchain.SkipReason);
+        Assert.Contains("--suite onchain", onchain.SkipReason);
+    }
+
+    [Fact]
+    public void Given_ASuiteWhoseClusterProofIsPending_When_Named_Then_ItRuns()
+    {
+        // Act
+        var plan = MatrixPlanner.Plan(["abcd", "onchain"], 6, lndClusterBackendWired: true);
+
+        // Assert: naming a suite is how its proof gets made
+        Assert.Equal(["onchain", "abcd"], plan.Select(p => p.Suite.Name));
+        Assert.All(plan, p => Assert.True(p.Runs));
+        Assert.All(plan, p => Assert.Equal(1, p.Namespaces));
     }
 
     [Fact]
@@ -146,7 +172,9 @@ public class MatrixPlannerTests
     [Theory]
     [InlineData(null, false)]
     [InlineData("public class LightningRegtestNetworkFixture : IDisposable { }", false)]
-    [InlineData("private readonly ILndNetworkBackend _backend;", true)]
+    [InlineData("private readonly ILndNetworkBackend _backend = new DockerLndBackend();", false)]
+    [InlineData("_backend = TestBackend.Current == TestBackendKind.Cluster ? new ClusterLndBackend() : new DockerLndBackend();",
+                true)]
     public void Given_TheFixtureSource_When_Probed_Then_OnlyTheWiredFixtureCounts(string? source, bool wired)
     {
         // Act & Assert
@@ -165,7 +193,9 @@ public class MatrixPlannerTests
 
             var path = Path.Combine(root, LndBackendProbe.FixturePath);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllText(path, "ILndNetworkBackend backend");
+            File.WriteAllText(path, "ILndNetworkBackend backend = new DockerLndBackend();");
+            Assert.False(LndBackendProbe.IsWiredIn(root));
+            File.WriteAllText(path, "ILndNetworkBackend backend = cluster ? new ClusterLndBackend() : docker;");
             Assert.True(LndBackendProbe.IsWiredIn(root));
         }
         finally

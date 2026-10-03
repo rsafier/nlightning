@@ -169,7 +169,7 @@ public class OnchainO2Tests : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         if (DockerDiagnostics.CurrentTestFailed)
-            await DockerDiagnostics.DumpContainerLogsAsync(["david"]);
+            await _fixture.DumpLndLogsAsync(["david"]);
 
         if (_node is not null)
             await _node.DisposeAsync();

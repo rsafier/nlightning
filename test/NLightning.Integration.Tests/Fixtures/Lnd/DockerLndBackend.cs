@@ -71,10 +71,20 @@ public sealed class DockerLndBackend : ILndNetworkBackend
     /// <c>HOST_ADDRESS</c> when set, otherwise <c>host.docker.internal</c> (OrbStack and Docker Desktop resolve it to
     /// the host).
     /// </summary>
-    public string HostAddressForPeers =>
-        Environment.GetEnvironmentVariable("HOST_ADDRESS") is { Length: > 0 } configured
-            ? configured
-            : "host.docker.internal";
+    public string HostAddressForPeers => HostAddressFor(Environment.GetEnvironmentVariable);
+
+    /// <summary>The environment variable that overrides <see cref="HostAddressForPeers"/>.</summary>
+    public const string HostAddressVariable = "HOST_ADDRESS";
+
+    /// <summary>
+    /// <see cref="HostAddressForPeers"/> under <paramref name="environment"/>: <see cref="HostAddressVariable"/> when set
+    /// (not empty), otherwise <c>host.docker.internal</c>.
+    /// </summary>
+    public static string HostAddressFor(Func<string, string?> environment)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+        return environment(HostAddressVariable) is { Length: > 0 } configured ? configured : "host.docker.internal";
+    }
 
     public LndNodeConnection GetLndNode(string alias) =>
         _lndNodes.FirstOrDefault(n => n.LocalAlias == alias)

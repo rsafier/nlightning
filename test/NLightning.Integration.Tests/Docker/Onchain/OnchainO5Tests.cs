@@ -263,6 +263,7 @@ public class OnchainO5Tests : IAsyncLifetime
     private async Task<(NLightningTestNode Node, LndNodeConnection David, ChannelId ChannelId, string ChannelPoint,
                         Transaction Revoked, LightningMoney WalletBefore)> PrepareLndBreachAsync(CancellationToken ct)
     {
+        _fixture.SkipUnlessDocker("rolls david's channel.db back inside his Docker container (LndChannelDbRollback)");
         var node = await CreateNodeAsync("breach-victim", ct);
         var david = _fixture.GetLndNode("david");
         Console.WriteLine($"[o5a] {await LndTestHelpers.GetVersionAsync(david, ct)}");

@@ -22,19 +22,32 @@ public class DockerLndBackendTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => backend.RestartLndAsync("alice"));
     }
 
-    [Fact]
-    public void Given_NoHostAddressVariable_When_PeersDialUs_Then_TheyUseDockersHostName()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void Given_NoHostAddressVariable_When_PeersDialUs_Then_TheyUseDockersHostName(string? configured)
     {
-        // Arrange
-        var backend = new DockerLndBackend();
+        // Arrange: HOST_ADDRESS unset or empty
+        string? Environment(string name) => name == "HOST_ADDRESS" ? configured : null;
 
         // Act
-        var host = backend.HostAddressForPeers;
+        var host = DockerLndBackend.HostAddressFor(Environment);
 
-        // Assert: HOST_ADDRESS when set (as before the backend split), else host.docker.internal
-        Assert.Equal(Environment.GetEnvironmentVariable("HOST_ADDRESS") is { Length: > 0 } configured
-                         ? configured
-                         : "host.docker.internal", host);
+        // Assert
+        Assert.Equal("host.docker.internal", host);
+    }
+
+    [Fact]
+    public void Given_AHostAddressVariable_When_PeersDialUs_Then_TheyUseIt()
+    {
+        // Arrange
+        static string? Environment(string name) => name == "HOST_ADDRESS" ? "192.168.65.254" : null;
+
+        // Act
+        var host = DockerLndBackend.HostAddressFor(Environment);
+
+        // Assert: as before the backend split (AbcNetworkTests' HOST_ADDRESS ?? host.docker.internal)
+        Assert.Equal("192.168.65.254", host);
     }
 
     [Fact]

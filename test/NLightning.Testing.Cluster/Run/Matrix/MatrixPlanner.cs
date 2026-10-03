@@ -68,6 +68,10 @@ public static class MatrixPlanner
     /// An unknown or repeated suite, a budget outside 1..<see cref="MaxNamespaces"/>, or a suite that needs more
     /// namespaces than the budget even serially.
     /// </exception>
+    /// <remarks>
+    /// A suite whose cluster proof is pending (<see cref="MatrixSuite.ClusterProofPending"/>) is skipped when
+    /// <paramref name="names"/> is empty (the default matrix) and runs when it is named.
+    /// </remarks>
     public static IReadOnlyList<PlannedSuite> Plan(IReadOnlyList<string>? names, int maxNamespaces,
                                                    bool lndClusterBackendWired)
     {
@@ -85,10 +89,11 @@ public static class MatrixPlanner
         // The catalog's order whatever the caller's: the longest suites start first
         suites = suites.OrderBy(s => SuiteCatalog.Names.ToList().IndexOf(s.Name)).ToList();
 
-        return suites.Select(s => PlanOne(s, maxNamespaces, lndClusterBackendWired)).ToList();
+        var named = names is { Count: > 0 };
+        return suites.Select(s => PlanOne(s, maxNamespaces, lndClusterBackendWired, named)).ToList();
     }
 
-    private static PlannedSuite PlanOne(MatrixSuite suite, int maxNamespaces, bool lndClusterBackendWired)
+    private static PlannedSuite PlanOne(MatrixSuite suite, int maxNamespaces, bool lndClusterBackendWired, bool named)
     {
         if (suite.DockerOnlyReason is { } dockerOnly)
             return new PlannedSuite(suite, $"Docker only: {dockerOnly}", 0, false);
@@ -96,8 +101,15 @@ public static class MatrixPlanner
         if (suite.Requirement == SuiteRequirement.LndClusterBackend && !lndClusterBackendWired)
             return new PlannedSuite(
                 suite,
-                "not ported yet: LightningRegtestNetworkFixture does not delegate to ILndNetworkBackend (phase 3 "
+                "not ported yet: LightningRegtestNetworkFixture does not construct ClusterLndBackend (phase 3 "
               + "wiring), so it would start Docker containers; run it with the Docker scripts",
+                0, false);
+
+        if (suite.ClusterProofPending is { } pending && !named)
+            return new PlannedSuite(
+                suite,
+                $"not in the default matrix until its cluster proof is made: {pending}; name it (--matrix "
+              + $"{suite.Name} or --suite {suite.Name}) to run it",
                 0, false);
 
         if (suite.Namespaces <= maxNamespaces)

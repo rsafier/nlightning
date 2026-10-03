@@ -34,6 +34,37 @@ public sealed partial record SuiteAttempt(
     /// <summary>The process ended by itself with exit code 0 and its results are green.</summary>
     public bool IsGreen => ExitCode == 0 && !TimedOut && Results.IsGreen;
 
+    /// <summary>
+    /// Whether the attempt in <paramref name="directory"/> is green (<see cref="IsGreen"/>), read from its exit,
+    /// timeout and results files only (never its log, which reaches hundreds of MB).
+    /// </summary>
+    public static bool IsGreenIn(string directory)
+    {
+        ArgumentNullException.ThrowIfNull(directory);
+        var exit = Path.Combine(directory, ExitFile);
+        if (!File.Exists(exit) || File.Exists(Path.Combine(directory, TimedOutFile)))
+            return false;
+
+        var code = File.ReadAllText(exit).Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        return code == "0" && XunitResults.Read(Path.Combine(directory, ResultsFile)).IsGreen;
+    }
+
+    /// <summary>
+    /// The green attempts under <paramref name="root"/> (every folder with an <c>exit</c> file, at any depth, that
+    /// <see cref="IsGreenIn"/>), sorted: the runner gzips only their logs.
+    /// </summary>
+    public static IReadOnlyList<string> GreenAttemptsUnder(string root)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        return System.IO.Directory.Exists(root)
+                   ? System.IO.Directory.EnumerateFiles(root, ExitFile, SearchOption.AllDirectories)
+                           .Select(f => Path.GetDirectoryName(f)!)
+                           .Where(IsGreenIn)
+                           .Order(StringComparer.Ordinal)
+                           .ToList()
+                   : [];
+    }
+
     /// <summary>Reads the attempt in <paramref name="directory"/> (missing files leave their fields empty).</summary>
     public static SuiteAttempt Read(string directory)
     {

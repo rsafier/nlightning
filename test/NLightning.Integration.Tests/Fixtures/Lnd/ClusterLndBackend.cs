@@ -41,8 +41,13 @@ public sealed class ClusterLndBackend : ILndNetworkBackend
 
     /// <param name="options">The network (the Docker fixture's by default).</param>
     /// <param name="deployer">The deployer of the in-process nodes that join; a default one when null.</param>
-    public ClusterLndBackend(LndRegtestNetworkOptions? options = null, InProcessNodeDeployer? deployer = null)
+    /// <param name="environment">
+    /// Reads environment variables (<see cref="HostEndpoints.ForPods"/>'s override); the process environment when null.
+    /// </param>
+    public ClusterLndBackend(LndRegtestNetworkOptions? options = null, InProcessNodeDeployer? deployer = null,
+                             Func<string, string?>? environment = null)
     {
+        HostAddressForPeers = HostEndpoints.ForPods(environment);
         Deployer = deployer ?? new InProcessNodeDeployer();
         _fixture = new NetworkFixture(options ?? new LndRegtestNetworkOptions(), Deployer);
     }
@@ -78,7 +83,7 @@ public sealed class ClusterLndBackend : ILndNetworkBackend
     /// <see cref="HostEndpoints.ForPods"/>: <c>host.orb.internal</c> on OrbStack (or <c>NLTG_HOST_ADDRESS</c>); a listener
     /// on loopback is enough there.
     /// </summary>
-    public string HostAddressForPeers { get; } = HostEndpoints.ForPods();
+    public string HostAddressForPeers { get; }
 
     public LndNodeConnection GetLndNode(string alias) => Network.GetLndNode(alias);
 

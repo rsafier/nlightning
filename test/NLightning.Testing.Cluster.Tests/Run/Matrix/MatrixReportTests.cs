@@ -64,6 +64,95 @@ public sealed class MatrixReportTests : IDisposable
         Assert.Empty(result.FailedClasses);
     }
 
+    [Theory]
+    [InlineData("Collection fixture type 'NLightning.Integration.Tests.Fixtures.PostgresFixture' threw in InitializeAsync", true)]
+    [InlineData("Class fixture type 'Ns.F' threw in its constructor\n---- System.TimeoutException : no slot", true)]
+    [InlineData("Assembly fixture type 'Ns.F' had one or more unresolved constructor arguments: x", true)]
+    [InlineData("The following constructor parameters did not have matching fixture data: Ns.F fixture", true)]
+    [InlineData("Assert.Equal() Failure: fixture type mismatch", false)]
+    [InlineData(null, false)]
+    public void Given_AFailureMessage_When_Checked_Then_OnlyXunitsFixtureFailuresCount(string? message, bool fixture)
+    {
+        // Act & Assert
+        Assert.Equal(fixture, XunitResults.IsFixtureFailure(message));
+    }
+
+    [Fact]
+    public void Given_AClassWhoseFixtureThrew_When_AskedWhatToRerun_Then_NothingIsAndTheSummarySaysWhy()
+    {
+        // Arrange: xunit v3 fails every test of the class with the fixture's message, errors stay 0
+        var dir = Path.Combine(_root, "fixture-batch");
+        Directory.CreateDirectory(dir);
+        File.WriteAllLines(Path.Combine(dir, MatrixReport.PlanFile),
+                           MatrixPlanner.Plan(["ldk"], 6, false).Select(p => p.ToLine()));
+        Attempt("fixture-batch/ldk", "1 10 1", tests: [("A", "One", false)]);
+        new XDocument(new XElement("assemblies", new XElement(
+                          "assembly", new XAttribute("total", 2), new XAttribute("passed", 0),
+                          new XAttribute("failed", 2), new XAttribute("skipped", 0), new XAttribute("errors", 0),
+                          new XElement("collection",
+                                       new[] { "One", "Two" }.Select(m => new XElement(
+                                                                       "test", new XAttribute("name", $"Ns.A.{m}"),
+                                                                       new XAttribute("type", "Ns.A"),
+                                                                       new XAttribute("method", m),
+                                                                       new XAttribute("result", "Fail"),
+                                                                       new XElement("failure", new XElement(
+                                                                           "message",
+                                                                           "Class fixture type 'Ns.F' threw in "
+                                                                         + "InitializeAsync\nboom"))))))))
+            .Save(Path.Combine(dir, "ldk", SuiteAttempt.ResultsFile));
+
+        // Act
+        var attempt = SuiteAttempt.Read(Path.Combine(dir, "ldk"));
+        var reports = MatrixReport.Read(dir, 3);
+
+        // Assert: one class, under the rerun limit, yet no rerun: a fixture that threw is not a test flake
+        Assert.Equal(2, attempt.Results.FixtureFailures);
+        Assert.Empty(MatrixReport.ClassesToRerun(attempt, 3));
+        Assert.Equal(SuiteOutcome.Failed, reports.Single().Outcome);
+        Assert.Contains("ldk: 2 test(s) failed in a fixture (no rerun)", MatrixReport.Format(reports, _root, null, null));
+    }
+
+    [Fact]
+    public void Given_SkippedSuites_When_TheExitCodeIsComputed_Then_NothingRunOrANamedSkipIsNotGreen()
+    {
+        // Arrange
+        var batch = Path.Combine(_root, "skips");
+        Directory.CreateDirectory(batch);
+        File.WriteAllLines(Path.Combine(batch, MatrixReport.PlanFile),
+                           MatrixPlanner.Plan(["ldk", "tor"], 6, false).Select(p => p.ToLine()));
+        Attempt("skips/ldk", "0 5 1", tests: [("A", "One", false)]);
+        var reports = MatrixReport.Read(batch, 3);
+        var torOnly = reports.Where(r => r.Name == "tor").ToList();
+
+        // Act & Assert: the default matrix lists its skips (0); a named skip or nothing run is 3; failures stay 1
+        Assert.Equal(0, MatrixReport.ExitCode(reports));
+        Assert.Equal(MatrixReport.NothingRanExitCode, MatrixReport.ExitCode(reports, suitesNamed: true));
+        Assert.Equal(MatrixReport.NothingRanExitCode, MatrixReport.ExitCode(torOnly));
+        Assert.Equal(MatrixReport.NothingRanExitCode, MatrixReport.ExitCode([]));
+    }
+
+    [Fact]
+    public async Task Given_AttemptsUnderABatch_When_GreenAttemptsAreListed_Then_OnlyTheGreenOnesComeBack()
+    {
+        // Arrange: green, exit 0 without tests, exit 0 with a failure, a timeout, a crash, and a green rerun
+        var green = Attempt("g/ldk", "0 5 1", tests: [("A", "One", false)]);
+        Attempt("g/cln", "0 5 1", tests: []);
+        Attempt("g/eclair", "0 5 1", tests: [("A", "One", true)]);
+        var hung = Attempt("g/postgres", "0 5 1", tests: [("A", "One", false)]);
+        File.WriteAllText(Path.Combine(hung, SuiteAttempt.TimedOutFile), "");
+        Attempt("g/faults", "3 5 1", tests: null);
+        var rerun = Attempt("g/eclair/rerun-1", "0 5 1", tests: [("A", "One", false)], rerunClass: "Ns.A");
+        var output = new StringWriter();
+
+        // Act
+        var code = await MatrixCli.RunAsync(["green-attempts", Path.Combine(_root, "g")], output, TextWriter.Null);
+
+        // Assert
+        Assert.Equal(ClusterCli.Ok, code);
+        Assert.Equal([rerun, green], output.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries));
+        Assert.False(SuiteAttempt.IsGreenIn(Path.Combine(_root, "g", "missing")));
+    }
+
     [Fact]
     public void Given_AnOldResultWithoutType_When_Read_Then_TheClassComesFromTheName()
     {

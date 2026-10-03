@@ -40,8 +40,10 @@ public sealed class LndChannelDbRollback : IDisposable
     /// <summary>The database path found in the container.</summary>
     public string? DatabasePath { get; private set; }
 
+    /// <exception cref="InvalidOperationException">The fixture runs on the cluster backend (Docker only).</exception>
     public LndChannelDbRollback(LightningRegtestNetworkFixture fixture, string container)
     {
+        fixture.RequireDocker(nameof(LndChannelDbRollback));
         _fixture = fixture;
         _container = container;
     }

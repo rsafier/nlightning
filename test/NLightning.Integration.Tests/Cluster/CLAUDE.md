@@ -87,10 +87,15 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   fixture dial LND at `GetLndPeerEndpointAsync` (`NLightningTestNode.ConnectToAsync(LndNodeConnection)`): the
   container IP on Docker, the Service name `alias.<ns>.svc.cluster.local:9735` on the cluster, which our node stores
   and redials after the restart (NL-780; LND cannot dial back, it only saw our ephemeral port).
-- The LND suite (the `Docker`, `Docker.Utils` and `Docker.Mock` namespaces, SQL Server left out):
-  `scripts/run-cluster.sh -n 1 --suite lnd` (`-notrait Database=SqlServer -parallel none`: its collections one after
-  the other, so at most 2 namespaces: a collection's network and `MultiNodeHarnessTests`' own Postgres pod; `--class`
-  for one class). On Docker it runs as before (SDK container, `--network host`, under the machine's Docker lock).
+- The LND suites: `scripts/run-cluster.sh -n 1 --suite lnd` runs the `regtest` collection's classes of the `Docker`
+  namespace and `Docker.Utils` (the catalog's `lnd`, SQL Server left out; 2 namespaces: the collection's network and
+  `MultiNodeHarnessTests`' own Postgres pod, so `-j` is capped at 3); the classes of the fixture's other collections
+  run in their own suites: `PostgresTests` in `postgres`, `BackupRestoreFlowTests` in `onchain`,
+  `ChannelPolicyPublicFlowTests` and `SpliceLndObserverTests` in `gossip` (`--suite onchain|gossip --class X`; those
+  suites stay out of the default matrix until their cluster proofs are made). Test code that drives Docker containers
+  by name skips itself on the cluster (`LightningRegtestNetworkFixture.SkipUnlessDocker`/`RequireDocker`:
+  `LndChannelDbRollback`, `RelayBitcoind`); failure dumps go through `DumpLndLogsAsync` everywhere. On Docker the suite
+  runs as before (SDK container, `--network host`, under the machine's Docker lock).
 - `Live/LndRegtestNetworkClusterTests` (`Category=Cluster`, `Explicit`): the backend's members answer, our node joins
   (2M sat), opens 1M sat to alice by her Service name, pays carol through alice and is paid by alice, alice restarts,
   and both payments work again. `scripts/run-cluster.sh -n 2 -p integration --class

@@ -21,8 +21,11 @@ public static class MatrixCli
               selection, constraints, reason or description ('|'-separated; default: every suite)
           nltg-cluster matrix rerun-classes <attempt folder> [--max N]
               the failed classes to rerun alone (none after a hang timeout, an error or more than N, default 3)
-          nltg-cluster matrix summary <batch folder> [--repo R] [--started <epoch s>] [--rerun-max N]
-              the summary table; exit code 1 when a suite really failed
+          nltg-cluster matrix summary <batch folder> [--repo R] [--started <epoch s>] [--rerun-max N] [--named]
+              the summary table; exit code 1 when a suite really failed, 3 when nothing ran or (--named: the
+              suites were named by the caller) a named suite was skipped
+          nltg-cluster matrix green-attempts <folder>
+              the attempt folders under <folder> (any depth) whose run was green: exit 0, no timeout, results green
         """;
 
     /// <summary>Runs <paramref name="args"/> (the words after <c>matrix</c>); returns the exit code.</summary>
@@ -51,6 +54,10 @@ public static class MatrixCli
                     foreach (var planned in MatrixPlanner.Plan(options.Suites, options.MaxNamespaces, wired))
                         await output.WriteLineAsync(planned.ToLine()).ConfigureAwait(false);
                     return ClusterCli.Ok;
+                case "green-attempts":
+                    foreach (var dir in SuiteAttempt.GreenAttemptsUnder(options.Folder!))
+                        await output.WriteLineAsync(dir).ConfigureAwait(false);
+                    return ClusterCli.Ok;
                 case "rerun-classes":
                     var attempt = SuiteAttempt.Read(options.Folder!);
                     foreach (var c in MatrixReport.ClassesToRerun(attempt, options.RerunMax))
@@ -63,7 +70,15 @@ public static class MatrixCli
                                                                 DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                                                                 MatrixReport.ReadPeak(options.Folder!)))
                                 .ConfigureAwait(false);
-                    return MatrixReport.ExitCode(reports);
+                    var code = MatrixReport.ExitCode(reports, options.Named);
+                    if (code == MatrixReport.NothingRanExitCode)
+                        await error.WriteLineAsync(
+                                  "nltg-cluster matrix: no tests ran for a suite that was asked for (skipped: "
+                                + string.Join(", ", reports.Where(r => r.Outcome == SuiteOutcome.Skipped)
+                                                         .Select(r => r.Name))
+                                + ")")
+                                   .ConfigureAwait(false);
+                    return code;
             }
         }
         catch (Exception e) when (e is ArgumentException or FormatException or FileNotFoundException)
@@ -86,6 +101,9 @@ public static class MatrixCli
                           + (s.Requirement == SuiteRequirement.LndClusterBackend
                                  ? " [needs the LND fixture's cluster backend]"
                                  : "")
+                          + (s.ClusterProofPending is { } pending
+                                 ? $" [not in the default matrix: {pending}]"
+                                 : "")
         }));
         var widths = Enumerable.Range(0, rows[0].Length).Select(i => rows.Max(r => r[i].Length)).ToArray();
         var builder = new StringBuilder();
@@ -102,18 +120,19 @@ public static class MatrixCli
         string? Repo,
         string? Folder,
         int RerunMax,
-        long? Started)
+        long? Started,
+        bool Named = false)
     {
         /// <exception cref="ArgumentException">An unknown command or option, or a missing or bad value.</exception>
         public static Options Parse(IReadOnlyList<string> args)
         {
             var command = args[0];
-            if (command is not ("list" or "plan" or "rerun-classes" or "summary"))
+            if (command is not ("list" or "plan" or "rerun-classes" or "summary" or "green-attempts"))
                 throw new ArgumentException($"unknown matrix command '{command}'");
 
             var options = new Options(null, MatrixPlanner.MaxNamespaces, null, null, MatrixReport.DefaultRerunMax, null);
             var i = 1;
-            if (command is "rerun-classes" or "summary")
+            if (command is "rerun-classes" or "summary" or "green-attempts")
             {
                 if (args.Count < 2 || args[1].StartsWith("--", StringComparison.Ordinal))
                     throw new ArgumentException($"{command} needs a folder");
@@ -139,6 +158,7 @@ public static class MatrixCli
                     ("plan", "--max-namespaces") => options with { MaxNamespaces = Number(arg, Value(), 1) },
                     ("plan" or "summary", "--repo") => options with { Repo = Value() },
                     ("summary", "--started") => options with { Started = Number(arg, Value(), 0) },
+                    ("summary", "--named") => options with { Named = true },
                     ("rerun-classes", "--max") or ("summary", "--rerun-max") =>
                         options with { RerunMax = Number(arg, Value(), 0) },
                     _ => throw new ArgumentException($"unknown option '{arg}' for matrix {command}")

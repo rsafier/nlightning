@@ -120,7 +120,7 @@ public sealed class Day0FlowTests : IAsyncLifetime
                     Console.WriteLine(line);
             }
 
-            await DockerDiagnostics.DumpContainerLogsAsync(["alice"]);
+            await _fixture.DumpLndLogsAsync(["alice"]);
         }
 
         foreach (var node in _nodes)

@@ -57,6 +57,10 @@ public class AnchorsPackageRelayTests : IAsyncLifetime
     public async ValueTask InitializeAsync()
     {
         var ct = TestContext.Current.CancellationToken;
+        // The relay is a Docker container on the miner's network (the test skips itself on the cluster backend)
+        if (_harness.Fixture.Backend != TestBackendKind.Docker)
+            return;
+
         _relay = await RelayBitcoind.StartAsync(_harness.Fixture, Money.Coins(1m), ct);
         _node = await _harness.CreateNodeAsync("anchors-package", ct, bitcoin: _relay.Endpoint);
     }
@@ -67,6 +71,7 @@ public class AnchorsPackageRelayTests : IAsyncLifetime
         // Arrange: an anchors channel whose commitment pays about 4 sat/vB; then a relay mempool whose minimum is above
         // that
         var ct = TestContext.Current.CancellationToken;
+        _harness.Fixture.SkipUnlessDocker("its relay bitcoind (RelayBitcoind) is a Docker container on the miner's network");
         var node = _node!;
         var relay = _relay!;
         var david = _harness.Fixture.GetLndNode("david");

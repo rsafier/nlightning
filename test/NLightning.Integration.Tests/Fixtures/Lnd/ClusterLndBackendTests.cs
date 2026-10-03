@@ -1,6 +1,5 @@
 namespace NLightning.Integration.Tests.Fixtures.Lnd;
 
-using Testing.Cluster.Reach;
 using Testing.Cluster.Topology.Lnd;
 
 public class ClusterLndBackendTests
@@ -23,14 +22,18 @@ public class ClusterLndBackendTests
         await backend.DisposeAsync();
     }
 
-    [Fact]
-    public void Given_TheClusterBackend_When_PeersDialUs_Then_TheyUseThePodFacingHost()
+    [Theory]
+    [InlineData(null, "host.orb.internal")]
+    [InlineData(" ", "host.orb.internal")]
+    [InlineData("10.0.0.7", "10.0.0.7")]
+    public void Given_TheClusterBackend_When_PeersDialUs_Then_TheyUseThePodFacingHost(string? configured,
+                                                                                      string expected)
     {
-        // Arrange
-        var backend = new ClusterLndBackend();
+        // Arrange: NLTG_HOST_ADDRESS unset, blank or set (what the CLN and Eclair backends use)
+        var backend = new ClusterLndBackend(environment: name => name == "NLTG_HOST_ADDRESS" ? configured : null);
 
-        // Act & Assert: host.orb.internal on OrbStack, or NLTG_HOST_ADDRESS (what the CLN and Eclair backends use)
-        Assert.Equal(HostEndpoints.ForPods(), backend.HostAddressForPeers);
+        // Act & Assert: host.orb.internal on OrbStack unless overridden
+        Assert.Equal(expected, backend.HostAddressForPeers);
     }
 
     [Fact]

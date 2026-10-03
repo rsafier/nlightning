@@ -77,6 +77,8 @@ internal sealed class RelayBitcoind : IAsyncDisposable
     public static async Task<RelayBitcoind> StartAsync(LightningRegtestNetworkFixture fixture, Money walletFunding,
                                                        CancellationToken ct)
     {
+        // A container on the miner's Docker network, by fixed name: never on the cluster backend
+        fixture.RequireDocker(nameof(RelayBitcoind));
         var relay = new RelayBitcoind(fixture);
         try
         {

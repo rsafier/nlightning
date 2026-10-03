@@ -411,7 +411,7 @@ public class OnchainO4Tests : IAsyncLifetime
         {
             foreach (var line in _node?.NodeLog.TakeLast(300) ?? [])
                 Console.WriteLine(line);
-            await DockerDiagnostics.DumpContainerLogsAsync(["alice", "david"]);
+            await _fixture.DumpLndLogsAsync(["alice", "david"]);
         }
 
         if (_node is not null)

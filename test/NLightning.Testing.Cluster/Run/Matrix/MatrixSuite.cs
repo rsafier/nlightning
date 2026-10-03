@@ -6,9 +6,9 @@ public enum SuiteRequirement
     None,
 
     /// <summary>
-    /// <c>LightningRegtestNetworkFixture</c> delegates to <c>ILndNetworkBackend</c> (test harness phase 3 wiring).
-    /// Without it <c>NLTG_TEST_BACKEND=cluster</c> is ignored and the fixture starts Docker containers outside the
-    /// machine's Docker lock, so the runner skips such a suite instead (<see cref="LndBackendProbe"/>).
+    /// <c>LightningRegtestNetworkFixture</c> picks <c>ClusterLndBackend</c> under <c>NLTG_TEST_BACKEND=cluster</c> (test
+    /// harness phase 3 wiring). Without it the fixture starts Docker containers outside the machine's Docker lock, so
+    /// the runner skips such a suite instead (<see cref="LndBackendProbe"/>).
     /// </summary>
     LndClusterBackend
 }
@@ -33,6 +33,10 @@ public enum SuiteRequirement
 /// <param name="Timeout">The hang timeout of one run of the suite (the process is killed after it).</param>
 /// <param name="Requirement">What must hold before the suite may run on the cluster.</param>
 /// <param name="DockerOnlyReason">Set for a suite that never runs on the cluster: why, and how to run it.</param>
+/// <param name="ClusterProofPending">
+/// Set for a suite whose cluster proof is still to be made: why. The default matrix (no suites named) skips it with
+/// that reason; naming it (<c>--matrix S</c> or <c>--suite S</c>) runs it, which is how the proof gets made.
+/// </param>
 public sealed record MatrixSuite(
     string Name,
     string Description,
@@ -44,4 +48,5 @@ public sealed record MatrixSuite(
     int SerialNamespaces,
     TimeSpan Timeout,
     SuiteRequirement Requirement = SuiteRequirement.None,
-    string? DockerOnlyReason = null);
+    string? DockerOnlyReason = null,
+    string? ClusterProofPending = null);

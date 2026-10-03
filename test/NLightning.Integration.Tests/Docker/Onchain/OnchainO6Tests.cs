@@ -254,7 +254,7 @@ public class OnchainO6Tests : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         if (DockerDiagnostics.CurrentTestFailed)
-            await DockerDiagnostics.DumpContainerLogsAsync(["david"]);
+            await _fixture.DumpLndLogsAsync(["david"]);
 
         // A failed test must not leave the mock time set
         await _fixture.Bitcoin.SendCommandAsync("setmocktime", CancellationToken.None, 0);

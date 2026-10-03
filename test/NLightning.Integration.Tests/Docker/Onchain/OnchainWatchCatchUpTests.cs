@@ -127,7 +127,7 @@ public class OnchainWatchCatchUpTests : IAsyncLifetime
         {
             foreach (var line in _node?.NodeLog.TakeLast(300) ?? [])
                 Console.WriteLine(line);
-            await DockerDiagnostics.DumpContainerLogsAsync(["david"]);
+            await _fixture.DumpLndLogsAsync(["david"]);
         }
 
         if (_node is not null)

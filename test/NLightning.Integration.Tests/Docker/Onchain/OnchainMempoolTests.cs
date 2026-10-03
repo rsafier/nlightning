@@ -183,7 +183,7 @@ public class OnchainMempoolTests : IAsyncLifetime
             foreach (var node in _nodes)
                 foreach (var line in node.NodeLog.TakeLast(300))
                     Console.WriteLine(line);
-            await DockerDiagnostics.DumpContainerLogsAsync(["alice", "david"]);
+            await _fixture.DumpLndLogsAsync(["alice", "david"]);
         }
 
         foreach (var node in _nodes)

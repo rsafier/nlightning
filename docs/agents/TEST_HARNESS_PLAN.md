@@ -244,7 +244,8 @@ The same topology model, sized up, on a multi-node cluster.
    - `run-cluster` replaces `run-{onchain,gossip,abcd,interop}.sh` and the hand-made LND runs.
    - It builds once, then runs the suite matrix with N runs in flight, reruns one failed class alone, prints a summary and collects diagnostics.
    - Update `test/CLAUDE.md` and root `CLAUDE.md`.
-   - Done ("Phase 5 runner record"): `scripts/run-cluster.sh --matrix`; the LND suites in it wait for the fixture wiring.
+   - Done ("Phase 5 runner record", "Phase 3/5/6 integration record"): `scripts/run-cluster.sh --matrix`; `lnd` runs in
+     it, `onchain`, `anchors`, `gossip` and `abcd` run when named until their cluster proofs are made.
 6. **Proof.**
    - The full matrix twice concurrently, then at the tuned N, green apart from documented flakes.
    - Wall time compared with today's serial pass (target ≈15 min instead of ≈75).

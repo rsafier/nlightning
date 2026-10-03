@@ -111,6 +111,29 @@ public class LightningRegtestNetworkFixture : IAsyncLifetime
         _backend.DumpLndLogsAsync(aliases, tail);
 
     /// <summary>
+    /// Skips the current test unless the network runs on Docker: for test code that drives the Docker containers by
+    /// name (<c>LndChannelDbRollback</c>, <c>RelayBitcoind</c>), which on the cluster backend would act on another
+    /// process's fixed-name containers.
+    /// </summary>
+    public void SkipUnlessDocker(string reason)
+    {
+        if (Backend != TestBackendKind.Docker)
+            Assert.Skip($"Docker backend only ({TestBackend.EnvironmentVariable}={Backend}): {reason}");
+    }
+
+    /// <summary>
+    /// Throws unless the network runs on Docker: the guard of the helpers that drive Docker containers by name, so that
+    /// they never touch another process's containers when a test forgot <see cref="SkipUnlessDocker"/>.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The network runs on the cluster backend.</exception>
+    public void RequireDocker(string what)
+    {
+        if (Backend != TestBackendKind.Docker)
+            throw new InvalidOperationException(
+                $"{what} drives Docker containers by name and runs on the Docker backend only, not on {Backend}");
+    }
+
+    /// <summary>
     /// Returns the object stored under <paramref name="key"/>, creating it once with <paramref name="factory"/>.
     /// Lets a test class build an expensive topology (nodes, channels) once and share it with the other tests of the
     /// collection. The object is disposed with the fixture if it is <see cref="IAsyncDisposable"/> or
