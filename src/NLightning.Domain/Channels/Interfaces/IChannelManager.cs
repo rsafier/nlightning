@@ -7,6 +7,7 @@ using Domain.Protocol.Models;
 using Events;
 using Models;
 using Node.Options;
+using ValueObjects;
 
 public interface IChannelManager
 {
@@ -62,6 +63,15 @@ public interface IChannelManager
     /// run before the new connection carries anything.
     /// </summary>
     void OnPeerConnectionChanged(CompactPubKey peerPubKey);
+
+    /// <summary>
+    /// The channels of <paramref name="peerPubKey"/> that should carry updates (ReadyForThem, ReadyForUs, Open,
+    /// ShuttingDown, Negotiating) whose <c>channel_reestablish</c> we sent on the peer's current connection and that
+    /// are still not reestablished on it: the peer has not answered (NL-796; the peer manager's reestablish deadline).
+    /// A channel waiting for its funding (V1FundingSigned) or whose close is agreed (Closing) is never listed: a peer
+    /// may have forgotten it or stopped its link, and nothing waits on its reestablish.
+    /// </summary>
+    IReadOnlyList<ChannelId> GetChannelsAwaitingPeerReestablish(CompactPubKey peerPubKey) => [];
 
     /// <summary>
     /// Registers a channel loaded from the database at startup (memory and signer), after resuming its state (BOLT2

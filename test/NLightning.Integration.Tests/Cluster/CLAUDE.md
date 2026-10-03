@@ -178,7 +178,8 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   no pong and drops the link; the HTLC is kept, then settles after the heal through `channel_reestablish`), a partition
   that outlasts our reconnect attempts (CLN drops us; a payment fails at once without an HTLC; our node reconnects by
   itself after the heal), a CLN whose `lightningd` is frozen behind a live `connectd` (our `channel_reestablish` goes
-  unanswered: the channel stays gated and refuses a payment), and CLN split from bitcoind (CLN's height stalls, our
+  unanswered: the channel stays gated and refuses a payment; after `Node:ReestablishTimeout`, 15 s there, our node
+  drops the connection and its backoff dials CLN again, still gated, NL-796), and CLN split from bitcoind (CLN's height stalls, our
   node follows the tip and pays over the established connection; CLN catches up after the heal).
 - `Live/ChainMonitorZmqClusterTests` (Explicit): bitcoind keeps only RPC and P2P open (`LimitIngressPortsAsync`) and
   restarts in place, so our ZMQ subscriber is gone (`TcpConnectionTable` shows no connection on 28332); our node

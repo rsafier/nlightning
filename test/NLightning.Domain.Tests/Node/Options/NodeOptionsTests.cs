@@ -254,6 +254,26 @@ public class NodeOptionsTests
     }
 
     [Fact]
+    public void Given_ReestablishTimeouts_When_GetValidationErrors_Then_OnlyANegativeOneIsAnError()
+    {
+        // Arrange (NL-796: 60 s by default, zero turns the deadline off)
+        var defaults = new NodeOptions();
+        var off = new NodeOptions { ReestablishTimeout = TimeSpan.Zero };
+        var negative = new NodeOptions { ReestablishTimeout = TimeSpan.FromSeconds(-1) };
+
+        // Act
+        var defaultErrors = defaults.GetValidationErrors();
+        var offErrors = off.GetValidationErrors();
+        var negativeErrors = negative.GetValidationErrors();
+
+        // Assert
+        Assert.Equal(TimeSpan.FromSeconds(60), defaults.ReestablishTimeout);
+        Assert.Empty(defaultErrors);
+        Assert.Empty(offErrors);
+        Assert.Contains(negativeErrors, e => e.Contains(nameof(NodeOptions.ReestablishTimeout)));
+    }
+
+    [Fact]
     public void Given_InvalidRoutingOptions_When_GetValidationErrors_Then_RoutingErrorsIncluded()
     {
         // Arrange
