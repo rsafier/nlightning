@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text;
 using NBitcoin;
 using NBitcoin.Secp256k1;

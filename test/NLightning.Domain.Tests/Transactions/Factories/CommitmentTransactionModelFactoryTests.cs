@@ -582,6 +582,95 @@ public class CommitmentTransactionModelFactoryTests
         Assert.Equal(ourNewKey, (byte[])remote.RemoteAnchorOutput!.FundingPubKey);
     }
 
+    [Fact]
+    public void Given_SimpleTaproot_When_CreatingLocalCommitment_Then_TaprootFeeAndAnchorsOnDelayedAndRemoteKeys()
+    {
+        // Arrange: bolt-simple-taproot.md, anchors keyed to local_delayedpubkey (holder) and remotepubkey (other side)
+        var channel = CreateChannel(true, LightningMoney.Satoshis(354), LightningMoney.Satoshis(354),
+                                    LightningMoney.Zero, LightningMoney.Zero);
+        var spec = new CommitmentTxSpec(7_000_000_000, 3_000_000_000, 15_000);
+        var factory = CreateFactoryWithDelayedKey(out var delayedKey);
+
+        // Act
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, spec, CommitmentSide.Local, 42,
+                                                                       CommitmentFormat.SimpleTaproot);
+
+        // Assert: 968 * 15,000 / 1000 = 14,520 sat (the first vector's fee) and both 330 sat anchors from the funder
+        Assert.Equal(CommitmentFormat.SimpleTaproot, transactionModel.Format);
+        Assert.True(transactionModel.IsSimpleTaproot);
+        Assert.True(transactionModel.HasAnchors);
+        Assert.Equal(LightningMoney.Satoshis(14_520), transactionModel.Fee);
+        Assert.NotNull(transactionModel.ToLocalOutput);
+        Assert.Equal(LightningMoney.Satoshis(7_000_000 - 14_520 - 660), transactionModel.ToLocalOutput.Amount);
+        Assert.NotNull(transactionModel.LocalAnchorOutput);
+        Assert.Equal(delayedKey, transactionModel.LocalAnchorOutput.FundingPubKey);
+        Assert.NotNull(transactionModel.RemoteAnchorOutput);
+        Assert.Equal(Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes(),
+                     (byte[])transactionModel.RemoteAnchorOutput.FundingPubKey);
+    }
+
+    [Fact]
+    public void Given_SimpleTaproot_When_CreatingRemoteCommitment_Then_OurAnchorIsOurPaymentBasepoint()
+    {
+        // Arrange
+        var channel = CreateChannel(true, LightningMoney.Satoshis(354), LightningMoney.Satoshis(354),
+                                    LightningMoney.Zero, LightningMoney.Zero);
+        var spec = new CommitmentTxSpec(3_000_000_000, 7_000_000_000, 253);
+        var factory = CreateFactoryWithDelayedKey(out var delayedKey);
+
+        // Act
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, spec, CommitmentSide.Remote, 7,
+                                                                       CommitmentFormat.SimpleTaproot,
+                                                                       s_emptyCompactPubKey);
+
+        // Assert: the holder (the peer) keeps its delayed key, the counterparty anchor is our remotepubkey
+        Assert.NotNull(transactionModel.LocalAnchorOutput);
+        Assert.Equal(delayedKey, transactionModel.LocalAnchorOutput.FundingPubKey);
+        Assert.NotNull(transactionModel.RemoteAnchorOutput);
+        Assert.Equal(Bolt3AppendixCVectors.NodeAPaymentBasepoint.ToBytes(),
+                     (byte[])transactionModel.RemoteAnchorOutput.FundingPubKey);
+        Assert.Equal(LightningMoney.Satoshis(968 * 253 / 1000), transactionModel.Fee);
+    }
+
+    [Fact]
+    public void Given_SimpleTaprootAtAHighFeerate_When_CreatingLocalCommitment_Then_HtlcsAreTrimmedOnTheDustLimitOnly()
+    {
+        // Arrange: zero-fee HTLC transactions, so 2,500 sat stays and 2,499.999 sat goes at a 2,500 sat dust limit
+        var atDust = new Htlc(LightningMoney.Satoshis(2_500), null!, HtlcDirection.Outgoing, 500, 0, 0,
+                              Bolt3AppendixCVectors.Htlc2PaymentHash, HtlcState.Offered);
+        var belowDust = new Htlc(LightningMoney.MilliSatoshis(2_499_999), null!, HtlcDirection.Incoming, 501, 0, 0,
+                                 Bolt3AppendixCVectors.Htlc3PaymentHash, HtlcState.Offered);
+        var channel = CreateChannel(true, LightningMoney.Satoshis(2_500), LightningMoney.Satoshis(2_500),
+                                    LightningMoney.Zero, LightningMoney.Zero);
+        var spec = new CommitmentTxSpec(6_000_000_000, 3_000_000_000, 50_000, [atDust, belowDust]);
+        var factory = CreateFactoryWithDelayedKey(out _);
+
+        // Act
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, spec, CommitmentSide.Local, 42,
+                                                                       CommitmentFormat.SimpleTaproot);
+
+        // Assert
+        Assert.Single(transactionModel.OfferedHtlcOutputs);
+        Assert.Empty(transactionModel.ReceivedHtlcOutputs);
+        Assert.Equal(LightningMoney.Satoshis((968 + 172) * 50_000 / 1000), transactionModel.Fee);
+    }
+
+    private static CommitmentTransactionModelFactory CreateFactoryWithDelayedKey(out CompactPubKey delayedKey)
+    {
+        CompactPubKey delayed = Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes();
+        delayedKey = delayed;
+        var keys = new CommitmentKeys { LocalDelayedPubKey = delayed, PerCommitmentPoint = s_emptyCompactPubKey };
+        var keyDerivationService = new Mock<ICommitmentKeyDerivationService>();
+        keyDerivationService.Setup(x => x.DeriveLocalCommitmentKeys(It.IsAny<uint>(), It.IsAny<ChannelBasepoints>(),
+                                                                    It.IsAny<ChannelBasepoints>(), It.IsAny<ulong>()))
+                            .Returns(keys);
+        keyDerivationService.Setup(x => x.DeriveRemoteCommitmentKeys(It.IsAny<ChannelBasepoints>(),
+                                                                     It.IsAny<ChannelBasepoints>(),
+                                                                     It.IsAny<CompactPubKey>()))
+                            .Returns(keys);
+        return new CommitmentTransactionModelFactory(keyDerivationService.Object, new Mock<ILightningSigner>().Object);
+    }
+
     private static CommitmentTransactionModelFactory CreateFactory()
     {
         return new CommitmentTransactionModelFactory(new Mock<ICommitmentKeyDerivationService>().Object,
