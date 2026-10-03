@@ -90,7 +90,7 @@ using TestUtils;
 /// meant at a quiescent point, since nothing retransmits.</para>
 /// </remarks>
 [ExcludeFromCodeCoverage]
-internal sealed class ThreeNodeHarness : IAsyncDisposable
+internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
 {
     public const ulong FundingSatoshis = 2_000_000;
     public const ulong PushSatoshis = 800_000;
@@ -336,7 +336,7 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
         }
     }
 
-    internal void Route(SwitchNode from, CompactPubKey to, IChannelMessage message)
+    public void Route(SwitchNode from, CompactPubKey to, IChannelMessage message)
     {
         var target = Find(to);
         if (!from.IsPeerAlive(to) || !target.IsRunning)
@@ -451,11 +451,12 @@ internal sealed record SentMessage(
     IChannelMessage Message,
     IReadOnlyDictionary<ChannelId, ChannelCommitments> SenderStates);
 
-/// <summary>One node of <see cref="ThreeNodeHarness"/>.</summary>
+/// <summary>One node of <see cref="ThreeNodeHarness"/> (or of another <see cref="ISwitchNodeNetwork"/>, such as the
+/// trampoline proofs' four-node <c>TrampolineHarness</c>).</summary>
 [ExcludeFromCodeCoverage]
 internal sealed class SwitchNode
 {
-    private readonly ThreeNodeHarness _harness;
+    private readonly ISwitchNodeNetwork _harness;
     private readonly ConcurrentDictionary<CompactPubKey, bool> _peerAlive = new();
     private ServiceProvider? _provider;
 
@@ -519,7 +520,7 @@ internal sealed class SwitchNode
     /// follows).</summary>
     public long LocalBalanceMsat => Channels.Sum(c => checked((long)c.LocalBalance.MilliSatoshi));
 
-    public SwitchNode(ThreeNodeHarness harness, string name, byte seed, string databasePath, RoutingOptions routing)
+    public SwitchNode(ISwitchNodeNetwork harness, string name, byte seed, string databasePath, RoutingOptions routing)
     {
         _harness = harness;
         Name = name;
