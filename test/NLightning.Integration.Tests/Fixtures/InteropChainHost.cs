@@ -52,7 +52,7 @@ public sealed class InteropChainHost(DockerClient client, string networkName, st
     public async Task StartAsync()
     {
         const string image = $"{BitcoinImage}@{BitcoinDigest}";
-        await EnsureImageAsync(client, BitcoinImage, BitcoinDigest);
+        await DockerContainerUtils.EnsureImageAsync(client, BitcoinImage, BitcoinDigest);
 
         await DockerContainerUtils.RemoveContainerAsync(client, BitcoindName);
         await RemoveNetworkAsync();
@@ -115,36 +115,6 @@ public sealed class InteropChainHost(DockerClient client, string networkName, st
     {
         await DockerContainerUtils.RemoveContainerAsync(client, BitcoindName);
         await RemoveNetworkAsync();
-    }
-
-    /// <summary>
-    /// Pulls <paramref name="repository"/> at <paramref name="tagOrDigest"/> unless it is already present.
-    /// </summary>
-    public static async Task EnsureImageAsync(DockerClient docker, string repository, string tagOrDigest)
-    {
-        var reference = tagOrDigest.StartsWith("sha256:", StringComparison.Ordinal)
-                            ? $"{repository}@{tagOrDigest}"
-                            : $"{repository}:{tagOrDigest}";
-        if (await ImageExistsAsync(docker, reference))
-            return;
-
-        await docker.Images.CreateImageAsync(new ImagesCreateParameters { FromImage = repository, Tag = tagOrDigest },
-                                             null, new Progress<JSONMessage>());
-        if (!await ImageExistsAsync(docker, reference))
-            throw new InvalidOperationException($"Could not pull {reference}");
-    }
-
-    public static async Task<bool> ImageExistsAsync(DockerClient docker, string reference)
-    {
-        try
-        {
-            await docker.Images.InspectImageAsync(reference);
-            return true;
-        }
-        catch (DockerImageNotFoundException)
-        {
-            return false;
-        }
     }
 
     /// <summary>

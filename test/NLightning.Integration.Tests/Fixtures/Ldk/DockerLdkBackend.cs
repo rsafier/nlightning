@@ -123,7 +123,7 @@ public sealed class DockerLdkBackend : ILdkBackend
 
     private async Task EnsureLdkImageAsync()
     {
-        if (await InteropChainHost.ImageExistsAsync(_client, $"{LdkFixture.LdkImage}:{LdkFixture.LdkTag}"))
+        if (await DockerContainerUtils.ImageExistsAsync(_client, $"{LdkFixture.LdkImage}:{LdkFixture.LdkTag}"))
             return;
 
         var dockerfileDir = EclairFixture.FindDockerDirectory("ldk_server");

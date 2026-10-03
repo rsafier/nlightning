@@ -71,7 +71,7 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
 - `Fixtures/LightningRegtestNetworkFixture` (collections `regtest`, `onchain-regtest`, `gossip-regtest`) keeps its
   members and delegates to `Fixtures/Lnd/ILndNetworkBackend`, picked by `NLTG_TEST_BACKEND` when xunit creates it
   (`IAsyncLifetime`; the network starts in `InitializeAsync`): `DockerLndBackend` (the former fixture: LNUnit's
-  builder, the same containers, flags, channels and image) or `ClusterLndBackend`. Members: `Bitcoin` (the miner's
+  builder, the same containers, flags, channels and image; the only LNUnit user, NL-819) or `ClusterLndBackend`. Members: `Bitcoin` (the miner's
   RPC with its `miner` wallet, by pod IP on the cluster), `BitcoinZmqPorts` (28332/28333 on that host), `LndNodes`,
   `GetLndNode(alias)` (in-tree `LndNodeConnection`s, the same objects across restarts), `RestartLndAsync(alias)`,
   `GetLndPeerEndpointAsync(lnd)`, `HostAddressForLnd` (where LND dials us: `HOST_ADDRESS`/`host.docker.internal` or

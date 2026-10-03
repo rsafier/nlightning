@@ -1,7 +1,6 @@
 using System.Globalization;
 using Docker.DotNet;
 using Docker.DotNet.Models;
-using LNUnit.Setup;
 using NBitcoin.RPC;
 using NLightning.Tests.Utils;
 
@@ -52,8 +51,8 @@ public sealed class DockerClnBackend : IClnBackend
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        await _client.PullImageAndWaitForCompleted(BitcoinImage, BitcoinTag);
-        await _client.PullImageAndWaitForCompleted(ClnFixture.ClnImage, ClnFixture.ClnTag);
+        await DockerContainerUtils.EnsureImageAsync(_client, BitcoinImage, BitcoinTag);
+        await DockerContainerUtils.EnsureImageAsync(_client, ClnFixture.ClnImage, ClnFixture.ClnTag);
 
         await DockerContainerUtils.RemoveContainerAsync(_client, ClnFixture.ClnContainerName);
         await DockerContainerUtils.RemoveContainerAsync(_client, ClnFixture.BitcoinContainerName);

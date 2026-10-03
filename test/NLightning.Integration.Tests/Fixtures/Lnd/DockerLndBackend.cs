@@ -10,16 +10,29 @@ namespace NLightning.Integration.Tests.Fixtures.Lnd;
 using Docker.Utils;
 
 /// <summary>
-/// The Docker backend of <see cref="LightningRegtestNetworkFixture"/> (the default, unchanged from the fixture before
-/// the cluster port): LNUnit's <c>LNUnitBuilder</c> starts bitcoind (<c>miner</c>) and the four LND containers with
-/// their startup channels; every LND client the tests get is our own <see cref="LndNodeConnection"/>
-/// (<c>test/NLightning.Testing.Lnd</c>, LND 0.21.4 protos), built from the gRPC endpoint, <c>tls.cert</c> and
-/// <c>admin.macaroon</c> the builder read out of each container (test harness phase 3 lane B).
+/// The Docker backend of <see cref="LightningRegtestNetworkFixture"/> (<c>NLTG_TEST_BACKEND=docker</c>, the default,
+/// unchanged from the fixture before the cluster port): bitcoind (<c>miner</c>) and the four LND containers
+/// (<see cref="LightningRegtestNetworkFixture.ContainerNames"/>) with their startup channels, orchestrated by LNUnit's
+/// <c>LNUnitBuilder</c>.
 /// </summary>
 /// <remarks>
-/// The containers (<see cref="LightningRegtestNetworkFixture.ContainerNames"/>) are force-removed before the network
-/// starts and when it is disposed. Our nodes dial LND at its container address (resolved from the gRPC endpoint), and
-/// LND dials us at <see cref="HostAddressForPeers"/>.
+/// <para>
+/// This is the only code of the test projects that uses LNUnit (NL-819, guarded by <c>LnUnitConfinementTests</c>): the
+/// other Docker fixtures pull their images with <see cref="DockerContainerUtils.EnsureImageAsync"/>, and every LND
+/// client the tests get is our own <see cref="LndNodeConnection"/> (<c>test/NLightning.Testing.Lnd</c>, LND 0.21.4
+/// protos), built from the gRPC endpoint, <c>tls.cert</c> and <c>admin.macaroon</c> the builder read out of each
+/// container (test harness phase 3 lane B). The <c>LNUnit</c> package brings <c>lnunit.lnd</c> (its own LND client)
+/// along transitively; nothing here uses it.
+/// </para>
+/// <para>
+/// The containers are force-removed before the network starts and when it is disposed (only once the start got to the
+/// builder, so a backend that never started never removes another process's containers). Our nodes dial LND at its
+/// container address (resolved from the gRPC endpoint), and LND dials us at <see cref="HostAddressForPeers"/>.
+/// <see cref="RestartLndAsync"/> is a plain container restart (LNUnit's <c>RestartByAlias</c> with its defaults: same
+/// container, network and data) and returns once the container runs, not once LND serves every RPC: the caller waits
+/// for LND (<c>ReestablishFlowTests</c> polls <c>GetInfo</c> with a deadline, because LNUnit's own readiness wait can
+/// block without one).
+/// </para>
 /// </remarks>
 public sealed class DockerLndBackend : ILndNetworkBackend
 {
@@ -149,10 +162,10 @@ public sealed class DockerLndBackend : ILndNetworkBackend
         await ConnectLndNodesAsync(builder);
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
-            return ValueTask.CompletedTask;
+            return;
 
         foreach (var lnd in _lndNodes)
             lnd.Dispose();
@@ -163,12 +176,14 @@ public sealed class DockerLndBackend : ILndNetworkBackend
         if (_builder is not null)
         {
             foreach (var name in LightningRegtestNetworkFixture.ContainerNames)
-                DockerContainerUtils.RemoveContainerAsync(_client, name).GetAwaiter().GetResult();
-            _builder.Destroy();
+                await DockerContainerUtils.RemoveContainerAsync(_client, name);
+
+            // The containers are gone already: LNUnit's Destroy() would only fail on them (the fixture used to call it
+            // without awaiting it), so the builder just releases its Docker client and its own LND connection pool
+            _builder.Dispose();
         }
 
         _client.Dispose();
-        return ValueTask.CompletedTask;
     }
 
     /// <summary>
@@ -201,14 +216,8 @@ public sealed class DockerLndBackend : ILndNetworkBackend
     private async Task EnsureLndImageAsync()
     {
         var image = $"{LightningRegtestNetworkFixture.LndImageName}:{LightningRegtestNetworkFixture.LndImageTag}";
-        try
-        {
-            await _client.Images.InspectImageAsync(image);
+        if (await DockerContainerUtils.ImageExistsAsync(_client, image))
             return;
-        }
-        catch (DockerImageNotFoundException)
-        {
-        }
 
         await _client.CreateDockerImageFromPath("../../../../Docker/custom_lnd", [image]);
     }

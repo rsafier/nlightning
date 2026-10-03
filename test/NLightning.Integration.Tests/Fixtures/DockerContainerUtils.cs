@@ -4,10 +4,52 @@ using Docker.DotNet.Models;
 namespace NLightning.Integration.Tests.Fixtures;
 
 /// <summary>
-/// Container helpers shared by the Docker fixtures.
+/// Container and image helpers shared by the Docker fixtures. They replace <c>LNUnit.Setup</c>'s Docker extensions
+/// (<c>PullImageAndWaitForCompleted</c>), so LNUnit is referenced only by the Docker LND backend
+/// (<see cref="Lnd.DockerLndBackend"/>; NL-819).
 /// </summary>
 internal static class DockerContainerUtils
 {
+    /// <summary>
+    /// Pulls <paramref name="repository"/> at <paramref name="tagOrDigest"/> (a tag, or a <c>sha256:</c> digest)
+    /// unless it is already present, and checks that it then is.
+    /// </summary>
+    /// <remarks>
+    /// Unlike LNUnit's <c>PullImageAndWaitForCompleted</c>, which asked the registry on every start, a present image is
+    /// used as is: the fixtures pin their tags, so a start works offline and never moves a local tag.
+    /// </remarks>
+    public static async Task EnsureImageAsync(DockerClient docker, string repository, string tagOrDigest)
+    {
+        var reference = tagOrDigest.StartsWith("sha256:", StringComparison.Ordinal)
+                            ? $"{repository}@{tagOrDigest}"
+                            : $"{repository}:{tagOrDigest}";
+        if (await ImageExistsAsync(docker, reference))
+            return;
+
+        // Docker.DotNet returns once the pull's progress stream has ended
+        await docker.Images.CreateImageAsync(new ImagesCreateParameters { FromImage = repository, Tag = tagOrDigest },
+                                             null, new Progress<JSONMessage>());
+        if (!await ImageExistsAsync(docker, reference))
+            throw new InvalidOperationException($"Could not pull {reference}");
+    }
+
+    /// <summary>
+    /// Whether the image <paramref name="reference"/> (<c>repository:tag</c> or <c>repository@sha256:...</c>) is
+    /// present locally.
+    /// </summary>
+    public static async Task<bool> ImageExistsAsync(DockerClient docker, string reference)
+    {
+        try
+        {
+            await docker.Images.InspectImageAsync(reference);
+            return true;
+        }
+        catch (DockerImageNotFoundException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>
     /// Force-removes a container (and its volumes) by name, ignoring a missing one.
     /// </summary>

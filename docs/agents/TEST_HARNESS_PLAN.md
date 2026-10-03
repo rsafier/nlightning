@@ -1206,6 +1206,37 @@ Fixture ready: CLN 6.1-7.5 s, LDK 14.6-14.7 s, Postgres 5.0-5.4 s (each in line 
 Next: the LND fixture's cluster backend (lane `hf-lnd-wire`) turns the five LND suites on in the matrix without a
 runner change; phase 6 runs the full matrix twice concurrently.
 
+### Lane record: LNUnit confined to the Docker LND backend (2026-10-02, branch `hf-lnunit` from 7593fdda)
+
+- **Done (NL-819).** `LightningRegtestNetworkFixture` is backend-neutral: it holds an `ILndNetworkBackend` (interface
+  unchanged) and keeps only the alias/image constants and `GetOrCreateAsync`. The LNUnit code moved to
+  `Fixtures/Lnd/DockerLndBackend` (the `LNUnitBuilder` network, the in-tree `LndNodeConnection`s, the `custom_lnd`
+  image build when missing); its dispose now disposes the builder instead of the old unawaited `Destroy()`, which
+  could only fail on containers the fixture had already removed. The fixture picks the backend from `TestBackend.Current`
+  (lane `hf-lnd-wire`; the integration merged both). `LNUnit.Setup`'s `PullImageAndWaitForCompleted` (CLN,
+  Postgres, SQL Server) is replaced by `DockerContainerUtils.EnsureImageAsync`/`ImageExistsAsync` (moved from
+  `InteropChainHost`; pull only when the image is missing, as the Eclair/LDK/Tor fixtures already did).
+  `Testing.Lnd.Tests` lost `LnUnitCoexistenceTests` and its `LNUnit.LND` reference. `LNUnit` stays referenced by
+  Integration.Tests only, and brings `lnunit.lnd` (global `Lnrpc`, ...) transitively; nothing uses it.
+  `Fixtures/LnUnitConfinementTests` (non-Docker) fails when another source uses an LNUnit namespace or another
+  project references the package.
+- **Proof.** Release build 0 warnings, format, sln check; Integration.Tests non-Docker 1122/1122, Testing.Lnd.Tests
+  106/106; Docker (machine lock) `PostgresTests` 24/24 and `ChannelOpeningFlowTests` 5/5, twice, no leftover
+  containers.
+- **Full removal (NL-820, open, owner decision).** Two ways. (a) Re-implement `DockerLndBackend` on Docker.DotNet
+  (about 1-1.5 days): bitcoind `miner` on the default bridge (wallet, mature coins), four `custom_lnd:0.21.4-beta`
+  containers named by alias with `LndWorkload`'s flags (alice's `--protocol.rbf-coop-close`/`--accept-keysend`),
+  `tls.cert`/`admin.macaroon` read from the container's archive, `SERVER_ACTIVE` waits, funding, permanent peers, the
+  pushed opens, the funders' policies and the graph wait of `LndRegtestNetworkSpec.Default` (the cluster's
+  `LndRegtestNetwork` already does all of it, but on a `TestRun` topology with pod handles (pod IP/UID in the
+  restart); sharing it needs a runtime seam under it), the restart as a plain container restart (the NL-262 address holds stay in the test), and the
+  image build with `System.Formats.Tar` instead of LNUnit's SharpCompress tar. The container names, the bridge
+  network and `host.docker.internal` must stay, because `ReestablishFlowTests`, `RelayBitcoind` and
+  `RegtestBitcoinEndpoint` rely on them. (b) Retire the Docker LND backend once the cluster backend is the default
+  for the LND, on-chain, gossip and ABCD suites (phase 6); the Tor fixture uses CLN only, so it does not need it. Either
+  way the `LNUnit` reference goes, with it `lnunit.lnd` and SharpCompress 0.41.0, so the NL-170
+  `NuGetAuditSuppress` in `test/Directory.Build.props` can go too.
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.

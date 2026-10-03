@@ -242,7 +242,7 @@ public sealed class EclairFixture : IAsyncLifetime
         if (process.ExitCode != 0)
             throw new InvalidOperationException($"docker build {tag} failed:\n{await stdout}\n{await stderr}");
 
-        if (!await InteropChainHost.ImageExistsAsync(client, tag))
+        if (!await DockerContainerUtils.ImageExistsAsync(client, tag))
             throw new InvalidOperationException($"docker build {tag} did not produce the image");
     }
 }

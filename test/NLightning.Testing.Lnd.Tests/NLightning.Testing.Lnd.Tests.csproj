@@ -29,12 +29,6 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <!--
-      lnunit.lnd only to prove that both client sets compile and load side by side in one test assembly (what phase 3
-      of the test harness plan does while it swaps the tests over) and to compare their services. Remove it, and
-      LnUnitCoexistenceTests, once the tests no longer use LNUnit.
-    -->
-    <PackageReference Include="LNUnit.LND" Version="3.0.4"/>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0"/>
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
       <PrivateAssets>all</PrivateAssets>
