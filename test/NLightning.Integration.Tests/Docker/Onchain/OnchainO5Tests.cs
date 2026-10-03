@@ -256,14 +256,13 @@ public class OnchainO5Tests : IAsyncLifetime
 
     /// <summary>
     /// The breach of Proof O5 (a) up to our restart: us → david, 1,000,000 sat with 300,000 pushed; a payment each way;
-    /// david's <c>channel.db</c> copied (container stopped, <c>/home/lnd/.lnd/data/graph/regtest/channel.db</c>);
+    /// david's <c>channel.db</c> copied while he is stopped (<see cref="LndChannelDbRollback"/>);
     /// three payments each way revoke that state; our node stops; david restarts on the copy and force-closes (its
     /// revoked commitment is mined); our node starts.
     /// </summary>
     private async Task<(NLightningTestNode Node, LndNodeConnection David, ChannelId ChannelId, string ChannelPoint,
                         Transaction Revoked, LightningMoney WalletBefore)> PrepareLndBreachAsync(CancellationToken ct)
     {
-        _fixture.SkipUnlessDocker("rolls david's channel.db back inside his Docker container (LndChannelDbRollback)");
         var node = await CreateNodeAsync("breach-victim", ct);
         var david = _fixture.GetLndNode("david");
         Console.WriteLine($"[o5a] {await LndTestHelpers.GetVersionAsync(david, ct)}");

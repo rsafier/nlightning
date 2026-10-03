@@ -48,7 +48,6 @@ public class AnchorsO5Tests : IAsyncLifetime
     {
         // Arrange: us -> david with a push; payments both ways; david's channel.db copied; three more payments each way
         var ct = TestContext.Current.CancellationToken;
-        _harness.Fixture.SkipUnlessDocker("rolls david's channel.db back inside his Docker container (LndChannelDbRollback)");
         var node = await _harness.CreateNodeAsync("anchors-o5-victim", ct);
         var david = _harness.Fixture.GetLndNode("david");
         var channel = await _harness.OpenAnchorsChannelAsync(node, david, LightningMoney.Satoshis(300_000), ct);

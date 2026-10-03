@@ -20,7 +20,7 @@ using Utils;
 /// </summary>
 /// <remarks>
 /// <para>Our node runs on a <see cref="RelayBitcoind"/> (the miner's image, a 5 MB mempool, synced from and relaying
-/// to the miner) whose mempool the test fills with 6 sat/vB transactions until bitcoind trims it: its
+/// to the miner; a container on Docker, a pod in the network's namespace on the cluster) whose mempool the test fills with 6 sat/vB transactions until bitcoind trims it: its
 /// <c>mempoolminfee</c> rises to about 7 sat/vB while <c>minrelaytxfee</c> stays at 1 sat/vB. The channel is opened at
 /// our opener's lowest feerate (1,000 sat/kw, about 4 sat/vB), so the commitment is between the two: refused alone
 /// ("mempool min fee not met"), accepted in a package whose feerate (the child pays for the 10 sat/vB estimate) is
@@ -57,10 +57,6 @@ public class AnchorsPackageRelayTests : IAsyncLifetime
     public async ValueTask InitializeAsync()
     {
         var ct = TestContext.Current.CancellationToken;
-        // The relay is a Docker container on the miner's network (the test skips itself on the cluster backend)
-        if (_harness.Fixture.Backend != TestBackendKind.Docker)
-            return;
-
         _relay = await RelayBitcoind.StartAsync(_harness.Fixture, Money.Coins(1m), ct);
         _node = await _harness.CreateNodeAsync("anchors-package", ct, bitcoin: _relay.Endpoint);
     }
@@ -71,7 +67,6 @@ public class AnchorsPackageRelayTests : IAsyncLifetime
         // Arrange: an anchors channel whose commitment pays about 4 sat/vB; then a relay mempool whose minimum is above
         // that
         var ct = TestContext.Current.CancellationToken;
-        _harness.Fixture.SkipUnlessDocker("its relay bitcoind (RelayBitcoind) is a Docker container on the miner's network");
         var node = _node!;
         var relay = _relay!;
         var david = _harness.Fixture.GetLndNode("david");
