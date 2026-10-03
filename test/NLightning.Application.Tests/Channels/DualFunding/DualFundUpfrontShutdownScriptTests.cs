@@ -95,7 +95,11 @@ public class DualFundUpfrontShutdownScriptTests
 
     private static async Task<DualFundHarness> CreateAsync(FeatureSupport anySegwit)
     {
-        var harness = await DualFundHarness.CreateAsync(0);
+        // The refused opens end at Alice's open deadline on the stepped clock, so they keep a short one; an open
+        // that completes keeps the default, which a loaded run cannot reach in 10 ms clock steps
+        var harness = await DualFundHarness.CreateAsync(0, anySegwit == FeatureSupport.No
+                                                               ? TimeSpan.FromSeconds(1)
+                                                               : null);
         harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
         harness.NegotiatedFeatures = new FeatureOptions
         {
