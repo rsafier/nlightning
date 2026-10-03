@@ -7504,7 +7504,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Lane record: LNUnit confined to the Docker LND backend"
 
 ### NL-820 Full LNUnit removal: re-implement the Docker LND backend on Docker.DotNet, or retire it once the cluster backend is the default
-- **Status:** fixed (ia-retire-lnunit)
+- **Status:** fixed (42e96743)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `test/NLightning.Integration.Tests/Fixtures/Lnd/DockerLndBackend.cs`, `test/Directory.Build.props` (the NL-170 `NuGetAuditSuppress`)
