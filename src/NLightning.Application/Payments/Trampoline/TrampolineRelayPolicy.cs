@@ -62,6 +62,49 @@ public static class TrampolineRelayPolicy
         return new TrampolineRelayDecision(true, maxFee, minCltvIn - keptDelta, fee, null, null);
     }
 
+    /// <summary>
+    /// Checks a complete set of a blinded trampoline hop (BOLTs PR 836 TR-R-10, NL-895 D-NL895-2): the recipient fixed
+    /// the hop's price in the path's <c>payment_relay</c>, which <paramref name="amountOut"/> and
+    /// <paramref name="cltvOut"/> already come from (the outer total and expiry, see
+    /// <c>IncomingOnionTrampolineRelay</c>; <c>payment_constraints</c> checked there too), so our
+    /// <c>Node:Trampoline</c> fee and delta do not apply and a refusal is never NODE|26.
+    /// </summary>
+    /// <remarks>
+    /// <para>What is left is our own safety, as for a blinded forward (<c>HtlcForwardingPolicy</c>): the set covers the
+    /// amount out, the outgoing expiry is above the height, the lowest incoming expiry keeps our plain forwarding delta
+    /// (<c>Node:Routing:CltvExpiryDelta</c>) above it (the leg's first HTLC may expire no later than that) and our
+    /// <c>MinCltvMarginBlocks</c> above the height. The leg's budget is what <c>payment_relay</c> granted: the fee is
+    /// sum in − amount out, the first HTLC's expiry at most the lowest incoming expiry − our forwarding delta.</para>
+    /// <para>A refusal carries <c>invalid_onion_blinding</c> (with an empty <c>sha256_of_onion</c>: the relay engine
+    /// answers each part as the blinded rules say, our own error at the introduction node, malformed past it).</para>
+    /// </remarks>
+    public static TrampolineRelayDecision EvaluateBlinded(TrampolineOptions options, LightningMoney sumIn,
+                                                          uint minCltvIn, LightningMoney amountOut, uint cltvOut,
+                                                          uint height, ushort forwardingCltvExpiryDelta)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(sumIn);
+        ArgumentNullException.ThrowIfNull(amountOut);
+
+        if (sumIn.MilliSatoshi < amountOut.MilliSatoshi)
+            return RefuseBlinded($"{sumIn.MilliSatoshi} msat in for {amountOut.MilliSatoshi} msat out");
+
+        if (cltvOut <= height)
+            return RefuseBlinded($"outgoing_cltv_value {cltvOut} is not above the height {height}");
+
+        if (minCltvIn < cltvOut || minCltvIn - cltvOut < forwardingCltvExpiryDelta)
+            return RefuseBlinded($"payment_relay leaves {(long)minCltvIn - cltvOut} blocks between the incoming "
+                               + $"expiry {minCltvIn} and the outgoing {cltvOut}, our forwarding delta is "
+                               + $"{forwardingCltvExpiryDelta}");
+
+        if ((ulong)minCltvIn <= (ulong)height + options.MinCltvMarginBlocks)
+            return RefuseBlinded($"incoming expiry {minCltvIn} too close to the height {height} (margin "
+                               + $"{options.MinCltvMarginBlocks} blocks)");
+
+        var fee = LightningMoney.MilliSatoshis(sumIn.MilliSatoshi - amountOut.MilliSatoshi);
+        return new TrampolineRelayDecision(true, fee, minCltvIn - forwardingCltvExpiryDelta, fee, null, null);
+    }
+
     /// <summary>Our trampoline fee for forwarding <paramref name="amountOut"/>.</summary>
     public static LightningMoney FeeOf(TrampolineOptions options, LightningMoney amountOut)
     {
@@ -81,6 +124,9 @@ public static class TrampolineRelayPolicy
 
     private static TrampolineRelayDecision Refuse(TrampolineOptions options, string reason) =>
         new(false, null, null, null, InsufficientFailure(options), reason);
+
+    private static TrampolineRelayDecision RefuseBlinded(string reason) =>
+        new(false, null, null, null, FailureMessage.InvalidOnionBlinding(new byte[32]), $"blinded hop: {reason}");
 }
 
 /// <summary>What <see cref="TrampolineRelayPolicy.Evaluate"/> decided.</summary>

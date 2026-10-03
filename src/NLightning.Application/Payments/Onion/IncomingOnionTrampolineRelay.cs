@@ -1,5 +1,6 @@
 namespace NLightning.Application.Payments.Onion;
 
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Protocol.Onion.Models;
@@ -33,6 +34,13 @@ public sealed record IncomingOnionTrampolineRelay(Secret OuterSharedSecret, HopP
     /// </summary>
     public CompactPubKey? NextNodeId => Blinded is { } blinded ? blinded.RecipientData.NextNodeId
                                                                : InnerPayload.OutgoingNodeId;
+
+    /// <summary>
+    /// Inside a blinded route, the recipient data's <c>short_channel_id</c>: the next node is the peer of that channel
+    /// of ours (the relay engine resolves it as the switch resolves a blinded forward, NL-895); null outside a blinded
+    /// route or when the data names <c>next_node_id</c> only.
+    /// </summary>
+    public ShortChannelId? NextShortChannelId => Blinded?.RecipientData.ShortChannelId;
 
     /// <summary>
     /// Inside a blinded route, the path key to give the next trampoline node (in its outer payload's

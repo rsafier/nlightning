@@ -2303,30 +2303,10 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             ? htlc
             : null;
 
-    /// <summary>
-    /// The open channel the onion's <c>short_channel_id</c> names: one of our aliases or the peer's alias, or the real
-    /// scid unless <c>option_scid_alias</c> is in the channel type (<c>Compulsory</c>): BOLT 2 forbids routing into
-    /// such a channel by its real scid. A channel that only negotiated the feature (<c>Optional</c>, e.g. a public
-    /// channel, announced by its real scid) accepts both (NL-348).
+    /// <summary>The open channel the onion's <c>short_channel_id</c> names (<see cref="OutgoingChannelResolver"/>).
     /// </summary>
-    /// <remarks>Splicing plan D12 (SP2-0 seam, lane SP2-B): a short channel id a splice lock retired resolves through
-    /// <see cref="IRetiredScidMap"/> for 72 blocks, after the live ones and the aliases.</remarks>
     private ChannelModel? ResolveOutgoingChannel(ShortChannelId shortChannelId) =>
-        _channelMemoryRepository.FindChannels(c => c.State == ChannelState.Open
-                                                && (c.LocalAliases?.Contains(shortChannelId) == true
-                                                 || c.RemoteAlias == shortChannelId
-                                                 || (c.ChannelParams.UseScidAlias != FeatureSupport.Compulsory
-                                                  && c.ShortChannelId != default
-                                                  && c.ShortChannelId == shortChannelId)))
-                                .FirstOrDefault()
-     ?? ResolveRetiredChannel(shortChannelId);
-
-    /// <summary>The open channel a retired short channel id still names (D12), or null.</summary>
-    private ChannelModel? ResolveRetiredChannel(ShortChannelId shortChannelId) =>
-        _retiredScidMap is not null && _retiredScidMap.TryResolve(shortChannelId, out var channelId)
-     && _channelMemoryRepository.TryGetChannel(channelId, out var channel) && channel.State == ChannelState.Open
-            ? channel
-            : null;
+        OutgoingChannelResolver.Resolve(_channelMemoryRepository, _retiredScidMap, shortChannelId);
 
     /// <summary>
     /// Inside a blinded route (M5), the open channel to <paramref name="nextNodeId"/> (the recipient data's
