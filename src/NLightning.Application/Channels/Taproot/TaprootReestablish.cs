@@ -37,8 +37,8 @@ public sealed class TaprootReestablish
     /// before any retransmission. Before <c>channel_ready</c> (no commitment state) only the presence of the funding's
     /// entry is checked: the peer's <c>channel_ready</c> carries the same nonce.
     /// </summary>
-    /// <exception cref="ChannelFailedException">The map is absent or misses an active funding (MUST fail the
-    /// channel).</exception>
+    /// <exception cref="ChannelFailedException">The map is absent, misses an active funding or holds a nonce that
+    /// does not parse (MUST fail the channel).</exception>
     public async Task ReceiveNoncesAsync(ChannelModel channel, ChannelReestablishMessage message)
     {
         ArgumentNullException.ThrowIfNull(channel);
@@ -49,6 +49,7 @@ public sealed class TaprootReestablish
         if (message.NextLocalNoncesTlv is not { } noncesTlv)
             throw Fail(channel, "channel_reestablish without next_local_nonces on a simple taproot channel");
 
+        TaprootChannelNonces.ThrowIfUnparsable(channel, noncesTlv.Nonces, "channel_reestablish");
         var nonces = TaprootChannelNonces.ToDictionary(noncesTlv.Nonces);
         if (channel.Commitments is not { } commitments)
         {
