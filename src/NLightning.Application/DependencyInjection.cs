@@ -51,6 +51,7 @@ using OnionMessages;
 using Payments;
 using Payments.Send;
 using Payments.Switch;
+using Payments.Trampoline;
 using Protocol.Factories;
 
 /// <summary>
@@ -121,6 +122,8 @@ public static class DependencyInjection
         services.AddPaymentsServices();
         services.AddHtlcSwitchServices();
         services.AddPaymentSendServices();
+        // Trampoline relays (NL-875 TR3): the engine is the switch's relay ingress and origin-3 handler
+        services.AddTrampolineRelayServices();
         services.AddChannelSafetyServices();
         services.AddOnchainServices();
         // O7: the wallet's fee inputs (O7-T1) for anchors HTLC transactions (O7-T3) and CPFP children (O7-T2)

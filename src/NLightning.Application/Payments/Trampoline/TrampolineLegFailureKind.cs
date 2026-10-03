@@ -10,13 +10,21 @@ public enum TrampolineLegFailureKind
     /// <see cref="TrampolineLegFailure.DownstreamPacketToRewrap"/> holds the packet (BOLT 4 trampoline errors).</summary>
     DownstreamTrampolineError = 1,
 
-    /// <summary>An outer hop of our leg failed for good (retries exhausted); the relay answers with its own error
-    /// (<c>temporary_trampoline_failure</c> or <c>unknown_next_trampoline</c>).</summary>
+    /// <summary>An outer hop of our leg failed for good (retries exhausted, or a failure that stops the leg), or the next
+    /// trampoline node answered on its outer layer only (<see cref="TrampolineLegFailure.ErringNodeIsNextTrampoline"/>
+    /// set, never retried: its error is encrypted for us, not for the origin, so it cannot be re-wrapped); the relay
+    /// answers with its own error (<c>temporary_trampoline_failure</c> or <c>unknown_next_trampoline</c>).
+    /// <see cref="TrampolineLegFailure.Failure"/> holds the last decrypted failure when one was read.</summary>
     RouteFailure = 2,
 
     /// <summary>The leg's deadline passed before it completed.</summary>
     Timeout = 3,
 
     /// <summary>A local refusal (link down, channel quiescent, node shutting down, ...).</summary>
-    LocalFailure = 4
+    LocalFailure = 4,
+
+    /// <summary>The next trampoline node is unknown: no channel of ours goes to it and our graph does not have it. The
+    /// relay answers <c>unknown_next_trampoline</c> (permanent); every other failure to start is
+    /// <see cref="NoRoute"/> (a budget too small, for one), answered <c>temporary_trampoline_failure</c>.</summary>
+    UnknownNextNode = 5
 }

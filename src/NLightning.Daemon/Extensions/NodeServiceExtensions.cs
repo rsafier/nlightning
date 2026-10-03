@@ -31,6 +31,7 @@ using Application.Payments.Invoices;
 using Application.Payments.Routing.Interfaces;
 using Application.Payments.Send;
 using Application.Payments.Switch;
+using Application.Payments.Trampoline;
 using Contracts.Utilities;
 using Daemon.Ipc.Handlers;
 using Daemon.Ipc.Interfaces;
@@ -167,7 +168,8 @@ public static class NodeServiceExtensions
             new ListForwardsClientHandler(GetPaymentLayerService<IForwardCircuitDbRepository>(sp),
                                           sp.GetRequiredService<ILogger<ListForwardsClientHandler>>(),
                                           sp.GetService<IChannelMemoryRepository>(),
-                                          sp.GetService<IRefusedHtlcCounter>()));
+                                          sp.GetService<IRefusedHtlcCounter>(),
+                                          sp.GetService<ITrampolineRelayDbRepository>()));
         services.TryAddSingleton(TimeProvider.System);
 
         // Cooperative close (ClientCommand 13, BOLT2 plan N10); IChannelCloseService comes from AddApplicationServices
@@ -408,6 +410,21 @@ public static class NodeServiceExtensions
 
         // How long the final hop holds an incomplete basic_mpp HTLC set before mpp_timeout (optional; default 60 s)
         services.Configure<HtlcSwitchOptions>(configuration.GetSection("Node:Switch"));
+
+        // Our trampoline relay policy and limits (optional Node:Trampoline section; used only while trampoline_routing
+        // is advertised, NL-875 TR3); an invalid section fails the start
+        services.AddOptions<TrampolineOptions>()
+                .Bind(configuration.GetSection(TrampolineOptions.SectionName))
+                .Validate(options =>
+                 {
+                     var errors = options.GetValidationErrors();
+                     if (errors.Count > 0)
+                         throw new OptionsValidationException(TrampolineOptions.SectionName,
+                                                              typeof(TrampolineOptions), errors);
+
+                     return true;
+                 })
+                .ValidateOnStart();
 
         // BOLT 7 funding output lookups of channel announcements (optional Gossip section; defaults apply, G2-T2)
         services.Configure<FundingOutputLookupOptions>(configuration.GetSection("Gossip"));

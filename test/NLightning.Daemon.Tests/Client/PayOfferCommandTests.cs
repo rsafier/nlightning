@@ -51,6 +51,22 @@ public class PayOfferCommandTests
     }
 
     [Fact]
+    public void Given_ATrampolineNode_When_ParsedForPayoffer_Then_ItIsKeptAndFetchinvoiceRefusesIt()
+    {
+        // Arrange (NL-875)
+        var nodeId = "02" + new string('1', 64);
+
+        // Act
+        var parsed = ClientApp.ParsePayOfferOptions([Offer, "--trampoline", nodeId], true, out var error);
+
+        // Assert
+        Assert.Null(error);
+        Assert.Equal(nodeId, Convert.ToHexStringLower(parsed!.TrampolineNode!.Value));
+        Assert.NotNull(ClientApp.ValidateArguments("fetchinvoice", [Offer, "--trampoline", nodeId]));
+        Assert.NotNull(ClientApp.ValidateArguments("payoffer", [Offer, "--trampoline", "xyz"]));
+    }
+
+    [Fact]
     public void Given_APaymentOption_When_ValidatedForFetchinvoice_Then_UsageError()
     {
         // Act / Assert

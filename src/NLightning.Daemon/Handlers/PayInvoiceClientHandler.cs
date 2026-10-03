@@ -101,6 +101,7 @@ public sealed class PayInvoiceClientHandler
             MaxParts = request.MaxParts is { } maxParts ? (int)maxParts : null,
             OutgoingChannelId = ResolveChannel(request.OutgoingChannel, "outgoing"),
             IncomingChannelId = ResolveChannel(request.IncomingChannel, "incoming"),
+            TrampolineNode = request.TrampolineNode,
             Labels = labels
         };
 

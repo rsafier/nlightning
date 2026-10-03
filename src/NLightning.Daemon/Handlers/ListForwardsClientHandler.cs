@@ -9,8 +9,10 @@ using Domain.Client.Enums;
 using Domain.Client.Exceptions;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
+using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
+using Domain.Payments.Trampoline;
 using Interfaces;
 
 /// <summary>
@@ -29,6 +31,7 @@ public sealed class ListForwardsClientHandler
     private readonly IChannelMemoryRepository? _channelMemoryRepository;
     private readonly IForwardCircuitDbRepository _forwardCircuitRepository;
     private readonly IRefusedHtlcCounter? _refusedHtlcCounter;
+    private readonly ITrampolineRelayDbRepository? _trampolineRelayRepository;
 
     /// <inheritdoc/>
     public ClientCommand Command => ClientCommand.ListForwards;
@@ -36,8 +39,10 @@ public sealed class ListForwardsClientHandler
     public ListForwardsClientHandler(IForwardCircuitDbRepository forwardCircuitRepository,
                                      ILogger<ListForwardsClientHandler> logger,
                                      IChannelMemoryRepository? channelMemoryRepository = null,
-                                     IRefusedHtlcCounter? refusedHtlcCounter = null)
+                                     IRefusedHtlcCounter? refusedHtlcCounter = null,
+                                     ITrampolineRelayDbRepository? trampolineRelayRepository = null)
     {
+        _trampolineRelayRepository = trampolineRelayRepository;
         _ = logger;
         _forwardCircuitRepository = forwardCircuitRepository;
         _channelMemoryRepository = channelMemoryRepository;
@@ -79,7 +84,48 @@ public sealed class ListForwardsClientHandler
         return new ListForwardsClientResponse(
             forwards.Select(c => ForwardInfoClientResponse.FromModel(c, ScidOf(c.IncomingChannelId),
                                              ScidOf(c.OutgoingChannelId), ScidOf(c.FailureSource)))
-                    .ToList(), summary);
+                    .ToList(), summary, await ListTrampolineRelaysAsync(request, channelId, ct));
+    }
+
+    /// <summary>
+    /// The page of trampoline relays (NL-875) under the same filters: the forward statuses map to the relay's (pending
+    /// = collecting, offered = sending), a channel filter matches a relay with an incoming part on it, and a scid that
+    /// names none of our channels matches no relay (a relay has no single outgoing channel).
+    /// </summary>
+    private async Task<IReadOnlyList<TrampolineRelayInfoClientResponse>> ListTrampolineRelaysAsync(
+        ListForwardsClientRequest request, ChannelId? channelId, CancellationToken ct)
+    {
+        if (_trampolineRelayRepository is null || (request.ChannelScid is not null && channelId is null))
+            return [];
+
+        TrampolineRelayStatus? status = request.Status switch
+        {
+            null => null,
+            ForwardCircuitStatus.Pending => TrampolineRelayStatus.Collecting,
+            ForwardCircuitStatus.Offered => TrampolineRelayStatus.Sending,
+            ForwardCircuitStatus.Fulfilled => TrampolineRelayStatus.Fulfilled,
+            _ => TrampolineRelayStatus.Failed
+        };
+        IReadOnlyList<TrampolineRelayModel> relays;
+        try
+        {
+            relays = await _trampolineRelayRepository.ListAsync(
+                         new TrampolineRelayListQuery(request.Skip, request.Take, request.Since, request.Until, status,
+                                                      channelId), ct);
+        }
+        catch (NotSupportedException)
+        {
+            return [];
+        }
+
+        var result = new List<TrampolineRelayInfoClientResponse>(relays.Count);
+        foreach (var relay in relays)
+        {
+            var parts = await _trampolineRelayRepository.GetPartsAsync(relay.PaymentHash);
+            result.Add(TrampolineRelayInfoClientResponse.FromModel(relay, parts, id => ScidOf(id)));
+        }
+
+        return result;
     }
 
     /// <summary>

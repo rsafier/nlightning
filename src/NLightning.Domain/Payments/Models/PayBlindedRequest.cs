@@ -2,6 +2,7 @@ namespace NLightning.Domain.Payments.Models;
 
 using Crypto.ValueObjects;
 using Money;
+using Node;
 using Offers.Models;
 using Protocol.Onion.Models;
 
@@ -29,6 +30,13 @@ public sealed record PayBlindedRequest(Hash PaymentHash, LightningMoney Amount,
     /// False sends one HTLC.
     /// </summary>
     public bool AllowMpp { get; init; }
+
+    /// <summary>
+    /// The recipient's features (BOLT 12 <c>invoice_features</c>, or a bLIP 39 BOLT 11 invoice's), or null. A payment
+    /// through a trampoline node (NL-875) reads <c>trampoline_routing</c> (bit 57) from them and passes them on as
+    /// <c>recipient_features</c> when the recipient does not support trampoline.
+    /// </summary>
+    public FeatureSet? RecipientFeatures { get; init; }
 
     /// <summary>
     /// The BOLT 12 offer and invoice the payment is for, stored with the payment (<c>PaymentModel.Bolt12</c>), or null.
