@@ -1150,6 +1150,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     /// </summary>
     internal async Task OnAbortedAsync(DualFundNegotiation negotiation, string reason)
     {
+        var abandonedTxId = negotiation.PendingTxId;
         negotiation.PendingTxId = null;
         negotiation.EndSale();
         negotiation.LiquidityRequest = null;
@@ -1166,6 +1167,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         {
             negotiation.RestoreShares();
             await RestoreLastSignedFundingAsync(negotiation, reason);
+            if (abandonedTxId is { } txId)
+                await ReplaceAbandonedPurchaseAsync(negotiation, txId);
             negotiation.BumpCompletion?.TrySetResult(new DualFundedOpenResult(negotiation.ChannelId, null, reason));
             negotiation.BumpCompletion = null;
             return;
@@ -1175,6 +1178,35 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                negotiation.ChannelId, reason);
         await ForgetUnfundedLockedAsync(negotiation);
         negotiation.OpenCompletion?.TrySetResult(new DualFundedOpenResult(negotiation.ChannelId, null, reason));
+    }
+
+    /// <summary>
+    /// The purchase stored with an RBF attempt that ended before both <c>tx_signatures</c> (liquidity ads, NL-867):
+    /// nothing can confirm the attempt any more, so its row, still Pending, is replaced at once (no seller lease guard
+    /// or griefing-cap slot held for it until the funding's depth), in a save of its own. Logged, never thrown.
+    /// </summary>
+    private async Task ReplaceAbandonedPurchaseAsync(DualFundNegotiation negotiation, TxId abandonedTxId)
+    {
+        if (!negotiation.Purchases.TryGetValue(abandonedTxId, out var purchase)
+         || purchase is not { Id: > 0, Status: LiquidityPurchaseStatus.Pending })
+            return;
+
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            purchase.MarkReplaced();
+            unitOfWork.LiquidityPurchaseDbRepository.Update(purchase);
+            await unitOfWork.SaveChangesAsync();
+            negotiation.Purchases.Remove(abandonedTxId);
+            _logger.LogInformation("Liquidity {Role} of channel {ChannelId} in the abandoned RBF attempt {TxId} replaced",
+                                   purchase.Role, negotiation.ChannelId, abandonedTxId);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not replace the liquidity purchase of the abandoned RBF attempt {TxId} of "
+                              + "channel {ChannelId}", abandonedTxId, negotiation.ChannelId);
+        }
     }
 
     /// <summary>
@@ -1236,15 +1268,122 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
          || _deferredChannelReady.ContainsKey(negotiation.ChannelId))
             return "channel_ready was already sent or received";
 
-        using var scope = _serviceProvider.CreateScope();
-        var watches = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().WatchedTransactionDbRepository;
-        foreach (var txId in negotiation.CompletedTxIds)
+        return await GetConfirmedAttemptAsync(negotiation, null) is { } confirmed
+                   ? $"the funding transaction {confirmed} already has a confirmation"
+                   : null;
+    }
+
+    /// <summary>
+    /// A fully signed attempt of the open that has a confirmation (its funding watch has a first-seen height), or null.
+    /// From then on no other attempt can confirm: they all double-spend it (IT-RBF-01).
+    /// </summary>
+    private async Task<TxId?> GetConfirmedAttemptAsync(DualFundNegotiation negotiation, IUnitOfWork? unitOfWork)
+    {
+        if (negotiation.CompletedTxIds.Count == 0)
+            return null;
+
+        using var scope = unitOfWork is null ? _serviceProvider.CreateScope() : null;
+        var watches = (unitOfWork ?? scope!.ServiceProvider.GetRequiredService<IUnitOfWork>())
+           .WatchedTransactionDbRepository;
+        foreach (var txId in negotiation.CompletedTxIds.ToList())
         {
             if (await watches.GetByTransactionIdAsync(txId) is { FirstSeenAtHeight: not null })
-                return $"the funding transaction {txId} already has a confirmation";
+                return txId;
         }
 
         return null;
+    }
+
+    /// <summary>The reason an RBF attempt is abandoned once an earlier attempt confirmed (NL-867).</summary>
+    private static string EarlierAttemptConfirmed(TxId confirmed) => $"an earlier attempt {confirmed} confirmed";
+
+    /// <summary>
+    /// The host's check before our <c>tx_signatures</c> (NL-867): an RBF attempt whose earlier attempt confirmed can
+    /// never confirm, so it is abandoned (<c>tx_abort</c>) instead of signed. Null for a first attempt, or when no
+    /// earlier attempt has a confirmation.
+    /// </summary>
+    internal async Task<string?> GetTxSignaturesRefusalAsync(DualFundNegotiation negotiation) =>
+        await GetConfirmedAttemptAsync(negotiation, null) is { } confirmed ? EarlierAttemptConfirmed(confirmed) : null;
+
+    /// <summary>
+    /// A block was processed (called by <c>ChannelManager</c> for every block, NL-867): every open with an RBF attempt
+    /// running (negotiating, or our <c>tx_init_rbf</c> waiting for its answer) whose earlier attempt now has a
+    /// confirmation abandons it at once (BOLT 2: "If the previous transaction confirms in the middle of an RBF attempt,
+    /// the attempt MUST be abandoned"), each under its channel's lock and off the caller's thread, not only at the
+    /// funding depth (<see cref="OnFundingConfirmedAsync"/>): our <c>tx_abort</c> goes out unless our
+    /// <c>tx_signatures</c> did (IT-ABT-01), the reservation and the sale slot go back, the attempt's purchase is
+    /// replaced and a waiting <c>bumpopen</c> returns.
+    /// </summary>
+    public void ScheduleConfirmedAttemptRound()
+    {
+        if (Volatile.Read(ref _disposed) != 0 || _serviceProvider.GetService<IInteractiveTxDriver>() is not { } driver)
+            return;
+
+        foreach (var negotiation in _negotiations.Values.Distinct().ToList())
+        {
+            if (negotiation.CompletedTxIds.Count == 0
+             || driver.GetInfo(negotiation.ChannelId) is not { } info
+             || info is { SessionId: null, RbfRequested: false })
+                continue;
+
+            RunAfterLock(negotiation.ChannelId, async () =>
+            {
+                if (_negotiations.TryGetValue(negotiation.ChannelId, out var current) && current == negotiation)
+                    _serviceProvider.GetService<IChannelMessagePublisher>()
+                                   ?.Publish(negotiation.Peer, await AbandonRbfAttemptLockedAsync(negotiation, null));
+            });
+        }
+    }
+
+    /// <summary>
+    /// <c>channel_reestablish</c> of a dual-funded open (NL-867; called by the reestablish handler under the channel's
+    /// lock, before it plans): an RBF attempt that is not signed and whose earlier attempt confirmed is abandoned now,
+    /// so the peer's <c>next_funding</c> for it is answered with our <c>tx_abort</c> (returned, to go out after our
+    /// <c>channel_reestablish</c>) and never with its <c>commitment_signed</c> again. Empty when nothing was abandoned.
+    /// </summary>
+    public async Task<IReadOnlyList<IChannelMessage>> AbandonRbfAttemptIfConfirmedAsync(ChannelModel channel,
+                                                                                       IUnitOfWork unitOfWork)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(unitOfWork);
+        if (channel is not { Version: ChannelVersion.V2, State: ChannelState.V1FundingSigned }
+         || await GetOrLoadAsync(channel.ChannelId, unitOfWork, CancellationToken.None) is not { } negotiation)
+            return [];
+
+        return await AbandonRbfAttemptLockedAsync(negotiation, unitOfWork);
+    }
+
+    /// <summary>
+    /// Under the channel's lock: the running RBF attempt (or our unanswered <c>tx_init_rbf</c>) is abandoned when an
+    /// earlier attempt confirmed; returns our <c>tx_abort</c> (to publish), empty when nothing was abandoned. After our
+    /// <c>tx_signatures</c> nothing is (IT-ABT-01): the attempt double-spends the confirmed one and never confirms.
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> AbandonRbfAttemptLockedAsync(DualFundNegotiation negotiation,
+                                                                                 IUnitOfWork? unitOfWork)
+    {
+        var driver = _serviceProvider.GetService<IInteractiveTxDriver>();
+        if (driver?.GetInfo(negotiation.ChannelId) is not { } info || info is { SessionId: null, RbfRequested: false }
+         || info.State is InteractiveTxSessionState.TxSignaturesSent or InteractiveTxSessionState.Signed
+         || await GetConfirmedAttemptAsync(negotiation, unitOfWork) is not { } confirmed)
+            return [];
+
+        var reason = EarlierAttemptConfirmed(confirmed);
+        _logger.LogInformation("Abandoning the RBF attempt of channel {ChannelId}: {Reason}", negotiation.ChannelId,
+                               reason);
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var messages = await driver.AbortAsync(negotiation.ChannelId, reason,
+                                                   unitOfWork ?? scope.ServiceProvider.GetRequiredService<IUnitOfWork>());
+            negotiation.RestoreShares();
+            return messages;
+        }
+        catch (InvalidOperationException e)
+        {
+            // Our tx_signatures went out meanwhile (IT-ABT-01)
+            _logger.LogWarning(e, "Could not abandon the RBF attempt of channel {ChannelId}", negotiation.ChannelId);
+            return [];
+        }
     }
 
     /// <summary>
@@ -1595,7 +1734,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             // Stored with the attempt (NL-528): whichever signed attempt confirms can still be closed unilaterally
             var replies = await driver.OnCommitmentSignedReceivedAsync(channelId, unitOfWork, cancellationToken,
                                                                        message.Payload.Signature);
-            negotiation.CommitmentSignedReceived = true;
+
+            // The driver abandons an attempt it cannot sign for (NL-867): nothing is pending then
+            negotiation.CommitmentSignedReceived = negotiation.PendingTxId is not null;
             return replies;
         }
         catch
@@ -2298,13 +2439,15 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     }
 
     /// <summary>
-    /// Aborts the channel's negotiation in progress with our <c>tx_abort</c> (published), under the channel's lock.
-    /// False when the driver refused because our <c>tx_signatures</c> went out (IT-ABT-01).
+    /// Aborts the channel's negotiation in progress, or withdraws our <c>tx_init_rbf</c> that waits for its answer
+    /// (NL-867), with our <c>tx_abort</c> (published), under the channel's lock. False when the driver refused because
+    /// our <c>tx_signatures</c> went out (IT-ABT-01).
     /// </summary>
     private async Task<bool> AbortNegotiationLockedAsync(DualFundNegotiation negotiation, string reason)
     {
         var driver = _serviceProvider.GetService<IInteractiveTxDriver>();
-        if (driver?.IsNegotiating(negotiation.ChannelId) != true)
+        if (driver is null || (!driver.IsNegotiating(negotiation.ChannelId)
+                            && driver.GetInfo(negotiation.ChannelId) is not { RbfRequested: true }))
             return true;
 
         try

@@ -448,6 +448,41 @@ internal sealed class DualFundNode
         }
     }
 
+    /// <summary>
+    /// The chain monitor finds <paramref name="txId"/>, a funding attempt of <paramref name="channelId"/>, in a block
+    /// (its first confirmation, below the funding depth; NL-867): its watch row gets the first-seen height and, with
+    /// <paramref name="spendWallet"/>, the wallet sees the attempt's inputs spent; with <paramref name="raiseBlock"/> the
+    /// block is raised and whatever it scheduled runs to the end.
+    /// </summary>
+    public async Task SeeInBlockAsync(ChannelId channelId, TxId txId, bool raiseBlock = true, bool spendWallet = true)
+    {
+        await InScopeAsync(async unitOfWork =>
+        {
+            var watch = await unitOfWork.WatchedTransactionDbRepository.GetByTransactionIdAsync(txId)
+                     ?? throw new InvalidOperationException($"{Name} does not watch {txId}");
+            watch.SetHeightAndIndex(DualFundHarness.BlockHeight, 1);
+            unitOfWork.WatchedTransactionDbRepository.Update(watch);
+            await unitOfWork.SaveChangesAsync();
+
+            if (spendWallet)
+            {
+                var session = (await unitOfWork.InteractiveTxSessionDbRepository.GetByChannelIdAsync(channelId))
+                   .First(s => s.ConstructedTx?.TxId == txId);
+                foreach (var input in session.ConstructedTx!.Inputs)
+                    Wallet.SpentOnChain.Add((input.PrevTxId, input.PrevTxVout));
+            }
+
+            return 0;
+        });
+
+        if (!raiseBlock)
+            return;
+
+        ChainMonitor.Raise(m => m.OnNewBlockDetected += null,
+                           new NewBlockEventArgs(DualFundHarness.BlockHeight, new Hash(new byte[32])));
+        await DualFund.WhenIdleAsync();
+    }
+
     /// <summary>A payment of <paramref name="amount"/> from this node to <paramref name="payee"/> over the channel.</summary>
     public async Task<(Hash PaymentHash, Secret Preimage)> PayAsync(DualFundNode payee, ChannelId channelId,
                                                                     LightningMoney amount)

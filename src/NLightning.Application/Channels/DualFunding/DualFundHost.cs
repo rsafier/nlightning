@@ -51,6 +51,11 @@ internal sealed class DualFundHost : IInteractiveTxHost
         Task.FromResult<CompactSignature?>(null);
 
     /// <inheritdoc />
+    public Task<string?> GetTxSignaturesRefusalAsync(ConstructedInteractiveTx transaction,
+                                                     CancellationToken cancellationToken) =>
+        _service.GetTxSignaturesRefusalAsync(_negotiation);
+
+    /// <inheritdoc />
     public Witness BuildSharedInputWitness(ConstructedInteractiveTx transaction, CompactSignature localSignature,
                                            CompactSignature remoteSignature) =>
         throw new InvalidOperationException("A dual-funded open has no shared input");

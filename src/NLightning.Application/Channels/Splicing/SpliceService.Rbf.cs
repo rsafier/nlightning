@@ -141,7 +141,8 @@ public sealed partial class SpliceService
                                                   QuiescenceState.None, fundings, false, quickFeerate);
                 conditions = conditions with
                 {
-                    Channel = conditions.Channel with { IsQuiescent = true, LocalIsQuiescenceInitiator = true }
+                    Channel = conditions.Channel with { IsQuiescent = true, LocalIsQuiescenceInitiator = true },
+                    AttemptConfirmed = await GetConfirmedPendingAttemptAsync(fundings, null, null) is not null
                 };
                 if (SpliceRules.CheckSendRbf(conditions, request.FeeratePerKw, plan.SignedContributionSatoshis) is
                     { } violation)
@@ -203,7 +204,10 @@ public sealed partial class SpliceService
             var fundings = _statePort.GetFundings(channel);
             var previous = await GetLatestAttemptSessionAsync(channel, fundings, cancellationToken);
             var conditions = GetRbfConditions(channel, GetNegotiatedFeatures(channel.RemoteNodeId),
-                                              quiescence.GetState(channelId), fundings, false, quickFeerate);
+                                              quiescence.GetState(channelId), fundings, false, quickFeerate) with
+            {
+                AttemptConfirmed = await GetConfirmedPendingAttemptAsync(fundings, null, null) is not null
+            };
             string? reason = null;
             if (SpliceRules.CheckSendRbf(conditions, negotiation.Model.FeeratePerKw,
                                          negotiation.Model.LocalContributionSatoshis) is { } violation)
@@ -309,7 +313,8 @@ public sealed partial class SpliceService
                                           await GetQuickConfirmationFeerateAsync(channel, cancellationToken));
         conditions = conditions with
         {
-            Channel = conditions.Channel with { SpliceNegotiating = existing is { IsInProgress: true } }
+            Channel = conditions.Channel with { SpliceNegotiating = existing is { IsInProgress: true } },
+            AttemptConfirmed = await GetConfirmedPendingAttemptAsync(fundings, null, unitOfWork) is not null
         };
         if (SpliceRules.CheckReceiveRbf(conditions, payload, contribution) is { } violation)
             return Reject(channelId, peerPubKey, violation);

@@ -136,6 +136,12 @@ internal sealed class FakeInteractiveTxContributor : IInteractiveTxContributor
     public int SignCalls { get; private set; }
     public BitcoinScript ChangeScript { get; } = new(new Key().PubKey.WitHash.ScriptPubKey.ToBytes());
 
+    /// <summary>
+    /// Outpoints a confirmed transaction spent (an RBF sibling of the funding, NL-867): signing a contribution with one
+    /// of them fails as the wallet contributor does, its reservation still held.
+    /// </summary>
+    public HashSet<(TxId TxId, uint Vout)> SpentOnChain { get; } = [];
+
     public IReadOnlyCollection<Guid> ActiveReservations => _reservations.Keys;
 
     public Task<InteractiveTxContribution> ContributeAsync(InteractiveTxContributionRequest request,
@@ -179,6 +185,10 @@ internal sealed class FakeInteractiveTxContributor : IInteractiveTxContributor
                                                   CancellationToken cancellationToken = default)
     {
         SignCalls++;
+        if (contribution.Inputs.Any(i => SpentOnChain.Contains((i.PrevTxId, i.PrevTxVout))))
+            throw new InteractiveTxInputsSpentException(
+                $"An input of interactive transaction {transaction.TxId} was spent on chain");
+
         IReadOnlyList<Witness> witnesses = contribution.Inputs.Select(i => CreateP2WpkhWitness(i.PrevTxId)).ToList();
         return Task.FromResult(witnesses);
     }

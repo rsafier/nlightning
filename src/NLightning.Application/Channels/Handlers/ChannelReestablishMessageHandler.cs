@@ -113,6 +113,13 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
                 $"Ignoring channel_reestablish on channel {channelId} in state {Enum.GetName(channel.State)}", channelId,
                 "channel_reestablish ignored: channel not active");
 
+        // NL-867: an RBF attempt of a dual-funded open whose earlier attempt confirmed is abandoned before anything else
+        // (our own channel_reestablish then names no next_funding for it), so the peer's next_funding for it gets our
+        // tx_abort and never its commitment_signed again (which it could not sign: its inputs are spent)
+        var abandoned = _dualFundReestablish is not null
+                            ? await _dualFundReestablish.AbandonConfirmedRbfAttemptAsync(channel)
+                            : [];
+
         var replies = new List<IChannelMessage>();
         switch (_tracker.GetStatus(channelId))
         {
@@ -129,6 +136,16 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
         }
 
         var local = await _reestablishService.GetLocalStateAsync(channel, negotiatedFeatures);
+
+        // NL-867: the same for a splice RBF attempt whose pending sibling confirmed (resumed from its rows first)
+        if (abandoned.Count == 0 && local.LatestInteractiveTx is { IsSplice: true, TxSignaturesSent: false }
+                                 && _serviceProvider?.GetService<SpliceService>() is { } spliceService)
+        {
+            abandoned = await spliceService.AbandonConfirmedRbfAttemptAsync(channel, _unitOfWork);
+            if (abandoned.Count > 0)
+                local = await _reestablishService.GetLocalStateAsync(channel, negotiatedFeatures);
+        }
+
         var peer = new PeerReestablish(payload.NextCommitmentNumber, payload.NextRevocationNumber,
                                        payload.YourLastPerCommitmentSecret, message.NextFundingTlv is not null,
                                        message.NextFundingTlv is { } nextFunding
@@ -192,7 +209,9 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
         if (plan.PeerSpliceLocked is { } lockedTxId && plan.Outcome == ReestablishOutcome.Resume)
             replies.AddRange(await ProcessPeerSpliceLockedAsync(channel, lockedTxId));
 
-        foreach (var step in plan.Steps)
+        // NL-867: the abandoned attempt's tx_abort answers the peer's next_funding (the planner's TxAbort step too)
+        replies.AddRange(abandoned);
+        foreach (var step in plan.Steps.Where(s => s != ReestablishStep.TxAbort || abandoned.Count == 0))
             replies.AddRange(await BuildStepAsync(channel, step, local, peer, peerPubKey));
 
         // B2-RE-28: our shutdown again, after the retransmitted updates; the fee negotiation restarts (B2-RE-29)
@@ -249,7 +268,13 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
                 if (_serviceProvider?.GetService<IInteractiveTxDriver>() is { } abortDriver)
                 {
                     var abort = abortDriver.AbortQuiescence(channelId, peerPubKey, abortReason);
-                    if (abort.Count == 0)
+                    if (abort.Count == 0 && abortDriver.GetInfo(channelId) is { AwaitingAbortEcho: true, SessionId: null })
+                        // Our tx_abort for that negotiation went out already (e.g. an RBF attempt abandoned when an
+                        // earlier attempt confirmed, NL-867): it answers the next_funding as well
+                        _logger.LogInformation(
+                            "Our tx_abort for the next_funding {TxId} of channel {ChannelId} went out already",
+                            peer.NextFunding?.TxId, channelId);
+                    else if (abort.Count == 0)
                         _logger.LogWarning(
                             "No tx_abort for the unknown next_funding {TxId} of channel {ChannelId}: the interactive-tx "
                           + "driver holds a negotiation or already waits for its tx_abort's echo",

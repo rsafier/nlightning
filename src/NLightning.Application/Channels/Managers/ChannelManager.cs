@@ -1805,11 +1805,31 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         // Closing channels whose closing transaction reached its depth but were not recorded as Closed
         CompleteConfirmedCloses();
 
+        // NL-867: an RBF attempt (dual-funded open or splice) whose earlier attempt just confirmed is abandoned at once
+        ScheduleConfirmedAttemptRounds();
+
         // BOLT 5: the resolution round of every channel whose funding output was spent (O2-T5)
         _serviceProvider.GetService<IOnchainResolutionExecutor>()?.ScheduleRound(args.Height);
 
         // BOLT 7: public channels that reached the announcement depth send their announcement_signatures (G1-T4)
         ScheduleAnnouncementRound();
+    }
+
+    /// <summary>
+    /// NL-867: every RBF attempt of a dual-funded open or a splice whose earlier attempt has a confirmation is abandoned
+    /// (the rounds run off this thread, each under its channel's lock). Never throws into the block's other work.
+    /// </summary>
+    private void ScheduleConfirmedAttemptRounds()
+    {
+        try
+        {
+            _serviceProvider.GetService<DualFunding.DualFundedOpenService>()?.ScheduleConfirmedAttemptRound();
+            _serviceProvider.GetService<Splicing.SpliceService>()?.ScheduleConfirmedAttemptRound();
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not schedule the abandonment of RBF attempts whose earlier attempt confirmed");
+        }
     }
 
     /// <summary>

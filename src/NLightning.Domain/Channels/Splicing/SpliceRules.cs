@@ -192,8 +192,9 @@ public static class SpliceRules
     /// "MUST NOT send <c>tx_init_rbf</c> if it has previously sent <c>splice_locked</c>"; "MUST NOT send
     /// <c>tx_init_rbf</c> if <c>option_zeroconf</c> has been negotiated"; the feerate at least
     /// max(floor(25/24 x previous), previous + 25) (<c>InteractiveTxRbfRules.GetMinimumNextFeerate</c>). Also refused:
-    /// no pending splice to replace, a negotiation in progress, a batch above <c>ChannelCommitments.MaxActiveFundings</c>
-    /// (SP-OP-04), our own cap <see cref="SpliceRbfConditions.MaxRbfAttempts"/> (<c>Splice:MaxRbfAttempts</c>) and a
+    /// no pending splice to replace, a negotiation in progress, an attempt that already has a confirmation (every new
+    /// attempt double-spends it and can never confirm, NL-867), a batch above
+    /// <c>ChannelCommitments.MaxActiveFundings</c> (SP-OP-04), our own cap <see cref="SpliceRbfConditions.MaxRbfAttempts"/> (<c>Splice:MaxRbfAttempts</c>) and a
     /// splice-out above our balance (SP-S-02). Every violation is <see cref="SpliceRuleAction.Refuse"/>.
     /// </summary>
     /// <param name="conditions">The channel and its pending splice, gathered under the lock.</param>
@@ -219,6 +220,8 @@ public static class SpliceRules
             return Refuse("SPR-T1", "no pending splice to replace");
         if (channel.SpliceNegotiating)
             return Refuse("SPR-T1", "a splice negotiation is in progress");
+        if (conditions.AttemptConfirmed)
+            return Refuse("SPR-T1", "an attempt of the pending splice already has a confirmation");
 
         var minimum = InteractiveTxRbfRules.GetMinimumNextFeerate(conditions.LastAttemptFeeratePerKw);
         if (feeratePerKw < minimum)
@@ -253,8 +256,8 @@ public static class SpliceRules
     /// when: the feerate is below max(floor(25/24 x last), last + 25) (interactive-tx: "MUST respond with
     /// <c>tx_abort</c>"); "another RBF attempt has been created recently" (SHOULD); "more than 10 pending RBF attempts
     /// and the <c>feerate</c> is not high enough to ensure quick confirmation" (SHOULD); and, under "MAY send
-    /// <c>tx_abort</c> for any reason", no pending splice to replace, a negotiation in progress, or a batch that would
-    /// exceed <c>ChannelCommitments.MaxActiveFundings</c>. D14 (not negotiated) is a warning and close.
+    /// <c>tx_abort</c> for any reason", no pending splice to replace, a negotiation in progress, an attempt that already
+    /// has a confirmation (NL-867), or a batch that would exceed <c>ChannelCommitments.MaxActiveFundings</c>. D14 (not negotiated) is a warning and close.
     /// </summary>
     /// <param name="conditions">The channel and its pending splice, gathered under the lock.</param>
     /// <param name="payload">The peer's <c>tx_init_rbf</c>.</param>
@@ -286,6 +289,8 @@ public static class SpliceRules
             return TxAbort("SPR-T1", "no pending splice to replace");
         if (channel.SpliceNegotiating)
             return TxAbort("SPR-T1", "a splice negotiation is in progress");
+        if (conditions.AttemptConfirmed)
+            return TxAbort("SPR-T1", "an attempt of the pending splice already has a confirmation");
         var minimum = InteractiveTxRbfRules.GetMinimumNextFeerate(conditions.LastAttemptFeeratePerKw);
         if (payload.Feerate < minimum)
             return TxAbort("IT-RBF-01",
@@ -604,7 +609,14 @@ public sealed record SpliceRbfConditions(
     bool ZeroconfNegotiated,
     bool LastAttemptIsRecent,
     uint? QuickConfirmationFeeratePerKw,
-    int MaxRbfAttempts);
+    int MaxRbfAttempts)
+{
+    /// <summary>
+    /// A pending attempt of the splice has a confirmation (NL-867): every new RBF attempt double-spends it and can never
+    /// confirm, so none is started or accepted.
+    /// </summary>
+    public bool AttemptConfirmed { get; init; }
+}
 
 /// <summary>
 /// What <see cref="SpliceRules.CheckTxComplete"/> judges about a constructed splice transaction (SP-TX-05), from our
