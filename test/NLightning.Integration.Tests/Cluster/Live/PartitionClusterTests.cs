@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Integration.Tests.Cluster.Live;
 
@@ -21,7 +23,8 @@ using ClusterPoll = Testing.Cluster.Poll;
 /// <summary>
 /// Network partitions between our in-process node and a CLN pod, and between CLN and its bitcoind (test harness phase 4,
 /// new coverage): an HTLC in flight across a partition, a partition that outlasts our reconnect attempts, a peer stuck
-/// before <c>channel_reestablish</c>, and a CLN cut off from the chain while our node keeps working.
+/// before <c>channel_reestablish</c>, a frozen peer only our ping keep-alive notices (NL-806),
+/// and a CLN cut off from the chain while our node keeps working.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -122,6 +125,52 @@ public class PartitionClusterTests
 
             Log($"{pair.Namespace}: HTLC held {held.TotalSeconds:F1} s through the partition, settled "
               + $"{settledIn.TotalSeconds:F1} s after the heal");
+            foreach (var fault in pair.Faults.Events)
+                Log($"  {fault}");
+        });
+
+    /// <summary>
+    /// NL-806: CLN is frozen (SIGSTOP) on a quiet channel right after a fresh connection, so its socket stays open and
+    /// nothing we send needs an answer: only our keep-alive can notice. Our node pings every <c>Node:PingInterval</c>
+    /// (15 s ±10 % on regtest) and closes the connection when a <c>pong</c> is missing after <c>Node:NetworkTimeout</c>
+    /// (15 s), so the drop comes within about 31.5 s of the freeze (the old random 30-300 s wait made it at least 45 s
+    /// after the connection); CLN resumes and our reconnect backoff brings the channel back by itself.
+    /// </summary>
+    [Fact(Explicit = true)]
+    public Task Given_AFrozenClnOnAQuietChannel_When_NothingIsSent_Then_OurPingDropsItWithinTheIntervalAndTheChannelComesBack() =>
+        WithClnPairAsync("part-ping", async (pair, ct) =>
+        {
+            // Arrange: a fresh connection (CLN drops the first one and our backoff redials), the regtest interval
+            var nodeOptions = pair.Nltg.TestNode.Services.GetRequiredService<IOptions<NodeOptions>>().Value;
+            var interval = nodeOptions.GetEffectivePingInterval();
+            await DropFromClnSideAsync(pair, ct);
+            await WaitActiveBothEndsAsync(pair, ct);
+            var peerId = new CompactPubKey(Convert.FromHexString(pair.ClnId));
+
+            // Act: freeze CLN and wait for our node to drop it, with no payment or ping of the test's own
+            await pair.Faults.PauseAsync(pair.ClnHandle, ct);
+            var frozen = Stopwatch.StartNew();
+            await ClusterPoll.UntilAsync(_ => Task.FromResult(!pair.Nltg.TestNode.IsConnectedTo(peerId)),
+                                         s_stepTimeout, s_poll, "our keep-alive drops the frozen CLN", ct);
+            var droppedIn = frozen.Elapsed;
+            var whileFrozen = await FindOurChannelAsync(pair, ct);
+            await pair.Faults.ResumeAsync(pair.ClnHandle, ct);
+            var resume = Stopwatch.StartNew();
+            await WaitActiveBothEndsAsync(pair, ct);
+            var activeIn = resume.Elapsed;
+
+            // Assert: the interval plus its jitter plus the pong timeout, with a few seconds of polling and scheduling
+            Assert.Equal(NodeOptions.RegtestDefaultPingInterval, interval);
+            var bound = interval * 1.1 + nodeOptions.NetworkTimeout + TimeSpan.FromSeconds(5);
+            Assert.True(droppedIn < bound, $"our node dropped the frozen CLN after {droppedIn} (bound {bound})");
+            Assert.Equal(ChannelState.Open, whileFrozen.State);
+            Assert.False(whileFrozen.IsPeerConnected);
+            await PayClnAsync(pair, SmallMsat, ct);
+            await WaitBalancesAsync(pair, PushMsat + SmallMsat, ct);
+
+            Log($"{pair.Namespace}: ping interval {interval.TotalSeconds:F0} s, the frozen CLN dropped "
+              + $"{droppedIn.TotalSeconds:F1} s after the freeze, channel active {activeIn.TotalSeconds:F1} s after the "
+              + "resume");
             foreach (var fault in pair.Faults.Events)
                 Log($"  {fault}");
         });

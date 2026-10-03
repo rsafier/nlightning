@@ -279,6 +279,111 @@ public class NodeOptionsTests
         Assert.Contains(tooLargeErrors, e => e.Contains(nameof(NodeOptions.ReestablishTimeout)));
     }
 
+    [Theory]
+    [InlineData("regtest", 15)]
+    [InlineData("mainnet", 60)]
+    [InlineData("testnet", 60)]
+    [InlineData("testnet4", 60)]
+    [InlineData("signet", 60)]
+    [InlineData("mutinynet", 60)]
+    public void Given_NoPingInterval_When_GetEffectivePingInterval_Then_TheNetworkDefault(string network,
+        int expectedSeconds)
+    {
+        // Arrange (NL-806: 15 s on regtest, 60 s elsewhere)
+        var options = new NodeOptions { BitcoinNetwork = BitcoinNetwork.Resolve(network) };
+
+        // Act
+        var interval = options.GetEffectivePingInterval();
+
+        // Assert
+        Assert.Null(options.PingInterval);
+        Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), interval);
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_APingInterval_When_GetEffectivePingInterval_Then_ItWinsOnEveryNetwork()
+    {
+        // Arrange
+        var mainnet = new NodeOptions { PingInterval = TimeSpan.FromSeconds(20) };
+        var regtest = new NodeOptions
+        {
+            BitcoinNetwork = BitcoinNetwork.Regtest,
+            PingInterval = TimeSpan.FromMinutes(2)
+        };
+
+        // Act & Assert
+        Assert.Equal(TimeSpan.FromSeconds(20), mainnet.GetEffectivePingInterval());
+        Assert.Equal(TimeSpan.FromMinutes(2), regtest.GetEffectivePingInterval());
+    }
+
+    [Theory]
+    [InlineData("mainnet", 0, false)]
+    [InlineData("mainnet", -1, false)]
+    [InlineData("mainnet", 4.999, false)]
+    [InlineData("mainnet", 5, true)]
+    [InlineData("mainnet", 15, true)]
+    [InlineData("regtest", 0, false)]
+    [InlineData("regtest", -15, false)]
+    [InlineData("regtest", 4, false)]
+    [InlineData("regtest", 5, true)]
+    [InlineData("regtest", 15, true)]
+    [InlineData("signet", 4, false)]
+    [InlineData("signet", 30, true)]
+    public void Given_PingIntervals_When_GetValidationErrors_Then_OnlyOneUnderFiveSecondsIsAnErrorOnAnyNetwork(
+        string network, double seconds, bool valid)
+    {
+        // Arrange (NL-806, owner decision 2026-10-03: BOLT 1 has no ping-rate rule since PR #918, so there is no
+        // 30 s floor; zero, negative and under 5 s are refused on every network, regtest included)
+        var options = new NodeOptions
+        {
+            BitcoinNetwork = BitcoinNetwork.Resolve(network),
+            PingInterval = TimeSpan.FromSeconds(seconds)
+        };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        if (valid)
+            Assert.Empty(errors);
+        else
+            Assert.Contains(errors, e => e.Contains(nameof(NodeOptions.PingInterval)));
+    }
+
+    [Fact]
+    public void Given_APingIntervalAboveATimersLimit_When_GetValidationErrors_Then_AnError()
+    {
+        // Arrange
+        var largest = new NodeOptions { PingInterval = NodeOptions.MaxPingInterval };
+        var tooLarge = new NodeOptions { PingInterval = TimeSpan.FromDays(60) };
+
+        // Act & Assert
+        Assert.Empty(largest.GetValidationErrors());
+        Assert.Contains(tooLarge.GetValidationErrors(), e => e.Contains(nameof(NodeOptions.PingInterval)));
+    }
+
+    [Fact]
+    public void Given_NodeSectionJsonWithAPingInterval_When_Bound_Then_ItIsRead()
+    {
+        // Arrange
+        var configuration = new ConfigurationBuilder()
+                           .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(
+                                                               """{ "Node": { "PingInterval": "00:00:45" } }""")))
+                           .Build();
+        var unset = new ConfigurationBuilder()
+                   .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes("""{ "Node": { "Daemon": false } }""")))
+                   .Build();
+
+        // Act
+        var bound = configuration.GetSection("Node").Get<NodeOptions>()!;
+        var unsetBound = unset.GetSection("Node").Get<NodeOptions>()!;
+
+        // Assert
+        Assert.Equal(TimeSpan.FromSeconds(45), bound.PingInterval);
+        Assert.Null(unsetBound.PingInterval);
+    }
+
     [Fact]
     public void Given_InvalidRoutingOptions_When_GetValidationErrors_Then_RoutingErrorsIncluded()
     {
