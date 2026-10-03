@@ -15,7 +15,9 @@ using Crypto.ValueObjects;
 /// <remarks>
 /// Encoding (version 1, big-endian): <c>version(1) || amount_sat(8) || csv_delay(2) || flags(1: 0x01 anchors, 0x02
 /// point, 0x04 htlc, 0x08 witness script) || u16 len || scriptPubKey || [u16 len || witness script] || [point(33)] ||
-/// [direction(1) || id(8) || amount_msat(8) || payment_hash(32) || cltv_expiry(4)]</c>. Written by the on-chain
+/// [direction(1) || id(8) || amount_msat(8) || payment_hash(32) || cltv_expiry(4)] || [u16 len || control block]</c>;
+/// flag 0x10 marks the trailing BIP 341 control block of a simple taproot script-path output (NL-877 T4), whose
+/// "witness script" is then the tapscript leaf. Written by the on-chain
 /// channel watcher for every output of a classified commitment; resolvers may write it for outputs they add (second-level
 /// outputs).
 /// </remarks>
@@ -27,6 +29,8 @@ using Crypto.ValueObjects;
 /// <param name="PerCommitmentPoint">The holder's per-commitment point of the commitment the output belongs to (ours for
 /// our commitment, the peer's for its commitments), when known.</param>
 /// <param name="Htlc">The HTLC of an HTLC output (direction from our point of view).</param>
+/// <param name="TaprootControlBlock">Simple taproot channels: the control block of the leaf in
+/// <paramref name="WitnessScript"/>; null otherwise.</param>
 public sealed record OutputDescriptorData(
     ulong AmountSat,
     byte[] ScriptPubKey,
@@ -34,7 +38,8 @@ public sealed record OutputDescriptorData(
     ushort CsvDelay,
     bool HasAnchors,
     CompactPubKey? PerCommitmentPoint,
-    SpecHtlc? Htlc)
+    SpecHtlc? Htlc,
+    byte[]? TaprootControlBlock = null)
 {
     /// <summary>The only encoding version so far.</summary>
     public const byte Version = 1;
@@ -43,6 +48,7 @@ public sealed record OutputDescriptorData(
     private const byte FlagPoint = 0x02;
     private const byte FlagHtlc = 0x04;
     private const byte FlagWitnessScript = 0x08;
+    private const byte FlagTaprootControlBlock = 0x10;
     private const int HtlcLength = 1 + 8 + 8 + CryptoConstants.Sha256HashLen + 4;
 
     /// <summary>The data of a descriptor of a mapped commitment.</summary>
@@ -54,7 +60,7 @@ public sealed record OutputDescriptorData(
         ArgumentNullException.ThrowIfNull(descriptor);
         return new OutputDescriptorData(descriptor.AmountSat, descriptor.ScriptPubKey, descriptor.WitnessScript,
                                         descriptor.CsvDelay, descriptor.HasAnchors, perCommitmentPoint,
-                                        descriptor.Htlc);
+                                        descriptor.Htlc, descriptor.TaprootControlBlock);
     }
 
     /// <summary>Encodes it (see the remarks).</summary>
@@ -66,11 +72,15 @@ public sealed record OutputDescriptorData(
 
         var flags = (byte)((HasAnchors ? FlagAnchors : 0) | (PerCommitmentPoint.HasValue ? FlagPoint : 0)
                                                           | (Htlc.HasValue ? FlagHtlc : 0)
-                                                          | (WitnessScript is not null ? FlagWitnessScript : 0));
+                                                          | (WitnessScript is not null ? FlagWitnessScript : 0)
+                                                          | (TaprootControlBlock is not null
+                                                                 ? FlagTaprootControlBlock
+                                                                 : 0));
         var length = 1 + 8 + 2 + 1 + 2 + ScriptPubKey.Length
                    + (WitnessScript is null ? 0 : 2 + WitnessScript.Length)
                    + (PerCommitmentPoint.HasValue ? CryptoConstants.CompactPubkeyLen : 0)
-                   + (Htlc.HasValue ? HtlcLength : 0);
+                   + (Htlc.HasValue ? HtlcLength : 0)
+                   + (TaprootControlBlock is null ? 0 : 2 + TaprootControlBlock.Length);
 
         var bytes = new byte[length];
         var span = bytes.AsSpan();
@@ -97,7 +107,11 @@ public sealed record OutputDescriptorData(
             ((ReadOnlySpan<byte>)htlc.PaymentHash).CopyTo(span[(offset + 17)..]);
             BinaryPrimitives.WriteUInt32BigEndian(span[(offset + 17 + CryptoConstants.Sha256HashLen)..],
                                                   htlc.CltvExpiry);
+            offset += HtlcLength;
         }
+
+        if (TaprootControlBlock is not null)
+            WriteBytes(span, offset, TaprootControlBlock);
 
         return bytes;
     }
@@ -138,11 +152,15 @@ public sealed record OutputDescriptorData(
             offset += HtlcLength;
         }
 
+        byte[]? controlBlock = null;
+        if ((flags & FlagTaprootControlBlock) != 0)
+            controlBlock = ReadBytes(bytes, ref offset);
+
         if (offset != bytes.Length)
             throw new FormatException("Trailing bytes after the output descriptor data.");
 
         return new OutputDescriptorData(amountSat, scriptPubKey, witnessScript, csvDelay, (flags & FlagAnchors) != 0,
-                                        point, htlc);
+                                        point, htlc, controlBlock);
     }
 
     /// <summary>Decodes the data of a row, or null when it has none or it is not in this encoding.</summary>

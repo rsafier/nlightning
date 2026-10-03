@@ -84,6 +84,7 @@ public sealed class RevokedCommitResolver : IOutputResolver
     private readonly ConcurrentDictionary<string, byte> _alerted = new();
     private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _fulfilled = new();
     private readonly ConcurrentDictionary<(TxId, uint), (ChainTx Transaction, uint Height)> _seenSpends = new();
+    private readonly UnsupportedTaprootOutputs _unsupportedTaproot = new();
 
     public RevokedCommitResolver(IRevokedCommitDataSource dataSource, ICommitmentOutputMapper mapper,
                                  IPenaltyTransactionBuilder penaltyTransactionBuilder,
@@ -141,6 +142,14 @@ public sealed class RevokedCommitResolver : IOutputResolver
 
             if (descriptor.Htlc is { } mapped)
                 mappedHtlcs.Add(new HtlcKey(mapped.Direction, mapped.Id));
+
+            // NL-966: the key-path penalty of a revoked simple taproot HTLC output is not built yet
+            if (descriptor is { IsSimpleTaproot: true, Kind: OutputDescriptorKind.RevokedHtlc })
+            {
+                _unsupportedTaproot.Report(close.ChannelId, close.CommitmentTransactionId, descriptor.Vout,
+                                           descriptor.Kind, descriptor.AmountSat, round.Actions);
+                continue;
+            }
 
             await PlanOutputAsync(round, map, descriptor, needs, spentBy, cancellationToken);
         }
@@ -210,8 +219,12 @@ public sealed class RevokedCommitResolver : IOutputResolver
         // rounds, which sweep it on its own after one confirmation
         var anchors = context.Channel.ChannelParams.OptionAnchorOutputs;
         var needs = new List<PenaltyNeed>();
-        foreach (var descriptor in map.Outputs.Where(d => d.Kind is OutputDescriptorKind.RevokedToLocal
-                                                                  or OutputDescriptorKind.RevokedHtlc
+        foreach (var descriptor in map.Outputs.Where(d => (d.Kind is OutputDescriptorKind.RevokedToLocal
+                                                                   || d is
+                                                                      {
+                                                                          Kind: OutputDescriptorKind.RevokedHtlc,
+                                                                          IsSimpleTaproot: false
+                                                                      })
                                                          || (d.Kind == OutputDescriptorKind.PaymentToRemote && !anchors)))
         {
             var row = CreateCommitmentRow(round, descriptor, context.PerCommitmentPoint);

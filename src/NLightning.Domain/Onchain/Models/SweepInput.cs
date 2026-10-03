@@ -25,6 +25,11 @@ using Enums;
 /// <param name="Preimage">The payment preimage, for <see cref="SweepSpendKind.HtlcPreimageClaim"/>.</param>
 /// <param name="WitnessPubKey">The key the witness pushes: our <c>payment_basepoint</c> for a P2WPKH
 /// <c>to_remote</c>, the <c>revocationpubkey</c> for <see cref="SweepSpendKind.RevokedHtlc"/>.</param>
+/// <param name="TaprootControlBlock">Simple taproot channels (NL-877 T4): the control block of the tapscript leaf in
+/// <paramref name="WitnessScript"/>; the input is then a BIP 341 script-path spend <c>&lt;sig&gt; &lt;leaf&gt;
+/// &lt;control_block&gt;</c> signed with <c>SIGHASH_DEFAULT</c> over every spent output. Null otherwise.</param>
+/// <param name="SpentScriptPubKey">The scriptPubKey of the spent output; required for a taproot input (BIP 341 commits
+/// to every input's script) and for every input of a transaction that has one.</param>
 public sealed record SweepInput(
     TxId TxId,
     uint Vout,
@@ -36,8 +41,13 @@ public sealed record SweepInput(
     CompactPubKey? PerCommitmentPoint = null,
     Secret? PerCommitmentSecret = null,
     byte[]? Preimage = null,
-    CompactPubKey? WitnessPubKey = null)
+    CompactPubKey? WitnessPubKey = null,
+    byte[]? TaprootControlBlock = null,
+    byte[]? SpentScriptPubKey = null)
 {
     /// <summary>The key that signs this input.</summary>
     public SweepKeyKind KeyKind => SpendKind.GetKeyKind();
+
+    /// <summary>A BIP 341 script-path spend of a simple taproot output (<see cref="TaprootControlBlock"/> set).</summary>
+    public bool IsTaprootScriptPath => TaprootControlBlock is not null;
 }

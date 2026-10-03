@@ -117,11 +117,13 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
     /// <param name="feeInputProvider">The wallet's fee inputs for anchors HTLC transactions (the default registration
     /// when null).</param>
     /// <param name="resolverLogger">The resolver's logger (a null logger when null).</param>
+    /// <param name="simpleTaproot">A simple taproot channel (NL-877 T4: P2TR outputs, script-path sweeps).</param>
     public LocalCommitResolutionHarness(Action<RealSigningCommitmentPair>? setup = null, bool hasAnchors = false,
                                         IAnchorFeeInputProvider? feeInputProvider = null,
-                                        ILogger<LocalCommitResolver>? resolverLogger = null)
+                                        ILogger<LocalCommitResolver>? resolverLogger = null,
+                                        bool simpleTaproot = false)
     {
-        Pair = new RealSigningCommitmentPair(hasAnchors);
+        Pair = new RealSigningCommitmentPair(hasAnchors || simpleTaproot, simpleTaproot);
         setup?.Invoke(Pair);
         Channel.UpdateCommitments(Pair.Alice.State);
 
@@ -283,16 +285,27 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
     /// <summary>Runs every input's witness against the output it spends.</summary>
     public void AssertAllInputsVerify(Transaction tx)
     {
-        for (var i = 0; i < tx.Inputs.Count; i++)
+        var spentOutputs = tx.Inputs.Select(input =>
         {
-            var prevOut = tx.Inputs[i].PrevOut;
-            var spent = _knownTransactions.TryGetValue(prevOut.Hash, out var parent)
-                            ? parent.Outputs[prevOut.N]
-                            : Broadcasts.Values.Select(b => Transaction.Load(b.RawTransaction, Network.Main))
-                                        .First(t => t.GetHash() == prevOut.Hash).Outputs[prevOut.N];
-            Assert.True(tx.Inputs.AsIndexedInputs().ElementAt(i).VerifyScript(spent, out var error),
-                        $"input {i} of {tx.GetHash()}: {error}");
+            var prevOut = input.PrevOut;
+            return _knownTransactions.TryGetValue(prevOut.Hash, out var parent)
+                       ? parent.Outputs[prevOut.N]
+                       : Broadcasts.Values.Select(b => Transaction.Load(b.RawTransaction, Network.Main))
+                                   .First(t => t.GetHash() == prevOut.Hash).Outputs[prevOut.N];
+        }).ToArray();
+
+        // A taproot input commits to every spent output: the validator holds them all
+        if (spentOutputs.Any(o => o.ScriptPubKey.IsScriptType(ScriptType.Taproot)))
+        {
+            var validator = tx.CreateValidator(spentOutputs);
+            for (var i = 0; i < tx.Inputs.Count; i++)
+                Assert.True(validator.ValidateInput(i).Error is null, $"input {i} of {tx.GetHash()}");
+            return;
         }
+
+        for (var i = 0; i < tx.Inputs.Count; i++)
+            Assert.True(tx.Inputs.AsIndexedInputs().ElementAt(i).VerifyScript(spentOutputs[i], out var error),
+                        $"input {i} of {tx.GetHash()}: {error}");
     }
 
     public void Dispose()

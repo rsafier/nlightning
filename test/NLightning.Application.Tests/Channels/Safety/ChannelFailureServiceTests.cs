@@ -64,9 +64,9 @@ public sealed class ChannelFailureServiceTests : IDisposable
         Init(hasAnchors: false);
     }
 
-    private void Init(bool hasAnchors)
+    private void Init(bool hasAnchors, bool simpleTaproot = false)
     {
-        _pair = new RealSigningCommitmentPair(hasAnchors);
+        _pair = new RealSigningCommitmentPair(hasAnchors, simpleTaproot);
         _channel = _pair.Alice.Channel;
 
         _memory.Setup(m => m.TryGetChannel(It.IsAny<ChannelId>(), out It.Ref<ChannelModel?>.IsAny))
@@ -187,6 +187,42 @@ public sealed class ChannelFailureServiceTests : IDisposable
         // NL-604: the row carries the commitment's fee, the funding capacity minus its outputs
         Assert.Equal((long)RealSigningCommitmentPair.FundingSatoshis - tx.Outputs.Sum(o => o.Value.Satoshi),
                      row.Fee?.Satoshi);
+    }
+
+    [Fact]
+    public async Task Given_TaprootChannelWithHtlcs_When_Failed_Then_LatestCommitmentBroadcastWithAMusigKeyPathWitness()
+    {
+        // Arrange (NL-877 T4 safety floor): the stored peer partial signature of a simple taproot channel
+        Dispose();
+        Init(hasAnchors: true, simpleTaproot: true);
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
+        _pair.Add(_pair.Bob, 30_000_000, RealSigningCommitmentPair.Preimage(2));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        var expectedTxId = _pair.Commitments.Last(c => c.Signer == "Bob").Verified;
+
+        // Act
+        var outcome = await Service.FailChannelAsync(_channel.ChannelId,
+                                                     new ChannelFailureRequest("test", "htlc timed out"),
+                                                     TestContext.Current.CancellationToken);
+
+        // Assert: our latest commitment, a one-element BIP 340 witness that executes against the P2TR funding
+        // output, stored with Failed before the publish
+        Assert.Equal(ChannelFailureStatus.Broadcast, outcome.Status);
+        var published = Assert.Single(_published);
+        Assert.Equal(expectedTxId, published.TxId);
+        var tx = Transaction.Load(published.RawTxBytes, Network.Main);
+        var input = Assert.Single(tx.Inputs);
+        Assert.Equal(1, input.WitScript.PushCount);
+        Assert.Equal(64, input.WitScript[0].Length);
+        var aggregate = _provider.GetRequiredService<Domain.Crypto.Interfaces.IMusig2Service>()
+                                 .AggregateTaprootKeyPath(_pair.Alice.Basepoints.FundingPubKey,
+                                                          _pair.Bob.Basepoints.FundingPubKey);
+        var spent = new TxOut(Money.Satoshis((long)RealSigningCommitmentPair.FundingSatoshis),
+                              new Script(aggregate.GetTaprootScriptPubKey()));
+        Assert.Null(tx.CreateValidator([spent]).ValidateInput(0).Error);
+        Assert.Equal(["broadcast staged", "persist Failed", "save", "publish", "error sent"], _calls);
+        Assert.Equal(_pair.Alice.State.LocalCommit.Number, Assert.Single(_storedBroadcasts).CommitmentNumber);
     }
 
     [Fact]

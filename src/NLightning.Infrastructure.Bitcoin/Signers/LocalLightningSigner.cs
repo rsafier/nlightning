@@ -452,6 +452,10 @@ public partial class LocalLightningSigner : ILightningSigner
         using var key = DeriveSweepKey(channelId, signingInfo.ChannelKeyIndex, context);
         var pubKey = key.PubKey;
 
+        // Simple taproot script-path spends (NL-877 T4): BIP 340 over the BIP 341 tapscript sighash
+        if (context.TaprootSpentOutputs is { } spentOutputs)
+            return SignTaprootSweepInput(channelId, tx, context, key, spentOutputs);
+
         Script scriptCode;
         if (context.WitnessScript is null)
         {

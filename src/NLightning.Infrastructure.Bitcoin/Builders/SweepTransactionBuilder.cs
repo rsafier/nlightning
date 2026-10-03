@@ -78,6 +78,13 @@ public class SweepTransactionBuilder : ISweepTransactionBuilder
         var tx = Transaction.Load(transaction.Transaction.RawTxBytes, _network);
         for (var i = 0; i < transaction.Inputs.Count; i++)
         {
+            // Simple taproot script path (NL-877 T4): the 64-byte BIP 340 signature as is (SIGHASH_DEFAULT)
+            if (transaction.Inputs[i].IsTaprootScriptPath)
+            {
+                tx.Inputs[i].WitScript = new WitScript(CreateWitness(transaction.Inputs[i], signatures[i]));
+                continue;
+            }
+
             if (!ECDSASignature.TryParseFromCompact(signatures[i], out var ecdsa))
                 throw new ArgumentException($"Signature {i} is not a valid compact signature", nameof(signatures));
 
@@ -106,6 +113,10 @@ public class SweepTransactionBuilder : ISweepTransactionBuilder
     /// </summary>
     internal static byte[][] CreateWitness(SweepInput input, byte[] signature)
     {
+        // BIP 341 script path: <sig> <leaf> <control_block>; every simple taproot leaf we spend takes one signature
+        if (input.TaprootControlBlock is { } controlBlock)
+            return [signature, input.WitnessScript!, controlBlock];
+
         return input.SpendKind switch
         {
             SweepSpendKind.DelayedOutput or SweepSpendKind.HtlcTimeoutClaim => [signature, [], input.WitnessScript!],
@@ -195,12 +206,27 @@ public class SweepTransactionBuilder : ISweepTransactionBuilder
                 _ => null
             };
 
+            if (input.IsTaprootScriptPath)
+                missing ??= input switch
+                {
+                    { WitnessScript: null } => "its tapscript leaf",
+                    { SpentScriptPubKey: null } => "the spent P2TR scriptPubKey",
+                    { SpendKind: not (SweepSpendKind.DelayedOutput or SweepSpendKind.PaymentToRemote
+                                   or SweepSpendKind.RevokedDelayedOutput) } => "a spend form simple taproot supports",
+                    _ => null
+                };
+
             if (!Enum.IsDefined(input.SpendKind))
                 throw new ArgumentException($"Input {i} has an unknown spend kind {input.SpendKind}", nameof(inputs));
 
             if (missing is not null)
                 throw new ArgumentException($"Input {i} ({input.SpendKind}) needs {missing}", nameof(inputs));
         }
+
+        // A BIP 341 signature commits to every spent output, so a transaction with a taproot input knows all of them
+        if (inputs.Any(i => i.IsTaprootScriptPath) && inputs.Any(i => i.SpentScriptPubKey is null))
+            throw new ArgumentException("A transaction with a taproot input needs the spent scriptPubKey of every input",
+                                        nameof(inputs));
 
         var timeoutClaims = inputs.Where(i => i.SpendKind == SweepSpendKind.HtlcTimeoutClaim).ToList();
         if (timeoutClaims.Count == 0)

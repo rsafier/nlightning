@@ -90,6 +90,39 @@ public sealed class RemoteCommitResolverTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_PeersTaprootCommitmentWithHtlcs_When_Confirmed_Then_ToRemoteSweptByScriptPathAndHtlcsAlerted()
+    {
+        // Arrange (NL-877 T4 safety floor): a simple taproot channel with an HTLC each way, Bob closes
+        _context.Dispose();
+        _context = new RemoteResolutionTestContext(simpleTaproot: true);
+        Pair.Add(Pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        Pair.Add(Pair.Bob, 30_000_000, RealSigningCommitmentPair.Preimage(2), Cltv);
+        Pair.Settle(Pair.Alice);
+        _context.UseSnapshot();
+        _context.CloseWith(Pair.Alice.State.RemoteCommit, ChannelCloseKind.RemoteCommitment);
+
+        // Act: the first round, then another block
+        await _context.BeginAsync(RemoteResolutionTestContext.CloseHeight);
+        var firstAlerts = _context.Alerts.Where(a => a.RequirementId == "NL-966").ToList();
+        await _context.ResolveAsync(RemoteResolutionTestContext.CloseHeight + 1);
+
+        // Assert: our to_remote swept by its leaf (nSequence 1), valid by script execution against the P2TR output
+        var row = _context.ToRemoteRow();
+        Assert.Equal(OutputResolutionState.Broadcast, row.State);
+        var sweep = Assert.Single(_context.Published);
+        Assert.True(_context.Verifies(sweep, out var error), error.ToString());
+        var tx = Transaction.Load(sweep.RawTransaction, Network.Main);
+        Assert.Equal(1U, tx.Inputs[0].Sequence.Value);
+        Assert.Equal(3, tx.Inputs[0].WitScript.PushCount);
+
+        // The HTLC outputs are recorded and alerted (NL-966), never built, and nothing throws in later rounds
+        Assert.Equal(2, firstAlerts.Count);
+        Assert.Single(_context.Published);
+        Assert.All(_context.SavedRows().Where(r => r.HtlcId is not null),
+                   r => Assert.Null(r.ResolvingTransactionId));
+    }
+
+    [Fact]
     public async Task Given_PeerCommitmentWithAnchors_When_Confirmed_Then_OurAnchorWaitsForTheAnchorSweep()
     {
         // Arrange (NL-601): an anchored channel, Bob closes; the watcher recorded our anchor before the first round

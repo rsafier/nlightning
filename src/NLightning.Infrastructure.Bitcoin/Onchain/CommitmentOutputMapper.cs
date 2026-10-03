@@ -133,6 +133,31 @@ public sealed class CommitmentOutputMapper : ICommitmentOutputMapper
         return found;
     }
 
+    /// <inheritdoc />
+    public IReadOnlyList<CommitmentOutputDescriptor> FindSimpleTaprootPaymentToRemote(ChainTx onChain,
+                                                                                      CompactPubKey ourPaymentBasepoint)
+    {
+        ArgumentNullException.ThrowIfNull(onChain);
+
+        // The amount does not change the script; the internal key is the NUMS point (spec errata, NL-914)
+        var toRemote = new TaprootToRemoteOutput(LightningMoney.Zero, new PubKey(ourPaymentBasepoint));
+        var scriptPubKey = toRemote.ScriptPubKey.ToBytes();
+        var leaf = toRemote.Leaf.Script.ToBytes();
+        var controlBlock = toRemote.GetControlBlock(toRemote.Leaf);
+
+        var found = new List<CommitmentOutputDescriptor>();
+        for (var vout = 0; vout < onChain.Outputs.Count; vout++)
+        {
+            var output = onChain.Outputs[vout];
+            if (output.ScriptPubKey.AsSpan().SequenceEqual(scriptPubKey))
+                found.Add(new CommitmentOutputDescriptor((uint)vout, output.AmountSat,
+                                                         OutputDescriptorKind.PaymentToRemote, output.ScriptPubKey,
+                                                         leaf, null, 1, true, null, controlBlock, true));
+        }
+
+        return found;
+    }
+
     private static void MapBuilt(CommitmentTransactionModel model, CommitmentTransactionBuildResult built,
                                  IReadOnlyList<Candidate> candidates, CommitmentCase commitmentCase,
                                  TxId commitmentTxId, List<CommitmentOutputDescriptor> descriptors)
@@ -205,7 +230,7 @@ public sealed class CommitmentOutputMapper : ICommitmentOutputMapper
 
         return new CommitmentOutputDescriptor(vout, amountSat, candidate.Kind, candidate.ScriptPubKey,
                                               candidate.WitnessScript, htlc, candidate.CsvDelay, model.HasAnchors,
-                                              secondLevel);
+                                              secondLevel, candidate.ControlBlock, model.IsSimpleTaproot);
     }
 
     /// <summary>
@@ -213,6 +238,9 @@ public sealed class CommitmentOutputMapper : ICommitmentOutputMapper
     /// </summary>
     private static List<Candidate> CreateCandidates(CommitmentTransactionModel model, CommitmentCase commitmentCase)
     {
+        if (model.IsSimpleTaproot)
+            return CreateSimpleTaprootCandidates(model, commitmentCase);
+
         // The builder derives the anchor script forms from the presence of anchor outputs, not from HasAnchors
         var hasAnchorOutputs = model.LocalAnchorOutput is not null || model.RemoteAnchorOutput is not null;
         var htlcCsv = (ushort)(model.HasAnchors ? 1 : 0);
@@ -287,6 +315,77 @@ public sealed class CommitmentOutputMapper : ICommitmentOutputMapper
         return candidates;
     }
 
+    /// <summary>
+    /// The P2TR outputs of a simple taproot commitment (NL-877 T4), converted exactly as the builder converts them
+    /// (<see cref="Builders.CommitmentTransactionBuilder.CreateSimpleTaprootOutputs"/>). The outputs we spend by script
+    /// path carry their leaf (as the witness script) and control block: our <c>to_local</c> on our commitment (delay
+    /// leaf), the revoked <c>to_local</c> (revocation leaf) and our <c>to_remote</c> on the peer's (its single leaf).
+    /// HTLC outputs and anchors are mapped without one: their spends are not built yet (NL-966).
+    /// </summary>
+    private static List<Candidate> CreateSimpleTaprootCandidates(CommitmentTransactionModel model,
+                                                                 CommitmentCase commitmentCase)
+    {
+        var candidates = new List<Candidate>();
+        foreach (var (output, htlc) in Builders.CommitmentTransactionBuilder.CreateSimpleTaprootOutputs(model))
+        {
+            switch (output)
+            {
+                case TaprootToLocalOutput toLocal:
+                    var toLocalKind = commitmentCase switch
+                    {
+                        CommitmentCase.Local => OutputDescriptorKind.DelayedToLocal,
+                        CommitmentCase.Revoked => OutputDescriptorKind.RevokedToLocal,
+                        _ => OutputDescriptorKind.PeerOutput
+                    };
+                    var toLocalLeaf = commitmentCase switch
+                    {
+                        CommitmentCase.Local => toLocal.DelayLeaf,
+                        CommitmentCase.Revoked => toLocal.RevokeLeaf,
+                        _ => null
+                    };
+                    candidates.Add(new Candidate(toLocal, toLocalKind, null, (ushort)toLocal.ToSelfDelay,
+                                                 toLocalLeaf));
+                    break;
+
+                case TaprootToRemoteOutput toRemote:
+                    candidates.Add(commitmentCase == CommitmentCase.Local
+                                       ? new Candidate(toRemote, OutputDescriptorKind.PeerOutput, null, 1, null)
+                                       : new Candidate(toRemote, OutputDescriptorKind.PaymentToRemote, null, 1,
+                                                       toRemote.Leaf));
+                    break;
+
+                case TaprootAnchorOutput anchor:
+                    // The holder's anchor is to_local_anchor (the model's LocalAnchorOutput)
+                    var isHolders = model.LocalAnchorOutput is { } holder
+                                 && new PubKey(holder.FundingPubKey) == anchor.InternalPubKey;
+                    var ours = isHolders == (commitmentCase == CommitmentCase.Local);
+                    candidates.Add(new Candidate(anchor,
+                                                 ours ? OutputDescriptorKind.OurAnchor : OutputDescriptorKind.PeerAnchor,
+                                                 null, AnchorCsvDelay, null));
+                    break;
+
+                case TaprootHtlcOutput htlcOutput when htlc is not null:
+                    var offered = htlc is OfferedHtlcOutputInfo;
+                    var htlcKind = (commitmentCase, offered) switch
+                    {
+                        (CommitmentCase.Local, true) => OutputDescriptorKind.LocalOfferedHtlc,
+                        (CommitmentCase.Local, false) => OutputDescriptorKind.LocalReceivedHtlc,
+                        (CommitmentCase.Remote, true) => OutputDescriptorKind.RemoteOfferedHtlc,
+                        (CommitmentCase.Remote, false) => OutputDescriptorKind.RemoteReceivedHtlc,
+                        _ => OutputDescriptorKind.RevokedHtlc
+                    };
+                    candidates.Add(new Candidate(htlcOutput, htlcKind, htlc, 1, null));
+                    break;
+
+                default:
+                    throw new InvalidOperationException(
+                        $"Unexpected simple taproot commitment output {output.GetType().Name}");
+            }
+        }
+
+        return candidates;
+    }
+
     private static SpecHtlc ToSpecHtlc(Htlc htlc) =>
         new(htlc.Direction, htlc.Id, htlc.Amount.MilliSatoshi, htlc.PaymentHash, htlc.CltvExpiry);
 
@@ -297,7 +396,21 @@ public sealed class CommitmentOutputMapper : ICommitmentOutputMapper
         public ushort CsvDelay { get; }
         public byte[] ScriptPubKey { get; }
         public byte[]? WitnessScript { get; }
+        public byte[]? ControlBlock { get; }
         public ulong AmountSat { get; }
+
+        /// <summary>A simple taproot output: <paramref name="leaf"/> is the leaf we spend it by, if any.</summary>
+        public Candidate(BaseTaprootOutput output, OutputDescriptorKind kind, HtlcOutputInfo? htlcOutput,
+                         ushort csvDelay, TapScript? leaf)
+        {
+            Kind = kind;
+            HtlcOutput = htlcOutput;
+            CsvDelay = csvDelay;
+            ScriptPubKey = output.ScriptPubKey.ToBytes();
+            WitnessScript = leaf?.Script.ToBytes();
+            ControlBlock = leaf is null ? null : output.GetControlBlock(leaf);
+            AmountSat = (ulong)output.Amount.Satoshi;
+        }
 
         public Candidate(BaseOutput output, OutputDescriptorKind kind, HtlcOutputInfo? htlcOutput, ushort csvDelay,
                          bool isWitnessScriptHash)

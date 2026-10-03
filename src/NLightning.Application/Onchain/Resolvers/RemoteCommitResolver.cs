@@ -107,6 +107,7 @@ public sealed class RemoteCommitResolver : IOutputResolver
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ILightningSigner _signer;
     private readonly ISweepTransactionBuilder _sweepBuilder;
+    private readonly UnsupportedTaprootOutputs _unsupportedTaproot = new();
 
     public RemoteCommitResolver(ICommitmentOutputMapper mapper, ISweepTransactionBuilder sweepBuilder,
                                 ILightningSigner signer, IFeeService feeService, IRemoteSweepDestination destination,
@@ -416,8 +417,11 @@ public sealed class RemoteCommitResolver : IOutputResolver
             return;
         }
 
-        var toRemote = _mapper.FindPaymentToRemote(onChain, context.Channel.LocalKeySet.PaymentCompactBasepoint,
-                                                   context.Channel.ChannelParams.OptionAnchorOutputs);
+        var toRemote = context.Channel.ChannelParams.OptionSimpleTaproot
+                           ? _mapper.FindSimpleTaprootPaymentToRemote(
+                               onChain, context.Channel.LocalKeySet.PaymentCompactBasepoint)
+                           : _mapper.FindPaymentToRemote(onChain, context.Channel.LocalKeySet.PaymentCompactBasepoint,
+                                                         context.Channel.ChannelParams.OptionAnchorOutputs);
         for (var vout = 0U; vout < onChain.Outputs.Count; vout++)
         {
             var output = onChain.Outputs[(int)vout];
@@ -557,9 +561,21 @@ public sealed class RemoteCommitResolver : IOutputResolver
             return;
         }
 
+        var taproot = context.Channel.ChannelParams.OptionSimpleTaproot;
         var descriptor = new CommitmentOutputDescriptor(row.OutputIndex, data.AmountSat, row.Descriptor,
                                                         data.ScriptPubKey, data.WitnessScript, data.Htlc,
-                                                        data.CsvDelay, data.HasAnchors);
+                                                        data.CsvDelay, data.HasAnchors, null,
+                                                        data.TaprootControlBlock, taproot);
+
+        // NL-966: the HTLC outputs of a simple taproot commitment are not claimed yet; recorded and alerted, never
+        // built (a throw would repeat every block)
+        if (taproot && row.Descriptor != OutputDescriptorKind.PaymentToRemote)
+        {
+            _unsupportedTaproot.Report(context.Channel.ChannelId, row.TransactionId, row.OutputIndex, row.Descriptor,
+                                       data.AmountSat, actions);
+            return;
+        }
+
         var htlc = data.Htlc;
         var record = htlc is { } h ? context.Commitments?.GetHtlc(h.Direction, h.Id) : null;
         var ours = htlc is { Direction: HtlcDirection.Outgoing };

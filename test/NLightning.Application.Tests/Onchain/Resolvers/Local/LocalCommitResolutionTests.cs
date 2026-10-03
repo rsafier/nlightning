@@ -80,6 +80,36 @@ public sealed class LocalCommitResolutionTests
     }
 
     [Fact]
+    public async Task Given_OurTaprootCommitmentWithHtlcs_When_TheCsvPasses_Then_ToLocalSweptByTheDelayLeafAndHtlcsAlerted()
+    {
+        // Arrange (NL-877 T4 safety floor): a simple taproot channel with an HTLC each way, our commitment on chain
+        using var harness = new LocalCommitResolutionHarness(pair =>
+        {
+            pair.Add(pair.Alice, OfferedMsat, s_offeredPreimage, OfferedCltv);
+            pair.Add(pair.Bob, ReceivedMsat, s_receivedPreimage, ReceivedCltv);
+            pair.Settle(pair.Alice);
+        }, simpleTaproot: true);
+
+        // Act: the first round, then up to the CSV and past both HTLC expiries
+        await harness.ResolveAsync();
+        var toLocal = harness.VoutOf(OutputDescriptorKind.DelayedToLocal);
+        await harness.MineToAsync(Math.Max(CloseHeight + Csv - 1, ReceivedCltv + 1));
+
+        // Assert: our to_local swept once, by its delay leaf with nSequence = to_self_delay, valid by execution
+        var sweep = Assert.Single(harness.Broadcast(BroadcastPurpose.Sweep));
+        var input = Assert.Single(sweep.Inputs);
+        Assert.Equal(new OutPoint(harness.CommitmentTransaction, toLocal), input.PrevOut);
+        Assert.Equal((uint)Csv, input.Sequence.Value);
+        Assert.Equal(3, input.WitScript.PushCount);
+        harness.AssertAllInputsVerify(sweep);
+
+        // No HTLC transaction is built for the taproot HTLC outputs (NL-966): they are alerted, never thrown on
+        Assert.Empty(harness.Broadcast(BroadcastPurpose.HtlcTransaction));
+        Assert.Contains(harness.Alerts, a => a.RequirementId == "NL-966");
+        Assert.All(harness.Rows.Values.Where(r => r.HtlcId is not null), r => Assert.Null(r.ResolvingTransactionId));
+    }
+
+    [Fact]
     public async Task Given_OurOfferedHtlc_When_CltvExpiryIsReached_Then_HtlcTimeoutIsBroadcastThenNotBefore()
     {
         // Arrange
