@@ -1629,6 +1629,26 @@ cb5c258f merge).
   passed, 8 platform skips (Domain 4339, Application 3740, Infrastructure.Bitcoin 1639, Daemon 1358, Integration 1154
   incl. `CompiledModelTests` and `PersistenceConfigurationTests`, Testing.Cluster 671, Infrastructure 665,
   Serialization 633, Bolt11 343, Testing.Lnd 106).
+- **Final proof (73e159fa, then 447e871d).** `--no-incremental` Release build 0 warnings on net10.0, the SDK 11 net11.0
+  compile check 0 warnings, format, sln check.
+  - Full cluster matrix `scripts/run-cluster.sh --matrix -j 6 --max-namespaces 6` (batch `integ-final-mx`, every
+    suite but tor): 11 green, cln rerun-green, 0 failed; peak 6 namespaces, none left; matrix wall 1724 s, of which
+    the 11 other suites had ended by 1142 s. lnd 58/58 (432 s), gossip 30/30 (816 s), eclair 25/25 + 2 `Explicit`
+    not run (951 s, `EclairLiquidityAdsTests` included), ldk 27/27 (608 s), eclair2 7/7 (443 s), day0 5/5 (447 s),
+    onchain 33/33 + 2 `Explicit` not run (357 s), anchors 18/18 (222 s), faults 5/5 (187 s), abcd 11/11 (90 s),
+    postgres 26/26 (57 s). cln 87/90 + 4 `Explicit` not run (1717 s): the three graph proofs of `ClnGossipTests`
+    waited 4 min each, the class alone was green. Cause: the test process passed 1.1 GiB RSS and the gossip memory
+    budget refused CLN's channels (NL-865, fixed in 447e871d: test nodes turn the budget off). After the fix the CLN
+    suite alone on the cluster (batch `integ-final-cln`) was 90/90 + 4 `Explicit` not run in 954 s.
+  - Docker, under the lock: `scripts/run-interop.sh tor Release` 3/3 (495 s); `EclairLiquidityAdsTests` 4/4 + 1
+    `Explicit` not run (158 s); `PostgresTests` 25/25 incl. the `AddLiquidityPurchases` round trip (`dotnet test`,
+    `--blame-hang-timeout 5m`); the CLN interop suite `scripts/run-interop.sh cln Release` 90/90 + 4 `Explicit` not
+    run (804 s, with NL-865). No container left.
+  - Non-Docker on net10.0 with `--blame-hang-timeout 5m`: 14,640 passed, 8 platform skips, the same counts per project
+    as above.
+  - Without `NLTG_TEST_BACKEND`: the `Docker` namespaces (Abcd, Onchain, Onchain.Anchors, Gossip, Gossip.Capture,
+    Day0, Utils; Interop, `PostgresTests` and `SqlServerTests` left out) had 163 tests: 144 skipped with the NL-820
+    reason, 12 container-free helpers passed, 7 `Explicit` not run, 0 failed, and no container was started.
 
 ## 6. Risks and open questions
 

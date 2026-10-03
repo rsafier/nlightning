@@ -145,10 +145,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 59 | 60 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 196 | 395 | 667 |
+| fixed | 14 | 62 | 196 | 396 | 668 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **62** | **204** | **465** | **745** |
+| **Total** | **14** | **62** | **204** | **466** | **746** |
 
 ### Epics
 
@@ -7779,6 +7779,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Done: `IEclairBackend.StartSellerAsync`/`DumpSellerLogAsync`; Docker starts the container as PR #19 did, the cluster deploys `nltg-eclair-seller` into the collection's run namespace (`EclairNode.Workload` with `ClusterEclairBackend.BuildSellerOptions`: wallet `eclair-seller` made by the init container, `emptyDir`, pod IP); both write `EclairFixture.SellerConfigLines` after the common configuration (`EclairBackendTests` pin it on both). Proof: cluster batch `integ-mx1` eclair 25/25 + 2 `Explicit` not run, `EclairLiquidityAdsTests` 4/4; Docker `scripts/run-interop.sh eclair Release -class ...EclairLiquidityAdsTests` 4/4 + 1 `Explicit` not run (158 s).
 - **Blocks/Blocked-by:** Related NL-850, NL-820
 - **Plan ref:** `LIQUIDITY_ADS_PLAN.md` LA6; `TEST_HARNESS_PLAN.md` "Integration record (wip/integrate)"
+
+### NL-865 Test nodes kept the 1 GiB gossip memory budget, which a long suite's shared test process exceeds
+- **Status:** fixed (447e871d)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs` (`BuildServiceProvider`)
+- **Evidence:** the full cluster matrix at the integration (`wip/integrate` 73e159fa, batch `integ-final-mx`, `-j 6 --max-namespaces 6`) failed all three graph proofs of `ClnGossipTests` in the CLN suite ("Timed out after 00:04:00 waiting for: N1's graph has 1069x1x0", the two others likewise): about 20 minutes into the run the test process passed 1.1 GiB RSS and every in-process node logged `GossipMemoryBudget` "The process uses 1167 MiB (managed heap 799 MiB), above Gossip:MaxMemoryMb 1024 MiB: new channels and nodes from gossip are refused", so N1 never stored CLN's channels. The class rerun alone (a fresh process) was green. `Gossip:MaxMemoryMb` (NL-373) reads the process RSS, which in a test process is shared by every node a suite starts; NL-466 had turned it off only for the reload tests.
+- **Fix sketch:** Done: `NLightningTestNode` sets `Gossip:MaxMemoryMb=0` (budget off, usage still reported) before `ExtraConfiguration`, so a test that proves the budget can set it again. Proof: the CLN suite on the cluster `scripts/run-cluster.sh -n 1 --suite cln` (batch `integ-final-cln`) 90/90 + 4 `Explicit` not run in 954 s, and on Docker `scripts/run-interop.sh cln Release` 90/90 + 4 `Explicit` not run in 804 s, `ClnGossipTests` green in both full runs.
+- **Blocks/Blocked-by:** Related NL-373, NL-466
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Integration record (wip/integrate)"
 
 ## Docs
 
