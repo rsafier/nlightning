@@ -73,7 +73,8 @@ internal sealed class ConnectPeerIpcHandler : IIpcCommandHandler
         }
         catch (InvalidOperationException oe)
         {
-            IpcRequestLog.LogRefused(_logger, Command, $"The operation could not be completed: {oe.Message}");
+            IpcRequestLog.LogRefusedOrFault(_logger, Command, $"The operation could not be completed: {oe.Message}",
+                                            oe);
             return IpcErrorFactory.CreateErrorEnvelope(envelope, ErrorCodes.InvalidOperation,
                                                        $"The operation could not be completed: {oe.Message}");
         }

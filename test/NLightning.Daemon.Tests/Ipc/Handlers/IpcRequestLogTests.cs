@@ -124,6 +124,80 @@ public class IpcRequestLogTests
         Assert.Same(fault, entry.Exception);
     }
 
+    [Fact]
+    public async Task Given_ARefusalWrappingAnInvalidOperationFromOutsideOurCode_When_Handled_Then_AnErrorWithTheStack()
+    {
+        // Arrange (NL-894): a client handler wraps every InvalidOperationException as a refusal, but this one is a bug
+        // (LINQ's Single() on an empty sequence inside a service)
+        var bug = Thrown(() => Array.Empty<int>().Single());
+        var logger = new CapturingLogger<CloseChannelIpcHandler>();
+        var wrapped = new ClientException(ErrorCodes.InvalidOperation, bug.Message, bug);
+        var handler = new CloseChannelIpcHandler(logger, CloseChannelThrowing(wrapped));
+
+        // Act
+        await handler.HandleAsync(CloseChannelEnvelope(), TestContext.Current.CancellationToken);
+
+        // Assert
+        var entry = Assert.Single(logger.Entries);
+        Assert.Equal(LogLevel.Error, entry.Level);
+        Assert.Same(wrapped, entry.Exception);
+        Assert.NotNull(entry.Exception!.InnerException!.StackTrace);
+    }
+
+    [Fact]
+    public async Task Given_ARefusalThrownByOurCode_When_HandledWithDebugOn_Then_OneWarningLineAndTheExceptionAtDebug()
+    {
+        // Arrange (NL-894): a service's own refusal stays one Warning line; its exception is recoverable at Debug
+        var refusal = Thrown(() => RefuseLikeAService());
+        var logger = new CapturingLogger<CloseChannelIpcHandler> { MinLevel = LogLevel.Debug };
+        var wrapped = new ClientException(ErrorCodes.InvalidOperation, refusal.Message, refusal);
+        var handler = new CloseChannelIpcHandler(logger, CloseChannelThrowing(wrapped));
+
+        // Act
+        await handler.HandleAsync(CloseChannelEnvelope(), TestContext.Current.CancellationToken);
+
+        // Assert
+        var warning = Assert.Single(logger.Entries, e => e.Level >= LogLevel.Information);
+        Assert.Equal(LogLevel.Warning, warning.Level);
+        Assert.Null(warning.Exception);
+        Assert.Equal("CloseChannel refused: Channel carries a lease", warning.Message);
+        var debug = Assert.Single(logger.Entries, e => e.Level == LogLevel.Debug);
+        Assert.Same(refusal, debug.Exception);
+    }
+
+    [Fact]
+    public void Given_Exceptions_When_AskedWhetherFaults_Then_BugsAndForeignThrowsAreFaultsOursAreNot()
+    {
+        // Arrange
+        var linq = Thrown(() => Array.Empty<int>().First());
+        var ours = Thrown(() => RefuseLikeAService());
+
+        // Act & Assert (NL-894)
+        Assert.True(IpcRequestLog.IsFault(linq));
+        Assert.True(IpcRequestLog.IsFault(new ObjectDisposedException("context")));
+        Assert.True(IpcRequestLog.IsFault(new NullReferenceException()));
+        Assert.False(IpcRequestLog.IsFault(ours));
+        Assert.False(IpcRequestLog.IsFault(new ChannelErrorException("the peer refused")));
+        Assert.False(IpcRequestLog.IsFault(new InvalidOperationException("never thrown")));
+        Assert.False(IpcRequestLog.IsFault(null));
+    }
+
+    private static object RefuseLikeAService() => throw new InvalidOperationException("Channel carries a lease");
+
+    private static Exception Thrown(Func<object> action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception e)
+        {
+            return e;
+        }
+
+        throw new InvalidOperationException("nothing was thrown");
+    }
+
     private static IServiceProvider OpenChannelThrowing(Exception exception)
     {
         var clientHandler = new Mock<IClientCommandHandler<OpenChannelClientRequest, OpenChannelClientResponse>>();
@@ -170,10 +244,15 @@ public class IpcRequestLogTests
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
-        public bool IsEnabled(LogLevel logLevel) => true;
+        public LogLevel MinLevel { get; init; } = LogLevel.Information;
+
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= MinLevel;
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
-                                Func<TState, Exception?, string> formatter) =>
-            _entries.Enqueue((logLevel, formatter(state, exception), exception));
+                                Func<TState, Exception?, string> formatter)
+        {
+            if (IsEnabled(logLevel))
+                _entries.Enqueue((logLevel, formatter(state, exception), exception));
+        }
     }
 }
