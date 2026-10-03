@@ -787,6 +787,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
 
         var (next, retired) = _statePort.Discard(fundings, funding.FundingTxId);
         await _statePort.StageFundingsAsync(channel, next, retired, unitOfWork, cancellationToken);
+        await StageAbandonedPurchaseAsync(channel.ChannelId, funding.FundingTxId, unitOfWork);
         await unitOfWork.SaveChangesAsync();
         _statePort.ApplyFundings(channel, next, retired);
         _logger.LogInformation("Splice funding {TxId} of channel {ChannelId} discarded after the abort",
@@ -795,19 +796,26 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
 
     /// <summary>
     /// Marks the stored <c>ChannelFundings</c> row of an aborted splice <c>Discarded</c> when it is still
-    /// <c>Pending</c> (own save).
+    /// <c>Pending</c>, and its liquidity purchase replaced (NL-870), in one save of their own.
     /// </summary>
     private async Task DiscardStoredFundingAsync(ChannelModel channel, TxId fundingTxId, IUnitOfWork unitOfWork)
     {
         var rows = unitOfWork.ChannelFundingDbRepository;
+        var discarded = false;
         if ((await rows.GetByChannelIdAsync(channel.ChannelId))
-               .FirstOrDefault(f => f.FundingTxId == fundingTxId) is not { Status: ChannelFundingStatus.Pending } stored)
+               .FirstOrDefault(f => f.FundingTxId == fundingTxId) is { Status: ChannelFundingStatus.Pending } stored)
+        {
+            await rows.UpsertAsync(channel.ChannelId, stored with { Status = ChannelFundingStatus.Discarded });
+            discarded = true;
+        }
+
+        if (!await StageAbandonedPurchaseAsync(channel.ChannelId, fundingTxId, unitOfWork) && !discarded)
             return;
 
-        await rows.UpsertAsync(channel.ChannelId, stored with { Status = ChannelFundingStatus.Discarded });
         await unitOfWork.SaveChangesAsync();
-        _logger.LogInformation("Stored splice funding {TxId} of channel {ChannelId} discarded after the abort",
-                               fundingTxId, channel.ChannelId);
+        if (discarded)
+            _logger.LogInformation("Stored splice funding {TxId} of channel {ChannelId} discarded after the abort",
+                                   fundingTxId, channel.ChannelId);
     }
 
     #endregion

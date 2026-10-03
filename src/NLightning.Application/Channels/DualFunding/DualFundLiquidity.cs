@@ -14,12 +14,14 @@ using Domain.Money;
 /// <param name="WillFund">The seller's answer.</param>
 /// <param name="Fees">The fee the buyer pays the seller.</param>
 /// <param name="ContributedSat">What the seller contributes to the funding output.</param>
+/// <param name="MaxFeeSat">The buyer's own fee limit, null for a sale or when none was given (NL-871).</param>
 internal sealed record DualFundLiquidity(
     LiquidityPurchaseRole Role,
     RequestFunding Request,
     WillFund WillFund,
     LiquidityFees Fees,
-    ulong ContributedSat)
+    ulong ContributedSat,
+    ulong? MaxFeeSat = null)
 {
     /// <summary>The fee from our side, in msat: + when we buy (it leaves our balance), − when we sell.</summary>
     public long LocalFeeMsat => GetLocalFeeMsat(Role, Fees);

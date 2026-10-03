@@ -34,7 +34,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 "NLightning.Infrastructure.Persistence.Entities.LiquidityAds.LiquidityPurchaseEntity",
                 typeof(LiquidityPurchaseEntity),
                 baseEntityType,
-                propertyCount: 25,
+                propertyCount: 26,
                 unnamedIndexCount: 3,
                 keyCount: 1);
 
@@ -627,6 +627,56 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             leaseStartHeight.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
             leaseStartHeight.AddAnnotation("Relational:ColumnName", "lease_start_height");
 
+            var maxFeeSat = runtimeEntityType.AddProperty(
+                "MaxFeeSat",
+                typeof(long?),
+                propertyInfo: typeof(LiquidityPurchaseEntity).GetProperty("MaxFeeSat", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(LiquidityPurchaseEntity).GetField("<MaxFeeSat>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            maxFeeSat.SetGetter(
+                long? (LiquidityPurchaseEntity instance) => LiquidityPurchaseEntityUnsafeAccessors.MaxFeeSat(instance),
+                bool (LiquidityPurchaseEntity instance) => !(LiquidityPurchaseEntityUnsafeAccessors.MaxFeeSat(instance).HasValue));
+            maxFeeSat.SetSetter(
+                LiquidityPurchaseEntity (LiquidityPurchaseEntity instance, long? value) =>
+                {
+                    LiquidityPurchaseEntityUnsafeAccessors.MaxFeeSat(instance) = value;
+                    return instance;
+                });
+            maxFeeSat.SetMaterializationSetter(
+                LiquidityPurchaseEntity (LiquidityPurchaseEntity instance, long? value) =>
+                {
+                    LiquidityPurchaseEntityUnsafeAccessors.MaxFeeSat(instance) = value;
+                    return instance;
+                });
+            maxFeeSat.SetAccessors(
+                long? (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.MaxFeeSat(((LiquidityPurchaseEntity)(entry.Entity))),
+                long? (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.MaxFeeSat(((LiquidityPurchaseEntity)(entry.Entity))),
+                long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(maxFeeSat, 11),
+                long? (IInternalEntry entry) => entry.GetCurrentValue<long?>(maxFeeSat));
+            maxFeeSat.SetPropertyIndexes(
+                index: 11,
+                originalValueIndex: 11,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            maxFeeSat.TypeMapping = LongTypeMapping.Default.Clone(
+                comparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                keyComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                providerValueComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v));
+            maxFeeSat.SetComparer(new NullableValueComparer<long>(maxFeeSat.TypeMapping.Comparer));
+            maxFeeSat.SetKeyComparer(new NullableValueComparer<long>(maxFeeSat.TypeMapping.KeyComparer));
+            maxFeeSat.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
+            maxFeeSat.AddAnnotation("Relational:ColumnName", "max_fee_sat");
+
             var miningFeeSat = runtimeEntityType.AddProperty(
                 "MiningFeeSat",
                 typeof(long),
@@ -651,11 +701,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             miningFeeSat.SetAccessors(
                 long (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.MiningFeeSat(((LiquidityPurchaseEntity)(entry.Entity))),
                 long (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.MiningFeeSat(((LiquidityPurchaseEntity)(entry.Entity))),
-                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(miningFeeSat, 11),
+                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(miningFeeSat, 12),
                 long (IInternalEntry entry) => entry.GetCurrentValue<long>(miningFeeSat));
             miningFeeSat.SetPropertyIndexes(
-                index: 11,
-                originalValueIndex: 11,
+                index: 12,
+                originalValueIndex: 12,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -699,11 +749,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             paymentType.SetAccessors(
                 byte (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.PaymentType(((LiquidityPurchaseEntity)(entry.Entity))),
                 byte (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.PaymentType(((LiquidityPurchaseEntity)(entry.Entity))),
-                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(paymentType, 12),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(paymentType, 13),
                 byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(paymentType));
             paymentType.SetPropertyIndexes(
-                index: 12,
-                originalValueIndex: 12,
+                index: 13,
+                originalValueIndex: 13,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -749,11 +799,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             peerNodeId.SetAccessors(
                 CompactPubKey (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.PeerNodeId(((LiquidityPurchaseEntity)(entry.Entity))),
                 CompactPubKey (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.PeerNodeId(((LiquidityPurchaseEntity)(entry.Entity))),
-                CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(peerNodeId, 13),
+                CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(peerNodeId, 14),
                 CompactPubKey (IInternalEntry entry) => entry.GetCurrentValue<CompactPubKey>(peerNodeId));
             peerNodeId.SetPropertyIndexes(
-                index: 13,
-                originalValueIndex: 13,
+                index: 14,
+                originalValueIndex: 14,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -805,11 +855,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             rateChannelCreationFeeSat.SetAccessors(
                 uint (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.RateChannelCreationFeeSat(((LiquidityPurchaseEntity)(entry.Entity))),
                 uint (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.RateChannelCreationFeeSat(((LiquidityPurchaseEntity)(entry.Entity))),
-                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(rateChannelCreationFeeSat, 14),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(rateChannelCreationFeeSat, 15),
                 uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(rateChannelCreationFeeSat));
             rateChannelCreationFeeSat.SetPropertyIndexes(
-                index: 14,
-                originalValueIndex: 14,
+                index: 15,
+                originalValueIndex: 15,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -861,11 +911,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             rateFeeBaseSat.SetAccessors(
                 uint (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.RateFeeBaseSat(((LiquidityPurchaseEntity)(entry.Entity))),
                 uint (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.RateFeeBaseSat(((LiquidityPurchaseEntity)(entry.Entity))),
-                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(rateFeeBaseSat, 15),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(rateFeeBaseSat, 16),
                 uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(rateFeeBaseSat));
             rateFeeBaseSat.SetPropertyIndexes(
-                index: 15,
-                originalValueIndex: 15,
+                index: 16,
+                originalValueIndex: 16,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -917,11 +967,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             rateFeeBasis.SetAccessors(
                 ushort (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.RateFeeBasis(((LiquidityPurchaseEntity)(entry.Entity))),
                 ushort (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.RateFeeBasis(((LiquidityPurchaseEntity)(entry.Entity))),
-                ushort (IInternalEntry entry) => entry.ReadOriginalValue<ushort>(rateFeeBasis, 16),
+                ushort (IInternalEntry entry) => entry.ReadOriginalValue<ushort>(rateFeeBasis, 17),
                 ushort (IInternalEntry entry) => entry.GetCurrentValue<ushort>(rateFeeBasis));
             rateFeeBasis.SetPropertyIndexes(
-                index: 16,
-                originalValueIndex: 16,
+                index: 17,
+                originalValueIndex: 17,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -975,11 +1025,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             rateFundingWeight.SetAccessors(
                 ushort (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.RateFundingWeight(((LiquidityPurchaseEntity)(entry.Entity))),
                 ushort (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.RateFundingWeight(((LiquidityPurchaseEntity)(entry.Entity))),
-                ushort (IInternalEntry entry) => entry.ReadOriginalValue<ushort>(rateFundingWeight, 17),
+                ushort (IInternalEntry entry) => entry.ReadOriginalValue<ushort>(rateFundingWeight, 18),
                 ushort (IInternalEntry entry) => entry.GetCurrentValue<ushort>(rateFundingWeight));
             rateFundingWeight.SetPropertyIndexes(
-                index: 17,
-                originalValueIndex: 17,
+                index: 18,
+                originalValueIndex: 18,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1033,11 +1083,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             rateMaxAmountSat.SetAccessors(
                 uint (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.RateMaxAmountSat(((LiquidityPurchaseEntity)(entry.Entity))),
                 uint (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.RateMaxAmountSat(((LiquidityPurchaseEntity)(entry.Entity))),
-                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(rateMaxAmountSat, 18),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(rateMaxAmountSat, 19),
                 uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(rateMaxAmountSat));
             rateMaxAmountSat.SetPropertyIndexes(
-                index: 18,
-                originalValueIndex: 18,
+                index: 19,
+                originalValueIndex: 19,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1089,11 +1139,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             rateMinAmountSat.SetAccessors(
                 uint (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.RateMinAmountSat(((LiquidityPurchaseEntity)(entry.Entity))),
                 uint (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.RateMinAmountSat(((LiquidityPurchaseEntity)(entry.Entity))),
-                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(rateMinAmountSat, 19),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(rateMinAmountSat, 20),
                 uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(rateMinAmountSat));
             rateMinAmountSat.SetPropertyIndexes(
-                index: 19,
-                originalValueIndex: 19,
+                index: 20,
+                originalValueIndex: 20,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1146,11 +1196,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             requestedSat.SetAccessors(
                 long (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.RequestedSat(((LiquidityPurchaseEntity)(entry.Entity))),
                 long (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.RequestedSat(((LiquidityPurchaseEntity)(entry.Entity))),
-                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(requestedSat, 20),
+                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(requestedSat, 21),
                 long (IInternalEntry entry) => entry.GetCurrentValue<long>(requestedSat));
             requestedSat.SetPropertyIndexes(
-                index: 20,
-                originalValueIndex: 20,
+                index: 21,
+                originalValueIndex: 21,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1194,11 +1244,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             role.SetAccessors(
                 byte (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.Role(((LiquidityPurchaseEntity)(entry.Entity))),
                 byte (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.Role(((LiquidityPurchaseEntity)(entry.Entity))),
-                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(role, 21),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(role, 22),
                 byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(role));
             role.SetPropertyIndexes(
-                index: 21,
-                originalValueIndex: 21,
+                index: 22,
+                originalValueIndex: 22,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1244,11 +1294,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             serviceFeeSat.SetAccessors(
                 long (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.ServiceFeeSat(((LiquidityPurchaseEntity)(entry.Entity))),
                 long (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.ServiceFeeSat(((LiquidityPurchaseEntity)(entry.Entity))),
-                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(serviceFeeSat, 22),
+                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(serviceFeeSat, 23),
                 long (IInternalEntry entry) => entry.GetCurrentValue<long>(serviceFeeSat));
             serviceFeeSat.SetPropertyIndexes(
-                index: 22,
-                originalValueIndex: 22,
+                index: 23,
+                originalValueIndex: 23,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1291,11 +1341,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             signature.SetAccessors(
                 byte[] (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.Signature(((LiquidityPurchaseEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.Signature(((LiquidityPurchaseEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(signature, 23),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(signature, 24),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(signature));
             signature.SetPropertyIndexes(
-                index: 23,
-                originalValueIndex: 23,
+                index: 24,
+                originalValueIndex: 24,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1339,11 +1389,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             status.SetAccessors(
                 byte (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.Status(((LiquidityPurchaseEntity)(entry.Entity))),
                 byte (IInternalEntry entry) => LiquidityPurchaseEntityUnsafeAccessors.Status(((LiquidityPurchaseEntity)(entry.Entity))),
-                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(status, 24),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(status, 25),
                 byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(status));
             status.SetPropertyIndexes(
-                index: 24,
-                originalValueIndex: 24,
+                index: 25,
+                originalValueIndex: 25,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1399,6 +1449,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var kind = runtimeEntityType.FindProperty("Kind");
             var leaseBlocks = runtimeEntityType.FindProperty("LeaseBlocks");
             var leaseStartHeight = runtimeEntityType.FindProperty("LeaseStartHeight");
+            var maxFeeSat = runtimeEntityType.FindProperty("MaxFeeSat");
             var miningFeeSat = runtimeEntityType.FindProperty("MiningFeeSat");
             var paymentType = runtimeEntityType.FindProperty("PaymentType");
             var peerNodeId = runtimeEntityType.FindProperty("PeerNodeId");
@@ -1420,7 +1471,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType1 = ((LiquidityPurchaseEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<long, ChannelId, uint?, bool, long, DateTimeOffset, byte[], TxId, byte, uint, uint?, long, byte, CompactPubKey, uint, uint, ushort, ushort, uint, uint, long, byte, long, byte[], byte>(((ValueComparer<long>)(((IProperty)id).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(id)), ((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), (source.GetCurrentValue<uint?>(closedAtHeight) == null ? null : ((ValueComparer<uint?>)(((IProperty)closedAtHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(closedAtHeight))), ((ValueComparer<bool>)(((IProperty)closedEarly).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(closedEarly)), ((ValueComparer<long>)(((IProperty)contributedSat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(contributedSat)), ((ValueComparer<DateTimeOffset>)(((IProperty)createdAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(createdAt)), (source.GetCurrentValue<byte[]>(fundingScript) == null ? null : ((ValueComparer<byte[]>)(((IProperty)fundingScript).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(fundingScript))), ((ValueComparer<TxId>)(((IProperty)fundingTxId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId>(fundingTxId)), ((ValueComparer<byte>)(((IProperty)kind).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(kind)), ((ValueComparer<uint>)(((IProperty)leaseBlocks).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(leaseBlocks)), (source.GetCurrentValue<uint?>(leaseStartHeight) == null ? null : ((ValueComparer<uint?>)(((IProperty)leaseStartHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(leaseStartHeight))), ((ValueComparer<long>)(((IProperty)miningFeeSat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(miningFeeSat)), ((ValueComparer<byte>)(((IProperty)paymentType).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(paymentType)), ((ValueComparer<CompactPubKey>)(((IProperty)peerNodeId).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(peerNodeId)), ((ValueComparer<uint>)(((IProperty)rateChannelCreationFeeSat).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(rateChannelCreationFeeSat)), ((ValueComparer<uint>)(((IProperty)rateFeeBaseSat).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(rateFeeBaseSat)), ((ValueComparer<ushort>)(((IProperty)rateFeeBasis).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(rateFeeBasis)), ((ValueComparer<ushort>)(((IProperty)rateFundingWeight).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(rateFundingWeight)), ((ValueComparer<uint>)(((IProperty)rateMaxAmountSat).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(rateMaxAmountSat)), ((ValueComparer<uint>)(((IProperty)rateMinAmountSat).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(rateMinAmountSat)), ((ValueComparer<long>)(((IProperty)requestedSat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(requestedSat)), ((ValueComparer<byte>)(((IProperty)role).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(role)), ((ValueComparer<long>)(((IProperty)serviceFeeSat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(serviceFeeSat)), (source.GetCurrentValue<byte[]>(signature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)signature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(signature))), ((ValueComparer<byte>)(((IProperty)status).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(status)))));
+                    return ((ISnapshot)(new Snapshot<long, ChannelId, uint?, bool, long, DateTimeOffset, byte[], TxId, byte, uint, uint?, long?, long, byte, CompactPubKey, uint, uint, ushort, ushort, uint, uint, long, byte, long, byte[], byte>(((ValueComparer<long>)(((IProperty)id).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(id)), ((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), (source.GetCurrentValue<uint?>(closedAtHeight) == null ? null : ((ValueComparer<uint?>)(((IProperty)closedAtHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(closedAtHeight))), ((ValueComparer<bool>)(((IProperty)closedEarly).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(closedEarly)), ((ValueComparer<long>)(((IProperty)contributedSat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(contributedSat)), ((ValueComparer<DateTimeOffset>)(((IProperty)createdAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(createdAt)), (source.GetCurrentValue<byte[]>(fundingScript) == null ? null : ((ValueComparer<byte[]>)(((IProperty)fundingScript).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(fundingScript))), ((ValueComparer<TxId>)(((IProperty)fundingTxId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId>(fundingTxId)), ((ValueComparer<byte>)(((IProperty)kind).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(kind)), ((ValueComparer<uint>)(((IProperty)leaseBlocks).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(leaseBlocks)), (source.GetCurrentValue<uint?>(leaseStartHeight) == null ? null : ((ValueComparer<uint?>)(((IProperty)leaseStartHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(leaseStartHeight))), (source.GetCurrentValue<long?>(maxFeeSat) == null ? null : ((ValueComparer<long?>)(((IProperty)maxFeeSat).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(maxFeeSat))), ((ValueComparer<long>)(((IProperty)miningFeeSat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(miningFeeSat)), ((ValueComparer<byte>)(((IProperty)paymentType).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(paymentType)), ((ValueComparer<CompactPubKey>)(((IProperty)peerNodeId).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(peerNodeId)), ((ValueComparer<uint>)(((IProperty)rateChannelCreationFeeSat).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(rateChannelCreationFeeSat)), ((ValueComparer<uint>)(((IProperty)rateFeeBaseSat).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(rateFeeBaseSat)), ((ValueComparer<ushort>)(((IProperty)rateFeeBasis).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(rateFeeBasis)), ((ValueComparer<ushort>)(((IProperty)rateFundingWeight).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(rateFundingWeight)), ((ValueComparer<uint>)(((IProperty)rateMaxAmountSat).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(rateMaxAmountSat)), ((ValueComparer<uint>)(((IProperty)rateMinAmountSat).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(rateMinAmountSat)), ((ValueComparer<long>)(((IProperty)requestedSat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(requestedSat)), ((ValueComparer<byte>)(((IProperty)role).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(role)), ((ValueComparer<long>)(((IProperty)serviceFeeSat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(serviceFeeSat)), (source.GetCurrentValue<byte[]>(signature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)signature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(signature))), ((ValueComparer<byte>)(((IProperty)status).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(status)))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => ((ISnapshot)(new Snapshot<long>(((ValueComparer<long>)(((IProperty)id).GetValueComparer())).Snapshot(default(long))))));
@@ -1437,11 +1488,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                     return ((ISnapshot)(new Snapshot<long>(((ValueComparer<long>)(((IProperty)id).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<long>(id)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 25,
+                propertyCount: 26,
                 navigationCount: 0,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 25,
+                originalValueCount: 26,
                 shadowCount: 0,
                 relationshipCount: 1,
                 storeGeneratedCount: 1));

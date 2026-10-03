@@ -17,7 +17,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
     public partial class NLightningDbContextModel
     {
         private NLightningDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("58d09cc2-02cd-4dca-9ed8-f599313bc443"), entityTypeCount: 50)
+            : base(skipDetectChanges: false, modelId: new Guid("b4792513-5c6d-4d0a-8a6a-090d985a5e1f"), entityTypeCount: 50)
         {
         }
 
@@ -5045,6 +5045,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 IsNullable = true
             };
             nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase.Columns.Add("lease_start_height", lease_start_heightColumnBase);
+            var max_fee_satColumnBase = new ColumnBase<ColumnMappingBase>("max_fee_sat", "bigint", nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase.Columns.Add("max_fee_sat", max_fee_satColumnBase);
             var mining_fee_satColumnBase = new ColumnBase<ColumnMappingBase>("mining_fee_sat", "bigint", nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase.Columns.Add("mining_fee_sat", mining_fee_satColumnBase);
             var payment_typeColumnBase = new ColumnBase<ColumnMappingBase>("payment_type", "smallint", nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase);
@@ -5088,6 +5093,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)kindColumnBase3, liquidityPurchaseEntity.FindProperty("Kind")!, nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lease_blocksColumnBase, liquidityPurchaseEntity.FindProperty("LeaseBlocks")!, nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lease_start_heightColumnBase, liquidityPurchaseEntity.FindProperty("LeaseStartHeight")!, nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)max_fee_satColumnBase, liquidityPurchaseEntity.FindProperty("MaxFeeSat")!, nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)mining_fee_satColumnBase, liquidityPurchaseEntity.FindProperty("MiningFeeSat")!, nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)payment_typeColumnBase, liquidityPurchaseEntity.FindProperty("PaymentType")!, nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)peer_node_idColumnBase, liquidityPurchaseEntity.FindProperty("PeerNodeId")!, nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
@@ -5146,6 +5152,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             };
             liquidity_purchasesTable.Columns.Add("lease_start_height", lease_start_heightColumn);
             lease_start_heightColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(lease_start_heightColumn);
+            var max_fee_satColumn = new Column("max_fee_sat", "bigint", liquidity_purchasesTable)
+            {
+                IsNullable = true
+            };
+            liquidity_purchasesTable.Columns.Add("max_fee_sat", max_fee_satColumn);
+            max_fee_satColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(max_fee_satColumn);
             var mining_fee_satColumn = new Column("mining_fee_sat", "bigint", liquidity_purchasesTable);
             liquidity_purchasesTable.Columns.Add("mining_fee_sat", mining_fee_satColumn);
             mining_fee_satColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(mining_fee_satColumn);
@@ -5203,6 +5215,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping(kindColumn3, liquidityPurchaseEntity.FindProperty("Kind")!, liquidity_purchasesTableMapping);
             RelationalModel.CreateColumnMapping(lease_blocksColumn, liquidityPurchaseEntity.FindProperty("LeaseBlocks")!, liquidity_purchasesTableMapping);
             RelationalModel.CreateColumnMapping(lease_start_heightColumn, liquidityPurchaseEntity.FindProperty("LeaseStartHeight")!, liquidity_purchasesTableMapping);
+            RelationalModel.CreateColumnMapping(max_fee_satColumn, liquidityPurchaseEntity.FindProperty("MaxFeeSat")!, liquidity_purchasesTableMapping);
             RelationalModel.CreateColumnMapping(mining_fee_satColumn, liquidityPurchaseEntity.FindProperty("MiningFeeSat")!, liquidity_purchasesTableMapping);
             RelationalModel.CreateColumnMapping(payment_typeColumn, liquidityPurchaseEntity.FindProperty("PaymentType")!, liquidity_purchasesTableMapping);
             RelationalModel.CreateColumnMapping(peer_node_idColumn, liquidityPurchaseEntity.FindProperty("PeerNodeId")!, liquidity_purchasesTableMapping);

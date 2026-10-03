@@ -100,7 +100,7 @@ New folder `src/NLightning.Domain/LiquidityAds/` (BCL-only):
   - the splice `ChannelFunding` deltas in `CreateSpliceCommitmentSignedAsync` :560-566;
   - the reserve check `SpliceRules.CheckTxComplete`/`KeepsReserve` (:464-510) counts the fee.
 - **Persistence** (migration `AddLiquidityPurchases`, all 3 providers):
-  - table `LiquidityPurchases`: channel id, funding txid, role, requested, contributed, rate, payment type, mining/service fee, signature, funding script, lease start height, created.
+  - table `LiquidityPurchases`: channel id, funding txid, role, requested, contributed, rate, payment type, mining/service fee, signature, funding script, lease start height, created; since the integration review (NL-871, migration `AddLiquidityPurchaseMaxFee`) also the buyer's own fee limit, which an RBF repeating the purchase keeps.
   - Restart paths that assume balance = share use it: `GetOrLoadAsync` :1292, `TryGetSignedAttempt` :1468.
   - The repository is on `IUnitOfWork`, with a throwing default and test wrappers forwarding it.
 - **Lease guard:** `ChannelCloseService`/coordinator refuses our cooperative close of a sold channel inside the lease unless forced.

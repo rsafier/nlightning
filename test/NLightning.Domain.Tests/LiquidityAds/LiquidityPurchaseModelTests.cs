@@ -54,6 +54,43 @@ public class LiquidityPurchaseModelTests
         Assert.Null(purchase.LeaseEndHeight);
         Assert.Null(purchase.ClosedAtHeight);
         Assert.False(purchase.ClosedEarly);
+        Assert.Null(purchase.MaxFeeSat);
+    }
+
+    [Fact]
+    public void Given_ABuyersFeeLimit_When_Created_Then_Kept()
+    {
+        // Act
+        var purchase = new LiquidityPurchaseModel(Channel(1), Txid(2), LiquidityPurchaseRole.Buyer,
+                                                  LiquidityPurchaseKind.ChannelOpen, 400_000, 400_000, s_rate,
+                                                  LiquidityPaymentType.FromChannelBalance, 625, 5_010, new byte[64],
+                                                  [0x00, 0x20], s_peer, 4_032, s_createdAt, 7_000);
+
+        // Assert
+        Assert.Equal(7_000UL, purchase.MaxFeeSat);
+    }
+
+    [Fact]
+    public void Given_AFeeLimitOnASale_When_Created_Then_Throws()
+    {
+        // Act & Assert: the limit is the buyer's own (NL-871)
+        Assert.Throws<ArgumentException>(() => new LiquidityPurchaseModel(
+                                             Channel(1), Txid(2), LiquidityPurchaseRole.Seller,
+                                             LiquidityPurchaseKind.ChannelOpen, 400_000, 400_000, s_rate,
+                                             LiquidityPaymentType.FromChannelBalance, 625, 5_010, new byte[64],
+                                             [0x00, 0x20], s_peer, 4_032, s_createdAt, 7_000));
+    }
+
+    [Fact]
+    public void Given_AFeeLimitAboveTheStoredRange_When_Created_Then_Throws()
+    {
+        // Act & Assert
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LiquidityPurchaseModel(
+                                                       Channel(1), Txid(2), LiquidityPurchaseRole.Buyer,
+                                                       LiquidityPurchaseKind.ChannelOpen, 400_000, 400_000, s_rate,
+                                                       LiquidityPaymentType.FromChannelBalance, 625, 5_010,
+                                                       new byte[64], [0x00, 0x20], s_peer, 4_032, s_createdAt,
+                                                       (ulong)long.MaxValue + 1));
     }
 
     [Fact]
@@ -259,10 +296,11 @@ public class LiquidityPurchaseModelTests
                                                       LiquidityPurchaseKind.OpenRbf, 1_000, 1_200, s_rate,
                                                       LiquidityPaymentType.FromChannelBalance, 3, 4, new byte[64],
                                                       [0x51], s_peer, 10, s_createdAt,
-                                                      LiquidityPurchaseStatus.Closed, 500, 505, true);
+                                                      LiquidityPurchaseStatus.Closed, 500, 505, true, 9_000);
 
         // Assert
         Assert.Equal(42, purchase.Id);
+        Assert.Equal(9_000UL, purchase.MaxFeeSat);
         Assert.Equal(LiquidityPurchaseStatus.Closed, purchase.Status);
         Assert.Equal(500U, purchase.LeaseStartHeight);
         Assert.Equal(505U, purchase.ClosedAtHeight);

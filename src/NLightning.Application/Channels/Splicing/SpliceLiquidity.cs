@@ -70,7 +70,7 @@ internal sealed class SpliceLiquidity
         ArgumentNullException.ThrowIfNull(purchase);
         return new SpliceLiquidity(purchase.Role,
                                    new RequestFunding(purchase.RequestedSat, purchase.Rate,
-                                                      LiquidityPaymentDetails.FromChannelBalance))
+                                                      LiquidityPaymentDetails.FromChannelBalance), purchase.MaxFeeSat)
         {
             WillFund = new WillFund(purchase.Rate, purchase.FundingScript, purchase.Signature),
             Fees = purchase.Fees,

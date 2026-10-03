@@ -202,6 +202,7 @@ public class LiquidityPurchaseDbRepository : BaseDbRepository<LiquidityPurchaseE
             FundingScript = purchase.FundingScript.ToArray(),
             PeerNodeId = purchase.PeerNodeId,
             LeaseBlocks = purchase.LeaseBlocks,
+            MaxFeeSat = purchase.MaxFeeSat is { } maxFee ? checked((long)maxFee) : null,
             Status = (byte)purchase.Status,
             LeaseStartHeight = purchase.LeaseStartHeight,
             ClosedAtHeight = purchase.ClosedAtHeight,
@@ -225,6 +226,7 @@ public class LiquidityPurchaseDbRepository : BaseDbRepository<LiquidityPurchaseE
                                               new CompactSignature(entity.Signature), entity.FundingScript,
                                               entity.PeerNodeId, entity.LeaseBlocks, entity.CreatedAt,
                                               (LiquidityPurchaseStatus)entity.Status, entity.LeaseStartHeight,
-                                              entity.ClosedAtHeight, entity.ClosedEarly);
+                                              entity.ClosedAtHeight, entity.ClosedEarly,
+                                              entity.MaxFeeSat is { } maxFee ? checked((ulong)maxFee) : null);
     }
 }

@@ -216,17 +216,19 @@ public sealed class LiquidityAdsService
     #endregion
 
     /// <summary>
-    /// A purchase record of a negotiated attempt (status Pending), for the attempt's save.
+    /// A purchase record of a negotiated attempt (status Pending), for the attempt's save. <paramref name="maxFeeSat"/>
+    /// is the buyer's own fee limit (null for a sale, or when the request gave none), kept for an RBF that repeats the
+    /// purchase (NL-871).
     /// </summary>
     public LiquidityPurchaseModel CreatePurchase(ChannelId channelId,
                                                  TxId fundingTxId,
                                                  LiquidityPurchaseRole role, LiquidityPurchaseKind kind,
                                                  RequestFunding request, ulong contributedSat, LiquidityFees fees,
-                                                 WillFund willFund, CompactPubKey peer) =>
+                                                 WillFund willFund, CompactPubKey peer, ulong? maxFeeSat = null) =>
         new(channelId, fundingTxId, role, kind, request.RequestedSat, contributedSat, request.Rate,
             (LiquidityPaymentType)request.PaymentDetails.Type, fees.MiningFeeSat, fees.ServiceFeeSat,
             willFund.Signature, willFund.FundingScript, peer, _nodeOptions.LiquidityAds.LeaseBlocks,
-            _timeProvider.GetUtcNow());
+            _timeProvider.GetUtcNow(), role == LiquidityPurchaseRole.Buyer ? maxFeeSat : null);
 
     /// <summary>
     /// A sale slot (griefing cap, D-L5) held by one sale negotiation; dispose it once the negotiation ends.

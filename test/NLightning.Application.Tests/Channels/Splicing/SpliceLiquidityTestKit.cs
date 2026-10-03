@@ -174,5 +174,5 @@ internal sealed class InMemorySpliceLiquidityPurchases : ILiquidityPurchaseDbRep
         LiquidityPurchaseModel.Restore(p.Id, p.ChannelId, p.FundingTxId, p.Role, p.Kind, p.RequestedSat,
                                        p.ContributedSat, p.Rate, p.PaymentType, p.MiningFeeSat, p.ServiceFeeSat,
                                        p.Signature, p.FundingScript, p.PeerNodeId, p.LeaseBlocks, p.CreatedAt,
-                                       p.Status, p.LeaseStartHeight, p.ClosedAtHeight, p.ClosedEarly);
+                                       p.Status, p.LeaseStartHeight, p.ClosedAtHeight, p.ClosedEarly, p.MaxFeeSat);
 }

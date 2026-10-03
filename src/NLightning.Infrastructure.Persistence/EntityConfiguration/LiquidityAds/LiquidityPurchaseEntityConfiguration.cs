@@ -45,6 +45,7 @@ public static class LiquidityPurchaseEntityConfiguration
                   .HasConversion<CompactPubKeyConverter>()
                   .IsRequired();
             entity.Property(e => e.LeaseBlocks).IsRequired();
+            entity.Property(e => e.MaxFeeSat).IsRequired(false);
             entity.Property(e => e.Status).IsRequired();
             entity.Property(e => e.LeaseStartHeight).IsRequired(false);
             entity.Property(e => e.ClosedAtHeight).IsRequired(false);

@@ -13,9 +13,10 @@ using Infrastructure.Persistence.Contexts;
 using Infrastructure.Repositories.Database.LiquidityAds;
 
 /// <summary>
-/// Provider-agnostic proof for migration <c>AddLiquidityPurchases</c> (NL-850 LA3), shared by the SQLite test and the
-/// Docker Postgres test: the schema right before it moves forward; then purchases round-trip every field (the extremes of
-/// every rate field, the amounts and a non-UTC creation time to the tick), the save assigns their ids, updates staged
+/// Provider-agnostic proof for migrations <c>AddLiquidityPurchases</c> (NL-850 LA3) and <c>AddLiquidityPurchaseMaxFee</c>
+/// (NL-871), shared by the SQLite test and the Docker Postgres test: the schema right before the first moves forward;
+/// then purchases round-trip every field (the extremes of every rate field, the amounts, the buyer's fee limit (none,
+/// and the largest) and a non-UTC creation time to the tick), the save assigns their ids, updates staged
 /// before and after a save and on a reloaded model are written, the queries (by channel, by funding attempt, the list
 /// with its filters and pages, the griefing counts and the lease guard) read what was saved, and a second purchase on
 /// the same funding attempt fails the save.
@@ -63,7 +64,8 @@ internal static class LiquidityPurchaseSchemaRoundTrip
                                                      Enumerable.Range(0, 64).Select(i => (byte)(255 - i)).ToArray(),
                                                      Enumerable.Range(0, 300).Select(i => (byte)i).ToArray(), s_peerA,
                                                      uint.MaxValue, s_now);
-        var bought = Create(0x12, 0x22, LiquidityPurchaseRole.Buyer, s_peerB, s_now.AddMinutes(1));
+        var bought = Create(0x12, 0x22, LiquidityPurchaseRole.Buyer, s_peerB, s_now.AddMinutes(1),
+                            maxFeeSat: long.MaxValue);
         var splice = Create(0x11, 0x23, LiquidityPurchaseRole.Seller, s_peerA, s_now.AddMinutes(2),
                             LiquidityPurchaseKind.Splice);
         await using (var context = contextFactory())
@@ -99,6 +101,8 @@ internal static class LiquidityPurchaseSchemaRoundTrip
             var reloadedBought = await repository.GetByFundingTxIdAsync(Channel(0x12), Txid(0x22));
             Assert.NotNull(reloadedBought);
             AssertSame(bought, reloadedBought);
+            Assert.Equal((ulong)long.MaxValue, reloadedBought.MaxFeeSat);
+            Assert.Null(reloaded.MaxFeeSat);
             Assert.Equal(LiquidityPurchaseStatus.Active, reloadedBought.Status);
             Assert.Equal(800_000U, reloadedBought.LeaseStartHeight);
 
@@ -122,6 +126,7 @@ internal static class LiquidityPurchaseSchemaRoundTrip
             Assert.Equal(LiquidityPurchaseStatus.Closed, closed.Status);
             Assert.Equal(800_000U, closed.LeaseStartHeight);
             Assert.Equal(800_010U, closed.ClosedAtHeight);
+            Assert.Equal((ulong)long.MaxValue, closed.MaxFeeSat);
             Assert.True(closed.ClosedEarly);
             Assert.Equal(s_rate, closed.Rate);
         }
@@ -179,12 +184,13 @@ internal static class LiquidityPurchaseSchemaRoundTrip
 
     private static LiquidityPurchaseModel Create(byte channel, byte txid, LiquidityPurchaseRole role,
                                                  CompactPubKey peer, DateTimeOffset createdAt,
-                                                 LiquidityPurchaseKind kind = LiquidityPurchaseKind.ChannelOpen)
+                                                 LiquidityPurchaseKind kind = LiquidityPurchaseKind.ChannelOpen,
+                                                 ulong? maxFeeSat = null)
     {
         return new LiquidityPurchaseModel(Channel(channel), Txid(txid), role, kind, 400_000, 450_000, s_rate,
                                           LiquidityPaymentType.FromChannelBalance, 625, 5_010,
                                           Enumerable.Repeat(channel, 64).ToArray(), [0x00, 0x20, txid], peer,
-                                          4_032, createdAt);
+                                          4_032, createdAt, maxFeeSat);
     }
 
     private static void AssertSame(LiquidityPurchaseModel expected, LiquidityPurchaseModel actual)
@@ -210,6 +216,7 @@ internal static class LiquidityPurchaseSchemaRoundTrip
         Assert.Equal(expected.LeaseStartHeight, actual.LeaseStartHeight);
         Assert.Equal(expected.ClosedAtHeight, actual.ClosedAtHeight);
         Assert.Equal(expected.ClosedEarly, actual.ClosedEarly);
+        Assert.Equal(expected.MaxFeeSat, actual.MaxFeeSat);
     }
 
     private static ChannelId Channel(byte fill) => Enumerable.Repeat(fill, 32).ToArray();

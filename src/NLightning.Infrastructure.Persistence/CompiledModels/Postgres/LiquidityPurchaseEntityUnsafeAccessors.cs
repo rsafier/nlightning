@@ -46,6 +46,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<LeaseStartHeight>k__BackingField")]
         public static extern ref uint? LeaseStartHeight(LiquidityPurchaseEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<MaxFeeSat>k__BackingField")]
+        public static extern ref long? MaxFeeSat(LiquidityPurchaseEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<MiningFeeSat>k__BackingField")]
         public static extern ref long MiningFeeSat(LiquidityPurchaseEntity @this);
 

@@ -62,6 +62,13 @@ public sealed class LiquidityPurchaseModel
     /// <summary>How many blocks the seller should keep the channel open after the funding confirmed.</summary>
     public uint LeaseBlocks { get; }
 
+    /// <summary>
+    /// The fee limit the buyer gave with the request (<c>--max-liquidity-fee</c>), null when it gave none (the node's
+    /// <c>Node:LiquidityAds:MaxFeeSat</c> applied) and for a sale. An RBF that repeats the purchase without a new
+    /// request keeps it (NL-871).
+    /// </summary>
+    public ulong? MaxFeeSat { get; }
+
     public DateTimeOffset CreatedAt { get; }
 
     public LiquidityPurchaseStatus Status { get; private set; }
@@ -91,7 +98,8 @@ public sealed class LiquidityPurchaseModel
                                   LiquidityPurchaseKind kind, ulong requestedSat, ulong contributedSat,
                                   FundingRate rate, LiquidityPaymentType paymentType, ulong miningFeeSat,
                                   ulong serviceFeeSat, CompactSignature signature, byte[] fundingScript,
-                                  CompactPubKey peerNodeId, uint leaseBlocks, DateTimeOffset createdAt)
+                                  CompactPubKey peerNodeId, uint leaseBlocks, DateTimeOffset createdAt,
+                                  ulong? maxFeeSat = null)
     {
         if (!Enum.IsDefined(role))
             throw new ArgumentOutOfRangeException(nameof(role), role, "Unknown purchase role.");
@@ -121,6 +129,10 @@ public sealed class LiquidityPurchaseModel
             throw new ArgumentOutOfRangeException(nameof(miningFeeSat), miningFeeSat, "The fee is too large.");
         if (serviceFeeSat > long.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(serviceFeeSat), serviceFeeSat, "The fee is too large.");
+        if (maxFeeSat > long.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(maxFeeSat), maxFeeSat, "The fee limit is too large.");
+        if (maxFeeSat is not null && role != LiquidityPurchaseRole.Buyer)
+            throw new ArgumentException("Only a purchase we made carries our fee limit.", nameof(maxFeeSat));
         _ = new LiquidityFees(miningFeeSat, serviceFeeSat).TotalMsat;
 
         ChannelId = channelId;
@@ -138,6 +150,7 @@ public sealed class LiquidityPurchaseModel
         PeerNodeId = peerNodeId;
         LeaseBlocks = leaseBlocks;
         CreatedAt = createdAt;
+        MaxFeeSat = maxFeeSat;
         Status = LiquidityPurchaseStatus.Pending;
     }
 
@@ -151,7 +164,8 @@ public sealed class LiquidityPurchaseModel
                                                  ulong serviceFeeSat, CompactSignature signature,
                                                  byte[] fundingScript, CompactPubKey peerNodeId, uint leaseBlocks,
                                                  DateTimeOffset createdAt, LiquidityPurchaseStatus status,
-                                                 uint? leaseStartHeight, uint? closedAtHeight, bool closedEarly)
+                                                 uint? leaseStartHeight, uint? closedAtHeight, bool closedEarly,
+                                                 ulong? maxFeeSat = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(id);
         if (!Enum.IsDefined(status))
@@ -167,7 +181,7 @@ public sealed class LiquidityPurchaseModel
 
         return new LiquidityPurchaseModel(channelId, fundingTxId, role, kind, requestedSat, contributedSat, rate,
                                           paymentType, miningFeeSat, serviceFeeSat, signature, fundingScript,
-                                          peerNodeId, leaseBlocks, createdAt)
+                                          peerNodeId, leaseBlocks, createdAt, maxFeeSat)
         {
             Id = id,
             Status = status,
@@ -205,7 +219,8 @@ public sealed class LiquidityPurchaseModel
     }
 
     /// <summary>
-    /// Another attempt of the same funding confirmed (or replaced this one). Idempotent.
+    /// Another attempt of the same funding confirmed (or replaced this one), or the attempt was abandoned before it
+    /// could confirm (a splice aborted before our <c>tx_signatures</c>, NL-870). Idempotent.
     /// </summary>
     /// <exception cref="InvalidOperationException">The purchase is active or closed.</exception>
     public void MarkReplaced()

@@ -282,6 +282,66 @@ public class SpliceLiquidityAdsTests
         Assert.Equal(0, LiquidityAds(harness.Bob).SalesInProgress);
     }
 
+    /// <summary>
+    /// NL-871: the buyer's own fee limit of the splice's purchase (3,500 sat; the fee is 3,400 sat at 1,000 sat/kw) is
+    /// stored with it and still applies when a bump repeats the purchase without a new request, also after a restart:
+    /// at 2,000 sat/kw the fee is 3,800 sat, so the buyer refuses the seller's answer instead of paying it unchecked
+    /// (<c>Node:LiquidityAds:MaxFeeSat</c> is unset).
+    /// </summary>
+    [Fact]
+    public async Task Given_ASpliceBoughtWithAFeeLimit_When_TheBuyerBumpsWithoutANewRequest_Then_TheLimitStillApplies()
+    {
+        // Arrange
+        using var harness = CreateHarness("Bob");
+        harness.Alice.Fund(SpliceIn + 200_000);
+        harness.Bob.Fund((long)Requested + 200_000);
+        Assert.Equal(3_400_000, FeeMsat(SpliceHarness.FeeratePerKw));
+        Assert.Equal(3_800_000, FeeMsat(2_000));
+        var first = (await BuyAsync(harness, harness.Alice, SpliceIn, new LiquidityRequest(Requested, null, 3_500)))
+                   .SpliceTxId!.Value;
+        Assert.Equal(3_500UL, Assert.Single(harness.Alice.Purchases.Committed).MaxFeeSat);
+        Assert.Null(Assert.Single(harness.Bob.Purchases.Committed).MaxFeeSat);
+        await harness.RestartAsync(harness.Alice);
+        await harness.Harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Act: no liquidity named, so the bump repeats the purchase at the new feerate
+        var bump = await BumpAsync(harness, harness.Alice, new SpliceBumpRequest(TwoNodeHarness.ChannelId, 2_000));
+
+        // Assert: the stored limit refused the dearer answer; the first attempt and its purchase are untouched
+        Assert.Equal(SpliceNegotiationState.Aborted, bump.State);
+        Assert.Contains(nameof(LiquidityAdsRefusal.FeeTooHigh), bump.FailureReason);
+        Assert.Empty(harness.Failures);
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+        {
+            Assert.Equal([first], node.Node.State.PendingFundings.Select(f => f.FundingTxId));
+            Assert.Equal(LiquidityPurchaseStatus.Pending, Assert.Single(node.Purchases.Committed).Status);
+        }
+    }
+
+    /// <summary>
+    /// NL-871: a bump that repeats a purchase made without a limit of its own stays within the node's default limit
+    /// (and without one, nothing checks the fee, as for the first attempt).
+    /// </summary>
+    [Fact]
+    public async Task Given_ASpliceBoughtWithoutAFeeLimit_When_TheBuyerBumps_Then_TheNodesDefaultLimitApplies()
+    {
+        // Arrange
+        using var harness = CreateHarness("Bob");
+        harness.Alice.Fund(SpliceIn + 200_000);
+        harness.Bob.Fund((long)Requested + 200_000);
+        await BuyAsync(harness, harness.Alice, SpliceIn, new LiquidityRequest(Requested));
+        Assert.Null(Assert.Single(harness.Alice.Purchases.Committed).MaxFeeSat);
+        LiquidityAds(harness.Alice).Options.MaxFeeSat = 3_500;
+
+        // Act
+        var bump = await BumpAsync(harness, harness.Alice, new SpliceBumpRequest(TwoNodeHarness.ChannelId, 2_000));
+
+        // Assert
+        Assert.Equal(SpliceNegotiationState.Aborted, bump.State);
+        Assert.Contains(nameof(LiquidityAdsRefusal.FeeTooHigh), bump.FailureReason);
+    }
+
     /// <summary>The seller of the pending splice's liquidity may not bump it: only the buyer can request it again.
     /// </summary>
     [Fact]
@@ -428,6 +488,66 @@ public class SpliceLiquidityAdsTests
         await harness.ConfirmAsync(spliceTx, TwoNodeHarness.BlockHeight + 3, harness.Alice, harness.Bob);
         Assert.Empty(harness.Failures);
         AssertLockEvents(harness.Alice, SpliceIn * 1_000, AccountingEventKind.LiquidityFeePaid, -fee);
+    }
+
+    /// <summary>
+    /// NL-870: a <c>tx_abort</c> after the splice commitments and before any <c>tx_signatures</c> abandons the attempt,
+    /// so its purchase rows, saved Pending with each node's <c>commitment_signed</c>, are replaced in the abort's save:
+    /// the seller's lease guard no longer finds a sale (its <c>closechannel</c> was refused for good before) and the
+    /// griefing cap no longer counts it. Alice, the buyer, got Bob's <c>commitment_signed</c> (the new funding pending
+    /// in her engine); Bob, the seller, only sent his (his funding row only stored).
+    /// </summary>
+    [Fact]
+    public async Task Given_ASpliceThatSoldLiquidity_When_AbortedAfterTheCommitments_Then_ThePurchasesNoLongerBind()
+    {
+        // Arrange: Alice buys from Bob; Alice's commitment_signed and every tx_signatures are held
+        using var harness = CreateHarness("Bob");
+        harness.Alice.Fund(SpliceIn + 200_000);
+        harness.Bob.Fund((long)Requested + 200_000);
+        var start = harness.Alice.Service.StartAsync(
+            new SpliceRequest(TwoNodeHarness.ChannelId, SpliceIn, SpliceHarness.FeeratePerKw)
+            {
+                Liquidity = new LiquidityRequest(Requested)
+            }, TestContext.Current.CancellationToken);
+        await PumpHoldingAsync(harness, static (from, m) => m is TxSignaturesMessage
+                                                         || (from == "Alice" && m is CommitmentSignedMessage));
+        Assert.IsType<CommitmentSignedMessage>(harness.Alice.Node.PeekNext());
+        Assert.DoesNotContain(harness.Transcript, t => t.Message is TxSignaturesMessage);
+        var spliceTx = Assert.Single(harness.Alice.Node.State.PendingFundings).FundingTxId;
+        Assert.Empty(harness.Bob.Node.State.PendingFundings);
+        AssertPurchase(harness.Alice, spliceTx, LiquidityPurchaseRole.Buyer, LiquidityPurchaseKind.Splice,
+                       LiquidityPurchaseStatus.Pending, SpliceHarness.FeeratePerKw);
+        AssertPurchase(harness.Bob, spliceTx, LiquidityPurchaseRole.Seller, LiquidityPurchaseKind.Splice,
+                       LiquidityPurchaseStatus.Pending, SpliceHarness.FeeratePerKw);
+        Assert.NotNull(await harness.Bob.Purchases.GetActiveSaleLeaseAsync(TwoNodeHarness.ChannelId,
+                                                                           TwoNodeHarness.BlockHeight));
+
+        // Act: each side gets the other's tx_abort instead of the held messages
+        foreach (var (node, from) in new[] { (harness.Bob, "Alice"), (harness.Alice, "Bob") })
+        {
+            var abort = new TxAbortMessage(new TxAbortPayload(TwoNodeHarness.ChannelId, [0x01]));
+            await node.Node.ChannelManager.HandleChannelMessageAsync(abort, SpliceHarness.CreateFeatures(),
+                                                                     SpliceHarness.NodeIdOf(from));
+        }
+
+        var result = await start.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await harness.WhenIdleAsync();
+
+        // Assert: the attempt is discarded on both nodes and its purchases replaced in the same saves
+        Assert.Equal(SpliceNegotiationState.Aborted, result.State);
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+        {
+            Assert.Empty(node.Node.State.PendingFundings);
+            Assert.Equal(ChannelFundingStatus.Discarded, node.FundingRows.Committed[spliceTx].Status);
+            Assert.Equal(LiquidityPurchaseStatus.Replaced, Assert.Single(node.Purchases.Committed).Status);
+            Assert.Empty(node.Broadcasts);
+        }
+
+        Assert.Null(await harness.Bob.Purchases.GetActiveSaleLeaseAsync(TwoNodeHarness.ChannelId,
+                                                                        TwoNodeHarness.BlockHeight));
+        Assert.Equal(0, await harness.Bob.Purchases.CountPendingSalesAsync());
+        Assert.Equal(0, LiquidityAds(harness.Bob).SalesInProgress);
+        Assert.Equal(ChannelState.Open, harness.Bob.Node.Channel.State);
     }
 
     #endregion

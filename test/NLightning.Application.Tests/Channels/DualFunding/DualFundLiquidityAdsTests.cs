@@ -279,6 +279,51 @@ public class DualFundLiquidityAdsTests
         await PayBothWaysAsync(harness, channelId);
     }
 
+    /// <summary>
+    /// NL-871: Alice's own fee limit of the open's purchase (7,000 sat; the fee is 6,500 sat at 2,500 sat/kw) is stored
+    /// with it and still applies after both nodes restart, when <c>bumpopen</c> repeats the purchase without a new
+    /// request: at 5,000 sat/kw the fee is 7,500 sat, so the bump is refused before anything is sent.
+    /// </summary>
+    [Fact]
+    public async Task Given_AnOpenBoughtWithAFeeLimit_When_AliceBumpsWithoutANewRequest_Then_TheLimitStillApplies()
+    {
+        // Arrange
+        await using var harness = await CreateAsync();
+        Assert.Equal(6_500UL, Fees(2_500).TotalSat);
+        Assert.Equal(7_500UL, Fees(5_000).TotalSat);
+        var first = await OpenAsync(harness, new LiquidityRequest(RequestedSat, MaxFeeSat: 7_000));
+        Assert.True(first.FailureReason is null, $"{first.FailureReason}\n{harness.Describe()}");
+        var channelId = first.ChannelId;
+        Assert.Equal(7_000UL, Assert.Single(await PurchasesAsync(harness.Alice, channelId)).MaxFeeSat);
+        Assert.Null(Assert.Single(await PurchasesAsync(harness.Bob, channelId)).MaxFeeSat);
+        foreach (var node in harness.Nodes)
+        {
+            await harness.RestartAsync(node);
+            await harness.ReconnectAsync();
+            await harness.PumpAsync();
+        }
+
+        var sent = harness.Transcript.Count;
+
+        // Act (pumped, so a bump that is not refused completes instead of waiting for the peer)
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(
+                          () => harness.RunAsync(harness.Alice.DualFund.BumpAsync(
+                                                     channelId, 5_000, TestContext.Current.CancellationToken)));
+
+        // Assert: the stored limit, no tx_init_rbf, the open's attempt and fee unchanged
+        Assert.Contains("above the limit of 7000 sat", refused.Message);
+        await harness.PumpAsync();
+        Assert.DoesNotContain(harness.Transcript.Skip(sent), t => t.Message is TxInitRbfMessage);
+        await AssertBalancesAsync(harness, channelId, 600_000, RequestedSat, Fees(2_500).TotalMsat);
+
+        // Act / Assert: a bump within the limit (a new request naming a higher one) goes through
+        var bump = await harness.RunAsync(harness.Alice.DualFund.BumpAsync(
+                                              channelId, 5_000, null, new LiquidityRequest(RequestedSat, MaxFeeSat: 8_000),
+                                              TestContext.Current.CancellationToken));
+        Assert.True(bump.FailureReason is null, $"{bump.FailureReason}\n{harness.Describe()}");
+        Assert.Equal(8_000UL, bump.Purchase!.MaxFeeSat);
+    }
+
     [Fact]
     public async Task Given_ARestartDuringAnRbfAttemptWithAPurchase_When_ThePeerForgotIt_Then_BackOnTheFirstFee()
     {

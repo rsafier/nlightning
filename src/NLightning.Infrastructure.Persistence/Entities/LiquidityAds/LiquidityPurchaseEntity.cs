@@ -57,6 +57,10 @@ public class LiquidityPurchaseEntity
 
     public required uint LeaseBlocks { get; set; }
 
+    /// <summary>The buyer's own fee limit given with the request; null for a sale or when none was given (NL-871).
+    /// </summary>
+    public long? MaxFeeSat { get; set; }
+
     /// <summary><c>LiquidityPurchaseStatus</c> (1 pending, 2 active, 3 replaced, 4 closed).</summary>
     public required byte Status { get; set; }
 

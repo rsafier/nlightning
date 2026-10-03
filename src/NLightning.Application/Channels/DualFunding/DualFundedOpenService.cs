@@ -530,7 +530,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
     /// <summary>
     /// The <c>request_funding</c> of our <c>tx_init_rbf</c> (NL-850): <paramref name="liquidity"/> at the peer's rate, or
-    /// the purchase of the attempt it replaces again (its amount and rate, the fee re-quoted at the new feerate), or
+    /// the purchase of the attempt it replaces again (its amount, rate and fee limit, the fee re-quoted at the new
+    /// feerate), or
     /// none when that attempt bought nothing. The fee, known now (the seller contributes at least the amount), must be
     /// within the limit and leave our share able to pay it (and the opener the first commitment's fee).
     /// </summary>
@@ -552,7 +553,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                           ? liquidityAds.CreateRequest(negotiation.Peer, liquidity, feeratePerKw, true)
                           : new RequestFunding(previous!.RequestedSat, previous.Rate,
                                                LiquidityPaymentDetails.FromChannelBalance);
-        var maxFee = liquidity?.MaxFeeSat;
+        // A repeated purchase keeps the buyer's own fee limit of the attempt it replaces (NL-871): its fee grows with
+        // the new feerate, and a bump without a new request names no limit of its own
+        var maxFee = liquidity is not null ? liquidity.MaxFeeSat : previous!.MaxFeeSat;
         var fees = LiquidityAdsRules.ComputeFees(request.Rate, feeratePerKw, request.RequestedSat,
                                                  request.RequestedSat, true);
         if ((maxFee ?? liquidityAds.Options.MaxFeeSat) is { } limit && fees.TotalSat > limit)
@@ -2049,7 +2052,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             return new LiquidityCheck($"liquidity ads: {refusal}", null);
 
         var liquidity = new DualFundLiquidity(LiquidityPurchaseRole.Buyer, request.Request, willFund!, fees,
-                                              contributedSat);
+                                              contributedSat, request.MaxFeeSat);
         if (DualFundLiquidity.GetBalanceViolation(localShare, sellerContribution, liquidity.LocalFeeMsat,
                                                   negotiation.IsOpener,
                                                   CommitmentFeeCalculator.FunderCost(commitmentFeeratePerKw,
@@ -2178,7 +2181,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                        ? LiquidityPurchaseKind.ChannelOpen
                                                        : LiquidityPurchaseKind.OpenRbf,
                                                    liquidity.Request, liquidity.ContributedSat, liquidity.Fees,
-                                                   liquidity.WillFund, negotiation.Peer);
+                                                   liquidity.WillFund, negotiation.Peer, liquidity.MaxFeeSat);
         unitOfWork.LiquidityPurchaseDbRepository.Add(purchase);
         negotiation.Purchases[txId] = purchase;
         _logger.LogInformation("Liquidity {Role} of {Amount} sat recorded with funding {TxId} of channel {ChannelId}: "

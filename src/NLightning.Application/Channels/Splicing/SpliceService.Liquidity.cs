@@ -125,8 +125,8 @@ public sealed partial class SpliceService
 
     /// <summary>
     /// The purchase an RBF of the pending splice carries (BOLT PR #1153: an RBF after a purchase MUST request funding
-    /// again): <paramref name="liquidity"/> when given, else the latest attempt's purchase repeated (same amount and
-    /// rate, the fee at the new feerate); null when neither. Only the buyer may bump an attempt that carries a purchase.
+    /// again): <paramref name="liquidity"/> when given, else the latest attempt's purchase repeated (same amount, rate
+    /// and fee limit, the fee at the new feerate); null when neither. Only the buyer may bump an attempt that carries a purchase.
     /// </summary>
     /// <exception cref="InvalidOperationException">We sold the latest attempt's liquidity, or the new request cannot be
     /// made.</exception>
@@ -141,11 +141,14 @@ public sealed partial class SpliceService
         if (liquidity is not null)
             return CreatePurchaseRequest(channel.RemoteNodeId, liquidity, feeratePerKw);
 
+        // The repeated purchase keeps the buyer's own fee limit of the attempt it replaces (NL-871): the fee follows the
+        // new feerate, and a bump (bumpsplice, the auto-bumper) never names a limit of its own
         return latestPurchase is null
                    ? null
                    : new SpliceLiquidity(LiquidityPurchaseRole.Buyer,
                                          new RequestFunding(latestPurchase.RequestedSat, latestPurchase.Rate,
-                                                            LiquidityPaymentDetails.FromChannelBalance));
+                                                            LiquidityPaymentDetails.FromChannelBalance),
+                                         latestPurchase.MaxFeeSat);
     }
 
     /// <summary>
@@ -311,9 +314,29 @@ public sealed partial class SpliceService
                                                   ? LiquidityPurchaseKind.SpliceRbf
                                                   : LiquidityPurchaseKind.Splice,
                                               liquidity.Request, (ulong)Math.Max(0, contributed), fees, willFund,
-                                              negotiation.PeerPubKey);
+                                              negotiation.PeerPubKey, liquidity.MaxFeeSat);
         purchases.Add(purchase);
         liquidity.Purchase = purchase;
+    }
+
+    /// <summary>
+    /// In the save that discards an aborted splice attempt (<c>tx_abort</c> or a reconnection without
+    /// <c>next_funding</c> before our <c>tx_signatures</c>): the attempt's purchase row, still Pending, is marked
+    /// replaced, so it no longer holds the seller's lease guard (D-L4) or a griefing-cap slot (D-L5). Nothing can confirm
+    /// the attempt any more, and no lock will ever retire it (NL-870). Returns whether a row was staged.
+    /// </summary>
+    private async Task<bool> StageAbandonedPurchaseAsync(ChannelId channelId, TxId fundingTxId, IUnitOfWork unitOfWork)
+    {
+        if (GetPurchases(unitOfWork) is not { } purchases
+         || await GetPurchaseAsync(purchases, channelId, fundingTxId) is not
+         { Status: LiquidityPurchaseStatus.Pending } purchase)
+            return false;
+
+        purchase.MarkReplaced();
+        purchases.Update(purchase);
+        _logger.LogInformation("Liquidity purchase of channel {ChannelId} in aborted splice {TxId} abandoned ({Role})",
+                               channelId, fundingTxId, purchase.Role);
+        return true;
     }
 
     /// <summary>

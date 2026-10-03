@@ -1649,6 +1649,14 @@ cb5c258f merge).
   - Without `NLTG_TEST_BACKEND`: the `Docker` namespaces (Abcd, Onchain, Onchain.Anchors, Gossip, Gossip.Capture,
     Day0, Utils; Interop, `PostgresTests` and `SqlServerTests` left out) had 163 tests: 144 skipped with the NL-820
     reason, 12 container-free helpers passed, 7 `Explicit` not run, 0 failed, and no container was started.
+- **Review fixes before the merge into `wip/fafo`.** Two liquidity ads findings on the integrated code: NL-870 (medium,
+  a splice aborted after our `commitment_signed` left its sale Pending, so the lease guard refused `closechannel` for
+  good) and NL-871 (low, an RBF repeating a purchase dropped the buyer's `--max-liquidity-fee`; migration
+  `AddLiquidityPurchaseMaxFee` on all three providers, compiled models regenerated). Reruns: the affected in-process
+  classes (`SpliceLiquidityAdsTests`, `DualFundLiquidityAdsTests`, `DualFundLiquidityAdsRefusalTests`,
+  `SpliceHarnessTests`, `SpliceRbfHarnessTests`, `LiquidityLeasesTests`, Domain `LiquidityPurchaseModelTests`),
+  the non-Docker persistence tests (incl. `CompiledModelTests`, `PersistenceConfigurationTests`) and Docker
+  `PostgresTests` 25/25 with the new migration's round trip.
 
 ## 6. Risks and open questions
 

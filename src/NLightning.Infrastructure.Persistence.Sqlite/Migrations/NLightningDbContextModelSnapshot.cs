@@ -1649,6 +1649,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<uint?>("LeaseStartHeight")
                         .HasColumnType("INTEGER");
 
+                    b.Property<long?>("MaxFeeSat")
+                        .HasColumnType("INTEGER");
+
                     b.Property<long>("MiningFeeSat")
                         .HasColumnType("INTEGER");
 
