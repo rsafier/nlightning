@@ -16,13 +16,27 @@ using NLightning.Tests.Utils;
 /// <summary>
 /// NL-178: <c>TcpService</c> over real loopback sockets: the listener accepts a connection and raises its event, a
 /// connect to a listener works end to end (bytes both ways), a refused connect becomes a <c>ConnectionException</c>,
-/// a bad listen address is skipped, and stop closes the listeners. NL-107: IPv6 listen addresses
+/// a bad listen address is skipped, and stop closes the listeners. NL-806: both directions have TCP keepalive on. NL-107: IPv6 listen addresses
 /// (<c>[ipv6]:port</c>, a bare address on the default port) parse and bind, the wildcard <c>[::]</c> dual-stack. Both
 /// directions have Nagle off (found by the cluster harness: our <c>stfu</c> reached CLN 40 ms after the
 /// <c>revoke_and_ack</c> before it, behind the peer's delayed ACK, and crossed CLN's fulfill, NL-477).
 /// </summary>
 public class TcpServiceTests
 {
+    /// <summary>
+    /// NL-806: TCP keepalive on both directions' peer sockets, a second guard behind the ping keep-alive.
+    /// </summary>
+    private static void AssertKeepAlive(Socket socket)
+    {
+        Assert.NotEqual(0, (int)socket.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive)!);
+        Assert.Equal(TcpService.KeepAliveTimeSeconds,
+                     (int)socket.GetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime)!);
+        Assert.Equal(TcpService.KeepAliveIntervalSeconds,
+                     (int)socket.GetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval)!);
+        Assert.Equal(TcpService.KeepAliveRetryCount,
+                     (int)socket.GetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount)!);
+    }
+
     [Fact]
     public async Task Given_AListener_When_AClientConnects_Then_TheEventCarriesThePeerAndAConnectedClient()
     {
@@ -48,6 +62,7 @@ public class TcpServiceTests
             Assert.NotEqual((uint)port, eventArgs.Port);
             Assert.True(eventArgs.TcpClient.Connected);
             Assert.True(eventArgs.TcpClient.NoDelay); // Nagle off: no delayed-ACK stall between two peer messages
+            AssertKeepAlive(eventArgs.TcpClient.Client);
             Assert.Single(service.ListeningTo);
         }
         finally
@@ -86,6 +101,7 @@ public class TcpServiceTests
             Assert.Equal(peerAddress.PubKey, connectedPeer.CompactPubKey);
             Assert.True(connectedPeer.TcpClient.Connected);
             Assert.True(connectedPeer.TcpClient.NoDelay);
+            AssertKeepAlive(connectedPeer.TcpClient.Client);
             await connectedPeer.TcpClient.Client.SendAsync(new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05 },
                                                            TestContext.Current.CancellationToken);
             var peer = await peerAccepted.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);

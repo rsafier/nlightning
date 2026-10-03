@@ -108,11 +108,21 @@ public class MatrixPlannerTests
 
     [Theory]
     [InlineData(0)]
-    [InlineData(7)]
+    [InlineData(13)]
     public void Given_ABudgetOutsideTheCap_When_Planned_Then_ItIsRefused(int budget)
     {
         // Act & Assert
         Assert.Throws<ArgumentException>(() => MatrixPlanner.Plan(["cln"], budget, false));
+    }
+
+    [Fact]
+    public void Given_TheWholeCap_When_Planned_Then_TwelveNamespacesAreAccepted()
+    {
+        // Act: NL-844 raised the cap from 6 to 12
+        var plan = MatrixPlanner.Plan(["lnd"], 12, true);
+
+        // Assert
+        Assert.Single(plan);
     }
 
     [Fact]

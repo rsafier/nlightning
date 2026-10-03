@@ -16,6 +16,15 @@ using Tor;
 
 public class TcpService : ITcpService
 {
+    /// <summary>Idle time before the first TCP keepalive probe on a peer socket: 60 s (NL-806).</summary>
+    internal const int KeepAliveTimeSeconds = 60;
+
+    /// <summary>Time between two unanswered TCP keepalive probes: 10 s.</summary>
+    internal const int KeepAliveIntervalSeconds = 10;
+
+    /// <summary>Unanswered probes before the kernel closes the socket: 5 (about 110 s of silence in all).</summary>
+    internal const int KeepAliveRetryCount = 5;
+
     private readonly ILogger<TcpService> _logger;
     private readonly NodeOptions _nodeOptions;
     private readonly ITorSocksDialer? _torSocksDialer;
@@ -130,6 +139,7 @@ public class TcpService : ITcpService
         // Nagle off: a peer message is often followed at once by another (revoke_and_ack then commitment_signed or
         // stfu), and Nagle would hold the second until the peer's delayed ACK of the first (about 40 ms)
         var tcpClient = new TcpClient { NoDelay = true };
+        EnableKeepAlive(tcpClient.Client, _logger);
         try
         {
             using var timeout = new CancellationTokenSource(_nodeOptions.NetworkTimeout);
@@ -149,6 +159,30 @@ public class TcpService : ITcpService
         {
             tcpClient.Dispose();
             throw new ConnectionException($"Failed to connect to peer {peerAddress.Host}:{peerAddress.Port}", e);
+        }
+    }
+
+    /// <summary>
+    /// Turns on TCP keepalive on a direct peer socket (<see cref="KeepAliveTimeSeconds"/>,
+    /// <see cref="KeepAliveIntervalSeconds"/>, <see cref="KeepAliveRetryCount"/>), a second guard behind the
+    /// <c>ping</c> keep-alive (<c>Node:PingInterval</c>) against a connection that died silently (NL-806). A
+    /// connection through Tor is not covered: its socket ends at the local Tor proxy. A platform that refuses one of
+    /// the options keeps the others and the connection (logged at debug).
+    /// </summary>
+    internal static void EnableKeepAlive(Socket socket, ILogger logger)
+    {
+        try
+        {
+            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, KeepAliveTimeSeconds);
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval,
+                                   KeepAliveIntervalSeconds);
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount,
+                                   KeepAliveRetryCount);
+        }
+        catch (Exception e) when (e is SocketException or PlatformNotSupportedException)
+        {
+            logger.LogDebug(e, "TCP keepalive could not be fully set on a peer socket; the ping keep-alive remains");
         }
     }
 
@@ -233,6 +267,7 @@ public class TcpService : ITcpService
                     try
                     {
                         tcpClient.NoDelay = true; // as on our outbound connections
+                        EnableKeepAlive(tcpClient.Client, _logger);
                     }
                     catch (SocketException e)
                     {

@@ -6,6 +6,8 @@ Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,
 
 Updated 2026-10-03 by the taproot wave t01 integrator (branch `wip/taproot-int` from `origin/wip/taproot-plan` at `ee682a23`, merged into `wip/fafo`): NL-913 fixed (cluster proof `tap-mx1`; CLN v26.06.8 does not signal simple close), NL-903 (low, fixed in 075a7920, f0ca4a5c and 5c14c684: review fixes) and NL-904 (medium, open: T3/T4 obligations from the review) new; NL-911 and NL-914 updated. NL-910 (low, open: a `ClnPeerStorageTests` cluster flake). Taproot NL-895..NL-899 renumbered to NL-911..NL-915 (collision with the trampoline follow-ups, which landed first).
 
+Updated 2026-10-03 by the namespace-cap lane (branch `wip/nscap`, owner decision 2026-10-03): NL-844 (fixed, b8362d19, 501bebd7: the harness cap on run namespaces is 12, set once in `RunAdmission.DefaultMaxRuns`; the matrix in 1,058 s at a peak of 11 namespaces) and NL-905 (open, low: the cln suite is the matrix long pole at 12 namespaces). Summary rows recounted from the entries after the merge of `wip/fafo` at bd1a0dc5 (NL-806 lane): 773 entries, no duplicate IDs.
+
 Updated 2026-10-03 by the batch12 integrator (branch `wip/batch12` from `wip/fafo` at `fedb876b`; lanes b12-splice-htlc, b12-ux, b12-reconcile-drift, b12-reestablish-deadline and b12-trimmed-loss merged with `--no-ff`): NL-880 (high) and NL-881 (medium) fixed in d2d2a7e5, NL-882..NL-885 (low) in 730ff053, NL-886/NL-887 (low) in 24d3dc4c, NL-760 and NL-796 fixed, NL-890 (low flake, open); review fixes NL-891 (medium), NL-892 (medium), NL-893 and NL-894 (low), all fixed. NL-888 and NL-889 are unused. NL-776 (lane b12-anysegwit, cfafd698) fixed.
 
 Updated 2026-10-03 by the Docker retirement lane (branch `wip/retire-docker` from 61889866, owner decision 2026-10-03: every suite but Tor on the cluster harness only): NL-866 (low, fixed in cea4bc4f: the CLN, Eclair, LDK and Postgres fixtures lost their Docker backends; Tor stays on Docker). Summary rows recounted from the entries: 749 entries, no duplicate IDs.
@@ -151,10 +153,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 3 | 67 | 70 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 63 | 201 | 413 | 691 |
+| fixed | 14 | 63 | 201 | 415 | 693 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **212** | **492** | **781** |
+| **Total** | **14** | **63** | **212** | **494** | **783** |
 
 ### Epics
 
@@ -5553,6 +5555,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Node/Managers/PeerManagerBatchTests.cs`
 - **Evidence:** Lane acct-a3-fixes-b (2026-10-02, several lanes building and testing on the machine): failed once in the full non-Docker run; the class passed 15/15 three times alone. The failure message was not captured. The test waits on `WaitForHandledAsync` and a disconnect `TaskCompletionSource` with `s_timeout`. Not hit in the A3 integration runs.
+- **Evidence (2):** Lane nl806 (2026-10-03, full non-Docker run on net10.0): `(batchSize: 0)` failed once with `Assert.Single() Failure: The collection was empty` at line 153 (`Warnings()` still empty after `WaitForHandledAsync(1)`: the warning is read before it was raised); the class passed 15/15 three times alone. Again `(batchSize: 0)` in the post-merge full run of the same lane, same message.
 - **Fix sketch:** Find the wait it races (as in the de-timing pass, NL-620 style); rerun alone before treating it as a regression.
 - **Blocks/Blocked-by:** Related NL-620
 - **Plan ref:** —
@@ -7772,12 +7775,12 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-806 After a cluster Eclair restart one in-process node kept a dead connection and our 30-300 s keep-alive did not notice within 2 min
-- **Status:** open
+- **Status:** fixed (31f2f11e)
 - **Severity:** low
 - **Kind:** gap
-- **Location:** `test/NLightning.Integration.Tests/Fixtures/Eclair/ClusterEclairBackend.cs` (`RestartEclairAsync`; the host to ClusterIP path on OrbStack), `src/NLightning.Infrastructure/Protocol/Services/PingPongService.cs` (`StartPingAsync`, random 30-300 s interval)
-- **Evidence:** test harness phase 3/4 proof, `pf-ecl3-3`: `EclairSpliceTests.Given_OurPendingSplice_When_EclairRestarts_*` timed out waiting for Eclair's `channel_reestablish`. Eclair stopped at 02:45:22; another node of ours logged the close at 02:45:27.47 and reestablished at 02:45:45; `nltg-eclair-splice-g` logged nothing and still showed connected and reestablished while Eclair had it DISCONNECTED and the channel OFFLINE. Once in 8 cluster Eclair suite/class runs; reruns green (class 7/7 alone, 7/7 x3 at once). Docker never hits it (docker-proxy closes the host socket).
-- **Fix sketch:** Not decided: find why OrbStack's host-to-ClusterIP path lost the close of that one connection, or use a shorter or deterministic keep-alive (LND pings every minute). A product or owner call; no assertion was weakened.
+- **Location:** `src/NLightning.Infrastructure/Protocol/Services/PingPongService.cs` (`StartPingAsync`, was a random 30-300 s interval), `src/NLightning.Domain/Node/Options/NodeOptions.cs` (`PingInterval`), `src/NLightning.Infrastructure/Transport/Services/TcpService.cs`; seen through `test/NLightning.Integration.Tests/Fixtures/Eclair/ClusterEclairBackend.cs` (`RestartEclairAsync`; the host to ClusterIP path on OrbStack)
+- **Evidence:** test harness phase 3/4 proof, `pf-ecl3-3`: `EclairSpliceTests.Given_OurPendingSplice_When_EclairRestarts_*` timed out waiting for Eclair's `channel_reestablish`. Eclair stopped at 02:45:22; another node of ours logged the close at 02:45:27.47 and reestablished at 02:45:45; `nltg-eclair-splice-g` logged nothing and still showed connected and reestablished while Eclair had it DISCONNECTED and the channel OFFLINE. Once in 8 cluster Eclair suite/class runs; reruns green (class 7/7 alone, 7/7 x3 at once). Docker never hits it (docker-proxy closes the host socket). Second occurrence in matrix `b12-mx2` (`/Users/ms/nlightning-b12/TestResults/cluster/b12-mx2/eclair2/`): Eclair restarted at about 17:12, node `nltg-eclair-splice-g` logged nothing until the teardown at 17:14:13, and the test timed out after 2 min waiting for Eclair's `channel_reestablish`. The reestablish deadline (`Node:ReestablishTimeout`, NL-796) is armed per new connection and so never fired: no new connection was made.
+- **Fix:** Owner decision 2026-10-03 (option (b)). `Node:PingInterval` (`NodeOptions.PingInterval`, a nullable `TimeSpan`; `GetEffectivePingInterval`): unset is 15 s on regtest (and so for the in-process test nodes, which `NLightningTestNode` puts on regtest) and 60 s on mainnet, testnet, testnet4, signet and mutinynet (LND pings every minute); each wait moves by up to ±10 % (`PingPongService.PingJitter`). Zero, negative or under 5 s is refused at start on every network, regtest included (`GetValidationErrors`; also above a timer's limit). There is no 30 s floor: BOLT 1 has had no ping-rate rule since PR #918 (2021, commit 49e1c1cba9, "Drop ping sending rate-limit suggestion"), which removed "SHOULD NOT send `ping` messages more often than once every 30 seconds." and "SHOULD fail the channels if it has received significantly in excess of one `ping` per 30 seconds."; its rationale keeps only "Limited precautions are recommended against `ping` flooding, however some latitude is given because of network delays." Our receive side answers every `ping` and enforces no rate, so 15 s between two of our nodes is never punished. The pong wait stays `Node:NetworkTimeout` (the Tor timeout through Tor, NL-590), and a missing `pong` still only closes the connection (BOLT 1: "if it doesn't receive a corresponding `pong`: MAY close the network connection, and MUST NOT fail the channels in this case"); the reconnect backoff redials and reestablishes. Second guard: TCP keepalive on direct peer sockets in both directions (`TcpService.EnableKeepAlive`: 60 s idle, 10 s interval, 5 probes; a refused option is logged at debug; Tor-routed sockets end at the local proxy and are left alone). The config template writes the network's interval. Tests: `PingPongServiceTests` (network defaults, jitter bounds, a stepped loop whose every wait is 15 s ± 10 %, a silent peer after a good ping disconnected by the pong timeout; the stepped tests fail with the old random wait), `TcpServiceTests` (keepalive read back on both directions; fail without it), `NodeOptionsTests` (defaults per network, the 5 s refusal on regtest and elsewhere, binding), `NodeServiceExtensionsTests` (the template's interval per network). Cluster proof: `scripts/run-cluster.sh --matrix eclair,eclair2` green (eclair 25 + 2 not run, eclair2 7/7), `--matrix faults,cln` green (faults 6/6, cln 91 + 4 not run), and `EclairSpliceTests` `-n 3` (3 x 7/7). The NL-806 case itself appeared in run `nl806-es3-1`: the splice was signed at 19:11:43.5 and Eclair restarted, no close reached `nltg-eclair-splice-g`, and its keep-alive dropped the connection with a `PingTimeoutException` at 19:12:19.4; it redialled at 19:12:20.5 and Eclair's `channel_reestablish` came at once (the other two runs got the close at once, as before). New faults test `PartitionClusterTests.Given_AFrozenClnOnAQuietChannel_*` (CLN frozen by SIGSTOP right after a fresh connection on a quiet channel, so only the keep-alive can notice): dropped 28.9 s after the freeze (bound 36.5 s: interval + 10 % + `NetworkTimeout` + 5 s), channel active 1.1 s after the resume; with the old random 30-300 s wait put back it failed (dropped after 102.4 s).
 - **Blocks/Blocked-by:** Related NL-796
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/4 record"
 
@@ -7932,14 +7935,14 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
 
 ### NL-844 The ~15 min full-matrix target is not reachable within the 6-namespace cap
-- **Status:** open
+- **Status:** fixed (b8362d19, 501bebd7)
 - **Severity:** low
 - **Kind:** test
-- **Location:** `docs/agents/TEST_HARNESS_PLAN.md` "Phase 6 proof record", `scripts/run-cluster.sh` (`--max-namespaces`, cap 6)
-- **Evidence:** test harness phase 6 proof: `p6-tuned1` used 6,131 namespace-seconds, so 6 namespaces need at least 1,022 s; the run took 1,088 s (18.1 min). A simulation of 300,000 random suite orders found none below 1,052 s. CLN at 902 s is now the longest suite.
-- **Fix sketch:** Owner decision: allow about 7 namespaces (the VM has 28 cores and 64 GiB), or shorten the long poles (CLN, gossip, eclair).
-- **Blocks/Blocked-by:** Related NL-841
-- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
+- **Location:** `test/NLightning.Testing.Cluster/Run/RunAdmission.cs` (`DefaultMaxRuns`), `scripts/run-cluster.sh` (`--max-namespaces`, `-j`), `nltg-cluster matrix cap`
+- **Evidence:** test harness phase 6 proof: `p6-tuned1` used 6,131 namespace-seconds, so 6 namespaces need at least 1,022 s; the run took 1,088 s (18.1 min). A simulation of 300,000 random suite orders found none below 1,052 s. CLN at 902 s is now the longest suite. Update (2026-10-03, branch `wip/nscap`): owner decision 2026-10-03, the cap is 12. `RunAdmission.DefaultMaxRuns` = 12 is the one place it is set (`MatrixPlanner.MaxNamespaces` uses it, `run-cluster.sh` reads it through `nltg-cluster matrix cap` for the `--max-namespaces` default and limit and the `-j` cap; b8362d19) and the matrix's `-j` defaults to the namespace budget (501bebd7); tests pin 12 (`RunAdmissionTests`, `MatrixPlannerTests`, `MatrixReportTests`, `run-cluster-tests.sh`). Proof `nscap-mx1` (`--matrix -j 12 --max-namespaces 12`): 11 green + cln rerun-green (`ClnPeerStorageTests` timed out once and was green alone, NL-910), **1,058 s** against 1,088 s at 6, peak 11 run namespaces sampled; OrbStack's helper peaked at 12.4 GB RSS and 318 % CPU, the test hosts at 15.1 GB, host memory in use 35.3 GB (31.0 GB idle). At 12 the wall is the longest suite's (cln 1,052 s, eclair 943 s, gossip 840 s), so the 15 min target now needs the long poles split (NL-905), not more namespaces (`TEST_HARNESS_PLAN.md` "Namespace cap 12 record").
+- **Fix sketch:** Done: cap 12. The rest (shorter long poles) is NL-905.
+- **Blocks/Blocked-by:** Related NL-841, NL-905
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record", "Namespace cap 12 record"
 
 ### NL-860 With `NLTG_TEST_BACKEND=cluster` but no buildable Kubernetes configuration the LND fixture skipped every test, and the matrix judged the all-skipped suites green
 - **Status:** fixed (5a62e771)
@@ -8150,6 +8153,26 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Done: `IpcRequestLog.IsFault`: an exception only a bug raises, or one thrown outside NLightning code (its `TargetSite`), is logged at ERR with the stack whatever the error code; a refusal thrown by our code stays one WRN line and its exception goes to Debug; `ConnectPeer`'s `InvalidOperationException` catch uses the same rule. Tests `IpcRequestLogTests` (3 new). A dedicated refusal exception type for the services stays a possible cleanup.
 - **Blocks/Blocked-by:** Related NL-883
 - **Plan ref:** none
+
+### NL-900 `FinancialReclassificationTests.Given_AClosedEntry_When_ARuleIsAddedDisabledEnabledAndAddedAgain_*` failed once under a loaded full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Accounting/Financial/FinancialReclassificationTests.cs` (line 128)
+- **Evidence:** Lane nl806 (2026-10-03, the post-merge full non-Docker run on net10.0 while other sessions built SDK 11 and ran cluster suites): `Assert.Null(entries[1].RuleId)` got 1 after 11 s (the first `RuleChange` adjustment carried the rule's id although "the rule had no id before its save"); the class (with `PeerManagerBatchTests`) passed 21/21 three times alone. Seen once.
+- **Fix sketch:** Find what the adjustment's `RuleId` reads under load (the rule row's id assigned before the adjustment is staged, or the entries' order); rerun alone before treating it as a regression.
+- **Blocks/Blocked-by:** Related NL-660
+- **Plan ref:** —
+
+### NL-905 The cln suite is the matrix's long pole at 12 namespaces
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Run/Matrix/SuiteCatalog.cs` (`cln`, `eclair`), `scripts/run-cluster.sh --matrix`
+- **Evidence:** proof `nscap-mx1` of NL-844 (2026-10-03, `--matrix -j 12 --max-namespaces 12`): the matrix took 1,058 s and cln alone 1,052 s; the next suites are eclair 943 s and gossip 840 s, every other suite at most 658 s (ldk). With 12 namespaces every suite starts at once, so the matrix wall is the longest suite's.
+- **Fix sketch:** Owner decision 2026-10-03: left as an issue for now. Split cln as eclair/gossip were (NL-841) and maybe eclair again, for a matrix of about 10-12 min.
+- **Blocks/Blocked-by:** Related NL-844, NL-841
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Namespace cap 12 record"
 
 ## Docs
 

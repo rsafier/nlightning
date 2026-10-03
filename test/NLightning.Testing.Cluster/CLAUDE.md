@@ -35,7 +35,8 @@ every implementation, our own node included, is driven through the same seams.
     (`RunAnnotations`, from `KeepNamespace`/`Ttl`). A taken name (a second run of one process under one
     `NLTG_TEST_RUN_ID`, or one still terminating) moves to `<id>-2`, `<id>-3` (`TestRunId.WithSuffix`).
     `RunAdmission` caps live run namespaces under the prefix across all processes (`NLTG_MAX_CONCURRENT_RUNS`,
-    default 6, `0`/`off` none): wait while full, create, rank by creation time then name, give the slot back if two
+    default `DefaultMaxRuns` 12 (6 until NL-844), `0`/`off` none; `nltg-cluster matrix cap` prints it for
+    `scripts/run-cluster.sh`, so it is set in one place): wait while full, create, rank by creation time then name, give the slot back if two
     raced past the cap. `QuotaSizing.ForWorkloads(workloads, extraPods)` sizes `TestRunOptions.Quota` from the
     topology's pod specs (sidecars and init containers included; a container without requests/limits is refused).
   - `RunReaper` (`ListAsync`/`ReapAsync`, pure `Evaluate`): only namespaces named `<prefix>-<nltg.run>` with the
@@ -45,7 +46,7 @@ every implementation, our own node included, is driven through the same seams.
     before each delete. CLI: `nltg-cluster list|reap [--prefix] [--ttl] [--run <id> [--force]] [--all]
     [--dry-run] [--wait] [--context]` (project `test/NLightning.Testing.Cluster.Cli`, logic in `Run/ClusterCli`).
   - `scripts/run-cluster.sh`: builds once, runs the Category=Cluster tests (`--class`/`--method`) N times
-    concurrently (`-n`, `-j` ≤ 6), each with `NLTG_TEST_RUN_ID=<batch>-<i>`, logs and xunit XML under
+    concurrently (`-n`, `-j` ≤ the cap, 12), each with `NLTG_TEST_RUN_ID=<batch>-<i>`, logs and xunit XML under
     `TestResults/cluster/<batch>/<run>/`, reaps each run's leftovers, prints a summary table (`summary.txt`).
     `--diag failure|always|off`, `--keep-on-failure` and `--trait` (default `Category=Cluster`); each run's dumps go
     to `<run>/diag/`, the table counts them (DIAG) and the summary lists the folders of every failed run.
@@ -319,7 +320,7 @@ every implementation, our own node included, is driven through the same seams.
 ## Rules while batch work shares the machine
 
 - Only namespaces `nltg-spike-*` labelled `nltg.run`/`nltg.spike=true` (that is what `TestRun` creates); never touch
-  `default`, `kube-*` or another run's namespace; no cluster-scoped objects; at most 6 spike namespaces at once;
+  `default`, `kube-*` or another run's namespace; no cluster-scoped objects; at most 12 spike namespaces at once (NL-844);
   pod requests at most 1 CPU / 1 GiB.
 - Never rebuild or retag existing images; new images only as `nltg-spike-*` (`ImageVersions.SpikeImagePrefix`).
 - Never run the Docker suite (`scripts/run-interop.sh tor`) from this lane; the LND runners `run-onchain.sh`,
