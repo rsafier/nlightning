@@ -94,8 +94,7 @@ public class TrampolinePayloadValidatorTests
         { "no outgoing_cltv_value", 4UL },
         { "short_channel_id", 6UL },
         { "outgoing_node_id", 14UL },
-        { "recipient_features", 21UL },
-        { "recipient_blinded_paths", 22UL }
+        { "recipient_features", 21UL }
     };
 
     [Theory]
@@ -111,8 +110,7 @@ public class TrampolinePayloadValidatorTests
             "short_channel_id" => [InnerAmt, InnerCltv, new OnionShortChannelIdTlv(new ShortChannelId(1, 2, 3)),
                                    InvoiceSecret],
             "outgoing_node_id" => [InnerAmt, InnerCltv, InvoiceSecret, NextTrampoline],
-            "recipient_features" => [InnerAmt, InnerCltv, InvoiceSecret, RecipientFeatures],
-            _ => [InnerAmt, InnerCltv, InvoiceSecret, RecipientPaths]
+            _ => [InnerAmt, InnerCltv, InvoiceSecret, RecipientFeatures]
         };
 
         // Act
@@ -121,6 +119,45 @@ public class TrampolinePayloadValidatorTests
 
         // Assert
         AssertInvalidOnionPayload(exception, new BigSize(expectedType), 0);
+    }
+
+    public static TheoryData<string> ValidLastTrampolineNodePayloads => new()
+    {
+        "recipient_blinded_paths",
+        "recipient_blinded_paths + recipient_features"
+    };
+
+    [Theory]
+    [MemberData(nameof(ValidLastTrampolineNodePayloads))]
+    public void Given_TheLastLayerNamingRecipientBlindedPaths_When_Validating_Then_ValidAsTheLastTrampolineNode(
+        string shape)
+    {
+        // Arrange: the payer's trampoline onion ends with the last trampoline node's payload, which pays a recipient
+        // without trampoline support (trampoline-to-blinded-path-payment-onion-test.json: Carol's layer is final)
+        BaseTlv[] tlvs = shape == "recipient_blinded_paths"
+                             ? [InnerAmt, InnerCltv, RecipientPaths]
+                             : [InnerAmt, InnerCltv, RecipientFeatures, RecipientPaths];
+
+        // Act
+        var isValid = TrampolinePayloadValidator.TryValidate(new HopPayload(tlvs), true, Outer, false, out var error);
+
+        // Assert
+        Assert.True(isValid);
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void Given_TheLastLayerWithRecipientBlindedPathsAndAnOutgoingNodeId_When_Validating_Then_Type22Fails()
+    {
+        // Arrange: the last trampoline node's payload follows the relay rules (outgoing_node_id or the paths)
+        BaseTlv[] tlvs = [InnerAmt, InnerCltv, NextTrampoline, RecipientPaths];
+
+        // Act
+        var exception = Assert.Throws<OnionException>(() =>
+            TrampolinePayloadValidator.Validate(new HopPayload(tlvs), true, Outer, false));
+
+        // Assert
+        AssertInvalidOnionPayload(exception, new BigSize(22), 0);
     }
 
     #endregion

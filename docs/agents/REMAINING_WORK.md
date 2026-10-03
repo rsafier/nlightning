@@ -44,7 +44,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 
 ## Protocol features
 
-- **Trampoline routing (BOLTs PR #836)** — plan: [`TRAMPOLINE_PLAN.md`](TRAMPOLINE_PLAN.md), NL-875, in progress on `wip/fafo` (draft PR on `wip/fafo`): client, relay and target in the spec format (56/57, TLV 20), blinded and BOLT 12 included; proofs are the spec vectors and in-process harness tests; interop with Eclair (after #2819) and LDK left as follow-ups.
+- **Trampoline routing (BOLTs PR #836)** — plan: [`TRAMPOLINE_PLAN.md`](TRAMPOLINE_PLAN.md), NL-875: client, relay and target built on `wip/fafo` (2026-10-03), spec format, proven by the spec vectors and in-process end-to-end tests; experimental until an owner decision. Left: blinded hops as trampoline hops (NL-895), Eclair/LDK interop proofs (NL-896), NL-897..NL-899.
 - **BOLT 7 gossip, graph and pathfinding** — plan: [`BOLT7_GOSSIP_PLAN.md`](BOLT7_GOSSIP_PLAN.md), four waves G-A..G-D, NL-099.
   - Public channels: `announce_channel`, `announcement_signatures`, our `channel_announcement` and `node_announcement`.
   - Validation and a graph store.

@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace NLightning.Application.Tests.Payments.Trampoline.Harness;
 
 using Application.Payments.Routing;
+using Application.Payments.Trampoline;
 using Bolt11.Models;
 using Channels.Harness;
 using Domain.Channels.Commitments.Events;
@@ -154,6 +155,32 @@ internal sealed partial class TrampolineHarness
                                                                             innerTotal)));
         return new TrampolinePaymentPlan(payer, invoice, onion, finalCltv,
                                          new Secret(RandomNumberGenerator.GetBytes(32)), innerTotal);
+    }
+
+    /// <summary>
+    /// <paramref name="payer"/>'s hand-built payment of <paramref name="invoice"/> through <paramref name="trampoline"/>
+    /// as an intermediate trampoline node (the relay engine's input): the trampoline onion [trampoline: forward the
+    /// invoice's amount to <paramref name="nextNodeId"/> (default: the recipient) with the final CLTV
+    /// (<c>outgoing_node_id</c>, TLV 14); next node: the recipient's final payload], an outer CLTV of the final CLTV
+    /// plus <paramref name="cltvDelta"/> and an outer total of the amount plus <paramref name="trampolineFee"/>: what the
+    /// trampoline node's parts must add up to. Send its parts with <see cref="SendTrampolinePartAsync"/> and
+    /// <c>[trampoline]</c> as the outer hops.
+    /// </summary>
+    public static async Task<TrampolinePaymentPlan> PlanRelayAsync(SwitchNode payer, SwitchNode trampoline,
+                                                                   SwitchNode recipient, InvoiceModel invoice,
+                                                                   LightningMoney trampolineFee, uint cltvDelta,
+                                                                   CompactPubKey? nextNodeId = null)
+    {
+        var amount = invoice.Amount
+                  ?? throw new ArgumentException("An amountless invoice cannot be relayed by hand.", nameof(invoice));
+        var finalCltv = FinalCltvOf(invoice);
+        var next = nextNodeId ?? recipient.NodeId;
+        var relayPayload = TrampolineOnionFactory.CreateIntermediatePayload(amount, finalCltv, next);
+        var finalPayload = TrampolineFinalPayload(amount, finalCltv, invoice.PaymentSecret, amount);
+        var onion = await BuildTrampolineOnionAsync(payer, invoice.PaymentHash, (trampoline.NodeId, relayPayload),
+                                                    (next, finalPayload));
+        return new TrampolinePaymentPlan(payer, invoice, onion, finalCltv + cltvDelta,
+                                         new Secret(RandomNumberGenerator.GetBytes(32)), amount + trampolineFee);
     }
 
     /// <summary>
