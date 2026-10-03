@@ -7,6 +7,7 @@ using Application.Payments.FinalHop;
 using Application.Payments.Onion;
 using Application.Payments.Routing;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Node.Options;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
@@ -45,6 +46,22 @@ internal sealed class PaymentsTestNode : IDisposable
     public IFailureOnionService FailureOnion => _provider.GetRequiredService<IFailureOnionService>();
     public IHopPayloadSerializer HopPayloadSerializer => _provider.GetRequiredService<IHopPayloadSerializer>();
     public IRouteBlindingService RouteBlinding => _provider.GetRequiredService<IRouteBlindingService>();
+    public ITrampolineOnionService TrampolineOnion => _provider.GetRequiredService<ITrampolineOnionService>();
+
+    public ITrampolineFailureOnionService TrampolineFailureOnion =>
+        _provider.GetRequiredService<ITrampolineFailureOnionService>();
+
+    public IAttributionDataService AttributionData => _provider.GetRequiredService<IAttributionDataService>();
+
+    /// <summary>
+    /// Turns trampoline routing on (BOLTs PR 836, NL-875; experimental, so allowed explicitly). Call before the first
+    /// use of the payment services: they read the features when they are built.
+    /// </summary>
+    public void EnableTrampoline()
+    {
+        Options.Features.OptionTrampolineRouting = FeatureSupport.Optional;
+        Options.Features.AllowExperimentalFeatures = true;
+    }
 
     public PaymentsTestNode(string name, byte seed, RoutingOptions? routing = null)
     {

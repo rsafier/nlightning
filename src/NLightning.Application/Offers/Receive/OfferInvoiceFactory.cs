@@ -21,13 +21,17 @@ using Domain.Protocol.Tlv;
 /// <c>invoice_paths</c> and one <c>invoice_blindedpay</c> per path in the same order (features empty: our paths set no
 /// <c>allowed_features</c>), <c>invoice_created_at</c>, <c>invoice_relative_expiry</c> only when it is not 7200,
 /// <c>invoice_payment_hash</c>, <c>invoice_amount</c>, <c>invoice_features</c> with MPP optional (bit 17) when we
-/// accept multi-part payments, <c>invoice_node_id</c> (the offer's issuer id), and exactly one <c>signature</c> by the
+/// accept multi-part payments and <c>trampoline_routing</c> optional (bit 57) when we do trampoline routing (NL-875),
+/// <c>invoice_node_id</c> (the offer's issuer id), and exactly one <c>signature</c> by the
 /// node key over the Merkle root, tag <c>lightninginvoicesignature</c>. Records in ascending type order.</para>
 /// </remarks>
 public static class OfferInvoiceFactory
 {
     /// <summary>BOLT 12 invoice feature bit 17: multi-part payments allowed.</summary>
     public const int MppOptionalBit = 17;
+
+    /// <summary>BOLT 12 invoice feature bit 57: the recipient supports trampoline routing (BOLTs PR 836).</summary>
+    public const int TrampolineOptionalBit = 57;
 
     /// <summary>
     /// The signed invoice's TLV stream.
@@ -41,10 +45,13 @@ public static class OfferInvoiceFactory
     /// <param name="allowMpp">Set MPP optional.</param>
     /// <param name="nodeId"><c>invoice_node_id</c>.</param>
     /// <param name="signer">Signs as the node.</param>
+    /// <param name="allowTrampoline">Set <c>trampoline_routing</c> optional: a payer may reach us through trampoline
+    /// nodes, our blinded hops becoming trampoline hops (BOLTs PR 836).</param>
     /// <exception cref="ArgumentException">No path.</exception>
     public static byte[] CreateInvoice(ReadInvoiceRequest request, IReadOnlyList<BlindedPaymentPath> paths,
                                        DateTimeOffset createdAt, uint relativeExpirySeconds, Hash paymentHash,
-                                       ulong amountMsat, bool allowMpp, CompactPubKey nodeId, IBolt12Signer signer)
+                                       ulong amountMsat, bool allowMpp, CompactPubKey nodeId, IBolt12Signer signer,
+                                       bool allowTrampoline = false)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(paths);
@@ -65,8 +72,13 @@ public static class OfferInvoiceFactory
                                             TruncatedInt.EncodeTu32(relativeExpirySeconds)));
         records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvoicePaymentHash, (byte[])paymentHash));
         records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvoiceAmount, TruncatedInt.EncodeTu64(amountMsat)));
+        var featureBits = new List<int>();
         if (allowMpp)
-            records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvoiceFeatures, FeatureBitmap(MppOptionalBit)));
+            featureBits.Add(MppOptionalBit);
+        if (allowTrampoline)
+            featureBits.Add(TrampolineOptionalBit);
+        if (featureBits.Count > 0)
+            records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvoiceFeatures, FeatureBitmap(featureBits.ToArray())));
         records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvoiceNodeId, (byte[])nodeId));
 
         records.Sort((a, b) => a.Type.CompareTo(b.Type));
@@ -98,6 +110,24 @@ public static class OfferInvoiceFactory
         ArgumentOutOfRangeException.ThrowIfNegative(bit);
         var bytes = new byte[bit / 8 + 1];
         bytes[0] = (byte)(1 << (bit % 8));
+        return bytes;
+    }
+
+    /// <summary>
+    /// A big-endian feature bitmap with <paramref name="bits"/> set (empty when none is given).
+    /// </summary>
+    public static byte[] FeatureBitmap(params int[] bits)
+    {
+        ArgumentNullException.ThrowIfNull(bits);
+        if (bits.Length == 0)
+            return [];
+
+        foreach (var bit in bits)
+            ArgumentOutOfRangeException.ThrowIfNegative(bit, nameof(bits));
+
+        var bytes = new byte[bits.Max() / 8 + 1];
+        foreach (var bit in bits)
+            bytes[bytes.Length - 1 - bit / 8] |= (byte)(1 << (bit % 8));
         return bytes;
     }
 }
