@@ -147,12 +147,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 60 | 62 |
+| open | 0 | 0 | 2 | 62 | 64 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
 | fixed | 14 | 63 | 201 | 411 | 689 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **211** | **483** | **771** |
+| **Total** | **14** | **63** | **211** | **485** | **773** |
 
 ### Epics
 
@@ -1792,6 +1792,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** TAPROOT_CHANNELS_PLAN D-T1
 
+### NL-898 Simple taproot spec (`bolt-simple-taproot.md`) text and vectors disagree in four places
+- **Status:** open
+- **Severity:** low
+- **Kind:** spec-violation
+- **Location:** upstream `lightning/bolts` `bolt-simple-taproot.md`; our record in `test/NLightning.Infrastructure.Bitcoin.Tests/Taproot/Vectors/README.md`
+- **Evidence:** Wave t01 (lanes T0, T1): (1) §To Remote Outputs names a second NUMS point `0245b181...` and a control block with `combined_funding_key`, while the vectors use `02dca094...` as the internal key of to_local and to_remote; (2) `scripts.funding.combined_key` is the BIP 86-tweaked output key, not the untweaked aggregate the text calls `combined_funding_key`; (3) the `scripts.accepted_htlc_*` vectors swap the local and remote HTLC keys relative to their names (the transaction vectors use the spec's roles, as does our code); (4) the `*_local_commit` and `*_remote_commit` script entries are identical. We follow the vectors and the transaction cases.
+- **Fix sketch:** Report upstream (an issue or PR on lightning/bolts); re-check when the file changes.
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN "Spec errata", wave t01 record
+
+### NL-899 `AnchorOutputInfo.FundingPubKey` holds a taproot anchor's internal key
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `AnchorOutputInfo` (Domain transaction models), the simple taproot commitment factory path (wave t01 lane T1)
+- **Evidence:** For `CommitmentFormat.SimpleTaproot` the anchor is keyed to `local_delayedpubkey`/`remotepubkey`, not the funding key, but the field keeps its anchors-era name.
+- **Fix sketch:** Rename to `AnchorPubKey` (or similar) when T3/T4 touch the anchor paths.
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN wave t01 hand-off
+
 ## BOLT 3: Transactions and scripts
 
 ### NL-056 HTLC-success / HTLC-timeout second-stage transactions not implemented
@@ -2023,7 +2043,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Plan T0 MuSig2 (BIP 327 vectors) → T1 scripts/txs (spec vectors) → T2 wire TLVs → T3 signer, nonces (counter scheme, never reused across a crash), persistence, reestablish → T4 BOLT 5 resolvers → T5 simple close, dual fund, splicing, backups → T6 cluster proofs against LND 0.21.4 and Eclair 0.14.3; experimental until T6 and an owner decision (D-T1 `option_simple_close` default, D-T2 taproot default).
 - **Blocks/Blocked-by:** Blocks NL-878
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T0-T6
-- **Update (wave t01, 2026-10-03, branch `wip/taproot-plan`):** T0 merged (`795ae14b`): BIP 327 MuSig2 behind `IMusig2Service` (our own module, D-T3; NBitcoin's MuSig2 refused, NL-896), every BIP 327 vector and the spec's signed commitment (partial and aggregated signatures) byte-exact. D-T1 done (lane SC, `a2e7d6bc`): `option_simple_close` Optional by default on every network; cluster re-run pending (NL-897). T1 (scripts and transactions) in progress.
+- **Update (wave t01, 2026-10-03, branch `wip/taproot-plan`):** T0 merged (`795ae14b`): BIP 327 MuSig2 behind `IMusig2Service` (our own module, D-T3; NBitcoin's MuSig2 refused, NL-896), every BIP 327 vector and the spec's signed commitment (partial and aggregated signatures) byte-exact. D-T1 done (lane SC, `a2e7d6bc`): `option_simple_close` Optional by default on every network; cluster re-run pending (NL-897). T1 (scripts and transactions) in progress. T1 merged (`c7da7b8b`): `CommitmentFormat` with the simple taproot weights and 354 sat dust in the one fee calculator, `Infrastructure.Bitcoin/Taproot/` scripts, tapscript trees, outputs, builders and BIP 340 HTLC signatures; every spec script vector, the three signed commitment transactions and the 9 HTLC resolution transactions byte-exact. Library only, not wired. Hand-off and wave t02 (T2 wire, T3 signer/state) in `TAPROOT_CHANNELS_PLAN.md` "Wave t01 hand-off".
 
 ---
 
