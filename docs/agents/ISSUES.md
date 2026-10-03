@@ -4,7 +4,7 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
-Updated 2026-10-03 by the taproot wave t01 integrator (branch `wip/taproot-int` from `origin/wip/taproot-plan` at `ee682a23`, merged into `wip/fafo`): NL-897 fixed (cluster proof `tap-mx1`; CLN v26.06.8 does not signal simple close), NL-903 (low, fixed in 075a7920 and f0ca4a5c: review fixes) and NL-904 (medium, open: T3/T4 obligations from the review) new; NL-895 and NL-898 updated. Summary: open 64, fixed 691, total 775.
+Updated 2026-10-03 by the taproot wave t01 integrator (branch `wip/taproot-int` from `origin/wip/taproot-plan` at `ee682a23`, merged into `wip/fafo`): NL-897 fixed (cluster proof `tap-mx1`; CLN v26.06.8 does not signal simple close), NL-903 (low, fixed in 075a7920, f0ca4a5c and 5c14c684: review fixes) and NL-904 (medium, open: T3/T4 obligations from the review) new; NL-895 and NL-898 updated. Summary: open 64, fixed 691, total 775.
 
 Updated 2026-10-03 by the batch12 integrator (branch `wip/batch12` from `wip/fafo` at `fedb876b`; lanes b12-splice-htlc, b12-ux, b12-reconcile-drift, b12-reestablish-deadline and b12-trimmed-loss merged with `--no-ff`): NL-880 (high) and NL-881 (medium) fixed in d2d2a7e5, NL-882..NL-885 (low) in 730ff053, NL-886/NL-887 (low) in 24d3dc4c, NL-760 and NL-796 fixed, NL-890 (low flake, open); review fixes NL-891 (medium), NL-892 (medium), NL-893 and NL-894 (low), all fixed. NL-888 and NL-889 are unused. NL-776 (lane b12-anysegwit, cfafd698) fixed.
 
@@ -1816,7 +1816,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 
 ### NL-903 Taproot wave t01 integration review: MuSig2 blame, nonce Clear race, format/anchors contradiction, a dual-fund test flake
-- **Status:** fixed (075a7920, f0ca4a5c)
+- **Status:** fixed (075a7920, f0ca4a5c, 5c14c684)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Crypto/Musig2/Bip327.cs` (`PartialSigAgg`, `NonceAgg`'s `Half`, `NonceGen`/`DeterministicSign`), `src/NLightning.Domain/Crypto/ValueObjects/MusigSecretNonce.cs` (`Clear`), `src/NLightning.Domain/Bitcoin/Transactions/Models/CommitmentTransactionModel.cs` (`HasAnchors`), `test/NLightning.Application.Tests/Channels/DualFunding/DualFundUpfrontShutdownScriptTests.cs`
