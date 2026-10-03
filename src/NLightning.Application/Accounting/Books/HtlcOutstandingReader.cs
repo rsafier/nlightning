@@ -36,7 +36,7 @@ internal sealed record HtlcOutstanding(long Msat, int HtlcCount, int ChannelCoun
 /// by our invoice's <c>InvoiceSettled</c> of its payment hash; an outgoing HTLC by its stored origin
 /// (<c>IChannelStateDbRepository.GetHtlcOriginAsync</c>, written in the add's save): a forward by the
 /// <c>ForwardSettled</c> of its incoming HTLC, our payment (or no origin, NL-265) by the <c>PaymentSucceeded</c> of the
-/// origin's hash. So a forward is counted on each of its channels by its own HTLC: the upstream HTLC while its fulfill
+/// origin's hash, a trampoline relay's (NL-875) by its <c>TrampolineRelaySettled</c> (incoming HTLCs too, by hash). So a forward is counted on each of its channels by its own HTLC: the upstream HTLC while its fulfill
 /// is not committed (even before it is sent, the link down), the downstream one while the peer's fulfill is not.
 /// An HTLC being failed is never counted: no settle of it can be booked.</para>
 /// <para>The marker on the HTLC (<see cref="InFlightHtlcBucket.PreimageKnown"/>) is deliberately not required: the
@@ -116,7 +116,12 @@ internal static class HtlcOutstandingReader
             return forward;
 
         var invoice = AccountingEventKeys.InvoiceSettled(htlc.PaymentHash);
-        return await isBooked(invoice) ? invoice : null;
+        if (await isBooked(invoice))
+            return invoice;
+
+        // A trampoline relay (NL-875) books its settle once per payment hash, like a forward's fee
+        var trampoline = AccountingEventKeys.TrampolineRelaySettled(htlc.PaymentHash);
+        return await isBooked(trampoline) ? trampoline : null;
     }
 
     /// <summary>The booked key of an outgoing HTLC's settle (by its stored origin), or null.</summary>
@@ -133,6 +138,8 @@ internal static class HtlcOutstandingReader
             } => AccountingEventKeys.ForwardSettled(incomingChannelId, incomingHtlcId),
             { Kind: HtlcOriginKind.Local, PaymentHash: { } paymentHash } =>
                 AccountingEventKeys.PaymentSucceeded(paymentHash),
+            { Kind: HtlcOriginKind.Trampoline, PaymentHash: { } paymentHash } =>
+                AccountingEventKeys.TrampolineRelaySettled(paymentHash),
             null => AccountingEventKeys.PaymentSucceeded(htlc.PaymentHash),
             _ => null
         };

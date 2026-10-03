@@ -252,6 +252,34 @@ public sealed class AccountingReconcileHtlcSettleTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Given_ATrampolineRelaySettledDownstreamFirst_When_Reconciled_Then_EachChannelCountsItsOwnHtlc()
+    {
+        // Arrange: a trampoline relay (NL-875): 20,001,000 msat in on channel 1, 20,000,000 out on channel 2 with the
+        // trampoline origin; the relay's settle is booked, the downstream fulfill folded, the upstream one not yet
+        var incoming = await AddChannelAsync(1, Incoming(4, 20_001_000));
+        var outgoing = await AddChannelAsync(2, Outgoing(7, 20_000_000));
+        await SetOriginAsync(outgoing, 7, HtlcOrigin.Trampoline(s_hash));
+        await AddEventsAsync(Opening(incoming), Opening(outgoing),
+                             Settle(AccountingEventKind.TrampolineRelaySettled,
+                                    AccountingEventKeys.TrampolineRelaySettled(s_hash), 1_000));
+        Load(incoming, OpeningMsat, Incoming(4, 20_001_000));
+        Load(outgoing, OpeningMsat, Outgoing(7, 20_000_000, HtlcState.RcvdRemoveHtlc, HtlcRemoval.Fulfill(s_preimage)));
+        await using var harness = await CreateBooksAsync();
+
+        // Act
+        var bothInFlight = await harness.Books.ReconcileAsync(TestContext.Current.CancellationToken);
+        Load(outgoing, OpeningMsat - 20_000_000);
+        var downstreamFolded = await harness.Books.ReconcileAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(bothInFlight.IsClean);
+        Assert.Equal((1_200_001_000L, 1_200_000_000L, 1_000L, 0L), Channels(bothInFlight));
+        Assert.True(downstreamFolded.IsClean);
+        Assert.Equal((1_200_001_000L, 1_180_000_000L, 20_001_000L, 0L), Channels(downstreamFolded));
+        Assert.Empty(_logger.Warnings);
+    }
+
+    [Fact]
     public async Task Given_ARealDriftBesideASettleInFlight_When_Reconciled_Then_OnlyTheDriftIsReportedAndLogged()
     {
         // Arrange: our invoice's fulfill in flight on channel 1, and 1,234 msat the books hold that the node never
