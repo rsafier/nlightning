@@ -33,8 +33,9 @@ public sealed record TestRunOptions
 
     /// <summary>
     /// Set to <c>1</c> or <c>true</c> to make disposing a run wait until its namespace is gone
-    /// (<see cref="WaitForDeletion"/>): <c>scripts/run-cluster.sh</c> sets it for a matrix suite it runs with
-    /// <c>-parallel none</c>, so its collections' namespaces never overlap and the suite stays within its count.
+    /// (<see cref="WaitForDeletion"/>): <c>scripts/run-cluster.sh</c> sets it for every run, so a suite's collections
+    /// run with <c>-parallel none</c> never overlap and a class that builds one topology per test never creates the
+    /// next while the last one terminates (NL-840): a process stays within its namespace count.
     /// </summary>
     public const string WaitForDeletionVariable = "NLTG_WAIT_NAMESPACE_DELETION";
 

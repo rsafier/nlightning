@@ -11,8 +11,8 @@
 #                     plan order (the longest suites first) starts a suite as soon as its namespace count fits. A failed
 #                     class is rerun alone once (the flake rule; at most --rerun-max classes per suite, never after a
 #                     hang timeout, a crash or a fixture error) and a green rerun marks the suite rerun-green. A slot
-#                     is freed once the suite's namespaces are gone, terminating ones included, and a suite run with
-#                     -parallel none waits for each collection's namespace to go (NLTG_WAIT_NAMESPACE_DELETION). Prints
+#                     is freed once the suite's namespaces are gone, terminating ones included, and every run waits
+#                     for each of its namespaces to go before it builds the next (NLTG_WAIT_NAMESPACE_DELETION). Prints
 #                     a summary table (suite, result, tests, passed/failed/skipped/not run, rerun, start, wall, fixture
 #                     ready, namespaces created/planned at once, dumps, first error), the log and diagnostics folders
 #                     of every failed suite and the batch's sampled namespace peak; exits 1 on a real failure, 3 when
@@ -285,10 +285,13 @@ fi
 run_attempt() {
   local dir="$1" id="$2" limit="$3" mode="$4" parallel="$5" run_backend="$6"
   shift 6
-  local start pid watchdog code parallel_args=() wait_deletion=""
+  local start pid watchdog code parallel_args=()
   if [[ "$parallel" != - ]]; then parallel_args=(-parallel "$parallel"); fi
-  # Collections one after another: each waits for its namespace to be gone before the next one starts
-  if [[ "$parallel" == none ]]; then wait_deletion=1; fi
+  # Every run's disposal waits until its namespace is gone (NLTG_WAIT_NAMESPACE_DELETION), so a process never holds
+  # more namespaces than its count: collections run one after another (-parallel none) never overlap, and a class that
+  # builds one topology per test (faults) never creates the next while the last one terminates (NL-840: a faults suite
+  # held 3 namespaces, 1 terminating, under a count of 2)
+  local wait_deletion=1
   mkdir -p "$dir"
   echo "$id" > "$dir/run-id"
   start=$(date +%s)

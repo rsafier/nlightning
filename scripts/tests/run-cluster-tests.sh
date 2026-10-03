@@ -79,8 +79,8 @@ if run_case matrix 0 FAKE_BUDGET=2 FAKE_JOBS=2 FAKE_SLEEP=2 "FAKE_WEIGHTS=postgr
   expect matrix "tor is skipped as Docker only" has "tor: skipped: Docker only"
   expect matrix "postgres ran with -parallel none, waiting for each namespace's deletion" \
     grep -Eq -- "-postgres backend=cluster wait=1 .*-parallel none" "$fake_dir/args.log"
-  expect matrix "faults ran with its collections in parallel" \
-    bash -c "grep -- '-faults backend=cluster wait= ' '$fake_dir/args.log' | grep -vq -- '-parallel'"
+  expect matrix "faults ran with its collections in parallel, waiting for each namespace's deletion (NL-840)" \
+    bash -c "grep -- '-faults backend=cluster wait=1 ' '$fake_dir/args.log' | grep -vq -- '-parallel'"
   expect matrix "every suite runs on the cluster backend" bash -c "! grep -v 'backend=cluster ' '$fake_dir/args.log'"
   expect matrix "SQL Server tests are left out" bash -c "! grep -v -- '-trait- Database=SqlServer' '$fake_dir/args.log'"
   expect matrix "the summary counts the suites" has "rerun-green, 0 failed; [0-9]+ skipped"
@@ -151,7 +151,7 @@ fi
 if run_case single 0 FAKE_SLEEP=1 -- -n 2 --suite cln; then
   expect single "2 runs green" has "2/2 run\(s\) green"
   expect single "the suite's trait and explicit mode" \
-    grep -Eq -- "-1 backend=cluster wait= -explicit off -trait Category=Interop.Cln -trait- Database=SqlServer" "$fake_dir/args.log"
+    grep -Eq -- "-1 backend=cluster wait=1 -explicit off -trait Category=Interop.Cln -trait- Database=SqlServer" "$fake_dir/args.log"
 fi
 if run_case single-class 0 FAKE_SLEEP=1 -- -n 1 --suite postgres --class Some.Class; then
   expect single-class "--class replaces the suite's classes, its trait stays" \
