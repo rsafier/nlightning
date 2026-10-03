@@ -140,6 +140,63 @@ public class ChannelFactoryTests
     }
 
     [Theory]
+    [InlineData("5120" + "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", FeatureSupport.No)]
+    [InlineData("76a914" + "cccccccccccccccccccccccccccccccccccccccc" + "88ac", FeatureSupport.Optional)]
+    [InlineData("6a06" + "000000000000", FeatureSupport.Optional)]
+    public async Task Given_UpfrontShutdownScriptOfAForbiddenForm_When_CreatingChannelAsNonInitiator_Then_ChannelError(
+        string scriptHex, FeatureSupport anySegwit)
+    {
+        // Arrange (NL-776: CLN v26.06.8 sends a P2TR upfront script without option_shutdown_anysegwit)
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()),
+                                                upfrontShutdownScriptTlv: new UpfrontShutdownScriptTlv(
+                                                    Convert.FromHexString(scriptHex)));
+        var negotiatedFeatures = new FeatureOptions
+        {
+            UpfrontShutdownScript = FeatureSupport.Optional,
+            BeyondSegwitShutdown = anySegwit
+        };
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => channelFactory.CreateChannelV1AsNonInitiatorAsync(message, negotiatedFeatures,
+                                                                                    s_remoteNodeId));
+
+        // Assert
+        Assert.Contains("upfront_shutdown_script", exception.Message);
+        Assert.Equal(s_temporaryChannelId, exception.ChannelId);
+    }
+
+    [Theory]
+    [InlineData("5120" + "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")]
+    [InlineData("0014" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    [InlineData("")]
+    public async Task Given_UpfrontShutdownScriptAllowedWithAnySegwit_When_CreatingChannelAsNonInitiator_Then_ScriptIsKept(
+        string scriptHex)
+    {
+        // Arrange
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var script = Convert.FromHexString(scriptHex);
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()),
+                                                upfrontShutdownScriptTlv: new UpfrontShutdownScriptTlv(script));
+        var negotiatedFeatures = new FeatureOptions
+        {
+            UpfrontShutdownScript = FeatureSupport.Optional,
+            BeyondSegwitShutdown = FeatureSupport.Optional
+        };
+
+        // Act
+        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, negotiatedFeatures,
+                                                                              s_remoteNodeId);
+
+        // Assert
+        if (script.Length == 0)
+            Assert.Null(channel.RemoteUpfrontShutdownScript);
+        else
+            Assert.Equal(script, (byte[])channel.RemoteUpfrontShutdownScript!.Value);
+    }
+
+    [Theory]
     [InlineData(FeatureSupport.Optional)]
     [InlineData(FeatureSupport.Compulsory)]
     public async Task
@@ -548,7 +605,9 @@ public class ChannelFactoryTests
     private static OpenChannel1Message CreateOpenChannel1Message(ChannelTypeTlv? channelTypeTlv,
                                                                  LightningMoney? openerDustLimit = null,
                                                                  LightningMoney? openerReserve = null,
-                                                                 ChannelFlag channelFlags = ChannelFlag.None)
+                                                                 ChannelFlag channelFlags = ChannelFlag.None,
+                                                                 UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv =
+                                                                     null)
     {
         var payload = new OpenChannel1Payload(BitcoinNetwork.Mainnet.ChainHash, new ChannelFlags(channelFlags),
                                               s_temporaryChannelId, openerReserve ?? LightningMoney.Satoshis(1_000),
@@ -559,7 +618,7 @@ public class ChannelFactoryTests
                                               LightningMoney.Satoshis(100_000), s_remoteNodeId, LightningMoney.Zero,
                                               s_remoteNodeId, 144);
 
-        return new OpenChannel1Message(payload, channelTypeTlv);
+        return new OpenChannel1Message(payload, channelTypeTlv, upfrontShutdownScriptTlv);
     }
 
     private static OpenChannelClientRequest CreateRequest(LightningMoney fundingAmount,

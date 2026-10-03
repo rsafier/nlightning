@@ -337,6 +337,23 @@ public class FeatureOptionsTests
     }
 
     [Fact]
+    public void Given_DefaultOptions_When_GetNodeFeatures_Then_ShutdownAnySegwitIsAdvertisedOptional()
+    {
+        // Arrange (NL-776: CLN v26.06.8 sends P2TR shutdown scripts on dual-funded channels)
+        var options = new FeatureOptions();
+
+        // Act
+        var features = options.GetNodeFeatures();
+        var nodeAnnouncementFeatures = options.GetNodeFeatures(FeatureContext.NodeAnnouncement);
+
+        // Assert
+        Assert.True(features.IsFeatureSet(Feature.OptionShutdownAnySegwit, false));
+        Assert.False(features.IsFeatureSet(Feature.OptionShutdownAnySegwit, true));
+        Assert.True(nodeAnnouncementFeatures.IsFeatureSet(Feature.OptionShutdownAnySegwit, false));
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
     public void Given_DefaultOptions_When_GetNodeFeatures_Then_ProvideStorageIsAdvertisedOptionalAndNotExperimental()
     {
         // Arrange (BOLT 1 peer storage, wave rf1: the daemon registers the peer storage service)

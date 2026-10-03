@@ -1,5 +1,8 @@
 namespace NLightning.Domain.Channels.Closing;
 
+using Domain.Enums;
+using Node.Options;
+
 /// <summary>
 /// The <c>scriptpubkey</c> forms BOLT 2 allows in <c>shutdown</c> (B2-SHUT-S10, B2-SHUT-R02) and the BOLT 3 dust
 /// thresholds of each output script (B2-CLS-R10, B3-DUST-01).
@@ -53,6 +56,20 @@ public static class ShutdownScriptValidator
             return true;
 
         return simpleClose && IsStandardOpReturn(script);
+    }
+
+    /// <summary>
+    /// True when <paramref name="script"/> may be sent as <c>upfront_shutdown_script</c> under
+    /// <paramref name="negotiatedFeatures"/>: zero-length, or a <c>shutdown</c> form <see cref="IsValid"/> allows with the
+    /// negotiated <c>option_shutdown_anysegwit</c> and <c>option_simple_close</c> (BOLT 2 <c>open_channel</c>, NL-776).
+    /// </summary>
+    public static bool IsValidUpfront(ReadOnlySpan<byte> script, FeatureOptions negotiatedFeatures)
+    {
+        ArgumentNullException.ThrowIfNull(negotiatedFeatures);
+
+        return script.IsEmpty
+            || IsValid(script, negotiatedFeatures.BeyondSegwitShutdown > FeatureSupport.No,
+                       negotiatedFeatures.OptionSimpleClose > FeatureSupport.No);
     }
 
     /// <summary>The BOLT 3 dust threshold of an output paying <paramref name="script"/>, in satoshis.</summary>

@@ -121,9 +121,14 @@ public class FeatureOptions
     public FeatureSupport OptionRouteBlinding { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
-    /// Enable beyond segwit shutdown.
+    /// Enable beyond segwit shutdown (BOLT 9 <c>option_shutdown_anysegwit</c> 26/27).
     /// </summary>
-    public FeatureSupport BeyondSegwitShutdown { get; set; } = FeatureSupport.No;
+    /// <remarks>
+    /// Optional by default since NL-776: a peer's <c>shutdown</c> or <c>upfront_shutdown_script</c> may then pay a segwit
+    /// v1-v16 program (P2TR), which CLN v26.06.8 sends on dual-funded channels. Without it negotiated such a script is
+    /// refused (<c>shutdown</c>: warning, B2-SHUT-R02; at the open: the open fails).
+    /// </remarks>
+    public FeatureSupport BeyondSegwitShutdown { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
     /// Enable dual fund (BOLT 2 "Channel Establishment v2", BOLT 9 <c>option_dual_fund</c> 28/29).
