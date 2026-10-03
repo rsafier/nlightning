@@ -154,6 +154,10 @@ public static class ClientUtils
         Console.WriteLine("  disableoffer <offer_id>      Stop answering an offer's invoice requests (alias:");
         Console.WriteLine("                               disable-offer); issued invoices stay payable");
         Console.WriteLine("  listinvoices [count] [skip]  List invoices, newest first [count 1-1000, default 100]");
+        Console.WriteLine("  waitinvoice <payment_hash> [--timeout <seconds>]");
+        Console.WriteLine("                               Wait until an invoice is paid or canceled (alias:");
+        Console.WriteLine("                               wait-invoice) [timeout 1-300, default 60]; exit code 1 if");
+        Console.WriteLine("                               it is still open when the wait ends");
         Console.WriteLine("  listpayments [count] [skip]  List outgoing payments, newest first [count 1-1000,");
         Console.WriteLine("                               default 100]");
         Console.WriteLine("  listforwards [count] [skip] [--since <time>] [--until <time>]");

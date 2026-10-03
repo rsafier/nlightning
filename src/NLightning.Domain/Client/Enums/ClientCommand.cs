@@ -108,5 +108,11 @@ public enum ClientCommand
     /// <summary>
     /// The books' administration (<c>accounting reconcile|rebuild|verify</c>, NL-602 A2).
     /// </summary>
-    AccountingAdmin = 45
+    AccountingAdmin = 45,
+
+    /// <summary>
+    /// Waits until one of our invoices leaves <c>Open</c> (<c>waitinvoice</c>, Cashu plan C0, NL-812), at most the
+    /// request's timeout; answers with the invoice either way.
+    /// </summary>
+    WaitInvoice = 46
 }

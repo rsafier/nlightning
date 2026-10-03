@@ -26,6 +26,7 @@ using Domain.Gossip.Interfaces;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Payments.Enums;
+using Domain.Payments.Events;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Keysend;
 using Domain.Payments.Models;
@@ -144,6 +145,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
     private readonly GraphPathSource? _graphPathSource;
     private readonly IRouteBlindingService? _routeBlindingService;
     private readonly IChannelUpdateService? _channelUpdateService;
+    private readonly IPaymentEventPublisher? _paymentEventPublisher;
 
     /// <summary>
     /// The engine's sender rules (<c>UpdateValidator.ValidateSendAdd</c>) that a smaller HTLC on the same channel may
@@ -174,8 +176,10 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                           IAttributionDataService? attributionDataService = null,
                           GraphPathSource? graphPathSource = null, IGossipScidRefresher? scidRefresher = null,
                           IRouteBlindingService? routeBlindingService = null,
-                          IChannelUpdateService? channelUpdateService = null)
+                          IChannelUpdateService? channelUpdateService = null,
+                          IPaymentEventPublisher? paymentEventPublisher = null)
     {
+        _paymentEventPublisher = paymentEventPublisher;
         _routeBlindingService = routeBlindingService;
         _channelUpdateService = channelUpdateService;
         _attributionDataService = attributionDataService;
@@ -2506,17 +2510,33 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         }
     }
 
+    /// <summary>
+    /// Logs a payment that succeeded and tells the payment event subscribers (Cashu plan C0, NL-812). Every caller
+    /// calls it after the save that marked the payment succeeded.
+    /// </summary>
     private void LogSucceeded(PaymentModel payment)
     {
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Payment {PaymentHash} succeeded ({Amount} msat, fee {Fee} msat)",
                                    payment.PaymentHash, payment.Amount.MilliSatoshi, payment.Fee.MilliSatoshi);
+        if (payment.Preimage is { } preimage)
+            _paymentEventPublisher?.Publish(new PaymentSucceededEvent(payment.PaymentHash, payment.Amount, payment.Fee,
+                                                                      preimage,
+                                                                      payment.CompletedAt
+                                                                   ?? _timeProvider.GetUtcNow()));
     }
 
+    /// <summary>
+    /// Logs a payment that failed and tells the payment event subscribers (Cashu plan C0, NL-812). Every caller calls
+    /// it after the save that marked the payment failed.
+    /// </summary>
     private void LogFailed(PaymentModel payment)
     {
         if (_logger.IsEnabled(LogLevel.Warning))
             _logger.LogWarning("Payment {PaymentHash} failed: {Reason}", payment.PaymentHash, payment.FailureReason);
+        if (payment.Status == PaymentStatus.Failed)
+            _paymentEventPublisher?.Publish(new PaymentFailedEvent(payment.PaymentHash, payment.FailureReason,
+                                                                   payment.CompletedAt ?? _timeProvider.GetUtcNow()));
     }
 
     private sealed class HashLock

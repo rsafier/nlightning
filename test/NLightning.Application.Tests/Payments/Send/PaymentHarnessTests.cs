@@ -11,11 +11,13 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Money;
 using Domain.Payments.Enums;
+using Domain.Payments.Events;
 using Domain.Payments.Models;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
+using Events;
 using Harness;
 using NLightning.Tests.Utils;
 
@@ -70,6 +72,47 @@ public class PaymentHarnessTests : IDisposable
                      (await _harness.Carol.Invoices.GetByPaymentHashAsync(invoice.PaymentHash))!.Status);
         Assert.Contains(_harness.Bob.Switch.PaymentOutcomes, o => o is { Event: OutgoingHtlcFulfilled, Handled: true });
         AssertNoPendingHtlcs();
+    }
+
+    [Fact]
+    public async Task Given_ASubscriber_When_BobPaysCarol_Then_BobPublishesTheSuccessAfterItsSave()
+    {
+        // Arrange - Cashu plan C0 (NL-812)
+        var ct = TestContext.Current.CancellationToken;
+        var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "event", null, ct);
+        using var subscription = _harness.Bob.PaymentEvents.Subscribe();
+
+        // Act
+        await _harness.RunAsync(_harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
+
+        // Assert: the event carries the proof, and the row it announces is already Succeeded
+        var succeeded = Assert.IsType<PaymentSucceededEvent>(await PaymentEventHubTests.ReadOneAsync(subscription));
+        Assert.Equal(invoice.PaymentHash, succeeded.PaymentHash);
+        Assert.Equal(invoice.Preimage, succeeded.Preimage);
+        Assert.Equal(s_amount, succeeded.Amount);
+        Assert.Equal(LightningMoney.Zero, succeeded.Fee);
+        Assert.Equal(PaymentStatus.Succeeded,
+                     (await _harness.Bob.Payments.GetByPaymentHashAsync(invoice.PaymentHash))!.Status);
+    }
+
+    [Fact]
+    public async Task Given_ASubscriber_When_BobsPaymentFailsForGood_Then_BobPublishesTheFailureOnce()
+    {
+        // Arrange - Cashu plan C0 (NL-812)
+        var ct = TestContext.Current.CancellationToken;
+        var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "event", null, ct);
+        _harness.Carol.Switch.FinalHopInterceptor = (_, _) => FailureMessage.TemporaryNodeFailure();
+        using var subscription = _harness.Bob.PaymentEvents.Subscribe();
+
+        // Act
+        await _harness.RunAsync(_harness.Bob.PaymentService.PayInvoiceAsync(
+                                    invoice.Bolt11!, null, new PayInvoiceOptions { Timeout = s_timeout }, ct));
+
+        // Assert
+        var failed = Assert.IsType<PaymentFailedEvent>(await PaymentEventHubTests.ReadOneAsync(subscription));
+        Assert.Equal(invoice.PaymentHash, failed.PaymentHash);
+        Assert.False(string.IsNullOrEmpty(failed.Reason));
+        Assert.False(subscription.Overflowed);
     }
 
     [Fact]

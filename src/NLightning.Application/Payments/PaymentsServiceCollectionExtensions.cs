@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 namespace NLightning.Application.Payments;
 
 using Domain.Payments.Interfaces;
+using Events;
 using FinalHop;
 using Invoices;
 using Onion;
@@ -19,7 +20,9 @@ public static class PaymentsServiceCollectionExtensions
     /// <summary>
     /// Adds <see cref="IncomingOnionProcessor"/>, <see cref="FinalHopProcessor"/>, <see cref="IForwardingPolicy"/>
     /// (<see cref="HtlcForwardingPolicy"/>), <see cref="HintRouteBuilder"/>, <see cref="PaymentOnionFactory"/> and
-    /// <see cref="IInvoiceService"/> (<see cref="InvoiceService"/>) and <see cref="BlindedPathBuilder"/>, all singletons.
+    /// <see cref="IInvoiceService"/> (<see cref="InvoiceService"/>), <see cref="BlindedPathBuilder"/> and the payment event
+    /// bus <see cref="PaymentEventHub"/> (<see cref="IPaymentEventPublisher"/>, <see cref="IPaymentEventSource"/>), all
+    /// singletons.
     /// </summary>
     /// <remarks>
     /// Needs, from the other layers: <c>ISphinxService</c> (<c>AddBitcoinInfrastructure</c>),
@@ -38,6 +41,12 @@ public static class PaymentsServiceCollectionExtensions
         services.AddSingleton<HintRouteBuilder>();
         services.AddSingleton<PaymentOnionFactory>();
         services.AddSingleton<IInvoiceService, InvoiceService>();
+
+        // Cashu plan C0 (NL-812): one bus for invoice and payment outcomes, published by the switch and the payment
+        // service after their saves
+        services.TryAddSingleton<PaymentEventHub>();
+        services.TryAddSingleton<IPaymentEventPublisher>(sp => sp.GetRequiredService<PaymentEventHub>());
+        services.TryAddSingleton<IPaymentEventSource>(sp => sp.GetRequiredService<PaymentEventHub>());
 
         // ONION M5: blinded paths to us (needs IRouteBlindingService, IChannelMemoryRepository and
         // IChannelUpdateService, resolved only when the builder is)

@@ -163,6 +163,11 @@ public static class NodeServiceExtensions
                                           sp.GetRequiredService<TimeProvider>()));
         services.AddScoped<IClientCommandHandler<ListPaymentsClientRequest, ListPaymentsClientResponse>>(sp =>
             new ListPaymentsClientHandler(GetPaymentLayerService<IPaymentService>(sp)));
+        // Cashu plan C0 (NL-812): wait for an invoice to leave Open (ClientCommand 46)
+        services.AddScoped<IClientCommandHandler<WaitInvoiceClientRequest, WaitInvoiceClientResponse>>(sp =>
+            new WaitInvoiceClientHandler(GetPaymentLayerService<IInvoiceService>(sp),
+                                         sp.GetService<IPaymentEventSource>(),
+                                         sp.GetRequiredService<TimeProvider>()));
         services.AddScoped<IClientCommandHandler<ListForwardsClientRequest, ListForwardsClientResponse>>(sp =>
             new ListForwardsClientHandler(GetPaymentLayerService<IForwardCircuitDbRepository>(sp),
                                           sp.GetRequiredService<ILogger<ListForwardsClientHandler>>(),
@@ -217,6 +222,7 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, PayInvoiceIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListInvoicesIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListPaymentsIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, WaitInvoiceIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListForwardsIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, CloseChannelIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ForceCloseChannelIpcHandler>();

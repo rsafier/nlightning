@@ -133,15 +133,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 45 | 46 |
-| in-progress | 0 | 0 | 0 | 0 | 0 |
+| open | 0 | 0 | 1 | 50 | 51 |
+| in-progress | 0 | 0 | 1 | 1 | 2 |
 | fixed | 14 | 62 | 188 | 373 | 637 |
 | wontfix | 0 | 0 | 5 | 8 | 13 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **195** | **428** | **699** |
+| **Total** | **14** | **62** | **196** | **434** | **706** |
 
 ### Epics
 
+- NL-811: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-812, C1 CDK gRPC payment processor NL-813, C2 Docker proof NL-814, C3 native wallet NL-815, C4 hold invoices NL-816)
 - NL-602: Accounting: core event feed and built-in books (fixed, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A3 all built on `wip/acct-a3`: A1 feed, A2 operational books, A3 financial profile (labels, classification, prices, projector and lots, period close, financial reports, config/security/docs; merge `c62d861b`, review fixes `94af679d`, `ecd983b1`); data gaps NL-603..NL-605 and the plugin stub NL-151 done; open follow-ups NL-606..NL-608, NL-610..NL-613, NL-645, NL-657, NL-658, NL-662, NL-674..NL-681 (NL-660, NL-665, NL-667 fixed on `wip/nl660`), flakes NL-620, NL-653)
 - NL-569: Tor: onion peers, our onion service, Tor-only mode (fixed, medium; lane tor, branch `wip/tor`: `Node:Tor` Off/Hybrid/TorOnly, SOCKS5 with isolation, control port with SAFECOOKIE, persisted v3 onion service announced in `node_announcement`, NL-542 and NL-178 fixed; `docs/agents/TOR.md`; follow-ups NL-571..NL-573; review fixes NL-575..NL-590)
 - NL-426: Static channel backup and restore (fixed, high; wave rf1: encrypted SCB, export/verify/restore IPC 21-23, recovery channels and the data-loss reestablish, proven against LND; wave lh1: NL-430, NL-431 old spends and every peer address, NL-432 persisted peer-storage retrievals with `listpeerstorage` (32); follow-up NL-435)
@@ -7306,6 +7307,78 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Generate into a temporary folder and replace only after all three providers succeed.
 - **Fix:** Done as sketched, and the old models are put back when the final build fails. Verified by hand: a run without a model change leaves the tree clean; a fake dotnet-ef failing on Postgres, no dotnet-ef on PATH and a broken generated SqlServer file each exit non-zero with the committed models intact and the project building.
 - **Blocks/Blocked-by:** Related NL-708
+- **Plan ref:** —
+
+## Cashu (ecash)
+
+### NL-811 Cashu ecash integration (epic)
+- **Status:** in-progress
+- **Severity:** medium
+- **Kind:** feature
+- **Location:** `docs/agents/CASHU_PLAN.md`; branch `wip/cashu`
+- **Evidence:** NLightning has every Lightning piece a Cashu mint needs (BOLT 11/12 receive and pay, MPP, on-chain wallet), but no Cashu integration: no backend contract the reference mint (CDK `cdk-mintd`) can use, no native ecash wallet, no hold invoices for NUT-14 swaps. CDK has no C# bindings (`cdk-ffi`: Python, Swift, Kotlin), so the integration speaks CDK's wire contracts or implements the NUTs.
+- **Fix sketch:** Waves C0-C4 of `CASHU_PLAN.md`: C0 payment event stream (NL-812), C1 CDK gRPC payment processor (NL-813), C2 Docker proof (NL-814), C3 native wallet (NL-815), C4 hold invoices + NUT-14 (NL-816).
+- **Blocks/Blocked-by:** NL-812..NL-816
+- **Plan ref:** `docs/agents/CASHU_PLAN.md`
+
+### NL-812 No notification when an invoice is settled or a payment finishes
+- **Status:** in-progress
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `src/NLightning.Domain/Payments/Events/`, `Domain/Payments/Interfaces/IPaymentEvent{Publisher,Source}.cs`, `src/NLightning.Application/Payments/Events/PaymentEventHub.cs`, `Payments/Switch/HtlcSwitch.cs` (`SettleWithAsync`), `Payments/Send/PaymentService.cs` (`LogSucceeded`/`LogFailed`), `src/NLightning.Daemon/Handlers/WaitInvoiceClientHandler.cs`, IPC 46
+- **Evidence:** Settlement and payment outcomes were only visible by polling `listinvoices`/`listpayments` or the accounting feed; a mint backend (C1), NWC or webhooks need a push. The IPC has no server push.
+- **Fix sketch:** In-process `PaymentEventHub` (`IPaymentEventPublisher`/`IPaymentEventSource`) with bounded per-subscriber queues (oldest dropped, `Overflowed` flag), published after the committing save by the switch (`InvoiceSettledEvent`, once per invoice) and the payment service (`PaymentSucceededEvent`/`PaymentFailedEvent`, only for final outcomes, not retried attempts); `waitinvoice <payment_hash> [--timeout]` (ClientCommand 46) subscribes, then reads, then waits (event or 5 s recheck; 1-300 s). Tests: `Application.Tests/Payments/Events/PaymentEventHubTests`, `PaymentHarnessTests.Given_ASubscriber_*`, `ThreeNodeSwitchTests.Given_ASubscriberAtCarol_*`, `Daemon.Tests/Handlers/WaitInvoiceClientHandlerTests`, `Client/WaitInvoiceCommandTests`.
+- **Blocks/Blocked-by:** Blocks NL-813
+- **Plan ref:** `CASHU_PLAN.md` C0
+
+### NL-813 Cashu mints cannot use NLightning as their Lightning backend
+- **Status:** open
+- **Severity:** low
+- **Kind:** feature
+- **Location:** new `src/NLightning.Cashu.PaymentProcessor`
+- **Evidence:** `cdk-mintd` talks to external Lightning backends through the `CdkPaymentProcessor` gRPC service (`cdk-payment-processor/src/proto/payment_processor.proto`); the shipped processors (Bark, LDK Server, LNbits, Spark) do not cover NLightning, and none does BOLT 11, BOLT 12 and on-chain together.
+- **Fix sketch:** Implement the service in the daemon on Kestrel behind `Cashu:PaymentProcessor` (default off, loopback, TLS required off loopback, refused on mainnet unless `AllowMainnet`): BOLT 11 create/quote/pay/check and `WaitPaymentEvent` over NL-812's hub first; BOLT 12 and on-chain after.
+- **Blocks/Blocked-by:** Blocked by NL-812; blocks NL-814
+- **Plan ref:** `CASHU_PLAN.md` C1
+
+### NL-814 No Docker proof of a CDK mint running on NLightning
+- **Status:** open
+- **Severity:** low
+- **Kind:** test-gap
+- **Location:** `test/NLightning.Integration.Tests/Docker/` (new `Cashu/`)
+- **Evidence:** C1 is proven only by unit tests until a `cdk-mintd` container runs on our processor.
+- **Fix sketch:** `cdk-mintd` (`ln_backend = grpcprocessor`) + `cdk-cli`: mint (we receive), melt to an LND invoice (we pay), a BOLT 12 melt, and a mint restart with quotes pending.
+- **Blocks/Blocked-by:** Blocked by NL-813
+- **Plan ref:** `CASHU_PLAN.md` C2
+
+### NL-815 No native Cashu wallet in the node
+- **Status:** open
+- **Severity:** low
+- **Kind:** feature
+- **Location:** Infrastructure.Bitcoin (hash-to-curve, BDHKE, DLEQ), Application (wallet), IPC
+- **Evidence:** Ecash cannot be received into or sent from the node's liquidity.
+- **Fix sketch:** NUT-00..05, 07, 09, 11, 12, 13, 17, 23 byte-exact against the NUT vectors; `nltg cashu receive|send`; proofs table and accounting bucket.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `CASHU_PLAN.md` C3
+
+### NL-816 No hold invoices (needed for NUT-14 LN/ecash atomic swaps)
+- **Status:** open
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `src/NLightning.Application/Payments/Switch/`
+- **Evidence:** The final hop settles as soon as the HTLC set is complete; there is no way to hold an HTLC until an external condition (a NUT-14 token redeemed) is met.
+- **Fix sketch:** An `IHtlcSwitch` decorator (the `DustExposureHtlcSwitch` pattern) holding sets of hold invoices until settle/cancel, failed back before the deadline monitor's CLTV limit.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `CASHU_PLAN.md` C4
+
+### NL-817 `dotnet format` reports 13 IDE0031 errors with SDK 10.0.4xx
+- **Status:** open
+- **Severity:** low
+- **Kind:** tooling
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Gossip/FundingOutputLookup.cs`, `src/NLightning.Application/Channels/Splicing/{SpliceService,RetiredScidMap}.cs`, `Gossip/Services/ChannelUpdateService.cs`, `Channels/DualFunding/DualFundedOpenService.cs`, `Channels/Backup/ChannelRestoreService.cs`
+- **Evidence:** On a clean `wip/fafo` checkout (cb5c258) `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"` with SDK 10.0.401 (linux-x64) fails with 13 `IDE0031 Null check can be simplified`; the CLAUDE.md gate was verified on SDK 10.0.103, whose analyzers do not report them (null-conditional assignment, C# 14).
+- **Fix sketch:** Apply the null-conditional assignments (or pin the SDK in `global.json`) so the gate passes on every 10.0 feature band.
+- **Blocks/Blocked-by:** —
 - **Plan ref:** —
 
 ## Docs
