@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-03 by the trampoline payer lane (worktree branch `worktree-agent-aa579db4e7a99b37e` from `wip/fafo` at `9418c968`): NL-980 fixed (5fc1bfc3: the zero-fee split over our own channels to the payee before hint and graph routes), NL-982 fixed (e60f768c: a failed payment records no fee, ordinary payments included), NL-898 fixed (8239d5dd: the payer verifies the outer attribution_data of trampoline failures).
+
 Updated 2026-10-03 by the taproot wave t01 integrator (branch `wip/taproot-int` from `origin/wip/taproot-plan` at `ee682a23`, merged into `wip/fafo`): NL-913 fixed (cluster proof `tap-mx1`; CLN v26.06.8 does not signal simple close), NL-903 (low, fixed in 075a7920, f0ca4a5c and 5c14c684: review fixes) and NL-904 (medium, open: T3/T4 obligations from the review) new; NL-911 and NL-914 updated. NL-910 (low, open: a `ClnPeerStorageTests` cluster flake). Taproot NL-895..NL-899 renumbered to NL-911..NL-915 (collision with the trampoline follow-ups, which landed first).
 
 Updated 2026-10-03 by the namespace-cap lane (branch `wip/nscap`, owner decision 2026-10-03): NL-844 (fixed, b8362d19, 501bebd7: the harness cap on run namespaces is 12, set once in `RunAdmission.DefaultMaxRuns`; the matrix in 1,058 s at a peak of 11 namespaces) and NL-905 (open, low: the cln suite is the matrix long pole at 12 namespaces). Summary rows recounted from the entries after the merge of `wip/fafo` at bd1a0dc5 (NL-806 lane): 773 entries, no duplicate IDs.
@@ -153,9 +155,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 69 | 72 |
+| open | 0 | 0 | 3 | 66 | 69 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 63 | 201 | 417 | 695 |
+| fixed | 14 | 63 | 201 | 420 | 698 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 3 | 5 |
 | **Total** | **14** | **63** | **212** | **499** | **788** |
@@ -1864,12 +1866,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 
 ### NL-980 The payer prefers a costly single-part route through strangers over a zero-fee split across its own direct channels
-- **Status:** open
+- **Status:** fixed (5fc1bfc3)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Routing/PaymentRoutePlanner.cs`, `Payments/Send/PaymentService.cs` (part selection before splitting)
 - **Evidence:** Mutinynet trampoline live test (2026-10-03, FAFO2 → FAFO → FAFO3, build 96a2fb0a). The outer leg to FAFO, a direct peer over two channels, first tried single-part routes through public third-party nodes (fee about 121,000 msat) before splitting across FAFO2's own two channels at fee 0. That cost about 10 s and exposed the attempts to strangers. The planner is general: this is not trampoline-specific.
 - **Fix sketch:** when the destination (or the trampoline) is a direct peer and the direct channels can carry the amount together, try the zero-fee split first, or weigh fee against part count.
+- **Fix (5fc1bfc3):** `PaymentRoutePlanner.TryPlan` tries, after the direct single parts and before any hint or graph path, a split over at least two of our direct channels to the payee (`TrySplit` over the direct paths only: no fee, no other node sees the payment; only with `PaymentTarget.SupportsMpp` and at least two parts allowed, so `MaxParts`/`MinPartMsat` apply). Generic: the outer leg to a trampoline peer (its target supports MPP) and any ordinary MPP payment to a direct peer benefit; non-MPP payees keep the old order. No existing planner or payment test changed expectation. Tests: `GraphRoutePlannerTests` (two 600k channels to the payee and a 1M graph route through Carol: split over both at fee 0; one channel that carries it: one direct part; no `basic_mpp`: the graph route as before) and `PaymentRoutePlannerTests` (the same against a hint through Carol, with and without `basic_mpp`).
 - **Blocks/Blocked-by:** Related NL-270, NL-875
 - **Plan ref:** —
 
@@ -1884,12 +1887,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TRAMPOLINE_PLAN.md`
 
 ### NL-982 A failed trampoline payment shows its last attempt's fee budget as its fee
-- **Status:** open
+- **Status:** fixed (e60f768c)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Payments/Send/PaymentService.TrampolinePayer.cs` (the payment row's fee on failure)
 - **Evidence:** Mutinynet trampoline live test (2026-10-03, test e2: recipient offline, 0x2019 from the trampoline): the failed payment's "Fee (msat)" read 10,000, the doubled budget of the last attempt, while nothing was paid. Cosmetic: the books recorded no fee.
 - **Fix sketch:** record 0 (or the budget in a separate field) for a payment that ends Failed.
+- **Fix (e60f768c):** `PaymentModel.Fail` clears `Fee` (a failed payment paid nothing), for trampoline and ordinary payments alike (ordinary failed rows had the same bug: the last attempt's routing fee). `PaymentDbRepository` writes `FeeMsat` with the mutable fields so `UpdateAsync` stores the zero; `FinishFailedAsync` restores an already failed row with zero and logs the offered fee only ("its last attempt offered N msat in fees, none paid"); the defensive late fulfill of a failed row (`WithPreimage`) takes the fee from the fulfilled HTLC's route when it carried the whole amount. `listpayments` shows 0; the books were already right (`PaymentFailed` books no fee). Tests: `PaymentModelTests`, `PaymentPersistenceTests.Given_AnInFlightPaymentWithAFee_When_ItFailsAndIsUpdated_*` (SQLite), `AttributionHarnessTests` (ordinary failure through Carol), `TrampolineAttributionHarnessTests.Given_AFailedPaymentThroughATrampoline_*` (row and accounting).
 - **Blocks/Blocked-by:** Related NL-875
 - **Plan ref:** —
 ### NL-056 HTLC-success / HTLC-timeout second-stage transactions not implemented
@@ -2755,12 +2759,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TRAMPOLINE_PLAN TR-R-14
 
 ### NL-898 The payer does not verify attribution_data on trampoline failures
-- **Status:** open
+- **Status:** fixed (8239d5dd)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Send/PaymentService.Trampoline*.cs`
 - **Evidence:** TR4 report (2026-10-03): failures through a trampoline are decrypted with `DecryptTrampolineErrorPacket`, but the outer-layer `attribution_data` (which the relay and target create, TR2's `TrampolineErrorPackets.CreateAttributed`/`WrapAttributed`) is not verified as it is for ordinary payments (NL-326). PR 836 says nothing about attribution on the trampoline layer (TR1 finding).
 - **Fix sketch:** verify the outer layer's attribution over the outer route's hold times when `OptionAttributionData` is advertised.
+- **Fix (8239d5dd):** `PaymentService.HandleSessionFailureAsync` keeps the attribution `DescribeFailure` verified over the outer route (`IAttributionDataService.DecryptErrorPacket`: the hops up to the outer erring hop, every outer hop for a trampoline-layer error) instead of dropping it in the trampoline branch: the verified hold times go on the part and the row as for any payment, the reason names an outer hop whose HMAC failed (`DescribeOuterAttribution`), and when no hop of either route authenticated the error the blamed hop is the source index and goes to the retry policy (`attributionBlame`, mission control). `DescribeStoredFailure` (no session) verifies it too (`VerifyOuterAttribution`). Never throws; without attribution nothing changes. Tests: `Payments/Trampoline/TrampolineAttributionHarnessTests` (Bob → Carol → trampoline David → Erin over the graph; `HarnessTrampolineNode.UseAttribution` builds the failures with the production `TrampolineErrorPackets`): David's NODE|26 and Erin's failure re-wrapped by David verify with Carol's and David's hold times, a garbled attribution names outer hop 1 and keeps only Carol's hold time, no attribution leaves the result unchanged.
 - **Blocks/Blocked-by:** Follow-up of NL-875; related NL-326
 - **Plan ref:** TRAMPOLINE_PLAN R2
 
