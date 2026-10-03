@@ -4,7 +4,7 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
-Updated 2026-10-03 by the Cashu integrator, round 3 (branch `wip/cashu-int` after the round-2 landing `d8c6cc6e`): the cloud agent's merge spec applied as a checklist. NL-1000 fixed (request limits), the rolling budget split off as NL-1011; NL-999 and NL-1001 extended to the event pump, BOLT 12 refusals and abandoned on-chain melts. The Cashu tests' stream reads are bounded (20 s), so a missing event fails a test instead of hanging its host. Summary rows recounted from the entries: 810, no duplicate IDs.
+Updated 2026-10-03 by the Cashu integrator, round 3 (branch `wip/cashu-int` after the round-2 landing `d8c6cc6e`): the cloud agent's merge spec applied as a checklist. NL-1000 fixed (request limits), the rolling budget split off as NL-1011; NL-999 and NL-1001 extended to the event pump, BOLT 12 refusals and abandoned on-chain melts. The Cashu tests' stream reads are bounded (20 s), so a missing event fails a test instead of hanging its host. NL-1005 added (a PeerManagerConnectTests hang in a loaded full run, green alone). Summary rows recounted from the entries: 811, no duplicate IDs.
 
 Updated 2026-10-03 by the Cashu integrator, round 2 (branch `wip/cashu-int`, after the first landing `74b97a25`): merged the cloud agent's `e6279803`, `a2a87dea` and `354fd1dd` (BOLT 12 and on-chain in the processor, `CashuQuotes`, NL-997 fixed; their NL-900..NL-907 renumbered as before; MPP partial melts are the new NL-1010) and fixed the review's land blockers on the new paths: NL-1001 (unknown-outcome failures never FAILED), NL-1002 (`waitinvoice` disconnect, nil hash), NL-1004 (high: spend cap, fee caps, `server.key` warning) and the round-2 parts of NL-998 and NL-999. NL-1000 now covers only request limits and a rolling budget. Summary rows recounted from the entries after merging wip/fafo at `1683ff22`: 809, no duplicate IDs.
 
@@ -165,12 +165,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 4 | 70 | 74 |
+| open | 0 | 0 | 4 | 71 | 75 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
 | fixed | 14 | 65 | 204 | 431 | 714 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 3 | 5 |
-| **Total** | **14** | **65** | **217** | **514** | **810** |
+| **Total** | **14** | **65** | **217** | **515** | **811** |
 
 ### Epics
 
@@ -8478,6 +8478,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** A budget per period (`MaxSpendPerHourSat` or similar) over the melts' stored quotes, refusing a melt that would exceed it.
 - **Blocks/Blocked-by:** Related NL-1000, NL-1004
 - **Plan ref:** `CASHU_PLAN.md` §6
+
+### NL-1005 `PeerManagerConnectTests.Given_AnOutboundConnectAndAnInboundOneAtTheSameTime_*` hung once in a loaded full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Node/Managers/PeerManagerConnectTests.cs`
+- **Evidence:** Cashu integration round 3 (2026-10-03, `wip/cashu-int` at `84593e26`, full non-Docker run on net10.0 while the cluster ran other agents' suites): the blame collector found the test inactive for 5 min and aborted Application.Tests (3,953 of 4,061 run). The class passed 5/5 alone three times, and Application.Tests passed 4,061/4,061 when run again. Nothing in it was changed by the Cashu work (two real peer managers over loopback).
+- **Fix sketch:** Read the hang dump of such a run (the simultaneous-connect tie-break waiting on a connection that never completes?); bound the test's waits so it fails instead of hanging.
+- **Blocks/Blocked-by:** Related NL-239, NL-240
+- **Plan ref:** —
 
 ## Docs
 
