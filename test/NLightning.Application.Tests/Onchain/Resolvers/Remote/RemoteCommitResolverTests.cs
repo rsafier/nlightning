@@ -482,10 +482,20 @@ public sealed class RemoteCommitResolverTests : IDisposable
         Assert.True(_context.Verifies(sweep, out error), error.ToString());
     }
 
-    [Fact]
-    public async Task Given_FutureCommitmentAfterDataLoss_When_Resolved_Then_EveryOutputWatchedToRemoteSweptAndCriticalAlert()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_FutureCommitmentAfterDataLoss_When_Resolved_Then_EveryOutputWatchedToRemoteSweptAndCriticalAlert(
+        bool simpleTaproot)
     {
-        // Arrange (B5-RMT-03): our snapshot is an old backup; Bob closes with a newer commitment holding HTLCs
+        // Arrange (B5-RMT-03): our snapshot is an old backup; Bob closes with a newer commitment holding HTLCs (a
+        // simple taproot to_remote is found by its NUMS-key script and swept by its leaf, NL-877 T5 restore recovery)
+        if (simpleTaproot)
+        {
+            _context.Dispose();
+            _context = new RemoteResolutionTestContext(simpleTaproot: true);
+        }
+
         var old = Pair.Alice.State;
         Pair.Add(Pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(5), Cltv);
         Pair.Add(Pair.Bob, 30_000_000, RealSigningCommitmentPair.Preimage(6), Cltv);

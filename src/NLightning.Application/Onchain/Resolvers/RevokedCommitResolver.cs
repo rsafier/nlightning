@@ -219,12 +219,10 @@ public sealed class RevokedCommitResolver : IOutputResolver
         // rounds, which sweep it on its own after one confirmation
         var anchors = context.Channel.ChannelParams.OptionAnchorOutputs;
         var needs = new List<PenaltyNeed>();
-        foreach (var descriptor in map.Outputs.Where(d => (d.Kind is OutputDescriptorKind.RevokedToLocal
-                                                                   || d is
-                                                                      {
-                                                                          Kind: OutputDescriptorKind.RevokedHtlc,
-                                                                          IsSimpleTaproot: false
-                                                                      })
+        // (NL-966: the key-path penalty of a revoked simple taproot HTLC output is not built yet)
+        foreach (var descriptor in map.Outputs.Where(d => d.Kind == OutputDescriptorKind.RevokedToLocal
+                                                         || (d.Kind == OutputDescriptorKind.RevokedHtlc
+                                                          && !d.IsSimpleTaproot)
                                                          || (d.Kind == OutputDescriptorKind.PaymentToRemote && !anchors)))
         {
             var row = CreateCommitmentRow(round, descriptor, context.PerCommitmentPoint);

@@ -211,8 +211,10 @@ public class SweepTransactionBuilder : ISweepTransactionBuilder
                 {
                     { WitnessScript: null } => "its tapscript leaf",
                     { SpentScriptPubKey: null } => "the spent P2TR scriptPubKey",
-                    { SpendKind: not (SweepSpendKind.DelayedOutput or SweepSpendKind.PaymentToRemote
-                                   or SweepSpendKind.RevokedDelayedOutput) } => "a spend form simple taproot supports",
+                    {
+                        SpendKind: not (SweepSpendKind.DelayedOutput or SweepSpendKind.PaymentToRemote
+                                   or SweepSpendKind.RevokedDelayedOutput)
+                    } => "a spend form simple taproot supports",
                     _ => null
                 };
 

@@ -108,8 +108,11 @@ public class RevokedResolutionTests
 
         // The revoked HTLC outputs' key-path penalties are not built (NL-966): alerted, not thrown, not spent
         Assert.Equal(2, kit.Alerts.Count(a => a.RequirementId == "NL-966"));
-        Assert.DoesNotContain(kit.Rows, r => r is { Descriptor: OutputDescriptorKind.RevokedHtlc,
-                                                    ResolvingTransactionId: not null });
+        Assert.DoesNotContain(kit.Rows, r => r is
+        {
+            Descriptor: OutputDescriptorKind.RevokedHtlc,
+            ResolvingTransactionId: not null
+        });
     }
 
     [Fact]

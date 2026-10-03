@@ -1,8 +1,8 @@
+using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
 
 namespace NLightning.Application.Tests.Channels.Close;
 
-using Domain.Channels.Closing;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Crypto.ValueObjects;
@@ -229,6 +229,41 @@ public class SimpleTaprootCloseHarnessTests
         Assert.IsType<ClosingSigMessage>(close.Bob.PeekNext());
         Assert.Equal(ChannelState.Closing, close.Bob.Channel.State);
         AssertKeyPathSpend(close, close.Bob.Channel.ClosingTransaction!.RawTxBytes);
+    }
+
+    [Fact]
+    public async Task Given_TaprootChannel_When_ClosedOnAConnectionWithoutSimpleClose_Then_RefusedWithAReason()
+    {
+        // Arrange: the peer manager says the current connection negotiated no option_simple_close
+        using var close = new CloseHarness(simpleTaproot: true, configure: (name, services) =>
+        {
+            if (name != "Alice")
+                return;
+
+            var peerService = new Mock<Domain.Node.Interfaces.IPeerService>();
+            peerService.SetupGet(p => p.Features).Returns(CloseHarness.LegacyCloseFeatures());
+            var peerManager = new Mock<Domain.Node.Interfaces.IPeerManager>();
+            peerManager.Setup(m => m.GetPeer(It.IsAny<CompactPubKey>()))
+                       .Returns((CompactPubKey id) =>
+                        {
+                            var peer = new Domain.Node.Models.PeerModel(id, "127.0.0.1", 9735, "IPv4");
+                            peer.SetPeerService(peerService.Object);
+                            return peer;
+                        });
+            services.AddSingleton(peerManager.Object);
+        });
+
+        // Act
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(
+                          () => close.CloseService(close.Alice)
+                                     .CloseChannelAsync(TwoNodeHarness.ChannelId, new ChannelCloseRequest(),
+                                                        TestContext.Current.CancellationToken));
+
+        // Assert: nothing sent, the channel still open
+        Assert.Contains("option_simple_close only", refused.Message);
+        Assert.Null(close.Alice.PeekNext());
+        Assert.Equal(ChannelState.Open, close.Alice.Channel.State);
+        Assert.Null(close.Alice.Channel.LocalShutdownScript);
     }
 
     #region Helpers
