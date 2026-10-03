@@ -6267,6 +6267,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Blocked by NL-966; related NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T4, T6
 
+### NL-979 An RBF attempt's replaced funding output of a taproot channel lost its MuSig2 P2TR format
+- **Status:** fixed (31c13716)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Channels/Models/ChannelModel.cs` (`ReplaceUnconfirmedFunding`)
+- **Evidence:** taproot wave t02 lane REVC (adversarial review of lanes V2/V2INT). Every other setter of `ChannelModel.FundingOutput` marks a simple taproot channel's output `IsSimpleTaproot` (`MarkFormat`), but `ReplaceUnconfirmedFunding` stored the caller's `FundingOutputInfo` as is, and its three callers in `DualFundedOpenService` (an RBF attempt's commitment step, the restore of the last signed attempt, an earlier attempt confirming) build it from amount, keys and outpoint only. A taproot channel moved to another attempt would then build P2WSH funding scripts and BIP 143 commitments for a P2TR output. Latent: NL-970 refuses every RBF of a taproot dual-funded open, so no path reaches it in t02. `ChannelFactoryTaprootTests.Given_ATaprootChannelBeingOpened_When_ItsUnconfirmedFundingIsReplaced_*` failed before the fix.
+- **Fix sketch:** done: `ReplaceUnconfirmedFunding` goes through `MarkFormat` too. The review's other results (no nonce reuse found in the dual-funded open, the sender-restart re-sign case covered by `DualFundTaprootTests`) are in `REPORT_REVC.md`.
+- **Blocks/Blocked-by:** Related NL-877, NL-970
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
+
 ### NL-158 Key file encryption: fixed Argon2 salt, all-zero XChaCha nonce, 64 KiB Argon2 memory
 - **Status:** fixed (953a33b, b999208)
 - **Severity:** critical
