@@ -5976,6 +5976,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** run the cluster interop matrix (cln, eclair, ldk, lnd) on the integration branch; add any even TLV a peer sends to the right known set.
 - **Blocks/Blocked-by:** Related NL-001, NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T2
+### NL-972 Every attempt of a dual-funded taproot open shared the commitment-0 verification nonce
+- **Status:** fixed (72e78d78)
+- **Severity:** critical
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.Taproot.cs` (`NonceContext`), `src/NLightning.Domain/Channels/ValueObjects/ChannelSigningInfo.cs`
+- **Evidence:** taproot wave t02 review (lane REVA). The counter nonce of local commitment 0 ignored the funding txid ("commitment 0 always uses the context without a txid"), and every RBF attempt of a dual-funded open is a funding on the same key index 0, so all attempts shared one MuSig2 verification nonce. Our broadcast of attempt A's commitment 0 (fail-the-channel before confirmation) followed by attempt B confirming (NL-528: the channel follows it) needs B's commitment 0 signed with the same secret nonce over another message: refused while the signer's in-memory session record lives (the confirmed funding's commitment could not be broadcast), and signed after a restart (the record is memory only), which reveals the funding private key. The test `Given_TwoOpenAttempts_When_CommitmentZeroIsBroadcastOnBoth_Then_TheSecondIsRefused` documented the shared nonce.
+- **Fix sketch:** done: `ChannelSigningInfo.IsDualFunded` (from `ChannelModel.Version` V2 and the channel row's `Version`) makes commitment 0 bind the attempt's txid; only a v1 open's commitment 0 on the original funding keeps the unbound context (its nonce goes out in open_channel/accept_channel, and a v1 open has one funding transaction). The key index overload of `GetLocalVerificationNonce` binds the txid it is given (null only for a v1 open's commitment 0): the dual-funded open lane must pass the attempt's txid for commitment 0 (tx_complete `commit_nonces`). Tests: `SimpleTaprootVerificationNonceTests`, `SimpleTaprootCommitmentSigningTests.Given_ADualFundedOpensAttempts_*`, `SignerStateReloadTests.Given_PersistedChannelVersion_*`.
+- **Blocks/Blocked-by:** Related NL-877, NL-904, NL-528, NL-956
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T3 (D-T4)
+
+### NL-973 Knowing bit 81 cut off peers that set option_simple_taproot without option_simple_close
+- **Status:** fixed (9d35d090)
+- **Severity:** medium
+- **Kind:** interop
+- **Location:** `src/NLightning.Domain/Node/FeatureSet.cs` (`IsCompatible`)
+- **Evidence:** taproot wave t02 review (lane REVA). Lane WIRE made 81 a known feature with the dependencies option_channel_type and option_simple_close, and `IsCompatible` fails the connection of any peer missing a dependency of a known feature, also on a node with taproot off (the default). LND 0.21.4 forces the RBF coop close (61) on with `--protocol.simple-taproot-chans` only when taproot overlay channels are off (`server.go`): litd nodes with overlay channels advertise 81 without 61. Before phase A, 81 was an unknown odd bit and those peers connected.
+- **Fix sketch:** done: a peer's missing dependency of 81 is ignored while we do not set 81 ourselves (the bit is then not negotiated); with taproot on, the dependency is enforced as the proposal says. Every other dependency stays strict. Tests: `FeatureSetTests.Given_WeDoNotSupportTaproot_*`, `Given_WeSupportTaproot_*`.
+- **Blocks/Blocked-by:** Related NL-877, NL-959
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T2
+
 ### NL-158 Key file encryption: fixed Argon2 salt, all-zero XChaCha nonce, 64 KiB Argon2 memory
 - **Status:** fixed (953a33b, b999208)
 - **Severity:** critical
