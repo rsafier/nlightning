@@ -18,6 +18,7 @@ public class PostgresTests
 
     public PostgresTests(PostgresFixture fixture)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
     }
 
@@ -350,7 +351,7 @@ public class PostgresTests
             () => new NLightningDbContext(options, databaseTypeProvider), TestContext.Current.CancellationToken);
     }
 
-    /// <summary>Options for a database of its own on the container's server, once the server accepts
+    /// <summary>Options for a database of its own on the fixture's server, once the server accepts
     /// connections.</summary>
     [Fact]
     public async Task Given_APostgresSpliceLockCommittingMidLoad_When_TheChannelIsLoaded_Then_ItIsAllBeforeOrAllAfterTheLock()

@@ -45,6 +45,7 @@ public sealed class ClnBolt12CaptureTests : IAsyncLifetime
 
     public ClnBolt12CaptureTests(ClnFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }

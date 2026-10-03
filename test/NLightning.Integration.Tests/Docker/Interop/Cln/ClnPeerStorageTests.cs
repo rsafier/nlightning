@@ -29,6 +29,7 @@ public sealed class ClnPeerStorageTests : IAsyncLifetime
 
     public ClnPeerStorageTests(ClnFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -43,7 +44,7 @@ public sealed class ClnPeerStorageTests : IAsyncLifetime
                         + await _fixture.Cln.GetLogLinesAsync(string.Empty, CancellationToken.None, 60, "unusual"));
         if (_session is not null)
         {
-            if (DockerDiagnostics.CurrentTestFailed)
+            if (TestDiagnostics.CurrentTestFailed)
                 Console.WriteLine($"[cln] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
 
             await _session.DisposeAsync();

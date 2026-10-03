@@ -112,8 +112,8 @@ using SpliceWireMessage = ClnSpliceTests.SpliceWireMessage;
 /// written, the splice broadcast and 2 s of grace for ours to reach CLN; our <c>next_funding</c> absent is what is
 /// asserted, CLN's is not, since nothing on the wire confirms that CLN read ours before the reset). The restart
 /// variants stop our node while cut and start it again on the same database. CLN is restarted once in a separate test
-/// on its own container (<c>nltg-cln-sp2</c>, a fixed host port, so its address survives the restart and the shared
-/// fixture's CLN is never restarted).</para>
+/// on its own node (<c>nltg-cln-sp2</c>, a PVC and a stable ClusterIP name, so its address survives the restart and
+/// the shared fixture's CLN is never restarted).</para>
 /// <para>Not covered here: LND 0.20 learning the spliced channel (plan (c) mentions it; the CLN fixture has no LND),
 /// and the on-chain part (d) (<c>Docker/Onchain/OnchainSpliceTests</c>). Written against the SP2 contracts
 /// (3560f3a9); the node side (reestablish, lock, SCID map, announcements) lands in lanes SP2-A/B and the integrator
@@ -162,6 +162,7 @@ public sealed class ClnSpliceReestablishTests : IAsyncLifetime
 
     public ClnSpliceReestablishTests(ClnFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -208,7 +209,7 @@ public sealed class ClnSpliceReestablishTests : IAsyncLifetime
                 Console.WriteLine("[cln] unusual/broken log lines so far:\n"
                                 + await _channel.Cln.Client.GetLogLinesAsync(string.Empty, CancellationToken.None,
                                                                              60, "unusual"));
-                if (DockerDiagnostics.CurrentTestFailed)
+                if (TestDiagnostics.CurrentTestFailed)
                     Console.WriteLine($"[cln] channel at failure: {await _channel.DescribeAsync(CancellationToken.None)}");
             }
             catch (Exception e)
@@ -338,8 +339,8 @@ public sealed class ClnSpliceReestablishTests : IAsyncLifetime
 
     /// <summary>
     /// Proof SP2 (a), "restart CLN once": on a CLN of its own (<c>nltg-cln-sp2</c>), we splice in and the connection
-    /// is cut when CLN's splice <c>commitment_signed</c> arrives (dropped); CLN is restarted (its container or pod,
-    /// data kept) while cut. CLN reloads the inflight and, once our node reconnects, both send <c>next_funding</c> for
+    /// is cut when CLN's splice <c>commitment_signed</c> arrives (dropped); CLN is restarted (its pod, data kept
+    /// on its PVC) while cut. CLN reloads the inflight and, once our node reconnects, both send <c>next_funding</c> for
     /// the splice, the signatures are exchanged and the splice locks; payments both ways after.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
@@ -616,8 +617,8 @@ public sealed class ClnSpliceReestablishTests : IAsyncLifetime
 
     /// <summary>
     /// A CLN of this class (<see cref="DedicatedClnName"/>) on the fixture's bitcoind, restartable with its address
-    /// kept (<see cref="ClnNodeSpec.Restartable"/>: a fixed <c>127.0.0.1</c> port on Docker, a PVC and a stable ClusterIP
-    /// name on the cluster); funded.
+    /// kept (<see cref="ClnNodeSpec.Restartable"/>: a PVC and a stable ClusterIP name);
+    /// funded.
     /// </summary>
     private async Task<ClnPeer> StartDedicatedClnAsync(CancellationToken ct)
     {

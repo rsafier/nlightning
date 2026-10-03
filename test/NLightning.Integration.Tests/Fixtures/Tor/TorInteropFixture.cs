@@ -3,7 +3,7 @@ using System.Net.Sockets;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 
-namespace NLightning.Integration.Tests.Fixtures;
+namespace NLightning.Integration.Tests.Fixtures.Tor;
 
 using Docker.Utils;
 using Domain.Money;
@@ -13,7 +13,10 @@ using Infrastructure.Transport.Tor;
 /// <summary>
 /// The Tor interop topology (NL-572): its own bitcoind, a C Tor client on the public Tor network and a Core Lightning
 /// node reachable only through its onion service, in a Docker network of their own (no container, name or chain
-/// state shared with the other fixtures).
+/// state shared with the other fixtures). It is the one fixture left on Docker (NL-866: the onion services live on the
+/// public Tor network, which the cluster runs do not reach); it runs without <c>NLTG_TEST_BACKEND</c> and its tests skip
+/// under <c>NLTG_TEST_BACKEND=cluster</c>. Run it with <c>scripts/run-interop.sh tor</c>, one Docker test process at a
+/// time on the machine.
 /// </summary>
 /// <remarks>
 /// <para>Tor (<see cref="TorContainerName"/>, built from <c>test/Docker/tor</c> as <see cref="TorImage"/> when the tag
@@ -55,13 +58,13 @@ public sealed class TorInteropFixture : IAsyncLifetime
 
     private readonly DockerClient _client = new DockerClientConfiguration().CreateClient();
     private readonly SharedObjectCache _shared = new();
-    private readonly InteropChainHost _chain;
+    private readonly TorChainHost _chain;
 
     private ClnClient? _cln;
 
     public TorInteropFixture()
     {
-        _chain = new InteropChainHost(_client, NetworkName, BitcoinContainerName);
+        _chain = new TorChainHost(_client, NetworkName, BitcoinContainerName);
     }
 
     public RegtestBitcoinEndpoint Bitcoin => _chain.Bitcoin;
@@ -258,6 +261,20 @@ public sealed class TorInteropFixture : IAsyncLifetime
         }
     }
 
+    /// <summary>Writes the last <paramref name="tail"/> lines of CLN's container log to <see cref="Console"/>.</summary>
+    public async Task DumpClnLogAsync(int tail)
+    {
+        try
+        {
+            Console.WriteLine($"===== docker logs {ClnContainerName} (last {tail} lines) =====");
+            Console.WriteLine(await GetContainerLogTailAsync(ClnContainerName, tail, CancellationToken.None));
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"===== docker logs {ClnContainerName}: unavailable ({e.Message}) =====");
+        }
+    }
+
     private async Task StartAsync()
     {
         await EnsureTorImageAsync();
@@ -294,9 +311,9 @@ public sealed class TorInteropFixture : IAsyncLifetime
             Cmd =
             [
                 $"--bitcoin-rpcconnect={BitcoinContainerName}",
-                $"--bitcoin-rpcport={InteropChainHost.RpcPort}",
-                $"--bitcoin-rpcuser={InteropChainHost.RpcUser}",
-                $"--bitcoin-rpcpassword={InteropChainHost.RpcPassword}",
+                $"--bitcoin-rpcport={TorChainHost.RpcPort}",
+                $"--bitcoin-rpcuser={TorChainHost.RpcUser}",
+                $"--bitcoin-rpcpassword={TorChainHost.RpcPassword}",
                 $"--bind-addr=127.0.0.1:{OnionPort}",
                 $"--proxy=127.0.0.1:{SocksPort}",
                 "--alias=nltg-tor-cln",
@@ -308,7 +325,7 @@ public sealed class TorInteropFixture : IAsyncLifetime
             HostConfig = new HostConfig { NetworkMode = $"container:{TorContainerName}" }
         });
         await _client.Containers.StartContainerAsync(cln.ID, new ContainerStartParameters());
-        var client = new ClnClient(_client, ClnContainerName);
+        var client = new ClnClient(ClnContainerName, DockerExec(_client, ClnContainerName));
         await DockerContainerUtils.WaitUntilReadyAsync(ClnContainerName, async ct => await client.GetInfoAsync(ct),
                                                        s_readyTimeout);
         _cln = client;
@@ -363,8 +380,8 @@ public sealed class TorInteropFixture : IAsyncLifetime
         if (await DockerContainerUtils.ImageExistsAsync(_client, $"{TorImage}:{TorImageTag}"))
             return;
 
-        await EclairFixture.BuildImageAsync(_client, EclairFixture.FindDockerDirectory("tor"),
-                                            $"{TorImage}:{TorImageTag}", TimeSpan.FromMinutes(5));
+        await DockerContainerUtils.BuildImageAsync(_client, DockerContainerUtils.FindDockerDirectory("tor"),
+                                                   $"{TorImage}:{TorImageTag}", TimeSpan.FromMinutes(5));
     }
 
     private async Task<string> ExecAsync(string container, IList<string> cmd, CancellationToken cancellationToken)
@@ -399,4 +416,21 @@ public sealed class TorInteropFixture : IAsyncLifetime
         var (stdout, stderr) = await stream.ReadOutputToEndAsync(cancellationToken);
         return stdout + stderr;
     }
+
+    /// <summary>A <c>docker exec</c> of a <c>lightning-cli</c> command in <paramref name="containerName"/>.</summary>
+    private static ClnExec DockerExec(DockerClient client, string containerName) => async (command, cancellationToken) =>
+    {
+        var exec = await client.Exec.ExecCreateContainerAsync(containerName, new ContainerExecCreateParameters
+        {
+            Cmd = [.. command],
+            AttachStdout = true,
+            AttachStderr = true
+        }, cancellationToken);
+        string stdout, stderr;
+        using (var stream = await client.Exec.StartAndAttachContainerExecAsync(exec.ID, false, cancellationToken))
+            (stdout, stderr) = await stream.ReadOutputToEndAsync(cancellationToken);
+
+        var inspect = await client.Exec.InspectContainerExecAsync(exec.ID, cancellationToken);
+        return new ClnExecResult(inspect.ExitCode, stdout, stderr);
+    };
 }

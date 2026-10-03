@@ -46,6 +46,7 @@ public sealed class ClnCloseTests : IAsyncLifetime
 
     public ClnCloseTests(ClnFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -58,7 +59,7 @@ public sealed class ClnCloseTests : IAsyncLifetime
                         + await _fixture.Cln.GetLogLinesAsync(string.Empty, CancellationToken.None, 100, "unusual"));
         if (_session is not null)
         {
-            if (DockerDiagnostics.CurrentTestFailed)
+            if (TestDiagnostics.CurrentTestFailed)
             {
                 Console.WriteLine($"[cln] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
                 Console.WriteLine("[cln] CLN close log:\n"

@@ -21,7 +21,8 @@ close and CPFP fees.
   - `dotnet build -c Release` and `-c Release.Native`: 0 errors, only the 5 baseline CS86xx warnings.
   - `dotnet format --verify-no-changes`.
   - Non-Docker tests on net10.0: all pass, no skips.
-  - Docker-class suites on net10.0 on the Kubernetes harness (the LND-based suites run there only since NL-820):
+  - Integration suites on net10.0 on the Kubernetes harness (every suite but Tor runs there only: the LND-based ones
+    since NL-820, CLN, Eclair, LDK and Postgres since NL-866):
     `scripts/run-cluster.sh --matrix lnd,onchain,anchors,gossip,day0,abcd,cln` (anchors, legacy on-chain, LND, the
     day-0 flows, CLN and gossip), then ABCD three times with `scripts/run-cluster.sh -n 3 --suite abcd`; the `Explicit`
     on-chain variants with `scripts/run-cluster.sh -n 1 --suite onchain --explicit on` where a record asks for them.

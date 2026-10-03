@@ -334,7 +334,7 @@ public class GraphStoreFlowTests
         LndNodeConnection funder, LndNodeConnection peer, NLightningTestNode node, CancellationToken ct)
     {
         await EnsureLndFundsAsync(funder, node, ct);
-        // The container IP on Docker, the Service name on the cluster (LND resolves it)
+        // The Service name (LND resolves it)
         var peerEndpoint = await _fixture.GetLndPeerEndpointAsync(peer, ct);
         if (!await LndTestHelpers.IsConnectedToAsync(funder, peer.LocalNodePubKey, ct))
             await funder.LightningClient.ConnectPeerAsync(new ConnectPeerRequest

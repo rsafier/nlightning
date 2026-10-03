@@ -23,7 +23,7 @@
 
   <ItemGroup>
     <PackageReference Include="KubernetesClient" Version="19.0.2"/>
-    <!-- The repo's RPC client (RegtestBitcoinEndpoint, InteropChainHost); same version as Infrastructure.Bitcoin -->
+    <!-- The repo's RPC client (RegtestBitcoinEndpoint); same version as Infrastructure.Bitcoin -->
     <PackageReference Include="NBitcoin" Version="9.0.5"/>
     <!-- IAsyncLifetime and TestContext: the collection fixture base (Topology/ClusterTopologyFixture), which test or
          collection a run belongs to, and the failure hook of Diagnostics/ (the library part of xunit v3, no runner;

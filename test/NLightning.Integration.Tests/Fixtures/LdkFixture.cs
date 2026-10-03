@@ -5,33 +5,31 @@ using Domain.Money;
 using Ldk;
 
 /// <summary>
-/// An ldk-server (LDK Node) regtest node for the interop tests (NL-180), on its own bitcoind, never sharing containers,
-/// names or chain state with the LND, CLN or Eclair fixtures. Where they run is <see cref="TestBackend"/>'s
-/// (<c>NLTG_TEST_BACKEND</c>): Docker by default (<see cref="DockerLdkBackend"/>: its own Docker network,
-/// <see cref="InteropChainHost"/>, LDK's p2p port published on <c>127.0.0.1</c>), or a run namespace of the Kubernetes
-/// harness (<see cref="ClusterLdkBackend"/>, test harness phase 4). The tests see the same members either way.
+/// An ldk-server (LDK Node) regtest node for the interop tests (NL-180), on its own bitcoind, never sharing nodes, names
+/// or chain state with the LND, CLN or Eclair fixtures: a run namespace of the Kubernetes harness
+/// (<see cref="ClusterLdkBackend"/>, test harness phase 4), the fixture's only backend since NL-866 retired the Docker
+/// one. Without <c>NLTG_TEST_BACKEND=cluster</c> the fixture starts nothing and every test that uses it is skipped with
+/// the reason (<see cref="UnavailableReason"/>); with it, a missing Kubernetes configuration fails the fixture
+/// (<see cref="ConfigurationError"/>, NL-860). Run the suite with <c>scripts/run-cluster.sh --matrix ldk</c>.
 /// </summary>
 /// <remarks>
-/// <para>ldk-server has no tags, releases or official image (NL-555): the Docker backend builds <see cref="LdkImage"/>
-/// from <c>test/Docker/ldk_server</c> (a pinned commit on pinned Rust and Debian images) when the tag is missing (a
-/// cold build takes 10-20 min; <c>scripts/run-interop.sh ldk --build</c> prebuilds it), and the cluster backend runs
-/// that local tag (never pulled).</para>
+/// <para>ldk-server has no tags, releases or official image (NL-555): <see cref="LdkImage"/> is a local image built from
+/// <c>test/Docker/ldk_server</c> (a pinned commit on pinned Rust and Debian images; a cold build takes 10-20 min):
+/// build it once with <c>docker build -t nltg-ldk-server:dc02b76c test/Docker/ldk_server</c>; the cluster never pulls
+/// it (<c>ImagePullPolicy.Never</c>, OrbStack's cluster shares the Docker image store).</para>
 /// <para>LDK follows bitcoind over RPC (it polls the tip every few seconds) and funds channels from its own BDK wallet.
-/// It is driven through <c>ldk-server-cli</c> in its container or pod (<see cref="LdkClient"/>), so only its p2p port
-/// is reached from outside, at an address that survives <see cref="RestartLdkAsync"/> (a fixed host port on Docker,
-/// its stable ClusterIP on the cluster). LDK has an alias (<see cref="LdkAlias"/>) and announces that address (NL-556):
-/// LDK Node may then announce channels, so it accepts both our private and our public opens (without an alias it
-/// refuses announced ones, <c>force_announced_channel_preference</c>) and opens a public channel on
-/// <c>open-channel --announce-channel</c>; its own <c>open-channel</c> without that flag and every private open of ours
-/// stay unannounced.</para>
+/// It is driven through <c>ldk-server-cli</c> in its pod (<see cref="LdkClient"/>), so only its p2p port is reached
+/// from outside, at its stable ClusterIP, which survives <see cref="RestartLdkAsync"/>. LDK has an alias
+/// (<see cref="LdkAlias"/>) and announces that address (NL-556): LDK Node may then announce channels, so it accepts
+/// both our private and our public opens (without an alias it refuses announced ones,
+/// <c>force_announced_channel_preference</c>) and opens a public channel on <c>open-channel --announce-channel</c>;
+/// its own <c>open-channel</c> without that flag and every private open of ours stay unannounced. A test class skips in
+/// its constructor (<see cref="SkipIfUnavailable"/>), so its cleanup never touches a fixture that did not start.</para>
 /// </remarks>
 // ReSharper disable once ClassNeverInstantiated.Global
 public sealed class LdkFixture : IAsyncLifetime
 {
-    public const string NetworkName = "nltg-ldk-net";
-    public const string BitcoinContainerName = "nltg-ldk-bitcoind";
-
-    /// <summary>The fixture LDK's container (Docker) or node (cluster) name.</summary>
+    /// <summary>The fixture LDK's node name.</summary>
     public const string LdkContainerName = "nltg-ldk";
 
     public const string LdkImage = "nltg-ldk-server";
@@ -41,52 +39,84 @@ public sealed class LdkFixture : IAsyncLifetime
     /// <summary>The alias LDK announces (an alias is what lets LDK Node announce channels).</summary>
     public const string LdkAlias = "nltg-ldk";
 
-    private readonly ILdkBackend _backend =
-        TestBackend.Current == TestBackendKind.Cluster ? new ClusterLdkBackend() : new DockerLdkBackend();
+    private readonly ClusterAvailability _availability;
+    private readonly ClusterLdkBackend? _backend;
 
     private readonly SharedObjectCache _shared = new();
 
-    /// <summary>Where the fixture runs (<see cref="TestBackend.Current"/> when xunit created it).</summary>
-    public TestBackendKind Backend => _backend.Kind;
+    public LdkFixture()
+        : this(Environment.GetEnvironmentVariable, ClusterAvailability.KubeConfigurationProbe)
+    {
+    }
 
-    public RegtestBitcoinEndpoint Bitcoin => _backend.Bitcoin;
+    /// <param name="environment">Reads environment variables (<see cref="TestBackend.EnvironmentVariable"/>).</param>
+    /// <param name="kubeConfiguration">Throws when no Kubernetes configuration can be built.</param>
+    /// <param name="skip">Skips the current test with a reason (<see cref="Assert.Skip"/> when null).</param>
+    internal LdkFixture(Func<string, string?> environment, Action kubeConfiguration, Action<string>? skip = null)
+    {
+        _availability = new ClusterAvailability("the LDK fixture", "NL-866", "scripts/run-cluster.sh --matrix ldk",
+                                                environment, kubeConfiguration, skip);
+        if (_availability.CanStart)
+            _backend = new ClusterLdkBackend();
+    }
 
-    public LdkClient Ldk => _backend.Ldk;
+    /// <summary>Why the fixture does not run in this process (the skip reason of its tests); null on the cluster.</summary>
+    public string? UnavailableReason => _availability.UnavailableReason;
+
+    /// <summary>Under <c>NLTG_TEST_BACKEND=cluster</c>, why no Kubernetes configuration could be built (NL-860).</summary>
+    public string? ConfigurationError => _availability.ConfigurationError;
+
+    public RegtestBitcoinEndpoint Bitcoin => Backend.Bitcoin;
+
+    public LdkClient Ldk => Backend.Ldk;
 
     /// <summary>LDK's node id (hex, lower case).</summary>
     public string LdkNodeId { get; private set; } = string.Empty;
 
-    /// <summary>
-    /// The host this process dials LDK at (<c>127.0.0.1</c> for Docker, LDK's stable ClusterIP for the cluster).
-    /// </summary>
-    public string LdkHost => _backend.LdkHost;
+    /// <summary>The host this process dials LDK at (LDK's stable ClusterIP).</summary>
+    public string LdkHost => Backend.LdkHost;
 
     /// <summary>LDK's p2p port at <see cref="LdkHost"/> (fixed for the fixture's lifetime).</summary>
-    public int LdkHostPort => _backend.LdkPort;
+    public int LdkHostPort => Backend.LdkPort;
 
     /// <summary>The <c>pubkey@host:port</c> an in-process node connects to.</summary>
     public string LdkAddress => $"{LdkNodeId}@{LdkHost}:{LdkHostPort}";
 
     /// <summary>
-    /// The host LDK dials to reach a listener of this process (<see cref="ClnFixture.HostAddressFromContainers"/> for
-    /// Docker, <c>host.orb.internal</c> on OrbStack's cluster); listen on every interface.
+    /// The host LDK dials to reach a listener of this process (<c>host.orb.internal</c> on OrbStack's cluster, or
+    /// <c>NLTG_HOST_ADDRESS</c>); listen on every interface.
     /// </summary>
-    public string HostAddressForLdk => _backend.HostAddressForPeers;
+    public string HostAddressForLdk => Backend.HostAddressForPeers;
 
-    public Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory) where T : class =>
-        _shared.GetOrCreateAsync(key, factory);
+    public Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory) where T : class
+    {
+        SkipIfUnavailable();
+        return _shared.GetOrCreateAsync(key, factory);
+    }
+
+    /// <summary>
+    /// Skips the current test when the fixture does not run in this process (<see cref="UnavailableReason"/>); every
+    /// member that needs LDK calls it, and a test class calls it in its constructor.
+    /// </summary>
+    public void SkipIfUnavailable() => _availability.SkipIfUnavailable();
 
     public async ValueTask InitializeAsync()
     {
+        if (UnavailableReason is not null)
+        {
+            Console.WriteLine($"[fixture] LDK fixture not started: {UnavailableReason}");
+            return;
+        }
+
+        _availability.ThrowIfMisconfigured();
         var watch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            await _backend.StartAsync(TestContext.Current.CancellationToken);
+            await Backend.StartAsync(TestContext.Current.CancellationToken);
             var info = await Ldk.GetNodeInfoAsync(CancellationToken.None);
             LdkNodeId = info["node_id"]!.GetValue<string>();
             Console.WriteLine($"[ldk] {LdkAddress}: {info.ToJsonString()}");
-            // One comparable line per backend (test harness: fixture start, Docker against the cluster)
-            Console.WriteLine($"[fixture] LDK fixture ({Backend}) ready in {watch.Elapsed.TotalSeconds:F1} s");
+            Console.WriteLine($"[fixture] LDK fixture (cluster) ready in {watch.Elapsed.TotalSeconds:F1} s");
         }
         catch
         {
@@ -98,14 +128,15 @@ public sealed class LdkFixture : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         _shared.DisposeAll();
-        await _backend.DisposeAsync();
+        if (_backend is not null)
+            await _backend.DisposeAsync();
     }
 
     /// <summary>
-    /// Writes the last <paramref name="tail"/> lines of LDK's log to <see cref="Console"/> (the test output). On the
-    /// cluster backend a failed test also gets a full dump of the namespace under <c>TestResults/cluster/</c>.
+    /// Writes the last <paramref name="tail"/> lines of LDK's log to <see cref="Console"/> (the test output); a failed
+    /// test also gets a full dump of the namespace under <c>TestResults/cluster/</c>. Does nothing when LDK never ran.
     /// </summary>
-    public Task DumpLdkLogAsync(int tail = 300) => _backend.DumpLdkLogAsync(tail);
+    public Task DumpLdkLogAsync(int tail = 300) => _backend?.DumpLdkLogAsync(tail) ?? Task.CompletedTask;
 
     /// <summary>bitcoind's tip height.</summary>
     public async Task<uint> GetTipAsync(CancellationToken cancellationToken) =>
@@ -178,5 +209,14 @@ public sealed class LdkFixture : IAsyncLifetime
     /// <summary>
     /// Restarts LDK (its data is kept) at the same address and waits until it is at the tip.
     /// </summary>
-    public Task RestartLdkAsync(CancellationToken cancellationToken) => _backend.RestartLdkAsync(cancellationToken);
+    public Task RestartLdkAsync(CancellationToken cancellationToken) => Backend.RestartLdkAsync(cancellationToken);
+
+    private ClusterLdkBackend Backend
+    {
+        get
+        {
+            SkipIfUnavailable();
+            return _backend ?? throw new InvalidOperationException(UnavailableReason ?? ConfigurationError);
+        }
+    }
 }

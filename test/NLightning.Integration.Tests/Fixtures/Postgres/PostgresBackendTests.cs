@@ -1,6 +1,6 @@
 namespace NLightning.Integration.Tests.Fixtures.Postgres;
 
-/// <summary>The pure parts of <see cref="PostgresFixture"/>'s two backends (no container, no cluster).</summary>
+/// <summary>The pure parts of <see cref="PostgresFixture"/> and its cluster backend (no cluster call).</summary>
 public class PostgresBackendTests
 {
     [Fact]
@@ -17,7 +17,7 @@ public class PostgresBackendTests
     }
 
     [Theory]
-    [InlineData(PostgresFixture.DefaultContainerName, "postgres")]
+    [InlineData(PostgresFixture.DefaultNodeName, "postgres")]
     [InlineData("nltg-harness-postgres", "postgres-nltg-harness-postgres")]
     public void Given_AContainerName_When_TheClusterSuiteIsNamed_Then_TheCollectionsServerIsPostgres(string name,
         string suite)
@@ -38,14 +38,53 @@ public class PostgresBackendTests
     }
 
     [Fact]
-    public void Given_AClusterBackend_When_Created_Then_ItReportsItsKindWithoutStarting()
+    public void Given_AClusterBackend_When_Created_Then_ItStartsNothing()
     {
         // Act
         var cluster = new ClusterPostgresBackend("unused");
 
         // Assert
-        Assert.Equal(TestBackendKind.Cluster, cluster.Kind);
         Assert.Equal(5432, cluster.Port);
         Assert.Throws<InvalidOperationException>(() => cluster.Host);
     }
+
+    [Fact]
+    public void Given_NoClusterOptIn_When_TheFixtureIsBuilt_Then_ItStartsNothingAndEveryMemberSkips()
+    {
+        // Arrange: a recording skip (Assert.Skip would skip this test itself)
+        var skips = new List<string>();
+        var probed = false;
+
+        // Act
+        using var fixture = new PostgresFixture(PostgresFixture.DefaultNodeName, _ => null, () => probed = true,
+                                                reason =>
+                                                {
+                                                    skips.Add(reason);
+                                                    throw new TestSkipped(reason);
+                                                });
+
+        // Assert: no Kubernetes configuration read, and each member skips with the reason (NL-866)
+        Assert.False(probed);
+        Assert.Contains("cluster backend only (NL-866)", fixture.UnavailableReason);
+        Assert.Throws<TestSkipped>(() => fixture.DbConnectionString);
+        Assert.Throws<TestSkipped>(() => fixture.ConnectionStringFor("other"));
+        Assert.Throws<TestSkipped>(() => fixture.Host);
+        Assert.Throws<TestSkipped>(() => fixture.HostPort);
+        Assert.Equal(4, skips.Count);
+    }
+
+    [Fact]
+    public void Given_TheClusterOptInWithoutAKubeConfiguration_When_TheFixtureIsBuilt_Then_ItThrowsInsteadOfSkipping()
+    {
+        // Act
+        var error = Assert.Throws<InvalidOperationException>(
+            () => new PostgresFixture(PostgresFixture.DefaultNodeName, _ => "cluster",
+                                      () => throw new FileNotFoundException("no kubeconfig"),
+                                      reason => Assert.Fail($"skipped: {reason}")));
+
+        // Assert (NL-860)
+        Assert.Contains("no Kubernetes cluster is configured to run the Postgres fixture on", error.Message);
+    }
+
+    private sealed class TestSkipped(string reason) : Exception(reason);
 }

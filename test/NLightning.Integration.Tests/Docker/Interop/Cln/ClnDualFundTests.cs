@@ -37,7 +37,7 @@ using Utils;
 /// <remarks>
 /// <para>CLN v26.06.8 advertises <c>option_dual_fund</c> only with <c>--experimental-dual-fund</c> (checked with
 /// <c>lightningd --help</c> on the pinned image), so every test runs a second CLN, <c>nltg-cln-df</c>, on the fixture's
-/// bitcoind (<see cref="ClnFixture.StartClnAsync"/>, a container or a pod as the backend runs) with that option and the
+/// bitcoind (<see cref="ClnFixture.StartClnAsync"/>, a pod in the collection's run namespace) with that option and the
 /// funder plugin's <c>match</c> policy at 100 %. The fixture's own CLN is left alone. Our node runs with <c>Features:AllowExperimentalFeatures</c> and <c>DualFund = Optional</c> (the feature
 /// stays experimental until this proof is accepted, plan DF3) and registers the dual-funding services itself through
 /// <see cref="NLightningTestNode.ConfigureServices"/> until the integrator adds <c>AddDualFundingServices()</c> to the
@@ -60,6 +60,7 @@ public sealed class ClnDualFundTests(ClnFixture fixture) : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _clnNode = await fixture.StartClnAsync(new ClnNodeSpec(ClnName)
         {
             // The fixture CLN's flags without --ignore-fee-limits=false, plus dual funding and the funder plugin
@@ -102,7 +103,7 @@ public sealed class ClnDualFundTests(ClnFixture fixture) : IAsyncLifetime
         {
             Console.WriteLine("[cln-df] UNUSUAL/BROKEN: "
                             + await _cln.GetLogLinesAsync(string.Empty, CancellationToken.None, 40, "unusual"));
-            if (DockerDiagnostics.CurrentTestFailed)
+            if (TestDiagnostics.CurrentTestFailed)
             {
                 // The channel's daemons (dualopend, channeld; not onchaind) and the funder plugin's decisions
                 var entries = (await _cln.CallAsync("getlog", CancellationToken.None, ("level", "debug")))["log"]!

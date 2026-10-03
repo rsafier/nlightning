@@ -6,14 +6,15 @@ using Testing.Cluster.Nodes.Ldk;
 public class LdkBackendTests
 {
     [Fact]
-    public void Given_TheFixturesLdk_When_TheDockerConfigIsBuilt_Then_ItIsTheConfigTheFixtureWroteBeforeTheSplit()
+    public void Given_TheClusterNode_When_ItsConfigIsBuilt_Then_ItIsTheFixturesConfig()
     {
-        // Arrange: the config.toml LdkFixture copied into its container before the backend split
+        // Arrange: the config.toml the fixture's LDK always ran with, as ClusterLdkBackend declares the node (chain
+        // alias miner, its stable ClusterIP announced)
         const string expected = """
                                 [node]
                                 network = "regtest"
                                 listening_addresses = ["0.0.0.0:9735"]
-                                announcement_addresses = ["127.0.0.1:20123"]
+                                announcement_addresses = ["10.43.0.7:9735"]
                                 alias = "nltg-ldk"
 
                                 [storage.disk]
@@ -24,39 +25,24 @@ public class LdkBackendTests
                                 log_to_file = false
 
                                 [bitcoind]
-                                rpc_address = "nltg-ldk-bitcoind:18443"
+                                rpc_address = "miner:18443"
                                 rpc_user = "nltg"
                                 rpc_password = "nltg"
                                 """;
-
-        // Act
-        var config = DockerLdkBackend.BuildConfig(20123);
-
-        // Assert
-        Assert.Equal(expected, config);
-    }
-
-    [Fact]
-    public void Given_TheSameNode_When_TheClusterConfigIsBuilt_Then_OnlyTheBitcoindHostAndTheAnnouncedAddressDiffer()
-    {
-        // Arrange: the cluster's node as ClusterLdkBackend declares it (chain alias miner, its stable ClusterIP)
         var options = new LdkNodeOptions
         {
             BitcoindHost = "miner",
-            BitcoindRpcUser = InteropChainHost.RpcUser,
-            BitcoindRpcPassword = InteropChainHost.RpcPassword,
+            BitcoindRpcUser = "nltg",
+            BitcoindRpcPassword = "nltg",
             Alias = LdkFixture.LdkAlias,
             AnnouncementAddresses = ["10.43.0.7:9735"]
         };
 
         // Act
-        var cluster = LdkNode.BuildConfig(LdkFixture.LdkContainerName, options);
-        var docker = DockerLdkBackend.BuildConfig(20123)
-                                     .Replace("127.0.0.1:20123", "10.43.0.7:9735", StringComparison.Ordinal)
-                                     .Replace($"{LdkFixture.BitcoinContainerName}:", "miner:", StringComparison.Ordinal);
+        var config = LdkNode.BuildConfig(LdkFixture.LdkContainerName, options);
 
         // Assert
-        Assert.Equal(docker, cluster);
+        Assert.Equal(expected, config);
         Assert.Equal(LdkFixture.ConfigPath, LdkNode.ConfigPath);
     }
 

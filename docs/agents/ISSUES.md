@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-03 by the Docker retirement lane (branch `wip/retire-docker` from 61889866, owner decision 2026-10-03: every suite but Tor on the cluster harness only): NL-866 (low, fixed in cea4bc4f: the CLN, Eclair, LDK and Postgres fixtures lost their Docker backends; Tor stays on Docker). Summary rows recounted from the entries: 749 entries, no duplicate IDs.
+
 Updated 2026-10-03 by the wip/integrate integrator (branch `wip/integrate` from `wip/harness-spike` 07cce046; owner decisions 2026-10-03: NL-820 option (b) and PR #19 merged with the harness): merges `ia-retire-lnunit` (NL-820 fixed, the Docker LND backend and LNUnit gone) and `c0d6a0cf` (`ia-pr19`: liquidity ads, PR #19's NL-771..NL-780 as NL-850..NL-859, wip/fafo's NL-779 and NL-810 unchanged); review fixes NL-860 (medium) and NL-861..NL-864 (low), all fixed. NL-864 runs PR #19's Eclair seller on both Eclair backends. The final proof added NL-865 (low, fixed), and the review of the integrated liquidity ads code NL-870 (medium, fixed: an aborted splice's sale no longer holds the lease guard) and NL-871 (low, fixed: a repeated purchase keeps the buyer's fee limit, migration `AddLiquidityPurchaseMaxFee`); NL-869 and NL-872..NL-874 are unused there; NL-866 (Docker backends of CLN, Eclair, LDK and Postgres retired), NL-867 (dual-fund and splice RBF: an attempt whose sibling confirmed is abandoned with `tx_abort`) and NL-868 (the price source's `ThroughTor` option) were added after.
 
 Updated 2026-10-03 by the test harness phase 3/5/6 write-up (branch `wip/harness-spike`; the phase 6 lanes and proof committed on the branch after `3e31759f`): NL-825 (fixed, 251feaa8: a stopped `NLightningTestNode` clears its SQLite pool so a restored snapshot is read on the macOS host), NL-830 (fixed, b246306e: `SpliceLndObserverTests` waits for bob's edge before the splice), NL-840 (fixed, 69fd5caa: every run waits until its namespace is gone), NL-841 (fixed, 6e87db78: `day0` and `eclair2` split off, `lnd` first), NL-842 (fixed, 47e9a2ea: `ChainSync.EnsureLndSpendableAsync` before G1 (b)), NL-843 (open, diagnostics 2ee6e42f: ZMQ heal timing under two matrices at once) and NL-844 (open, owner decision: the 15 min matrix needs about 7 namespaces) added; NL-262 and NL-276 fixed on the cluster backend (moot there: the full matrix green at 6 namespaces in 18 min and twice at once, `TEST_HARNESS_PLAN.md` "Phase 6 proof record"; the Docker fallback keeps their workarounds); NL-818 and NL-820 updated, still open. NL-826..NL-829, NL-831..NL-839 were not assigned. No product bug in these phases. Summary rows recounted from the entries: 730 entries, no duplicate IDs.
@@ -145,10 +147,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 59 | 60 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 62 | 198 | 399 | 673 |
+| fixed | 14 | 62 | 198 | 400 | 674 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **62** | **207** | **469** | **752** |
+| **Total** | **14** | **62** | **207** | **470** | **753** |
 
 ### Epics
 
@@ -7840,6 +7842,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Done: `NLightningTestNode` sets `Gossip:MaxMemoryMb=0` (budget off, usage still reported) before `ExtraConfiguration`, so a test that proves the budget can set it again. Proof: the CLN suite on the cluster `scripts/run-cluster.sh -n 1 --suite cln` (batch `integ-final-cln`) 90/90 + 4 `Explicit` not run in 954 s, and on Docker `scripts/run-interop.sh cln Release` 90/90 + 4 `Explicit` not run in 804 s, `ClnGossipTests` green in both full runs.
 - **Blocks/Blocked-by:** Related NL-373, NL-466
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Integration record (wip/integrate)"
+
+### NL-866 The CLN, Eclair, LDK and Postgres fixtures kept Docker backends next to the cluster, so every suite but Tor had two backends to keep in step
+- **Status:** fixed (cea4bc4f)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Fixtures/{ClnFixture,EclairFixture,LdkFixture,PostgresFixture,TestBackend,DockerContainerUtils}.cs`, `Fixtures/{Cln,Eclair,Ldk,Postgres}/`, `Fixtures/Tor/`, `Docker/Utils/{ClnClient,LdkClient,EclairClient,TestDiagnostics}.cs`, `scripts/run-interop.sh`, `scripts/run-cluster.sh`
+- **Evidence:** owner decision 2026-10-03: every test suite runs through the cluster harness (`scripts/run-cluster.sh --matrix`); after NL-820 the LND network ran on the cluster only, but `DockerClnBackend`, `DockerEclairBackend` (incl. PR #19's liquidity seller), `DockerLdkBackend` and `DockerPostgresBackend` stayed as the default (`NLTG_TEST_BACKEND` unset = Docker) with `scripts/run-interop.sh cln|eclair|ldk` as a Docker fallback, so every fixture change had to be made and proven twice.
+- **Fix sketch:** Done: the four Docker backends and the `I*Backend` switches removed; the fixtures hold their cluster backend behind `Fixtures/ClusterAvailability` (shared with the LND network): without `NLTG_TEST_BACKEND=cluster` (the explicit opt-in; `docker` and typos throw) they start nothing and their tests skip with the reason (test classes skip in their constructor), with it and no Kubernetes configuration they fail (NL-860). Tor keeps its Docker pieces (`Fixtures/Tor/TorInteropFixture`, `TorChainHost` = the former `InteropChainHost`, `DockerContainerUtils`; `SqlServerFixture`, not run, untouched); `ClnClient`/`LdkClient`/`EclairClient` lost their Docker constructors, `DockerDiagnostics` became `TestDiagnostics`, `Docker.DotNet` moved from Tests.Utils to Integration.Tests. Guard `Fixtures/DockerAbsenceTests` (Docker API and `docker` CLI only in the Tor/SQL Server fixtures, the shared helpers and `Testing.Lnd.Tests`' Explicit live test; `Docker.DotNet` only in Integration.Tests; no `Docker*Backend` type). `run-interop.sh` runs only `tor` (cln/eclair/ldk print the `run-cluster.sh` command, exit 2). Proof: cluster batch `nl866-mx1` (`--matrix cln,eclair,eclair2,ldk,postgres -j 6 --max-namespaces 6`) green in 902 s: cln 90/90 + 4 `Explicit` not run, eclair 25/25 + 2, eclair2 7/7, ldk 27/27, postgres 26/26, no rerun, no namespace left; without `NLTG_TEST_BACKEND` the Interop.Cln/Eclair/Ldk namespaces 136 skipped with the reason (13 container-free helpers passed, 3 `Explicit` not run) and `PostgresTests` 25 skipped, 0 failed, no container started; with `NLTG_TEST_BACKEND=cluster` and an unknown kube context the fixtures fail loudly; Tor on Docker `scripts/run-interop.sh tor Release`: 2/3 in the full run, `Given_ATorOnlyNodeWithAChannelToCln_When_TorRestarts_*` timed out waiting 4 min for CLN's onion to be reachable again on the public Tor network after the Tor restart; rerun alone green (1/1, 137 s); no container left.
+- **Blocks/Blocked-by:** Related NL-820, NL-860, NL-864
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "NL-866 record"
 
 ### NL-876 `dotnet format --verify-no-changes` failed on a clean tree with SDK 10.0.401 (IDE0031)
 - **Status:** fixed (c578ac1b)

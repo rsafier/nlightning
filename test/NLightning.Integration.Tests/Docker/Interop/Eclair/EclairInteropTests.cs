@@ -52,6 +52,7 @@ public sealed class EclairInteropTests : IAsyncLifetime
 
     public EclairInteropTests(EclairFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -60,7 +61,7 @@ public sealed class EclairInteropTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var session in _ownSessions.Append(_session).OfType<EclairChannelSession>())
                 Console.WriteLine($"[eclair] channel at failure: {await session.DescribeAsync(CancellationToken.None)}");
@@ -101,8 +102,8 @@ public sealed class EclairInteropTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// 1b: Eclair dials us at <see cref="EclairFixture.HostAddressForEclair"/> (<c>host.docker.internal</c>, or
-    /// <c>host.orb.internal</c> on the cluster; our listener on every interface): we are the BOLT 8 responder, the
+    /// 1b: Eclair dials us at <see cref="EclairFixture.HostAddressForEclair"/> (<c>host.orb.internal</c> on
+    /// OrbStack's cluster; our listener on every interface): we are the BOLT 8 responder, the
     /// connection stays up and the same features are negotiated.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]

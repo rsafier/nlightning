@@ -280,12 +280,14 @@ every implementation, our own node included, is driven through the same seams.
 
 ## Running a ported suite (phases 2-4)
 
-- The suites keep their fixtures; `NLTG_TEST_BACKEND=docker|cluster` (Integration.Tests `Fixtures/TestBackend`, Docker
-  when unset, an unknown value throws) picks the backend per process. Ported so far: the CLN interop suite
-  (`ClnFixture` -> `ClusterClnBackend`, a warm `ClusterTopologyFixture`), the Eclair interop suite (`EclairFixture`
-  -> `ClusterEclairBackend`, phase 4), the LDK interop suite (`LdkFixture` -> `ClusterLdkBackend`, phase 4) and
-  `PostgresFixture` (`ClusterPostgresBackend`, phase 4: a run namespace with one `PostgresNode`, reached at its pod IP;
-  `StartNamed` gets a namespace of its own).
+- The suites keep their fixtures, and the cluster is their only backend (NL-820 for the LND network, NL-866 for the
+  rest): the CLN interop suite (`ClnFixture` -> `ClusterClnBackend`, a warm `ClusterTopologyFixture`), the Eclair
+  interop suite (`EclairFixture` -> `ClusterEclairBackend`, phase 4), the LDK interop suite (`LdkFixture` ->
+  `ClusterLdkBackend`, phase 4) and `PostgresFixture` (`ClusterPostgresBackend`, phase 4: a run namespace with one
+  `PostgresNode`, reached at its pod IP; `StartNamed` gets a namespace of its own). `NLTG_TEST_BACKEND=cluster`
+  (Integration.Tests `Fixtures/TestBackend`) is the explicit opt-in the runner sets: unset, those fixtures start nothing
+  and their tests skip with the reason (`ClusterAvailability`); set without a Kubernetes configuration, they fail
+  (NL-860); `docker` or another value throws.
 - `scripts/run-cluster.sh -n 1 --suite eclair` runs the Eclair interop suite the same way (`--trait
   Category=Interop.Eclair`), `--suite ldk` the LDK one (`Category=Interop.Ldk`), `--suite postgres`
   `Docker/PostgresTests` and `Cluster/Live/ServerDatabaseClusterTests` on a Postgres pod, and `--suite faults` the
@@ -307,10 +309,12 @@ every implementation, our own node included, is driven through the same seams.
   matrices at once (3 namespaces each) are green in 35-38 min (two flakes rerun green: NL-842 fixed, NL-843).
 - NL-820 (owner decision 2026-10-03): the LND fixture's Docker backend was retired with LNUnit, so the LND-based suites
   (lnd, onchain, anchors, gossip, day0, abcd) run on the cluster only; without `NLTG_TEST_BACKEND=cluster` their
-  tests are reported skipped. The CLN, Eclair, LDK and Postgres fixtures keep both backends; Tor stays Docker only.
-- A new suite follows the same pattern: the fixture keeps its members and delegates to a Docker backend (the old code,
-  unchanged) and a cluster backend (`ClusterTopologyFixture`, plus `InProcessTopologyFixture` for our nodes); test
-  bodies reach the backend only through the fixture.
+  tests are reported skipped. NL-866 (owner decision 2026-10-03) did the same for the CLN, Eclair (incl. the
+  liquidity-ads seller), LDK and Postgres fixtures; Tor stays Docker only (`scripts/run-interop.sh tor`), and
+  Integration.Tests' `Fixtures/DockerAbsenceTests` keeps Docker out of every other fixture.
+- A new suite follows the same pattern: the fixture holds a cluster backend (`ClusterTopologyFixture`, plus
+  `InProcessTopologyFixture` for our nodes) behind a `ClusterAvailability`, and test bodies reach the backend only
+  through the fixture (calling `fixture.SkipIfUnavailable()` in their constructor). There is no Docker backend to add.
 
 ## Rules while batch work shares the machine
 
@@ -318,8 +322,8 @@ every implementation, our own node included, is driven through the same seams.
   `default`, `kube-*` or another run's namespace; no cluster-scoped objects; at most 6 spike namespaces at once;
   pod requests at most 1 CPU / 1 GiB.
 - Never rebuild or retag existing images; new images only as `nltg-spike-*` (`ImageVersions.SpikeImagePrefix`).
-- Never run the Docker suites (`scripts/run-interop.sh`) from this lane; the LND runners `run-onchain.sh`,
-  `run-gossip.sh` and `run-abcd.sh` are retired pointers (NL-820).
+- Never run the Docker suite (`scripts/run-interop.sh tor`) from this lane; the LND runners `run-onchain.sh`,
+  `run-gossip.sh` and `run-abcd.sh` (NL-820) and `run-interop.sh cln|eclair|ldk` (NL-866) are retired pointers.
 
 ## Tests
 
