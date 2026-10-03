@@ -1,6 +1,9 @@
+using NLightning.Tests.Utils.Vectors;
+
 namespace NLightning.Application.Tests.Payments.Trampoline;
 
 using Application.Payments.Routing;
+using Application.Payments.Send;
 using Application.Payments.Trampoline;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
@@ -208,5 +211,81 @@ public class TrampolineOnionFactoryTests : IDisposable
         // Assert: the ephemeral keys (bytes 1..33) differ, also from the outer onion's
         Assert.NotEqual(first.Packet.PublicKey.ToArray(), second.Packet.PublicKey.ToArray());
         Assert.NotEqual(first.Packet.PublicKey.ToArray(), outer.Packet.PublicKey.ToArray());
+    }
+
+    [Fact]
+    public async Task Given_TheVectorsBlindedPathOfARecipientWithTrampoline_When_ThePayerBuildsItsAttempt_Then_ByteExact()
+    {
+        // Arrange: PR 836 trampoline-to-blinded-path-payment-onion-test.json [1]: Eve's path Dave -> Eve (Dave's
+        // payment_relay 500 msat + 1000 ppm, delta 36), Eve supports trampoline, the payer pays 150,000,000 msat to
+        // Eve at expiry 800,000 through Carol (NL-895 task 2, TR-R-07)
+        var carol = PubKey("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007");
+        var dave = PubKey("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991");
+        var eve = PubKey(Bolt4TrampolineVectors.BlindedEveBlindedNodeId);
+        var path = new BlindedPath(dave, PubKey(Bolt4TrampolineVectors.BlindedPathKey),
+                                   [
+                                       new BlindedPathHop(PubKey(Bolt4TrampolineVectors.BlindedDaveBlindedNodeId),
+                                                          Convert.FromHexString(
+                                                              Bolt4TrampolineVectors.BlindedDaveEncryptedData)),
+                                       new BlindedPathHop(eve,
+                                                          Convert.FromHexString(
+                                                              Bolt4TrampolineVectors.BlindedEveEncryptedData))
+                                   ]);
+        var amount = LightningMoney.MilliSatoshis(150_000_000);
+        var recipient = new BlindedTrampolineRecipient(
+            amount, new BlindedPaymentPath(path, new BlindedPayInfo(500, 1_000, 36, 1, 500_000_000)));
+        var policy = new TrampolinePolicy(1_000, 1_000, 576);
+        var state = new TrampolinePayerState(carol, recipient, policy, 0);
+        var hash = new Hash(Convert.FromHexString("e89bc505e84aaca09613833fc58c9069078fb43bfbea0488f34eec9db99b5f82"));
+
+        // Act: the final expiry is the height + 3 (our safety offset) = 800,000
+        Assert.True(PaymentService.TryBuildTrampolineAttempt(state, policy, 799_997, out var attempt, out var why),
+                    why);
+        var onion = await Factory().CreateAsync(attempt.Hops,
+                                                new PrivKey(Convert.FromHexString(
+                                                                Bolt4TrampolineVectors.BlindedTrampolineSessionKey)),
+                                                hash, TrampolineOnionSizePolicy.Exact);
+
+        // Assert: Carol (2, 4, 14), Dave (10, 12: the encrypted data and the invoice's path key, nothing else),
+        // blinded(Eve) (2, 4, 10, 18: amount, expiry, encrypted data and total, nothing else), and the whole onion
+        Assert.Equal([carol, dave, eve], attempt.Hops.Select(h => h.NodeId));
+        Assert.Equal(Bolt4TrampolineVectors.BlindedIntermediateTrampolineInner[2..],
+                     await SerializeHexAsync(attempt.Hops[0].Payload));
+        Assert.Equal(Bolt4TrampolineVectors.BlindedIntroductionInner[2..],
+                     await SerializeHexAsync(attempt.Hops[1].Payload));
+        Assert.Equal(Bolt4TrampolineVectors.BlindedFinalInner[2..], await SerializeHexAsync(attempt.Hops[2].Payload));
+        Assert.Equal(Bolt4TrampolineVectors.BlindedTrampolineOnion, Convert.ToHexStringLower(onion.Packet.ToBytes()));
+    }
+
+    [Fact]
+    public async Task Given_TheVectorsBlindedHopRelay_When_TheLegsOuterPayloadIsBuilt_Then_ByteExactWithTlv12()
+    {
+        // Arrange: PR 836 trampoline-to-blinded-path-payment-onion-test.json [1], Dave's outer payload for Eve: the
+        // next path key goes in TLV 12 next to the peeled trampoline onion (TLV 20) (NL-895, TR-R-10)
+        var expectedHex = Bolt4TrampolineVectors.BlindedFinalOuter[6..];
+        var expected = await _bob.HopPayloadSerializer.DeserializeAsync(Convert.FromHexString(expectedHex));
+        var amount = expected.AmtToForward!;
+        var cltv = expected.OutgoingCltvValue!.Value;
+        var eve = PubKey(Bolt4TrampolineVectors.BlindedEveBlindedNodeId);
+        var route = new PaymentRoute([new RouteHop(eve, amount, cltv, null)], amount, cltv, s_paymentHash,
+                                     expected.PaymentData!.PaymentSecret);
+
+        // Act
+        var payload = PaymentOnionFactory.CreatePayload(route.Hops[0], route, null,
+                                                        new TrampolineFinalHop(
+                                                            expected.TrampolineOnionPacket!.Value.ToBytes(),
+                                                            expected.CurrentPathKey));
+
+        // Assert
+        Assert.Equal(expectedHex, await SerializeHexAsync(payload));
+    }
+
+    private static CompactPubKey PubKey(string hex) => new(Convert.FromHexString(hex));
+
+    private async Task<string> SerializeHexAsync(HopPayload payload)
+    {
+        using var stream = new MemoryStream();
+        await _bob.HopPayloadSerializer.SerializeAsync(payload, stream);
+        return Convert.ToHexStringLower(stream.ToArray());
     }
 }
