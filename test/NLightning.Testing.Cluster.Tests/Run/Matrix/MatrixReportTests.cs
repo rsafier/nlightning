@@ -64,6 +64,30 @@ public sealed class MatrixReportTests : IDisposable
         Assert.Empty(result.FailedClasses);
     }
 
+    [Fact]
+    public void Given_EveryTestSkipped_When_ReadAndJudged_Then_TheSuiteIsNotGreen()
+    {
+        // Arrange: an LND suite whose fixture found no cluster and skipped every test (NL-860)
+        var document = XDocument.Parse(
+            """
+            <assemblies><assembly total="12" passed="0" failed="0" skipped="10" not-run="2" errors="0">
+            </assembly></assemblies>
+            """);
+        var dir = Attempt("skipped", "0 3 1", tests: []);
+        document.Save(Path.Combine(dir, SuiteAttempt.ResultsFile));
+
+        // Act
+        var result = XunitResults.Parse(document);
+        var attempt = SuiteAttempt.Read(dir);
+
+        // Assert
+        Assert.Equal((12, 0, 10), (result.Total, result.Passed, result.Skipped));
+        Assert.False(result.IsGreen);
+        Assert.False(attempt.IsGreen);
+        Assert.False(SuiteAttempt.IsGreenIn(dir));
+        Assert.Equal(SuiteOutcome.Failed, MatrixReport.Judge(null, attempt, [], 3));
+    }
+
     [Theory]
     [InlineData("Collection fixture type 'NLightning.Integration.Tests.Fixtures.PostgresFixture' threw in InitializeAsync", true)]
     [InlineData("Class fixture type 'Ns.F' threw in its constructor\n---- System.TimeoutException : no slot", true)]

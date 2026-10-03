@@ -2,7 +2,8 @@ namespace NLightning.Integration.Tests.Fixtures;
 
 /// <summary>
 /// The LND regtest network runs on the cluster backend only (NL-820): elsewhere the fixture starts nothing and every
-/// test that uses it is skipped with the reason, never passed or failed.
+/// test that uses it is skipped with the reason, never passed or failed; on the cluster backend without a Kubernetes
+/// configuration the fixture fails (NL-860).
 /// </summary>
 public class LightningRegtestNetworkFixtureTests
 {
@@ -31,19 +32,26 @@ public class LightningRegtestNetworkFixtureTests
     }
 
     [Fact]
-    public async Task Given_TheClusterBackendWithoutAKubeConfiguration_When_TheFixtureStarts_Then_ItSaysNoClusterIsConfigured()
+    public async Task Given_TheClusterBackendWithoutAKubeConfiguration_When_TheFixtureStarts_Then_ItFailsInsteadOfSkipping()
     {
-        // Arrange
+        // Arrange: NLTG_TEST_BACKEND=cluster, but no configuration (a pod without its token, a missing kubeconfig)
+        var skips = new List<string>();
         await using var fixture = new LightningRegtestNetworkFixture(
-            Environment("cluster"), () => throw new FileNotFoundException("no kubeconfig at ~/.kube/config"));
+            Environment("cluster"), () => throw new FileNotFoundException("no kubeconfig at ~/.kube/config"),
+            reason => skips.Add(reason));
 
         // Act
-        await fixture.InitializeAsync();
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await fixture.InitializeAsync());
 
-        // Assert
-        Assert.NotNull(fixture.UnavailableReason);
-        Assert.Contains("no Kubernetes cluster is configured", fixture.UnavailableReason);
-        Assert.Contains("no kubeconfig at ~/.kube/config", fixture.UnavailableReason);
+        // Assert: a fixture failure (every test of the collections fails), never a suite of skips the matrix would
+        // count as green (NL-860)
+        Assert.Null(fixture.UnavailableReason);
+        Assert.NotNull(fixture.ConfigurationError);
+        Assert.Contains("no Kubernetes cluster is configured", error.Message);
+        Assert.Contains("no kubeconfig at ~/.kube/config", error.Message);
+        fixture.SkipIfUnavailable();
+        Assert.Empty(skips);
+        Assert.Throws<InvalidOperationException>(() => fixture.Bitcoin);
     }
 
     [Fact]
@@ -54,6 +62,7 @@ public class LightningRegtestNetworkFixtureTests
 
         // Assert
         Assert.Null(fixture.UnavailableReason);
+        Assert.Null(fixture.ConfigurationError);
         fixture.SkipIfUnavailable();
         Assert.Throws<InvalidOperationException>(() => fixture.Bitcoin);
     }

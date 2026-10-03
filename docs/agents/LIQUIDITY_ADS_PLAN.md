@@ -1,6 +1,6 @@
 # Liquidity ads plan (NL-850)
 
-Status: **done** (2026-10-03, NL-850 fixed at `10b8ba84`): both roles in the dual-funded open, its RBF, the splice and the splice RBF, with restarts, the lease guard, accounting and the operator surface; proven in-process (NLightning ↔ NLightning, both roles) and against Eclair 0.14.3 as seller (Docker, buyer role only). Owner decision 2026-10-03 to build liquidity ads (BOLT PR #1153 as Eclair 0.14.3 speaks it) instead of the LSPS family. Tasks LA0..LA7 below; the record section at the end tracks what was built and the follow-ups (NL-851..NL-858).
+Status: **done** (2026-10-03, NL-850 fixed at `10b8ba84`): both roles in the dual-funded open, its RBF, the splice and the splice RBF, with restarts, the lease guard, accounting and the operator surface; proven in-process (NLightning ↔ NLightning, both roles) and against Eclair 0.14.3 as seller (Docker, buyer role only). Owner decision 2026-10-03 to build liquidity ads (BOLT PR #1153 as Eclair 0.14.3 speaks it) instead of the LSPS family. Tasks LA0..LA7 below; the record section at the end tracks what was built and the follow-ups (NL-851..NL-859).
 
 ## Context
 

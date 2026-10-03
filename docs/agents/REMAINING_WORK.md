@@ -77,7 +77,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 
 - **More implementations.** Eclair and LDK interop suites (CLN done: 22/22; mainnet gossip already exercised against Eclair, CLN and LND peers). Update (lane b10-eclair): the Eclair suite covers the day-0 shapes (splicing, dual-funded RBF, force and simple closes, public channels, gossip queries, offers); left against Eclair: attribution_data (NL-332) and HTLCs resolved on chain. A CLN-funded ABCD-style multi-hop test.
 - **CI.**
-  - Run the Docker suites in CI. They are local only today, and NL-276 blocks the host process on macOS, so an in-container runner is needed.
+  - Run the Docker-class suites in CI. Since the test harness (phases 3-6) and NL-820 the LND-based suites run on the Kubernetes harness only (`scripts/run-cluster.sh --matrix`, the full matrix in about 18 min at 6 namespaces) and the CLN, Eclair, LDK and Postgres suites on either backend, so CI needs a cluster (deferred, owner decision 2026-10-03); Tor interop stays Docker only.
   - Per-fixture container names, so suites can run in parallel.
 - **Platform checks not yet done.** NativeAOT publish under SDK 11 and the Wasm/Blazor build on SDK 11 (NL-300).
 - **Known flakes.** LND fixture startup races (NL-263 family, NL-319 "server still starting"; the LNUnit Docker fixture is gone since NL-820, the LND suites run on the cluster harness).

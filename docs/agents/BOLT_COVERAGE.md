@@ -205,7 +205,7 @@ Keysend and custom onion records (>= 65536) are implemented since wave lh1 (NL-4
 
 ## Liquidity ads (BOLT PR #1153, not merged into the BOLTs)
 
-> Plan: [`LIQUIDITY_ADS_PLAN.md`](LIQUIDITY_ADS_PLAN.md) ("Record"). Epic NL-850 (fixed at `10b8ba84`); follow-ups NL-851..NL-858. Wire as Eclair 0.14.3 speaks it (the interop target); the PR is still open, so the TLV tag 1339 is one constant (`LiquidityAdsConstants.TlvType`) to switch when it merges.
+> Plan: [`LIQUIDITY_ADS_PLAN.md`](LIQUIDITY_ADS_PLAN.md) ("Record"). Epic NL-850 (fixed at `10b8ba84`); follow-ups NL-851..NL-859. Wire as Eclair 0.14.3 speaks it (the interop target); the PR is still open, so the TLV tag 1339 is one constant (`LiquidityAdsConstants.TlvType`) to switch when it merges.
 
 | Feature | Status | Primary files | Tests | Notes |
 |---|---|---|---|---|

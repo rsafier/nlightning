@@ -28,8 +28,12 @@ public sealed record XunitRunResult(
 {
     public static XunitRunResult Missing { get; } = new(false, 0, 0, 0, 0, 0, 0, [], null);
 
-    /// <summary>Tests ran, none failed and the run reported no error (fixture cleanup, catastrophic).</summary>
-    public bool IsGreen => Found && Total > 0 && Failed == 0 && Errors == 0;
+    /// <summary>
+    /// At least one test passed, none failed and the run reported no error (fixture cleanup, catastrophic). A run whose
+    /// tests were all skipped (or not run) proves nothing and is not green: a suite of the LND regtest collections
+    /// skipped because the fixture found no cluster is a failure of the matrix, never a pass (NL-860).
+    /// </summary>
+    public bool IsGreen => Found && Passed > 0 && Failed == 0 && Errors == 0;
 }
 
 /// <summary>Reads xunit v3 XML result files.</summary>

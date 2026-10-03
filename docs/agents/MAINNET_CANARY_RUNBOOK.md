@@ -21,8 +21,11 @@ close and CPFP fees.
   - `dotnet build -c Release` and `-c Release.Native`: 0 errors, only the 5 baseline CS86xx warnings.
   - `dotnet format --verify-no-changes`.
   - Non-Docker tests on net10.0: all pass, no skips.
-  - Docker suites on net10.0, from the in-container runner: anchors (18), legacy on-chain with `-explicit on` (24),
-    LND (59), CLN (22), ABCD `scripts/run-abcd.sh 3`, and gossip. These are the suites of the O7b and d12 records.
+  - Docker-class suites on net10.0 on the Kubernetes harness (the LND-based suites run there only since NL-820):
+    `scripts/run-cluster.sh --matrix lnd,onchain,anchors,gossip,day0,abcd,cln` (anchors, legacy on-chain, LND, the
+    day-0 flows, CLN and gossip), then ABCD three times with `scripts/run-cluster.sh -n 3 --suite abcd`; the `Explicit`
+    on-chain variants with `scripts/run-cluster.sh -n 1 --suite onchain --explicit on` where a record asks for them.
+    These are the suites of the O7b and d12 records.
 - [ ] **Features on by default on mainnet at this commit.** Check them against the written `appsettings.json`:
   - HTLCs: **on**. `Node:EnableHtlcs` is `null`, which means on (O6-T4, `BOLT5_ONCHAIN_PLAN.md` "O6-T4 decision").
   - Anchors: **on**. `option_anchors` is Optional (O7-T4). The wallet must hold **confirmed** funds for the reserve:

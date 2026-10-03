@@ -17,10 +17,11 @@ using Testing.Cluster.Run;
 /// <para>
 /// The network runs on the Kubernetes harness only (<see cref="ClusterLndBackend"/>: the warm <c>LndRegtestNetwork</c>
 /// in a run namespace of its own, test harness phase 3). The Docker backend (LNUnit's <c>LNUnitBuilder</c>) was
-/// retired with LNUnit (NL-820). Without <c>NLTG_TEST_BACKEND=cluster</c>, or without a Kubernetes configuration to
-/// reach a cluster with, the fixture starts nothing and every test of its collections is skipped with the reason
-/// (<see cref="UnavailableReason"/>); run them with
-/// <c>scripts/run-cluster.sh --matrix lnd,onchain,anchors,gossip,abcd</c>. Every LND client is our own <see cref="LndNodeConnection"/> (<c>test/NLightning.Testing.Lnd</c>, LND 0.21.4 protos).
+/// retired with LNUnit (NL-820). Without <c>NLTG_TEST_BACKEND=cluster</c> the fixture starts nothing and every test of
+/// its collections is skipped with the reason (<see cref="UnavailableReason"/>). With it, a missing Kubernetes
+/// configuration is a fixture failure (<see cref="ConfigurationError"/>, thrown by <see cref="InitializeAsync"/>), never
+/// a skip, so a cluster run without a cluster cannot pass as a suite of skipped tests (NL-860); run them with
+/// <c>scripts/run-cluster.sh --matrix lnd,onchain,anchors,gossip,day0,abcd</c>. Every LND client is our own <see cref="LndNodeConnection"/> (<c>test/NLightning.Testing.Lnd</c>, LND 0.21.4 protos).
 /// </para>
 /// <para>
 /// Our in-process nodes dial an LND node at <see cref="GetLndPeerEndpointAsync"/> (what
@@ -65,24 +66,35 @@ public class LightningRegtestNetworkFixture : IAsyncLifetime
 
     /// <param name="environment">Reads environment variables (<see cref="TestBackend.EnvironmentVariable"/>).</param>
     /// <param name="kubeConfiguration">
-    /// Throws when no Kubernetes configuration can be built (no kubeconfig and not in a pod); called only on the
-    /// cluster backend.
+    /// Throws when no Kubernetes configuration can be built (no kubeconfig, or in a pod without its service account
+    /// token); called only on the cluster backend, where it is a fixture failure (<see cref="ConfigurationError"/>).
     /// </param>
     /// <param name="skip">Skips the current test with a reason (<see cref="Assert.Skip"/> when null).</param>
     internal LightningRegtestNetworkFixture(Func<string, string?> environment, Action kubeConfiguration,
                                             Action<string>? skip = null)
     {
         _skip = skip ?? (reason => Assert.Skip(reason));
-        UnavailableReason = GetUnavailableReason(environment, kubeConfiguration);
-        if (UnavailableReason is null)
+        UnavailableReason = GetUnavailableReason(environment);
+        if (UnavailableReason is not null)
+            return;
+
+        ConfigurationError = GetConfigurationError(kubeConfiguration);
+        if (ConfigurationError is null)
             _backend = new ClusterLndBackend();
     }
 
     /// <summary>
-    /// Why the network cannot run in this process (the skip reason of every test that uses it), or null when it runs on
-    /// the cluster.
+    /// Why the network does not run in this process (the skip reason of every test that uses it): the backend is not
+    /// the cluster. Null on the cluster backend, where the network runs or the fixture fails
+    /// (<see cref="ConfigurationError"/>).
     /// </summary>
     public string? UnavailableReason { get; }
+
+    /// <summary>
+    /// On the cluster backend, why no Kubernetes configuration could be built; <see cref="InitializeAsync"/> then throws
+    /// it, so every test of the collections fails as a fixture failure instead of skipping (NL-860). Null otherwise.
+    /// </summary>
+    public string? ConfigurationError { get; }
 
     /// <summary>The cluster backend (its run, network and in-process deployer).</summary>
     public ClusterLndBackend Cluster => Backend;
@@ -160,12 +172,15 @@ public class LightningRegtestNetworkFixture : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
-        if (_backend is null)
+        if (UnavailableReason is not null)
         {
             // Nothing to start: the tests skip on their first use of the fixture
             Console.WriteLine($"[fixture] LND regtest network not started: {UnavailableReason}");
             return;
         }
+
+        if (_backend is null)
+            throw new InvalidOperationException(ConfigurationError);
 
         var watch = Stopwatch.StartNew();
         try
@@ -192,18 +207,25 @@ public class LightningRegtestNetworkFixture : IAsyncLifetime
     }
 
     /// <summary>
-    /// Why the network cannot run under <paramref name="environment"/>: the backend is not the cluster, or no
-    /// Kubernetes configuration can be built (<paramref name="kubeConfiguration"/> throws); null when it can.
+    /// Why the network does not run under <paramref name="environment"/>: the backend is not the cluster; null when it
+    /// is (a mistyped backend name throws, so a typo never turns a suite into skips).
     /// </summary>
-    internal static string? GetUnavailableReason(Func<string, string?> environment, Action kubeConfiguration)
+    internal static string? GetUnavailableReason(Func<string, string?> environment)
     {
         ArgumentNullException.ThrowIfNull(environment);
-        ArgumentNullException.ThrowIfNull(kubeConfiguration);
-        if (TestBackend.Parse(environment(TestBackend.EnvironmentVariable)) != TestBackendKind.Cluster)
-            return "The LND regtest network runs on the cluster backend only (NL-820): set "
-                 + $"{TestBackend.EnvironmentVariable}=cluster or run scripts/run-cluster.sh "
-                 + "--matrix lnd,onchain,anchors,gossip,abcd";
+        return TestBackend.Parse(environment(TestBackend.EnvironmentVariable)) != TestBackendKind.Cluster
+                   ? "The LND regtest network runs on the cluster backend only (NL-820): set "
+                   + $"{TestBackend.EnvironmentVariable}=cluster or run scripts/run-cluster.sh "
+                   + "--matrix lnd,onchain,anchors,gossip,day0,abcd"
+                   : null;
+    }
 
+    /// <summary>
+    /// Why no Kubernetes configuration can be built (<paramref name="kubeConfiguration"/> throws), or null when it can.
+    /// </summary>
+    internal static string? GetConfigurationError(Action kubeConfiguration)
+    {
+        ArgumentNullException.ThrowIfNull(kubeConfiguration);
         try
         {
             kubeConfiguration();
@@ -223,7 +245,7 @@ public class LightningRegtestNetworkFixture : IAsyncLifetime
         get
         {
             SkipIfUnavailable();
-            return _backend ?? throw new InvalidOperationException(UnavailableReason);
+            return _backend ?? throw new InvalidOperationException(UnavailableReason ?? ConfigurationError);
         }
     }
 }
