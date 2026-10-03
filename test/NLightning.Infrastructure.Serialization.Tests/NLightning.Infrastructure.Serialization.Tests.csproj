@@ -46,4 +46,8 @@
     <None Include="Vectors\*.*" CopyToOutputDirectory="PreserveNewest"/>
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\NLightning.Tests.Utils\Vectors\Bolt4TrampolineVectors.cs" Link="Onion\Bolt4TrampolineVectors.cs"/>
+  </ItemGroup>
+
 </Project>

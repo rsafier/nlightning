@@ -20,5 +20,9 @@ public class OnionTlvConverterRegistrationTests
         Assert.NotNull(factory.GetConverter<CurrentPathKeyTlv>());
         Assert.NotNull(factory.GetConverter<PaymentMetadataTlv>());
         Assert.NotNull(factory.GetConverter<TotalAmountMsatTlv>());
+        Assert.NotNull(factory.GetConverter<OutgoingNodeIdTlv>());
+        Assert.NotNull(factory.GetConverter<TrampolineOnionPacketTlv>());
+        Assert.NotNull(factory.GetConverter<RecipientFeaturesTlv>());
+        Assert.NotNull(factory.GetConverter<RecipientBlindedPathsTlv>());
     }
 }

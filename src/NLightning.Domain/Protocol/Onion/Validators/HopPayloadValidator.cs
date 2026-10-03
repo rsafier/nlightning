@@ -40,6 +40,19 @@ using Protocol.ValueObjects;
 /// A non-blinded final hop that carries <c>short_channel_id</c> is accepted: "MUST NOT include short_channel_id" is a
 /// writer rule only, and the final-node reader requirements do not check it.
 /// </para>
+/// <para>
+/// Trampoline (BOLTs PR 836, NL-875): the trampoline types (<see cref="OnionPayloadTlvTypes.TrampolineTypes"/>) count
+/// as unknown unless the caller passes <c>allowTrampoline</c> (the node advertises <c>trampoline_routing</c>), so a
+/// node without the feature refuses a <c>trampoline_onion_packet</c> (20), an <c>outgoing_node_id</c> (14) or
+/// <c>recipient_blinded_paths</c> (22) with <c>invalid_onion_payload</c> exactly as before they were known, and
+/// ignores the odd <c>recipient_features</c> (21). With <c>allowTrampoline</c>, a non-blinded final hop carrying a
+/// <c>trampoline_onion_packet</c> needs only <c>amt_to_forward</c> and <c>outgoing_cltv_value</c> (the outer
+/// <c>payment_data</c> is optional when the trampoline node is reached without MPP), may carry the
+/// <c>current_path_key</c> of a blinded trampoline hop, and must not carry <c>short_channel_id</c>; a
+/// <c>trampoline_onion_packet</c> anywhere else, and <c>outgoing_node_id</c> or <c>recipient_blinded_paths</c> in any
+/// payment onion payload, are refused: they belong in the trampoline onion, whose payload
+/// <see cref="TrampolinePayloadValidator"/> checks.
+/// </para>
 /// </remarks>
 public static class HopPayloadValidator
 {
@@ -59,7 +72,8 @@ public static class HopPayloadValidator
     ];
 
     /// <summary>
-    /// Validates <paramref name="payload"/> and throws on the first violation.
+    /// Validates <paramref name="payload"/> and throws on the first violation, treating the trampoline types as
+    /// unknown.
     /// </summary>
     /// <param name="payload">The parsed hop payload.</param>
     /// <param name="isFinalHop">Whether this node is the final destination (the peeled next_hmac is all zero).</param>
@@ -67,12 +81,26 @@ public static class HopPayloadValidator
     /// <exception cref="OnionException">Thrown with <c>invalid_onion_payload</c> when the payload is invalid.</exception>
     public static void Validate(HopPayload payload, bool isFinalHop, bool hasUpdateAddPathKey)
     {
-        if (!TryValidate(payload, isFinalHop, hasUpdateAddPathKey, out var error))
+        Validate(payload, isFinalHop, hasUpdateAddPathKey, false);
+    }
+
+    /// <summary>
+    /// Validates <paramref name="payload"/> and throws on the first violation.
+    /// </summary>
+    /// <param name="payload">The parsed hop payload.</param>
+    /// <param name="isFinalHop">Whether this node is the final destination (the peeled next_hmac is all zero).</param>
+    /// <param name="hasUpdateAddPathKey">Whether the incoming <c>update_add_htlc</c> carried a <c>path_key</c>.</param>
+    /// <param name="allowTrampoline">Whether this node processes trampoline payloads (it advertises
+    /// <c>trampoline_routing</c>); <c>false</c> treats the trampoline types as unknown.</param>
+    /// <exception cref="OnionException">Thrown with <c>invalid_onion_payload</c> when the payload is invalid.</exception>
+    public static void Validate(HopPayload payload, bool isFinalHop, bool hasUpdateAddPathKey, bool allowTrampoline)
+    {
+        if (!TryValidate(payload, isFinalHop, hasUpdateAddPathKey, allowTrampoline, out var error))
             throw error;
     }
 
     /// <summary>
-    /// Validates <paramref name="payload"/> without throwing.
+    /// Validates <paramref name="payload"/> without throwing, treating the trampoline types as unknown.
     /// </summary>
     /// <param name="payload">The parsed hop payload.</param>
     /// <param name="isFinalHop">Whether this node is the final destination (the peeled next_hmac is all zero).</param>
@@ -82,30 +110,122 @@ public static class HopPayloadValidator
     public static bool TryValidate(HopPayload payload, bool isFinalHop, bool hasUpdateAddPathKey,
                                    [NotNullWhen(false)] out OnionException? error)
     {
+        return TryValidate(payload, isFinalHop, hasUpdateAddPathKey, false, out error);
+    }
+
+    /// <summary>
+    /// Validates <paramref name="payload"/> without throwing.
+    /// </summary>
+    /// <param name="payload">The parsed hop payload.</param>
+    /// <param name="isFinalHop">Whether this node is the final destination (the peeled next_hmac is all zero).</param>
+    /// <param name="hasUpdateAddPathKey">Whether the incoming <c>update_add_htlc</c> carried a <c>path_key</c>.</param>
+    /// <param name="allowTrampoline">Whether this node processes trampoline payloads (it advertises
+    /// <c>trampoline_routing</c>); <c>false</c> treats the trampoline types as unknown.</param>
+    /// <param name="error">The first violation found, as an <c>invalid_onion_payload</c> exception.</param>
+    /// <returns><c>true</c> when the payload is valid.</returns>
+    public static bool TryValidate(HopPayload payload, bool isFinalHop, bool hasUpdateAddPathKey,
+                                   bool allowTrampoline, [NotNullWhen(false)] out OnionException? error)
+    {
         ArgumentNullException.ThrowIfNull(payload);
 
-        error = FindUnknownEvenType(payload, isFinalHop)
-             ?? (payload.IsBlinded
-                     ? ValidateBlinded(payload, isFinalHop, hasUpdateAddPathKey)
-                     : ValidateNonBlinded(payload, isFinalHop, hasUpdateAddPathKey));
+        error = FindUnknownEvenType(payload, isFinalHop, allowTrampoline);
+        if (error is not null)
+            return false;
+
+        if (allowTrampoline && HasTrampolineRecord(payload))
+            error = ValidateTrampolineRecords(payload, isFinalHop, hasUpdateAddPathKey);
+        else if (payload.IsBlinded)
+            error = ValidateBlinded(payload, isFinalHop, hasUpdateAddPathKey);
+        else
+            error = ValidateNonBlinded(payload, isFinalHop, hasUpdateAddPathKey);
 
         return error is null;
     }
 
-    private static OnionException? FindUnknownEvenType(HopPayload payload, bool isFinalHop)
+    /// <summary>
+    /// <c>invalid_onion_payload</c> for a required record that is missing (offset 0).
+    /// </summary>
+    internal static OnionException Missing(HopPayload payload, BigSize type, string name)
+    {
+        return Fail(payload, type, $"Required hop payload field {name} (type {type.Value}) is missing.");
+    }
+
+    /// <summary>
+    /// <c>invalid_onion_payload</c> for <paramref name="type"/>, at the offset the record started at when known.
+    /// </summary>
+    internal static OnionException Fail(HopPayload payload, BigSize type, string message)
+    {
+        var offset = payload.TryGetRecordOffset(type, out var recordOffset) ? recordOffset : 0;
+        return InvalidOnionPayloadFailureFactory.Create(type, offset, message);
+    }
+
+    private static OnionException? FindUnknownEvenType(HopPayload payload, bool isFinalHop, bool allowTrampoline)
     {
         // BOLT 1: an unknown even type MUST fail the stream. The parser enforces it below the custom range (it cannot
         // tell a final hop); repeat it here for payloads built by hand. Custom records (65536 and up) are accepted
         // whatever their parity at the final hop only, as LND does: they are for the final node's application
-        // (keysend's preimage is one, and even). A forwarding hop has no use for them and keeps BOLT 1's rule
-        var unknownEven = payload.UnknownTlvs.FirstOrDefault(tlv => tlv.Type.Value % 2 == 0
-                                                                 && (!isFinalHop
-                                                                  || tlv.Type < OnionPayloadTlvTypes
-                                                                                .CustomRecordTypeStart));
+        // (keysend's preimage is one, and even). A forwarding hop has no use for them and keeps BOLT 1's rule.
+        // The trampoline types are parsed, but count as unknown unless the caller allows trampoline: a node that does
+        // not process trampoline payloads refuses them exactly as before they were known (NL-875)
+        var unknownEven = payload.Tlvs.FirstOrDefault(tlv => IsUnknown(tlv.Type, allowTrampoline)
+                                                          && tlv.Type.Value % 2 == 0
+                                                          && (!isFinalHop
+                                                           || tlv.Type < OnionPayloadTlvTypes.CustomRecordTypeStart));
 
         return unknownEven is null
                    ? null
                    : Fail(payload, unknownEven.Type, $"Unknown even TLV type {unknownEven.Type.Value}.");
+    }
+
+    private static bool HasTrampolineRecord(HopPayload payload) =>
+        payload.TrampolineOnionPacket is not null || payload.OutgoingNodeId is not null
+                                                  || payload.RecipientBlindedPaths is not null;
+
+    /// <summary>
+    /// The payment onion rules of a payload with a trampoline record (14, 20 or 22), once trampoline is allowed.
+    /// </summary>
+    private static OnionException? ValidateTrampolineRecords(HopPayload payload, bool isFinalHop,
+                                                             bool hasUpdateAddPathKey)
+    {
+        // outgoing_node_id and recipient_blinded_paths name the next trampoline node or the recipient's paths: they
+        // belong in a trampoline onion's payload, never in a payment onion's
+        if (payload.OutgoingNodeId is not null)
+            return Fail(payload, OnionPayloadTlvTypes.OutgoingNodeId,
+                        "outgoing_node_id is only allowed in a trampoline onion payload.");
+
+        if (payload.RecipientBlindedPaths is not null)
+            return Fail(payload, OnionPayloadTlvTypes.RecipientBlindedPaths,
+                        "recipient_blinded_paths is only allowed in a trampoline onion payload.");
+
+        // BOLT 4 (PR 836): the sender "MUST include the trampoline_onion_packet tlv in the last hop's payload of the
+        // onion_packet", which is never inside a blinded route (a blinded path to a trampoline-supporting recipient
+        // travels inside the trampoline onion)
+        if (!isFinalHop)
+            return Fail(payload, OnionPayloadTlvTypes.TrampolineOnionPacket,
+                        "trampoline_onion_packet is only allowed in the final hop's payload.");
+
+        if (payload.IsBlinded)
+            return Fail(payload, OnionPayloadTlvTypes.TrampolineOnionPacket,
+                        "trampoline_onion_packet is not allowed in a blinded hop payload.");
+
+        if (hasUpdateAddPathKey)
+            return Missing(payload, OnionPayloadTlvTypes.EncryptedRecipientData, "encrypted_recipient_data");
+
+        if (payload.AmtToForward is null)
+            return Missing(payload, OnionPayloadTlvTypes.AmtToForward, "amt_to_forward");
+
+        if (payload.OutgoingCltvValue is null)
+            return Missing(payload, OnionPayloadTlvTypes.OutgoingCltvValue, "outgoing_cltv_value");
+
+        // The writer of a final hop "MUST NOT include short_channel_id nor outgoing_node_id": for the trampoline node
+        // it is enforced, since a next hop named in the outer payload would contradict the trampoline onion.
+        // payment_data is optional ("The outer onion MAY omit payment_data when not using MPP to reach the trampoline
+        // node"), and a current_path_key is the path key of a blinded trampoline hop (it must be in exactly one of the
+        // two onions, which TrampolinePayloadValidator checks)
+        return payload.ShortChannelId is not null
+                   ? Fail(payload, OnionPayloadTlvTypes.ShortChannelId,
+                          "short_channel_id is not allowed in a payload carrying a trampoline_onion_packet.")
+                   : null;
     }
 
     private static OnionException? ValidateBlinded(HopPayload payload, bool isFinalHop, bool hasUpdateAddPathKey)
@@ -171,14 +291,7 @@ public static class HopPayloadValidator
                    : null;
     }
 
-    private static OnionException Missing(HopPayload payload, BigSize type, string name)
-    {
-        return Fail(payload, type, $"Required hop payload field {name} (type {type.Value}) is missing.");
-    }
-
-    private static OnionException Fail(HopPayload payload, BigSize type, string message)
-    {
-        var offset = payload.TryGetRecordOffset(type, out var recordOffset) ? recordOffset : 0;
-        return InvalidOnionPayloadFailureFactory.Create(type, offset, message);
-    }
+    private static bool IsUnknown(BigSize type, bool allowTrampoline) =>
+        !OnionPayloadTlvTypes.KnownTypes.Contains(type)
+     || (!allowTrampoline && OnionPayloadTlvTypes.TrampolineTypes.Contains(type));
 }

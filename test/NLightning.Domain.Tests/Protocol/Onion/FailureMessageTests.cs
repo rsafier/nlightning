@@ -37,7 +37,10 @@ public class FailureMessageTests
         { "expiry_too_far", FailureCode.ExpiryTooFar, "" },
         { "invalid_onion_payload", FailureCode.InvalidOnionPayload, "fd012d0015" },
         { "mpp_timeout", FailureCode.MppTimeout, "" },
-        { "invalid_onion_blinding", FailureCode.InvalidOnionBlinding, Convert.ToHexStringLower(s_sha256OfOnion) }
+        { "invalid_onion_blinding", FailureCode.InvalidOnionBlinding, Convert.ToHexStringLower(s_sha256OfOnion) },
+        { "temporary_trampoline_failure", FailureCode.TemporaryTrampolineFailure, "" },
+        { "trampoline_fee_or_expiry_insufficient", FailureCode.TrampolineFeeOrExpiryInsufficient, "000003e8000001f40090" },
+        { "unknown_next_trampoline", FailureCode.UnknownNextTrampoline, "" }
     };
 
     private static FailureMessage Create(string name)
@@ -70,6 +73,9 @@ public class FailureMessageTests
             "invalid_onion_payload" => FailureMessage.InvalidOnionPayload(new BigSize(301), 21),
             "mpp_timeout" => FailureMessage.MppTimeout(),
             "invalid_onion_blinding" => FailureMessage.InvalidOnionBlinding(s_sha256OfOnion),
+            "temporary_trampoline_failure" => FailureMessage.TemporaryTrampolineFailure(),
+            "trampoline_fee_or_expiry_insufficient" => FailureMessage.TrampolineFeeOrExpiryInsufficient(1000, 500, 144),
+            "unknown_next_trampoline" => FailureMessage.UnknownNextTrampoline(),
             _ => throw new ArgumentOutOfRangeException(nameof(name), name, null)
         };
     }
@@ -155,6 +161,10 @@ public class FailureMessageTests
     [InlineData(FailureCode.FinalIncorrectCltvExpiry, "000090")]
     [InlineData(FailureCode.InvalidOnionPayload, "fd00010015")]
     [InlineData(FailureCode.InvalidOnionPayload, "0600")]
+    [InlineData(FailureCode.TemporaryTrampolineFailure, "00")]
+    [InlineData(FailureCode.TrampolineFeeOrExpiryInsufficient, "000003e8000001f400")]
+    [InlineData(FailureCode.TrampolineFeeOrExpiryInsufficient, "000003e8000001f4009000")]
+    [InlineData(FailureCode.UnknownNextTrampoline, "01")]
     public void Given_DataNotMatchingKnownCodeLayout_When_Constructing_Then_Throws(FailureCode code, string dataHex)
     {
         // Act / Assert
@@ -229,6 +239,8 @@ public class FailureMessageTests
     [InlineData(FailureCode.FeeInsufficient, "00000000000007d00001aa01020304", 11)]
     [InlineData(FailureCode.InvalidOnionPayload, "fd012d0015ffff", 5)]
     [InlineData((FailureCode)0x7777, "01020304", 4)]
+    [InlineData(FailureCode.TrampolineFeeOrExpiryInsufficient, "000003e8000001f40090ff01", 10)]
+    [InlineData(FailureCode.UnknownNextTrampoline, "ff01", 0)]
     public void Given_DataFollowedByTail_When_GettingDataLength_Then_OnlyTheDataIsCounted(FailureCode code,
         string hex, int expectedLength)
     {
@@ -238,5 +250,47 @@ public class FailureMessageTests
         // Assert
         Assert.True(ok);
         Assert.Equal(expectedLength, length);
+    }
+
+    [Fact]
+    public void Given_TrampolineFeeOrExpiryInsufficient_When_ReadingThePolicy_Then_TheFieldsAreReturned()
+    {
+        // Arrange
+        var message = FailureMessage.TrampolineFeeOrExpiryInsufficient(uint.MaxValue, 2_500, 288);
+
+        // Act
+        var ok = message.TryGetTrampolinePolicy(out var feeBase, out var feeProportional, out var cltvDelta);
+
+        // Assert
+        Assert.True(ok);
+        Assert.Equal(uint.MaxValue, feeBase);
+        Assert.Equal(2_500U, feeProportional);
+        Assert.Equal((ushort)288, cltvDelta);
+        Assert.Equal(FailureMessage.TrampolinePolicyLength, message.Data.Length);
+        Assert.Null(message.HtlcAmount);
+        Assert.Null(message.CltvExpiry);
+        Assert.Null(message.ChannelUpdate);
+        Assert.False(message.HasChannelUpdateField);
+    }
+
+    [Theory]
+    [InlineData(FailureCode.TemporaryTrampolineFailure)]
+    [InlineData(FailureCode.UnknownNextTrampoline)]
+    [InlineData(FailureCode.FeeInsufficient)]
+    public void Given_AnotherCode_When_ReadingTheTrampolinePolicy_Then_False(FailureCode code)
+    {
+        // Arrange
+        var message = code == FailureCode.FeeInsufficient
+                          ? FailureMessage.FeeInsufficient(LightningMoney.MilliSatoshis(1_000UL))
+                          : new FailureMessage(code, ReadOnlyMemory<byte>.Empty);
+
+        // Act
+        var ok = message.TryGetTrampolinePolicy(out var feeBase, out var feeProportional, out var cltvDelta);
+
+        // Assert
+        Assert.False(ok);
+        Assert.Equal(0U, feeBase);
+        Assert.Equal(0U, feeProportional);
+        Assert.Equal((ushort)0, cltvDelta);
     }
 }

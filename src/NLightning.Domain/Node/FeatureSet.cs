@@ -79,6 +79,7 @@ public class FeatureSet
         { Feature.OptionScidAlias, InitAndNode | FeatureContext.ChannelType },
         { Feature.OptionPaymentMetadata, FeatureContext.Invoice },
         { Feature.OptionZeroconf, InitAndNode | FeatureContext.ChannelType },
+        { Feature.OptionTrampolineRouting, InitAndNode | FeatureContext.Invoice },
         { Feature.OptionSimpleClose, InitAndNode },
         { Feature.OptionSplice, InitAndNode },
         { Feature.OptionOnionMessagesOnlyChannels, InitAndNode },

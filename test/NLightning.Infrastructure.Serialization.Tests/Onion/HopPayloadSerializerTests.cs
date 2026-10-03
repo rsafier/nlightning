@@ -161,7 +161,7 @@ public class HopPayloadSerializerTests
     }
 
     [Theory]
-    [InlineData("020101140100", 20UL, 4)] // unknown even type 20
+    [InlineData("020101180100", 24UL, 4)] // unknown even type 24
     [InlineData("040101020101", 2UL, 4)] // types not increasing
     [InlineData("020101020102", 2UL, 4)] // duplicate type
     [InlineData("02020001", 2UL, 1)] // non-minimal tu64
@@ -208,14 +208,14 @@ public class HopPayloadSerializerTests
     public async Task Given_InvalidRecordAfterLengthPrefix_When_Deserializing_Then_OffsetIncludesPrefix()
     {
         // Arrange
-        using var input = new MemoryStream(Convert.FromHexString("06020101140100"));
+        using var input = new MemoryStream(Convert.FromHexString("06020101180100"));
 
         // Act
         var exception = await Assert.ThrowsAsync<OnionException>(() =>
             _serializer.DeserializeWithLengthPrefixAsync(input));
 
         // Assert
-        AssertInvalidOnionPayload(exception, 20, 4);
+        AssertInvalidOnionPayload(exception, 24, 4);
     }
 
     [Fact]
@@ -276,18 +276,18 @@ public class HopPayloadSerializerTests
     [Fact]
     public async Task Given_InvalidRecordInLongPayload_When_DeserializingWithoutPrefix_Then_OffsetCountsThreeBytePrefix()
     {
-        // Arrange: 254 bytes (so a 3-byte length prefix): odd type 1 with 250 bytes, then unknown even type 20
+        // Arrange: 254 bytes (so a 3-byte length prefix): odd type 1 with 250 bytes, then unknown even type 24
         var payload = new byte[254];
         payload[0] = 0x01;
         payload[1] = 0xfa;
-        payload[252] = 0x14;
+        payload[252] = 0x18;
         payload[253] = 0x00;
 
         // Act
         var exception = await Assert.ThrowsAsync<OnionException>(() => _serializer.DeserializeAsync(payload));
 
-        // Assert: record 20 starts at payload offset 252, i.e. offset 255 in the decrypted byte stream
-        AssertInvalidOnionPayload(exception, 20, 255);
+        // Assert: record 24 starts at payload offset 252, i.e. offset 255 in the decrypted byte stream
+        AssertInvalidOnionPayload(exception, 24, 255);
     }
 
     private static void AssertOffset(HopPayload payload, BigSize type, int expectedOffset)

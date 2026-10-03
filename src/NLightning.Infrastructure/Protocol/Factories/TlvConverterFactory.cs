@@ -65,5 +65,11 @@ public class TlvConverterFactory : ITlvConverterFactory
         _converters.Add(typeof(CurrentPathKeyTlv), new CurrentPathKeyTlvConverter());
         _converters.Add(typeof(PaymentMetadataTlv), new PaymentMetadataTlvConverter());
         _converters.Add(typeof(TotalAmountMsatTlv), new TotalAmountMsatTlvConverter());
+
+        // Trampoline hop payload TLVs (BOLTs PR 836, NL-875)
+        _converters.Add(typeof(OutgoingNodeIdTlv), new OutgoingNodeIdTlvConverter());
+        _converters.Add(typeof(TrampolineOnionPacketTlv), new TrampolineOnionPacketTlvConverter());
+        _converters.Add(typeof(RecipientFeaturesTlv), new RecipientFeaturesTlvConverter());
+        _converters.Add(typeof(RecipientBlindedPathsTlv), new RecipientBlindedPathsTlvConverter());
     }
 }

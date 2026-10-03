@@ -9,6 +9,7 @@ using Protocol.Models;
 using Protocol.Tlv;
 using Protocol.ValueObjects;
 using Tlv;
+using ValueObjects;
 
 /// <summary>
 /// A parsed BOLT 4 per-hop <c>payload</c> TLV stream.
@@ -35,8 +36,12 @@ public sealed class HopPayload
         [OnionPayloadTlvTypes.PaymentData] = typeof(PaymentDataTlv),
         [OnionPayloadTlvTypes.EncryptedRecipientData] = typeof(EncryptedRecipientDataTlv),
         [OnionPayloadTlvTypes.CurrentPathKey] = typeof(CurrentPathKeyTlv),
+        [OnionPayloadTlvTypes.OutgoingNodeId] = typeof(OutgoingNodeIdTlv),
         [OnionPayloadTlvTypes.PaymentMetadata] = typeof(PaymentMetadataTlv),
-        [OnionPayloadTlvTypes.TotalAmountMsat] = typeof(TotalAmountMsatTlv)
+        [OnionPayloadTlvTypes.TotalAmountMsat] = typeof(TotalAmountMsatTlv),
+        [OnionPayloadTlvTypes.TrampolineOnionPacket] = typeof(TrampolineOnionPacketTlv),
+        [OnionPayloadTlvTypes.RecipientFeatures] = typeof(RecipientFeaturesTlv),
+        [OnionPayloadTlvTypes.RecipientBlindedPaths] = typeof(RecipientBlindedPathsTlv)
     };
 
     private readonly TlvStream _tlvStream = new();
@@ -60,11 +65,31 @@ public sealed class HopPayload
     /// <summary>current_path_key (type 12). Only prefix-checked; not validated as a curve point.</summary>
     public CompactPubKey? CurrentPathKey { get; }
 
+    /// <summary>
+    /// outgoing_node_id (type 14, trampoline): the next trampoline node. Only prefix-checked; not validated as a curve
+    /// point.
+    /// </summary>
+    public CompactPubKey? OutgoingNodeId { get; }
+
     /// <summary>payment_metadata (type 16).</summary>
     public ReadOnlyMemory<byte>? PaymentMetadata { get; }
 
     /// <summary>total_amount_msat (type 18).</summary>
     public LightningMoney? TotalAmountMsat { get; }
+
+    /// <summary>
+    /// trampoline_onion_packet (type 20): the trampoline onion to peel, with its variable-size <c>hop_payloads</c>.
+    /// </summary>
+    public OnionPacket? TrampolineOnionPacket { get; }
+
+    /// <summary>recipient_features (type 21, trampoline): the recipient's invoice features, big-endian.</summary>
+    public RecipientFeaturesTlv? RecipientFeatures { get; }
+
+    /// <summary>
+    /// recipient_blinded_paths (type 22, trampoline): the blinded paths of a recipient that does not support
+    /// trampoline.
+    /// </summary>
+    public IReadOnlyList<WireBlindedPaymentPath>? RecipientBlindedPaths { get; }
 
     /// <summary>
     /// keysend_preimage (type 5482373484, <see cref="OnionPayloadTlvTypes.KeysendPreimage"/>): the preimage of a
@@ -157,11 +182,23 @@ public sealed class HopPayload
                 case CurrentPathKeyTlv currentPathKey:
                     CurrentPathKey = currentPathKey.PathKey;
                     break;
+                case OutgoingNodeIdTlv outgoingNodeId:
+                    OutgoingNodeId = outgoingNodeId.OutgoingNodeId;
+                    break;
                 case PaymentMetadataTlv paymentMetadata:
                     PaymentMetadata = paymentMetadata.PaymentMetadata;
                     break;
                 case TotalAmountMsatTlv totalAmountMsat:
                     TotalAmountMsat = totalAmountMsat.TotalAmount;
+                    break;
+                case TrampolineOnionPacketTlv trampolineOnionPacket:
+                    TrampolineOnionPacket = trampolineOnionPacket.ToOnionPacket();
+                    break;
+                case RecipientFeaturesTlv recipientFeatures:
+                    RecipientFeatures = recipientFeatures;
+                    break;
+                case RecipientBlindedPathsTlv recipientBlindedPaths:
+                    RecipientBlindedPaths = recipientBlindedPaths.Paths;
                     break;
                 default:
                     if (tlv.Type == OnionPayloadTlvTypes.KeysendPreimage)

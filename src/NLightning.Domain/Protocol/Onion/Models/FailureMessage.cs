@@ -37,6 +37,12 @@ public sealed class FailureMessage
     public const int CodeLength = sizeof(ushort);
 
     /// <summary>
+    /// The length of the data of <c>trampoline_fee_or_expiry_insufficient</c>: <c>u32 fee_base_msat ||
+    /// u32 fee_proportional_millionths || u16 cltv_expiry_delta</c>.
+    /// </summary>
+    public const int TrampolinePolicyLength = sizeof(uint) + sizeof(uint) + sizeof(ushort);
+
+    /// <summary>
     /// The failure code.
     /// </summary>
     public FailureCode Code { get; }
@@ -130,6 +136,31 @@ public sealed class FailureMessage
      && InvalidOnionPayloadFailureFactory.TryDecodeData(Data.Span, out _, out var offset)
             ? offset
             : null;
+
+    /// <summary>
+    /// Reads the fee and CLTV delta a <c>trampoline_fee_or_expiry_insufficient</c> failure asks for.
+    /// </summary>
+    /// <param name="feeBaseMsat">The trampoline node's <c>fee_base_msat</c>.</param>
+    /// <param name="feeProportionalMillionths">Its <c>fee_proportional_millionths</c>.</param>
+    /// <param name="cltvExpiryDelta">Its <c>cltv_expiry_delta</c>.</param>
+    /// <returns><c>false</c> (and zeros) for any other code.</returns>
+    public bool TryGetTrampolinePolicy(out uint feeBaseMsat, out uint feeProportionalMillionths,
+                                       out ushort cltvExpiryDelta)
+    {
+        if (Code != FailureCode.TrampolineFeeOrExpiryInsufficient)
+        {
+            feeBaseMsat = 0;
+            feeProportionalMillionths = 0;
+            cltvExpiryDelta = 0;
+            return false;
+        }
+
+        var data = Data.Span;
+        feeBaseMsat = BinaryPrimitives.ReadUInt32BigEndian(data);
+        feeProportionalMillionths = BinaryPrimitives.ReadUInt32BigEndian(data[sizeof(uint)..]);
+        cltvExpiryDelta = BinaryPrimitives.ReadUInt16BigEndian(data[(2 * sizeof(uint))..]);
+        return true;
+    }
 
     /// <summary>
     /// Creates a failure message.
@@ -246,6 +277,8 @@ public sealed class FailureMessage
             case FailureCode.MppTimeout:
             case FailureCode.IncorrectPaymentAmount:
             case FailureCode.FinalExpiryTooSoon:
+            case FailureCode.TemporaryTrampolineFailure:
+            case FailureCode.UnknownNextTrampoline:
                 length = 0;
                 return true;
             case FailureCode.InvalidOnionVersion:
@@ -262,6 +295,9 @@ public sealed class FailureMessage
                 break;
             case FailureCode.FinalIncorrectHtlcAmount:
                 length = sizeof(ulong);
+                break;
+            case FailureCode.TrampolineFeeOrExpiryInsufficient:
+                length = TrampolinePolicyLength;
                 break;
             case FailureCode.InvalidOnionPayload:
                 if (!BigSizeCodec.TryRead(dataAndTail, out _, out var typeLength))
@@ -386,6 +422,26 @@ public sealed class FailureMessage
     /// <summary>BADONION|PERM|24 <c>invalid_onion_blinding</c> with <c>sha256_of_onion</c>.</summary>
     public static FailureMessage InvalidOnionBlinding(ReadOnlySpan<byte> sha256OfOnion) =>
         CreateBadOnion(FailureCode.InvalidOnionBlinding, sha256OfOnion);
+
+    /// <summary>NODE|25 <c>temporary_trampoline_failure</c> (BOLTs PR 836), no data.</summary>
+    public static FailureMessage TemporaryTrampolineFailure() => WithoutData(FailureCode.TemporaryTrampolineFailure);
+
+    /// <summary>
+    /// NODE|26 <c>trampoline_fee_or_expiry_insufficient</c> (BOLTs PR 836): the fee and CLTV delta the trampoline node
+    /// needs to reach the next trampoline node.
+    /// </summary>
+    public static FailureMessage TrampolineFeeOrExpiryInsufficient(uint feeBaseMsat, uint feeProportionalMillionths,
+                                                                   ushort cltvExpiryDelta)
+    {
+        var data = new byte[TrampolinePolicyLength];
+        BinaryPrimitives.WriteUInt32BigEndian(data, feeBaseMsat);
+        BinaryPrimitives.WriteUInt32BigEndian(data.AsSpan(sizeof(uint)), feeProportionalMillionths);
+        BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(2 * sizeof(uint)), cltvExpiryDelta);
+        return new FailureMessage(FailureCode.TrampolineFeeOrExpiryInsufficient, data);
+    }
+
+    /// <summary>PERM|27 <c>unknown_next_trampoline</c> (BOLTs PR 836), no data.</summary>
+    public static FailureMessage UnknownNextTrampoline() => WithoutData(FailureCode.UnknownNextTrampoline);
 
     #endregion
 
