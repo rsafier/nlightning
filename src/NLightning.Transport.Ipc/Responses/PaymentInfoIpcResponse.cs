@@ -73,6 +73,23 @@ public sealed class PaymentInfoIpcResponse
     /// </summary>
     [Key(17)] public List<string>? Tags { get; init; }
 
+    /// <summary>
+    /// True for the outgoing leg of a trampoline payment we relayed (NL-899): not our spending; <c>listforwards</c>
+    /// lists the relay. False from a daemon before it.
+    /// </summary>
+    [Key(18)] public bool IsTrampolineRelay { get; init; }
+
+    /// <summary>The trampoline node a payment of ours went through (hop 0 of its last trampoline attempt), or null
+    /// (NL-899).</summary>
+    [Key(19)] public CompactPubKey? TrampolineNodeId { get; init; }
+
+    /// <summary>The inner route of the last trampoline attempt, trampoline node first (NL-899); null without
+    /// one.</summary>
+    [Key(20)] public List<PaymentTrampolineHopIpcInfo>? TrampolineRoute { get; init; }
+
+    /// <summary>How many trampoline attempts the payment built (NL-899); 0 or absent without one.</summary>
+    [Key(21)] public int TrampolineAttempts { get; init; }
+
     public static PaymentInfoIpcResponse FromClientResponse(PaymentInfoClientResponse payment)
     {
         ArgumentNullException.ThrowIfNull(payment);
@@ -95,7 +112,39 @@ public sealed class PaymentInfoIpcResponse
             IsKeysend = payment.IsKeysend,
             CustomRecords = CustomRecordsIpc.FromRecords(payment.CustomRecords),
             Label = payment.Label,
-            Tags = payment.Tags.Count == 0 ? null : [.. payment.Tags]
+            Tags = payment.Tags.Count == 0 ? null : [.. payment.Tags],
+            IsTrampolineRelay = payment.IsTrampolineRelay,
+            TrampolineNodeId = payment.TrampolineNodeId,
+            TrampolineRoute = payment.TrampolineRoute.Count == 0
+                                  ? null
+                                  : payment.TrampolineRoute.Select(PaymentTrampolineHopIpcInfo.FromClientResponse)
+                                           .ToList(),
+            TrampolineAttempts = payment.TrampolineAttempts
+        };
+    }
+}
+
+/// <summary>One hop of a payment's trampoline route over the wire (NL-899).</summary>
+[MessagePackObject]
+public sealed class PaymentTrampolineHopIpcInfo
+{
+    /// <summary>The trampoline node (or the payee, last).</summary>
+    [Key(0)] public required CompactPubKey NodeId { get; init; }
+
+    /// <summary>The amount the hop forwards, msat.</summary>
+    [Key(1)] public required ulong AmountMsat { get; init; }
+
+    /// <summary>The hop's <c>outgoing_cltv_value</c>.</summary>
+    [Key(2)] public required uint CltvExpiry { get; init; }
+
+    public static PaymentTrampolineHopIpcInfo FromClientResponse(PaymentTrampolineHopClientResponse hop)
+    {
+        ArgumentNullException.ThrowIfNull(hop);
+        return new PaymentTrampolineHopIpcInfo
+        {
+            NodeId = hop.NodeId,
+            AmountMsat = hop.Amount.MilliSatoshi,
+            CltvExpiry = hop.CltvExpiry
         };
     }
 }

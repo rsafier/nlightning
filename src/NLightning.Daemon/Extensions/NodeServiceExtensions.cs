@@ -45,6 +45,7 @@ using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Node.Options;
 using Domain.Payments.Interfaces;
+using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Handlers;
@@ -168,7 +169,8 @@ public static class NodeServiceExtensions
             new ListInvoicesClientHandler(GetPaymentLayerService<IInvoiceService>(sp),
                                           sp.GetRequiredService<TimeProvider>()));
         services.AddScoped<IClientCommandHandler<ListPaymentsClientRequest, ListPaymentsClientResponse>>(sp =>
-            new ListPaymentsClientHandler(GetPaymentLayerService<IPaymentService>(sp)));
+            new ListPaymentsClientHandler(GetPaymentLayerService<IPaymentService>(sp),
+                                          sp.GetService<IPaymentDbRepository>(), sp.GetService<IUnitOfWork>()));
         // Cashu plan C0 (NL-991): wait for an invoice to leave Open (ClientCommand 47)
         services.AddScoped<IClientCommandHandler<WaitInvoiceClientRequest, WaitInvoiceClientResponse>>(sp =>
             new WaitInvoiceClientHandler(GetPaymentLayerService<IInvoiceService>(sp),

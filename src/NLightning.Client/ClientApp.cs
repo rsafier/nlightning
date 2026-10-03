@@ -334,8 +334,10 @@ internal static class ClientApp
                     break;
                 case "listpayments":
                 case "list-payments":
-                    var (paymentTake, paymentSkip) = ParsePage(commandArgs);
-                    var payments = await client.ListPaymentsAsync(paymentSkip, paymentTake, cancellationToken);
+                    var includeRelayLegs = TakeIncludeRelayLegs(commandArgs, out var paymentPageArgs);
+                    var (paymentTake, paymentSkip) = ParsePage(paymentPageArgs);
+                    var payments = await client.ListPaymentsAsync(paymentSkip, paymentTake, cancellationToken,
+                                                                  includeRelayLegs);
                     new ListPaymentsPrinter().Print(payments);
                     break;
                 case "listaccountingevents":
@@ -584,10 +586,13 @@ internal static class ClientApp
             case "liquidityads":
             case "liquidity-ads":
                 return LiquidityAdsCommands.Validate(cmd, commandArgs);
-            case "listinvoices":
-            case "list-invoices":
             case "listpayments":
             case "list-payments":
+                // NL-899: --include-relay-legs anywhere, then the page as for listinvoices
+                TakeIncludeRelayLegs(commandArgs, out commandArgs);
+                goto case "listinvoices";
+            case "listinvoices":
+            case "list-invoices":
                 if (commandArgs.Length > 0
                  && !(TryParsePositiveInt(commandArgs[0], out var count) && count <= MaxListCount))
                     return $"Invalid count '{commandArgs[0]}': expected a number from 1 to {MaxListCount}.";
@@ -1649,6 +1654,19 @@ internal static class ClientApp
             return bytes;
 
         return await File.ReadAllBytesAsync(commandArgs[0], cancellationToken);
+    }
+
+    /// <summary>The <c>listpayments</c> flag that also lists the outgoing legs of trampoline relays (NL-899).</summary>
+    internal const string IncludeRelayLegsOption = "--include-relay-legs";
+
+    /// <summary>
+    /// Whether <paramref name="commandArgs"/> carry <see cref="IncludeRelayLegsOption"/> (anywhere);
+    /// <paramref name="rest"/> is the arguments without it.
+    /// </summary>
+    internal static bool TakeIncludeRelayLegs(string[] commandArgs, out string[] rest)
+    {
+        rest = commandArgs.Where(a => !string.Equals(a, IncludeRelayLegsOption, StringComparison.Ordinal)).ToArray();
+        return rest.Length != commandArgs.Length;
     }
 
     /// <summary>

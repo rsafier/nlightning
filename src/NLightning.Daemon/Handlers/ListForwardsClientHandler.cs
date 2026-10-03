@@ -65,15 +65,18 @@ public sealed class ListForwardsClientHandler
 
         var forwards = await _forwardCircuitRepository.ListAsync(query, ct);
         var totals = await _forwardCircuitRepository.SummarizeAsync(query, ct);
+        var (relays, relayTotals) = await ListTrampolineRelaysAsync(request, channelId, ct);
 
+        // NL-981: the totals count the trampoline relays with the forwards (collecting = pending, sending = offered)
         var refused = _refusedHtlcCounter?.Snapshot() ?? new Dictionary<RefusedHtlcReason, long>();
         var summary = new ForwardSummaryClientResponse
         {
-            Pending = totals.Pending,
-            Offered = totals.Offered,
-            Fulfilled = totals.Fulfilled,
-            Failed = totals.Failed,
-            FulfilledFeesMsat = totals.FulfilledFeesMsat,
+            Pending = totals.Pending + relayTotals.Collecting,
+            Offered = totals.Offered + relayTotals.Sending,
+            Fulfilled = totals.Fulfilled + relayTotals.Fulfilled,
+            Failed = totals.Failed + relayTotals.Failed,
+            FulfilledFeesMsat = totals.FulfilledFeesMsat + relayTotals.FulfilledFeesMsat,
+            TrampolineRelays = relayTotals,
             RefusedTotal = refused.Values.Sum(),
             RefusedByReason = refused
                               .OrderBy(kvp => (int)kvp.Key)
@@ -84,19 +87,21 @@ public sealed class ListForwardsClientHandler
         return new ListForwardsClientResponse(
             forwards.Select(c => ForwardInfoClientResponse.FromModel(c, ScidOf(c.IncomingChannelId),
                                              ScidOf(c.OutgoingChannelId), ScidOf(c.FailureSource)))
-                    .ToList(), summary, await ListTrampolineRelaysAsync(request, channelId, ct));
+                    .ToList(), summary, relays);
     }
 
     /// <summary>
-    /// The page of trampoline relays (NL-875) under the same filters: the forward statuses map to the relay's (pending
-    /// = collecting, offered = sending), a channel filter matches a relay with an incoming part on it, and a scid that
-    /// names none of our channels matches no relay (a relay has no single outgoing channel).
+    /// The page of trampoline relays (NL-875) under the same filters, with their totals over the whole filtered set
+    /// (NL-981): the forward statuses map to the relay's (pending = collecting, offered = sending), a channel filter
+    /// matches a relay with an incoming part on it, and a scid that names none of our channels matches no relay (a
+    /// relay has no single outgoing channel). The failed attempts a payer's retry replaced (NL-899) are listed with
+    /// the relays, newest first, as failed relays with their attempt number.
     /// </summary>
-    private async Task<IReadOnlyList<TrampolineRelayInfoClientResponse>> ListTrampolineRelaysAsync(
-        ListForwardsClientRequest request, ChannelId? channelId, CancellationToken ct)
+    private async Task<(IReadOnlyList<TrampolineRelayInfoClientResponse> Relays, TrampolineRelayTotals Totals)>
+        ListTrampolineRelaysAsync(ListForwardsClientRequest request, ChannelId? channelId, CancellationToken ct)
     {
         if (_trampolineRelayRepository is null || (request.ChannelScid is not null && channelId is null))
-            return [];
+            return ([], default);
 
         TrampolineRelayStatus? status = request.Status switch
         {
@@ -106,26 +111,55 @@ public sealed class ListForwardsClientHandler
             ForwardCircuitStatus.Fulfilled => TrampolineRelayStatus.Fulfilled,
             _ => TrampolineRelayStatus.Failed
         };
+
+        // Both sources newest first, each up to the end of the page; merged, then the page is cut
+        var through = (int)Math.Min((long)request.Skip + request.Take, int.MaxValue);
+        var query = new TrampolineRelayListQuery(0, through, request.Since, request.Until, status, channelId);
         IReadOnlyList<TrampolineRelayModel> relays;
         try
         {
-            relays = await _trampolineRelayRepository.ListAsync(
-                         new TrampolineRelayListQuery(request.Skip, request.Take, request.Since, request.Until, status,
-                                                      channelId), ct);
+            relays = await _trampolineRelayRepository.ListAsync(query, ct);
         }
         catch (NotSupportedException)
         {
-            return [];
+            return ([], default);
         }
 
-        var result = new List<TrampolineRelayInfoClientResponse>(relays.Count);
-        foreach (var relay in relays)
+        var replaced = await _trampolineRelayRepository.ListReplacedAttemptsAsync(query, ct) ?? [];
+        TrampolineRelayTotals totals;
+        try
         {
-            var parts = await _trampolineRelayRepository.GetPartsAsync(relay.PaymentHash);
-            result.Add(TrampolineRelayInfoClientResponse.FromModel(relay, parts, id => ScidOf(id)));
+            totals = await _trampolineRelayRepository.SummarizeAsync(query, ct);
+        }
+        catch (NotSupportedException)
+        {
+            totals = default;
         }
 
-        return result;
+        var rows = relays.Select(r => (r.CreatedAt, Relay: (TrampolineRelayModel?)r,
+                                       Attempt: (TrampolineRelayAttemptModel?)null))
+                         .Concat(replaced.Select(a => (a.CreatedAt, Relay: (TrampolineRelayModel?)null,
+                                                       Attempt: (TrampolineRelayAttemptModel?)a)))
+                         .OrderByDescending(row => row.CreatedAt)
+                         .Skip(request.Skip)
+                         .Take(request.Take)
+                         .ToList();
+
+        var result = new List<TrampolineRelayInfoClientResponse>(rows.Count);
+        foreach (var (_, relay, attempt) in rows)
+        {
+            if (relay is not null)
+            {
+                var parts = await _trampolineRelayRepository.GetPartsAsync(relay.PaymentHash);
+                result.Add(TrampolineRelayInfoClientResponse.FromModel(relay, parts, id => ScidOf(id)));
+            }
+            else
+            {
+                result.Add(TrampolineRelayInfoClientResponse.FromAttempt(attempt!, id => ScidOf(id)));
+            }
+        }
+
+        return (result, totals);
     }
 
     /// <summary>

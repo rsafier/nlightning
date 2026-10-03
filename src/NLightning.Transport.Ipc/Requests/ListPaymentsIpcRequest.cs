@@ -20,8 +20,14 @@ public sealed class ListPaymentsIpcRequest
     /// </summary>
     [Key(1)] public int Take { get; set; } = 100;
 
+    /// <summary>
+    /// Also list the outgoing legs of the trampoline payments we relayed (NL-899; absent from an older client = left
+    /// out).
+    /// </summary>
+    [Key(2)] public bool IncludeRelayLegs { get; init; }
+
     public ListPaymentsClientRequest ToClientRequest()
     {
-        return new ListPaymentsClientRequest { Skip = Skip, Take = Take };
+        return new ListPaymentsClientRequest { Skip = Skip, Take = Take, IncludeRelayLegs = IncludeRelayLegs };
     }
 }

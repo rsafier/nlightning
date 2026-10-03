@@ -49,6 +49,12 @@ public sealed class TrampolineRelayInfoClientResponse
     /// <summary>The failure code's name (or hex when unknown), or null when there is no code.</summary>
     public string? FailureCodeName { get; init; }
 
+    /// <summary>
+    /// For a failed attempt that a payer's retry with the same payment hash replaced (NL-899), its number (1 = the
+    /// first); null for the relay the hash has now.
+    /// </summary>
+    public int? ReplacedAttempt { get; init; }
+
     /// <summary>Maps a relay and its parts; <paramref name="scidOf"/> names a loaded channel's scid (or null).</summary>
     public static TrampolineRelayInfoClientResponse FromModel(TrampolineRelayModel relay,
                                                               IReadOnlyList<TrampolineRelayPartModel> parts,
@@ -74,6 +80,32 @@ public sealed class TrampolineRelayInfoClientResponse
             CompletedAt = relay.CompletedAt,
             FailureCode = relay.FailureCode,
             FailureCodeName = ForwardInfoClientResponse.FailureCodeNameOf(relay.FailureCode)
+        };
+    }
+
+    /// <summary>Maps a replaced failed attempt (NL-899); <paramref name="scidOf"/> names a loaded channel's scid (or
+    /// null).</summary>
+    public static TrampolineRelayInfoClientResponse FromAttempt(TrampolineRelayAttemptModel attempt,
+                                                                Func<ChannelId, string?>? scidOf = null)
+    {
+        ArgumentNullException.ThrowIfNull(attempt);
+
+        return new TrampolineRelayInfoClientResponse
+        {
+            PaymentHash = attempt.PaymentHash,
+            Status = TrampolineRelayStatus.Failed,
+            Parts = attempt.Parts,
+            IncomingChannelIds = attempt.IncomingChannelIds,
+            IncomingChannelScids = attempt.IncomingChannelIds.Select(c => scidOf?.Invoke(c)).ToList(),
+            IncomingAmount = attempt.IncomingAmount,
+            IncomingTotal = attempt.IncomingTotal,
+            AmountOut = attempt.AmountOut,
+            NextNodeId = attempt.NextNodeId,
+            CreatedAt = attempt.CreatedAt,
+            CompletedAt = attempt.CompletedAt,
+            FailureCode = attempt.FailureCode,
+            FailureCodeName = ForwardInfoClientResponse.FailureCodeNameOf(attempt.FailureCode),
+            ReplacedAttempt = attempt.Attempt
         };
     }
 }
