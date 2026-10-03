@@ -6142,6 +6142,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Location:** `src/NLightning.Infrastructure.Serialization/Messages/Types/{FundingCreated,FundingSigned,RevokeAndAck,Shutdown,TxComplete}*Serializer.cs`
 - **Evidence:** before taproot wave t02 these serializers never read the bytes after the payload, so any trailing TLV (even ones included) was silently ignored. Lane WIRE made them read the extension with `DeserializeStrictAsync` (BOLT 1, NL-001) to get the taproot TLVs, so a peer sending an even TLV we do not know in one of them is now answered with a warning and disconnected. Known sets: funding_created/funding_signed {2}, revoke_and_ack {22}, shutdown {8}, tx_complete {4, 6}. No LND 0.21.4, CLN v26.06.8 or Eclair 0.14.3 even TLV is known to be missing (LND staging taproot sends revoke_and_ack 4, but only on staging channels, which we never open), but the interop suites have not run against this change yet.
 - **Fix sketch:** run the cluster interop matrix (cln, eclair, ldk, lnd) on the integration branch; add any even TLV a peer sends to the right known set.
+- **t02 integration:** the matrix `tap2-mx1` (lnd, cln, eclair, day0, onchain, anchors, taproot) found no peer message refused by the stricter readers; LDK was not run, so the entry stays open until the `ldk` suite has run on this code.
 - **Blocks/Blocked-by:** Related NL-001, NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T2
 ### NL-972 Every attempt of a dual-funded taproot open shared the commitment-0 verification nonce
