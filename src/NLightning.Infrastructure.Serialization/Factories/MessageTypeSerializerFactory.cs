@@ -63,15 +63,18 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _serializers.Add(typeof(ClosingCompleteMessage),
                          new ClosingCompleteMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
         _serializers.Add(typeof(ClosingSigMessage),
-                         new ClosingSigMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
+                         new ClosingSigMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                             _tlvStreamSerializer));
         _serializers.Add(typeof(CommitmentSignedMessage),
                          new CommitmentSignedMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                                    _tlvStreamSerializer));
         _serializers.Add(typeof(ErrorMessage), new ErrorMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(FundingCreatedMessage),
-                         new FundingCreatedMessageTypeSerializer(_payloadSerializerFactory));
+                         new FundingCreatedMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                                  _tlvStreamSerializer));
         _serializers.Add(typeof(FundingSignedMessage),
-                         new FundingSignedMessageTypeSerializer(_payloadSerializerFactory));
+                         new FundingSignedMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                                 _tlvStreamSerializer));
         _serializers.Add(typeof(InitMessage),
                          new InitMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                        _tlvStreamSerializer));
@@ -91,8 +94,11 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
                          new PeerStorageRetrievalMessageTypeSerializer(_payloadSerializerFactory,
                                                                        _tlvStreamSerializer));
         _serializers.Add(typeof(RevokeAndAckMessage),
-                         new RevokeAndAckMessageTypeSerializer(_payloadSerializerFactory));
-        _serializers.Add(typeof(ShutdownMessage), new ShutdownMessageTypeSerializer(_payloadSerializerFactory));
+                         new RevokeAndAckMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                               _tlvStreamSerializer));
+        _serializers.Add(typeof(ShutdownMessage),
+                         new ShutdownMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                           _tlvStreamSerializer));
         _serializers.Add(typeof(SpliceAckMessage),
                          new SpliceAckMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                             _tlvStreamSerializer));
@@ -114,7 +120,9 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
                                                              _tlvStreamSerializer));
         _serializers.Add(typeof(TxAddOutputMessage),
                          new TxAddOutputMessageTypeSerializer(_payloadSerializerFactory));
-        _serializers.Add(typeof(TxCompleteMessage), new TxCompleteMessageTypeSerializer(_payloadSerializerFactory));
+        _serializers.Add(typeof(TxCompleteMessage),
+                         new TxCompleteMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                             _tlvStreamSerializer));
         _serializers.Add(typeof(TxInitRbfMessage),
                          new TxInitRbfMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                             _tlvStreamSerializer));

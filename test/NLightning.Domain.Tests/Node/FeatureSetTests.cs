@@ -67,6 +67,8 @@ public class FeatureSetTests
     [InlineData(Feature.OptionSimpleClose, Feature.OptionShutdownAnySegwit, true)]
     [InlineData(Feature.OptionOnionMessagesOnlyChannels, Feature.OptionOnionMessages, false)]
     [InlineData(Feature.OptionOnionMessagesOnlyChannels, Feature.OptionOnionMessages, true)]
+    [InlineData(Feature.OptionSimpleTaproot, Feature.OptionSimpleClose, false)]
+    [InlineData(Feature.OptionSimpleTaproot, Feature.OptionSimpleClose, true)]
     public void Given_Features_When_SetFeatureADependsOnFeatureB_Then_FeatureBIsSet(
         Feature feature, Feature dependsOn, bool isCompulsory)
     {
@@ -279,6 +281,8 @@ public class FeatureSetTests
     [InlineData(Feature.ZeroFeeCommitments, Feature.OptionChannelType)]
     [InlineData(Feature.OptionSimpleClose, Feature.OptionShutdownAnySegwit)]
     [InlineData(Feature.OptionOnionMessagesOnlyChannels, Feature.OptionOnionMessages)]
+    [InlineData(Feature.OptionSimpleTaproot, Feature.OptionSimpleClose)]
+    [InlineData(Feature.OptionSimpleTaproot, Feature.OptionChannelType)]
     public void Given_OtherSetsFeatureWithoutDependency_When_IsCompatible_Then_ReturnFalse(Feature feature,
         Feature dependency)
     {
@@ -612,4 +616,36 @@ public class FeatureSetTests
     }
 
     #endregion
+
+    [Fact]
+    public void Given_PeerWithTaprootAndItsDependenciesButNoAnchors_When_IsCompatible_Then_TaprootIsNegotiated()
+    {
+        // Arrange (LND's extra 81 -> 23 dependency is not BOLT 9: a peer without 23 is not refused)
+        var features = new FeatureSet();
+        features.SetFeature(Feature.OptionSimpleTaproot, false);
+        var other = new FeatureSet();
+        other.SetFeature(Feature.OptionSimpleTaproot, false);
+
+        // Act
+        var result = features.IsCompatible(other, out var negotiated);
+
+        // Assert
+        Assert.True(result);
+        Assert.NotNull(negotiated);
+        Assert.True(negotiated.IsFeatureSet(Feature.OptionSimpleTaproot, false));
+        Assert.False(other.HasFeature(Feature.OptionAnchors));
+    }
+
+    [Fact]
+    public void Given_SimpleTaproot_When_GetContexts_Then_InitNodeAndChannelType()
+    {
+        // Act
+        var contexts = FeatureSet.GetContexts(Feature.OptionSimpleTaproot);
+
+        // Assert (bits 80/81: contexts I and N, and a channel type bit)
+        Assert.Equal(81, (int)Feature.OptionSimpleTaproot);
+        Assert.Equal(FeatureContext.Init | FeatureContext.NodeAnnouncement | FeatureContext.ChannelType, contexts);
+        Assert.Equal([Feature.OptionChannelType, Feature.OptionSimpleClose],
+                     FeatureSet.GetDependencies(Feature.OptionSimpleTaproot));
+    }
 }

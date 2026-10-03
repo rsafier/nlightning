@@ -14,7 +14,8 @@ public class FeatureOptions
     /// fails <see cref="GetValidationErrors"/>) unless <see cref="AllowExperimentalFeatures"/> is set.
     /// </summary>
     /// <remarks>
-    /// Holds trampoline_routing (bits 56/57, NL-875) while trampoline routing is being built. Empty from NL-332 (owner
+    /// Holds trampoline_routing (bits 56/57, NL-875) while trampoline routing is being built and option_simple_taproot
+    /// (bits 80/81, NL-877) while simple taproot channels are being built. Empty from NL-332 (owner
     /// decision 2026-10-02, attribution_data, the last member then, left it and is advertised Optional by default)
     /// until NL-875. Features that left the set before: quiesce, dual_fund and splice by splicing plan D13 after
     /// Proofs SP2, SPR and DF (wave d13); provide_storage with the peer_storage handlers and route_blinding with the
@@ -23,7 +24,7 @@ public class FeatureOptions
     /// Add a feature here while it is not implemented, and remove it from this set when it is.
     /// </remarks>
     public static readonly IReadOnlySet<Feature> ExperimentalFeatures =
-        new HashSet<Feature> { Feature.OptionTrampolineRouting };
+        new HashSet<Feature> { Feature.OptionTrampolineRouting, Feature.OptionSimpleTaproot };
 
     /// <summary>
     /// The experimental set these options are gated by: <see cref="ExperimentalFeatures"/>, replaced only by tests of
@@ -240,6 +241,19 @@ public class FeatureOptions
     public FeatureSupport OptionTrampolineRouting { get; set; } = FeatureSupport.No;
 
     /// <summary>
+    /// Enable simple taproot channels (<c>option_simple_taproot</c>, bits 80/81, contexts init and node_announcement and
+    /// a channel type bit; the staging bits 180/181 are never advertised).
+    /// </summary>
+    /// <remarks>
+    /// Defaults to No and is in <see cref="ExperimentalFeatures"/> while taproot channels are being built (NL-877):
+    /// enabling it fails <see cref="GetValidationErrors"/> unless <see cref="AllowExperimentalFeatures"/> is set. BOLT 9
+    /// dependencies: <c>option_channel_type</c> and <see cref="OptionSimpleClose"/>. LND 0.21 also requires
+    /// <see cref="OptionAnchors"/> (bit 23) next to 81 in a peer's init, so a configuration with taproot on and anchors
+    /// off is refused too.
+    /// </remarks>
+    public FeatureSupport OptionSimpleTaproot { get; set; } = FeatureSupport.No;
+
+    /// <summary>
     /// Enable initial routing sync.
     /// </summary>
     /// [Deprecated]
@@ -299,6 +313,13 @@ public class FeatureOptions
             }
         }
 
+        // Not a BOLT 9 dependency, but LND 0.21 refuses an init with 81 and without 23 (feature/deps.go)
+        if (OptionSimpleTaproot != FeatureSupport.No && OptionAnchors == FeatureSupport.No)
+        {
+            errors.Add($"Feature {Feature.OptionSimpleTaproot} requires {Feature.OptionAnchors}, which is disabled "
+                     + "(LND refuses option_simple_taproot without option_anchors)");
+        }
+
         return errors;
     }
 
@@ -328,6 +349,7 @@ public class FeatureOptions
         { Feature.OptionSimpleClose, OptionSimpleClose },
         { Feature.OptionSplice, OptionSplice },
         { Feature.OptionTrampolineRouting, OptionTrampolineRouting },
+        { Feature.OptionSimpleTaproot, OptionSimpleTaproot },
     };
 
     /// <summary>
@@ -451,6 +473,11 @@ public class FeatureOptions
         {
             features.SetFeature(Feature.OptionTrampolineRouting,
                                 OptionTrampolineRouting == FeatureSupport.Compulsory);
+        }
+
+        if (IsAdvertised(Feature.OptionSimpleTaproot, OptionSimpleTaproot))
+        {
+            features.SetFeature(Feature.OptionSimpleTaproot, OptionSimpleTaproot == FeatureSupport.Compulsory);
         }
 
         return features;
@@ -606,6 +633,11 @@ public class FeatureOptions
                                           : featureSet.IsFeatureSet(Feature.OptionTrampolineRouting, false)
                                               ? FeatureSupport.Optional
                                               : FeatureSupport.No,
+            OptionSimpleTaproot = featureSet.IsFeatureSet(Feature.OptionSimpleTaproot, true)
+                                      ? FeatureSupport.Compulsory
+                                      : featureSet.IsFeatureSet(Feature.OptionSimpleTaproot, false)
+                                          ? FeatureSupport.Optional
+                                          : FeatureSupport.No,
         };
 
         if (extension?.TryGetTlv(new BigSize(1), out var chainHashes) ?? false)

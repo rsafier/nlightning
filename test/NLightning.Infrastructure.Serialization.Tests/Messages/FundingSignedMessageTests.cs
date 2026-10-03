@@ -21,7 +21,9 @@ public class FundingSignedMessageTests
 
     private const string MessageHex = ChannelIdHex + SignatureHex;
 
-    private readonly FundingSignedMessageTypeSerializer _serializer = new(SerializerHelper.PayloadSerializerFactory);
+    private readonly FundingSignedMessageTypeSerializer _serializer =
+        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
+            SerializerHelper.TlvStreamSerializer);
 
     [Fact]
     public async Task Given_SpecShapedBytes_When_DeserializeAsync_Then_AllFieldsAreDecoded()

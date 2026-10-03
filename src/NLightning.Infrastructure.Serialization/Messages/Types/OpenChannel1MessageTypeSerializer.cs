@@ -18,7 +18,10 @@ public class OpenChannel1MessageTypeSerializer : IMessageTypeSerializer<OpenChan
     /// The <c>open_channel_tlvs</c> types this node understands. BOLT 1: an unknown even type MUST fail the stream.
     /// </summary>
     private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
-        new HashSet<BigSize> { TlvConstants.UpfrontShutdownScript, TlvConstants.ChannelType };
+        new HashSet<BigSize>
+        {
+            TlvConstants.UpfrontShutdownScript, TlvConstants.ChannelType, TaprootTlvConstants.NextLocalNonce
+        };
 
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
@@ -87,9 +90,12 @@ public class OpenChannel1MessageTypeSerializer : IMessageTypeSerializer<OpenChan
                 channelTypeTlv = channelTypeTlvConverter.ConvertFromBase(baseChannelTypeTlv!);
             }
 
-            return new OpenChannel1Message(payload, channelTypeTlv, upfrontShutdownScriptTlv);
+            var nextLocalNonceTlv =
+                extension.ReadTlv<NextLocalNonceTlv>(TaprootTlvConstants.NextLocalNonce, _tlvConverterFactory);
+
+            return new OpenChannel1Message(payload, channelTypeTlv, upfrontShutdownScriptTlv, nextLocalNonceTlv);
         }
-        catch (SerializationException e)
+        catch (Exception e) when (e is SerializationException or InvalidCastException)
         {
             throw new MessageSerializationException("Error deserializing OpenChannel1Message", e);
         }

@@ -23,7 +23,8 @@ public class MessageExtensionStrictnessTests
     [
         "init", "open_channel", "accept_channel", "open_channel2", "accept_channel2", "tx_init_rbf", "tx_ack_rbf",
         "channel_ready", "channel_reestablish", "closing_signed", "closing_signed_no_fee_range", "commitment_signed",
-        "tx_add_input", "tx_add_input_shared", "tx_signatures", "tx_signatures_shared"
+        "tx_add_input", "tx_add_input_shared", "tx_signatures", "tx_signatures_shared", "funding_created",
+        "funding_signed", "revoke_and_ack", "shutdown", "tx_complete"
     ];
 
     [Theory]
@@ -133,6 +134,26 @@ public class MessageExtensionStrictnessTests
                 // channel_id, txid, num_witnesses = 0, shared_input_signature
                 Zero32 + Zero32 + "0000" + "0040"
               + "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320"),
+            // Read strictly since the simple taproot TLVs (NL-877); their extension was ignored before
+            "funding_created" => (
+                new FundingCreatedMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                // temporary_channel_id, funding_txid, funding_output_index, signature
+                Zero32 + Zero32 + "0000" + new string('0', 128)),
+            "funding_signed" => (
+                new FundingSignedMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                // channel_id, signature
+                Zero32 + new string('0', 128)),
+            "revoke_and_ack" => (
+                new RevokeAndAckMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                // channel_id, per_commitment_secret, next_per_commitment_point
+                Zero32 + Zero32 + Point),
+            "shutdown" => (
+                new ShutdownMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                // channel_id, len = 22, scriptpubkey (P2WPKH)
+                Zero32 + "0016" + "0014" + new string('0', 40)),
+            "tx_complete" => (
+                new TxCompleteMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                Zero32),
             _ => throw new ArgumentOutOfRangeException(nameof(messageName), messageName, null)
         };
     }

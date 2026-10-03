@@ -19,7 +19,11 @@ public class ChannelReestablishMessageTypeSerializer : IMessageTypeSerializer<Ch
     /// (<c>my_current_funding_locked</c>, SP-RE-02). BOLT 1: an unknown even type MUST fail the stream.
     /// </summary>
     private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
-        new HashSet<BigSize> { TlvConstants.NextFunding, TlvConstants.MyCurrentFundingLocked };
+        new HashSet<BigSize>
+        {
+            TlvConstants.NextFunding, TlvConstants.MyCurrentFundingLocked, TaprootTlvConstants.NextLocalNonces,
+            TaprootTlvConstants.CurrentCommitNonce
+        };
 
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
@@ -90,9 +94,15 @@ public class ChannelReestablishMessageTypeSerializer : IMessageTypeSerializer<Ch
                 myCurrentFundingLockedTlv = tlvConverter.ConvertFromBase(baseMyCurrentFundingLockedTlv!);
             }
 
-            return new ChannelReestablishMessage(payload, nextFundingTlv, myCurrentFundingLockedTlv);
+            var nextLocalNoncesTlv =
+                extension.ReadTlv<NextLocalNoncesTlv>(TaprootTlvConstants.NextLocalNonces, _tlvConverterFactory);
+            var currentCommitNonceTlv =
+                extension.ReadTlv<CurrentCommitNonceTlv>(TaprootTlvConstants.CurrentCommitNonce, _tlvConverterFactory);
+
+            return new ChannelReestablishMessage(payload, nextFundingTlv, myCurrentFundingLockedTlv, nextLocalNoncesTlv,
+                                                 currentCommitNonceTlv);
         }
-        catch (SerializationException e)
+        catch (Exception e) when (e is SerializationException or InvalidCastException)
         {
             throw new MessageSerializationException("Error deserializing ChannelReestablishMessage", e);
         }

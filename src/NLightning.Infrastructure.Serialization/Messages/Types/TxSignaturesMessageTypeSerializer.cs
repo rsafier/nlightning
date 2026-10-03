@@ -19,7 +19,10 @@ public class TxSignaturesMessageTypeSerializer : IMessageTypeSerializer<TxSignat
     /// an unknown even type MUST fail the stream.
     /// </summary>
     private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
-        new HashSet<BigSize> { InteractiveTxTlvConstants.SharedInputSignature };
+        new HashSet<BigSize>
+        {
+            InteractiveTxTlvConstants.SharedInputSignature, TaprootTlvConstants.SharedInputPartialSignature
+        };
 
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
@@ -81,7 +84,11 @@ public class TxSignaturesMessageTypeSerializer : IMessageTypeSerializer<TxSignat
                 sharedInputSignatureTlv = tlvConverter.ConvertFromBase(baseSharedInputSignature!);
             }
 
-            return new TxSignaturesMessage(payload, sharedInputSignatureTlv);
+            var sharedInputPartialSignatureTlv =
+                extension.ReadTlv<SharedInputPartialSignatureTlv>(TaprootTlvConstants.SharedInputPartialSignature,
+                                                                  _tlvConverterFactory);
+
+            return new TxSignaturesMessage(payload, sharedInputSignatureTlv, sharedInputPartialSignatureTlv);
         }
         catch (SerializationException e)
         {
