@@ -191,78 +191,95 @@ public class PartitionClusterTests
     public Task Given_AClnThatNeverAnswersOurReestablish_When_TheDeadlinePasses_Then_WeDropAndRedialAndTheChannelStaysGatedUntilTheReestablish() =>
         WithClnPairAsync("part-reestablish", async (pair, ct) =>
         {
-            // Arrange: an invoice first (lightning-cli waits on a frozen lightningd), then freeze lightningd only and
-            // drop the connection; our node redials CLN's connectd
-            var invoice = await pair.Cln.CreateInvoiceAsync(HtlcMsat, "paid before the reestablish", ct);
-            var clnAddress = await pair.Cln.GetAddressAsync(ct);
-            var clnPeerId = new CompactPubKey(Convert.FromHexString(pair.ClnId));
-            await pair.Faults.PauseProcessAsync(pair.ClnHandle, "lightningd", ct);
-            await pair.Nltg.DisconnectAsync(pair.ClnId, ct);
-            var redial = await Record.ExceptionAsync(() => pair.Nltg.ConnectAsync(clnAddress, ct));
-            var sinceRedial = Stopwatch.StartNew();
-            var firstConnection = pair.Nltg.TestNode.PeerManager.GetPeer(clnPeerId);
+            // A failure while lightningd is frozen resumes it first: the failure dump reads CLN through lightning-cli
+            var resumed = false;
+            try
+            {
+                // Arrange: an invoice first (lightning-cli waits on a frozen lightningd), then freeze lightningd only and
+                // drop the connection; our node redials CLN's connectd at the pod IP: the frozen lightningd fails CLN's
+                // readiness probe, which takes the pod out of the cln-p2p Service, so our backoff's redial (to the address
+                // of this connection) must not go through the Service
+                var invoice = await pair.Cln.CreateInvoiceAsync(HtlcMsat, "paid before the reestablish", ct);
+                var clnAddress = await pair.Cln.GetAddressAsync(ct);
+                var clnPodAddress = clnAddress with
+                {
+                    Host = pair.ClnHandle.PodIp ?? throw new InvalidOperationException("CLN has no pod IP")
+                };
+                var clnPeerId = new CompactPubKey(Convert.FromHexString(pair.ClnId));
+                await pair.Faults.PauseProcessAsync(pair.ClnHandle, "lightningd", ct);
+                await pair.Nltg.DisconnectAsync(pair.ClnId, ct);
+                var redial = await Record.ExceptionAsync(() => pair.Nltg.ConnectAsync(clnPodAddress, ct));
+                var sinceRedial = Stopwatch.StartNew();
+                var firstConnection = pair.Nltg.TestNode.PeerManager.GetPeer(clnPeerId);
 
-            // Act: the transport is up (connectd completed init) and the channel must not become usable without CLN's
-            // reestablish; the case this test exists for, so it holds before the deadline or fails
-            Assert.Null(redial);
-            Assert.NotNull(firstConnection);
-            var clnSockets = await TcpConnectionTable.CountEstablishedAsync(pair.ClnHandle, ClnNode.P2PPort, ct);
-            var refused = await pair.Nltg.PayInvoiceAsync(invoice.Bolt11, ct);
-            var afterRefusal = await FindOurChannelAsync(pair, ct);
-            var refusedAt = sinceRedial.Elapsed;
+                // Act: the transport is up (connectd completed init) and the channel must not become usable without CLN's
+                // reestablish; the case this test exists for, so it holds before the deadline or fails
+                Assert.Null(redial);
+                Assert.NotNull(firstConnection);
+                var clnSockets = await TcpConnectionTable.CountEstablishedAsync(pair.ClnHandle, ClnNode.P2PPort, ct);
+                var refused = await pair.Nltg.PayInvoiceAsync(invoice.Bolt11, ct);
+                var afterRefusal = await FindOurChannelAsync(pair, ct);
+                var refusedAt = sinceRedial.Elapsed;
 
-            // Act: past the deadline our node drops the connection and its backoff dials CLN again (a new connection),
-            // while the channel stays gated the whole time
-            var gated = await HoldAsync(pair, ct, c => c is { State: ChannelState.Open, IsReestablished: false },
-                                        s_reestablishTimeout + TimeSpan.FromSeconds(2));
-            var secondConnection = await ClusterPoll.ForAsync(
-                _ => Task.FromResult(pair.Nltg.TestNode.PeerManager.GetPeer(clnPeerId) is { } current
-                                  && !ReferenceEquals(current, firstConnection)
-                                         ? current
-                                         : null),
-                s_stepTimeout, s_poll, "our node dropped CLN after the reestablish deadline and dialed it again", ct);
-            var redialedIn = sinceRedial.Elapsed;
-            var onSecondConnection = await FindOurChannelAsync(pair, ct);
+                // Act: past the deadline our node drops the connection and its backoff dials CLN again (a new connection),
+                // while the channel stays gated the whole time
+                var gated = await HoldAsync(pair, ct, c => c is { State: ChannelState.Open, IsReestablished: false },
+                                            s_reestablishTimeout + TimeSpan.FromSeconds(2));
+                var secondConnection = await ClusterPoll.ForAsync(
+                    _ => Task.FromResult(pair.Nltg.TestNode.PeerManager.GetPeer(clnPeerId) is { } current
+                                      && !ReferenceEquals(current, firstConnection)
+                                             ? current
+                                             : null),
+                    s_stepTimeout, s_poll, "our node dropped CLN after the reestablish deadline and dialed it again", ct);
+                var redialedIn = sinceRedial.Elapsed;
+                var onSecondConnection = await FindOurChannelAsync(pair, ct);
 
-            // Act: partition the half-open link, resume CLN, heal
-            var partition = await pair.Faults.PartitionFromHostAsync([pair.ClnHandle], null, ct);
-            await pair.Nltg.DisconnectAsync(pair.ClnId, ct);
-            await pair.Faults.ResumeAsync(pair.ClnHandle, ct);
-            await Task.Delay(TimeSpan.FromSeconds(2), ct);
-            await pair.Faults.HealAsync(partition, ct);
-            var heal = Stopwatch.StartNew();
-            await pair.Nltg.ConnectAsync(clnAddress, ct);
-            await WaitActiveBothEndsAsync(pair, ct);
-            var activeIn = heal.Elapsed;
+                // Act: partition the half-open link, resume CLN, heal
+                var partition = await pair.Faults.PartitionFromHostAsync([pair.ClnHandle], null, ct);
+                await pair.Nltg.DisconnectAsync(pair.ClnId, ct);
+                await pair.Faults.ResumeAsync(pair.ClnHandle, ct);
+                resumed = true;
+                await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                await pair.Faults.HealAsync(partition, ct);
+                var heal = Stopwatch.StartNew();
+                await pair.Nltg.ConnectAsync(clnAddress, ct);
+                await WaitActiveBothEndsAsync(pair, ct);
+                var activeIn = heal.Elapsed;
 
-            // Assert
-            Assert.True(clnSockets >= 1, $"CLN's pod holds {clnSockets} established connections on its p2p port while "
-                                       + "lightningd is frozen");
-            Assert.False(refused.Succeeded);
-            Assert.True(refusedAt < s_reestablishTimeout,
-                        $"the payment was refused {refusedAt} after the redial, past the deadline");
-            Assert.True(afterRefusal.IsPeerConnected, "the transport dropped before the deadline");
-            Assert.False(afterRefusal.IsReestablished);
-            Assert.Equal(0, afterRefusal.OfferedHtlcCount);
-            Assert.True(redialedIn >= s_reestablishTimeout - TimeSpan.FromSeconds(1),
-                        $"our node redialed {redialedIn} after the first connection, before the deadline");
-            Assert.True(redialedIn < s_reestablishTimeout + s_reconnectMaxDelay + TimeSpan.FromSeconds(20),
-                        $"our node redialed only {redialedIn} after the first connection");
-            Assert.NotNull(secondConnection);
-            Assert.Equal(ChannelState.Open, onSecondConnection.State);
-            Assert.False(onSecondConnection.IsReestablished);
-            Assert.Equal(0, onSecondConnection.OfferedHtlcCount);
-            Assert.Equal("unpaid", await ClnInvoiceStatusAsync(pair, invoice.PaymentHashHex, ct));
-            await PayClnAsync(pair, HtlcMsat, ct);
-            await WaitBalancesAsync(pair, PushMsat + HtlcMsat, ct);
+                // Assert
+                Assert.True(clnSockets >= 1, $"CLN's pod holds {clnSockets} established connections on its p2p port while "
+                                           + "lightningd is frozen");
+                Assert.False(refused.Succeeded);
+                Assert.True(refusedAt < s_reestablishTimeout,
+                            $"the payment was refused {refusedAt} after the redial, past the deadline");
+                Assert.True(afterRefusal.IsPeerConnected, "the transport dropped before the deadline");
+                Assert.False(afterRefusal.IsReestablished);
+                Assert.Equal(0, afterRefusal.OfferedHtlcCount);
+                Assert.True(redialedIn >= s_reestablishTimeout - TimeSpan.FromSeconds(1),
+                            $"our node redialed {redialedIn} after the first connection, before the deadline");
+                Assert.True(redialedIn < s_reestablishTimeout + s_reconnectMaxDelay + TimeSpan.FromSeconds(20),
+                            $"our node redialed only {redialedIn} after the first connection");
+                Assert.NotNull(secondConnection);
+                Assert.Equal(ChannelState.Open, onSecondConnection.State);
+                Assert.False(onSecondConnection.IsReestablished);
+                Assert.Equal(0, onSecondConnection.OfferedHtlcCount);
+                Assert.Equal("unpaid", await ClnInvoiceStatusAsync(pair, invoice.PaymentHashHex, ct));
+                await PayClnAsync(pair, HtlcMsat, ct);
+                await WaitBalancesAsync(pair, PushMsat + HtlcMsat, ct);
 
-            Log($"{pair.Namespace}: redial to the frozen CLN connected ({clnSockets} established on CLN's p2p port), "
-              + $"payment refused ({refused.FailureReason}) {refusedAt.TotalSeconds:F1} s in, gated "
-              + $"{gated.TotalSeconds:F1} s, dropped and redialed by our node {redialedIn.TotalSeconds:F1} s after the "
-              + $"redial (deadline {s_reestablishTimeout.TotalSeconds:F0} s), active {activeIn.TotalSeconds:F1} s after "
-              + "the heal");
-            foreach (var fault in pair.Faults.Events)
-                Log($"  {fault}");
+                Log($"{pair.Namespace}: redial to the frozen CLN connected ({clnSockets} established on CLN's p2p port), "
+                  + $"payment refused ({refused.FailureReason}) {refusedAt.TotalSeconds:F1} s in, gated "
+                  + $"{gated.TotalSeconds:F1} s, dropped and redialed by our node {redialedIn.TotalSeconds:F1} s after the "
+                  + $"redial (deadline {s_reestablishTimeout.TotalSeconds:F0} s), active {activeIn.TotalSeconds:F1} s after "
+                  + "the heal");
+                foreach (var fault in pair.Faults.Events)
+                    Log($"  {fault}");
+            }
+            catch when (!resumed)
+            {
+                await pair.Faults.ResumeAsync(pair.ClnHandle, CancellationToken.None);
+                throw;
+            }
         }, o => o.ReestablishTimeout = s_reestablishTimeout);
 
     /// <summary>
