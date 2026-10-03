@@ -145,10 +145,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 59 | 60 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 62 | 198 | 398 | 672 |
+| fixed | 14 | 62 | 198 | 399 | 673 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **62** | **207** | **468** | **751** |
+| **Total** | **14** | **62** | **207** | **469** | **752** |
 
 ### Epics
 
@@ -7840,6 +7840,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Done: `NLightningTestNode` sets `Gossip:MaxMemoryMb=0` (budget off, usage still reported) before `ExtraConfiguration`, so a test that proves the budget can set it again. Proof: the CLN suite on the cluster `scripts/run-cluster.sh -n 1 --suite cln` (batch `integ-final-cln`) 90/90 + 4 `Explicit` not run in 954 s, and on Docker `scripts/run-interop.sh cln Release` 90/90 + 4 `Explicit` not run in 804 s, `ClnGossipTests` green in both full runs.
 - **Blocks/Blocked-by:** Related NL-373, NL-466
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Integration record (wip/integrate)"
+
+### NL-876 `dotnet format --verify-no-changes` failed on a clean tree with SDK 10.0.401 (IDE0031)
+- **Status:** fixed (c578ac1b)
+- **Severity:** low
+- **Kind:** ci
+- **Location:** `Application/Channels/Backup/ChannelRestoreService.cs`, `Channels/DualFunding/DualFundedOpenService.cs`, `Channels/Splicing/RetiredScidMap.cs`, `Channels/Splicing/SpliceService.cs`, `Gossip/Services/ChannelUpdateService.cs`, `Infrastructure.Bitcoin/Gossip/FundingOutputLookup.cs`
+- **Evidence:** trampoline wave tr1 (2026-10-03, cloud host with SDK 10.0.401): the format gate reported 13 IDE0031 ("null check can be simplified") errors at `858f0b7e`, none in changed files; the analyzer of the newer SDK suggests C# 14 null-conditional assignment for `if (x is not null) x.Event += h;`.
+- **Fix sketch:** Done: `dotnet format --diagnostics IDE0031` (13 sites, `x?.Event += h`); Release build 0 warnings.
+- **Blocks/Blocked-by:** Related NL-875
+- **Plan ref:** none
 
 ## Docs
 
