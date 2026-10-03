@@ -52,6 +52,7 @@ public sealed class EclairInteropTests : IAsyncLifetime
 
     public EclairInteropTests(EclairFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -60,7 +61,7 @@ public sealed class EclairInteropTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var session in _ownSessions.Append(_session).OfType<EclairChannelSession>())
                 Console.WriteLine($"[eclair] channel at failure: {await session.DescribeAsync(CancellationToken.None)}");

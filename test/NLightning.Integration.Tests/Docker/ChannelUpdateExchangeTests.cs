@@ -127,7 +127,7 @@ public class ChannelUpdateExchangeTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
             await _fixture.DumpLndLogsAsync(["alice"]);
 
         if (_node is not null)

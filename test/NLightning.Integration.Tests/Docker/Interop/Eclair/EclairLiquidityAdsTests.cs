@@ -36,12 +36,10 @@ using Utils;
 /// </summary>
 /// <remarks>
 /// Eclair 0.14.3's API can only sell (<c>open</c>, <c>rbfopen</c> and <c>splicein</c> never request funding), so
-/// every purchase here is ours. The seller Eclair is a separate node on the fixture's chain (a container on Docker, a
-/// node of the collection's run namespace on the cluster), so the shared Eclair the other classes use keeps its default
-/// configuration. Run with <c>scripts/run-interop.sh eclair Release -class
-/// NLightning.Integration.Tests.Docker.Interop.Eclair.EclairLiquidityAdsTests</c> (Docker) or
+/// every purchase here is ours. The seller Eclair is a separate node on the fixture's chain (a node of the
+/// collection's run namespace), so the shared Eclair the other classes use keeps its default configuration. Run with
 /// <c>scripts/run-cluster.sh -n 1 --suite eclair --class
-/// NLightning.Integration.Tests.Docker.Interop.Eclair.EclairLiquidityAdsTests</c> (cluster).
+/// NLightning.Integration.Tests.Docker.Interop.Eclair.EclairLiquidityAdsTests</c>.
 /// </remarks>
 [Collection(EclairInteropCollection.Name)]
 [Trait("Category", EclairInteropCollection.Category)]
@@ -69,6 +67,7 @@ public sealed class EclairLiquidityAdsTests : IAsyncLifetime
 
     public EclairLiquidityAdsTests(EclairFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -80,7 +79,7 @@ public sealed class EclairLiquidityAdsTests : IAsyncLifetime
         if (_session is null)
             return;
 
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             Console.WriteLine($"[eclair-seller] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
             await _fixture.DumpSellerLogAsync(400);

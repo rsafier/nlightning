@@ -98,6 +98,7 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
 
     public ClnQuiescenceTests(ClnFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -118,7 +119,7 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
             Console.WriteLine("[cln] CLN unusual/broken log lines so far:\n"
                             + await _fixture.Cln.GetLogLinesAsync(string.Empty, CancellationToken.None, 60,
                                                                   "unusual"));
-            if (DockerDiagnostics.CurrentTestFailed)
+            if (TestDiagnostics.CurrentTestFailed)
                 Console.WriteLine($"[cln] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
 
             await _session.DisposeAsync();

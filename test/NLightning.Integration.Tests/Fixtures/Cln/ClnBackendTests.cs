@@ -9,27 +9,27 @@ using ClnNodeOptions = Testing.Cluster.Nodes.Cln.ClnNodeOptions;
 public class ClnBackendTests
 {
     [Fact]
-    public void Given_TheFixturesCln_When_ArgsBuilt_Then_TheyAreTheDockerFixturesCommandLine()
+    public void Given_TheFixturesCln_When_ArgsBuilt_Then_TheyAreTheFixturesCommandLine()
     {
-        // Arrange: the command line ClnFixture ran CLN with before the backend split
+        // Arrange: the command line the fixture's CLN always ran with, on the run's chain (alias miner)
         string[] expected =
         [
-            "--bitcoin-rpcconnect=nltg-cln-bitcoind", "--bitcoin-rpcport=18443", "--bitcoin-rpcuser=nltg",
+            "--bitcoin-rpcconnect=miner", "--bitcoin-rpcport=18443", "--bitcoin-rpcuser=nltg",
             "--bitcoin-rpcpassword=nltg", "--bind-addr=0.0.0.0:9735", "--alias=nltg-cln", "--log-level=debug",
             "--developer", "--dev-bitcoind-poll=1", "--ignore-fee-limits=false"
         ];
 
         // Act
-        var args = DockerClnBackend.BuildClnArgs(ClnFixture.ClnContainerName, enforceFeeLimits: true, []);
+        var args = ClnNode.BuildArgs(ClnFixture.ClnContainerName, Options(ClnFixture.ClnContainerName, true, []));
 
         // Assert
         Assert.Equal(expected, args);
     }
 
     [Fact]
-    public void Given_ADualFundingSpec_When_ArgsBuilt_Then_TheyAreTheDualFundClassesFormerCommandLine()
+    public void Given_ADualFundingSpec_When_ArgsBuilt_Then_TheyAreTheDualFundClassesCommandLine()
     {
-        // Arrange: ClnDualFundTests' own container before the backend split (no fee-limit flag, its options last)
+        // Arrange: ClnDualFundTests' own node (no fee-limit flag, its options last)
         string[] extra =
         [
             "--experimental-dual-fund", "--funding-confirms=3", "--funder-lease-requests-only=false",
@@ -37,39 +37,16 @@ public class ClnBackendTests
         ];
         string[] expected =
         [
-            "--bitcoin-rpcconnect=nltg-cln-bitcoind", "--bitcoin-rpcport=18443", "--bitcoin-rpcuser=nltg",
+            "--bitcoin-rpcconnect=miner", "--bitcoin-rpcport=18443", "--bitcoin-rpcuser=nltg",
             "--bitcoin-rpcpassword=nltg", "--bind-addr=0.0.0.0:9735", "--alias=nltg-cln-df", "--log-level=debug",
             "--developer", "--dev-bitcoind-poll=1", .. extra
         ];
 
         // Act
-        var args = DockerClnBackend.BuildClnArgs("nltg-cln-df", enforceFeeLimits: false, extra);
+        var args = ClnNode.BuildArgs("nltg-cln-df", Options("nltg-cln-df", false, extra));
 
         // Assert
         Assert.Equal(expected, args);
-    }
-
-    [Fact]
-    public void Given_TheSameSpec_When_BuiltForTheCluster_Then_TheLightningdFlagsMatchDocker()
-    {
-        // Arrange: the cluster's CLN flags past the bitcoind connection (its host is the chain's alias there)
-        var options = new ClnNodeOptions
-        {
-            BitcoindHost = "miner",
-            BitcoindRpcUser = ClnFixture.RpcUser,
-            BitcoindRpcPassword = ClnFixture.RpcPassword,
-            Alias = "nltg-cln-sp2",
-            EnforceFeeLimits = true,
-            ExtraArgs = ["--experimental-splicing"]
-        };
-
-        // Act
-        var cluster = ClnNode.BuildArgs("nltg-cln-sp2", options);
-        var docker = DockerClnBackend.BuildClnArgs("nltg-cln-sp2", true, ["--experimental-splicing"]);
-
-        // Assert
-        Assert.Equal(docker.Skip(1), cluster.Skip(1));
-        Assert.Equal("--bitcoin-rpcconnect=miner", cluster[0]);
     }
 
     [Fact]
@@ -139,4 +116,15 @@ public class ClnBackendTests
         Assert.False(spec.Restartable);
         Assert.Empty(spec.ExtraArgs);
     }
+
+    private static ClnNodeOptions Options(string alias, bool enforceFeeLimits, IReadOnlyList<string> extraArgs) =>
+        new()
+        {
+            BitcoindHost = "miner",
+            BitcoindRpcUser = "nltg",
+            BitcoindRpcPassword = "nltg",
+            Alias = alias,
+            EnforceFeeLimits = enforceFeeLimits,
+            ExtraArgs = extraArgs
+        };
 }

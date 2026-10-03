@@ -97,6 +97,7 @@ public sealed class ClnOnionMessageTests : IAsyncLifetime
 
     public ClnOnionMessageTests(ClnFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -125,7 +126,7 @@ public sealed class ClnOnionMessageTests : IAsyncLifetime
             await proof.Node.DisposeAsync();
         }
 
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
             await _fixture.DumpClnLogAsync(300);
     }
 

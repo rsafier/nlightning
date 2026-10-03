@@ -8,21 +8,20 @@ using Testing.Cluster.Nodes.Postgres;
 using Testing.Cluster.Run;
 
 /// <summary>
-/// The cluster backend of <see cref="PostgresFixture"/> (<c>NLTG_TEST_BACKEND=cluster</c>, test harness phase 4): a run
+/// The backend of <see cref="PostgresFixture"/> (test harness phase 4; the only one since NL-866 retired the Docker
+/// backend): a run
 /// namespace of its own (suite <c>postgres</c>, or <c>postgres-&lt;name&gt;</c> for
 /// <see cref="PostgresFixture.StartNamed"/>) holding one <see cref="PostgresNode"/> (the same image release, pinned by
 /// digest, with the fixture's database, user and password; its data in an <c>emptyDir</c>, never restarted). This
 /// process connects to the pod IP (OrbStack routes the pod network to the host). A failed test of the collection
 /// dumps the namespace (<c>[assembly: ClusterDiagnostics]</c>); disposing deletes it.
 /// </summary>
-public sealed class ClusterPostgresBackend(string name) : IPostgresBackend
+public sealed class ClusterPostgresBackend(string name)
 {
     private static readonly TimeSpan s_deployTimeout = TimeSpan.FromMinutes(3);
 
     private TestRun? _run;
     private PostgresNode? _node;
-
-    public TestBackendKind Kind => TestBackendKind.Cluster;
 
     public string Host => _node?.Host ?? throw new InvalidOperationException("The Postgres fixture is not running");
 
@@ -33,7 +32,7 @@ public sealed class ClusterPostgresBackend(string name) : IPostgresBackend
 
     /// <summary>The suite name of the run: <c>postgres</c> for the collection's server, else one per name.</summary>
     public static string SuiteFor(string name) =>
-        name == PostgresFixture.DefaultContainerName ? "postgres" : $"postgres-{name}";
+        name == PostgresFixture.DefaultNodeName ? "postgres" : $"postgres-{name}";
 
     /// <summary>The node's alias: the fixture's container name when it is a valid workload name, else <c>postgres</c>.</summary>
     public static string NodeNameFor(string name) =>

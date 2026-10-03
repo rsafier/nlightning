@@ -397,7 +397,7 @@ public class NormalOperationFlowTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
             await _fixture.DumpLndLogsAsync(["alice"]);
 
         try

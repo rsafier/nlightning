@@ -12,10 +12,11 @@ using Testing.Cluster.Run;
 using Testing.Cluster.Topology;
 
 /// <summary>
-/// The cluster backend of <see cref="ClnFixture"/> (<c>NLTG_TEST_BACKEND=cluster</c>, test harness phase 2): a warm
+/// The backend of <see cref="ClnFixture"/> (<c>NLTG_TEST_BACKEND=cluster</c>, test harness phase 2; the only one since
+/// NL-866 retired the Docker backend): a warm
 /// topology (<see cref="ClusterTopologyFixture"/>, one run namespace for the whole CLN collection) with the harness's
-/// bitcoind (<c>miner</c>) and a CLN named <see cref="ClnFixture.ClnContainerName"/> (same image, flags and alias as
-/// the Docker container), both on <c>emptyDir</c> (never restarted); the in-process nodes reach bitcoind by its pod
+/// bitcoind (<c>miner</c>) and a CLN named <see cref="ClnFixture.ClnContainerName"/> (the pinned CLN image, its
+/// flags and its name as alias), both on <c>emptyDir</c> (never restarted); the in-process nodes reach bitcoind by its pod
 /// IP (<see cref="ClusterChainEndpoint"/>) and CLN by its pod IP, and CLN reaches them at
 /// <see cref="HostEndpoints.ForPods"/>. A failed test of the collection dumps the namespace
 /// (<c>[assembly: ClusterDiagnostics]</c>).
@@ -23,10 +24,9 @@ using Testing.Cluster.Topology;
 /// <remarks>
 /// Nodes a test adds (<see cref="StartClnAsync"/>) go into the same namespace and are removed when disposed
 /// (<see cref="TestRun.RemoveNodeAsync"/>); a restartable one gets a PVC and its stable ClusterIP name
-/// (<see cref="StableNodeAddress"/>), which this process dials, so its address survives the restart as the Docker
-/// backend's fixed host port does.
+/// (<see cref="StableNodeAddress"/>), which this process dials, so its address survives the restart.
 /// </remarks>
-public sealed class ClusterClnBackend : IClnBackend
+public sealed class ClusterClnBackend
 {
     /// <summary>How long a node a test adds may take to be ready, and to be reachable at its address.</summary>
     private static readonly TimeSpan s_readyTimeout = TimeSpan.FromMinutes(2);
@@ -37,8 +37,6 @@ public sealed class ClusterClnBackend : IClnBackend
     private RegtestBitcoinEndpoint? _bitcoin;
     private ClnClient? _cln;
     private KubeNodeHandle? _clnHandle;
-
-    public TestBackendKind Kind => TestBackendKind.Cluster;
 
     public RegtestBitcoinEndpoint Bitcoin =>
         _bitcoin ?? throw new InvalidOperationException("The CLN fixture is not running");
@@ -187,7 +185,7 @@ public sealed class ClusterClnBackend : IClnBackend
 
     /// <summary>
     /// The collection's topology: bitcoind <c>miner</c> and CLN <see cref="ClnFixture.ClnContainerName"/>, both on
-    /// <c>emptyDir</c>, nothing funded or opened (the tests build their own channels, as on Docker).
+    /// <c>emptyDir</c>, nothing funded or opened (the tests build their own channels).
     /// </summary>
     private sealed class ClnTopology : ClusterTopologyFixture
     {

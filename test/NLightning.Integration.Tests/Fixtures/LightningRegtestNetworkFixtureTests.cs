@@ -12,7 +12,6 @@ public class LightningRegtestNetworkFixtureTests
     [Theory]
     [InlineData(null)]
     [InlineData("")]
-    [InlineData("docker")]
     public async Task Given_TheBackendIsNotTheCluster_When_TheFixtureStarts_Then_ItStartsNothingAndSaysWhy(
         string? backend)
     {
@@ -108,11 +107,13 @@ public class LightningRegtestNetworkFixtureTests
         }
     }
 
-    [Fact]
-    public void Given_AMistypedBackend_When_TheFixtureIsBuilt_Then_ItThrowsInsteadOfSkipping()
+    [Theory]
+    [InlineData("clustr")]
+    [InlineData("docker")]
+    public void Given_AMistypedOrRetiredBackend_When_TheFixtureIsBuilt_Then_ItThrowsInsteadOfSkipping(string backend)
     {
-        // Act & Assert: a typo must not turn a whole suite into skips
-        Assert.Throws<ArgumentException>(() => new LightningRegtestNetworkFixture(Environment("clustr"),
+        // Act & Assert: a typo, or the retired Docker backend (NL-866), must not turn a whole suite into skips
+        Assert.Throws<ArgumentException>(() => new LightningRegtestNetworkFixture(Environment(backend),
                                                                                   s_kubeConfigured));
     }
 

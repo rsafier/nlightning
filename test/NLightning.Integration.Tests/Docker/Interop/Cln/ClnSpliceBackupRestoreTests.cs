@@ -52,6 +52,7 @@ public sealed class ClnSpliceBackupRestoreTests : IAsyncLifetime
 
     public ClnSpliceBackupRestoreTests(ClnFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -62,7 +63,7 @@ public sealed class ClnSpliceBackupRestoreTests : IAsyncLifetime
     {
         if (_session is not null)
         {
-            if (DockerDiagnostics.CurrentTestFailed)
+            if (TestDiagnostics.CurrentTestFailed)
                 Console.WriteLine($"[cln] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
 
             await _session.DisposeAsync();

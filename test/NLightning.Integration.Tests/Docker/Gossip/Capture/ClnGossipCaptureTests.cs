@@ -39,6 +39,7 @@ public sealed class ClnGossipCaptureTests : IAsyncLifetime
 
     public ClnGossipCaptureTests(ClnFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }

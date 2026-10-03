@@ -101,7 +101,7 @@ public partial class LnUnitAbsenceTests
         Assert.Equal(matches, LnUnitUsage().IsMatch(line));
     }
 
-    private static string FindRepositoryRoot()
+    internal static string FindRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null;
              directory = directory.Parent)
@@ -114,7 +114,7 @@ public partial class LnUnitAbsenceTests
         return string.Empty;
     }
 
-    private static IEnumerable<string> EnumerateSources(string root, string pattern) =>
+    internal static IEnumerable<string> EnumerateSources(string root, string pattern) =>
         Directory.EnumerateFiles(Path.Combine(root, "test"), pattern, SearchOption.AllDirectories)
                  .Concat(Directory.EnumerateFiles(Path.Combine(root, "src"), pattern, SearchOption.AllDirectories))
                  .Concat(Directory.EnumerateFiles(Path.Combine(root, "tools"), pattern, SearchOption.AllDirectories))
@@ -124,7 +124,7 @@ public partial class LnUnitAbsenceTests
     private static bool IsBuildOutput(string root, string path) =>
         Relative(root, path).Split('/').Any(segment => segment is "bin" or "obj");
 
-    private static string Relative(string root, string path) =>
+    internal static string Relative(string root, string path) =>
         Path.GetRelativePath(root, path).Replace(Path.DirectorySeparatorChar, '/');
 
     /// <summary>

@@ -34,7 +34,7 @@ using Utils;
 /// rows (<c>OutputResolutions</c>), our wallet and payments, bitcoind, and LDK's <c>list-channels</c>,
 /// <c>get-balances</c> and <c>list-payments</c>. LDK claims what it is owed through its own <c>OutputSweeper</c>
 /// (spendable outputs once 6 blocks deep), which is why the LDK side is checked by its on-chain balance.</para>
-/// <para>Each test builds its own node and channel. Run with <c>scripts/run-interop.sh ldk Release -class
+/// <para>Each test builds its own node and channel. Run with <c>scripts/run-cluster.sh -n 1 --suite ldk --class
 /// NLightning.Integration.Tests.Docker.Interop.Ldk.LdkOnchainTests</c>.</para>
 /// </remarks>
 [Collection(LdkInteropCollection.Name)]
@@ -54,6 +54,7 @@ public sealed class LdkOnchainTests : IAsyncLifetime
 
     public LdkOnchainTests(LdkFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -62,7 +63,7 @@ public sealed class LdkOnchainTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var session in _sessions)
             {

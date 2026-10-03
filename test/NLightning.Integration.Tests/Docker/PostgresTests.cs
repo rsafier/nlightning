@@ -18,6 +18,7 @@ public class PostgresTests
 
     public PostgresTests(PostgresFixture fixture)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
     }
 

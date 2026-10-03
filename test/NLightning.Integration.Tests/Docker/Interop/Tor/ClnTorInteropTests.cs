@@ -14,6 +14,7 @@ using Domain.Node.Options;
 using Domain.Node.ValueObjects;
 using Domain.Payments.Enums;
 using Fixtures;
+using Fixtures.Tor;
 using Infrastructure.Transport.Tor;
 using Utils;
 
@@ -66,10 +67,10 @@ public sealed class ClnTorInteropTests : IAsyncLifetime
 
         Console.WriteLine("[cln] CLN unusual/broken log lines so far:\n"
                         + await _fixture.Cln.GetLogLinesAsync(string.Empty, CancellationToken.None, 100, "unusual"));
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             Console.WriteLine("[tor] log tail:\n" + await _fixture.GetTorLogAsync(80, CancellationToken.None));
-            await DockerDiagnostics.DumpContainerLogsAsync([TorInteropFixture.ClnContainerName], 300);
+            await _fixture.DumpClnLogAsync(300);
         }
 
         foreach (var keyFile in _keyFiles)

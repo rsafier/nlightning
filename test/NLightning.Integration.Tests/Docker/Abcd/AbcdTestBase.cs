@@ -51,7 +51,7 @@ public abstract class AbcdTestBase : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             if (Network is not null)
                 await Network.DumpDiagnosticsAsync();

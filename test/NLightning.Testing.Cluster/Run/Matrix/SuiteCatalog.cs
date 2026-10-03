@@ -7,8 +7,8 @@ namespace NLightning.Testing.Cluster.Run.Matrix;
 /// 2-namespace suite queued behind 1-namespace ones would wait until two slots free at once. The longest collections
 /// are split in two suites (<c>gossip</c>/<c>day0</c>, <c>eclair</c>/<c>eclair2</c>), each its own process and
 /// topology, so no suite runs much longer than the CLN suite. Every suite runs on the cluster backend
-/// (<c>NLTG_TEST_BACKEND=cluster</c>) except <c>tor</c>, which stays on Docker (owner decision) and is listed as
-/// skipped. SQL Server tests never run (owner decision): <see cref="GlobalConstraints"/> leave them out everywhere.
+/// (<c>NLTG_TEST_BACKEND=cluster</c>), its fixtures' only backend (NL-820, NL-866), except <c>tor</c>, which stays on
+/// Docker (owner decision) and is listed as skipped. SQL Server tests never run (owner decision): <see cref="GlobalConstraints"/> leave them out everywhere.
 /// </summary>
 public static class SuiteCatalog
 {

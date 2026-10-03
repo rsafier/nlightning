@@ -21,7 +21,7 @@ using Utils;
 /// <c>invoice_request</c> reaches Eclair as an onion message, its invoice comes back, and our payment through its
 /// blinded path succeeds and Eclair lists it received.
 /// </summary>
-/// <remarks>Run with <c>scripts/run-interop.sh eclair Release -class
+/// <remarks>Run with <c>scripts/run-cluster.sh -n 1 --suite eclair --class
 /// NLightning.Integration.Tests.Docker.Interop.Eclair.EclairOfferTests</c>.</remarks>
 [Collection(EclairInteropCollection.Name)]
 [Trait("Category", EclairInteropCollection.Category)]
@@ -37,6 +37,7 @@ public sealed class EclairOfferTests : IAsyncLifetime
 
     public EclairOfferTests(EclairFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -48,7 +49,7 @@ public sealed class EclairOfferTests : IAsyncLifetime
         if (_session is null)
             return;
 
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             Console.WriteLine($"[eclair] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
             await _fixture.DumpEclairLogAsync(400);

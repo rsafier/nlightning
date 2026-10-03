@@ -11,21 +11,20 @@ using Testing.Cluster.Run;
 using Testing.Cluster.Topology;
 
 /// <summary>
-/// The cluster backend of <see cref="EclairFixture"/> (<c>NLTG_TEST_BACKEND=cluster</c>, test harness phase 4): a warm
+/// The backend of <see cref="EclairFixture"/> (<c>NLTG_TEST_BACKEND=cluster</c>, test harness phase 4; the only one
+/// since NL-866 retired the Docker backend): a warm
 /// topology (<see cref="ClusterTopologyFixture"/>, one run namespace for the whole Eclair collection) with the harness's
-/// bitcoind <c>miner</c> on Bitcoin Core 31.1 (as the Docker backend's <see cref="InteropChainHost"/>; Eclair 0.14.3
-/// refuses older) on <c>emptyDir</c>, and Eclair <see cref="EclairFixture.EclairContainerName"/> from the same local
-/// image, configuration and wallet (<see cref="EclairNode"/>) on a PVC behind its stable ClusterIP name
+/// bitcoind <c>miner</c> on Bitcoin Core 31.1 (Eclair 0.14.3 refuses older) on <c>emptyDir</c>, and Eclair <see cref="EclairFixture.EclairContainerName"/> from the local image
+/// <c>nltg-eclair:0.14.3</c> (built from <c>test/Docker/eclair</c>, never pulled), its configuration and wallet (<see cref="EclairNode"/>) on a PVC behind its stable ClusterIP name
 /// (<see cref="StableNodeAddress"/>), because the tests restart it.
 /// </summary>
 /// <remarks>
 /// The in-process nodes reach bitcoind by its pod IP (<see cref="ClusterChainEndpoint"/>), Eclair's p2p port at the
-/// stable name (it stays the same across <see cref="RestartEclairAsync"/>, as the Docker backend's fixed host port
-/// does) and its API at the pod's IP (moved to the new pod after a restart). Eclair reaches this process at
+/// stable name (it stays the same across <see cref="RestartEclairAsync"/>) and its API at the pod's IP (moved to the new pod after a restart). Eclair reaches this process at
 /// <see cref="HostEndpoints.ForPods"/>. A failed test of the collection dumps the namespace, Eclair's state included
 /// (<c>[assembly: ClusterDiagnostics]</c>).
 /// </remarks>
-public sealed class ClusterEclairBackend : IEclairBackend
+public sealed class ClusterEclairBackend
 {
     /// <summary>How long Eclair may take to be ready again, reachable, and at the tip.</summary>
     private static readonly TimeSpan s_readyTimeout = TimeSpan.FromMinutes(2);
@@ -37,8 +36,6 @@ public sealed class ClusterEclairBackend : IEclairBackend
     private EclairTestPeer? _peer;
     private EclairTestPeer? _sellerPeer;
     private EclairClient? _seller;
-
-    public TestBackendKind Kind => TestBackendKind.Cluster;
 
     public RegtestBitcoinEndpoint Bitcoin =>
         _bitcoin ?? throw new InvalidOperationException("The Eclair fixture is not running");
@@ -219,7 +216,7 @@ public sealed class ClusterEclairBackend : IEclairBackend
     /// <summary>
     /// The collection's topology: bitcoind <c>miner</c> (31.1, <c>emptyDir</c>) and Eclair
     /// <see cref="EclairFixture.EclairContainerName"/> (PVC, restarted by the tests), nothing funded or opened (the
-    /// tests build their own channels, as on Docker).
+    /// tests build their own channels).
     /// </summary>
     private sealed class EclairTopology : ClusterTopologyFixture
     {
