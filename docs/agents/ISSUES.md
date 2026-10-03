@@ -147,12 +147,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 61 | 62 |
+| open | 0 | 0 | 1 | 62 | 63 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
 | fixed | 14 | 63 | 201 | 412 | 690 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **210** | **484** | **771** |
+| **Total** | **14** | **63** | **210** | **485** | **772** |
 
 ### Epics
 
@@ -5469,7 +5469,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Node/Managers/PeerManagerBatchTests.cs`
 - **Evidence:** Lane acct-a3-fixes-b (2026-10-02, several lanes building and testing on the machine): failed once in the full non-Docker run; the class passed 15/15 three times alone. The failure message was not captured. The test waits on `WaitForHandledAsync` and a disconnect `TaskCompletionSource` with `s_timeout`. Not hit in the A3 integration runs.
-- **Evidence (2):** Lane nl806 (2026-10-03, full non-Docker run on net10.0): `(batchSize: 0)` failed once with `Assert.Single() Failure: The collection was empty` at line 153 (`Warnings()` still empty after `WaitForHandledAsync(1)`: the warning is read before it was raised); the class passed 15/15 three times alone.
+- **Evidence (2):** Lane nl806 (2026-10-03, full non-Docker run on net10.0): `(batchSize: 0)` failed once with `Assert.Single() Failure: The collection was empty` at line 153 (`Warnings()` still empty after `WaitForHandledAsync(1)`: the warning is read before it was raised); the class passed 15/15 three times alone. Again `(batchSize: 0)` in the post-merge full run of the same lane, same message.
 - **Fix sketch:** Find the wait it races (as in the de-timing pass, NL-620 style); rerun alone before treating it as a regression.
 - **Blocks/Blocked-by:** Related NL-620
 - **Plan ref:** —
@@ -8046,6 +8046,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Done: `IpcRequestLog.IsFault`: an exception only a bug raises, or one thrown outside NLightning code (its `TargetSite`), is logged at ERR with the stack whatever the error code; a refusal thrown by our code stays one WRN line and its exception goes to Debug; `ConnectPeer`'s `InvalidOperationException` catch uses the same rule. Tests `IpcRequestLogTests` (3 new). A dedicated refusal exception type for the services stays a possible cleanup.
 - **Blocks/Blocked-by:** Related NL-883
 - **Plan ref:** none
+
+### NL-900 `FinancialReclassificationTests.Given_AClosedEntry_When_ARuleIsAddedDisabledEnabledAndAddedAgain_*` failed once under a loaded full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Accounting/Financial/FinancialReclassificationTests.cs` (line 128)
+- **Evidence:** Lane nl806 (2026-10-03, the post-merge full non-Docker run on net10.0 while other sessions built SDK 11 and ran cluster suites): `Assert.Null(entries[1].RuleId)` got 1 after 11 s (the first `RuleChange` adjustment carried the rule's id although "the rule had no id before its save"); the class (with `PeerManagerBatchTests`) passed 21/21 three times alone. Seen once.
+- **Fix sketch:** Find what the adjustment's `RuleId` reads under load (the rule row's id assigned before the adjustment is staged, or the entries' order); rerun alone before treating it as a regression.
+- **Blocks/Blocked-by:** Related NL-660
+- **Plan ref:** —
 
 ## Docs
 
