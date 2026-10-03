@@ -1837,6 +1837,48 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T3, T4
 - **t02 lane SIG:** items 3, 5 and 7 done in `LocalLightningSigner.Taproot.cs`. (3) Verification nonces from the counter scheme bound to the funding txid: `HMAC-SHA256(key = "taproot-rev-root" || funding_txid, msg = sha256(per-commitment seed))`, leaf `2^48-1-n`, `NonceGen(rand' = leaf, pk = that funding's key)`; commitment 0 uses the key without a txid (the formula of LND's `DeriveMusig2Shachain`); a verification nonce signs one broadcast session only (memory record, so the shared commitment-0 nonce of dual-funded open attempts never signs twice); `IMusig2Service.GenerateNonce(pubKey, privKey, ...)` draws its own randomness with the key required, and `IMusig2Service.CreateSession` binds the aggregate to its public nonces (`MusigSigningSession.PublicNonces`, checked by `VerifyPartialSignature`). (5) `Taproot/SimpleTaprootMirroredCommitmentTests`: Alice's remote and Bob's local commitment are one transaction through the production factory/builders, the MuSig2 partial and the 0x83 HTLC signatures verify on Bob's side, and the broadcast and HTLC transactions pass script execution. (7) Our BIP 340 HTLC signature is verified before it leaves the signer and a taproot context with `HasAnchors = false` throws `SignerException`. Items 1, 2, 4 and 6 are not the signer's.
+- **t02 lane STATE:** items 1 and 2 done (branch `tap2-state`). (1) The `CommitmentSpec` region of `CommitmentFeeCalculator` takes only a `CommitmentFormat` (the `bool` forms are gone there), `CommitmentParams.Format` carries the channel's format into the engine, and every caller passes it (`UpdateValidator`, `ChannelCommitments`, `ChannelOpenValidator`, `ChannelFactory`, `DualFundedOpenService`, `HtlcSwitch`, `InvoiceService`, `ChannelCloseCoordinator`, `DustExposurePolicy`, `AnchorCpfpService*`); proven by an exactly affordable `update_fee` and `update_add_htlc` on a taproot engine that the anchors weight refuses (`SimpleTaprootCommitmentsTests`). (2) `ChannelParams.OptionSimpleTaproot` forces `OptionAnchorOutputs` true (the anchors semantics stay on every anchors branch) and `CommitmentFormat` returns `SimpleTaproot`; anchor CPFP skips taproot channels with a log line (T4). The places that still build P2WSH for a taproot channel are NL-953 (funding) and NL-954 (on chain).
+
+### NL-953 Funding output and transaction builders build the P2WSH 2-of-2 for a simple taproot channel
+- **Status:** open
+- **Severity:** medium
+- **Kind:** tech-debt
+- **Location:** `Infrastructure.Bitcoin/Builders/FundingTransactionBuilder.cs`, `FundingOutputBuilder.cs`, `ClosingTransactionBuilder.cs`, `Application/Channels/Splicing/SpliceFundingScripts.cs`, `DualFundedOpenService.GetFundingScript`, `CommitmentSigningService.WithFunding` (splice fundings)
+- **Evidence:** Taproot wave t02 lane STATE wired the channel type into `ChannelParams`/`CommitmentParams` and the engine, but these builders take a `FundingOutputInfo` without the commitment format and always build the P2WSH 2-of-2; a taproot open (T5) needs the MuSig2 P2TR output (`TaprootFundingOutput`, what `LocalLightningSigner.SignFundingTransaction` already checks). Latent until the open handlers create taproot channels.
+- **Fix sketch:** Give `FundingOutputInfo` (or the funding transaction model) the format and branch the builders on `IsTaproot()` in the opening phase; refuse a taproot splice until T5.
+- **Blocks/Blocked-by:** Related NL-877, NL-904
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T5
+
+### NL-954 On-chain code treats a simple taproot channel as an anchors (P2WSH) channel
+- **Status:** open
+- **Severity:** medium
+- **Kind:** tech-debt
+- **Location:** `Application/Onchain/OnchainChannelWatcher.cs`, `Onchain/Resolvers/{Local,Remote,Revoked}CommitResolver*`, `Onchain/Mempool/MempoolReactor.cs`, `Infrastructure.Bitcoin/Wallet/AnchorReserveService.cs`, `Channels/Accounting/ChannelAccountingEvents.cs` (the `anchors` field)
+- **Evidence:** `ChannelParams.OptionAnchorOutputs` is true for a taproot channel (NL-904 item 2), so these take the anchors branches with P2WSH output descriptors; T1 left `CommitmentOutputMapper` and the resolvers without taproot descriptors. Anchor CPFP is the one place guarded in lane STATE (`AnchorCpfpService.IsSkippedTaprootChannel`, logged once per channel). The anchor reserve keeps counting taproot channels, which is right (their HTLC transactions need wallet fee inputs too).
+- **Fix sketch:** T4: taproot descriptors in the mapper and resolvers, CPFP through the taproot anchor, then drop the CPFP guard.
+- **Blocks/Blocked-by:** Related NL-877, NL-904
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T4
+
+### NL-955 Static channel backups and peer storage do not carry the simple taproot channel type
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `Application/Channels/Backup/ChannelBackupCodec.cs`, `Models/ChannelBackupEntry.cs`, `RecoveryChannels.cs`, `Node/PeerStorage/`
+- **Evidence:** The backup flags have anchors but no taproot bit, so a restored taproot channel would be rebuilt as an anchors channel (wrong scripts for the to_remote sweep).
+- **Fix sketch:** A taproot flag in the backup entry and codec (new version byte), restore sweeping `to_remote` by its script path (T5 "Backups").
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T5
+
+### NL-956 D-T4 gate open: no crash-injection proof yet that no MuSig2 nonce is reused
+- **Status:** open
+- **Severity:** medium
+- **Kind:** test
+- **Location:** `Application/Channels/Services/ChannelStateTransitionService.cs` (the taproot handlers of the next phase), `Integration.Tests/Persistence` crash-injection tests (N5 style)
+- **Evidence:** Lane STATE persists the peer's partial signatures and verification nonces (migration `AddSimpleTaprootChannels`) and the engine consumes a peer nonce in the same transition that signs with it; our signing nonces are JIT and never stored, our verification nonces counter-derived (lane SIG). Plan D-T4 still asks for a crash test on all three providers once the handlers send taproot `commitment_signed`/`revoke_and_ack`.
+- **Fix sketch:** Crash after each statement of the taproot transitions' saves (as `Given_CrashAfterEachStatementOfASave_*`), restart, and assert that a re-signed commitment uses a fresh signing nonce and the reloaded peer nonce map.
+- **Blocks/Blocked-by:** Related NL-877, NL-904
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T3, D-T4
+
 ## BOLT 3: Transactions and scripts
 
 
