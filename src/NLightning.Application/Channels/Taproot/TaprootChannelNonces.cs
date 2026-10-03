@@ -1,5 +1,6 @@
 namespace NLightning.Application.Channels.Taproot;
 
+using Close.Simple;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Models;
@@ -70,6 +71,29 @@ public static class TaprootChannelNonces
     {
         ArgumentNullException.ThrowIfNull(nonces);
         return nonces.Entries.ToDictionary(e => e.FundingTxId, e => e.Nonce);
+    }
+
+    /// <summary>
+    /// The peer's <c>next_local_nonces</c> of a <c>revoke_and_ack</c> or <c>channel_reestablish</c>: every entry must
+    /// parse as two compressed secp256k1 points (bolt-simple-taproot.md §Message Retransmission: "MUST fail the channel
+    /// if <c>next_local_nonces</c> is absent, or cannot be parsed"; NL-975). A nonce that is not one would be saved and
+    /// then make every <c>commitment_signed</c> of ours fail in the signer, so the channel would hang until its HTLC
+    /// deadlines instead of failing.
+    /// </summary>
+    /// <exception cref="ChannelFailedException">An entry does not parse (TAPROOT-NONCE-R02).</exception>
+    public static void ThrowIfUnparsable(ChannelModel channel, FundingNonces nonces, string messageName)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(nonces);
+        foreach (var (txId, nonce) in nonces.Entries)
+            if (!TaprootCloseNonces.IsValidPublicNonce(nonce))
+                throw new ChannelFailedException(channel.ChannelId,
+                                                 $"[TAPROOT-NONCE-R02] {messageName} next_local_nonces entry for "
+                                               + $"funding {txId} is not two compressed points",
+                                                 $"{messageName} next_local_nonces does not parse")
+                {
+                    RequirementId = "TAPROOT-NONCE-R02"
+                };
     }
 
     /// <summary>

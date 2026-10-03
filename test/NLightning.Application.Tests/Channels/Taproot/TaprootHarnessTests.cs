@@ -14,7 +14,9 @@ using Domain.Money;
 using Domain.Payments.ValueObjects;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Models;
 using Domain.Protocol.Onion.ValueObjects;
+using Domain.Protocol.Tlv;
 using Harness;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using NLightning.Tests.Utils.Mocks;
@@ -257,6 +259,64 @@ public class TaprootHarnessTests
         // Assert
         Assert.Equal("TAPROOT-NONCE-R01", failure.RequirementId);
     }
+
+    [Fact]
+    public async Task Given_RevokeAndAckWithANonceThatIsNotTwoPoints_When_Received_Then_TheChannelFails()
+    {
+        // Arrange - Bob's revoke_and_ack carries a nonce map entry that does not parse (NL-975: it used to be saved,
+        // and every later commitment_signed of Alice's failed in the signer)
+        using var harness = new TwoNodeHarness(simpleTaproot: true);
+        await OfferAsync(harness.Alice, AliceAmountMsat, 1);
+        await harness.Alice.Scheduler.WhenIdleAsync();
+        harness.DeliveryBudget = 2;
+        await harness.PumpAsync();
+        Assert.True(harness.Bob.TryTakeNext(out var bobMessage));
+        var revokeAndAck = Assert.IsType<RevokeAndAckMessage>(bobMessage);
+        var tampered = new RevokeAndAckMessage(revokeAndAck.Payload,
+                                               new NextLocalNoncesTlv(Unparsable(revokeAndAck.NextLocalNoncesTlv!)));
+
+        // Act
+        var failure = await Assert.ThrowsAsync<ChannelFailedException>(
+                          () => harness.Alice.ChannelManager.HandleChannelMessageAsync(
+                              tampered, harness.Bob.NegotiatedFeatures, harness.Bob.NodeId));
+
+        // Assert
+        Assert.Equal("TAPROOT-NONCE-R02", failure.RequirementId);
+        Assert.Equal(ChannelState.Failed, harness.Alice.Channel.State);
+    }
+
+    [Fact]
+    public async Task Given_ChannelReestablishWithANonceThatIsNotTwoPoints_When_Received_Then_TheChannelFails()
+    {
+        // Arrange - an HTLC in flight, then the link drops; Bob's channel_reestablish nonce does not parse (NL-975)
+        using var harness = new TwoNodeHarness(simpleTaproot: true);
+        await OfferAsync(harness.Alice, AliceAmountMsat, 1);
+        await harness.PumpAsync();
+        await harness.DisconnectAsync();
+        await harness.ReconnectAsync();
+        Assert.True(harness.Bob.TryTakeNext(out var bobMessage));
+        var reestablish = Assert.IsType<ChannelReestablishMessage>(bobMessage);
+        var tampered = new ChannelReestablishMessage(reestablish.Payload, null, null,
+                                                     new NextLocalNoncesTlv(Unparsable(reestablish.NextLocalNoncesTlv!)));
+
+        // Act
+        var failure = await Assert.ThrowsAsync<ChannelFailedException>(
+                          () => harness.Alice.ChannelManager.HandleChannelMessageAsync(
+                              tampered, harness.Bob.NegotiatedFeatures, harness.Bob.NodeId));
+
+        // Assert
+        Assert.Equal("TAPROOT-NONCE-R02", failure.RequirementId);
+        Assert.Equal(ChannelState.Failed, harness.Alice.Channel.State);
+    }
+
+    /// <summary>The same map with every nonce's first point made unparsable (prefix 0x05).</summary>
+    private static FundingNonces Unparsable(NextLocalNoncesTlv tlv) =>
+        new(tlv.Nonces.Entries.Select(e =>
+        {
+            var bytes = ((byte[])e.Nonce).ToArray();
+            bytes[0] = 0x05;
+            return (e.FundingTxId, new MusigPublicNonce(bytes));
+        }));
 
     [Fact]
     public async Task Given_CommitmentSignedWithANonZeroSignature_When_Received_Then_TheChannelFails()

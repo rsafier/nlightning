@@ -55,6 +55,9 @@ public class RevokeAndAckMessageHandler : IChannelMessageHandler<RevokeAndAckMes
         {
             // A simple taproot channel's next_local_nonces replace the peer's verification nonces; the engine fails the
             // channel when they are absent or miss an active funding (NL-877 T3)
+            // (each entry must parse as two points, NL-975)
+            if (channel.ChannelParams.OptionSimpleTaproot && message.NextLocalNoncesTlv is { } received)
+                TaprootChannelNonces.ThrowIfUnparsable(channel, received.Nonces, "revoke_and_ack");
             var nonces = message.NextLocalNoncesTlv is { } noncesTlv
                              ? TaprootChannelNonces.ToDictionary(noncesTlv.Nonces)
                              : null;

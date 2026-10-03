@@ -125,8 +125,8 @@ public class OpenChannelIpcHandlerTests
                 Amount = LightningMoney.Satoshis(1_000),
                 PushAmount = LightningMoney.Satoshis(10)
             }, s_options, TestContext.Current.CancellationToken);
-        // fixarray of 11 (keys 0-10; 7 and 8 are the label and tags, NL-602 A3-T1; 9 and 10 the liquidity purchase,
-        // NL-850)
+        // fixarray of 12 (keys 0-11; 7 and 8 are the label and tags, NL-602 A3-T1; 9 and 10 the liquidity purchase,
+        // NL-850; 11 the channel type, NL-877 T5)
         Assert.Equal(0x9C, current[0]);
         Assert.Equal(0xC2, current[^8]); // key 4: false
         Assert.Equal(0xC2, current[^7]); // key 5: false
@@ -195,6 +195,31 @@ public class OpenChannelIpcHandlerTests
         // Assert
         Assert.False(request.ForceV1);
         Assert.False(request.ToClientRequest().ForceV1);
+    }
+
+    [Fact]
+    public void Given_ARequestWithoutKey11_When_Deserialized_Then_ItKeepsTheDefaultChannelType()
+    {
+        // Arrange (a client before NL-877 T5: keys 0-10): the same request without its last array element
+        var current = MessagePackSerializer.Serialize(
+            new OpenChannelIpcRequest
+            {
+                NodeInfo = "02abc@127.0.0.1:9735",
+                Amount = LightningMoney.Satoshis(1_000),
+                ForceV1 = true
+            }, s_options, TestContext.Current.CancellationToken);
+        Assert.Equal(0x9C, current[0]);
+        Assert.Equal(0xC0, current[^1]); // key 11: nil
+        byte[] older = [0x9B, .. current[1..^1]];
+
+        // Act
+        var request = MessagePackSerializer.Deserialize<OpenChannelIpcRequest>(
+            older, s_options, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Null(request.ChannelType);
+        Assert.True(request.ForceV1);
+        Assert.False(request.ToClientRequest().IsSimpleTaproot);
     }
 
     [Fact]
