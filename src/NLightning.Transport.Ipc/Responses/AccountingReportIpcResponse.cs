@@ -281,6 +281,12 @@ public sealed class AccountingChannelIpcResponse
     /// <summary>The net yield annualized over the same time as <see cref="AnnualizedYield"/>.</summary>
     [Key(35)] public double? NetAnnualizedYield { get; init; }
 
+    /// <summary>Liquidity fees paid on the channel (liquidity ads, NL-771).</summary>
+    [Key(36)] public long LiquidityFeesPaidMsat { get; init; }
+
+    /// <summary>Liquidity fees earned on the channel (liquidity ads, NL-771).</summary>
+    [Key(37)] public long LiquidityFeesEarnedMsat { get; init; }
+
     public static AccountingChannelIpcResponse From(AccountingChannelLine line) => new()
     {
         ChannelId = line.ChannelId.ToString(),
@@ -318,7 +324,9 @@ public sealed class AccountingChannelIpcResponse
         OpenedAtBlockHeight = line.OpenedAtBlockHeight,
         TrackedSinceUnixMilliseconds = AccountingReportIpcResponse.Milliseconds(line.TrackedSince),
         NetYieldOnCapacity = line.NetYieldOnCapacity,
-        NetAnnualizedYield = line.NetAnnualizedYield
+        NetAnnualizedYield = line.NetAnnualizedYield,
+        LiquidityFeesPaidMsat = line.LiquidityFeesPaidMsat,
+        LiquidityFeesEarnedMsat = line.LiquidityFeesEarnedMsat
     };
 }
 
@@ -342,6 +350,8 @@ public sealed class AccountingPeerIpcResponse
     [Key(11)] public long OnchainFeesMsat { get; init; }
     [Key(12)] public long OnchainLossMsat { get; init; }
     [Key(13)] public long NetMsat { get; init; }
+    [Key(14)] public long LiquidityFeesPaidMsat { get; init; }
+    [Key(15)] public long LiquidityFeesEarnedMsat { get; init; }
 
     public static AccountingPeerIpcResponse From(AccountingPeerLine line) => new()
     {
@@ -358,7 +368,9 @@ public sealed class AccountingPeerIpcResponse
         RebalanceCostMsat = line.RebalanceCostMsat,
         OnchainFeesMsat = line.OnchainFeesMsat,
         OnchainLossMsat = line.OnchainLossMsat,
-        NetMsat = line.NetMsat
+        NetMsat = line.NetMsat,
+        LiquidityFeesPaidMsat = line.LiquidityFeesPaidMsat,
+        LiquidityFeesEarnedMsat = line.LiquidityFeesEarnedMsat
     };
 }
 

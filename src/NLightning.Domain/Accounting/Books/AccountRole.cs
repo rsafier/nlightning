@@ -14,10 +14,18 @@ public enum AccountRole
     Routing = 11,
     PushReceived = 12,
     OnchainGain = 13,
+
+    /// <summary>The fees we earned selling liquidity (liquidity ads, NL-771).</summary>
+    LiquidityIncome = 14,
+
     Sent = 20,
     RoutingFees = 21,
     Rebalance = 22,
     PushSent = 23,
+
+    /// <summary>The fees we paid buying liquidity (liquidity ads, NL-771): mining and service fee.</summary>
+    LiquidityFees = 24,
+
     FeeFunding = 30,
     FeeSplice = 31,
     FeeClose = 32,

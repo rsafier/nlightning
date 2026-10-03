@@ -103,7 +103,8 @@ public static class FinancialLotRules
         // Income and equity coming in are credits when we acquire; expenses and equity going out are debits when we
         // dispose. The opposite sign is a reversal of such a line.
         var inward = posting.Account is AccountRole.Received or AccountRole.Routing or AccountRole.PushReceived
-                                     or AccountRole.OnchainGain or AccountRole.TransfersIn or AccountRole.Opening;
+                                     or AccountRole.OnchainGain or AccountRole.LiquidityIncome
+                                     or AccountRole.TransfersIn or AccountRole.Opening;
         if (inward)
             return posting.AmountMsat < 0 ? FinancialLineKind.Acquisition : FinancialLineKind.Disposal;
 

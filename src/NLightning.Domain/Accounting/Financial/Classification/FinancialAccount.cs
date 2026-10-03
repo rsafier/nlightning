@@ -26,6 +26,9 @@ public enum FinancialAccount
     IncomeUnclassified = 13,
     RealizedGains = 14,
 
+    /// <summary>The fees we earned selling liquidity (liquidity ads, NL-771).</summary>
+    Liquidity = 15,
+
     // Expenses
     Payments = 20,
     Losses = 21,
@@ -41,6 +44,9 @@ public enum FinancialAccount
     FeeSweep = 35,
     FeeCpfp = 36,
     FeeWithdraw = 37,
+
+    /// <summary>The fees we paid buying liquidity (liquidity ads, NL-771).</summary>
+    FeeLiquidity = 38,
 
     // Equity (the opening balances and the transfers default to the operational names)
     Opening = 50,

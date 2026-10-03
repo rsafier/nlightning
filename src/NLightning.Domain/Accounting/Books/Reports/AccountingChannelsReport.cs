@@ -118,11 +118,19 @@ public sealed record AccountingChannelLine
     /// <summary>Value lost on chain: trimmed or dust value of a force close, forwards lost on chain.</summary>
     public long OnchainLossMsat { get; init; }
 
+    /// <summary>Liquidity fees we paid buying liquidity on this channel (liquidity ads, NL-771).</summary>
+    public long LiquidityFeesPaidMsat { get; init; }
+
+    /// <summary>Liquidity fees we earned selling liquidity on this channel (liquidity ads, NL-771).</summary>
+    public long LiquidityFeesEarnedMsat { get; init; }
+
     public long OnchainFeesMsat =>
         FundingFeeMsat + SpliceFeeMsat + CloseFeeMsat + CommitmentFeeMsat + SweepFeeMsat + CpfpFeeMsat;
 
-    /// <summary>What the channel earned as a fee earner: routing out, less rebalance cost, on-chain fees and losses.</summary>
-    public long NetMsat => RoutingOutMsat - RebalanceCostMsat - OnchainFeesMsat - OnchainLossMsat;
+    /// <summary>What the channel earned as a fee earner: routing out and liquidity fees earned, less rebalance cost,
+    /// liquidity fees paid, on-chain fees and losses.</summary>
+    public long NetMsat => RoutingOutMsat + LiquidityFeesEarnedMsat - RebalanceCostMsat - LiquidityFeesPaidMsat
+                         - OnchainFeesMsat - OnchainLossMsat;
 
     /// <summary>
     /// The routing yield before costs: <see cref="RoutingOutMsat"/> over <see cref="CapacityMsat"/> (null when the
@@ -172,4 +180,6 @@ public sealed record AccountingPeerLine
     public long OnchainFeesMsat { get; init; }
     public long OnchainLossMsat { get; init; }
     public long NetMsat { get; init; }
+    public long LiquidityFeesPaidMsat { get; init; }
+    public long LiquidityFeesEarnedMsat { get; init; }
 }

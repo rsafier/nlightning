@@ -79,6 +79,57 @@ public static class AccountingDetailKeys
 
     #endregion
 
+    #region Liquidity ads (NL-771)
+
+    /// <summary>
+    /// The liquidity fee (msat, signed: positive when we paid it, negative when we earned it) that the balance of a
+    /// funding or splice includes: on <see cref="Enums.AccountingEventKind.ChannelFunded"/> and
+    /// <see cref="Enums.AccountingEventKind.SpliceLocked"/>, whose amounts leave it out (the liquidity event books it).
+    /// </summary>
+    public const string LiquidityFeeMsat = "liquidityFeeMsat";
+
+    /// <summary>Our side of a liquidity purchase: <see cref="LiquidityBuyer"/> or <see cref="LiquiditySeller"/>.</summary>
+    public const string LiquidityRole = "role";
+
+    public const string LiquidityBuyer = "buyer";
+    public const string LiquiditySeller = "seller";
+
+    /// <summary>The channel of a liquidity purchase (also the event's channel id).</summary>
+    public const string PurchaseChannelId = "channelId";
+
+    /// <summary>The funding (or splice) transaction a liquidity purchase was made in (also the event's txid).</summary>
+    public const string PurchaseFundingTxId = "fundingTxId";
+
+    /// <summary>The other node of a liquidity purchase (also the event's counterparty).</summary>
+    public const string PurchasePeer = "peer";
+
+    /// <summary>The amount the buyer requested, in satoshis.</summary>
+    public const string RequestedSat = "requestedSat";
+
+    /// <summary>The amount the seller contributed, in satoshis.</summary>
+    public const string ContributedSat = "contributedSat";
+
+    /// <summary>The mining fee part of a liquidity fee (the seller's on-chain weight refunded), in msat.</summary>
+    public const string MiningFeeMsat = "miningFeeMsat";
+
+    /// <summary>The service fee part of a liquidity fee (the seller's own fee), in msat.</summary>
+    public const string ServiceFeeMsat = "serviceFeeMsat";
+
+    /// <summary>The <see cref="Kind"/> of a liquidity purchase made at a dual-funded open.</summary>
+    public const string LiquidityKindOpen = "open";
+
+    /// <summary>The <see cref="Kind"/> of a liquidity purchase made at an RBF of a dual-funded open.</summary>
+    public const string LiquidityKindRbf = "rbf";
+
+    /// <summary>The <see cref="Kind"/> of a liquidity purchase made at a splice.</summary>
+    public const string LiquidityKindSplice = "splice";
+
+    /// <summary>On the <see cref="Enums.AccountingEventKind.Reversal"/> of a liquidity purchase whose attempt an RBF
+    /// replaced: the funding transaction of the attempt that replaced it, when known.</summary>
+    public const string ReplacedBy = "replacedBy";
+
+    #endregion
+
     #region Force close and on-chain resolution
 
     /// <summary>What a force close is (<c>LocalCommitment</c>, <c>RemoteCommitment</c>, ...).</summary>

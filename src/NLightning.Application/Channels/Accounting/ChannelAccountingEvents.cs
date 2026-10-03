@@ -14,6 +14,7 @@ using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
 using Domain.Persistence.Interfaces;
@@ -41,6 +42,13 @@ using Splicing;
 /// wallet inputs minus our wallet outputs minus our fee), so <c>AmountMsat</c> is that delta and the fee is not counted
 /// twice: the books post the delta to the channel and the fee to expenses, and the wallet side follows from the
 /// identity above.</para>
+/// <para>Liquidity ads (NL-771): a purchase moves the fee (mining plus service) from the buyer's balance to the
+/// seller's in the new commitment, with no output of its own. <see cref="AccountingEventKind.ChannelFunded"/> and
+/// <see cref="AccountingEventKind.SpliceLocked"/> book our contribution without it (their <c>liquidityFeeMsat</c>
+/// argument, + when we paid, − when we earned, is the part of the balance that is the fee) and
+/// <see cref="RecordLiquidityPurchaseAsync"/> books the fee itself
+/// (<see cref="AccountingEventKind.LiquidityFeePaid"/> or <see cref="AccountingEventKind.LiquidityFeeEarned"/>), so
+/// the channels account holds the balance and the fee is an expense or income.</para>
 /// </remarks>
 internal static class ChannelAccountingEvents
 {
@@ -53,15 +61,20 @@ internal static class ChannelAccountingEvents
     /// confirmation's save). The channel must hold the confirmed funding outpoint, its short channel id and, in
     /// <see cref="ChannelModel.FundingCreatedAtBlockHeight"/>, the funding's block.
     /// </summary>
+    /// <param name="liquidityFeeMsat">The liquidity fee of a purchase made in this funding (NL-771): + when we bought,
+    /// − when we sold, 0 for none. Only used when the attempt's contribution is not stored (the channel balance, which
+    /// includes the fee, stands in for it); stage the fee itself with <see cref="RecordLiquidityPurchaseAsync"/>.</param>
     public static async Task StageChannelFundedAsync(IUnitOfWork unitOfWork, ChannelModel channel,
-                                                     DateTimeOffset occurredAt, ILogger logger)
+                                                     DateTimeOffset occurredAt, ILogger logger,
+                                                     long liquidityFeeMsat = 0)
     {
         try
         {
             if (unitOfWork.AccountingEventDbRepository is not { } events)
                 return;
 
-            foreach (var accountingEvent in await BuildChannelFundedAsync(unitOfWork, channel, occurredAt))
+            foreach (var accountingEvent in await BuildChannelFundedAsync(unitOfWork, channel, occurredAt,
+                                                                          liquidityFeeMsat: liquidityFeeMsat))
                 events.Add(accountingEvent);
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -77,9 +90,10 @@ internal static class ChannelAccountingEvents
     /// without this its force close would take our balance out of a channel bucket that never received it. Once per
     /// funding (the event's key), in its own save; never throws.
     /// </summary>
+    /// <param name="liquidityFeeMsat">As for <see cref="StageChannelFundedAsync"/>.</param>
     public static async Task RecordLateChannelFundedAsync(IUnitOfWork unitOfWork, ChannelModel channel, uint height,
                                                           ShortChannelId shortChannelId, DateTimeOffset occurredAt,
-                                                          ILogger logger)
+                                                          ILogger logger, long liquidityFeeMsat = 0)
     {
         try
         {
@@ -88,7 +102,8 @@ internal static class ChannelAccountingEvents
              || await events.ExistsAsync(AccountingEventKeys.ChannelFunded(channel.ChannelId, fundingTxId)))
                 return;
 
-            var built = await BuildChannelFundedAsync(unitOfWork, channel, occurredAt, (height, shortChannelId));
+            var built = await BuildChannelFundedAsync(unitOfWork, channel, occurredAt, (height, shortChannelId),
+                                                      liquidityFeeMsat);
             foreach (var accountingEvent in built)
                 if (!await events.ExistsAsync(accountingEvent.EventKey))
                     events.Add(accountingEvent);
@@ -111,9 +126,10 @@ internal static class ChannelAccountingEvents
     /// </summary>
     /// <param name="confirmedAt">The funding's block and short channel id when the channel does not hold them (a
     /// channel that failed before its funding confirmed, NL-617); null takes the channel's.</param>
+    /// <param name="liquidityFeeMsat">As for <see cref="StageChannelFundedAsync"/>.</param>
     public static async Task<IReadOnlyList<AccountingEventModel>> BuildChannelFundedAsync(
         IUnitOfWork unitOfWork, ChannelModel channel, DateTimeOffset occurredAt,
-        (uint Height, ShortChannelId ShortChannelId)? confirmedAt = null)
+        (uint Height, ShortChannelId ShortChannelId)? confirmedAt = null, long liquidityFeeMsat = 0)
     {
         if (channel.FundingOutput is not { TransactionId: { } fundingTxId } funding)
             return [];
@@ -125,10 +141,11 @@ internal static class ChannelAccountingEvents
         ulong? totalFeeSat = null;
         if (isDualFunded)
         {
+            // Our share of the funding output: never the balance, which a liquidity fee moved (NL-771)
             var attempt = await FindAttemptAsync(unitOfWork, channel.ChannelId, fundingTxId);
             contributionMsat = attempt?.LocalFundingSatoshis is { } localSat
                                    ? checked(localSat * 1_000)
-                                   : checked((long)channel.LocalBalance.MilliSatoshi);
+                                   : checked((long)channel.LocalBalance.MilliSatoshi + liquidityFeeMsat);
             if (attempt?.ConstructedTx is { } transaction)
             {
                 totalFeeSat = SpliceService.GetTotalFee(transaction);
@@ -182,6 +199,7 @@ internal static class ChannelAccountingEvents
                 ("scidAlias", Format(channel.ChannelParams.UseScidAlias > FeatureSupport.No)),
                 ("fundingFeeSat", totalFeeSat is { } total ? Format(total) : null),
                 ("feeUnknown", feeMsat is null ? "true" : null),
+                (AccountingDetailKeys.LiquidityFeeMsat, liquidityFeeMsat != 0 ? Format(liquidityFeeMsat) : null),
                 ("pushMsat", push is null ? null : Format(push.MilliSatoshi)),
                 ("pushUnknown", push is null && !isDualFunded ? "true" : null),
                 // NL-602 A3-T1: the operator's label and tags of the open (openchannel --label/--tag)
@@ -244,15 +262,22 @@ internal static class ChannelAccountingEvents
     /// locked (both <c>splice_locked</c>, before the lock's save), with its deltas relative to
     /// <paramref name="previous"/>, the funding it replaces.
     /// </summary>
+    /// <param name="liquidityFeeMsat">The liquidity fee of a purchase made in this splice (NL-771) that
+    /// <see cref="ChannelFunding.LocalBalanceDeltaMsat"/> includes: + when we bought (the delta is our contribution
+    /// less the fee), − when we sold (our contribution plus the fee), 0 for none. The event's amount and our fee share
+    /// leave it out; stage the fee itself with <see cref="RecordLiquidityPurchaseAsync"/>.</param>
     public static async Task StageSpliceLockedAsync(IUnitOfWork unitOfWork, ChannelModel channel,
                                                     ChannelFunding locked, ChannelFunding previous,
-                                                    DateTimeOffset occurredAt, ILogger logger)
+                                                    DateTimeOffset occurredAt, ILogger logger,
+                                                    long liquidityFeeMsat = 0)
     {
         try
         {
             if (unitOfWork.AccountingEventDbRepository is not { } events)
                 return;
 
+            // The change of our balance less the liquidity fee it includes: what our wallet put in or took out
+            var deltaMsat = checked(locked.LocalBalanceDeltaMsat + liquidityFeeMsat);
             var attempt = await FindAttemptAsync(unitOfWork, channel.ChannelId, locked.FundingTxId);
             long? feeMsat = null;
             ulong? totalFeeSat = null;
@@ -261,7 +286,7 @@ internal static class ChannelAccountingEvents
             if (attempt?.ConstructedTx is { } transaction)
             {
                 totalFeeSat = SpliceService.GetTotalFee(transaction);
-                feeMsat = GetLocalFeeShareMsat(transaction, locked.LocalBalanceDeltaMsat);
+                feeMsat = GetLocalFeeShareMsat(transaction, deltaMsat);
                 (walletInputsSat, walletOutputsSat) = GetLocalWalletAmounts(transaction);
             }
 
@@ -276,20 +301,19 @@ internal static class ChannelAccountingEvents
                 TxId = locked.FundingTxId,
                 OutputIndex = locked.OutputIndex,
                 Counterparty = channel.RemoteNodeId,
-                AmountMsat = locked.LocalBalanceDeltaMsat,
+                AmountMsat = deltaMsat,
                 FeeMsat = feeMsat ?? 0,
                 Finality = AccountingFinality.Confirmed,
                 Details = AccountingDetailsCodec.Create(
-                    (AccountingDetailKeys.BucketFrom,
-                     locked.LocalBalanceDeltaMsat >= 0 ? WalletBucket : ChannelBucket),
-                    (AccountingDetailKeys.BucketTo,
-                     locked.LocalBalanceDeltaMsat >= 0 ? ChannelBucket : WalletBucket),
+                    (AccountingDetailKeys.BucketFrom, deltaMsat >= 0 ? WalletBucket : ChannelBucket),
+                    (AccountingDetailKeys.BucketTo, deltaMsat >= 0 ? ChannelBucket : WalletBucket),
                     (AccountingDetailKeys.Kind, locked.Kind.ToString()),
                     ("capacitySat", Format(locked.CapacitySatoshis)),
                     ("previousCapacitySat", Format(previous.CapacitySatoshis)),
                     ("previousFundingTxId", previous.FundingTxId.ToString()),
                     ("grossDeltaMsat", Format(locked.LocalBalanceDeltaMsat)),
                     ("deltaIncludesFee", "true"),
+                    (AccountingDetailKeys.LiquidityFeeMsat, liquidityFeeMsat != 0 ? Format(liquidityFeeMsat) : null),
                     ("ourFeeMsat", feeMsat is { } fee ? Format(fee) : null),
                     ("spliceFeeSat", totalFeeSat is { } total ? Format(total) : null),
                     ("walletInputsSat", walletInputsSat is { } inputs ? Format(inputs) : null),
@@ -304,6 +328,221 @@ internal static class ChannelAccountingEvents
                             locked.FundingTxId, channel.ChannelId);
         }
     }
+
+    /// <summary>
+    /// Stages the liquidity fee of a purchase (liquidity ads, NL-771) made in the funding or splice
+    /// <paramref name="fundingTxId"/> of <paramref name="channelId"/>: <see cref="AccountingEventKind.LiquidityFeePaid"/>
+    /// (AmountMsat −fee, FeeMsat fee) when we bought, <see cref="AccountingEventKind.LiquidityFeeEarned"/> (AmountMsat
+    /// +fee) when we sold, the fee being the mining fee plus the service fee. Keyed by channel and funding
+    /// (<see cref="AccountingEventKeys.LiquidityFee"/>): nothing is staged while that purchase's event stands, and a
+    /// purchase whose event an RBF replaced (<see cref="RecordLiquidityPurchaseReplacedAsync"/>) is recorded again
+    /// under its next key (that attempt confirmed after all). Nothing for a zero fee. Staged on
+    /// <paramref name="unitOfWork"/>, whose save commits it; never throws.
+    /// </summary>
+    /// <remarks>
+    /// Stage it in the save that books the funding (with <see cref="StageChannelFundedAsync"/>) or the splice's lock
+    /// (with <see cref="StageSpliceLockedAsync"/>), passing them the same fee: the reconcile counts a channel's balance
+    /// only once its funding confirmed and a splice's new balance only once it locked, so a fee booked earlier shows as
+    /// a drift of the channels account until then. Booked earlier (in the negotiation's save), an RBF that replaces the
+    /// attempt must reverse it with <see cref="RecordLiquidityPurchaseReplacedAsync"/>.
+    /// </remarks>
+    /// <param name="weBought">True when we bought the liquidity (the fee left our balance), false when we sold it.
+    /// </param>
+    /// <param name="peer">The other node of the purchase.</param>
+    /// <param name="requestedSat">The amount the buyer requested.</param>
+    /// <param name="contributedSat">The amount the seller contributed.</param>
+    /// <param name="miningFeeSat">The mining fee part (<c>LiquidityFees.MiningFeeSat</c>).</param>
+    /// <param name="serviceFeeSat">The service fee part (<c>LiquidityFees.ServiceFeeSat</c>).</param>
+    /// <param name="kind">When the purchase was made (open, RBF of the open, splice).</param>
+    /// <param name="blockHeight">The funding's block, when staged with its confirmation.</param>
+    /// <param name="shortChannelId">The funding's short channel id, when known.</param>
+    public static async Task RecordLiquidityPurchaseAsync(IUnitOfWork unitOfWork, ChannelId channelId,
+                                                          TxId fundingTxId, bool weBought, CompactPubKey? peer,
+                                                          ulong requestedSat, ulong contributedSat, ulong miningFeeSat,
+                                                          ulong serviceFeeSat, AccountingLiquidityKind kind,
+                                                          DateTimeOffset occurredAt, ILogger logger,
+                                                          uint? blockHeight = null,
+                                                          ShortChannelId? shortChannelId = null)
+    {
+        try
+        {
+            if (unitOfWork.AccountingEventDbRepository is not { } events
+             || BuildLiquidityPurchase(channelId, fundingTxId, weBought, peer, requestedSat, contributedSat,
+                                       miningFeeSat, serviceFeeSat, kind, occurredAt, blockHeight,
+                                       shortChannelId) is not { } built)
+                return;
+
+            var existing = await events.GetByKeyPrefixAsync(built.EventKey) ?? [];
+            if (NextLiquidityKey(built.EventKey, existing) is not { } key)
+                return;
+
+            events.Add(key == built.EventKey ? built : WithKey(built, key));
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            logger.LogError(e, "Could not record the liquidity purchase of channel {ChannelId} in funding {TxId} in "
+                             + "the accounting feed", channelId, fundingTxId);
+        }
+    }
+
+    /// <summary>
+    /// Stages the <see cref="AccountingEventKind.Reversal"/> of the standing liquidity fee event of
+    /// <paramref name="replacedFundingTxId"/> (NL-771), an attempt of a dual-funded open or a splice that an RBF
+    /// replaced before it confirmed: the books take the old fee back (the new attempt's purchase is recorded on its own
+    /// key). Keyed <see cref="AccountingEventKeys.Replaced"/> of the reversed event, so a repeat is a duplicate; nothing
+    /// when no event of that funding stands. Staged on <paramref name="unitOfWork"/>; never throws.
+    /// </summary>
+    /// <param name="replacementFundingTxId">The attempt that replaced it, when known (a detail).</param>
+    public static async Task RecordLiquidityPurchaseReplacedAsync(IUnitOfWork unitOfWork, ChannelId channelId,
+                                                                  TxId replacedFundingTxId, DateTimeOffset occurredAt,
+                                                                  ILogger logger, TxId? replacementFundingTxId = null)
+    {
+        try
+        {
+            if (unitOfWork.AccountingEventDbRepository is not { } events)
+                return;
+
+            var baseKey = AccountingEventKeys.LiquidityFee(channelId, replacedFundingTxId);
+            var existing = await events.GetByKeyPrefixAsync(baseKey) ?? [];
+            if (FindStandingLiquidity(baseKey, existing) is not { } standing)
+                return;
+
+            events.Add(BuildLiquidityReplacement(standing, occurredAt, replacementFundingTxId));
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            logger.LogError(e, "Could not reverse the replaced liquidity purchase of channel {ChannelId} in funding "
+                             + "{TxId} in the accounting feed", channelId, replacedFundingTxId);
+        }
+    }
+
+    /// <summary>
+    /// The event <see cref="RecordLiquidityPurchaseAsync"/> stages under the purchase's first key, built but not
+    /// staged; null for a zero fee. May throw (an overflow).
+    /// </summary>
+    public static AccountingEventModel? BuildLiquidityPurchase(ChannelId channelId, TxId fundingTxId, bool weBought,
+                                                               CompactPubKey? peer, ulong requestedSat,
+                                                               ulong contributedSat, ulong miningFeeSat,
+                                                               ulong serviceFeeSat, AccountingLiquidityKind kind,
+                                                               DateTimeOffset occurredAt, uint? blockHeight = null,
+                                                               ShortChannelId? shortChannelId = null)
+    {
+        var miningFeeMsat = checked((long)miningFeeSat * 1_000);
+        var serviceFeeMsat = checked((long)serviceFeeSat * 1_000);
+        var totalMsat = checked(miningFeeMsat + serviceFeeMsat);
+        if (totalMsat == 0)
+            return null;
+
+        return new AccountingEventModel
+        {
+            EventKey = AccountingEventKeys.LiquidityFee(channelId, fundingTxId),
+            Kind = weBought ? AccountingEventKind.LiquidityFeePaid : AccountingEventKind.LiquidityFeeEarned,
+            OccurredAt = occurredAt,
+            BlockHeight = blockHeight,
+            ChannelId = channelId,
+            ShortChannelId = shortChannelId,
+            TxId = fundingTxId,
+            Counterparty = peer,
+            AmountMsat = weBought ? -totalMsat : totalMsat,
+            FeeMsat = weBought ? totalMsat : 0,
+            Finality = blockHeight is null ? AccountingFinality.Final : AccountingFinality.Confirmed,
+            Details = AccountingDetailsCodec.Create(
+                (weBought ? AccountingDetailKeys.BucketFrom : AccountingDetailKeys.BucketTo, ChannelBucket),
+                (AccountingDetailKeys.LiquidityRole,
+                 weBought ? AccountingDetailKeys.LiquidityBuyer : AccountingDetailKeys.LiquiditySeller),
+                (AccountingDetailKeys.Kind, kind switch
+                {
+                    AccountingLiquidityKind.Open => AccountingDetailKeys.LiquidityKindOpen,
+                    AccountingLiquidityKind.Rbf => AccountingDetailKeys.LiquidityKindRbf,
+                    AccountingLiquidityKind.Splice => AccountingDetailKeys.LiquidityKindSplice,
+                    _ => null
+                }),
+                (AccountingDetailKeys.PurchaseChannelId, channelId.ToString()),
+                (AccountingDetailKeys.PurchaseFundingTxId, fundingTxId.ToString()),
+                (AccountingDetailKeys.PurchasePeer, peer?.ToString()),
+                (AccountingDetailKeys.RequestedSat, Format(requestedSat)),
+                (AccountingDetailKeys.ContributedSat, Format(contributedSat)),
+                (AccountingDetailKeys.MiningFeeMsat, Format(miningFeeMsat)),
+                (AccountingDetailKeys.ServiceFeeMsat, Format(serviceFeeMsat)))
+        };
+    }
+
+    /// <summary>The reversal <see cref="RecordLiquidityPurchaseReplacedAsync"/> stages for <paramref name="standing"/>.
+    /// </summary>
+    public static AccountingEventModel BuildLiquidityReplacement(AccountingEventModel standing,
+                                                                 DateTimeOffset occurredAt,
+                                                                 TxId? replacementFundingTxId = null)
+    {
+        ArgumentNullException.ThrowIfNull(standing);
+        return new AccountingEventModel
+        {
+            EventKey = AccountingEventKeys.Replaced(standing.EventKey),
+            Kind = AccountingEventKind.Reversal,
+            OccurredAt = occurredAt,
+            ChannelId = standing.ChannelId,
+            ShortChannelId = standing.ShortChannelId,
+            TxId = standing.TxId,
+            Counterparty = standing.Counterparty,
+            AmountMsat = -standing.AmountMsat,
+            FeeMsat = -standing.FeeMsat,
+            Finality = AccountingFinality.Final,
+            Details = AccountingDetailsCodec.Create(
+                (AccountingConfirmations.ReversesDetail, standing.EventKey),
+                (AccountingConfirmations.OriginalKindDetail, standing.Kind.ToString()),
+                (AccountingDetailKeys.ReplacedBy, replacementFundingTxId?.ToString()))
+        };
+    }
+
+    // The first confirmation key of the purchase that is free; null while one stands (neither replaced nor reversed by
+    // a reorg)
+    private static string? NextLiquidityKey(string baseKey, IReadOnlyCollection<AccountingEventModel> existing)
+    {
+        var keys = existing.Select(e => e.EventKey).ToHashSet(StringComparer.Ordinal);
+        for (var generation = 1; ; generation++)
+        {
+            var key = generation == 1 ? baseKey : AccountingEventKeys.Reconfirmed(baseKey, generation);
+            var recorded = existing.Where(e => e.Kind != AccountingEventKind.Reversal
+                                            && string.Equals(e.EventKey, key, StringComparison.Ordinal))
+                                   .ToList();
+            if (recorded.Count == 0)
+                return key;
+
+            if (recorded.Any(e => !IsLiquidityReversed(e, keys)))
+                return null;
+        }
+    }
+
+    private static AccountingEventModel? FindStandingLiquidity(string baseKey,
+                                                               IReadOnlyCollection<AccountingEventModel> existing)
+    {
+        var keys = existing.Select(e => e.EventKey).ToHashSet(StringComparer.Ordinal);
+        return existing.LastOrDefault(e => e.Kind != AccountingEventKind.Reversal
+                                        && AccountingConfirmations.IsConfirmationKey(baseKey, e.EventKey)
+                                        && !IsLiquidityReversed(e, keys));
+    }
+
+    private static bool IsLiquidityReversed(AccountingEventModel accountingEvent, IReadOnlySet<string> keys) =>
+        keys.Contains(AccountingEventKeys.Replaced(accountingEvent.EventKey))
+     || AccountingConfirmations.IsReversed(accountingEvent, keys);
+
+    private static AccountingEventModel WithKey(AccountingEventModel e, string key) => new()
+    {
+        EventKey = key,
+        Kind = e.Kind,
+        OccurredAt = e.OccurredAt,
+        BlockHeight = e.BlockHeight,
+        ChannelId = e.ChannelId,
+        ShortChannelId = e.ShortChannelId,
+        PaymentHash = e.PaymentHash,
+        TxId = e.TxId,
+        OutputIndex = e.OutputIndex,
+        Counterparty = e.Counterparty,
+        AmountMsat = e.AmountMsat,
+        FeeMsat = e.FeeMsat,
+        Finality = e.Finality,
+        Flags = e.Flags,
+        Details = e.Details
+    };
 
     /// <summary>
     /// Stages <see cref="AccountingEventKind.ChannelClosedMutual"/> for a channel whose agreed closing transaction
