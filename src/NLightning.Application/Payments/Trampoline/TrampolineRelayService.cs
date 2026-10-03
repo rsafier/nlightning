@@ -633,7 +633,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
                                        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(failure);
-        var ourFailure = failure.Kind == TrampolineLegFailureKind.NoRoute
+        var ourFailure = failure.Kind == TrampolineLegFailureKind.UnknownNextNode
                              ? FailureMessage.UnknownNextTrampoline()
                              : FailureMessage.TemporaryTrampolineFailure();
         var pending = failure is

@@ -351,7 +351,8 @@ public class TrampolineRelayServiceTests
     }
 
     [Theory]
-    [InlineData(TrampolineLegFailureKind.NoRoute, FailureCode.UnknownNextTrampoline)]
+    [InlineData(TrampolineLegFailureKind.UnknownNextNode, FailureCode.UnknownNextTrampoline)]
+    [InlineData(TrampolineLegFailureKind.NoRoute, FailureCode.TemporaryTrampolineFailure)]
     [InlineData(TrampolineLegFailureKind.RouteFailure, FailureCode.TemporaryTrampolineFailure)]
     [InlineData(TrampolineLegFailureKind.Timeout, FailureCode.TemporaryTrampolineFailure)]
     public async Task Given_OurLegFails_When_Reported_Then_OurOwnErrorAtOurIndex(TrampolineLegFailureKind kind,

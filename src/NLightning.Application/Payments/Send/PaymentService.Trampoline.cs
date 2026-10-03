@@ -109,6 +109,15 @@ public sealed partial class PaymentService
         List<BlindedPaymentPath>? blindedPaths = null;
         if (request.NextNodeId is { } nextNodeId)
         {
+            if (!IsKnownNextNode(nextNodeId))
+            {
+                ReportLegFailed(null, paymentHash,
+                                new TrampolineLegFailure(TrampolineLegFailureKind.UnknownNextNode, null, null, false,
+                                                         $"The next trampoline node {nextNodeId} is neither a channel "
+                                                       + "peer nor in our graph."));
+                return;
+            }
+
             target = nextNodeId;
         }
         else
@@ -248,6 +257,19 @@ public sealed partial class PaymentService
                                                      reason));
             CompleteSession(session);
         }
+    }
+
+    /// <summary>
+    /// Whether we can route to <paramref name="nodeId"/> at all: a channel of ours goes to it, or our graph has it (or
+    /// no graph is available, so we cannot tell and let the planner decide).
+    /// </summary>
+    private bool IsKnownNextNode(CompactPubKey nodeId)
+    {
+        if (_channelMemoryRepository.FindChannels(c => c.RemoteNodeId == nodeId).Count > 0)
+            return true;
+
+        var graph = _graphPathSource?.GetGraph();
+        return graph is null || graph.TryGetNodeIndex(nodeId, out _);
     }
 
     /// <summary>

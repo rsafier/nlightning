@@ -21,5 +21,10 @@ public enum TrampolineLegFailureKind
     Timeout = 3,
 
     /// <summary>A local refusal (link down, channel quiescent, node shutting down, ...).</summary>
-    LocalFailure = 4
+    LocalFailure = 4,
+
+    /// <summary>The next trampoline node is unknown: no channel of ours goes to it and our graph does not have it. The
+    /// relay answers <c>unknown_next_trampoline</c> (permanent); every other failure to start is
+    /// <see cref="NoRoute"/> (a budget too small, for one), answered <c>temporary_trampoline_failure</c>.</summary>
+    UnknownNextNode = 5
 }
