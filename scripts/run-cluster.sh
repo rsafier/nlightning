@@ -17,8 +17,8 @@
 #                     ready, namespaces created/planned at once, dumps, first error), the log and diagnostics folders
 #                     of every failed suite and the batch's sampled namespace peak; exits 1 on a real failure, 3 when
 #                     nothing ran or a suite named in --matrix S,... was skipped. Docker-only suites (tor) are listed
-#                     as skipped, with the reason; suites whose cluster proof is pending (onchain, anchors, gossip,
-#                     abcd) are left out of the default matrix and run when named. The namespaces of ended suites
+#                     as skipped, with the reason; suites whose cluster proof is pending (`nltg-cluster matrix list`
+#                     names them) are left out of the default matrix and run when named. The namespaces of ended suites
 #                     that are still there (kept on failure, or still terminating) count against the budget.
 #   default (-n N)    runs one selection (a --suite, or --class/--method/--trait tests) N times concurrently.
 # Every run has a hang timeout (the suite's, or --timeout): its process is stopped (TERM, KILL 30 s later) and the run

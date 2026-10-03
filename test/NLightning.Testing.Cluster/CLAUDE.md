@@ -56,8 +56,8 @@ every implementation, our own node included, is driven through the same seams.
     parallelism, hang timeout, `SuiteRequirement.LndClusterBackend`, Docker-only reason; `GlobalConstraints` leave SQL
     Server out), `MatrixPlanner` (catalog order, skips, the namespace budget, `PlannedSuite.ToLine` = the '|'-separated
     line the script reads), `LndBackendProbe` (the LND suites run only once `LightningRegtestNetworkFixture` constructs
-    `ClusterLndBackend`), `MatrixSuite.ClusterProofPending` (onchain, anchors, gossip, abcd: out of the default matrix,
-    run when named), `XunitResults` (xunit v3 XML: counts, failed classes, first error, fixture failures), `SuiteAttempt` (one
+    `ClusterLndBackend`), `MatrixSuite.ClusterProofPending` (LND suites not proven on the cluster yet, named by `nltg-cluster
+    matrix list`: out of the default matrix, run when named), `XunitResults` (xunit v3 XML: counts, failed classes, first error, fixture failures), `SuiteAttempt` (one
     test process's folder: exit, timedout, class, namespaces created, `[fixture] ... ready in` lines, dumps) and
     `MatrixReport` (`ClassesToRerun`: 1..rerun-max failed classes, never after a timeout, crash, error or fixture failure; `Judge`:
     green, rerun-green, failed, timeout, skipped, not run; `Format`; `ExitCode`: 1 on a failure, 3 when nothing ran or a named suite was skipped; `green-attempts` lists the

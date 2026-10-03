@@ -12,7 +12,7 @@ public class MatrixPlannerTests
 
         // Assert
         Assert.Equal(SuiteCatalog.Names, plan.Select(p => p.Suite.Name));
-        Assert.Equal(["onchain", "anchors", "gossip", "abcd", "tor"], plan.Where(p => !p.Runs).Select(p => p.Suite.Name));
+        Assert.Equal(["onchain", "anchors", "gossip", "tor"], plan.Where(p => !p.Runs).Select(p => p.Suite.Name));
         Assert.All(plan.Where(p => p.Runs), p => Assert.False(p.Serial));
     }
 
