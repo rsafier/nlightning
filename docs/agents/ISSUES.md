@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-03 by the namespace-cap lane (branch `wip/nscap`, owner decision 2026-10-03): NL-844 (fixed, b8362d19, 501bebd7: the harness cap on run namespaces is 12, set once in `RunAdmission.DefaultMaxRuns`; the matrix in 1,058 s at a peak of 11 namespaces) and NL-905 (open, low: the cln suite is the matrix long pole at 12 namespaces). Summary rows recounted from the entries: 772 entries, no duplicate IDs.
+
 Updated 2026-10-03 by the batch12 integrator (branch `wip/batch12` from `wip/fafo` at `fedb876b`; lanes b12-splice-htlc, b12-ux, b12-reconcile-drift, b12-reestablish-deadline and b12-trimmed-loss merged with `--no-ff`): NL-880 (high) and NL-881 (medium) fixed in d2d2a7e5, NL-882..NL-885 (low) in 730ff053, NL-886/NL-887 (low) in 24d3dc4c, NL-760 and NL-796 fixed, NL-890 (low flake, open); review fixes NL-891 (medium), NL-892 (medium), NL-893 and NL-894 (low), all fixed. NL-888 and NL-889 are unused. NL-776 (lane b12-anysegwit, cfafd698) fixed.
 
 Updated 2026-10-03 by the Docker retirement lane (branch `wip/retire-docker` from 61889866, owner decision 2026-10-03: every suite but Tor on the cluster harness only): NL-866 (low, fixed in cea4bc4f: the CLN, Eclair, LDK and Postgres fixtures lost their Docker backends; Tor stays on Docker). Summary rows recounted from the entries: 749 entries, no duplicate IDs.
@@ -149,10 +151,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 62 | 63 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 63 | 201 | 411 | 689 |
+| fixed | 14 | 63 | 201 | 412 | 690 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **210** | **484** | **771** |
+| **Total** | **14** | **63** | **210** | **485** | **772** |
 
 ### Epics
 
@@ -7827,14 +7829,14 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
 
 ### NL-844 The ~15 min full-matrix target is not reachable within the 6-namespace cap
-- **Status:** open
+- **Status:** fixed (b8362d19, 501bebd7)
 - **Severity:** low
 - **Kind:** test
-- **Location:** `docs/agents/TEST_HARNESS_PLAN.md` "Phase 6 proof record", `scripts/run-cluster.sh` (`--max-namespaces`, cap 6)
-- **Evidence:** test harness phase 6 proof: `p6-tuned1` used 6,131 namespace-seconds, so 6 namespaces need at least 1,022 s; the run took 1,088 s (18.1 min). A simulation of 300,000 random suite orders found none below 1,052 s. CLN at 902 s is now the longest suite.
-- **Fix sketch:** Owner decision: allow about 7 namespaces (the VM has 28 cores and 64 GiB), or shorten the long poles (CLN, gossip, eclair).
-- **Blocks/Blocked-by:** Related NL-841
-- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
+- **Location:** `test/NLightning.Testing.Cluster/Run/RunAdmission.cs` (`DefaultMaxRuns`), `scripts/run-cluster.sh` (`--max-namespaces`, `-j`), `nltg-cluster matrix cap`
+- **Evidence:** test harness phase 6 proof: `p6-tuned1` used 6,131 namespace-seconds, so 6 namespaces need at least 1,022 s; the run took 1,088 s (18.1 min). A simulation of 300,000 random suite orders found none below 1,052 s. CLN at 902 s is now the longest suite. Update (2026-10-03, branch `wip/nscap`): owner decision 2026-10-03, the cap is 12. `RunAdmission.DefaultMaxRuns` = 12 is the one place it is set (`MatrixPlanner.MaxNamespaces` uses it, `run-cluster.sh` reads it through `nltg-cluster matrix cap` for the `--max-namespaces` default and limit and the `-j` cap; b8362d19) and the matrix's `-j` defaults to the namespace budget (501bebd7); tests pin 12 (`RunAdmissionTests`, `MatrixPlannerTests`, `MatrixReportTests`, `run-cluster-tests.sh`). Proof `nscap-mx1` (`--matrix -j 12 --max-namespaces 12`): 11 green + cln rerun-green (`ClnPeerStorageTests` timed out once and was green alone, NL-910), **1,058 s** against 1,088 s at 6, peak 11 run namespaces sampled; OrbStack's helper peaked at 12.4 GB RSS and 318 % CPU, the test hosts at 15.1 GB, host memory in use 35.3 GB (31.0 GB idle). At 12 the wall is the longest suite's (cln 1,052 s, eclair 943 s, gossip 840 s), so the 15 min target now needs the long poles split (NL-905), not more namespaces (`TEST_HARNESS_PLAN.md` "Namespace cap 12 record").
+- **Fix sketch:** Done: cap 12. The rest (shorter long poles) is NL-905.
+- **Blocks/Blocked-by:** Related NL-841, NL-905
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record", "Namespace cap 12 record"
 
 ### NL-860 With `NLTG_TEST_BACKEND=cluster` but no buildable Kubernetes configuration the LND fixture skipped every test, and the matrix judged the all-skipped suites green
 - **Status:** fixed (5a62e771)
@@ -8045,6 +8047,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Done: `IpcRequestLog.IsFault`: an exception only a bug raises, or one thrown outside NLightning code (its `TargetSite`), is logged at ERR with the stack whatever the error code; a refusal thrown by our code stays one WRN line and its exception goes to Debug; `ConnectPeer`'s `InvalidOperationException` catch uses the same rule. Tests `IpcRequestLogTests` (3 new). A dedicated refusal exception type for the services stays a possible cleanup.
 - **Blocks/Blocked-by:** Related NL-883
 - **Plan ref:** none
+
+### NL-905 The cln suite is the matrix's long pole at 12 namespaces
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Run/Matrix/SuiteCatalog.cs` (`cln`, `eclair`), `scripts/run-cluster.sh --matrix`
+- **Evidence:** proof `nscap-mx1` of NL-844 (2026-10-03, `--matrix -j 12 --max-namespaces 12`): the matrix took 1,058 s and cln alone 1,052 s; the next suites are eclair 943 s and gossip 840 s, every other suite at most 658 s (ldk). With 12 namespaces every suite starts at once, so the matrix wall is the longest suite's.
+- **Fix sketch:** Owner decision 2026-10-03: left as an issue for now. Split cln as eclair/gossip were (NL-841) and maybe eclair again, for a matrix of about 10-12 min.
+- **Blocks/Blocked-by:** Related NL-844, NL-841
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Namespace cap 12 record"
 
 ## Docs
 
