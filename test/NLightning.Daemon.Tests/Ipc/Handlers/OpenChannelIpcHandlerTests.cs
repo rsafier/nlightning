@@ -127,15 +127,16 @@ public class OpenChannelIpcHandlerTests
             }, s_options, TestContext.Current.CancellationToken);
         // fixarray of 11 (keys 0-10; 7 and 8 are the label and tags, NL-602 A3-T1; 9 and 10 the liquidity purchase,
         // NL-850)
-        Assert.Equal(0x9B, current[0]);
-        Assert.Equal(0xC2, current[^7]); // key 4: false
-        Assert.Equal(0xC2, current[^6]); // key 5: false
-        Assert.Equal(0xC2, current[^5]); // key 6: false
-        Assert.Equal(0xC0, current[^4]); // key 7: nil
-        Assert.Equal(0xC0, current[^3]); // key 8: nil
-        Assert.Equal(0xC0, current[^2]); // key 9: nil
-        Assert.Equal(0xC0, current[^1]); // key 10: nil
-        byte[] older = [0x94, .. current[1..^7]];
+        Assert.Equal(0x9C, current[0]);
+        Assert.Equal(0xC2, current[^8]); // key 4: false
+        Assert.Equal(0xC2, current[^7]); // key 5: false
+        Assert.Equal(0xC2, current[^6]); // key 6: false
+        Assert.Equal(0xC0, current[^5]); // key 7: nil
+        Assert.Equal(0xC0, current[^4]); // key 8: nil
+        Assert.Equal(0xC0, current[^3]); // key 9: nil
+        Assert.Equal(0xC0, current[^2]); // key 10: nil
+        Assert.Equal(0xC0, current[^1]); // key 11: nil
+        byte[] older = [0x94, .. current[1..^8]];
 
         // Act
         var request = MessagePackSerializer.Deserialize<OpenChannelIpcRequest>(
@@ -160,9 +161,9 @@ public class OpenChannelIpcHandlerTests
                 IsPublic = true,
                 IsDualFunded = true
             }, s_options, TestContext.Current.CancellationToken);
-        Assert.Equal(0xC3, current[^6]); // key 5: true
-        Assert.Equal(0xC2, current[^5]); // key 6: false
-        byte[] older = [0x95, .. current[1..^6]];
+        Assert.Equal(0xC3, current[^7]); // key 5: true
+        Assert.Equal(0xC2, current[^6]); // key 6: false
+        byte[] older = [0x95, .. current[1..^7]];
 
         // Act
         var request = MessagePackSerializer.Deserialize<OpenChannelIpcRequest>(
@@ -184,8 +185,8 @@ public class OpenChannelIpcHandlerTests
                 Amount = LightningMoney.Satoshis(1_000),
                 ForceV1 = true
             }, s_options, TestContext.Current.CancellationToken);
-        Assert.Equal(0xC3, current[^5]); // key 6: true
-        byte[] older = [0x96, .. current[1..^5]];
+        Assert.Equal(0xC3, current[^6]); // key 6: true
+        byte[] older = [0x96, .. current[1..^6]];
 
         // Act
         var request = MessagePackSerializer.Deserialize<OpenChannelIpcRequest>(

@@ -83,6 +83,20 @@ public class SimpleTaprootVerificationNonceTests
     }
 
     [Fact]
+    public void Given_ADualFundedChannelsNonZeroNumber_When_Deriving_Then_TheKeyIndexAndChannelOverloadsAgree()
+    {
+        // Arrange: only commitment 0 differs between the v1 and the dual-funded rule
+        var kit = new TaprootSignerKit(isDualFunded: true);
+
+        // Act
+        var byKeyIndex = kit.Alice.GetLocalVerificationNonce(0u, kit.FundingTxId, 1);
+        var byChannel = kit.Alice.GetLocalVerificationNonce(TaprootSignerKit.ChannelId, null, 1);
+
+        // Assert
+        Assert.Equal(byKeyIndex, byChannel);
+    }
+
+    [Fact]
     public void Given_ANonZeroNumberWithoutFundingTxId_When_DerivingByKeyIndex_Then_ItThrows()
     {
         // Arrange

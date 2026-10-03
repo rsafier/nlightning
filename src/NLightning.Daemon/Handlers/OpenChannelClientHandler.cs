@@ -126,7 +126,7 @@ public sealed class OpenChannelClientHandler
         // Liquidity ads (NL-850): buying inbound liquidity rides on open_channel2, so it implies a v2 open
         CheckLiquidityRequest(request);
 
-        // Simple taproot channels (NL-877 T5): private and v1 only for now
+        // Simple taproot channels (NL-877 T5): private, no liquidity purchase (NL-971)
         CheckSimpleTaprootRequest(request);
 
         // NL-602 A3-T1: refused before anything is sent; stored with the channel's first save
@@ -144,10 +144,10 @@ public sealed class OpenChannelClientHandler
         var peer = _peerManager.GetPeer(peerId)
                 ?? await _peerManager.ConnectToPeerAsync(new PeerAddressInfo(request.NodeInfo));
 
-        // Simple taproot channels (NL-877 T5): our advertisement, the peer's support and option_simple_close, and a v1
-        // open (the dual-funded taproot open is not implemented yet: the one place that refuses it)
+        // Simple taproot channels (NL-877 T5): our advertisement, the peer's support and option_simple_close; the open
+        // then goes v1 or v2 by the NL-551 rules like any other (DualFundedOpenRequest.SimpleTaproot on v2)
         if (request.IsSimpleTaproot)
-            CheckSimpleTaprootPeer(request, peer);
+            CheckSimpleTaprootPeer(peer);
 
         // Wave DF: a dual-funded (v2) open negotiates the funding transaction interactively, our share from the wallet.
         // NL-551: it is the default when the peer supports it (Eclair refuses a v1 open once option_dual_fund is
@@ -398,6 +398,7 @@ public sealed class OpenChannelClientHandler
                                                     null, request.IsPublic)
         {
             Labels = labels,
+            SimpleTaproot = request.IsSimpleTaproot,
             Liquidity = request.RequestInboundSat is { } inbound
                             ? new LiquidityRequest(inbound, null, request.MaxLiquidityFeeSat)
                             : null
@@ -463,8 +464,9 @@ public sealed class OpenChannelClientHandler
 
     /// <summary>
     /// <c>openchannel --channel-type taproot</c> (NL-877 T5), before anything is looked up: a simple taproot channel is
-    /// private (the spec forbids <c>announce_channel</c>, taproot gossip is T7) and v1 (no <c>--dual-fund</c> or
-    /// liquidity purchase).
+    /// private (the spec forbids <c>announce_channel</c>, taproot gossip is T7) and buys no liquidity (no
+    /// <c>--request-inbound</c>: liquidity ads are not wired for the taproot funding script and weight yet, NL-971). It
+    /// may open v1 or dual-funded (<c>--dual-fund</c>, or v2 by default by the NL-551 rules).
     /// </summary>
     internal static void CheckSimpleTaprootRequest(OpenChannelClientRequest request)
     {
@@ -475,19 +477,18 @@ public sealed class OpenChannelClientHandler
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       "Simple taproot channels are private: --public can't be used with "
                                     + "--channel-type taproot");
-        if (request.IsDualFunded || request.RequestInboundSat is not null)
+        if (request.RequestInboundSat is not null)
             throw new ClientException(ErrorCodes.InvalidOperation,
-                                      "A dual-funded simple taproot open is not supported yet: use --v1 (without "
-                                    + "--dual-fund or --request-inbound)");
+                                      "Buying inbound liquidity (--request-inbound) is not supported with "
+                                    + "--channel-type taproot yet (NL-971)");
     }
 
     /// <summary>
     /// <c>openchannel --channel-type taproot</c> once the peer is connected: our <c>Features:OptionSimpleTaproot</c>
     /// advertised (with <c>Features:AllowExperimentalFeatures</c>), the peer supporting it (bits 80/81) and
-    /// <c>option_simple_close</c>, and a v1 open: when the open would go v2 (NL-551) the dual-funded taproot open is
-    /// refused until it is implemented.
+    /// <c>option_simple_close</c>.
     /// </summary>
-    private void CheckSimpleTaprootPeer(OpenChannelClientRequest request, PeerModel peer)
+    private void CheckSimpleTaprootPeer(PeerModel peer)
     {
         if (!_nodeOptions.Features.IsSimpleTaprootAdvertised)
             throw new ClientException(ErrorCodes.InvalidOperation,
@@ -500,10 +501,6 @@ public sealed class OpenChannelClientHandler
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       "A simple taproot channel needs option_simple_close, which the peer did not "
                                     + "negotiate");
-        if (OpensDualFundedByDefault(request, peer))
-            throw new ClientException(ErrorCodes.InvalidOperation,
-                                      "The peer negotiated option_dual_fund, and a dual-funded simple taproot open is "
-                                    + "not supported yet: use --v1");
     }
 
     /// <summary>

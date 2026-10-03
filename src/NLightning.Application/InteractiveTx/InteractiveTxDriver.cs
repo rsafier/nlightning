@@ -443,6 +443,12 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
         var checkpoint = attempt.Checkpoint();
         attempt.Negotiation = step.Next;
+
+        // BOLTs PR #1324: a taproot session's tx_complete carries the sender's commit_nonces, new ones after every
+        // change of the transaction; the peer's last ones are for the transaction both tx_complete close
+        if (message is TxCompleteMessage txComplete)
+            attempt.RemoteCommitNonces = txComplete.CommitNoncesTlv;
+
         if (step.Aborted)
         {
             // A rule the peer broke: our tx_abort goes out and waits for its echo (none comes from a peer that
@@ -455,7 +461,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
         try
         {
-            var outbound = new List<IChannelMessage>(step.Outbound);
+            var outbound = new List<IChannelMessage>(WithCommitNonces(entry, attempt, step.Outbound));
             if (step.NegotiationComplete)
             {
                 outbound.AddRange(await ConstructAsync(entry, attempt, unitOfWork, cancellationToken));
@@ -679,13 +685,55 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         return await StartAttemptAsync(entry, attempt, cancellationToken);
     }
 
+    /// <summary>
+    /// <paramref name="outbound"/> with our <c>commit_nonces</c> on every <c>tx_complete</c> of a session whose host asks
+    /// for them (BOLTs PR #1324, simple taproot channels): verification nonces for the transaction negotiated so far
+    /// (<paramref name="attempt"/>'s inputs and outputs now), so a change of the transaction sends new ones with the next
+    /// <c>tx_complete</c>. A transaction that cannot be built yet (no input or no output) gets none: the peer then refuses
+    /// to sign it, and so would we.
+    /// </summary>
+    private IReadOnlyList<IChannelMessage> WithCommitNonces(ChannelEntry entry, Attempt attempt,
+                                                           IReadOnlyList<IChannelMessage> outbound)
+    {
+        if (entry.Host is not { } host || !outbound.Any(m => m is TxCompleteMessage))
+            return outbound;
+
+        var decorated = new List<IChannelMessage>(outbound.Count);
+        foreach (var message in outbound)
+        {
+            if (message is not TxCompleteMessage { CommitNoncesTlv: null } txComplete)
+            {
+                decorated.Add(message);
+                continue;
+            }
+
+            ConstructedInteractiveTx transaction;
+            try
+            {
+                transaction = _builder.Build(attempt.Terms.Locktime, attempt.Negotiation.Inputs,
+                                             attempt.Negotiation.Outputs);
+            }
+            catch (Exception e) when (e is ArgumentException or InvalidOperationException)
+            {
+                decorated.Add(message);
+                continue;
+            }
+
+            decorated.Add(host.GetLocalCommitNonces(transaction.TxId) is { } nonces
+                              ? new TxCompleteMessage(txComplete.Payload, nonces, txComplete.FundingNonceTlv)
+                              : message);
+        }
+
+        return decorated;
+    }
+
     private async Task<IReadOnlyList<IChannelMessage>> StartAttemptAsync(ChannelEntry entry, Attempt attempt,
                                                                          CancellationToken cancellationToken)
     {
         var step = attempt.Negotiation.Start();
         attempt.Negotiation = step.Next;
         if (!step.Aborted)
-            return step.Outbound;
+            return WithCommitNonces(entry, attempt, step.Outbound);
 
         // Our own contribution broke a rule (a bug in the host or the contributor): nothing was sent yet
         LogAborted(attempt, step.AbortReason!, step.RequirementId, true);
@@ -723,6 +771,11 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
             return await RejectAsync(entry, attempt, $"the negotiated transaction is invalid: {e.Message}",
                                      unitOfWork, cancellationToken);
         }
+
+        // BOLTs PR #1324: a taproot commitment step needs the peer's commit_nonces of the constructed transaction
+        if (entry.Host!.AcceptRemoteCommitNonces(attempt.Negotiation.ConstructedTx!, attempt.RemoteCommitNonces) is
+            { } nonceRefusal)
+            return await RejectAsync(entry, attempt, nonceRefusal, unitOfWork, cancellationToken);
 
         var model = CreateModel(entry, attempt) with { CommitmentSignedSent = true };
         IReadOnlyList<IChannelMessage> commitment;
@@ -1202,6 +1255,12 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
         /// <summary>Both tx_signatures exchanged and handed to the host; applied to memory after the save.</summary>
         public bool IsCompleted { get; set; }
+
+        /// <summary>
+        /// The <c>commit_nonces</c> of the peer's latest <c>tx_complete</c> (BOLTs PR #1324, simple taproot sessions);
+        /// null when it sent none.
+        /// </summary>
+        public CommitNoncesTlv? RemoteCommitNonces { get; set; }
 
         public (IInteractiveTxNegotiation Negotiation, InteractiveTxSessionModel? Model, bool IsCompleted)
             Checkpoint() => (Negotiation, Model, IsCompleted);

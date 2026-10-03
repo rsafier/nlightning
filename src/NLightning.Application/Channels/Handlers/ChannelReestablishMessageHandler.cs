@@ -207,7 +207,12 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
         // so the peer's retransmitted tx_signatures and our own rebuilt ones find it
         if (_dualFundReestablish is not null && DualFundReestablish.IsPendingOpen(channel)
                                              && local.LatestInteractiveTx is not null)
+        {
             await _dualFundReestablish.EnsureLoadedAsync(channel);
+
+            // A simple taproot open re-signs its commitment_signed against the peer's current_commit_nonce (PR #1324)
+            await _dualFundReestablish.ReceiveCurrentCommitNonceAsync(channel, message.CurrentCommitNonceTlv?.Nonce);
+        }
 
         // A splice our commitment_signed started resumes too (the driver and the splice service forgot it on a
         // restart), so the peer's retransmitted splice commitment_signed and tx_signatures complete it

@@ -50,8 +50,9 @@ public static class ClientUtils
         Console.WriteLine("                               --no-wait; Ctrl-C after the txid stops waiting, the open");
         Console.WriteLine("                               continues");
         Console.WriteLine("             [--channel-type taproot|anchors]");
-        Console.WriteLine("                               taproot opens a private simple taproot channel (v1 only,");
-        Console.WriteLine("                               experimental: needs Features:OptionSimpleTaproot and");
+        Console.WriteLine("                               taproot opens a private simple taproot channel (v1 or");
+        Console.WriteLine("                               dual-funded, no --request-inbound; experimental: needs");
+        Console.WriteLine("                               Features:OptionSimpleTaproot and");
         Console.WriteLine("                               Features:AllowExperimentalFeatures, and a peer with");
         Console.WriteLine("                               option_simple_taproot and option_simple_close) [default:");
         Console.WriteLine("                               anchors]");

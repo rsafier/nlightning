@@ -5,6 +5,7 @@ namespace NLightning.Application.Channels.DualFunding;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
+using Domain.Crypto.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -55,6 +56,23 @@ public sealed class DualFundReestablish
     {
         ArgumentNullException.ThrowIfNull(channel);
         return IsPendingOpen(channel) ? await _service.AbandonRbfAttemptIfConfirmedAsync(channel, _unitOfWork) : [];
+    }
+
+    /// <summary>
+    /// Simple taproot opens (BOLTs PR #1324, taproot wave t02 lane V2): the peer's <c>channel_reestablish</c>
+    /// <c>current_commit_nonce</c> (type 24, null when absent), which a retransmitted <c>commitment_signed</c> of the open
+    /// is signed against (<see cref="CreateCommitmentSignedRetransmissionAsync"/>). Call it after
+    /// <see cref="EnsureLoadedAsync"/>; nothing for a channel that is not a pending dual-funded open.
+    /// </summary>
+    public async Task ReceiveCurrentCommitNonceAsync(ChannelModel channel, MusigPublicNonce? nonce)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        if (!IsPendingOpen(channel)
+         || await _service.GetOrLoadAsync(channel.ChannelId, _unitOfWork, CancellationToken.None) is not
+         { } negotiation)
+            return;
+
+        negotiation.RemoteCurrentCommitNonce = nonce;
     }
 
     /// <summary>

@@ -6,6 +6,7 @@ namespace NLightning.Daemon.Tests.Handlers;
 using Daemon.Handlers;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.DualFunding.Interfaces;
+using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
@@ -30,9 +31,10 @@ using NLightning.Client.Handlers;
 using Transport.Ipc.Requests;
 
 /// <summary>
-/// <c>openchannel --channel-type taproot</c> (NL-877 T5): the IPC key, the client option and the daemon's refusals
-/// (public, dual-funded, not advertised, the peer without option_simple_taproot or option_simple_close, a v2 open by
-/// default) and the taproot <c>open_channel</c> with our commitment 0 verification nonce.
+/// <c>openchannel --channel-type taproot</c> (NL-877 T5): the IPC key, the client option, the daemon's refusals
+/// (public, a liquidity purchase (NL-971), not advertised, the peer without option_simple_taproot or
+/// option_simple_close), the taproot <c>open_channel</c> with our commitment 0 verification nonce, and the v2 open by
+/// the NL-551 rules handing the type to the dual-funded open (<c>DualFundedOpenRequest.SimpleTaproot</c>).
 /// </summary>
 public class OpenChannelTaprootClientHandlerTests
 {
@@ -48,16 +50,14 @@ public class OpenChannelTaprootClientHandlerTests
     private readonly Mock<ILightningSigner> _signer = new();
 
     [Theory]
-    [InlineData(true, false, false)]
-    [InlineData(false, true, false)]
-    [InlineData(false, false, true)]
-    public async Task Given_APublicOrDualFundedTaprootRequest_When_Handled_Then_RefusedBeforeConnecting(
-        bool isPublic, bool dualFund, bool requestInbound)
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Given_APublicOrLiquidityBuyingTaprootRequest_When_Handled_Then_RefusedBeforeConnecting(
+        bool isPublic, bool requestInbound)
     {
         // Arrange
         var request = Request();
         request.IsPublic = isPublic;
-        request.IsDualFunded = dualFund;
         request.RequestInboundSat = requestInbound ? 10_000UL : null;
 
         // Act
@@ -74,7 +74,7 @@ public class OpenChannelTaprootClientHandlerTests
     [InlineData(false, true, true, false, "Features:AllowExperimentalFeatures")]
     [InlineData(true, false, true, false, "does not support simple taproot")]
     [InlineData(true, true, false, false, "option_simple_close")]
-    [InlineData(true, true, true, true, "use --v1")]
+    [InlineData(true, true, false, true, "option_simple_close")]
     public async Task Given_ATaprootRequest_When_TheNodeOrPeerCannotRunIt_Then_RefusedBeforeTheFactory(
         bool advertised, bool peerTaproot, bool peerSimpleClose, bool peerDualFund, string reason)
     {
@@ -91,13 +91,56 @@ public class OpenChannelTaprootClientHandlerTests
                           ? Advertising()
                           : new NodeOptions { Features = new FeatureOptions { OptionSimpleTaproot = FeatureSupport.Optional } };
 
+        var dualFunded = new Mock<IDualFundedOpenService>();
+
         // Act
         var exception = await Assert.ThrowsAsync<ClientException>(
-                            () => CreateHandler(options, new Mock<IDualFundedOpenService>().Object)
+                            () => CreateHandler(options, dualFunded.Object)
                                  .HandleAsync(Request(peerId), TestContext.Current.CancellationToken));
 
         // Assert
         Assert.Contains(reason, exception.Message);
+        dualFunded.Verify(x => x.OpenAsync(It.IsAny<DualFundedOpenRequest>(), It.IsAny<CancellationToken>()),
+                          Times.Never);
+        _channelFactory.Verify(x => x.CreateChannelV1AsInitiatorAsync(It.IsAny<OpenChannelClientRequest>(),
+                                                                      It.IsAny<FeatureOptions>(),
+                                                                      It.IsAny<CompactPubKey>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_ATaprootOpenToADualFundPeer_When_ItGoesV2_Then_TheDualFundedOpenGetsTheTaprootType(
+        bool explicitDualFund)
+    {
+        // Arrange - NL-551: option_dual_fund negotiated and no push opens v2 (or --dual-fund asks for it)
+        var peerId = PeerId();
+        SetUpPeer(peerId, new FeatureOptions
+        {
+            OptionSimpleTaproot = FeatureSupport.Optional,
+            OptionSimpleClose = FeatureSupport.Optional,
+            DualFund = FeatureSupport.Optional,
+            AllowExperimentalFeatures = true
+        });
+        var request = Request(peerId);
+        request.IsDualFunded = explicitDualFund;
+        var channelId = new ChannelId(Enumerable.Repeat((byte)9, 32).ToArray());
+        DualFundedOpenRequest? sent = null;
+        var dualFunded = new Mock<IDualFundedOpenService>();
+        dualFunded.Setup(x => x.OpenAsync(It.IsAny<DualFundedOpenRequest>(), It.IsAny<CancellationToken>()))
+                  .Callback<DualFundedOpenRequest, CancellationToken>((r, _) => sent = r)
+                  .ReturnsAsync(new DualFundedOpenResult(channelId));
+
+        // Act
+        var response = await CreateHandler(Advertising(), dualFunded.Object)
+                          .HandleAsync(request, TestContext.Current.CancellationToken);
+
+        // Assert - a private taproot v2 open, nothing through the v1 factory
+        Assert.Equal(channelId, response.ChannelId);
+        Assert.NotNull(sent);
+        Assert.True(sent.SimpleTaproot);
+        Assert.False(sent.IsPublic);
+        Assert.Null(sent.Liquidity);
         _channelFactory.Verify(x => x.CreateChannelV1AsInitiatorAsync(It.IsAny<OpenChannelClientRequest>(),
                                                                       It.IsAny<FeatureOptions>(),
                                                                       It.IsAny<CompactPubKey>()), Times.Never);
@@ -195,8 +238,10 @@ public class OpenChannelTaprootClientHandlerTests
     [Theory]
     [InlineData(new[] { "node", "100000", "--channel-type", "taproot", "--v1" }, "taproot", null)]
     [InlineData(new[] { "node", "100000", "--channel-type", "anchors" }, "anchors", null)]
-    [InlineData(new[] { "node", "100000", "--channel-type", "taproot", "--public" }, "taproot", "private v1")]
-    [InlineData(new[] { "node", "100000", "--channel-type", "taproot", "--dual-fund" }, "taproot", "private v1")]
+    [InlineData(new[] { "node", "100000", "--channel-type", "taproot", "--dual-fund" }, "taproot", null)]
+    [InlineData(new[] { "node", "100000", "--channel-type", "taproot", "--public" }, "taproot", "private channel")]
+    [InlineData(new[] { "node", "100000", "--channel-type", "taproot", "--request-inbound", "50000" }, "taproot",
+                "private channel")]
     [InlineData(new[] { "node", "100000", "--channel-type" }, null, "expects taproot or anchors")]
     [InlineData(new[] { "node", "100000", "--channel-type", "legacy" }, null, "expects taproot or anchors")]
     public void Given_ChannelTypeOption_When_Parsed_Then_TypeOrError(string[] args, string? type, string? error)

@@ -24,8 +24,9 @@ public sealed class ChannelOpenMandatoryValidationParameters
 
     /// <summary>
     /// Whether the open flow can run a simple taproot channel (<c>option_simple_taproot</c>, NL-877 T5): the v1 flow
-    /// (<c>open_channel</c>/<c>accept_channel</c>) can; a flow that leaves it false (the dual-funded open, until it signs
-    /// MuSig2 commitments) refuses the taproot channel type as unsupported.
+    /// (<c>open_channel</c>/<c>accept_channel</c>) and the dual-funded open (<c>open_channel2</c>/
+    /// <c>accept_channel2</c>, MuSig2 through <c>tx_complete</c> <c>commit_nonces</c>) can; a flow that leaves it false
+    /// refuses the taproot channel type as unsupported.
     /// </summary>
     public bool AllowSimpleTaproot { get; init; }
 
