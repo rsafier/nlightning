@@ -37,5 +37,13 @@ public static class FailureCodeExtensions
     /// </summary>
     public static bool IsUpdate(this FailureCode code) => code.HasFlagBit(FailureCodeFlags.Update);
 
+    /// <summary>
+    /// True for the trampoline failure codes of BOLTs PR 836: <c>temporary_trampoline_failure</c> (NODE|25),
+    /// <c>trampoline_fee_or_expiry_insufficient</c> (NODE|26) and <c>unknown_next_trampoline</c> (PERM|27).
+    /// </summary>
+    public static bool IsTrampoline(this FailureCode code) =>
+        code is FailureCode.TemporaryTrampolineFailure or FailureCode.TrampolineFeeOrExpiryInsufficient
+             or FailureCode.UnknownNextTrampoline;
+
     private static bool HasFlagBit(this FailureCode code, FailureCodeFlags flag) => ((ushort)code & (ushort)flag) != 0;
 }

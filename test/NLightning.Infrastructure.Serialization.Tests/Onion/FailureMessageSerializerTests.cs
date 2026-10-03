@@ -47,7 +47,10 @@ public class FailureMessageSerializerTests
         { FailureCode.ExpiryTooFar, "0015" },
         { FailureCode.InvalidOnionPayload, "4016" + "fd012d" + "0015" },
         { FailureCode.MppTimeout, "0017" },
-        { FailureCode.InvalidOnionBlinding, "c018" + Hex(s_sha256OfOnion) }
+        { FailureCode.InvalidOnionBlinding, "c018" + Hex(s_sha256OfOnion) },
+        { FailureCode.TemporaryTrampolineFailure, "2019" },
+        { FailureCode.TrampolineFeeOrExpiryInsufficient, "201a" + "000003e8" + "000001f4" + "0090" },
+        { FailureCode.UnknownNextTrampoline, "401b" }
     };
 
     [Fact]
@@ -304,6 +307,9 @@ public class FailureMessageSerializerTests
             FailureCode.FinalExpiryTooSoon => FailureMessage.FinalExpiryTooSoon(),
             FailureCode.MppTimeout => FailureMessage.MppTimeout(),
             FailureCode.InvalidOnionBlinding => FailureMessage.InvalidOnionBlinding(s_sha256OfOnion),
+            FailureCode.TemporaryTrampolineFailure => FailureMessage.TemporaryTrampolineFailure(),
+            FailureCode.TrampolineFeeOrExpiryInsufficient => FailureMessage.TrampolineFeeOrExpiryInsufficient(1000, 500, 144),
+            FailureCode.UnknownNextTrampoline => FailureMessage.UnknownNextTrampoline(),
             _ => throw new ArgumentOutOfRangeException(nameof(code), code, null)
         };
     }
