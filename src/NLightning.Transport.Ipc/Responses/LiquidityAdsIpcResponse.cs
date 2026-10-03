@@ -106,6 +106,15 @@ public sealed class LiquiditySellerIpcInfo
     /// <summary>The payment types it accepts, by name (an unknown bit as its number).</summary>
     [Key(5)] public List<string> PaymentTypes { get; set; } = [];
 
+    /// <summary>
+    /// When <see cref="Source"/> is <see cref="LiquiditySellerSource.Init"/>: the rates of its <c>node_announcement</c>,
+    /// or null when it announces none (NL-884).
+    /// </summary>
+    [Key(6)] public List<FundingRateIpcInfo>? AnnouncedRates { get; set; }
+
+    /// <summary>The payment types of <see cref="AnnouncedRates"/>, by name; null with them.</summary>
+    [Key(7)] public List<string>? AnnouncedPaymentTypes { get; set; }
+
     public static LiquiditySellerIpcInfo From(LiquiditySellerInfo seller)
     {
         ArgumentNullException.ThrowIfNull(seller);
@@ -116,7 +125,9 @@ public sealed class LiquiditySellerIpcInfo
             IsConnected = seller.IsConnected,
             Alias = seller.Alias,
             Rates = seller.Rates.Rates.Select(FundingRateIpcInfo.From).ToList(),
-            PaymentTypes = PaymentTypeNames(seller.Rates)
+            PaymentTypes = PaymentTypeNames(seller.Rates),
+            AnnouncedRates = seller.AnnouncedRates?.Rates.Select(FundingRateIpcInfo.From).ToList(),
+            AnnouncedPaymentTypes = seller.AnnouncedRates is { } announced ? PaymentTypeNames(announced) : null
         };
     }
 

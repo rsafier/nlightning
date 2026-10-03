@@ -143,6 +143,59 @@ public class LiquidityLeasesTests
     }
 
     [Fact]
+    public async Task Given_SeveralLeasesInForce_When_WeCloseTheChannel_Then_TheRefusalNamesEveryOne()
+    {
+        // Arrange (NL-882, the 2026-10-03 Mutinynet test): the open's purchase we made (80,000 sat) and a splice's
+        // sale (50,000 sat) are both in force; a closed sale and a replaced attempt are not
+        var bought = Purchase(1, LiquidityPurchaseStatus.Active, LiquidityPurchaseRole.Buyer,
+                              LiquidityPurchaseKind.ChannelOpen, 80_000, leaseStart: 900, createdMinute: 1);
+        var closed = Purchase(2, LiquidityPurchaseStatus.Closed, LiquidityPurchaseRole.Seller,
+                              LiquidityPurchaseKind.Splice, 11_000, leaseStart: 500, createdMinute: 2);
+        var replaced = Purchase(3, LiquidityPurchaseStatus.Replaced, LiquidityPurchaseRole.Seller,
+                                LiquidityPurchaseKind.Splice, 22_000, leaseStart: null, createdMinute: 3);
+        var sold = Purchase(4, LiquidityPurchaseStatus.Active, LiquidityPurchaseRole.Seller,
+                            LiquidityPurchaseKind.SpliceRbf, 50_000, leaseStart: 950, createdMinute: 4);
+        _purchases.Setup(r => r.GetActiveSaleLeaseAsync(s_channelId, 1_000)).ReturnsAsync(sold);
+        _purchases.Setup(r => r.GetByChannelIdAsync(s_channelId)).ReturnsAsync([bought, closed, replaced, sold]);
+        var (service, publisher, _) = CreateCloseService();
+
+        // Act
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                            () => service.CloseChannelAsync(s_channelId, new ChannelCloseRequest(),
+                                                            TestContext.Current.CancellationToken));
+
+        // Assert: both leases, newest first, with amount, role, kind and end; nothing else
+        Assert.Contains("carries 2 liquidity leases in force", exception.Message);
+        Assert.Contains($"50000 sat of inbound liquidity we sold to {NormalOperationTestContext.PeerNodeId} (splice), "
+                      + "leased until block 4982 (3982 blocks left)", exception.Message);
+        Assert.Contains($"80000 sat of inbound liquidity we bought from {NormalOperationTestContext.PeerNodeId} (open), "
+                      + "leased until block 4932 (3932 blocks left)", exception.Message);
+        Assert.True(exception.Message.IndexOf("50000 sat", StringComparison.Ordinal)
+                  < exception.Message.IndexOf("80000 sat", StringComparison.Ordinal));
+        Assert.DoesNotContain("11000 sat", exception.Message);
+        Assert.DoesNotContain("22000 sat", exception.Message);
+        Assert.Contains("closechannel --force", exception.Message);
+        publisher.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_PendingRbfAttempts_When_LeasesInForceAreRead_Then_OnlyTheNewestAttemptCounts()
+    {
+        // Arrange: two pending attempts of one funding (an open and its RBF); only one of them can confirm
+        var first = Purchase(1, LiquidityPurchaseStatus.Pending, LiquidityPurchaseRole.Seller,
+                             LiquidityPurchaseKind.ChannelOpen, 60_000, leaseStart: null, createdMinute: 1);
+        var bump = Purchase(2, LiquidityPurchaseStatus.Pending, LiquidityPurchaseRole.Seller,
+                            LiquidityPurchaseKind.OpenRbf, 60_000, leaseStart: null, createdMinute: 2);
+        _purchases.Setup(r => r.GetByChannelIdAsync(s_channelId)).ReturnsAsync([first, bump]);
+
+        // Act
+        var leases = await LiquidityLeases.GetLeasesInForceAsync(_unitOfWork.Object, s_channelId, 1_000);
+
+        // Assert
+        Assert.Equal([bump], leases);
+    }
+
+    [Fact]
     public async Task Given_APendingSale_When_WeCloseTheChannel_Then_RefusedUntilTheLeaseIsOver()
     {
         // Arrange: the funding has not confirmed, so the lease has not even started
@@ -254,6 +307,19 @@ public class LiquidityLeasesTests
                                            : null,
                                        status == LiquidityPurchaseStatus.Closed ? 1_500 : null,
                                        status == LiquidityPurchaseStatus.Closed);
+
+    /// <summary>A purchase on the channel in <paramref name="role"/>, created <paramref name="createdMinute"/> minutes
+    /// after the epoch, with its lease from <paramref name="leaseStart"/> (none while pending or replaced).</summary>
+    private static LiquidityPurchaseModel Purchase(long id, LiquidityPurchaseStatus status, LiquidityPurchaseRole role,
+                                                   LiquidityPurchaseKind kind, ulong contributedSat, uint? leaseStart,
+                                                   int createdMinute) =>
+        LiquidityPurchaseModel.Restore(id, s_channelId, new TxId(Enumerable.Repeat((byte)id, 32).ToArray()), role,
+                                       kind, contributedSat, contributedSat, s_rate,
+                                       LiquidityPaymentType.FromChannelBalance, 1_250, 5_010,
+                                       new CompactSignature(new byte[64]), [0x00, 0x20],
+                                       NormalOperationTestContext.PeerNodeId, 4_032,
+                                       DateTimeOffset.UnixEpoch.AddMinutes(createdMinute), status, leaseStart,
+                                       status == LiquidityPurchaseStatus.Closed ? leaseStart + 10 : null, false);
 
     private static ChannelModel CreateChannel(ChannelState state)
     {
