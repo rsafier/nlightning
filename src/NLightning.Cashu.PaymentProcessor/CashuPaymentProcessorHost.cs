@@ -19,10 +19,11 @@ namespace NLightning.Cashu.PaymentProcessor;
 /// </summary>
 /// <remarks>
 /// The server has its own small service provider (gRPC and Kestrel only); the service instance comes from the node's
-/// provider, so it uses the node's invoice, payment and event services. Without <c>TlsDirectory</c> it serves
-/// HTTP/2 without TLS (h2c, what <c>cdk-mintd</c> uses without <c>tls_dir</c>), which the options allow on loopback
-/// only. With it, it serves TLS with <c>server.pem</c>/<c>server.key</c>, and when <c>ca.pem</c> is there too every
-/// client must present a certificate that CA signed.
+/// provider, so it uses the node's invoice, payment, offer, wallet and event services, and its background loops
+/// (<see cref="CdkPaymentProcessorService.StartBackgroundAsync"/>) run while the server does. Without
+/// <c>TlsDirectory</c> it serves HTTP/2 without TLS (h2c, what <c>cdk-mintd</c> uses without <c>tls_dir</c>), which
+/// the options allow on loopback only. With it, it serves TLS with <c>server.pem</c>/<c>server.key</c>, and when
+/// <c>ca.pem</c> is there too every client must present a certificate that CA signed.
 /// </remarks>
 public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
 {
@@ -30,6 +31,7 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
     private readonly CashuPaymentProcessorOptions _options;
     private readonly IServiceProvider _serviceProvider;
     private WebApplication? _app;
+    private CdkPaymentProcessorService? _service;
 
     public CashuPaymentProcessorHost(IServiceProvider serviceProvider,
                                      IOptions<CashuPaymentProcessorOptions> options,
@@ -54,11 +56,16 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
         builder.Services.AddSingleton(_serviceProvider.GetRequiredService<ILoggerFactory>());
         builder.Services.AddSingleton(typeof(ILogger<>), typeof(Logger<>));
         builder.Services.AddGrpc();
-        builder.Services.AddSingleton(_ => _serviceProvider.GetRequiredService<CdkPaymentProcessorService>());
+        var service = _serviceProvider.GetRequiredService<CdkPaymentProcessorService>();
+        builder.Services.AddSingleton(service);
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
             kestrel.Listen(IPAddress.Parse(_options.ListenAddress), _options.Port, ConfigureListener);
         });
+
+        // The event and chain loops first, so the mint's first stream sees everything after the start
+        await service.StartBackgroundAsync(cancellationToken);
+        _service = service;
 
         var app = builder.Build();
         app.MapGrpcService<CdkPaymentProcessorService>();
@@ -75,12 +82,18 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
     /// <inheritdoc />
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (_app is null)
-            return;
+        if (_app is not null)
+        {
+            await _app.StopAsync(cancellationToken);
+            await _app.DisposeAsync();
+            _app = null;
+        }
 
-        await _app.StopAsync(cancellationToken);
-        await _app.DisposeAsync();
-        _app = null;
+        if (_service is not null)
+        {
+            await _service.StopBackgroundAsync();
+            _service = null;
+        }
     }
 
     /// <inheritdoc />

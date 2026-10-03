@@ -1,57 +1,77 @@
 using System.Collections.Concurrent;
 using Grpc.Core;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace NLightning.Cashu.PaymentProcessor;
 
-using Bolt11.Exceptions;
-using Bolt11.Models;
 using Domain.Accounting.Labels;
+using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Wallet.Interfaces;
+using Domain.Cashu.Enums;
+using Domain.Cashu.Interfaces;
+using Domain.Cashu.Models;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Node.Options;
-using Domain.Payments.Enums;
-using Domain.Payments.Events;
+using Domain.Offers.Interfaces;
 using Domain.Payments.Interfaces;
-using Domain.Payments.Models;
+using Domain.Persistence.Interfaces;
 using Grpc;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 /// <summary>
-/// CDK's <c>CdkPaymentProcessor</c> gRPC service over this node (Cashu plan C1, NL-902): a Cashu mint
-/// (<c>cdk-mintd</c>, <c>ln_backend = "grpcprocessor"</c>) creates its mint quotes as our BOLT 11 invoices and pays
-/// its melts with our payment service.
+/// CDK's <c>CdkPaymentProcessor</c> gRPC service over this node (Cashu plan C1, NL-902; breadth NL-997): a Cashu mint
+/// (<c>cdk-mintd</c>, <c>backend = "grpcprocessor"</c>) creates its mint quotes as our BOLT 11 invoices, BOLT 12
+/// offers or on-chain wallet addresses, and pays its melts with our payment service, offer payer or wallet.
 /// </summary>
 /// <remarks>
-/// <para>Only BOLT 11 is offered (<see cref="GetSettings"/> leaves bolt12 and onchain unset); other methods answer
-/// <see cref="StatusCode.Unimplemented"/>. Every request is identified by its payment hash (hex). Invoices and
-/// payments carry the label <see cref="CashuPaymentProcessorOptions.Label"/>, so the books show the mint's flows.</para>
-/// <para>Amounts are in the configured unit: received amounts are rounded down to it, spent amounts and fee reserves
-/// up. A melt's <c>max_fee_amount</c> is the fee limit of the payment; the payment waits at most
-/// <see cref="CashuPaymentProcessorOptions.PaymentTimeoutSeconds"/> and answers <c>PENDING</c> after that (the mint
-/// then checks it, or hears of it on <see cref="WaitPaymentEvent"/>).</para>
-/// <para><see cref="WaitPaymentEvent"/> streams the settles of invoices with our label and the outcomes of the
-/// payments this process made (their quote ids are held in memory: after a restart the mint learns them through
-/// <see cref="CheckOutgoingPayment"/>, as the CDK contract expects of a reconnecting mint).</para>
+/// <para>The identifiers follow CDK's own backends: BOLT 11 by payment hash (<c>cdk-ldk-node</c>), BOLT 12 mint quotes by
+/// offer id with one payment per paid invoice (<c>payment_id</c> = its payment hash), BOLT 12 melts and everything
+/// on-chain by the mint's quote id (<c>cdk-ldk-node</c>, <c>cdk-bdk</c>; NUT-25, NUT-30). Methods the node cannot serve
+/// are left out of <see cref="GetSettings"/> and answer <see cref="StatusCode.Unimplemented"/>.</para>
+/// <para>Every melt and on-chain mint quote is a <c>CashuQuotes</c> row (<see cref="ICashuQuoteDbRepository"/>): a
+/// melt is saved <see cref="CashuQuoteState.Dispatching"/> before its payment starts, so after a restart of the node or
+/// of the mint the quote still names its payment, and a melt is never sent twice for one quote.</para>
+/// <para>Invoices, offers, payments and withdrawals carry the label <see cref="CashuPaymentProcessorOptions.Label"/>
+/// (melts also the tag <c>cdk_quote</c>), so the books show the mint's flows. Amounts are in the configured unit:
+/// received amounts are rounded down to it, spent amounts and fee reserves up.</para>
+/// <para><see cref="WaitPaymentEvent"/> streams <see cref="ProcessorEventHub"/>, which the background loops
+/// (<see cref="StartBackgroundAsync"/>) fill: settled invoices with our label, the outcomes of the mint's melts, and
+/// on-chain deposits and melts once they have <see cref="CashuPaymentProcessorOptions.OnchainConfirmations"/>.</para>
 /// </remarks>
-public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentProcessorBase
+public sealed partial class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentProcessorBase, IAsyncDisposable
 {
-    private const string Bolt11Method = "bolt11";
+    internal const string QuoteTagKey = "cdk_quote";
 
+    private readonly IBlockchainMonitor? _blockchainMonitor;
+    private readonly IBitcoinChainService? _chainService;
     private readonly IPaymentEventSource _eventSource;
+    private readonly ProcessorEventHub _events = new();
+    private readonly IFeeService? _feeService;
+    private readonly ConcurrentDictionary<string, byte> _inFlight = new(StringComparer.Ordinal);
     private readonly IInvoiceService _invoiceService;
+    private readonly SourceLabels _labels;
     private readonly ILogger<CdkPaymentProcessorService> _logger;
     private readonly NodeOptions _nodeOptions;
+    private readonly IOfferPaymentService? _offerPaymentService;
+    private readonly IOfferService? _offerService;
     private readonly CashuPaymentProcessorOptions _options;
     private readonly IPaymentService _paymentService;
+    private readonly IServiceScopeFactory? _scopeFactory;
     private readonly TimeProvider _timeProvider;
-    private readonly SourceLabels _labels;
-    private readonly ConcurrentDictionary<Hash, string> _quoteIds = new();
+    private readonly IWalletSpendService? _walletSpendService;
 
     public CdkPaymentProcessorService(IInvoiceService invoiceService, IPaymentService paymentService,
                                       IPaymentEventSource eventSource, IOptions<NodeOptions> nodeOptions,
                                       IOptions<CashuPaymentProcessorOptions> options,
-                                      ILogger<CdkPaymentProcessorService> logger, TimeProvider? timeProvider = null)
+                                      ILogger<CdkPaymentProcessorService> logger, TimeProvider? timeProvider = null,
+                                      IServiceScopeFactory? scopeFactory = null, IOfferService? offerService = null,
+                                      IOfferPaymentService? offerPaymentService = null,
+                                      IWalletSpendService? walletSpendService = null, IFeeService? feeService = null,
+                                      IBlockchainMonitor? blockchainMonitor = null,
+                                      IBitcoinChainService? chainService = null)
     {
         _invoiceService = invoiceService;
         _paymentService = paymentService;
@@ -60,158 +80,162 @@ public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentP
         _options = options.Value;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _scopeFactory = scopeFactory;
+        _offerService = offerService;
+        _offerPaymentService = offerPaymentService;
+        _walletSpendService = walletSpendService;
+        _feeService = feeService;
+        _blockchainMonitor = blockchainMonitor;
+        _chainService = chainService;
         _labels = SourceLabels.Create(_options.Label, null);
     }
 
+    /// <summary>How many <see cref="WaitPaymentEvent"/> streams are open.</summary>
+    internal int StreamCount => _events.SubscriberCount;
+
     private string Unit => _options.IsMsat ? "msat" : "sat";
 
+    /// <summary>Whether BOLT 12 is served: enabled, offers work both ways, and quotes can be stored.</summary>
+    internal bool Bolt12Available => _options.Bolt12Enabled && _scopeFactory is not null
+                                  && _offerService is { IsAvailable: true }
+                                  && _offerPaymentService is { IsAvailable: true };
+
+    /// <summary>Whether on-chain is served: enabled and the wallet, fee and chain services are there.</summary>
+    internal bool OnchainAvailable => _options.OnchainEnabled && _scopeFactory is not null
+                                   && _walletSpendService is not null && _feeService is not null
+                                   && _blockchainMonitor is not null;
+
     /// <inheritdoc />
-    public override Task<SettingsResponse> GetSettings(EmptyRequest request, ServerCallContext context) =>
-        Task.FromResult(new SettingsResponse
+    public override Task<SettingsResponse> GetSettings(EmptyRequest request, ServerCallContext context)
+    {
+        var settings = new SettingsResponse
         {
             Unit = Unit,
             Bolt11 = new Bolt11Settings { Mpp = false, Amountless = true, InvoiceDescription = true }
-        });
+        };
+        if (Bolt12Available)
+            settings.Bolt12 = new Bolt12Settings { Amountless = true, InvoiceDescription = true };
+        if (OnchainAvailable)
+            settings.Onchain = new OnchainSettings
+            {
+                Confirmations = _options.OnchainConfirmations,
+                MinReceiveAmountSat = _options.OnchainMinReceiveSat,
+                MinSendAmountSat = _options.OnchainMinSendSat
+            };
+        return Task.FromResult(settings);
+    }
 
     /// <inheritdoc />
-    public override async Task<CreatePaymentResponse> CreatePayment(CreatePaymentRequest request,
-                                                                    ServerCallContext context)
-    {
-        if (request.Options?.OptionsCase != IncomingPaymentOptions.OptionsOneofCase.Bolt11)
-            throw Unimplemented(request.Options?.OptionsCase.ToString() ?? "no method");
-
-        var bolt11 = request.Options.Bolt11;
-        var amount = bolt11.Amount is { Value: > 0 } given ? ToMoney(given) : null;
-        uint? expirySeconds = null;
-        if (bolt11.HasUnixExpiry)
+    public override Task<CreatePaymentResponse> CreatePayment(CreatePaymentRequest request, ServerCallContext context) =>
+        request.Options?.OptionsCase switch
         {
-            var seconds = (long)bolt11.UnixExpiry - _timeProvider.GetUtcNow().ToUnixTimeSeconds();
-            if (seconds < 1)
-                throw new RpcException(new Status(StatusCode.InvalidArgument, "The expiry is in the past."));
-            expirySeconds = (uint)Math.Min(seconds, uint.MaxValue);
-        }
-
-        var invoice = await _invoiceService.CreateInvoiceAsync(amount, bolt11.HasDescription ? bolt11.Description : "",
-                                                               expirySeconds, _labels, context.CancellationToken);
-        _logger.LogInformation("Cashu mint quote: invoice {PaymentHash} for {Amount}", invoice.PaymentHash,
-                               amount is null ? "any amount" : $"{amount.MilliSatoshi} msat");
-        return new CreatePaymentResponse
-        {
-            RequestIdentifier = Identifier(invoice.PaymentHash),
-            Request = invoice.Bolt11 ?? "",
-            Expiry = (ulong)invoice.CreatedAt.AddSeconds(invoice.ExpirySeconds).ToUnixTimeSeconds()
+            IncomingPaymentOptions.OptionsOneofCase.Bolt11 => CreateBolt11Async(request.Options.Bolt11,
+                                                                                context.CancellationToken),
+            IncomingPaymentOptions.OptionsOneofCase.Bolt12 when Bolt12Available =>
+                CreateBolt12Async(request.Options.Bolt12, context.CancellationToken),
+            IncomingPaymentOptions.OptionsOneofCase.Onchain when OnchainAvailable =>
+                CreateOnchainAsync(request.Options.Onchain, context.CancellationToken),
+            _ => throw Unimplemented(request.Options?.OptionsCase.ToString() ?? "no method")
         };
-    }
 
     /// <inheritdoc />
     public override Task<PaymentQuoteResponse> GetPaymentQuote(PaymentQuoteRequest request, ServerCallContext context)
     {
-        if (request.RequestType != OutgoingPaymentRequestType.Bolt11Invoice)
-            throw Unimplemented(request.RequestType.ToString());
         CheckUnit(request.Unit);
-
-        var invoice = Decode(request.Request);
-        var amount = AmountToPay(invoice, request.Options);
-        return Task.FromResult(new PaymentQuoteResponse
+        return request.RequestType switch
         {
-            RequestIdentifier = Identifier(invoice),
-            Amount = ToAmount(amount, roundUp: true),
-            Fee = ToAmount(FeeReserve(amount), roundUp: true),
-            State = QuoteState.Unpaid
-        });
+            OutgoingPaymentRequestType.Bolt11Invoice => Task.FromResult(QuoteBolt11(request)),
+            OutgoingPaymentRequestType.Bolt12Offer when Bolt12Available =>
+                QuoteBolt12Async(request, context.CancellationToken),
+            OutgoingPaymentRequestType.Onchain when OnchainAvailable =>
+                QuoteOnchainAsync(request, context.CancellationToken),
+            _ => throw Unimplemented(request.RequestType.ToString())
+        };
     }
 
     /// <inheritdoc />
-    public override async Task<MakePaymentResponse> MakePayment(MakePaymentRequest request, ServerCallContext context)
+    public override Task<MakePaymentResponse> MakePayment(MakePaymentRequest request, ServerCallContext context)
     {
-        if (request.PaymentOptions?.OptionsCase != OutgoingPaymentVariant.OptionsOneofCase.Bolt11)
-            throw Unimplemented(request.PaymentOptions?.OptionsCase.ToString() ?? "no method");
         if (request.PartialAmount is not null)
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                                               "Partial (multi-path) melts are not supported."));
         if (!string.IsNullOrEmpty(request.Unit))
             CheckUnit(request.Unit);
 
-        var options = request.PaymentOptions.Bolt11;
-        var invoice = Decode(options.Bolt11);
-        var paymentHash = HashOf(invoice);
-        var amount = AmountToPay(invoice, options.MeltOptions);
-        var maxFee = request.MaxFeeAmount ?? options.MaxFeeAmount;
-        if (!string.IsNullOrEmpty(options.QuoteId))
-            _quoteIds[paymentHash] = options.QuoteId;
-
-        var payOptions = new PayInvoiceOptions
+        return request.PaymentOptions?.OptionsCase switch
         {
-            Timeout = TimeSpan.FromSeconds(_options.PaymentTimeoutSeconds),
-            MaxFee = maxFee is null ? FeeReserve(amount) : ToMoney(maxFee),
-            Labels = _labels
+            OutgoingPaymentVariant.OptionsOneofCase.Bolt11 =>
+                PayBolt11Async(request.PaymentOptions.Bolt11, request.MaxFeeAmount, context.CancellationToken),
+            OutgoingPaymentVariant.OptionsOneofCase.Bolt12 when Bolt12Available =>
+                PayBolt12Async(request.PaymentOptions.Bolt12, request.MaxFeeAmount, context.CancellationToken),
+            OutgoingPaymentVariant.OptionsOneofCase.Onchain when OnchainAvailable =>
+                PayOnchainAsync(request.PaymentOptions.Onchain, request.MaxFeeAmount, context.CancellationToken),
+            _ => throw Unimplemented(request.PaymentOptions?.OptionsCase.ToString() ?? "no method")
         };
-
-        PaymentModel payment;
-        try
-        {
-            var result = await _paymentService.PayInvoiceAsync(options.Bolt11, invoice.Amount.IsZero ? amount : null,
-                                                               payOptions, context.CancellationToken);
-            payment = result.Payment;
-        }
-        catch (ArgumentException e)
-        {
-            throw new RpcException(new Status(StatusCode.InvalidArgument, e.Message));
-        }
-        catch (InvalidOperationException e) when (e.GetType() == typeof(InvalidOperationException))
-        {
-            // Already in flight or paid: answer with the stored payment
-            payment = await _paymentService.GetPaymentAsync(paymentHash, context.CancellationToken)
-                   ?? throw new RpcException(new Status(StatusCode.FailedPrecondition, e.Message));
-        }
-
-        _logger.LogInformation("Cashu melt {QuoteId}: payment {PaymentHash} is {Status}", options.QuoteId,
-                               paymentHash, payment.Status);
-        return ToMakePaymentResponse(payment);
     }
 
     /// <inheritdoc />
     public override async Task<CheckIncomingPaymentResponse> CheckIncomingPayment(
         CheckIncomingPaymentRequest request, ServerCallContext context)
     {
-        var paymentHash = ParseIdentifier(request.RequestIdentifier);
-        var invoice = await _invoiceService.GetInvoiceAsync(paymentHash, context.CancellationToken);
+        var identifier = request.RequestIdentifier;
         var response = new CheckIncomingPaymentResponse();
-        if (invoice is { Status: InvoiceStatus.Settled })
-            response.Payments.Add(Received(invoice));
-        return response;
+        switch (identifier?.Type)
+        {
+            case PaymentIdentifierType.PaymentHash:
+                var invoice = await _invoiceService.GetInvoiceAsync(ParseHash(identifier, "payment hash"),
+                                                                    context.CancellationToken);
+                if (invoice is { Status: Domain.Payments.Enums.InvoiceStatus.Settled })
+                    response.Payments.Add(Received(invoice));
+                return response;
+            case PaymentIdentifierType.OfferId when Bolt12Available:
+                response.Payments.AddRange(await CheckOfferAsync(ParseHash(identifier, "offer id")));
+                return response;
+            case PaymentIdentifierType.QuoteId when OnchainAvailable:
+                response.Payments.AddRange(await CheckDepositsAsync(ParseQuoteId(identifier)));
+                return response;
+            default:
+                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                                                  $"Identifiers of type {identifier?.Type} are not known here."));
+        }
     }
 
     /// <inheritdoc />
     public override async Task<MakePaymentResponse> CheckOutgoingPayment(CheckOutgoingPaymentRequest request,
                                                                          ServerCallContext context)
     {
-        var paymentHash = ParseIdentifier(request.RequestIdentifier);
-        var payment = await _paymentService.GetPaymentAsync(paymentHash, context.CancellationToken);
-        return payment is null
-                   ? new MakePaymentResponse
-                   {
-                       PaymentIdentifier = Identifier(paymentHash),
-                       Status = QuoteState.Unknown,
-                       TotalSpent = new AmountMessage { Value = 0, Unit = Unit }
-                   }
-                   : ToMakePaymentResponse(payment);
+        var identifier = request.RequestIdentifier;
+        switch (identifier?.Type)
+        {
+            case PaymentIdentifierType.PaymentHash:
+                var paymentHash = ParseHash(identifier, "payment hash");
+                var payment = await _paymentService.GetPaymentAsync(paymentHash, context.CancellationToken);
+                if (payment is not null)
+                    return ToMakePaymentResponse(payment, Identifier(paymentHash));
+
+                // A melt saved before its payment that never reached the payment service, in this process or before
+                var quote = _scopeFactory is null ? null : await WithQuotesAsync(r => r.GetOutgoingByPaymentHashAsync(paymentHash));
+                return quote is not null && _inFlight.ContainsKey(quote.QuoteId)
+                           ? Pending(Identifier(paymentHash))
+                           : Unknown(Identifier(paymentHash));
+            case PaymentIdentifierType.QuoteId when _scopeFactory is not null:
+                return await CheckQuoteAsync(ParseQuoteId(identifier), context.CancellationToken);
+            default:
+                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                                                  $"Identifiers of type {identifier?.Type} are not known here."));
+        }
     }
 
     /// <inheritdoc />
     public override async Task WaitPaymentEvent(EmptyRequest request, IServerStreamWriter<PaymentEventResponse> stream,
                                                 ServerCallContext context)
     {
-        using var subscription = _eventSource.Subscribe();
+        using var subscription = _events.Subscribe();
         _logger.LogInformation("Cashu mint subscribed to payment events");
         try
         {
-            await foreach (var paymentEvent in subscription.ReadAllAsync(context.CancellationToken))
-            {
-                var response = await ToEventResponseAsync(paymentEvent, context.CancellationToken);
-                if (response is not null)
-                    await stream.WriteAsync(response, context.CancellationToken);
-            }
+            await foreach (var response in subscription.ReadAllAsync(context.CancellationToken))
+                await stream.WriteAsync(response, context.CancellationToken);
         }
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
         {
@@ -223,114 +247,68 @@ public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentP
                              + "recover them)");
     }
 
-    /// <summary>
-    /// The stream message for <paramref name="paymentEvent"/>, or null when it is not the mint's.
-    /// </summary>
-    internal async Task<PaymentEventResponse?> ToEventResponseAsync(PaymentEvent paymentEvent,
+    /// <summary>The state of a melt by its quote id (BOLT 12 and on-chain melts, and BOLT 11 melts as stored).</summary>
+    private async Task<MakePaymentResponse> CheckQuoteAsync(string quoteId, CancellationToken cancellationToken)
+    {
+        var identifier = QuoteIdentifier(quoteId);
+        var quote = await WithQuotesAsync(r => r.GetAsync(quoteId));
+        if (quote is not { Direction: CashuQuoteDirection.Outgoing })
+            return Unknown(identifier);
+
+        return quote.Method == CashuQuoteMethod.Onchain
+                   ? OnchainResponse(quote)
+                   : await LightningResponseAsync(quote, identifier, cancellationToken);
+    }
+
+    /// <summary>A melt's state when the mint asks: in flight here, or as its quote and payment say.</summary>
+    private async Task<MakePaymentResponse> LightningResponseAsync(CashuQuoteModel quote, PaymentIdentifier identifier,
                                                                    CancellationToken cancellationToken)
     {
-        switch (paymentEvent)
-        {
-            case InvoiceSettledEvent settled:
-                var invoice = await _invoiceService.GetInvoiceAsync(settled.PaymentHash, cancellationToken);
-                if (invoice is not { Status: InvoiceStatus.Settled } || invoice.Label != _options.Label)
-                    return null;
-                return new PaymentEventResponse { PaymentReceived = Received(invoice) };
-            case PaymentSucceededEvent succeeded when _quoteIds.TryRemove(succeeded.PaymentHash, out var quoteId):
-                var payment = await _paymentService.GetPaymentAsync(succeeded.PaymentHash, cancellationToken);
-                return payment is null
-                           ? null
-                           : new PaymentEventResponse
-                           {
-                               PaymentSuccessful = new PaymentSuccessfulResponse
-                               {
-                                   QuoteId = quoteId,
-                                   Details = ToMakePaymentResponse(payment)
-                               }
-                           };
-            case PaymentFailedEvent failed when _quoteIds.TryRemove(failed.PaymentHash, out var quoteId):
-                return new PaymentEventResponse
-                {
-                    PaymentFailed = new PaymentFailedResponse
-                    {
-                        QuoteId = quoteId,
-                        Reason = failed.Reason ?? "The payment failed."
-                    }
-                };
-            default:
-                return null;
-        }
-    }
+        if (quote.PaymentHash is { } paymentHash
+         && await _paymentService.GetPaymentAsync(paymentHash, cancellationToken) is { } payment)
+            return ToMakePaymentResponse(payment, identifier);
 
-    private MakePaymentResponse ToMakePaymentResponse(PaymentModel payment)
-    {
-        var response = new MakePaymentResponse
+        return quote.State switch
         {
-            PaymentIdentifier = Identifier(payment.PaymentHash),
-            Status = payment.Status switch
-            {
-                PaymentStatus.Succeeded => QuoteState.Paid,
-                PaymentStatus.Failed => QuoteState.Failed,
-                _ => QuoteState.Pending
-            },
-            TotalSpent = ToAmount(payment.Status == PaymentStatus.Succeeded
-                                      ? payment.Amount + payment.Fee
-                                      : LightningMoney.Zero, roundUp: true)
+            CashuQuoteState.Failed => Failed(identifier),
+            CashuQuoteState.Created => Unpaid(identifier),
+            // Dispatching without a payment: sending here, or interrupted by a restart before the payment was stored
+            // (the BOLT 12 invoice is fetched first): never answered as unpaid, so the mint never pays it twice
+            _ when _inFlight.ContainsKey(quote.QuoteId) || quote.Method == CashuQuoteMethod.Bolt12 => Pending(identifier),
+            _ => Unknown(identifier)
         };
-        if (payment.Preimage is { } preimage)
-            response.PaymentProof = Convert.ToHexString((byte[])preimage).ToLowerInvariant();
-        return response;
     }
 
-    private WaitIncomingPaymentResponse Received(InvoiceModel invoice) => new()
+    /// <summary>Runs <paramref name="read"/> on a fresh unit of work's quote repository.</summary>
+    private async Task<T> WithQuotesAsync<T>(Func<ICashuQuoteDbRepository, Task<T>> read)
     {
-        PaymentIdentifier = Identifier(invoice.PaymentHash),
-        PaymentAmount = ToAmount(invoice.AmountReceived ?? invoice.Amount ?? LightningMoney.Zero, roundUp: false),
-        PaymentId = invoice.PaymentHash.ToString()
-    };
-
-    private Invoice Decode(string bolt11)
-    {
-        try
-        {
-            var invoice = Invoice.Decode(bolt11.Trim(), _nodeOptions.BitcoinNetwork);
-            if (invoice.PaymentHash is null)
-                throw new RpcException(new Status(StatusCode.InvalidArgument, "The invoice has no payment hash."));
-            if (invoice.ExpiryDate <= _timeProvider.GetUtcNow())
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
-                                                  $"The invoice expired at {invoice.ExpiryDate:O}."));
-            return invoice;
-        }
-        catch (InvoiceSerializationException e)
-        {
-            throw new RpcException(new Status(StatusCode.InvalidArgument,
-                                              $"The invoice cannot be decoded for {_nodeOptions.BitcoinNetwork}: "
-                                            + (e.InnerException?.Message ?? e.Message)));
-        }
+        using var scope = _scopeFactory!.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        return await read(unitOfWork.CashuQuoteDbRepository);
     }
 
-    private static LightningMoney AmountToPay(Invoice invoice, MeltOptions? meltOptions)
+    /// <summary>Stages <paramref name="write"/> on a fresh unit of work and saves it.</summary>
+    private async Task SaveQuotesAsync(Action<ICashuQuoteDbRepository> write)
     {
-        if (meltOptions?.OptionsCase == MeltOptions.OptionsOneofCase.Mpp)
-            throw new RpcException(new Status(StatusCode.InvalidArgument,
-                                              "Partial (multi-path) melts are not supported."));
-
-        var requested = meltOptions?.OptionsCase == MeltOptions.OptionsOneofCase.Amountless
-                            ? LightningMoney.MilliSatoshis(meltOptions.Amountless.AmountMsat)
-                            : null;
-        if (!invoice.Amount.IsZero)
-        {
-            if (requested is not null && requested != invoice.Amount)
-                throw new RpcException(new Status(StatusCode.InvalidArgument,
-                                                  "The amount differs from the invoice's."));
-            return invoice.Amount;
-        }
-
-        return requested is { IsZero: false }
-                   ? requested
-                   : throw new RpcException(new Status(StatusCode.InvalidArgument,
-                                                       "The invoice has no amount; give one (amountless option)."));
+        using var scope = _scopeFactory!.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        write(unitOfWork.CashuQuoteDbRepository);
+        await unitOfWork.SaveChangesAsync();
     }
+
+    /// <summary>Saves <paramref name="quote"/> as new or changed.</summary>
+    private Task SaveQuoteAsync(CashuQuoteModel quote, bool isNew) =>
+        SaveQuotesAsync(r =>
+        {
+            if (isNew)
+                r.Add(quote);
+            else
+                r.Update(quote);
+        });
+
+    /// <summary>The labels of a melt: the processor's label and the mint's quote id as tag <c>cdk_quote</c>.</summary>
+    private SourceLabels MeltLabels(string quoteId) =>
+        SourceLabels.TryCreate(_options.Label, [$"{QuoteTagKey}={quoteId}"], out var labels, out _) ? labels : _labels;
 
     /// <summary>
     /// max(<see cref="CashuPaymentProcessorOptions.MinFeeReserveMsat"/>, amount × FeeReservePpm / 1,000,000).
@@ -362,9 +340,20 @@ public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentP
                                               $"This processor's unit is {Unit}, not {unit}."));
     }
 
-    private static Hash HashOf(Invoice invoice) => new(Convert.FromHexString(invoice.PaymentHash!.ToString()));
+    private MakePaymentResponse Pending(PaymentIdentifier identifier) => StatusOnly(identifier, QuoteState.Pending);
 
-    private static PaymentIdentifier Identifier(Invoice invoice) => Identifier(HashOf(invoice));
+    private MakePaymentResponse Unknown(PaymentIdentifier identifier) => StatusOnly(identifier, QuoteState.Unknown);
+
+    private MakePaymentResponse Unpaid(PaymentIdentifier identifier) => StatusOnly(identifier, QuoteState.Unpaid);
+
+    private MakePaymentResponse Failed(PaymentIdentifier identifier) => StatusOnly(identifier, QuoteState.Failed);
+
+    private MakePaymentResponse StatusOnly(PaymentIdentifier identifier, QuoteState state) => new()
+    {
+        PaymentIdentifier = identifier,
+        Status = state,
+        TotalSpent = new AmountMessage { Value = 0, Unit = Unit }
+    };
 
     private static PaymentIdentifier Identifier(Hash paymentHash) => new()
     {
@@ -372,22 +361,52 @@ public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentP
         Hash = paymentHash.ToString()
     };
 
-    private static Hash ParseIdentifier(PaymentIdentifier? identifier)
+    private static PaymentIdentifier OfferIdentifier(Hash offerId) => new()
     {
-        if (identifier is not { Type: PaymentIdentifierType.PaymentHash, ValueCase: PaymentIdentifier.ValueOneofCase.Hash }
-         || identifier.Hash.Length != 64)
-            throw new RpcException(new Status(StatusCode.InvalidArgument,
-                                              "Only payment-hash identifiers (64 hex characters) are known."));
+        Type = PaymentIdentifierType.OfferId,
+        Id = offerId.ToString()
+    };
+
+    private static PaymentIdentifier QuoteIdentifier(string quoteId) => new()
+    {
+        Type = PaymentIdentifierType.QuoteId,
+        Id = quoteId
+    };
+
+    /// <summary>The hash a payment-hash (<c>hash</c>) or offer-id (<c>id</c>) identifier names.</summary>
+    private static Hash ParseHash(PaymentIdentifier identifier, string what)
+    {
+        var text = identifier.ValueCase switch
+        {
+            PaymentIdentifier.ValueOneofCase.Hash => identifier.Hash,
+            PaymentIdentifier.ValueOneofCase.Id => identifier.Id,
+            _ => ""
+        };
+        if (text.Length != 64)
+            throw new RpcException(new Status(StatusCode.InvalidArgument, $"A {what} is 64 hex characters."));
         try
         {
-            return new Hash(Convert.FromHexString(identifier.Hash));
+            return new Hash(Convert.FromHexString(text));
         }
         catch (FormatException)
         {
-            throw new RpcException(new Status(StatusCode.InvalidArgument, "The payment hash is not hex."));
+            throw new RpcException(new Status(StatusCode.InvalidArgument, $"The {what} is not hex."));
         }
     }
 
+    private static string ParseQuoteId(PaymentIdentifier identifier) =>
+        CheckQuoteId(identifier.ValueCase == PaymentIdentifier.ValueOneofCase.Id ? identifier.Id : null);
+
+    /// <summary>The mint's quote id, refused when missing or too long to store.</summary>
+    private static string CheckQuoteId(string? quoteId) =>
+        string.IsNullOrWhiteSpace(quoteId)
+            ? throw new RpcException(new Status(StatusCode.InvalidArgument, "The mint's quote id is required."))
+            : quoteId.Length > CashuQuoteModel.QuoteIdMaxLength
+                ? throw new RpcException(new Status(StatusCode.InvalidArgument,
+                                                    $"A quote id is at most {CashuQuoteModel.QuoteIdMaxLength} "
+                                                  + "characters."))
+                : quoteId;
+
     private static RpcException Unimplemented(string method) =>
-        new(new Status(StatusCode.Unimplemented, $"Only {Bolt11Method} is supported, not {method}."));
+        new(new Status(StatusCode.Unimplemented, $"{method} is not served by this processor."));
 }

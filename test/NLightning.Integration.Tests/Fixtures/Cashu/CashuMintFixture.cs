@@ -136,18 +136,44 @@ public sealed class CashuMintFixture : IAsyncLifetime
             allow_insecure = true
             """, cancellationToken);
 
+        // The configuration goes into the mint's database once, so a restart (RestartMintAsync) keeps the mint
         await DockerAsync(["run", "-d", "--name", MintdContainerName, "--network", "host",
                            "-v", $"{directory}:/data", "-e", $"CDK_MINTD_MNEMONIC={MintMnemonic}", MintdImage,
                            "sh", "-c",
-                           "cdk-mintd -w /data config init --file /data/config.toml --new-mint "
-                         + "&& exec cdk-mintd -w /data --enable-logging"], cancellationToken);
+                           "{ [ -f /data/.initialized ] || { cdk-mintd -w /data config init --file /data/config.toml "
+                         + "--new-mint && touch /data/.initialized; }; } && exec cdk-mintd -w /data --enable-logging"],
+                          cancellationToken);
+        await WaitForMintAsync();
+        Console.WriteLine($"[cashu] cdk-mintd {CdkVersion} up at {MintUrl}, processor 127.0.0.1:{processorPort}");
+    }
+
+    /// <summary>
+    /// Stops <c>cdk-mintd</c> and starts it again over the same database (its quotes, keysets and the processor's
+    /// address), and waits until it answers.
+    /// </summary>
+    public async Task RestartMintAsync(CancellationToken cancellationToken)
+    {
+        await DockerAsync(["stop", "-t", "10", MintdContainerName], cancellationToken);
+        await DockerAsync(["start", MintdContainerName], cancellationToken);
+        await WaitForMintAsync();
+        Console.WriteLine($"[cashu] cdk-mintd restarted at {MintUrl}");
+    }
+
+    /// <summary>GETs <paramref name="path"/> on the mint (e.g. <c>/v1/melt/quote/onchain/{id}</c>).</summary>
+    public async Task<string> GetFromMintAsync(string path, CancellationToken cancellationToken)
+    {
+        using var http = new HttpClient();
+        return await http.GetStringAsync($"{MintUrl}{path}", cancellationToken);
+    }
+
+    private async Task WaitForMintAsync()
+    {
         using var http = new HttpClient();
         await DockerContainerUtils.WaitUntilReadyAsync(MintdContainerName, async ct =>
         {
             using var response = await http.GetAsync($"{MintUrl}/v1/info", ct);
             response.EnsureSuccessStatusCode();
         }, s_mintReadyTimeout);
-        Console.WriteLine($"[cashu] cdk-mintd {CdkVersion} up at {MintUrl}, processor 127.0.0.1:{processorPort}");
     }
 
     /// <summary>Removes the mint container.</summary>
