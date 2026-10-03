@@ -131,6 +131,47 @@ public sealed class FaultInjector : IAsyncDisposable
     }
 
     /// <summary>
+    /// A clean restart in place: runs <paramref name="stopCommand"/> in the node's main container (the node's own
+    /// shutdown, e.g. <c>bitcoin-cli stop</c>), and waits until the kubelet has restarted the container in the same pod
+    /// (same UID, IP and data, an <c>emptyDir</c> included; its restart count grows) and it is ready again. Unlike
+    /// <see cref="CrashAsync"/> the node flushes its state; unlike <see cref="RestartAsync"/> it works on an
+    /// <c>emptyDir</c> and keeps the pod IP. Needs no shared process namespace. Every connection to the node drops
+    /// (established ones too, which a partition alone keeps). A second restart within ten minutes waits for the
+    /// kubelet's back-off (10 s, then doubling).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The stop command failed.</exception>
+    public async Task<NodeReplacement> RestartInPlaceAsync(INodeHandle node, IReadOnlyList<string> stopCommand,
+                                                           TimeSpan readyTimeout, CancellationToken cancellationToken)
+    {
+        RequireOwn(node);
+        ArgumentNullException.ThrowIfNull(stopCommand);
+        if (stopCommand.Count == 0)
+            throw new ArgumentException("The stop command is empty", nameof(stopCommand));
+
+        var started = DateTimeOffset.UtcNow;
+        var watch = Stopwatch.StartNew();
+        var before = await ReadPodAsync(node, cancellationToken).ConfigureAwait(false);
+        var restartsBefore = RestartCount(before, node.ContainerName);
+
+        var result = await node.ExecAsync(stopCommand, cancellationToken).ConfigureAwait(false);
+        result.EnsureSuccess($"stopping {node} ({string.Join(' ', stopCommand)})");
+
+        var after = await WaitForPodAsync(node, before.Metadata.Uid,
+                                          pod => RestartCount(pod, node.ContainerName) > restartsBefore
+                                              && PodStatusReader.IsReady(pod),
+                                          "restarted in place and ready", readyTimeout, null,
+                                          cancellationToken).ConfigureAwait(false);
+        await node.WaitReadyAsync(readyTimeout, cancellationToken).ConfigureAwait(false);
+        _paused.TryRemove(node.Name, out _);
+
+        var replacement = new NodeReplacement(node.Name, FaultKind.RestartInPlace, before.Metadata.Uid,
+                                              after.Metadata.Uid, before.Status?.PodIP, after.Status?.PodIP,
+                                              restartsBefore, RestartCount(after, node.ContainerName), watch.Elapsed);
+        Record(started, FaultKind.RestartInPlace, node.Name, watch.Elapsed, Describe(replacement));
+        return replacement;
+    }
+
+    /// <summary>
     /// Pauses the node: SIGSTOP to every process of its main container, then waits until the kernel shows them
     /// stopped. The pod stays (no restart); its TCP peers see a silent node, and an exec readiness probe that talks
     /// to the node times out. Execs still work (a new process is not stopped).
@@ -138,7 +179,26 @@ public sealed class FaultInjector : IAsyncDisposable
     /// <exception cref="FaultNotSupportedException">The node's process is PID 1 (deploy it
     /// <see cref="ProcessFaultSupport.WithProcessFaults"/>).</exception>
     /// <exception cref="InvalidOperationException">The node is already paused by this injector.</exception>
-    public async Task<PausedNode> PauseAsync(INodeHandle node, CancellationToken cancellationToken)
+    public Task<PausedNode> PauseAsync(INodeHandle node, CancellationToken cancellationToken) =>
+        PauseAsync(node, null, cancellationToken);
+
+    /// <summary>
+    /// Pauses only the processes of the node's main container named <paramref name="processName"/> (their
+    /// <c>/proc/&lt;pid&gt;/comm</c>): e.g. CLN's <c>lightningd</c> while its <c>connectd</c> keeps answering the
+    /// transport, so a peer connects and exchanges <c>init</c> but nothing behind it moves.
+    /// <see cref="ResumeAsync"/> continues every process of the container. Otherwise as
+    /// <see cref="PauseAsync(INodeHandle, CancellationToken)"/>.
+    /// </summary>
+    public Task<PausedNode> PauseProcessAsync(INodeHandle node, string processName,
+                                              CancellationToken cancellationToken)
+    {
+        if (!ContainerProcessScripts.IsProcessName(processName))
+            throw new ArgumentException($"'{processName}' is not a process name", nameof(processName));
+        return PauseAsync(node, processName, cancellationToken);
+    }
+
+    private async Task<PausedNode> PauseAsync(INodeHandle node, string? processName,
+                                              CancellationToken cancellationToken)
     {
         RequireOwn(node);
         if (!_paused.TryAdd(node.Name, node))
@@ -148,7 +208,8 @@ public sealed class FaultInjector : IAsyncDisposable
         var watch = Stopwatch.StartNew();
         try
         {
-            var result = await node.ExecAsync(ContainerProcessScripts.Signal("STOP", true, true, passes: 3),
+            var result = await node.ExecAsync(ContainerProcessScripts.Signal("STOP", true, true, passes: 3,
+                                                                             processName: processName),
                                               cancellationToken).ConfigureAwait(false);
             if (result.ExitCode == ContainerProcessScripts.MainProcessIsPid1ExitCode)
                 throw NotSupported(node, "pause");
@@ -156,13 +217,15 @@ public sealed class FaultInjector : IAsyncDisposable
 
             var pids = ContainerProcessScripts.ParseSignalled(result.StdOutText);
             if (pids.Count == 0)
-                throw new InvalidOperationException($"{node} has no process to pause");
+                throw new InvalidOperationException(
+                    $"{node} has no process {(processName is null ? "" : $"named {processName} ")}to pause");
 
             await WaitForProcessesAsync(node, pids, p => p is null || p.IsStopped || p.HasExited, "stopped",
                                         cancellationToken).ConfigureAwait(false);
 
             var paused = new PausedNode(node.Name, pids, watch.Elapsed);
-            Record(started, FaultKind.Pause, node.Name, watch.Elapsed, $"SIGSTOP pids {string.Join(',', pids)}");
+            Record(started, FaultKind.Pause, node.Name, watch.Elapsed,
+                   $"SIGSTOP {(processName is null ? "" : processName + " ")}pids {string.Join(',', pids)}");
             return paused;
         }
         catch
@@ -220,25 +283,58 @@ public sealed class FaultInjector : IAsyncDisposable
             RequireOwn(node);
         options ??= PartitionOptions.Default;
 
-        var started = DateTimeOffset.UtcNow;
-        var watch = Stopwatch.StartNew();
-        var name = PartitionPolicy.NamePrefix
-                 + Interlocked.Increment(ref _partitionSequence).ToString(CultureInfo.InvariantCulture);
+        var name = NextPartitionName();
         var policy = PartitionPolicy.Build(_run, name, isolated.Select(n => n.Name).ToList(),
                                            others?.Select(n => n.Name).ToList(), options);
-        await _client.NetworkingV1.CreateNamespacedNetworkPolicyAsync(policy, _run.Namespace,
-                                                                      cancellationToken: cancellationToken)
-                     .ConfigureAwait(false);
-
         var partition = new NetworkPartition(
             name, policy.Spec.PodSelector.MatchExpressions[0].Values.ToList(),
-            others?.Select(n => n.Name).Distinct().Order(StringComparer.Ordinal).ToList());
-        _partitions[name] = partition;
-        await Task.Delay(options.SettleTime, cancellationToken).ConfigureAwait(false);
+            others?.Select(n => n.Name).Distinct().Order(StringComparer.Ordinal).ToList(),
+            others is null ? PartitionShape.Isolate : PartitionShape.Split);
+        return await ApplyAsync(policy, partition, options.SettleTime, cancellationToken).ConfigureAwait(false);
+    }
 
-        Record(started, FaultKind.Partition, string.Join(',', partition.Isolated), watch.Elapsed,
-               partition.ToString());
-        return partition;
+    /// <summary>
+    /// Cuts <paramref name="nodes"/> off from everything outside the run's pods (<see cref="PartitionShape.Outside"/>):
+    /// they keep their bitcoind, their peers in the run and DNS, and lose the host, i.e. the test process and the
+    /// in-process nodes in it, both ways. The partition between a pod peer and our in-process node. As with every
+    /// partition, established connections survive (disconnect the peers after this);
+    /// <see cref="PartitionOptions.AllowedIngressCidrs"/> is ignored.
+    /// </summary>
+    public async Task<NetworkPartition> PartitionFromHostAsync(IReadOnlyCollection<INodeHandle> nodes,
+                                                               PartitionOptions? options,
+                                                               CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(nodes);
+        foreach (var node in nodes)
+            RequireOwn(node);
+        options ??= PartitionOptions.Default;
+
+        var name = NextPartitionName();
+        var policy = PartitionPolicy.BuildOutsideCut(_run, name, nodes.Select(n => n.Name).ToList(), options);
+        var partition = new NetworkPartition(name, policy.Spec.PodSelector.MatchExpressions[0].Values.ToList(), null,
+                                             PartitionShape.Outside);
+        return await ApplyAsync(policy, partition, options.SettleTime, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Leaves only <paramref name="openPorts"/> open for new connections into <paramref name="node"/>, from anywhere
+    /// (<see cref="PartitionShape.Ports"/>); the node's own connections out are untouched. E.g. bitcoind with its RPC
+    /// and P2P ports open and its ZMQ feeds cut. Established connections survive: restart the node in place
+    /// (<see cref="RestartInPlaceAsync"/>) or have the client reconnect for the cut to bite.
+    /// </summary>
+    public async Task<NetworkPartition> LimitIngressPortsAsync(INodeHandle node, IReadOnlyCollection<int> openPorts,
+                                                               CancellationToken cancellationToken,
+                                                               TimeSpan? settleTime = null)
+    {
+        RequireOwn(node);
+        ArgumentNullException.ThrowIfNull(openPorts);
+
+        var name = NextPartitionName();
+        var policy = PartitionPolicy.BuildIngressPorts(_run, name, [node.Name], openPorts);
+        var partition = new NetworkPartition(name, [node.Name], null, PartitionShape.Ports,
+                                             openPorts.Distinct().Order().ToList());
+        return await ApplyAsync(policy, partition, settleTime ?? PartitionOptions.Default.SettleTime,
+                                cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Isolates one node from every other pod (<see cref="PartitionAsync"/> with no other side).</summary>
@@ -301,6 +397,25 @@ public sealed class FaultInjector : IAsyncDisposable
         {
             _log?.Invoke($"[nltg-faults] healing partitions in {_run.Namespace} failed: {e.Message}");
         }
+    }
+
+    private string NextPartitionName() =>
+        PartitionPolicy.NamePrefix + Interlocked.Increment(ref _partitionSequence).ToString(CultureInfo.InvariantCulture);
+
+    private async Task<NetworkPartition> ApplyAsync(V1NetworkPolicy policy, NetworkPartition partition,
+                                                    TimeSpan settleTime, CancellationToken cancellationToken)
+    {
+        var started = DateTimeOffset.UtcNow;
+        var watch = Stopwatch.StartNew();
+        await _client.NetworkingV1.CreateNamespacedNetworkPolicyAsync(policy, _run.Namespace,
+                                                                      cancellationToken: cancellationToken)
+                     .ConfigureAwait(false);
+        _partitions[partition.Name] = partition;
+        await Task.Delay(settleTime, cancellationToken).ConfigureAwait(false);
+
+        Record(started, FaultKind.Partition, string.Join(',', partition.Isolated), watch.Elapsed,
+               partition.ToString());
+        return partition;
     }
 
     private async Task<NodeReplacement> ReplaceAsync(INodeHandle node, FaultKind kind, Func<INodeHandle, Task> act,

@@ -33,8 +33,12 @@
 #                         suite (-p integration, --trait Category=Interop.Cln, --explicit off; its 4 Explicit capture
 #                         tests stay out unless --explicit on is given); eclair = the Eclair interop suite
 #                         (--trait Category=Interop.Eclair, --explicit off; its 1 Explicit test likewise); ldk =
-#                         the LDK interop suite (--trait Category=Interop.Ldk, --explicit off); each run gets its
-#                         own namespace(s)
+#                         the LDK interop suite (--trait Category=Interop.Ldk, --explicit off); postgres =
+#                         Docker/PostgresTests and the Explicit Cluster/Live/ServerDatabaseClusterTests on a Postgres
+#                         pod (--trait Database=Postgres, --explicit on; MultiNodeHarnessTests' Postgres fact needs the
+#                         LND fixture and stays out); faults = the partition and ZMQ-loss tests
+#                         (Cluster/Live/PartitionClusterTests, ChainMonitorZmqClusterTests); --class/--method replace
+#                         a suite's classes; each run gets its own namespace(s)
 #
 # Example: the scaffold's namespace test 3 times at once
 #   scripts/run-cluster.sh -n 3 --method '*ARunDeploysABusyboxStatefulSet*'
@@ -46,6 +50,8 @@
 #   scripts/run-cluster.sh -n 1 --suite eclair
 # Example: the LDK interop suite on the cluster, alone
 #   scripts/run-cluster.sh -n 1 --suite ldk
+# Example: the Postgres round trips on a Postgres pod, and the partition tests (test harness phase 4)
+#   scripts/run-cluster.sh -n 1 --suite postgres; scripts/run-cluster.sh -n 1 --suite faults
 #
 # Never runs Docker suites and never touches namespaces outside nltg-spike-*: the test processes create only their
 # own namespaces, and the reaper only deletes harness run namespaces (nltg-cluster reap, RunReaper).
@@ -66,6 +72,7 @@ diag="${NLTG_CLUSTER_DIAG:-failure}"
 trait="Category=Cluster"
 explicit=only
 suite=""
+suite_classes=()
 backend=""
 filters=()
 extra=()
@@ -99,13 +106,25 @@ while [[ $# -gt 0 ]]; do
              [[ -n "${explicit_set:-}" ]] || explicit=off ;;
         ldk) project=integration; trait="Category=Interop.Ldk"; backend=cluster
              [[ -n "${explicit_set:-}" ]] || explicit=off ;;
-        *) die "--suite $suite: unknown suite (cln, eclair, ldk)" ;;
+        postgres) project=integration; trait="Database=Postgres"; backend=cluster
+                  suite_classes=(NLightning.Integration.Tests.Docker.PostgresTests
+                                 NLightning.Integration.Tests.Cluster.Live.ServerDatabaseClusterTests)
+                  [[ -n "${explicit_set:-}" ]] || explicit=on ;;
+        faults) project=integration; trait="Category=Cluster"; backend=cluster
+                suite_classes=(NLightning.Integration.Tests.Cluster.Live.PartitionClusterTests
+                               NLightning.Integration.Tests.Cluster.Live.ChainMonitorZmqClusterTests) ;;
+        *) die "--suite $suite: unknown suite (cln, eclair, ldk, postgres, faults)" ;;
       esac ;;
     -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
     --) shift; extra=("$@"); break ;;
     *) die "unknown argument $1 (see --help)" ;;
   esac
 done
+
+# A suite's own classes, unless --class/--method narrowed it
+if (( ${#filters[@]} == 0 )) && [[ -n "${suite_classes[*]:-}" ]]; then
+  for class in "${suite_classes[@]}"; do filters+=(-class "$class"); done
+fi
 
 [[ "$runs" =~ ^[0-9]+$ && "$runs" -ge 1 ]] || die "--runs must be a positive number"
 jobs="${jobs:-$runs}"

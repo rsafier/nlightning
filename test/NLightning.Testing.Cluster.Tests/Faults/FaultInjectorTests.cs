@@ -58,6 +58,25 @@ public class FaultInjectorTests
         await Assert.ThrowsAsync<ArgumentException>(() => faults.RestartAsync(stranger, TimeSpan.FromSeconds(1), ct));
         await Assert.ThrowsAsync<ArgumentException>(() => faults.KillAsync(stranger, TimeSpan.FromSeconds(1), ct));
         await Assert.ThrowsAsync<ArgumentException>(() => faults.IsolateAsync(stranger, null, ct));
+        await Assert.ThrowsAsync<ArgumentException>(() => faults.PauseProcessAsync(stranger, "lightningd", ct));
+        await Assert.ThrowsAsync<ArgumentException>(() => faults.PartitionFromHostAsync([stranger], null, ct));
+        await Assert.ThrowsAsync<ArgumentException>(() => faults.LimitIngressPortsAsync(stranger, [18443], ct));
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => faults.RestartInPlaceAsync(stranger, ["true"], TimeSpan.FromSeconds(1), ct));
+        Assert.Empty(faults.Events);
+    }
+
+    [Fact]
+    public async Task Given_AnEmptyStopCommand_When_RestartedInPlace_Then_ItIsRefusedBeforeTheCluster()
+    {
+        // Arrange
+        using var client = UnreachableClient();
+        await using var faults = new FaultInjector(client, s_run);
+        var node = new KubeNodeHandle(client, s_run.Namespace, "miner", NodeKind.BitcoinCore);
+
+        // Act / Assert
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => faults.RestartInPlaceAsync(node, [], TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken));
         Assert.Empty(faults.Events);
     }
 
@@ -94,11 +113,15 @@ public class FaultInjectorTests
         var fault = new FaultEvent(DateTimeOffset.UnixEpoch, FaultKind.Pause, "alice", TimeSpan.FromSeconds(1.5),
                                    "SIGSTOP pids 7");
         var isolate = new NetworkPartition("nltg-partition-1", ["alice"], null);
-        var split = new NetworkPartition("nltg-partition-2", ["alice", "bob"], ["carol"]);
+        var split = new NetworkPartition("nltg-partition-2", ["alice", "bob"], ["carol"], PartitionShape.Split);
+        var outside = new NetworkPartition("nltg-partition-3", ["cln"], null, PartitionShape.Outside);
+        var ports = new NetworkPartition("nltg-partition-4", ["miner"], null, PartitionShape.Ports, [18443, 18444]);
 
         // Assert
         Assert.Equal("00:00:00.000 Pause alice (1.5 s): SIGSTOP pids 7", fault.ToString());
         Assert.Equal("nltg-partition-1: [alice] | [*]", isolate.ToString());
         Assert.Equal("nltg-partition-2: [alice,bob] | [carol]", split.ToString());
+        Assert.Equal("nltg-partition-3: [cln] | outside the run (host)", outside.ToString());
+        Assert.Equal("nltg-partition-4: [miner] open only on ports 18443,18444", ports.ToString());
     }
 }

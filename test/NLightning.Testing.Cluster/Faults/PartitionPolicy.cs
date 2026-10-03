@@ -1,3 +1,4 @@
+using System.Globalization;
 using k8s.Models;
 
 namespace NLightning.Testing.Cluster.Faults;
@@ -17,8 +18,17 @@ using Run;
 ///   <item><b>Isolate</b> (<c>others</c> null): the selected nodes reach only each other (and DNS, and the allowed
 ///   CIDRs inbound). An isolated LN node also loses its chain backend.</item>
 ///   <item><b>Split</b> (<c>others</c> given): the selected nodes cannot reach the other side and the other side
-///   cannot reach them; both keep everything else (their bitcoind, DNS, the runner).</item>
+///   cannot reach them; both keep everything else in the run (their bitcoind, DNS).</item>
+///   <item><b>Outside</b> (<see cref="BuildOutsideCut"/>): the selected nodes keep every pod of the run and DNS but lose
+///   everything outside the run's pods, i.e. the test process on the host and our in-process nodes in it (test harness
+///   phase 4).</item>
+///   <item><b>Ports</b> (<see cref="BuildIngressPorts"/>): new connections into the selected nodes reach only the
+///   listed ports, from anywhere; their own connections out are not touched (e.g. bitcoind's RPC open, its ZMQ feeds
+///   cut).</item>
 /// </list>
+/// Every shape allows only what it lists, so a policy that selects a node with <c>Egress</c> cuts its connections to
+/// the host too: the isolate and split shapes also cut a pod from the test process unless
+/// <see cref="PartitionOptions.AllowedIngressCidrs"/> lets the runner in.
 /// </para>
 /// <para>
 /// Enforcement is the network plugin's. Measured on OrbStack (k3s, flannel host-gw with k3s's embedded kube-router
@@ -39,6 +49,15 @@ public static class PartitionPolicy
 
     /// <summary>The prefix of partition policy names (<c>nltg-partition-&lt;n&gt;</c>).</summary>
     public const string NamePrefix = "nltg-partition-";
+
+    /// <summary>The <c>nltg.partition/others</c> value of the outside shape.</summary>
+    public const string OutsideMarker = "outside";
+
+    /// <summary>The <c>nltg.partition/others</c> value of the ports shape.</summary>
+    public const string PortsMarker = "ports";
+
+    /// <summary>The annotation that lists the open ports of the ports shape.</summary>
+    public const string OpenPortsAnnotation = "nltg.partition/open-ports";
 
     /// <summary>
     /// The policy that cuts <paramref name="isolated"/> off from <paramref name="others"/> (or from every pod but each
@@ -77,32 +96,109 @@ public static class PartitionPolicy
 
         var egress = new List<V1NetworkPolicyEgressRule> { new() { To = peers } };
         if (options.AllowDns)
-            egress.Add(new V1NetworkPolicyEgressRule
-            {
-                To =
-                [
-                    new V1NetworkPolicyPeer
-                    {
-                        NamespaceSelector = new V1LabelSelector
-                        {
-                            MatchLabels = new Dictionary<string, string>
-                            {
-                                ["kubernetes.io/metadata.name"] = options.DnsNamespace
-                            }
-                        },
-                        PodSelector = new V1LabelSelector
-                        {
-                            MatchLabels = new Dictionary<string, string>(options.DnsPodLabels)
-                        }
-                    }
-                ],
-                Ports =
-                [
-                    new V1NetworkPolicyPort { Port = 53, Protocol = "UDP" },
-                    new V1NetworkPolicyPort { Port = 53, Protocol = "TCP" }
-                ]
-            });
+            egress.Add(DnsRule(options));
 
+        return Policy(run, name, side, otherSide is null ? "*" : string.Join(',', otherSide), ["Ingress", "Egress"],
+                      [new V1NetworkPolicyIngressRule { FromProperty = ingressPeers }], egress);
+    }
+
+    /// <summary>
+    /// The policy that cuts <paramref name="isolated"/> off from everything outside the run's pods (the <b>outside</b>
+    /// shape): they keep every pod of <paramref name="run"/>'s namespace (their bitcoind, their peers in the run) and,
+    /// with <see cref="PartitionOptions.AllowDns"/>, DNS, and lose the host, i.e. the test process and the in-process
+    /// nodes in it, in both directions. <see cref="PartitionOptions.AllowedIngressCidrs"/> is not applied: the runner
+    /// is what this shape cuts.
+    /// </summary>
+    public static V1NetworkPolicy BuildOutsideCut(RunIdentity run, string name, IReadOnlyCollection<string> isolated,
+                                                  PartitionOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+        ArgumentNullException.ThrowIfNull(isolated);
+        ArgumentNullException.ThrowIfNull(options);
+        KubeNames.RequireDns1123Label(name, "partition name");
+        var side = Validate(isolated, nameof(isolated));
+
+        // An empty pod selector without a namespace selector: every pod of the run's own namespace
+        var runPods = new List<V1NetworkPolicyPeer> { new() { PodSelector = new V1LabelSelector() } };
+        var egress = new List<V1NetworkPolicyEgressRule> { new() { To = runPods } };
+        if (options.AllowDns)
+            egress.Add(DnsRule(options));
+
+        return Policy(run, name, side, OutsideMarker, ["Ingress", "Egress"],
+                      [new V1NetworkPolicyIngressRule { FromProperty = [.. runPods] }], egress);
+    }
+
+    /// <summary>
+    /// The policy under which new connections into <paramref name="nodes"/> reach only <paramref name="openPorts"/>
+    /// (TCP), from any source (the <b>ports</b> shape); the nodes' own connections out are not touched. Established
+    /// connections to the other ports survive on conntrack-based plugins, as with every partition.
+    /// </summary>
+    public static V1NetworkPolicy BuildIngressPorts(RunIdentity run, string name, IReadOnlyCollection<string> nodes,
+                                                    IReadOnlyCollection<int> openPorts)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+        ArgumentNullException.ThrowIfNull(nodes);
+        ArgumentNullException.ThrowIfNull(openPorts);
+        KubeNames.RequireDns1123Label(name, "partition name");
+        var side = Validate(nodes, nameof(nodes));
+        if (openPorts.Count == 0)
+            throw new ArgumentException("Open at least one port (an isolation cuts every port)", nameof(openPorts));
+        foreach (var port in openPorts)
+            if (port is < 1 or > 65535)
+                throw new ArgumentOutOfRangeException(nameof(openPorts), port, "A port is 1-65535");
+
+        var ports = openPorts.Distinct().Order().ToList();
+        var policy = Policy(run, name, side, PortsMarker, ["Ingress"],
+                            [
+                                new V1NetworkPolicyIngressRule
+                                {
+                                    Ports = ports.Select(p => new V1NetworkPolicyPort
+                                    {
+                                        Port = p,
+                                        Protocol = "TCP"
+                                    }).ToList()
+                                }
+                            ], null);
+        policy.Metadata.Annotations[OpenPortsAnnotation] =
+            string.Join(',', ports.Select(p => p.ToString(CultureInfo.InvariantCulture)));
+        return policy;
+    }
+
+    /// <summary>The label selector of partition policies, for listing and cleanup.</summary>
+    public static string Selector(string runId) =>
+        RunLabels.ToSelector(new Dictionary<string, string> { [RunLabels.Run] = runId, [FaultLabel] = FaultLabelValue });
+
+    private static V1NetworkPolicyEgressRule DnsRule(PartitionOptions options) =>
+        new()
+        {
+            To =
+            [
+                new V1NetworkPolicyPeer
+                {
+                    NamespaceSelector = new V1LabelSelector
+                    {
+                        MatchLabels = new Dictionary<string, string>
+                        {
+                            ["kubernetes.io/metadata.name"] = options.DnsNamespace
+                        }
+                    },
+                    PodSelector = new V1LabelSelector
+                    {
+                        MatchLabels = new Dictionary<string, string>(options.DnsPodLabels)
+                    }
+                }
+            ],
+            Ports =
+            [
+                new V1NetworkPolicyPort { Port = 53, Protocol = "UDP" },
+                new V1NetworkPolicyPort { Port = 53, Protocol = "TCP" }
+            ]
+        };
+
+    private static V1NetworkPolicy Policy(RunIdentity run, string name, IReadOnlyList<string> side, string others,
+                                          IList<string> policyTypes, IList<V1NetworkPolicyIngressRule> ingress,
+                                          IList<V1NetworkPolicyEgressRule>? egress)
+    {
         var labels = new Dictionary<string, string>(run.Labels) { [FaultLabel] = FaultLabelValue };
         return new V1NetworkPolicy
         {
@@ -116,22 +212,18 @@ public static class PartitionPolicy
                 Annotations = new Dictionary<string, string>
                 {
                     ["nltg.partition/isolated"] = string.Join(',', side),
-                    ["nltg.partition/others"] = otherSide is null ? "*" : string.Join(',', otherSide)
+                    ["nltg.partition/others"] = others
                 }
             },
             Spec = new V1NetworkPolicySpec
             {
                 PodSelector = NodesSelector(run.Id, side, "In"),
-                PolicyTypes = ["Ingress", "Egress"],
-                Ingress = [new V1NetworkPolicyIngressRule { FromProperty = ingressPeers }],
+                PolicyTypes = policyTypes,
+                Ingress = ingress,
                 Egress = egress
             }
         };
     }
-
-    /// <summary>The label selector of partition policies, for listing and cleanup.</summary>
-    public static string Selector(string runId) =>
-        RunLabels.ToSelector(new Dictionary<string, string> { [RunLabels.Run] = runId, [FaultLabel] = FaultLabelValue });
 
     private static List<string> Validate(IReadOnlyCollection<string> nodes, string parameter)
     {

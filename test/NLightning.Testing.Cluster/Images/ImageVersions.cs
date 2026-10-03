@@ -52,8 +52,12 @@ public static class ImageVersions
     /// <summary>ldk-server at commit dc02b76c, built locally by <c>LdkFixture</c>. Reused as it is.</summary>
     public static readonly ImageRef Ldk = new("nltg-ldk-server", "dc02b76c", PullPolicy: ImagePullPolicy.Never);
 
-    /// <summary>PostgreSQL as in <c>PostgresFixture</c>.</summary>
-    public static readonly ImageRef Postgres = new("postgres", "16.2-alpine");
+    /// <summary>
+    /// PostgreSQL as in <c>PostgresFixture</c> (its Docker backend pulls the same tag; the cluster's is pinned to the
+    /// official multi-arch index digest).
+    /// </summary>
+    public static readonly ImageRef Postgres =
+        new("postgres", "16.2-alpine", "sha256:951bfda460300925caa3949eaa092ba022e9aec191bbea9056a39e2382260b27");
 
     /// <summary>A tiny image for the harness's own smoke tests.</summary>
     public static readonly ImageRef Busybox = new("busybox", "1.37");

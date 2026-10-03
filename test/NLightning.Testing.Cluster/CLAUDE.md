@@ -97,7 +97,14 @@ every implementation, our own node included, is driven through the same seams.
     `bin/<config>/net10.0` of the tests, no restore in the image); `RunnerImage.FromEnvironment()` takes
     `NLTG_RUNNER_IMAGE` for a pushed image. Rebuild it after changing the tests.
 - `Images/ImageVersions`: the one version table (bitcoind 29.0 Polar and 31.1 official by digest, `custom_lnd:0.21.4-beta`
-  Never, CLN v26.06.8 by digest, `nltg-eclair:0.14.3` Never, `nltg-ldk-server:dc02b76c` Never, postgres, busybox).
+  Never, CLN v26.06.8 by digest, `nltg-eclair:0.14.3` Never, `nltg-ldk-server:dc02b76c` Never, postgres 16.2-alpine by
+  digest, busybox).
+- `Nodes/Postgres/` (phase 4): `PostgresNode.DeployAsync(run, PostgresNodeOptions, timeout, ct)` (the fixture's image,
+  user/password `superuser`, database `nlightning`, `PGDATA` under an `emptyDir` by default, readiness = `pg_isready`
+  over TCP, which the image's Unix-socket-only init server never passes), `Host` = pod IP, `ConnectionString(db)`.
+- `Reach/TcpConnectionTable`: a pod's TCP sockets from `/proc/net/tcp{,6}` through an exec (no `ss` in the images);
+  `CountEstablishedAsync(node, port)` says whether a client really is connected (e.g. a ZMQ subscriber), which a
+  NetworkPolicy does not.
 - `Poll` (library root): the one deadline-bound wait (`UntilAsync` for a bool, `UntilDoneAsync` for a check that
   says what is missing, `ForAsync<T>` for a value); every wait of the chain helpers, topologies and node adapters
   goes through it. Do not add another poll loop.
@@ -196,6 +203,21 @@ every implementation, our own node included, is driven through the same seams.
     **established TCP connections survive** (conntrack), so disconnect the peers (node command or restart) after
     partitioning. DNS stays reachable by default; `PartitionOptions.AllowedIngressCidrs` (`NLTG_RUNNER_CIDRS`) lets
     the runner keep driving an isolated node (OrbStack host: `192.168.194.0/32`). `HealAsync` deletes the policy.
+    Policies only allow, so the isolate and split shapes also cut the pod from the host.
+  - Phase 4 shapes (`PartitionShape`): `PartitionFromHostAsync(nodes)` (**outside**: the nodes keep every pod of the
+    run and DNS and lose the host, i.e. the test process and our in-process nodes; the partition between a pod peer
+    and our node; `AllowedIngressCidrs` ignored) and `LimitIngressPortsAsync(node, openPorts)` (**ports**: new
+    connections into the node reach only those ports, its own connections out are untouched; e.g. bitcoind with RPC
+    and P2P open and its ZMQ feeds cut).
+  - `RestartInPlaceAsync(node, stopCommand)`: the node's own clean stop (`bitcoin-cli stop`) and the kubelet's restart
+    of the container in the same pod (same UID, IP and data, an `emptyDir` included; restart count +1): every
+    connection to the node drops, which a partition alone never does. No shared process namespace needed.
+  - `PauseProcessAsync(node, name)`: SIGSTOP only to the processes of that `comm` name and their ancestors in the
+    container (CLN's `lightningd` while `connectd` keeps answering the transport). Signal order (NL-795): STOP goes
+    parents first and CONT children first (by depth in the process tree). CLN's entrypoint is a bash wrapper that
+    waits for `lightningd`: resumed before its child, it saw the stop as the child's end and exited 147, taking the
+    container down at `ResumeAsync` (found by the first phase 4 runs; unit tests pin the order, the partition tests
+    prove it live).
 - `Diagnostics/` (phase 2 lane D): failure diagnostics, written to
   `<root>/<test or fixture>/<namespace>/` where `<root>` is `NLTG_CLUSTER_DIAG_DIR` (`run-cluster.sh` sets
   `TestResults/cluster/<batch>/<run>/diag`) or `<repo>/TestResults/cluster/<run id>`.
@@ -234,9 +256,13 @@ every implementation, our own node included, is driven through the same seams.
 - The suites keep their fixtures; `NLTG_TEST_BACKEND=docker|cluster` (Integration.Tests `Fixtures/TestBackend`, Docker
   when unset, an unknown value throws) picks the backend per process. Ported so far: the CLN interop suite
   (`ClnFixture` -> `ClusterClnBackend`, a warm `ClusterTopologyFixture`), the Eclair interop suite (`EclairFixture`
-  -> `ClusterEclairBackend`, phase 4) and the LDK interop suite (`LdkFixture` -> `ClusterLdkBackend`, phase 4).
+  -> `ClusterEclairBackend`, phase 4), the LDK interop suite (`LdkFixture` -> `ClusterLdkBackend`, phase 4) and
+  `PostgresFixture` (`ClusterPostgresBackend`, phase 4: a run namespace with one `PostgresNode`, reached at its pod IP;
+  `StartNamed` gets a namespace of its own).
 - `scripts/run-cluster.sh -n 1 --suite eclair` runs the Eclair interop suite the same way (`--trait
-  Category=Interop.Eclair`), `--suite ldk` the LDK one (`Category=Interop.Ldk`).
+  Category=Interop.Eclair`), `--suite ldk` the LDK one (`Category=Interop.Ldk`), `--suite postgres`
+  `Docker/PostgresTests` and `Cluster/Live/ServerDatabaseClusterTests` on a Postgres pod, and `--suite faults` the
+  partition tests (`Cluster/Live/PartitionClusterTests`, `ChainMonitorZmqClusterTests`).
 - `scripts/run-cluster.sh -n 3 --suite cln` builds once and runs 3 processes of `-p integration --trait
   Category=Interop.Cln`, each with `NLTG_TEST_BACKEND=cluster` and its own run id and namespace (`--class X` narrows it,
   `--explicit on` adds the captures, `--keep-on-failure` keeps a failed run's namespace). No Docker lock is needed.

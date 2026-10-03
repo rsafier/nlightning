@@ -899,6 +899,62 @@ Evidence (OrbStack, Release, net10.0; logs under `TestResults/cluster/hp4l-*`, `
 | Cluster, the whole suite alone (`hp4l-full1`, one namespace) | 27/27, 0 diagnostics dumps, no tip-poll catch-up; fixture ready in 16.4 s | 655 s |
 | Docker (`run-interop.sh ldk` under the machine lock) | 27/27 (baseline 27/27); fixture ready in 8.6 s | 579 s tests, 9:49 with the build |
 
+### Phase 4 lane record: Postgres and network partitions (2026-10-02, branch `hp3-pg-faults` from b88b2717)
+
+**Postgres on the cluster backend.** `PostgresFixture` keeps its members (and its connection string format, which
+`PostgresTests` edits) over `Fixtures/Postgres/IPostgresBackend`: `DockerPostgresBackend` is the former fixture moved
+over verbatim, `ClusterPostgresBackend` starts a run namespace (suite `postgres`, or `postgres-<name>` for
+`StartNamed`) with one `PostgresNode` (`Nodes/Postgres/`: `postgres:16.2-alpine` pinned by its index digest, the
+fixture's user, password and database, `PGDATA` on an `emptyDir`, readiness = `pg_isready` over TCP, which the image's
+Unix-socket-only init server never passes) and connects to the pod IP. `Docker/PostgresTests` run unchanged on both.
+`MultiNodeHarnessTests`' Postgres fact takes its server from `StartNamed`, so it follows the switch, but it still needs
+the LND Docker fixture (phase 3 lane); its cluster equivalent is `Cluster/Live/ServerDatabaseClusterTests` (our node on
+a fresh database of the collection's server connects to an LND pod, stops, starts and redials it from the stored
+peer). `scripts/run-cluster.sh -n 1 --suite postgres` runs both classes.
+
+**Partitions (new coverage).** `Faults/` grew what Lightning tests need:
+- `PartitionFromHostAsync` (the *outside* shape): a pod keeps every pod of its run and DNS and loses the host, i.e.
+  the test process and our in-process nodes. The isolate and split shapes cut the host too (policies only allow), but
+  also cut a CLN from its bitcoind.
+- `LimitIngressPortsAsync` (the *ports* shape): new connections reach only the listed ports (bitcoind: RPC and P2P).
+- `RestartInPlaceAsync`: the node's own clean stop and the kubelet's restart in the same pod (same IP, `emptyDir`
+  kept). It drops every connection, which a policy never does (conntrack keeps established TCP).
+- `PauseProcessAsync`: one process name and its ancestors (CLN's `lightningd` behind a live `connectd`).
+- `Reach/TcpConnectionTable`: established connections from `/proc/net/tcp{,6}` (is a ZMQ subscriber connected).
+- **NL-795 (harness, fixed):** `ResumeAsync` killed CLN. The signal script walked `/proc` in name order, so CLN's bash
+  entrypoint got SIGCONT before `lightningd`, saw its child stopped and exited 147 (128 + SIGSTOP); the container
+  restarted. STOP now goes parents first and CONT children first, by depth in the process tree, and a named pause
+  also stops the waiting ancestors.
+
+How a test drops the established connection matters: our `DisconnectPeer` is "on purpose" and never redialled (by
+design, the operator's `disconnect`); CLN's `disconnect` or our own ping timeout (the BOLT 1 liveness check,
+`IPeerService.PingAsync`) are drops our node redials with its backoff.
+
+| Test (`Cluster/Live/`, Explicit, `Category=Cluster`) | What it proves |
+|---|---|
+| `PartitionClusterTests` HTLC to a frozen CLN | CLN frozen (SIGSTOP) with our `update_add_htlc` + `commitment_signed` on the wire, partitioned; our ping gets no pong and drops the link. For 10 s the HTLC stays (payment InFlight, channel Open, nothing failed or broadcast). CLN resumes behind the partition and processes what reached its socket (it revoked: reestablish "ours 3/2, theirs 4/2"). After the heal our node reconnects by itself, CLN retransmits, the payment succeeds and both sides agree on the balances. |
+| `PartitionClusterTests` partition outlasting our reconnects | CLN drops us behind the partition. For 10 s the channel stays Open, disconnected and not reestablished, and a payment fails at once ("no usable channel") without adding an HTLC; CLN's invoice stays unpaid. After the heal the channel is active again within 0.7-0.8 s, with no connect call from the test. |
+| `PartitionClusterTests` reestablish never answered | `lightningd` frozen, `connectd` alive: our redial completes `init` and our `channel_reestablish` goes unanswered. The channel stays gated for 10 s with the transport up, and a payment is refused without an HTLC. Then partition, resume, heal and redial: reestablished and paying. |
+| `PartitionClusterTests` CLN split from bitcoind | CLN's height stays at 113 while the tip goes to 116; our node follows the tip and pays CLN over the established connection; after the heal CLN catches up and pays us. (`--bitcoin-retry-timeout=600`: bcli would end lightningd after 60 s.) |
+| `ChainMonitorZmqClusterTests` | bitcoind keeps only RPC and P2P and restarts in place; no ZMQ subscriber is connected (`TcpConnectionTable`). Our node (tip poll every 5 s) follows 3 blocks over RPC alone (`TipPollCatchUps` +1). It opens a channel to CLN, sees it confirm and pays, still without ZMQ. After the heal the subscriber reconnects and the next block arrives in about 100 ms with no catch-up: NL-775 end to end. |
+| `ServerDatabaseClusterTests` | The server-database restart on a Postgres pod (above). |
+
+**Evidence** (OrbStack, Release, net10.0, at most 2 namespaces of this lane at once):
+
+| Run | Result | Time |
+|---|---|---|
+| `PostgresTests` on the cluster (`NLTG_TEST_BACKEND=cluster`, `-class`) | 23/23 | 43.7 s, server ready in 4.5 s |
+| `ServerDatabaseClusterTests` alone, twice | 1/1, 1/1 | 13.7 s, 16.9 s (topology 9.7 s, restart to reconnected 0.3 s) |
+| `run-cluster.sh -n 1 --suite postgres` (`hp4-pg1`, `hp4-pg2`) | 24/24, 24/24 | 57 s, 56 s |
+| `run-cluster.sh -n 1 --suite faults` (`hp4-ft1`, `hp4-ft2`) | 5/5, 5/5 | 151 s, 113 s |
+| `PartitionClusterTests` alone (`hp4pt-c1`, before the NL-795 ancestor fix) | 3/4 (the named pause killed CLN) | 108 s |
+| Docker `PostgresTests` from the host, under the machine lock | 23/23 | 22.7 s |
+| Docker `MultiNodeHarnessTests` Postgres fact (SDK container, `--network host`, same lock) | 1/1 (`StartNamed` on Docker) | 17.6 s |
+| Partition timings (both faults runs) | HTLC held 10 s, settled 4.3-4.6 s after the heal; channel back 0.8-1.3 s after the heal; gated 10 s, back 0.4-0.7 s; CLN held at 113 while the tip went to 116; 3 blocks over RPC alone in 5.7-7.2 s, ZMQ back 0.0 s | |
+
+Not found: a product bug. Observations: NL-796 (our node has no deadline for the peer's `channel_reestablish`),
+NL-797 (the ZMQ subscriber came back 0-12.5 s after the port cut healed; the tip poll covered the gap).
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.
