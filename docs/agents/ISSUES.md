@@ -151,12 +151,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 68 | 71 |
+| open | 0 | 0 | 3 | 71 | 74 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
 | fixed | 14 | 63 | 201 | 415 | 693 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **212** | **495** | **784** |
+| **Total** | **14** | **63** | **212** | **498** | **787** |
 
 ### Epics
 
@@ -1860,6 +1860,36 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-394, NL-501
 - **Plan ref:** —
 
+
+### NL-980 The payer prefers a costly single-part route through strangers over a zero-fee split across its own direct channels
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Routing/PaymentRoutePlanner.cs`, `Payments/Send/PaymentService.cs` (part selection before splitting)
+- **Evidence:** Mutinynet trampoline live test (2026-10-03, FAFO2 → FAFO → FAFO3, build 96a2fb0a). The outer leg to FAFO, a direct peer over two channels, first tried single-part routes through public third-party nodes (fee about 121,000 msat) before splitting across FAFO2's own two channels at fee 0. That cost about 10 s and exposed the attempts to strangers. The planner is general: this is not trampoline-specific.
+- **Fix sketch:** when the destination (or the trampoline) is a direct peer and the direct channels can carry the amount together, try the zero-fee split first, or weigh fee against part count.
+- **Blocks/Blocked-by:** Related NL-270, NL-875
+- **Plan ref:** —
+
+### NL-981 `listforwards` totals leave out trampoline relay fees, and the relay's outgoing leg shows in `listpayments` as a plain payment
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Daemon/Handlers/ListForwardsClientHandler.cs` (summary totals), `Payments.IsTrampolineRelay` consumers in the `listpayments` path
+- **Evidence:** Mutinynet trampoline live test (2026-10-03). FAFO earned 92,000 msat in 5 trampoline relays, booked correctly as `TrampolineRelaySettled` (income:lightning:routing 93,007 msat with 1,007 msat from a plain forward). But the `listforwards` "fees earned" total counts only the plain forward. FAFO's relay legs appear in `listpayments` without a marker. A failed relay row is replaced when the payer retries the same hash. The failed-row history and the listing gaps overlap NL-899; the totals gap is new.
+- **Fix sketch:** add the relay rows (key 2) to the totals, mark relay legs in `listpayments` (or hide them behind a flag), and keep failed relay attempts.
+- **Blocks/Blocked-by:** Related NL-899, NL-875
+- **Plan ref:** `TRAMPOLINE_PLAN.md`
+
+### NL-982 A failed trampoline payment shows its last attempt's fee budget as its fee
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.TrampolinePayer.cs` (the payment row's fee on failure)
+- **Evidence:** Mutinynet trampoline live test (2026-10-03, test e2: recipient offline, 0x2019 from the trampoline): the failed payment's "Fee (msat)" read 10,000, the doubled budget of the last attempt, while nothing was paid. Cosmetic: the books recorded no fee.
+- **Fix sketch:** record 0 (or the budget in a separate field) for a payment that ends Failed.
+- **Blocks/Blocked-by:** Related NL-875
+- **Plan ref:** —
 ### NL-056 HTLC-success / HTLC-timeout second-stage transactions not implemented
 - **Status:** fixed (dfe8866, b222896)
 - **Severity:** high
