@@ -2,6 +2,7 @@ using k8s.Models;
 
 namespace NLightning.Testing.Cluster.Nodes.Cln;
 
+using Faults;
 using Kube;
 
 /// <summary>
@@ -44,7 +45,7 @@ public static class ClnNode
         foreach (var arg in BuildArgs(name, options))
             workload.Args.Add(arg);
 
-        return workload;
+        return options.ProcessFaults ? workload.WithProcessFaults() : workload;
     }
 
     /// <summary>

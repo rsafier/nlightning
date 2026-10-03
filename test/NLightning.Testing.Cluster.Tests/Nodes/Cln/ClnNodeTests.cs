@@ -75,4 +75,18 @@ public class ClnNodeTests
         Assert.True(ClnNode.DrainSeconds > container.ReadinessProbe.PeriodSeconds
                                          * container.ReadinessProbe.FailureThreshold);
     }
+
+    [Fact]
+    public void Given_ProcessFaults_When_TheWorkloadIsBuilt_Then_ThePodSharesItsProcessNamespaceAndKeepsItsPreStop()
+    {
+        // Act
+        var plain = ClnNode.Workload("alice", Options()).Build(s_run).StatefulSet.Spec.Template.Spec;
+        var faulty = ClnNode.Workload("alice", Options() with { ProcessFaults = true }).Build(s_run).StatefulSet.Spec
+                            .Template.Spec;
+
+        // Assert
+        Assert.NotEqual(true, plain.ShareProcessNamespace);
+        Assert.True(faulty.ShareProcessNamespace);
+        Assert.Equal(ClnNode.StopCommand, faulty.Containers[0].Lifecycle.PreStop.Exec.Command);
+    }
 }

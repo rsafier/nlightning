@@ -57,4 +57,11 @@ public sealed record ClnNodeOptions
     public V1Container? StartupWait { get; init; }
 
     public WorkloadResources Resources { get; init; } = WorkloadResources.Default;
+
+    /// <summary>
+    /// Shares the pod's process namespace (<see cref="Faults.ProcessFaultSupport.WithProcessFaults"/>) so the fault
+    /// injector can pause the node (SIGSTOP to lightningd and its subdaemons); the image's PID 1 is a bash script, which
+    /// <see cref="Faults.FaultInjector.PauseAsync"/> refuses otherwise.
+    /// </summary>
+    public bool ProcessFaults { get; init; }
 }

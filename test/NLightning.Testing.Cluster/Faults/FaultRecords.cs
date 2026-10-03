@@ -14,6 +14,12 @@ public enum FaultKind
     /// <summary>SIGKILL to the node's processes: the container restarts in place, same pod, IP and PVC.</summary>
     Crash,
 
+    /// <summary>
+    /// The node stopped cleanly by its own command; the container restarts in place, same pod, IP and data (an
+    /// <c>emptyDir</c> included). See <see cref="FaultInjector.RestartInPlaceAsync"/>.
+    /// </summary>
+    RestartInPlace,
+
     /// <summary>SIGSTOP to the node's processes.</summary>
     Pause,
 
@@ -47,13 +53,15 @@ public sealed record FaultEvent(DateTimeOffset StartedAt, FaultKind Kind, string
 /// What a restart, kill or crash did to a node's pod.
 /// </summary>
 /// <param name="Node">The node alias.</param>
-/// <param name="Kind"><see cref="FaultKind.Restart"/>, <see cref="FaultKind.Kill"/> or <see cref="FaultKind.Crash"/>.</param>
+/// <param name="Kind"><see cref="FaultKind.Restart"/>, <see cref="FaultKind.Kill"/>, <see cref="FaultKind.Crash"/> or
+/// <see cref="FaultKind.RestartInPlace"/>.</param>
 /// <param name="PodUidBefore">The pod UID before (null when no pod existed).</param>
 /// <param name="PodUidAfter">The pod UID once ready again (the same as before after a crash).</param>
 /// <param name="PodIpBefore">The pod IP before.</param>
 /// <param name="PodIpAfter">The pod IP once ready again (it may change: peers must use the DNS names).</param>
 /// <param name="RestartCountBefore">The main container's restart count before.</param>
-/// <param name="RestartCountAfter">The main container's restart count after (it grows only on a crash).</param>
+/// <param name="RestartCountAfter">The main container's restart count after (it grows only on a crash or a restart in
+/// place).</param>
 /// <param name="Duration">From the fault to the node being ready again.</param>
 public sealed record NodeReplacement(string Node, FaultKind Kind, string? PodUidBefore, string? PodUidAfter,
                                      string? PodIpBefore, string? PodIpAfter, int RestartCountBefore,
@@ -76,11 +84,38 @@ public sealed record PausedNode(string Node, IReadOnlyList<int> StoppedPids, Tim
 /// </summary>
 /// <param name="Name">The NetworkPolicy's name in the run's namespace.</param>
 /// <param name="Isolated">The selected side's aliases.</param>
-/// <param name="Others">The other side's aliases, or null when the selected side is isolated from every pod.</param>
-public sealed record NetworkPartition(string Name, IReadOnlyList<string> Isolated, IReadOnlyList<string>? Others)
+/// <param name="Others">The other side's aliases, or null when the selected side is isolated from every pod (or, for
+/// <see cref="PartitionShape.Outside"/> and <see cref="PartitionShape.Ports"/>, has no other side).</param>
+/// <param name="Shape">What the policy cuts (<see cref="PartitionPolicy"/>).</param>
+/// <param name="OpenPorts">The ports still open, for <see cref="PartitionShape.Ports"/>.</param>
+public sealed record NetworkPartition(string Name, IReadOnlyList<string> Isolated, IReadOnlyList<string>? Others,
+                                      PartitionShape Shape = PartitionShape.Isolate,
+                                      IReadOnlyList<int>? OpenPorts = null)
 {
     public override string ToString() =>
-        $"{Name}: [{string.Join(',', Isolated)}] | [{(Others is null ? "*" : string.Join(',', Others))}]";
+        Shape switch
+        {
+            PartitionShape.Outside => $"{Name}: [{string.Join(',', Isolated)}] | outside the run (host)",
+            PartitionShape.Ports =>
+                $"{Name}: [{string.Join(',', Isolated)}] open only on ports {string.Join(',', OpenPorts ?? [])}",
+            _ => $"{Name}: [{string.Join(',', Isolated)}] | [{(Others is null ? "*" : string.Join(',', Others))}]"
+        };
+}
+
+/// <summary>The shapes of a <see cref="NetworkPartition"/> (<see cref="PartitionPolicy"/>).</summary>
+public enum PartitionShape
+{
+    /// <summary>The selected nodes reach only each other (and DNS).</summary>
+    Isolate,
+
+    /// <summary>The selected nodes and the other side cannot reach each other.</summary>
+    Split,
+
+    /// <summary>The selected nodes keep the run's pods and lose the host (the test process, our in-process nodes).</summary>
+    Outside,
+
+    /// <summary>New connections into the selected nodes reach only some ports.</summary>
+    Ports
 }
 
 /// <summary>

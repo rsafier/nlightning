@@ -142,4 +142,82 @@ public class PartitionPolicyTests
         Assert.True(options.AllowDns);
         Assert.Empty(none.AllowedIngressCidrs);
     }
+
+    [Fact]
+    public void Given_TheOutsideShape_When_Built_Then_TheSideKeepsEveryPodOfTheRunAndDnsAndNothingElse()
+    {
+        // Act
+        var policy = PartitionPolicy.BuildOutsideCut(s_run, "nltg-partition-5", ["cln"],
+                                                     PartitionOptions.Default with
+                                                     {
+                                                         AllowedIngressCidrs = ["192.168.194.0/32"]
+                                                     });
+
+        // Assert: the side is selected both ways
+        Assert.Equal(["Ingress", "Egress"], policy.Spec.PolicyTypes);
+        Assert.Equal(["cln"], policy.Spec.PodSelector.MatchExpressions[0].Values);
+        Assert.Equal("r1", policy.Spec.PodSelector.MatchLabels[RunLabels.Run]);
+
+        // Assert: every pod of the namespace (an empty selector, no namespace selector), never the runner's CIDR
+        var from = Assert.Single(Assert.Single(policy.Spec.Ingress).FromProperty);
+        Assert.Null(from.IpBlock);
+        Assert.Null(from.NamespaceSelector);
+        Assert.Null(from.PodSelector.MatchLabels);
+        Assert.Null(from.PodSelector.MatchExpressions);
+        Assert.Equal(2, policy.Spec.Egress.Count);
+        var to = Assert.Single(policy.Spec.Egress[0].To);
+        Assert.Null(to.NamespaceSelector);
+        Assert.Null(to.PodSelector.MatchExpressions);
+        Assert.Equal("kube-system",
+                     policy.Spec.Egress[1].To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"]);
+        Assert.Equal(PartitionPolicy.OutsideMarker, policy.Metadata.Annotations["nltg.partition/others"]);
+        Assert.Equal(PartitionPolicy.FaultLabelValue, policy.Metadata.Labels[PartitionPolicy.FaultLabel]);
+    }
+
+    [Fact]
+    public void Given_TheOutsideShapeWithoutDns_When_Built_Then_OnlyTheRunsPodsAreReachable()
+    {
+        // Act
+        var policy = PartitionPolicy.BuildOutsideCut(s_run, "nltg-partition-6", ["cln"],
+                                                     PartitionOptions.Default with { AllowDns = false });
+
+        // Assert
+        Assert.Single(policy.Spec.Egress);
+    }
+
+    [Fact]
+    public void Given_OpenPorts_When_TheIngressPortsShapeIsBuilt_Then_OnlyThosePortsAreOpenFromAnywhereAndEgressIsFree()
+    {
+        // Act
+        var policy = PartitionPolicy.BuildIngressPorts(s_run, "nltg-partition-7", ["miner"], [18444, 18443, 18443]);
+
+        // Assert
+        Assert.Equal(["Ingress"], policy.Spec.PolicyTypes);
+        Assert.Null(policy.Spec.Egress);
+        Assert.Equal(["miner"], policy.Spec.PodSelector.MatchExpressions[0].Values);
+        var rule = Assert.Single(policy.Spec.Ingress);
+        Assert.Null(rule.FromProperty);
+        Assert.Equal(["18443", "18444"], rule.Ports.Select(p => p.Port.Value));
+        Assert.All(rule.Ports, p => Assert.Equal("TCP", p.Protocol));
+        Assert.Equal("18443,18444", policy.Metadata.Annotations[PartitionPolicy.OpenPortsAnnotation]);
+        Assert.Equal(PartitionPolicy.PortsMarker, policy.Metadata.Annotations["nltg.partition/others"]);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(65536)]
+    public void Given_AnInvalidPort_When_TheIngressPortsShapeIsBuilt_Then_ItThrows(int port)
+    {
+        // Act / Assert
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => PartitionPolicy.BuildIngressPorts(s_run, "nltg-partition-8", ["miner"], [port]));
+    }
+
+    [Fact]
+    public void Given_NoOpenPort_When_TheIngressPortsShapeIsBuilt_Then_ItThrows()
+    {
+        // Act / Assert
+        Assert.Throws<ArgumentException>(() => PartitionPolicy.BuildIngressPorts(s_run, "nltg-partition-9", ["miner"],
+                                                                                 []));
+    }
 }
