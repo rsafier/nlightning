@@ -6478,6 +6478,7 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Blocks/Blocked-by:** Related NL-382
 - **Plan ref:** —
 - **Update (2026-10-02, NL-602 integration):** after the de-timing pass the deterministic bound held (at most 6,112 adjacency scans per query, bound 40,000), but the 2,500 ms wall-clock canary tripped once (3,108 ms for 20 queries) on a 4-core cloud host at load average 26 (three agent builds running); the class passed 44/44 alone. The canary only catches a gross regression; on an oversubscribed host it can still fire.
+- **Update (2026-10-03, wave t01 integration):** the wall-clock canary tripped once more in the full net10.0 run on the 4-core cloud host while lane T1 built in parallel; 3/3 green alone (0.66-0.91 s).
 
 ### NL-445 GossipIngressTests retry case failed once under a loaded full run
 - **Status:** fixed (2b9fd41d)
