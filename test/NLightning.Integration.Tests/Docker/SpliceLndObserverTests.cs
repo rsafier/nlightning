@@ -103,6 +103,14 @@ public sealed class SpliceLndObserverTests : IAsyncLifetime
         var openEdge = await Day0Harness.WaitLndHasChannelAsync(_fixture, alice, scidOpen, a, b, ct);
         Assert.Equal(ChannelCapacitySat, openEdge.Capacity);
         Assert.Equal(ChannelPoint(openA), openEdge.ChanPoint);
+        // Bob hears the open only through alice's relay (LND's 5 s trickle delay). When the splice confirmed while he
+        // was still taking the open in (7 s after its sixth block, under the load of two cluster runs), he kept the
+        // spent edge for good (NL-830; his graph closed 0 channels at the splice's block, alice's 1). The likely cause,
+        // which LND's info log cannot confirm: a new edge's outpoint joins the spend filter at the graph's height, and a
+        // block the chain view filters again is skipped by the graph builder as already processed. So bob holds the
+        // old edge before the splice, which is also what (4) proves him to forget.
+        var bobOpenEdge = await Day0Harness.WaitLndHasChannelAsync(_fixture, bob, scidOpen, a, b, ct);
+        Assert.Equal(ChannelPoint(openA), bobOpenEdge.ChanPoint);
 
         // Act: A splices in; the splice locks on both ends
         var before = await Day0Harness.WaitSettledAsync(a, channelId, ct);
