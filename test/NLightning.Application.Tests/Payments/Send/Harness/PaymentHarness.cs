@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
@@ -395,6 +396,12 @@ internal sealed class PaymentHarnessNode : IDisposable
     public bool OutboxIsEmpty => _outbox.IsEmpty;
 
     /// <summary>
+    /// When set, called before each HTLC this node offers (channel, amount): a non-null exception refuses the offer as
+    /// the engine would, before anything is added (<see cref="OfferRefusingChannelOperations"/>).
+    /// </summary>
+    public Func<ChannelId, LightningMoney, Exception?>? OfferRefusal { get; set; }
+
+    /// <summary>
     /// The gossip graph this node's payments route over (with <c>usesGraph</c>); the planner reads it on every round.
     /// </summary>
     public IGraphView GraphView { get; set; } = GraphSnapshot.Empty;
@@ -430,6 +437,11 @@ internal sealed class PaymentHarnessNode : IDisposable
         services.AddSingleton<IChannelMessagePublisher>(new LazyPublisher(this));
         services.AddSingleton<IPeerLivenessProbe>(new MarkedLinkProbe());
         services.AddChannelOperationsServices();
+        // A test may refuse offers as the engine would (OfferRefusal); everything else is the production service
+        services.AddSingleton<ChannelOperationsService>();
+        services.Replace(ServiceDescriptor.Singleton<IChannelOperations>(
+                             sp => OfferRefusingChannelOperations.Create(
+                                 sp.GetRequiredService<ChannelOperationsService>(), this)));
         services.Configure<CommitSchedulerOptions>(o => o.Debounce = TimeSpan.Zero);
         services.AddSingleton(ChannelUpdates.Object);
         services.AddPaymentsServices();

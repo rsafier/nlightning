@@ -454,6 +454,30 @@ public class GraphRoutePlannerTests
         Assert.False(part.Route.Fee.IsZero);
     }
 
+    [Theory]
+    [InlineData(0UL, true)]
+    [InlineData(2_000_000UL, false)]
+    public void Given_TheCheaperGraphRoutesFirstChannelAndItsHtlcMinimum_When_Planned_Then_ARouteOverAChannelThatTakesIt(
+        ulong davidsMinimumMsat, bool overDavid)
+    {
+        // Arrange (NL-924): we also have a channel to David, so us → David → Erin is the cheapest graph route; David
+        // takes HTLCs of at least davidsMinimumMsat on it (his htlc_minimum_msat), which may be above the amount
+        var toDavid = s_toDavid with { HtlcMinimumMsat = davidsMinimumMsat };
+        _channels.Add(toDavid);
+        var graph = Graph().Channel(s_scidUd, s_us, s_david, 10_000, new SyntheticGraph.Policy(0, 0, 40), s_davidPolicy)
+                           .Build();
+
+        // Act
+        var planned = Planner().TryPlan(Request(Target(), Context(graph)), out var parts, out var reason);
+
+        // Assert: over David when he takes the amount, else through Carol (the pathfinder skips David's channel)
+        Assert.True(planned, reason);
+        var part = Assert.Single(parts!);
+        Assert.Equal(overDavid ? toDavid : s_toCarol, part.Channel);
+        Assert.Equal(overDavid ? [s_david, s_erin] : [s_carol, s_david, s_erin],
+                     part.Route.Hops.Select(h => h.NodeId));
+    }
+
     private static PaymentTarget DavidTarget(bool mpp) =>
         new(s_david, Enumerable.Repeat((byte)0x11, 32).ToArray(), Enumerable.Repeat((byte)0x22, 32).ToArray(), null,
             FinalDelta, [], null, mpp);

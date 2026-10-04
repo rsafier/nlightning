@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Tests.Payments.Trampoline;
 
 using Application.Payments.Send;
+using Application.Payments.Trampoline;
 using Domain.Accounting.Enums;
 using Domain.Money;
 using Domain.Payments.Enums;
@@ -64,8 +65,10 @@ public class TrampolineAttributionHarnessTests : IDisposable
         Assert.Equal(FailureCode.TrampolineFeeOrExpiryInsufficient, payment.FailureCode);
         Assert.Equal(1, payment.FailureSourceIndex);
 
-        // Assert: the outer layer's attribution verified both outer hops, and each hop's hold time is its own
+        // Assert: the outer layer's attribution verified both outer hops, and each hop's hold time is its own; the
+        // reason names the trampoline node David for the last one (NL-924: the stored route names the payee Erin there)
         Assert.Contains("hold times", payment.FailureReason);
+        Assert.Contains($"(the last from the trampoline node {_harness.David.NodeId})", payment.FailureReason);
         Assert.DoesNotContain("did not verify", payment.FailureReason);
         Assert.Equal(2, payment.Route.Count);
         AssertHoldTime(payment.Route[0], Assert.Single(_harness.Carol.Switch.ReportedHoldTimes).HoldTime, s_carolHeld);
@@ -119,9 +122,40 @@ public class TrampolineAttributionHarnessTests : IDisposable
         // Assert: the failure is still read; Carol verifies, David (outer hop 1) does not, so only Carol's hold time
         Assert.Equal(PaymentStatus.Failed, payment.Status);
         Assert.Equal(FailureCode.TrampolineFeeOrExpiryInsufficient, payment.FailureCode);
-        Assert.Contains("attribution_data of outer hop 1", payment.FailureReason);
+        Assert.Contains($"attribution_data of outer hop 1 (the trampoline node {_harness.David.NodeId})",
+                        payment.FailureReason);
+        Assert.DoesNotContain(_harness.Erin!.NodeId.ToString(), payment.FailureReason);
         AssertHoldTime(payment.Route[0], Assert.Single(_harness.Carol.Switch.ReportedHoldTimes).HoldTime, s_carolHeld);
         Assert.Null(payment.Route[1].HoldTime);
+    }
+
+    [Fact]
+    public async Task Given_ARelayLegFailsWithAttribution_When_DavidsLegEnds_Then_TheLegRowKeepsItAndTheOutcomeIsUnchanged()
+    {
+        // Arrange (NL-924): the NL-898 branch also runs for a relay's outgoing leg (DecideLegFailure): Erin refuses in
+        // her trampoline layer with outer-layer attribution, so David's leg (David → Erin, his production
+        // PaymentService) fails with a packet he must re-wrap for Bob
+        EnableAttribution();
+        _erin.RecipientFailure = FailureMessage.IncorrectOrUnknownPaymentDetails(s_amount, PaymentHarness.BlockHeight);
+        var invoice = await TrampolinePaymentHarnessTests.CreateInvoiceAsync(_harness.Erin!, s_amount);
+
+        // Act
+        var payment = await PayAsync(invoice);
+        await _david.PaymentService.WhenRoundsIdleAsync();
+
+        // Assert: the leg ended as without attribution: a downstream error with the packet to re-wrap, read by Bob
+        Assert.Equal(FailureCode.IncorrectOrUnknownPaymentDetails, payment.FailureCode);
+        var outcome = Assert.Single(_david.Outcomes);
+        Assert.Equal(TrampolineLegFailureKind.DownstreamTrampolineError, outcome.Failure!.Kind);
+        Assert.NotNull(outcome.Failure.DownstreamPacketToRewrap);
+
+        // Assert: the leg's row keeps the attribution Erin's outer layer carried: her hold time and the reason's
+        var leg = await _harness.David.Payments.GetByPaymentHashAsync(invoice.PaymentHash);
+        Assert.True(leg!.IsTrampolineRelay);
+        Assert.Equal(PaymentStatus.Failed, leg.Status);
+        Assert.Contains("hold times", leg.FailureReason);
+        Assert.Equal(_harness.Erin!.NodeId, Assert.Single(leg.Route).NodeId);
+        Assert.Equal(AttributionHoldTime.ToDuration(Assert.Single(_erin.ReportedHoldTimes)), leg.Route[0].HoldTime);
     }
 
     [Fact]

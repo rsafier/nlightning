@@ -164,6 +164,12 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         ["B2-ADD-S01", "B2-ADD-S02", "B2-ADD-S03", "B2-ADD-S04", "B2-ADD-S09", "B2-DUST-03", "B2-DUST-04"];
 
     /// <summary>
+    /// The engine's sender rule for an HTLC below the peer's <c>htlc_minimum_msat</c>: a larger HTLC on the same
+    /// channel may pass (NL-924).
+    /// </summary>
+    private const string HtlcMinimumRule = "B2-ADD-S06";
+
+    /// <summary>
     /// BOLT 11's <c>min_final_cltv_expiry_delta</c> when an invoice has no <c>c</c> field (the <c>getroute</c> default).
     /// </summary>
     private const ushort DefaultFinalCltvDelta = 18;
@@ -667,7 +673,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                                + "preimage and marking the payment succeeded", fulfilled.HtlcId, fulfilled.ChannelId,
                                  payment.PaymentHash, payment.Status, payment.OutgoingHtlcId,
                                  payment.OutgoingChannelId);
-                payment = WithPreimage(payment, fulfilled, now);
+                payment = WithPreimage(payment, fulfilled, now,
+                                       await GetStoredPartsOfFailedAsync(scope, payment));
             }
 
             await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().UpdateAsync(payment);
@@ -1507,6 +1514,10 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             part.Status = PaymentPartStatus.Failed;
             if (e is CommitmentRefusedException { RequirementId: var rule } && s_liquidityRules.Contains(rule))
                 session.Constraints.BoundLocalLiquidity(channelId, route.FirstHopAmount.MilliSatoshi);
+            else if (e is CommitmentRefusedException { RequirementId: HtlcMinimumRule })
+                // NL-924: a larger HTLC may still pass (the planner reads the peer's minimum, so this means the
+                // channel's state moved since the plan): raise the channel's minimum instead of avoiding it
+                session.Constraints.RaiseLocalHtlcMinimum(channelId, route.FirstHopAmount.MilliSatoshi);
             else
                 session.Constraints.ExcludedLocalChannels.Add(channelId);
 
@@ -1628,6 +1639,28 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         {
             _logger.LogError(e, "Could not store the resolution of the part of payment {PaymentHash} offered as HTLC "
                               + "{HtlcId} on channel {ChannelId}", paymentHash, htlcId, channelId);
+        }
+    }
+
+    /// <summary>
+    /// The stored parts (<c>PaymentParts</c>) of a failed row, for the fee of a late fulfill (NL-924); empty for any
+    /// other row, when none is stored or they cannot be read (logged).
+    /// </summary>
+    private async Task<IReadOnlyList<PaymentPartModel>> GetStoredPartsOfFailedAsync(IServiceScope scope,
+                                                                                     PaymentModel payment)
+    {
+        if (payment.Status != PaymentStatus.Failed)
+            return [];
+
+        try
+        {
+            return await scope.ServiceProvider.GetRequiredService<IPaymentPartDbRepository>()
+                              .GetForPaymentAsync(payment.PaymentHash);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not read the stored parts of payment {PaymentHash}", payment.PaymentHash);
+            return [];
         }
     }
 
@@ -1947,7 +1980,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             }
             else
             {
-                payment = WithPreimage(payment, fulfilled, now);
+                payment = WithPreimage(payment, fulfilled, now, await GetStoredPartsOfFailedAsync(scope, payment));
             }
 
             await repository.UpdateAsync(payment);
@@ -1991,7 +2024,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             // none, BOLTs PR 836): its hold times are recorded and a hop whose HMAC failed is blamed as for any payment
             (code, interpretation) = (trampoline.Code, trampoline.Interpretation);
             sourceIndex = trampoline.SourceIndex ?? (trampoline.Code is null ? attribution.InvalidHopIndex : null);
-            reason = trampoline.Reason + DescribeOuterAttribution(part.Hops, attribution);
+            reason = trampoline.Reason
+                   + DescribeOuterAttribution(part.Hops, attribution, session.Trampoline?.TrampolineNode);
             (retry, note) = trampoline.Retry is { } decided
                                 ? (decided, trampoline.Note!)
                                 : _retryPolicy.Decide(part, failed.Removal.Kind, interpretation, session.Constraints,
@@ -2403,7 +2437,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     }
 
     private static LocalChannelCandidate ToCandidate(ChannelModel channel) =>
-        new(channel.ChannelId, channel.RemoteNodeId, channel.ShortChannelId);
+        new(channel.ChannelId, channel.RemoteNodeId, channel.ShortChannelId,
+            channel.Commitments?.Params.Remote.HtlcMinimumMsat ?? 0);
 
     /// <summary>
     /// The channels a circular payment may come back in through (NL-609): every usable channel (or only
@@ -2467,8 +2502,10 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     /// The last hop of a route that ends in a blinded path is stored under <paramref name="payee"/> (the recipient's
     /// real id when the caller knew it, e.g. a BOLT 12 <c>invoice_node_id</c>), not under its blinded id, so the row
     /// names its payee; the shared secret is the one of the blinded hop. So is the last hop of a route to a trampoline
-    /// node (<paramref name="toTrampoline"/>, NL-875): the row names the payee behind it, the shared secret is the
-    /// trampoline node's outer one, and the trampoline node is hop 0 of the payment's <c>PaymentTrampolineHops</c>.
+    /// node (<paramref name="toTrampoline"/>, NL-875): the row names the payee behind it (<see cref="PaymentModel"/>
+    /// requires its route to end at the payee), the shared secret is the trampoline node's outer one, and the
+    /// trampoline node is hop 0 of the payment's <c>PaymentTrampolineHops</c>. That hop's hold time is therefore the
+    /// trampoline node's, and failure reasons name the trampoline node for it (NL-924).
     /// </remarks>
     private static List<PaymentHop> BuildHops(PaymentRoute route, IReadOnlyList<Secret> sharedSecrets,
                                               ShortChannelId firstChannel, CompactPubKey payee,
@@ -2543,23 +2580,58 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     /// <summary>
     /// The payment marked succeeded with a proven preimage, whatever its status (see the class remarks).
     /// </summary>
+    /// <param name="payment">The stored row.</param>
+    /// <param name="fulfilled">The fulfill.</param>
+    /// <param name="completedAt">When.</param>
+    /// <param name="storedParts">The row's stored parts (<c>PaymentParts</c>), when it is a failed row.</param>
     private static PaymentModel WithPreimage(PaymentModel payment, OutgoingHtlcFulfilled fulfilled,
-                                             DateTimeOffset completedAt)
+                                             DateTimeOffset completedAt,
+                                             IReadOnlyList<PaymentPartModel>? storedParts = null)
     {
         var (channelId, htlcId) = payment.OutgoingHtlcId is { } recordedId
                                       ? (payment.OutgoingChannelId!.Value, recordedId)
                                       : (fulfilled.ChannelId, fulfilled.HtlcId);
-        // A failed row records no fee (NL-982): when the fulfilled HTLC is the row's and carried the whole amount, its
-        // fee is what it carried above the amount; otherwise it stays unknown (zero)
-        var fee = payment.Fee;
-        if (payment.Status == PaymentStatus.Failed && (channelId, htlcId) == (fulfilled.ChannelId, fulfilled.HtlcId)
-                                                   && payment.Route.Count > 0
-                                                   && payment.Route[0].Amount > payment.Amount)
-            fee = payment.Route[0].Amount - payment.Amount;
+        var fee = payment.Status == PaymentStatus.Failed
+                      ? LateFulfillFee(payment, fulfilled, storedParts ?? [])
+                      : payment.Fee;
         return PaymentModel.Restore(payment.PaymentHash, payment.Bolt11, payment.PayeeNodeId, payment.Amount,
                                     fee, payment.CreatedAt, PaymentStatus.Succeeded, channelId, htlcId,
                                     fulfilled.PaymentPreimage, null, null, null, completedAt, payment.Route,
                                     payment.Bolt12, payment.Keysend, payment.IsTrampolineRelay);
+    }
+
+    /// <summary>
+    /// The fee of a failed row fulfilled late (a failed row records none, NL-982): what the fulfilled HTLC carried above
+    /// the amount, only when it is known to be the attempt's only paying part (NL-924): a stored part whose siblings
+    /// all failed (its first hop above the amount: routing fees, and the trampoline fee for a trampoline payment), or,
+    /// when no part is stored, the row's recorded HTLC (<see cref="PaymentModel.OutgoingHtlcId"/>) whose route
+    /// delivered exactly the amount (one part; a trampoline route delivers the trampoline fee too, so it stays unknown).
+    /// Otherwise unknown: zero. A row without a recorded HTLC once took any fulfilled HTLC as its own, and a part of a
+    /// split as the whole.
+    /// </summary>
+    private static LightningMoney LateFulfillFee(PaymentModel payment, OutgoingHtlcFulfilled fulfilled,
+                                                 IReadOnlyList<PaymentPartModel> storedParts)
+    {
+        var fulfilledPart = storedParts.FirstOrDefault(p => p.ChannelId == fulfilled.ChannelId
+                                                         && p.HtlcId == fulfilled.HtlcId);
+        if (fulfilledPart is not null)
+        {
+            if (storedParts.Any(p => !ReferenceEquals(p, fulfilledPart) && p.State != PaymentPartState.Failed)
+             || fulfilledPart.Hops.Count == 0 || fulfilledPart.Hops[0].Amount <= payment.Amount)
+                return LightningMoney.Zero;
+
+            return fulfilledPart.Hops[0].Amount - payment.Amount;
+        }
+
+        if (storedParts.Count == 0 && payment.OutgoingHtlcId is { } recordedId
+                                   && payment.OutgoingChannelId == fulfilled.ChannelId
+                                   && recordedId == fulfilled.HtlcId
+                                   && payment.Route.Count > 0
+                                   && payment.Route[^1].Amount == payment.Amount
+                                   && payment.Route[0].Amount > payment.Amount)
+            return payment.Route[0].Amount - payment.Amount;
+
+        return LightningMoney.Zero;
     }
 
     private async Task WaitAsync(Task outcome, TimeSpan timeout, CancellationToken cancellationToken)
