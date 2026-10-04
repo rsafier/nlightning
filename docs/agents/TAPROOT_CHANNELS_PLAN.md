@@ -164,6 +164,8 @@ After the merge the integrator replays the spec's signed commitment vectors end 
 
 **Ledger:** NL-953..NL-961, NL-965..NL-979 (NL-950..NL-952, NL-962..NL-964 unused); NL-904 items 1-3 and 5-7 done, item 4 stays with T4.
 
+**T6 force closes (wave t03, lane FC, NL-978 fixed):** `Docker/Taproot/LndTaprootForceCloseTests` in the same suite (one node per test, an HTLC each way on the commitment): our `forceclosechannel` (key-path commitment, HTLC-success with the preimage and HTLC-timeout at `cltv_expiry` by script path with LND's `SIGHASH_SINGLE|ANYONECANPAY` signature and a wallet fee input, P2TR second-level outputs and `to_local` swept by the delay leaf after the 144-block CSV, Closed, LND `RemoteForceClose`), LND's force close (preimage and timeout claims and `to_remote` by script path, LND `LocalForceClose`) and the penalty of a revoked commitment that holds an HTLC (LND's `channel.db` rolled back; HTLC by the revocation key path, `to_local` by the revocation leaf; the wallet gets the whole channel less the fees); `LndTaprootFlowTests` adds a crash after our `commitment_signed` and an LND restart with an HTLC in flight. The suite takes about 220 s (6 tests). The run found NL-1055 (our unspent anchor kept the channel resolving; fixed in the executor, any format).
+
 **Next (t03):** T4 in full (NL-966, NL-904 item 4), the force-close interop (NL-978), Eclair T6 (with NL-957), splicing (NL-965), dual-funded RBF (NL-970, needs a column), then the owner decision on advertising `option_simple_taproot` Optional.
 
 ## 3. Decisions

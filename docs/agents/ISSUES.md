@@ -6422,7 +6422,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T6
 
 ### NL-978 The LND taproot interop proof covers no force close, no on-chain HTLC and no LND restart with an HTLC in flight
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane FC)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `test/NLightning.Integration.Tests/Docker/Taproot/LndTaprootFlowTests.cs` (suite `taproot`)
@@ -6438,6 +6438,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
   - an LND restart with an HTLC in flight;
   - a crash between our `commitment_signed` and LND's `revoke_and_ack`, the taproot analogue of `ReestablishFlowTests` (c).
 - **Fix sketch:** add these cases to `LndTaprootFlowTests` as T4 lands: our force close and LND's, with sweeps and `ClosedChannels` checks, and the crash-after-`commitment_signed` case with `CrashableTcpService`.
+- **t03 lane FC:** done against LND 0.21.4 (`--protocol.simple-taproot-chans`) on the cluster suite `taproot` (runs `fc-r2` 3/3, `fc-r3` and `fc-r4` 6/6 with the whole suite; `fc-r1` found NL-1055; onchain suite `fc-oc1` 33/33 with the NL-1055 fix). New class `Docker/Taproot/LndTaprootForceCloseTests`, one node per test, all three with an HTLC each way on the commitment (the HTLC LND offers us is fulfilled and its fulfill cut off with `CrashableTcpService`, as anchors O4 (c)):
+  - (1) our `forceclosechannel`: our commitment by the MuSig2 key path (one 64-byte witness), all outputs P2TR; HTLC-success (preimage, LND's 65-byte `SIGHASH_SINGLE|ANYONECANPAY` signature, ours 64-byte `SIGHASH_DEFAULT`, a wallet fee input, nSequence 1, P2TR second-level output) before the expiry, LND's payment succeeds from it; HTLC-timeout at `cltv_expiry` (not a block before), our payment fails with `permanent_channel_failure` once 6 deep; both second-level outputs and `to_local` swept by the delay leaf at nSequence = CSV (144); `pendingsweeps` empty, the channel Closed with every row Irrevocable (anchors Ignored); LND lists `RemoteForceClose` (its resolutions: OutgoingHtlc Claimed by our HTLC-success, IncomingHtlc Abandoned, Commit Claimed).
+  - (2) LND's force close: our `to_remote` by its 1-CSV leaf (`<sig> <leaf> <control block>`, nSequence 1), the preimage claim of LND's HTLC (`<sig> <preimage> <leaf> <control block>`, nSequence 1, locktime 0) before its expiry with LND's payment succeeding, the timeout claim of ours at `cltv_expiry` (`<sig> <leaf> <control block>`); payment failed, Closed, LND lists `LocalForceClose`.
+  - (3) penalty: tara's `channel.db` copied (`LndChannelDbRollback`) while our HTLC is held (so tara restarts with an HTLC in flight and settles it after), more payments, our node down, tara restored and force-closing the revoked commitment that holds the HTLC: the HTLC output taken by the revocation key path (one signature), tara's `to_local` by the revocation leaf, our `to_remote` by its leaf; taken = capacity - commitment fee - 2 anchors, our wallet gains it less 3,070 sat of fees; Closed.
+  - (4) in `LndTaprootFlowTests`: a crash right after our `commitment_signed` is saved, restart, the dance completes and LND's payment succeeds; then an LND restart with our HTLC held, settled after LND's `channel_reestablish`, payments both ways after.
 - **Blocks/Blocked-by:** Blocked by NL-966; related NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T4, T6
 
@@ -8968,6 +8973,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Done (residue in NL-182, NL-183, NL-184).
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
+
+### NL-1055 Our unspent anchor on our own or a revoked commitment kept the channel OnchainResolving forever
+- **Status:** fixed (wip/taproot-t03, lane FC)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs` (round, after the irrevocable aging); `LocalCommitResolver.IsResolvedHere`, `RevokedCommitResolver` (neither touches `OurAnchor` rows)
+- **Evidence:** cluster run `fc-r1` (NL-978 proofs against LND, taproot): after our force close and after the penalty of LND's revoked commitment every output was Irrevocable but `…:0 OurAnchor Pending` stayed, so the channel never reached Closed (`pendingsweeps` listed it 50+ blocks after the irrevocable depth). The watcher records a row for our anchor (`CommitmentOutputDescriptor.IsOurs`), only a spend resolves it, and nothing spends it when the commitment needed no CPFP child and the anchor sweep is uneconomical (`AnchorCpfpPolicy.DecideAnchorSweep`: one or two 330-sat anchors at 10 sat/vB). `RemoteCommitResolver` already settles its `OurAnchor` row `Ignored` at the irrevocable depth (NL-601); the local and revoked paths had no such rule. Format-independent: the same for anchors (P2WSH) channels, whose proofs never asserted Closed after our force close. Funds were never at risk (330 sat).
+- **Fix sketch:** Done: the executor settles every `OurAnchor` row still Pending/Waiting as `Ignored` once the funding spend is irrevocably deep (whoever spent it earlier is recorded `Resolved` by the watch, as before). Test `OnchainResolutionExecutorTests.Given_OurUnspentAnchorOnOurCommitment_When_TheFundingSpendIsIrrevocable_Then_IgnoredAndChannelClosed` (fails without the fix); cluster `LndTaprootForceCloseTests` (1) and (3) reach Closed.
+- **Blocks/Blocked-by:** Related NL-978, NL-601, NL-1050
+- **Plan ref:** BOLT5_ONCHAIN_PLAN O6-T2, O7
 
 ### NL-1050 The anchor sweep of a revoked or future simple taproot peer commitment leaves the peer's anchor
 - **Status:** open

@@ -248,6 +248,32 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_OurUnspentAnchorOnOurCommitment_When_TheFundingSpendIsIrrevocable_Then_IgnoredAndChannelClosed()
+    {
+        // Arrange (NL-1055): no CPFP child and an uneconomical anchor sweep left our anchor unspent; the resolver of our
+        // commitment never touches anchor rows
+        AddOutput(0, OutputDescriptorKind.DelayedToLocal, OutputResolutionState.Resolved, SpentAt + 1);
+        AddOutput(1, OutputDescriptorKind.OurAnchor);
+        var executor = CreateExecutor();
+
+        // Act: the funding spend 99 deep
+        await executor.RunRoundAsync(SpentAt + 98, TestContext.Current.CancellationToken);
+
+        // Assert: the anchor still waits for a spend
+        Assert.Equal(OutputResolutionState.Pending, _store.Outputs[(s_commitmentTxId, 1)].State);
+
+        // Act: 100 deep, then the to_local sweep 100 deep
+        await executor.RunRoundAsync(SpentAt + 99, TestContext.Current.CancellationToken);
+        var anchorAt100 = _store.Outputs[(s_commitmentTxId, 1)].State;
+        await executor.RunRoundAsync(SpentAt + 100, TestContext.Current.CancellationToken);
+
+        // Assert: ignored at the irrevocable depth, then the channel closes
+        Assert.Equal(OutputResolutionState.Ignored, anchorAt100);
+        Assert.Equal(OutputResolutionState.Irrevocable, _store.Outputs[(s_commitmentTxId, 0)].State);
+        Assert.Equal(ChannelState.Closed, _channel.State);
+    }
+
+    [Fact]
     public async Task Given_ABoughtLease_When_TheChannelClosesOnChain_Then_ThePurchaseIsClosedAtTheSpendInTheSave()
     {
         // Arrange (liquidity ads, NL-850): a purchase active from block 900 (lease to 4,932); the funding was spent
