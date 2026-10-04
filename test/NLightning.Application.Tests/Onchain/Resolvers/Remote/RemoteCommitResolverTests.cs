@@ -90,9 +90,10 @@ public sealed class RemoteCommitResolverTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_PeersTaprootCommitmentWithHtlcs_When_Confirmed_Then_ToRemoteSweptByScriptPathAndHtlcsAlerted()
+    public async Task Given_TaprootHtlcRowsRecordedWithoutALeaf_When_Resolved_Then_ReMappedAndClaimed()
     {
-        // Arrange (NL-877 T4 safety floor): a simple taproot channel with an HTLC each way, Bob closes
+        // Arrange (NL-966): rows a t02 build wrote before the HTLC leaves were mapped carry no control block; they take
+        // the rebuilt commitment's leaf and are claimed as any other
         _context.Dispose();
         _context = new RemoteResolutionTestContext(simpleTaproot: true);
         Pair.Add(Pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
@@ -100,26 +101,36 @@ public sealed class RemoteCommitResolverTests : IDisposable
         Pair.Settle(Pair.Alice);
         _context.UseSnapshot();
         _context.CloseWith(Pair.Alice.State.RemoteCommit, ChannelCloseKind.RemoteCommitment);
+        var commit = Pair.Alice.State.RemoteCommit;
+        var map = _context.Mapper.Map(_context.Channel, CommitmentTxSpec.FromCommitmentSpec(commit.Spec),
+                                      CommitmentCase.Remote, commit.Number, commit.PerCommitmentPoint);
+        var (unitOfWork, save) = _context.Store.CreateUnitOfWork();
+        foreach (var htlc in map.Outputs.Where(o => o.Htlc is not null))
+            await unitOfWork.OnchainResolutionDbRepository.UpsertOutputAsync(new OutputResolutionModel
+            {
+                TransactionId = _context.Close.CommitmentTransactionId,
+                OutputIndex = htlc.Vout,
+                ChannelId = _context.Channel.ChannelId,
+                Descriptor = htlc.Kind,
+                DescriptorData = (OutputDescriptorData.FromDescriptor(htlc, map.PerCommitmentPoint) with
+                {
+                    TaprootControlBlock = null
+                }).Encode(),
+                HtlcDirection = htlc.Htlc!.Value.Direction,
+                HtlcId = htlc.Htlc.Value.Id
+            });
+        await save();
 
-        // Act: the first round, then another block
-        await _context.BeginAsync(RemoteResolutionTestContext.CloseHeight);
-        var firstAlerts = _context.Alerts.Where(a => a.RequirementId == "NL-966").ToList();
-        await _context.ResolveAsync(RemoteResolutionTestContext.CloseHeight + 1);
+        // Act: the first round at the expiry
+        await _context.BeginAsync(Cltv);
 
-        // Assert: our to_remote swept by its leaf (nSequence 1), valid by script execution against the P2TR output
-        var row = _context.ToRemoteRow();
-        Assert.Equal(OutputResolutionState.Broadcast, row.State);
-        var sweep = Assert.Single(_context.Published);
-        Assert.True(_context.Verifies(sweep, out var error), error.ToString());
-        var tx = Transaction.Load(sweep.RawTransaction, Network.Main);
-        Assert.Equal(1U, tx.Inputs[0].Sequence.Value);
-        Assert.Equal(3, tx.Inputs[0].WitScript.PushCount);
-
-        // The HTLC outputs are recorded and alerted (NL-966), never built, and nothing throws in later rounds
-        Assert.Equal(2, firstAlerts.Count);
-        Assert.Single(_context.Published);
+        // Assert: both rows saved with their leaf, our offered HTLC claimed by its timeout leaf, to_remote swept
         Assert.All(_context.SavedRows().Where(r => r.HtlcId is not null),
-                   r => Assert.Null(r.ResolvingTransactionId));
+                   r => Assert.NotNull(OutputDescriptorData.Decode(r.DescriptorData).TaprootControlBlock));
+        Assert.Equal(2, _context.Published.Count);
+        Assert.All(_context.Published, b => Assert.True(_context.Verifies(b, out var error), error.ToString()));
+        Assert.Single(_context.Published, b => b.Purpose == BroadcastPurpose.HtlcClaim);
+        Assert.DoesNotContain(_context.Alerts, a => a.RequirementId == "NL-966");
     }
 
     [Fact]

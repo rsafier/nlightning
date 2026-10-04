@@ -84,7 +84,6 @@ public sealed class RevokedCommitResolver : IOutputResolver
     private readonly ConcurrentDictionary<string, byte> _alerted = new();
     private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _fulfilled = new();
     private readonly ConcurrentDictionary<(TxId, uint), (ChainTx Transaction, uint Height)> _seenSpends = new();
-    private readonly UnsupportedTaprootOutputs _unsupportedTaproot = new();
 
     public RevokedCommitResolver(IRevokedCommitDataSource dataSource, ICommitmentOutputMapper mapper,
                                  IPenaltyTransactionBuilder penaltyTransactionBuilder,
@@ -142,14 +141,6 @@ public sealed class RevokedCommitResolver : IOutputResolver
 
             if (descriptor.Htlc is { } mapped)
                 mappedHtlcs.Add(new HtlcKey(mapped.Direction, mapped.Id));
-
-            // NL-966: the key-path penalty of a revoked simple taproot HTLC output is not built yet
-            if (descriptor is { IsSimpleTaproot: true, Kind: OutputDescriptorKind.RevokedHtlc })
-            {
-                _unsupportedTaproot.Report(close.ChannelId, close.CommitmentTransactionId, descriptor.Vout,
-                                           descriptor.Kind, descriptor.AmountSat, round.Actions);
-                continue;
-            }
 
             await PlanOutputAsync(round, map, descriptor, needs, spentBy, cancellationToken);
         }
@@ -219,10 +210,9 @@ public sealed class RevokedCommitResolver : IOutputResolver
         // rounds, which sweep it on its own after one confirmation
         var anchors = context.Channel.ChannelParams.OptionAnchorOutputs;
         var needs = new List<PenaltyNeed>();
-        // (NL-966: the key-path penalty of a revoked simple taproot HTLC output is not built yet)
-        foreach (var descriptor in map.Outputs.Where(d => d.Kind == OutputDescriptorKind.RevokedToLocal
-                                                         || (d.Kind == OutputDescriptorKind.RevokedHtlc
-                                                          && !d.IsSimpleTaproot)
+        // (a simple taproot HTLC output is penalized by key path, NL-966)
+        foreach (var descriptor in map.Outputs.Where(d => d.Kind is OutputDescriptorKind.RevokedToLocal
+                                                              or OutputDescriptorKind.RevokedHtlc
                                                          || (d.Kind == OutputDescriptorKind.PaymentToRemote && !anchors)))
         {
             var row = CreateCommitmentRow(round, descriptor, context.PerCommitmentPoint);
@@ -603,6 +593,12 @@ public sealed class RevokedCommitResolver : IOutputResolver
         if (data?.WitnessScript is not { } witnessScript)
             return null;
 
+        // Simple taproot (NL-966): the revocation key path, tweaked with the delay leaf's root
+        if (data.TaprootControlBlock is { } controlBlock)
+            return SweepInputFactory.TaprootSecondLevelPenalty(row.TransactionId, row.OutputIndex, data.AmountSat,
+                                                               data.ScriptPubKey, witnessScript, controlBlock,
+                                                               context.PerCommitmentSecret);
+
         return SweepInputFactory.SecondLevelPenalty(row.TransactionId, data.AmountSat, witnessScript,
                                                     context.PerCommitmentSecret) with
         { Vout = row.OutputIndex };
@@ -631,9 +627,26 @@ public sealed class RevokedCommitResolver : IOutputResolver
         var toSelfDelay = context.Channel.ChannelParams.Local.ToSelfDelay;
         var theirDelayedKey = _keyDerivationService.DerivePublicKey(
             context.Channel.RemoteKeySet!.DelayedPaymentCompactBasepoint, context.PerCommitmentPoint);
-        var script = new HtlcResolutionOutput(LightningMoney.Satoshis(output.AmountSat), new PubKey(theirDelayedKey),
-                                              new PubKey(RevocationPubKey(context)), toSelfDelay);
-        var scriptPubKey = (byte[])script.BitcoinScriptPubKey;
+        var amount = LightningMoney.Satoshis(output.AmountSat);
+        byte[] scriptPubKey, witnessScript;
+        byte[]? controlBlock = null;
+        if (context.Channel.ChannelParams.OptionSimpleTaproot)
+        {
+            // Simple taproot (NL-966): internal key revocation_pubkey, one delay leaf; penalized by key path
+            var taproot = new TaprootHtlcResolutionOutput(amount, new PubKey(theirDelayedKey),
+                                                          new PubKey(RevocationPubKey(context)), toSelfDelay);
+            scriptPubKey = (byte[])taproot.BitcoinScriptPubKey;
+            witnessScript = taproot.DelayLeaf.Script.ToBytes();
+            controlBlock = taproot.GetControlBlock(taproot.DelayLeaf);
+        }
+        else
+        {
+            var script = new HtlcResolutionOutput(amount, new PubKey(theirDelayedKey),
+                                                  new PubKey(RevocationPubKey(context)), toSelfDelay);
+            scriptPubKey = (byte[])script.BitcoinScriptPubKey;
+            witnessScript = (byte[])script.RedeemBitcoinScript;
+        }
+
         if (!scriptPubKey.AsSpan().SequenceEqual(output.ScriptPubKey))
         {
             alert = new AlertAction("B5-REV-06",
@@ -648,9 +661,9 @@ public sealed class RevokedCommitResolver : IOutputResolver
               + "output before block {Deadline} (B5-REV-06)", close.ChannelId, htlcTransaction.TxId,
                 parent.OutputIndex, height + toSelfDelay);
 
-        var data = new OutputDescriptorData(output.AmountSat, scriptPubKey, (byte[])script.RedeemBitcoinScript, toSelfDelay,
+        var data = new OutputDescriptorData(output.AmountSat, scriptPubKey, witnessScript, toSelfDelay,
                                             context.Channel.ChannelParams.OptionAnchorOutputs,
-                                            context.PerCommitmentPoint, htlc);
+                                            context.PerCommitmentPoint, htlc, controlBlock);
         return new OutputResolutionModel
         {
             TransactionId = htlcTransaction.TxId,

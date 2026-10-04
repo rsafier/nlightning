@@ -13,7 +13,8 @@ using Enums;
 /// <param name="Vout">The output index.</param>
 /// <param name="AmountSat">The output amount in satoshis.</param>
 /// <param name="SpendKind">How the output is spent (witness, sequence, locktime and key).</param>
-/// <param name="WitnessScript">The P2WSH witness script; null only for a P2WPKH <c>to_remote</c>.</param>
+/// <param name="WitnessScript">The P2WSH witness script (simple taproot: the tapscript leaf); null only for a P2WPKH
+/// <c>to_remote</c> and a simple taproot key-path penalty.</param>
 /// <param name="CsvDelay">The relative delay the witness script enforces (<c>to_self_delay</c> on a delayed output, 1
 /// on anchor HTLC and <c>to_remote</c> outputs, 0 when there is none); it becomes the input's <c>nSequence</c>.</param>
 /// <param name="CltvExpiry">The HTLC's <c>cltv_expiry</c>. For <see cref="SweepSpendKind.HtlcTimeoutClaim"/> the
@@ -30,6 +31,9 @@ using Enums;
 /// &lt;control_block&gt;</c> signed with <c>SIGHASH_DEFAULT</c> over every spent output. Null otherwise.</param>
 /// <param name="SpentScriptPubKey">The scriptPubKey of the spent output; required for a taproot input (BIP 341 commits
 /// to every input's script) and for every input of a transaction that has one.</param>
+/// <param name="TaprootMerkleRoot">Simple taproot key-path spends (NL-966: the revocation penalty of an HTLC output or of
+/// the peer's second-level output, whose internal key is the revocation key): the tapscript merkle root the output key
+/// is tweaked with; the witness is then the 64-byte BIP 340 signature alone. Null otherwise.</param>
 public sealed record SweepInput(
     TxId TxId,
     uint Vout,
@@ -43,11 +47,18 @@ public sealed record SweepInput(
     byte[]? Preimage = null,
     CompactPubKey? WitnessPubKey = null,
     byte[]? TaprootControlBlock = null,
-    byte[]? SpentScriptPubKey = null)
+    byte[]? SpentScriptPubKey = null,
+    byte[]? TaprootMerkleRoot = null)
 {
     /// <summary>The key that signs this input.</summary>
     public SweepKeyKind KeyKind => SpendKind.GetKeyKind();
 
     /// <summary>A BIP 341 script-path spend of a simple taproot output (<see cref="TaprootControlBlock"/> set).</summary>
     public bool IsTaprootScriptPath => TaprootControlBlock is not null;
+
+    /// <summary>A BIP 341 key-path spend of a simple taproot output (<see cref="TaprootMerkleRoot"/> set, no leaf).</summary>
+    public bool IsTaprootKeyPath => TaprootMerkleRoot is not null && TaprootControlBlock is null;
+
+    /// <summary>A simple taproot input, by script or key path: its signature commits to every spent output.</summary>
+    public bool IsTaproot => IsTaprootScriptPath || IsTaprootKeyPath;
 }
