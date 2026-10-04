@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-04 by the NL-923/NL-925/NL-940 lane (branch `wip/zcleanup1`): NL-925 (low) fixed in 7be91cb2 (a stored origin is authoritative for the first-hop check of an unrecorded HTLC).
+
 Updated 2026-10-04 by the taproot wave t02 integrator (follow-up on wip/fafo 2e455bc2): NL-959 fixed and verified by the full matrix `tap2-mx2`; NL-958 note; the NL-983 fix of wip/nl983 proven on taproot channels against LND (`o983b-taproot` 3/3, `o983b-day0` 3/3) after a test-only fix of the mempool scan (2578448b); Summary recounted (841).
 
 Updated 2026-10-04 by the NL-924 lane (worktree branch `worktree-agent-af41d6157ae6ff1e1`, from `wip/fafo` at `d8c6cc6e`): NL-924 (low) new and fixed in d6324dc3, 449de393, 094d4709 and 2f334449 (payer review follow-ups of NL-898, NL-980, NL-982), review fixes in 71ddf9b2, 0dcd85d2, 11ad3c56, e16c114e and a362a343; NL-925 (low, open) new: a trampoline peer's one-hop outer route fails the first-hop match. Summary rows recounted from the entries after merging wip/fafo at `34c708d4`: 839, no duplicate IDs.
@@ -171,9 +173,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 1 | 6 | 83 | 90 |
+| open | 0 | 1 | 6 | 82 | 89 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
-| fixed | 15 | 66 | 211 | 437 | 729 |
+| fixed | 15 | 66 | 211 | 438 | 730 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 3 | 4 | 7 |
 | **Total** | **15** | **67** | **227** | **534** | **843** |
@@ -3045,12 +3047,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TRAMPOLINE_PLAN TR4
 
 ### NL-925 A payment through a trampoline node that is our peer stores its only outer hop under the payee, so the first-hop match fails
-- **Status:** open
+- **Status:** fixed (7be91cb2)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`BuildHops`, `MatchesFirstHop` in `MatchOutcomeAsync` and `FindAttemptHtlcs(matchFirstHop: true)`)
 - **Evidence:** found while fixing NL-924 (2026-10-03). The stored route of a trampoline payment names the payee for its last hop (`PaymentModel` requires its route to end at the payee). When the trampoline node is our direct peer the outer route has one hop, so `Route[0].NodeId` is the payee and `MatchesFirstHop` (channel peer = first hop) never matches. It only matters for a row without a recorded HTLC id (a crash between the offer and `AddOutgoingHtlc`): a failure of that HTLC is then `Unmatched` and the row stays in flight until the next start or retry reconciles it through the stored origin (`FindHtlcsByOriginAsync`); a fulfill is still recorded (late-fulfill path).
-- **Fix sketch:** skip the first-hop check when the HTLC's stored origin is `Local(hash)` (the check is for rows from before NL-250), or compare the first hop against `PaymentTrampolineHops` hop 0 for a trampoline payment.
+- **Fix:** (7be91cb2) `MatchOutcomeAsync` runs the first-hop check only when the origin lookup stored none (the check is for rows from before NL-250): a stored origin equal to the payment's is authoritative, so the failure is matched and the row fails at once; the same rename for a blinded path's one-hop route (`BlindedStartIndex`) is covered too. `ReconcileUnrecordedAsync` needed no change (its by-origin fallback already found the HTLC). Tests: `PaymentServiceTests.Given_ATrampolinePeersHtlcWithALocalOrigin_When_Failed_Then_ThePaymentFails` (fails without the fix) and `Given_NoStoredOriginAndAnotherPeersHtlc_When_Failed_Then_ThePaymentStaysInFlight` (pins the pre-NL-250 heuristic).
 - **Blocks/Blocked-by:** related NL-924, NL-875
 - **Plan ref:** —
 
