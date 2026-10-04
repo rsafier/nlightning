@@ -131,6 +131,48 @@ public class TrampolinePaymentHarnessTests
     }
 
     [Fact]
+    public async Task Given_ATrampolinePeer_When_BobAsksForARouteThroughIt_Then_TheOuterRouteAndThePolicyAreQuoted()
+    {
+        // Arrange: the quote names Carol, our trampoline peer, for David's amount (NL-940)
+        using var harness = new PaymentHarness();
+        var carol = new HarnessTrampolineNode(harness.Carol);
+        var david = new HarnessTrampolineNode(harness.David);
+        var invoice = await CreateInvoiceAsync(harness.David, s_amount);
+
+        // Act
+        var quote = await harness.Bob.RouteQuery.QuoteRouteAsync(harness.David.NodeId, s_amount, null,
+                                                                 invoice.MinFinalCltvExpiry, harness.Carol.NodeId,
+                                                                 TestContext.Current.CancellationToken);
+
+        // Assert: the one-hop outer route to Carol around the default policy (1,000 msat + 1,000 ppm, delta 576),
+        // nothing sent, and the layer names the payee and what it must receive
+        Assert.Empty(carol.Received);
+        Assert.Empty(carol.Legs);
+        var layer = quote.TrampolineLayer;
+        Assert.NotNull(layer);
+        Assert.Equal(harness.Carol.NodeId, layer.TrampolineNode);
+        Assert.Equal(harness.David.NodeId, layer.Payee);
+        Assert.Equal(s_amount, layer.Amount);
+        Assert.Equal(1_100UL, layer.Fee.MilliSatoshi);
+        Assert.False(layer.PolicyLearnt);
+        Assert.Equal(new TrampolinePolicy(1_000, 1_000, 576), layer.Policy);
+        Assert.Equal(101_100UL, quote.Route.FirstHopAmount.MilliSatoshi);
+        Assert.Equal(layer.PayeeCltvExpiry + 576, quote.Route.FirstHopCltvExpiry);
+        Assert.Equal(harness.Carol.NodeId, Assert.Single(quote.Route.Hops).NodeId);
+        Assert.Equal(harness.BobCarol, quote.Channel.ChannelId);
+
+        // Assert: the quote is what the payment sends — David's invoice paid through Carol afterwards carries the
+        // quoted first hop (amount and expiry) and pays the quoted fee
+        var result = await harness.RunAsync(harness.Bob.PaymentService.PayInvoiceAsync(
+                                                invoice.Bolt11!, null, Through(harness.Carol),
+                                                TestContext.Current.CancellationToken));
+        Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
+        Assert.Equal(quote.Route.FirstHopAmount, result.Payment.Route[0].Amount);
+        Assert.Equal(quote.Route.FirstHopCltvExpiry, result.Payment.Route[0].CltvExpiry);
+        Assert.Equal(1_100UL, result.Payment.Fee.MilliSatoshi);
+    }
+
+    [Fact]
     public async Task Given_ChannelsTooSmallForTheAmount_When_PaidThroughCarol_Then_BothLegsSplitWithOneTrampolineOnion()
     {
         // Arrange: no single channel carries 2,000,000 sat

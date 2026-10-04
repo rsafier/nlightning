@@ -19,10 +19,15 @@ public interface IRouteQueryService
     /// (<c>PaymentSendOptions.GetMaxFee</c>).</param>
     /// <param name="finalCltvDelta">The destination's <c>min_final_cltv_expiry_delta</c>; null uses BOLT 11's
     /// default of 18.</param>
+    /// <param name="trampolineNode">Quote the outer route to a trampoline node instead (NL-940): the route is what a
+    /// payment through it would send in its first round, priced with the node's cached (or the default) policy, and
+    /// the quote's <see cref="RouteQuote.TrampolineLayer"/> carries that layer.</param>
     /// <param name="cancellationToken">Cancels the query.</param>
-    /// <exception cref="ArgumentException">A zero amount, or the destination is us.</exception>
+    /// <exception cref="ArgumentException">A zero amount, the destination is us, or the trampoline node is us or the
+    /// destination.</exception>
     /// <exception cref="InvalidOperationException">No block was processed yet, or no route fits (the message says
     /// why).</exception>
     Task<RouteQuote> QuoteRouteAsync(CompactPubKey payee, LightningMoney amount, LightningMoney? maxFee,
-                                     ushort? finalCltvDelta, CancellationToken cancellationToken = default);
+                                     ushort? finalCltvDelta, CompactPubKey? trampolineNode = null,
+                                     CancellationToken cancellationToken = default);
 }

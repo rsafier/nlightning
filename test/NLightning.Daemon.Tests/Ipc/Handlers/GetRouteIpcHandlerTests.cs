@@ -6,6 +6,7 @@ namespace NLightning.Daemon.Tests.Ipc.Handlers;
 
 using Application.Payments.Routing;
 using Application.Payments.Routing.Interfaces;
+using Application.Payments.Send;
 using Daemon.Handlers;
 using Daemon.Interfaces;
 using Daemon.Ipc.Handlers;
@@ -59,13 +60,29 @@ public class GetRouteIpcHandlerTests
                               "graph route over 300x1x0");
     }
 
+    /// <summary>
+    /// Our one-hop outer route to Carol, the trampoline node, for 1,002,000 msat at 1,319 (Erin's 743 plus the default
+    /// policy's delta 576), with the layer a payment through her would carry (NL-940).
+    /// </summary>
+    private static RouteQuote QuoteThroughTrampoline()
+    {
+        var route = new PaymentRoute([new RouteHop(s_carol, LightningMoney.MilliSatoshis(1_002_000), 1_319, null)],
+                                     LightningMoney.MilliSatoshis(1_002_000), 1_319, new Hash(new byte[32]),
+                                     new Secret(new byte[32]));
+        return new RouteQuote(route, new LocalChannelCandidate(s_ourChannel, s_carol, s_ourScid), 1.0, 700,
+                              "direct channel 300x1x0",
+                              new TrampolineQuote(s_carol, s_erin, LightningMoney.MilliSatoshis(1_000_000), 743,
+                                                  new TrampolinePolicy(1_000, 1_000, 576), PolicyLearnt: false,
+                                                  LightningMoney.MilliSatoshis(2_000)));
+    }
+
     [Fact]
     public async Task Given_ARouteQuote_When_GetRoute_Then_EveryHopCrossesTheWireWithItsFeeAndCltv()
     {
         // Arrange
         _routes.Setup(r => r.QuoteRouteAsync(s_erin, LightningMoney.MilliSatoshis(1_000_000),
                                              LightningMoney.MilliSatoshis(5_000), (ushort?)40,
-                                             It.IsAny<CancellationToken>()))
+                                             It.IsAny<CompactPubKey?>(), It.IsAny<CancellationToken>()))
                .ReturnsAsync(Quote());
         using var provider = BuildProvider();
         var handler = new GetRouteIpcHandler(NullLogger<GetRouteIpcHandler>.Instance, provider);
@@ -100,7 +117,7 @@ public class GetRouteIpcHandlerTests
         // Arrange
         _routes.Setup(r => r.QuoteRouteAsync(It.IsAny<CompactPubKey>(), It.IsAny<LightningMoney>(),
                                              It.IsAny<LightningMoney?>(), It.IsAny<ushort?>(),
-                                             It.IsAny<CancellationToken>()))
+                                             It.IsAny<CompactPubKey?>(), It.IsAny<CancellationToken>()))
                .ThrowsAsync(new InvalidOperationException("No route to the payee: the graph has no path."));
         using var provider = BuildProvider();
         var handler = new GetRouteIpcHandler(NullLogger<GetRouteIpcHandler>.Instance, provider);
@@ -118,6 +135,40 @@ public class GetRouteIpcHandlerTests
         var error = MessagePackSerializer.Deserialize<IpcError>(response.Payload, s_options, ct);
         Assert.Equal(ErrorCodes.InvalidOperation, error.Code);
         Assert.Contains("graph has no path", error.Message);
+    }
+
+    [Fact]
+    public async Task Given_ATrampolineQuote_When_GetRoute_Then_TheOuterRouteAndItsPolicyCrossTheWire()
+    {
+        // Arrange: our one-hop outer route to Carol, the trampoline node, around the default policy (1,000 msat +
+        // 1,000 ppm, delta 576): a fee of 2,000 msat on Erin's 1,000,000 msat (NL-940)
+        _routes.Setup(r => r.QuoteRouteAsync(s_erin, LightningMoney.MilliSatoshis(1_000_000), null, null, s_carol,
+                                             It.IsAny<CancellationToken>()))
+               .ReturnsAsync(QuoteThroughTrampoline());
+        using var provider = BuildProvider();
+        var handler = new GetRouteIpcHandler(NullLogger<GetRouteIpcHandler>.Instance, provider);
+
+        // Act
+        var response = await handler.HandleAsync(Envelope(new GetRouteIpcRequest
+        {
+            NodeId = s_erin,
+            AmountMsat = 1_000_000,
+            TrampolineNode = s_carol
+        }), TestContext.Current.CancellationToken);
+
+        // Assert: the outer hop carries the trampoline node's fee, and the layer names the payee and the policy
+        Assert.Equal(IpcEnvelopeKind.Response, response.Kind);
+        var payload = MessagePackSerializer.Deserialize<GetRouteIpcResponse>(response.Payload, s_options,
+                                                                             TestContext.Current.CancellationToken);
+        Assert.Equal((1_002_000UL, 2_000UL, 1_319U), (payload.AmountMsat, payload.FeeMsat, payload.CltvExpiry));
+        var hop = Assert.Single(payload.Hops);
+        Assert.Equal((s_carol, ToNumber(s_ourScid), 1_002_000UL, 1_319U, 2_000UL), Tuple(hop));
+        var trampoline = payload.Trampoline;
+        Assert.NotNull(trampoline);
+        Assert.Equal((s_carol, s_erin, 1_000_000UL, 743U, 1_000U, 1_000U, (ushort)576, 2_000UL, false),
+                     (trampoline.TrampolineNode, trampoline.Payee, trampoline.AmountMsat,
+                      trampoline.PayeeCltvExpiry, trampoline.FeeBaseMsat, trampoline.FeeProportionalMillionths,
+                      trampoline.CltvExpiryDelta, trampoline.FeeMsat, trampoline.PolicyLearnt));
     }
 
     [Fact]
@@ -142,7 +193,14 @@ public class GetRouteIpcHandlerTests
     public void Given_AGetRouteRequest_When_RoundTripped_Then_EveryFieldIsPreserved()
     {
         // Arrange
-        var request = new GetRouteIpcRequest { NodeId = s_david, AmountMsat = 42, MaxFeeMsat = 7, FinalCltvDelta = 9 };
+        var request = new GetRouteIpcRequest
+        {
+            NodeId = s_david,
+            AmountMsat = 42,
+            MaxFeeMsat = 7,
+            FinalCltvDelta = 9,
+            TrampolineNode = s_carol
+        };
 
         // Act
         var clientRequest = MessagePackSerializer.Deserialize<GetRouteIpcRequest>(
@@ -151,11 +209,12 @@ public class GetRouteIpcHandlerTests
         var defaults = new GetRouteIpcRequest { NodeId = s_david, AmountMsat = 42 }.ToClientRequest();
 
         // Assert
-        Assert.Equal((s_david, 42UL, 7UL, (ushort?)9),
+        Assert.Equal((s_david, 42UL, 7UL, (ushort?)9, s_carol),
                      (clientRequest.NodeId, clientRequest.Amount.MilliSatoshi, clientRequest.MaxFee!.MilliSatoshi,
-                      clientRequest.FinalCltvDelta));
+                      clientRequest.FinalCltvDelta, clientRequest.TrampolineNode));
         Assert.Null(defaults.MaxFee);
         Assert.Null(defaults.FinalCltvDelta);
+        Assert.Null(defaults.TrampolineNode);
     }
 
     private ServiceProvider BuildProvider()

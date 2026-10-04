@@ -33,5 +33,17 @@ public sealed class GetRoutePrinter : IPrinter<GetRouteIpcResponse>
                                             $"    Amount (msat):    {hop.AmountMsat}, fee {hop.FeeMsat}"));
             _output.WriteLine(string.Create(CultureInfo.InvariantCulture, $"    CLTV Expiry:      {hop.CltvExpiry}"));
         }
+
+        if (item.Trampoline is not { } trampoline)
+            return;
+
+        _output.WriteLine(PaymentsPrintFormat.Separator);
+        _output.WriteLine("  Trampoline layer:");
+        _output.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                                        $"    Node:             {trampoline.TrampolineNode} ({(trampoline.PolicyLearnt ? "policy learnt from it" : "default policy")})"));
+        _output.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                                        $"    Policy:           {trampoline.FeeBaseMsat} msat + {trampoline.FeeProportionalMillionths} ppm, delta {trampoline.CltvExpiryDelta} (fee {trampoline.FeeMsat} msat)"));
+        _output.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                                        $"    Payee:            {trampoline.Payee} receives {trampoline.AmountMsat} msat at CLTV {trampoline.PayeeCltvExpiry}"));
     }
 }

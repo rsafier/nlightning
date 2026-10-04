@@ -20,6 +20,12 @@ public sealed class GetRouteClientRequest
     /// <summary>The destination's <c>min_final_cltv_expiry_delta</c>, or null for BOLT 11's default of 18.</summary>
     public ushort? FinalCltvDelta { get; init; }
 
+    /// <summary>
+    /// Quote the outer route to a trampoline node instead (NL-940): the policy it would be priced with rides on the
+    /// response's <c>Trampoline</c> section; null for our own route.
+    /// </summary>
+    public CompactPubKey? TrampolineNode { get; init; }
+
     public GetRouteClientRequest(CompactPubKey nodeId, LightningMoney amount)
     {
         NodeId = nodeId;

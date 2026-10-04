@@ -180,7 +180,7 @@ public class GraphPaymentHarnessTests
         var ct = TestContext.Current.CancellationToken;
 
         // Act: getroute first (nothing sent), then the payment of Erin's invoice (c = 40)
-        var quote = await harness.Bob.RouteQuery.QuoteRouteAsync(erin.NodeId, s_amount, null, 40, ct);
+        var quote = await harness.Bob.RouteQuery.QuoteRouteAsync(erin.NodeId, s_amount, null, 40, null, ct);
         var invoice = await erin.InvoiceService.CreateInvoiceAsync(s_amount, "quote", null, ct);
         var result = await PayAsync(harness, invoice.Bolt11!);
 

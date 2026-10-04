@@ -544,15 +544,24 @@ public class ClientAppTests
         var full = ClientApp.ParseGetRouteOptions([node, "1000000", "--max-fee-msat", "5000", "--final-cltv=40"],
                                                   out var fullError);
         var plain = ClientApp.ParseGetRouteOptions([node, "1"], out _);
+        var through = ClientApp.ParseGetRouteOptions(
+            [node, "1000000", "--trampoline", "02bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+            out var throughError);
 
         // Assert
         Assert.Null(fullError);
         Assert.Equal(node, Convert.ToHexString((byte[])full!.NodeId).ToLowerInvariant());
         Assert.Equal((1_000_000UL, (ulong?)5_000, (ushort?)40),
                      (full.AmountMsat, full.MaxFeeMsat, full.FinalCltvDelta));
-        Assert.Equal((1UL, (ulong?)null, (ushort?)null), (plain!.AmountMsat, plain.MaxFeeMsat, plain.FinalCltvDelta));
+        Assert.Equal((1UL, (ulong?)null, (ushort?)null, null), (plain!.AmountMsat, plain.MaxFeeMsat,
+                                                                 plain.FinalCltvDelta, plain.TrampolineNode));
+        Assert.Null(throughError);
+        Assert.Equal("02bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                     Convert.ToHexString((byte[])through!.TrampolineNode!).ToLowerInvariant());
         Assert.Null(ClientApp.ValidateArguments("getroute", [node, "10"]));
         Assert.Null(ClientApp.ValidateArguments("get-route", ["--max-fee-msat=0", node, "10"]));
+        Assert.Null(ClientApp.ValidateArguments("getroute",
+                                                [node, "10", "--trampoline=02bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]));
         Assert.NotNull(ClientApp.ValidateArguments("getroute", [node]));
         Assert.NotNull(ClientApp.ValidateArguments("getroute", [node, "0"]));
         Assert.NotNull(ClientApp.ValidateArguments("getroute", ["04" + node[2..], "10"]));
@@ -560,6 +569,8 @@ public class ClientAppTests
         Assert.NotNull(ClientApp.ValidateArguments("getroute", [node, "10", "--final-cltv", "0"]));
         Assert.NotNull(ClientApp.ValidateArguments("getroute", [node, "10", "--max-parts", "2"]));
         Assert.NotNull(ClientApp.ValidateArguments("getroute", [node, "10", "--max-fee-msat"]));
+        Assert.NotNull(ClientApp.ValidateArguments("getroute", [node, "10", "--trampoline", "zz"]));
+        Assert.NotNull(ClientApp.ValidateArguments("getroute", [node, "10", "--trampoline"]));
     }
 
     [Fact]
