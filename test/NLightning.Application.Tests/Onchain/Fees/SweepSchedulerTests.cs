@@ -274,6 +274,61 @@ public sealed class SweepSchedulerTests
         Assert.Contains(actions, a => a is StageWriteAction { Description: var d } && d.StartsWith("replaced"));
     }
 
+    [Fact]
+    public async Task Given_TaprootRevokedHtlcRowsRecordedWithoutALeaf_When_AResolverRoundRuns_Then_ThePenaltyIsBumped()
+    {
+        // Arrange (NL-1051): the watcher of a t02 build wrote the revoked commitment's HTLC rows without a leaf and
+        // control block; a t03 build penalizes those outputs by key path from the fresh map, so its fee bump needs them
+        using var kit = new RevokedBreachKit(simpleTaproot: true);
+        var pair = kit.Pair;
+        pair.Add(pair.Bob, 50_000_000, RealSigningCommitmentPair.Preimage(0xB1), 600);
+        pair.Add(pair.Alice, 40_000_000, RealSigningCommitmentPair.Preimage(0xA1), 650);
+        pair.Settle(pair.Bob);
+        kit.CaptureRevokedState();
+        pair.UpdateFee(3_000);
+        pair.Settle(pair.Alice);
+        kit.Breach();
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
+        for (var i = 0; i < kit.Rows.Count; i++)
+        {
+            if (kit.Rows[i].Descriptor != OutputDescriptorKind.RevokedHtlc)
+                continue;
+
+            var data = OutputDescriptorData.TryDecode(kit.Rows[i])!;
+            kit.Rows[i] = kit.Rows[i] with
+            {
+                DescriptorData = (data with { WitnessScript = null, TaprootControlBlock = null }).Encode()
+            };
+        }
+
+        var height = RevokedBreachKit.SpentAtHeight + 1 + s_policy.RbfIntervalBlocks;
+        var htlcPenalties = kit.Broadcasts.Values
+                               .Where(b => b.Purpose == BroadcastPurpose.Penalty
+                                        && kit.Rows.Any(r => r.ResolvingTransactionId == b.TransactionId
+                                                          && r.Descriptor == OutputDescriptorKind.RevokedHtlc))
+                               .Select(b => b.TransactionId)
+                               .ToList();
+        Assert.NotEmpty(htlcPenalties);
+        var secret = kit.DataSource.Context!.PerCommitmentSecret;
+        var scheduler = new SweepScheduler(CreateFeeService(RevokedBreachKit.FeeratePerKw).Object, kit.Victim.Signer,
+                                           NullLogger<SweepScheduler>.Instance, new SweepFeePolicy(s_policy),
+                                           CreateShachain(secret).Object);
+
+        // Act: a resolver round of the upgraded build, then the scheduler
+        await kit.RunAsync(height);
+        var actions = await scheduler.PlanAsync(kit.Close, kit.Rows.ToList(), height, CreateUnitOfWork(kit),
+                                                TestContext.Current.CancellationToken);
+
+        // Assert: every penalty of an HTLC output is replaced, re-signed by the revocation key path (script-valid)
+        var replacements = actions.OfType<BroadcastAction>().Select(a => a.Transaction).ToList();
+        await kit.ApplyAsync(actions);
+        foreach (var penalty in htlcPenalties)
+        {
+            var replacement = Assert.Single(replacements, r => r.ReplacesTransactionId == penalty);
+            kit.AssertVerifies(replacement.TransactionId);
+        }
+    }
+
     private static readonly SweepFeePolicyOptions s_policy = new();
 
     private static Mock<IFeeService> CreateFeeService(uint feeratePerKw)

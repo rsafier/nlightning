@@ -300,6 +300,16 @@ public sealed class RevokedCommitResolver : IOutputResolver
         var row = round.GetOrCreateRow(commitmentTxId, descriptor.Vout,
                                        () => CreateCommitmentRow(round, descriptor, map.PerCommitmentPoint))!;
 
+        // NL-1051: a simple taproot HTLC row the watcher of a t02 build wrote has no leaf and control block; the key-path
+        // penalty is built from the map, but its fee bump (SweepScheduler) re-derives the merkle root from the row
+        if (descriptor is { IsSimpleTaproot: true, TaprootControlBlock: not null }
+         && OutputDescriptorData.TryDecode(row) is { TaprootControlBlock: null } recorded
+         && recorded.ScriptPubKey.AsSpan().SequenceEqual(descriptor.ScriptPubKey))
+            row = round.Replace(row with
+            {
+                DescriptorData = OutputDescriptorData.FromDescriptor(descriptor, map.PerCommitmentPoint).Encode()
+            });
+
         var lookup = await GetSpendAsync(row, descriptor.Htlc, cancellationToken);
         if (lookup.SpenderTxId is { } spender)
             spentBy[(row.TransactionId, row.OutputIndex)] = spender;
@@ -1029,6 +1039,21 @@ public sealed class RevokedCommitResolver : IOutputResolver
             Actions.Add(new WatchOutpointAction(new WatchedOutpointModel(row.TransactionId, row.OutputIndex,
                                                                          row.ChannelId,
                                                                          WatchedOutpointPurpose.ResolutionOutput)));
+            return row;
+        }
+
+        /// <summary>Replaces an existing row with <paramref name="row"/> (same outpoint), staged for the save.</summary>
+        public OutputResolutionModel Replace(OutputResolutionModel row)
+        {
+            var index = _rows.FindIndex(r => r.TransactionId == row.TransactionId && r.OutputIndex == row.OutputIndex);
+            if (index >= 0)
+                _rows[index] = row;
+            else
+                _rows.Add(row);
+
+            Actions.RemoveAll(a => a is UpsertOutputAction u && u.Output.TransactionId == row.TransactionId
+                                                         && u.Output.OutputIndex == row.OutputIndex);
+            Actions.Add(new UpsertOutputAction(row));
             return row;
         }
     }
