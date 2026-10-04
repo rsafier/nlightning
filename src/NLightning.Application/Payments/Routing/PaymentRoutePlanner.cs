@@ -26,7 +26,9 @@ using Domain.Routing.Pathfinding;
 /// whose total CLTV exceeds <see cref="RoutingOptions.MaxCltvExpiryDistance"/> is skipped.</para>
 /// <para>An amount fits a path when the fee is within the remaining fee limit, our HTLC is at most what the engine
 /// lets us send on that channel (<see cref="PaymentPlanRequest.MaxSendableMsat"/>, given the parts already planned on
-/// it) and below its learnt bound, and every hint channel forwards at least its <c>htlc_minimum_msat</c>, at most its
+/// it) and below its learnt bound, at least the peer's <c>htlc_minimum_msat</c> on it
+/// (<see cref="LocalChannelCandidate.HtlcMinimumMsat"/>, raised by <see cref="RouteConstraints.LocalHtlcMinimumsMsat"/>;
+/// NL-924), and every hint channel forwards at least its <c>htlc_minimum_msat</c>, at most its
 /// <c>htlc_maximum_msat</c> and, with the parts already planned over it and the payment's parts still in flight over it
 /// (<see cref="PaymentPlanRequest.HintForwardsInFlightMsat"/>), less than its learnt liquidity bound.</para>
 /// <para>One part: the first path, in order (direct paths first, then hints in invoice order; each by what its channel
@@ -35,8 +37,9 @@ using Domain.Routing.Pathfinding;
 /// channels, the split rules below) comes before any hint or graph path, single-part or not (NL-980). Split (only
 /// with <see cref="PaymentTarget.SupportsMpp"/> and at least two parts allowed): paths by fee for the whole amount,
 /// cheapest first, then by what they can send; each takes the largest amount that fits (at least
-/// <see cref="PaymentPlanRequest.MinPartMsat"/> unless that is all that is left), until the amount is covered,
-/// within <see cref="PaymentPlanRequest.MaxParts"/>. Every part carries <c>total_msat</c> =
+/// <see cref="PaymentPlanRequest.MinPartMsat"/> unless that is all that is left; a part that would leave a rest below
+/// every later path's minimum leaves max(that minimum, <see cref="PaymentPlanRequest.MinPartMsat"/>) instead, NL-924),
+/// until the amount is covered, within <see cref="PaymentPlanRequest.MaxParts"/>. Every part carries <c>total_msat</c> =
 /// <see cref="PaymentPlanRequest.TotalMsat"/>.</para>
 /// <para>Graph paths (BOLT 7 plan G4-T3, decision D7; only with <see cref="PaymentPlanRequest.Graph"/>): when no direct
 /// or hint path carries the whole amount (there is none, the payment avoided them, or they are depleted, bounded by a
@@ -269,8 +272,9 @@ public sealed class PaymentRoutePlanner
         var hintAssigned = new Dictionary<ShortChannelId, ulong>(inFlight);
         var remaining = request.AmountMsat;
         var feeLeft = request.MaxFeeMsat;
-        foreach (var path in ordered)
+        for (var index = 0; index < ordered.Count; index++)
         {
+            var path = ordered[index];
             if (planned.Count == request.MaxParts)
                 break;
 
@@ -284,6 +288,13 @@ public sealed class PaymentRoutePlanner
             var (amount, route) = largest.Value;
             if (amount < remaining && amount < request.MinPartMsat)
                 continue;
+
+            var shifted = amount < remaining
+                              ? LeaveForTheRest(request, path, ordered, index, remaining, amount, feeLeft, onChannel,
+                                                hintAssigned)
+                              : null;
+            if (shifted is { } smaller)
+                (amount, route) = smaller;
 
             planned.Add(new PlannedPart(path.Channel, route, path.Description));
             onChannel.Add(route.FirstHopAmount.MilliSatoshi);
@@ -310,6 +321,62 @@ public sealed class PaymentRoutePlanner
                             + "missing";
         return false;
     }
+
+    /// <summary>
+    /// A smaller part for <paramref name="path"/> when the rest it would leave (<paramref name="remaining"/> -
+    /// <paramref name="amount"/>) is below what every later path takes at least (its first channel's and its hops'
+    /// <c>htlc_minimum_msat</c>; NL-924): the part then leaves max(that minimum,
+    /// <see cref="PaymentPlanRequest.MinPartMsat"/>) instead, when the smaller part still fits and is a whole part
+    /// itself. Null: keep the part as it is.
+    /// </summary>
+    private (ulong Amount, PaymentRoute Route)? LeaveForTheRest(PaymentPlanRequest request, CandidatePath path,
+                                                               List<CandidatePath> ordered, int index, ulong remaining,
+                                                               ulong amount, ulong feeLeft,
+                                                               IReadOnlyList<ulong> onChannel,
+                                                               IReadOnlyDictionary<ShortChannelId, ulong> hintAssigned)
+    {
+        if (index + 1 >= ordered.Count)
+            return null;
+
+        var floor = ordered.Skip(index + 1).Min(PathMinimumMsat);
+        if (remaining - amount >= floor)
+            return null;
+
+        var leave = Math.Max(floor, request.MinPartMsat);
+        if (leave >= remaining)
+            return null;
+
+        var smaller = remaining - leave;
+        if (smaller < request.MinPartMsat
+         || !TryFit(request, path, smaller, feeLeft, onChannel, hintAssigned, out var route, out _))
+            return null;
+
+        return (smaller, route);
+
+        ulong PathMinimumMsat(CandidatePath candidate)
+        {
+            var minimum = Math.Max(1, LocalMinimumMsat(request, candidate.Channel));
+            for (var i = 0; i < candidate.Hops.Count; i++)
+            {
+                if (candidate.Limits is { } limits)
+                    minimum = Math.Max(minimum, limits[i].HtlcMinimumMsat);
+                else if (request.Constraints.PolicyOverrides.TryGetValue(candidate.Hops[i].ShortChannelId,
+                                                                         out var policy))
+                    minimum = Math.Max(minimum, policy.HtlcMinimumMsat);
+            }
+
+            return minimum;
+        }
+    }
+
+    /// <summary>
+    /// The smallest HTLC our channel takes: the peer's <c>htlc_minimum_msat</c>, or more after the engine refused an
+    /// HTLC below it (<see cref="RouteConstraints.LocalHtlcMinimumsMsat"/>).
+    /// </summary>
+    private static ulong LocalMinimumMsat(PaymentPlanRequest request, LocalChannelCandidate channel) =>
+        request.Constraints.LocalHtlcMinimumsMsat.TryGetValue(channel.ChannelId, out var learnt)
+            ? Math.Max(learnt, channel.HtlcMinimumMsat)
+            : channel.HtlcMinimumMsat;
 
     /// <summary>
     /// The largest amount up to <paramref name="upTo"/> that fits the path (binary search: fee and amounts grow with
@@ -371,6 +438,16 @@ public sealed class PaymentRoutePlanner
         if (firstHop > sendable)
         {
             reason = $"our channel {path.Channel.ShortChannelId} can send at most {sendable} msat, not {firstHop} msat";
+            route = null;
+            return false;
+        }
+
+        // NL-924: the peer's htlc_minimum_msat on our channel (B2-ADD-S06), or what a refusal taught us
+        var localMinimum = LocalMinimumMsat(request, path.Channel);
+        if (!ignoreMinimums && firstHop < localMinimum)
+        {
+            reason = $"our channel {path.Channel.ShortChannelId} takes HTLCs of at least {localMinimum} msat, not "
+                   + $"{firstHop} msat";
             route = null;
             return false;
         }
@@ -897,7 +974,10 @@ public sealed class PaymentRoutePlanner
 /// <param name="ChannelId">The channel.</param>
 /// <param name="PeerNodeId">Our peer on it.</param>
 /// <param name="ShortChannelId">Its short channel id (recorded as the first hop's channel).</param>
-public sealed record LocalChannelCandidate(ChannelId ChannelId, CompactPubKey PeerNodeId, ShortChannelId ShortChannelId);
+/// <param name="HtlcMinimumMsat">The peer's <c>htlc_minimum_msat</c> on it: the smallest HTLC we may offer (BOLT 2
+/// B2-ADD-S06; NL-924). 0: none.</param>
+public sealed record LocalChannelCandidate(ChannelId ChannelId, CompactPubKey PeerNodeId, ShortChannelId ShortChannelId,
+                                           ulong HtlcMinimumMsat = 0);
 
 /// <summary>
 /// One HTLC of a planned round.

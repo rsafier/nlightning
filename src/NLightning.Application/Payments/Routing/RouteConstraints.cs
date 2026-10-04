@@ -54,6 +54,13 @@ public sealed class RouteConstraints
     public Dictionary<ChannelId, ulong> LocalLiquidityBoundsMsat { get; } = [];
 
     /// <summary>
+    /// An inclusive lower bound on our HTLC on one of our channels, above the peer's <c>htlc_minimum_msat</c> the
+    /// candidate carries (the engine refused an HTLC below the peer's minimum, B2-ADD-S06: the channel's state changed
+    /// since the plan; NL-924).
+    /// </summary>
+    public Dictionary<ChannelId, ulong> LocalHtlcMinimumsMsat { get; } = [];
+
+    /// <summary>
     /// The blinded paths (by their index in the payment's paths) not used again: a failure came from inside them
     /// (BOLT 4: <c>invalid_onion_blinding</c> from the introduction node).
     /// </summary>
@@ -81,6 +88,17 @@ public sealed class RouteConstraints
     {
         if (!LocalLiquidityBoundsMsat.TryGetValue(channelId, out var current) || refusedMsat < current)
             LocalLiquidityBoundsMsat[channelId] = refusedMsat;
+    }
+
+    /// <summary>
+    /// Raises the smallest HTLC planned on our channel to above <paramref name="refusedMsat"/> (never lowers it): the
+    /// engine refused an HTLC of that size as below the peer's <c>htlc_minimum_msat</c>.
+    /// </summary>
+    public void RaiseLocalHtlcMinimum(ChannelId channelId, ulong refusedMsat)
+    {
+        var minimum = refusedMsat == ulong.MaxValue ? refusedMsat : refusedMsat + 1;
+        if (!LocalHtlcMinimumsMsat.TryGetValue(channelId, out var current) || minimum > current)
+            LocalHtlcMinimumsMsat[channelId] = minimum;
     }
 }
 

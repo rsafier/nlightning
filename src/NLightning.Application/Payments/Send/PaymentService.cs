@@ -164,6 +164,12 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         ["B2-ADD-S01", "B2-ADD-S02", "B2-ADD-S03", "B2-ADD-S04", "B2-ADD-S09", "B2-DUST-03", "B2-DUST-04"];
 
     /// <summary>
+    /// The engine's sender rule for an HTLC below the peer's <c>htlc_minimum_msat</c>: a larger HTLC on the same
+    /// channel may pass (NL-924).
+    /// </summary>
+    private const string HtlcMinimumRule = "B2-ADD-S06";
+
+    /// <summary>
     /// BOLT 11's <c>min_final_cltv_expiry_delta</c> when an invoice has no <c>c</c> field (the <c>getroute</c> default).
     /// </summary>
     private const ushort DefaultFinalCltvDelta = 18;
@@ -1507,6 +1513,10 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             part.Status = PaymentPartStatus.Failed;
             if (e is CommitmentRefusedException { RequirementId: var rule } && s_liquidityRules.Contains(rule))
                 session.Constraints.BoundLocalLiquidity(channelId, route.FirstHopAmount.MilliSatoshi);
+            else if (e is CommitmentRefusedException { RequirementId: HtlcMinimumRule })
+                // NL-924: a larger HTLC may still pass (the planner reads the peer's minimum, so this means the
+                // channel's state moved since the plan): raise the channel's minimum instead of avoiding it
+                session.Constraints.RaiseLocalHtlcMinimum(channelId, route.FirstHopAmount.MilliSatoshi);
             else
                 session.Constraints.ExcludedLocalChannels.Add(channelId);
 
@@ -2403,7 +2413,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     }
 
     private static LocalChannelCandidate ToCandidate(ChannelModel channel) =>
-        new(channel.ChannelId, channel.RemoteNodeId, channel.ShortChannelId);
+        new(channel.ChannelId, channel.RemoteNodeId, channel.ShortChannelId,
+            channel.Commitments?.Params.Remote.HtlcMinimumMsat ?? 0);
 
     /// <summary>
     /// The channels a circular payment may come back in through (NL-609): every usable channel (or only
