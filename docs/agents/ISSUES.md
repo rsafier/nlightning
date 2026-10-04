@@ -8964,3 +8964,13 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** for a revoked close derive the point from the shachain secret (`RevokedCommitDataSource`), or find any 330-sat P2TR output of the commitment whose key-path tweak matches a known key.
 - **Blocks/Blocked-by:** Related NL-966, NL-877
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T4
+
+### NL-1051 A key-path penalty of a simple taproot HTLC output recorded by a t02 build cannot be fee-bumped
+- **Status:** fixed (wip/taproot-t03, lane RV4)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Onchain/Resolvers/RevokedCommitResolver.cs` (`PlanOutputAsync`), `Onchain/Fees/SweepScheduler.cs`
+- **Evidence:** The watcher writes a row for every output of a revoked commitment at classification. A t02 build mapped the taproot HTLC outputs without a leaf and control block, so their rows carry neither. After an upgrade to t03 the resolver builds the key-path penalty from the fresh map, but `GetOrCreateRow` keeps the old row, and `SweepScheduler` re-derives the merkle root from the row (`TapscriptMerkleRoot.Compute(leaf, control block)`): without them it takes the P2WSH path, the signer refuses the null witness script, and the whole penalty (its `to_local` and other HTLC inputs too) is never RBF-bumped. Review lane RV4, reproduced by `SweepSchedulerTests.Given_TaprootRevokedHtlcRowsRecordedWithoutALeaf_*`. Only a breach in progress across the t02 to t03 upgrade is affected; the original penalty still goes out.
+- **Fix sketch:** Done: a taproot row whose data has no control block takes the mapped descriptor's data (same scriptPubKey) in the round, staged as an upsert, as `RemoteCommitResolver` does for the peer's commitments.
+- **Blocks/Blocked-by:** Related NL-966, NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T4
