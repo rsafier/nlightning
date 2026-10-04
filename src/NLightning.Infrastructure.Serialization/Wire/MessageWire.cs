@@ -21,17 +21,18 @@ using Exceptions;
 /// The decode side reproduces the hand-written serializers' behavior: body fields first, then the extension read
 /// strictly (increasing types, canonical BigSize, length bounds, unknown even types rejected by the definition's
 /// known set, unknown odd types dropped on re-encode because the message ctor rebuilds <c>Extension</c> from the
-/// typed TLVs), then the message constructed through its normal constructor. Errors are wrapped as
-/// <see cref="MessageSerializationException"/> over <see cref="PayloadSerializationException"/>, exactly like the
-/// hand-written pair did, so <see cref="MessageService"/> keeps answering malformed messages with a connection
-/// <c>warning</c>.
+/// typed TLVs), then the message constructed through its normal constructor. Errors take the same two shapes the
+/// hand-written pair produced — payload/body and construction failures escape as
+/// <see cref="PayloadSerializationException"/>, extension failures are wrapped in
+/// <see cref="MessageSerializationException"/> — so <see cref="MessageService"/> keeps answering malformed messages
+/// with a connection <c>warning</c>.
 /// </remarks>
 public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSerializer<TMessage>
     where TMessage : class, IMessage
 {
     private readonly WireEncode<TMessage> _encodeBody;
     private readonly WireDecode<TMessage> _decodeBody;
-    private readonly TlvDef[]? _tlvs;
+    private readonly Dictionary<BigSize, TlvDef> _tlvsByType;
     private ITlvConverterFactory? _converters;
 
     internal MessageWire(MessageTypes type, WireEncode<TMessage> encodeBody, WireDecode<TMessage> decodeBody,
@@ -40,7 +41,7 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
         Type = type;
         _encodeBody = encodeBody;
         _decodeBody = decodeBody;
-        _tlvs = tlvs.Length == 0 ? null : tlvs;
+        _tlvsByType = tlvs.ToDictionary(t => t.Type);
     }
 
     public override MessageTypes Type { get; }
@@ -51,21 +52,17 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
     /// Binds the TLV converter factory the registry was built with. Called once by <see cref="WireRegistry"/>
     /// before first use; typed TLV decoding without a bound factory is a programming error.
     /// </summary>
-    internal override void Bind(ITlvConverterFactory converters)
-    {
-        if (_tlvs is not null)
-            _converters = converters;
-    }
+    internal override void Bind(ITlvConverterFactory converters) => _converters = converters;
 
-    /// <summary>Encodes the whole message body (payload fields, then the extension records) into a new buffer.</summary>
-    internal byte[] EncodeMessage(TMessage message)
+    /// <summary>Encodes the message (payload fields, then the extension records) straight onto the stream.</summary>
+    private void Encode(TMessage message, Stream stream)
     {
         var writer = new WireWriter();
         try
         {
             _encodeBody(ref writer, message);
             WriteExtension(ref writer, message.Extension);
-            return writer.ToArray();
+            writer.WriteTo(stream);
         }
         finally
         {
@@ -91,7 +88,7 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
             throw new PayloadSerializationException($"Error deserializing {typeof(TMessage).Name} payload", e);
         }
 
-        var tlvs = _tlvs is null ? WireTlvs.Empty : ReadTlvs(ref reader, _tlvs);
+        var tlvs = _tlvsByType.Count == 0 ? WireTlvs.Empty : ReadTlvs(ref reader);
         try
         {
             return construct(tlvs);
@@ -108,8 +105,7 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
         if (message is not TMessage typedMessage)
             throw new SerializationException($"Message is not of type {typeof(TMessage).Name}");
 
-        var bytes = EncodeMessage(typedMessage);
-        stream.Write(bytes);
+        Encode(typedMessage, stream);
         return Task.CompletedTask;
     }
 
@@ -131,11 +127,6 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
     }
 
     async Task<IMessage> IMessageTypeSerializer.DeserializeAsync(Stream stream)
-    {
-        return await DeserializeCoreAsync(stream);
-    }
-
-    private async Task<IMessage> DeserializeCoreAsync(Stream stream)
     {
         return await DeserializeAsync(stream);
     }
@@ -160,11 +151,11 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
         }
     }
 
-    private WireTlvs ReadTlvs(ref WireReader reader, TlvDef[] tlvs)
+    private WireTlvs ReadTlvs(ref WireReader reader)
     {
         try
         {
-            return ReadTlvsCore(ref reader, tlvs);
+            return ReadTlvsCore(ref reader);
         }
         catch (Exception e) when (e is SerializationException or InvalidCastException)
         {
@@ -172,13 +163,13 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
         }
     }
 
-    private WireTlvs ReadTlvsCore(ref WireReader reader, TlvDef[] tlvs)
+    private WireTlvs ReadTlvsCore(ref WireReader reader)
     {
         var converters = _converters
                       ?? throw new InvalidOperationException(
                              $"The wire definition of {typeof(TMessage).Name} was not bound to a converter factory");
 
-        var typed = new object?[tlvs.Length];
+        var typed = new Dictionary<BigSize, object?>();
         var raws = new Dictionary<BigSize, BaseTlv>();
         BigSize? previousType = null;
         while (reader.Remaining > 0)
@@ -201,17 +192,10 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
             var raw = new BaseTlv(type, new BigSize(length), value);
             raws[type] = raw;
 
-            for (var i = 0; i < tlvs.Length; i++)
-            {
-                if (tlvs[i].Type.Value != type.Value)
-                    continue;
-
-                // BOLT 1: an unknown even type MUST fail the stream; the known set is the definition's TLV table
-                typed[i] = tlvs[i].Decode(raw, converters);
-                break;
-            }
-
-            if (type.Value % 2 == 0 && !tlvs.Any(t => t.Type.Value == type.Value))
+            if (_tlvsByType.TryGetValue(type, out var def))
+                typed[type] = def.Decode(raw, converters);
+            // BOLT 1: an unknown even type MUST fail the stream; the known set is the definition's TLV table
+            else if (type.Value % 2 == 0)
                 throw new SerializationException($"Unknown even TLV type {type.Value}.");
         }
 
@@ -301,7 +285,7 @@ public sealed class TlvDef
         {
             return _decode(raw, converters);
         }
-        catch (InvalidCastException e) when (!IsLenient)
+        catch (Exception e) when (!IsLenient && e is not SerializationException)
         {
             throw new SerializationException($"Error deserializing TLV type {Type.Value}", e);
         }
@@ -309,26 +293,27 @@ public sealed class TlvDef
 }
 
 /// <summary>
-/// The decoded extension of one message: the typed TLVs by table index and every raw record by type. The definition's
-/// decode lambda picks the typed TLVs it knows and any raw value it must keep (init's undecodable advisory records).
+/// The decoded extension of one message: the typed TLVs and the raw records, both keyed by wire type. The
+/// definition's decode lambda picks the typed TLVs it knows and any raw value it must keep (init's undecodable
+/// advisory records).
 /// </summary>
 public sealed class WireTlvs
 {
-    public static readonly WireTlvs Empty = new([], new Dictionary<BigSize, BaseTlv>());
+    public static readonly WireTlvs Empty = new([], []);
 
-    private readonly object?[] _typed;
+    private readonly Dictionary<BigSize, object?> _typed;
     private readonly Dictionary<BigSize, BaseTlv> _raws;
 
-    internal WireTlvs(object?[] typed, Dictionary<BigSize, BaseTlv> raws)
+    internal WireTlvs(Dictionary<BigSize, object?> typed, Dictionary<BigSize, BaseTlv> raws)
     {
         _typed = typed;
         _raws = raws;
     }
 
-    /// <summary>The typed TLV decoded at table index <paramref name="index"/>, or null when absent.</summary>
-    public T? Get<T>(int index) where T : class
+    /// <summary>The typed TLV of <paramref name="type"/>, or null when the message carried none.</summary>
+    public T? Get<T>(BigSize type) where T : class
     {
-        return _typed.Length > index ? _typed[index] as T : null;
+        return _typed.TryGetValue(type, out var value) ? value as T : null;
     }
 
     /// <summary>The raw value of the record of <paramref name="type"/>, or null when the message carried none.</summary>

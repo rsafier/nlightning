@@ -1,18 +1,14 @@
 namespace NLightning.Infrastructure.Serialization.Tests.Wire;
 
 using Domain.Bitcoin.ValueObjects;
-using Domain.Protocol.Interfaces;
-using Domain.Serialization.Interfaces;
-
 using Domain.Channels.ValueObjects;
-using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
-using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Microsoft.Extensions.Logging.Abstractions;
 
 /// <summary>

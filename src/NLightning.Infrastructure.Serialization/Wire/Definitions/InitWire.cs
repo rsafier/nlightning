@@ -34,13 +34,14 @@ internal static class InitWire
         var features = ReadFeatures(ref reader);
 
         return tlvs => new InitMessage(new InitPayload(FeatureSet.Combine(globalFeatures, features)),
-                                       tlvs.Get<NetworksTlv>(0), tlvs.Get<RemoteAddressTlv>(1),
-                                       tlvs.Get<WillFundRatesTlv>(2))
+                                       tlvs.Get<NetworksTlv>(TlvConstants.Networks),
+                                       tlvs.Get<RemoteAddressTlv>(TlvConstants.RemoteAddress),
+                                       tlvs.Get<WillFundRatesTlv>(TlvConstants.LiquidityAds))
         {
             UndecodableRemoteAddress = tlvs.RawValue(TlvConstants.RemoteAddress) is { } raw
-                                       && tlvs.Get<RemoteAddressTlv>(1) is null ? raw : null,
+                                       && tlvs.Get<RemoteAddressTlv>(TlvConstants.RemoteAddress) is null ? raw : null,
             UndecodableWillFundRates = tlvs.RawValue(TlvConstants.LiquidityAds) is { } rates
-                                       && tlvs.Get<WillFundRatesTlv>(2) is null ? rates : null
+                                       && tlvs.Get<WillFundRatesTlv>(TlvConstants.LiquidityAds) is null ? rates : null
         };
     }
 

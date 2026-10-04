@@ -80,5 +80,8 @@ internal ref struct WireWriter
 
     public readonly byte[] ToArray() => WrittenSpan.ToArray();
 
+    /// <summary>Writes the encoded bytes to <paramref name="stream"/> without copying them out of the pooled buffer.</summary>
+    public readonly void WriteTo(Stream stream) => stream.Write(WrittenSpan);
+
     public readonly void ReturnBuffer() => ArrayPool<byte>.Shared.Return(_buffer);
 }

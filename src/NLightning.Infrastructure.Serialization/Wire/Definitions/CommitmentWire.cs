@@ -41,7 +41,8 @@ internal static class CommitmentSignedWire
 
         return tlvs => new CommitmentSignedMessage(
             new CommitmentSignedPayload(channelId, htlcSignatures, signature),
-            tlvs.Get<FundingTxIdTlv>(0), tlvs.Get<PartialSignatureWithNonceTlv>(1));
+            tlvs.Get<FundingTxIdTlv>(TlvConstants.FundingTxId),
+            tlvs.Get<PartialSignatureWithNonceTlv>(TaprootTlvConstants.PartialSignatureWithNonce));
     }
 }
 
@@ -66,7 +67,7 @@ internal static class RevokeAndAckWire
 
         return tlvs => new RevokeAndAckMessage(
             new RevokeAndAckPayload(channelId, nextPerCommitmentPoint, perCommitmentSecret),
-            tlvs.Get<NextLocalNoncesTlv>(0));
+            tlvs.Get<NextLocalNoncesTlv>(TaprootTlvConstants.NextLocalNonces));
     }
 }
 
@@ -99,17 +100,15 @@ internal static class ChannelReestablishWire
         return tlvs => new ChannelReestablishMessage(
             new ChannelReestablishPayload(channelId, myCurrentPerCommitmentPoint, nextCommitmentNumber,
                                           nextRevocationNumber, yourLastPerCommitmentSecret),
-            tlvs.Get<NextFundingTlv>(0), tlvs.Get<MyCurrentFundingLockedTlv>(1),
-            tlvs.Get<NextLocalNoncesTlv>(2), tlvs.Get<CurrentCommitNonceTlv>(3));
+            tlvs.Get<NextFundingTlv>(TlvConstants.NextFunding),
+            tlvs.Get<MyCurrentFundingLockedTlv>(TlvConstants.MyCurrentFundingLocked),
+            tlvs.Get<NextLocalNoncesTlv>(TaprootTlvConstants.NextLocalNonces),
+            tlvs.Get<CurrentCommitNonceTlv>(TaprootTlvConstants.CurrentCommitNonce));
     }
 }
 
 internal static class TxAddInputWire
 {
-    private const int SharedInputTxIdIndex = 0;
-    private const int PrevTxDetailsIndex = 1;
-    private const int PrevTxDetailsEclairIndex = 2;
-
     public static readonly MessageWire<TxAddInputMessage> Def = new(MessageTypes.TxAddInput, Encode, Decode,
         TlvDef.Typed<SharedInputTxIdTlv>(InteractiveTxTlvConstants.SharedInputTxId),
         TlvDef.Typed<PrevTxDetailsTlv>(InteractiveTxTlvConstants.PrevTxDetails),
@@ -138,11 +137,12 @@ internal static class TxAddInputWire
         return tlvs =>
         {
             // prevtx_details: the spec's type 2 wins over Eclair's prototype 1111 when a peer sends both (NL-957)
-            var prevTxDetails = tlvs.Get<PrevTxDetailsTlv>(PrevTxDetailsIndex)
-                             ?? tlvs.Get<PrevTxDetailsTlv>(PrevTxDetailsEclairIndex);
+            var prevTxDetails = tlvs.Get<PrevTxDetailsTlv>(InteractiveTxTlvConstants.PrevTxDetails)
+                             ?? tlvs.Get<PrevTxDetailsTlv>(InteractiveTxTlvConstants.PrevTxDetailsEclair);
 
             return new TxAddInputMessage(new TxAddInputPayload(channelId, serialId, prevTx, prevTxVout, sequence),
-                                         tlvs.Get<SharedInputTxIdTlv>(SharedInputTxIdIndex), prevTxDetails);
+                                         tlvs.Get<SharedInputTxIdTlv>(InteractiveTxTlvConstants.SharedInputTxId),
+                                         prevTxDetails);
         };
     }
 }

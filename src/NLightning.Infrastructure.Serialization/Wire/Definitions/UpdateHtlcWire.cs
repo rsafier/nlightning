@@ -47,7 +47,7 @@ internal static class UpdateAddHtlcWire
         return tlvs => new UpdateAddHtlcMessage(
             new UpdateAddHtlcPayload(LightningMoney.MilliSatoshis(amountMsat), channelId, cltvExpiry, id, paymentHash,
                                      onion),
-            tlvs.Get<BlindedPathTlv>(0));
+            tlvs.Get<BlindedPathTlv>(TlvConstants.BlindedPath));
     }
 }
 
@@ -72,8 +72,8 @@ internal static class UpdateFulfillHtlcWire
         var preimage = reader.BytesArray(CryptoConstants.Sha256HashLen);
 
         return tlvs => new UpdateFulfillHtlcMessage(new UpdateFulfillHtlcPayload(channelId, id, preimage),
-                                                    tlvs.Get<AttributionDataTlv>(0),
-                                                    tlvs.Get<FulfillmentPayloadTlv>(1));
+                                                    tlvs.Get<AttributionDataTlv>(TlvConstants.AttributionData),
+                                                    tlvs.Get<FulfillmentPayloadTlv>(TlvConstants.FulfillmentPayload));
     }
 }
 
@@ -99,7 +99,7 @@ internal static class UpdateFailHtlcWire
         var reason = reader.BytesArray(length);
 
         return tlvs => new UpdateFailHtlcMessage(new UpdateFailHtlcPayload(channelId, id, reason),
-                                                 tlvs.Get<AttributionDataTlv>(0));
+                                                 tlvs.Get<AttributionDataTlv>(TlvConstants.AttributionData));
     }
 }
 

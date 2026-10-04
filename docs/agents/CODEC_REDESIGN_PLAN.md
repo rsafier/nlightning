@@ -235,6 +235,15 @@ stays a hand-written list guarded by a completeness test in the interim.
 **Option 4 — hand-written combinator runtime + hand-written declarative definitions**
 (option 1's runtime, option 4's staging), with these reasons:
 
+As-built deltas from the option 1 sketch (P0 review, 2026-10-04): the decode lambda is **two-phase** — it reads the
+fixed fields and returns a constructor continuation that receives the decoded `WireTlvs` (TLV records follow the body,
+so the runtime parses body → extension → construct); typed-TLV lookups are **keyed by wire type**
+(`tlvs.Get<NextFundingTlv>(TlvConstants.NextFunding)`), not by table index; the encode side writes **straight from the
+pooled buffer to the stream** (`WireWriter.WriteTo`); the definition's TLV table doubles as the known-type set and is
+built into a by-type lookup at registration (a duplicate type fails registration); and strict `TlvDef`s wrap **any**
+converter failure as `SerializationException` (converters can throw `ArgumentException`, not only
+`InvalidCastException`).
+
 1. **Risk to byte-exact behavior dominates.** The whole point is that nothing on the wire
    changes; option 1's runtime is hand-written, testable C# whose every primitive can be
    equivalence-tested against the existing codecs. Options 2 and 3 add a second author of
