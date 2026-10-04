@@ -24,10 +24,14 @@ public sealed class GetRouteIpcRequest
     /// <summary>The destination's <c>min_final_cltv_expiry_delta</c>; null for 18.</summary>
     [Key(3)] public ushort? FinalCltvDelta { get; init; }
 
+    /// <summary>The trampoline node to quote the outer route to (NL-940); null for our own route.</summary>
+    [Key(4)] public CompactPubKey? TrampolineNode { get; init; }
+
     public GetRouteClientRequest ToClientRequest() =>
         new(NodeId, LightningMoney.MilliSatoshis(AmountMsat))
         {
             MaxFee = MaxFeeMsat is { } maxFee ? LightningMoney.MilliSatoshis(maxFee) : null,
-            FinalCltvDelta = FinalCltvDelta
+            FinalCltvDelta = FinalCltvDelta,
+            TrampolineNode = TrampolineNode
         };
 }

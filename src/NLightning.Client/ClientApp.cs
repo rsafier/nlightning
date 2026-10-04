@@ -245,7 +245,7 @@ internal static class ClientApp
                     var routeArgs = ParseGetRouteOptions(commandArgs, out _)!;
                     var route = await client.GetRouteAsync(routeArgs.NodeId, routeArgs.AmountMsat,
                                                            routeArgs.MaxFeeMsat, routeArgs.FinalCltvDelta,
-                                                           cancellationToken);
+                                                           routeArgs.TrampolineNode, cancellationToken);
                     new GetRoutePrinter().Print(route);
                     break;
                 case "describegraph":
@@ -1398,16 +1398,21 @@ internal static class ClientApp
 
     /// <summary>
     /// The arguments of getroute: <c>&lt;node_id&gt; &lt;amount_msat&gt;</c> and the options
-    /// <c>--max-fee-msat &lt;msat&gt;</c> (0 to <see cref="MaxPayFeeMsat"/>) and <c>--final-cltv &lt;blocks&gt;</c> (the
-    /// destination's <c>min_final_cltv_expiry_delta</c>, 1 to 65535), each also as <c>--option=value</c>.
+    /// <c>--max-fee-msat &lt;msat&gt;</c> (0 to <see cref="MaxPayFeeMsat"/>), <c>--final-cltv &lt;blocks&gt;</c> (the
+    /// destination's <c>min_final_cltv_expiry_delta</c>, 1 to 65535) and <c>--trampoline &lt;node_id&gt;</c> (quote the
+    /// outer route to a trampoline node, priced with its cached or the default policy, NL-940), each also as
+    /// <c>--option=value</c>.
     /// </summary>
     /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
     internal static GetRouteArguments? ParseGetRouteOptions(string[] commandArgs, out string? error)
     {
-        const string usage = "Usage: getroute <node_id> <amount_msat> [--max-fee-msat <msat>] [--final-cltv <blocks>]";
+        const string usage =
+            "Usage: getroute <node_id> <amount_msat> [--max-fee-msat <msat>] [--final-cltv <blocks>] "
+            + "[--trampoline <node_id>]";
         var positional = new List<string>();
         ulong? maxFeeMsat = null;
         ushort? finalCltv = null;
+        CompactPubKey? trampolineNode = null;
         for (var i = 0; i < commandArgs.Length; i++)
         {
             var argument = commandArgs[i];
@@ -1456,8 +1461,17 @@ internal static class ClientApp
 
                     finalCltv = blocks;
                     break;
+                case "--trampoline":
+                    if (!TryParseNodeId(value, out var trampoline))
+                    {
+                        error = $"Invalid trampoline node '{value}': expected a node id (66 hex characters).";
+                        return null;
+                    }
+
+                    trampolineNode = trampoline;
+                    break;
                 default:
-                    error = $"Unknown option '{name}': expected --max-fee-msat or --final-cltv.";
+                    error = $"Unknown option '{name}': expected --max-fee-msat, --final-cltv or --trampoline.";
                     return null;
             }
         }
@@ -1482,7 +1496,7 @@ internal static class ClientApp
         }
 
         error = null;
-        return new GetRouteArguments(nodeId, amount, maxFeeMsat, finalCltv);
+        return new GetRouteArguments(nodeId, amount, maxFeeMsat, finalCltv, trampolineNode);
     }
 
     /// <summary>
@@ -1845,7 +1859,7 @@ internal sealed record ListForwardsArguments(int Skip, int Take, long? Since, lo
 /// The parsed arguments of getroute.
 /// </summary>
 internal sealed record GetRouteArguments(CompactPubKey NodeId, ulong AmountMsat, ulong? MaxFeeMsat,
-                                         ushort? FinalCltvDelta);
+                                         ushort? FinalCltvDelta, CompactPubKey? TrampolineNode = null);
 
 /// <summary>
 /// The parsed arguments of payinvoice.

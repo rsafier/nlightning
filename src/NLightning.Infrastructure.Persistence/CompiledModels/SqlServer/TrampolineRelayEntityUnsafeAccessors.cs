@@ -17,6 +17,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<AmountOutMsat>k__BackingField")]
         public static extern ref long AmountOutMsat(TrampolineRelayEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<BlindedKeptCltvExpiryDelta>k__BackingField")]
+        public static extern ref ushort? BlindedKeptCltvExpiryDelta(TrampolineRelayEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<CltvExpiryOut>k__BackingField")]
         public static extern ref uint CltvExpiryOut(TrampolineRelayEntity @this);
 

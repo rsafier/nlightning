@@ -699,17 +699,20 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
 
     /// <summary>
     /// The route a payment of <paramref name="amountMsat"/> to <paramref name="nodeId"/> would take now
-    /// (ClientCommand 19); nothing is sent.
+    /// (ClientCommand 19); nothing is sent. With <paramref name="trampolineNode"/>, the outer route to it around its
+    /// cached (or the default) trampoline policy, which the response's <c>Trampoline</c> section carries (NL-940).
     /// </summary>
     public Task<GetRouteIpcResponse> GetRouteAsync(CompactPubKey nodeId, ulong amountMsat, ulong? maxFeeMsat,
-                                                   ushort? finalCltvDelta, CancellationToken ct = default) =>
+                                                   ushort? finalCltvDelta, CompactPubKey? trampolineNode = null,
+                                                   CancellationToken ct = default) =>
         SendRequestAsync<GetRouteIpcRequest, GetRouteIpcResponse>(ClientCommand.GetRoute,
                                                                   new GetRouteIpcRequest
                                                                   {
                                                                       NodeId = nodeId,
                                                                       AmountMsat = amountMsat,
                                                                       MaxFeeMsat = maxFeeMsat,
-                                                                      FinalCltvDelta = finalCltvDelta
+                                                                      FinalCltvDelta = finalCltvDelta,
+                                                                      TrampolineNode = trampolineNode
                                                                   }, ct);
 
     /// <summary>

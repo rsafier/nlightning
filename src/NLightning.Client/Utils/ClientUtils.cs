@@ -140,10 +140,12 @@ public static class ClientUtils
         Console.WriteLine("                               List the gossip graph's channels with both policies (alias:");
         Console.WriteLine("                               list-graph-channels); scid as BLOCKxTXxOUTPUT");
         Console.WriteLine("  getroute <node_id> <amount_msat> [--max-fee-msat <msat>] [--final-cltv <blocks>]");
+        Console.WriteLine("                               [--trampoline <node_id>]");
         Console.WriteLine("                               Show the route a payment would take now, hop by hop, with");
         Console.WriteLine("                               fees, CLTVs and its success estimate (alias: get-route);");
-        Console.WriteLine("                               our own routes only: a payment through a trampoline node");
-        Console.WriteLine("                               (payinvoice --trampoline) is not planned here");
+        Console.WriteLine("                               --trampoline quotes the outer route to a trampoline node");
+        Console.WriteLine("                               (the payer's cached or default policy shown as a second");
+        Console.WriteLine("                               layer, as payinvoice --trampoline would send it)");
         Console.WriteLine("  describegraph [--channels] [--nodes] [--limit <n>] [--offset <n>]");
         Console.WriteLine("                               Show the gossip graph's counts, memory, queues and sync");
         Console.WriteLine("                               peers (alias: describe-graph), with a page of channels");

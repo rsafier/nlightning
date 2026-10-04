@@ -16,7 +16,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
     public partial class NLightningDbContextModel
     {
         private NLightningDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("3c50cc54-9b13-4892-80f9-3a2e4a66d775"), entityTypeCount: 56)
+            : base(skipDetectChanges: false, modelId: new Guid("d08bacd2-f514-48a7-85b9-b44f9f7e2eaf"), entityTypeCount: 56)
         {
         }
 
@@ -7593,6 +7593,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             var nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity", null, relationalModel);
             var amountOutMsatColumnBase0 = new ColumnBase<ColumnMappingBase>("AmountOutMsat", "bigint", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("AmountOutMsat", amountOutMsatColumnBase0);
+            var blindedKeptCltvExpiryDeltaColumnBase = new ColumnBase<ColumnMappingBase>("BlindedKeptCltvExpiryDelta", "int", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("BlindedKeptCltvExpiryDelta", blindedKeptCltvExpiryDeltaColumnBase);
             var cltvExpiryOutColumnBase0 = new ColumnBase<ColumnMappingBase>("CltvExpiryOut", "bigint", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("CltvExpiryOut", cltvExpiryOutColumnBase0);
             var completedAtColumnBase2 = new ColumnBase<ColumnMappingBase>("CompletedAt", "bigint", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
@@ -7669,6 +7674,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             defaultTableMappings53.Add(nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)paymentHashColumnBase11, trampolineRelayEntity.FindProperty("PaymentHash")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountOutMsatColumnBase0, trampolineRelayEntity.FindProperty("AmountOutMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blindedKeptCltvExpiryDeltaColumnBase, trampolineRelayEntity.FindProperty("BlindedKeptCltvExpiryDelta")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)cltvExpiryOutColumnBase0, trampolineRelayEntity.FindProperty("CltvExpiryOut")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)completedAtColumnBase2, trampolineRelayEntity.FindProperty("CompletedAt")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)createdAtColumnBase15, trampolineRelayEntity.FindProperty("CreatedAt")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
@@ -7695,6 +7701,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             var amountOutMsatColumn0 = new Column("AmountOutMsat", "bigint", trampolineRelaysTable);
             trampolineRelaysTable.Columns.Add("AmountOutMsat", amountOutMsatColumn0);
             amountOutMsatColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(amountOutMsatColumn0);
+            var blindedKeptCltvExpiryDeltaColumn = new Column("BlindedKeptCltvExpiryDelta", "int", trampolineRelaysTable)
+            {
+                IsNullable = true
+            };
+            trampolineRelaysTable.Columns.Add("BlindedKeptCltvExpiryDelta", blindedKeptCltvExpiryDeltaColumn);
+            blindedKeptCltvExpiryDeltaColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<int>(blindedKeptCltvExpiryDeltaColumn);
             var cltvExpiryOutColumn0 = new Column("CltvExpiryOut", "bigint", trampolineRelaysTable);
             trampolineRelaysTable.Columns.Add("CltvExpiryOut", cltvExpiryOutColumn0);
             cltvExpiryOutColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(cltvExpiryOutColumn0);
@@ -7785,6 +7797,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             tableMappings53.Add(trampolineRelaysTableMapping);
             RelationalModel.CreateColumnMapping(paymentHashColumn11, trampolineRelayEntity.FindProperty("PaymentHash")!, trampolineRelaysTableMapping);
             RelationalModel.CreateColumnMapping(amountOutMsatColumn0, trampolineRelayEntity.FindProperty("AmountOutMsat")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(blindedKeptCltvExpiryDeltaColumn, trampolineRelayEntity.FindProperty("BlindedKeptCltvExpiryDelta")!, trampolineRelaysTableMapping);
             RelationalModel.CreateColumnMapping(cltvExpiryOutColumn0, trampolineRelayEntity.FindProperty("CltvExpiryOut")!, trampolineRelaysTableMapping);
             RelationalModel.CreateColumnMapping(completedAtColumn2, trampolineRelayEntity.FindProperty("CompletedAt")!, trampolineRelaysTableMapping);
             RelationalModel.CreateColumnMapping(createdAtColumn15, trampolineRelayEntity.FindProperty("CreatedAt")!, trampolineRelaysTableMapping);

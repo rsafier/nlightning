@@ -31,7 +31,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 "NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity",
                 typeof(TrampolineRelayEntity),
                 baseEntityType,
-                propertyCount: 18,
+                propertyCount: 19,
                 unnamedIndexCount: 2,
                 keyCount: 1);
 
@@ -144,6 +144,63 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     long (long v) => v));
             amountOutMsat.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
+            var blindedKeptCltvExpiryDelta = runtimeEntityType.AddProperty(
+                "BlindedKeptCltvExpiryDelta",
+                typeof(ushort?),
+                propertyInfo: typeof(TrampolineRelayEntity).GetProperty("BlindedKeptCltvExpiryDelta", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(TrampolineRelayEntity).GetField("<BlindedKeptCltvExpiryDelta>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            blindedKeptCltvExpiryDelta.SetGetter(
+                ushort? (TrampolineRelayEntity instance) => TrampolineRelayEntityUnsafeAccessors.BlindedKeptCltvExpiryDelta(instance),
+                bool (TrampolineRelayEntity instance) => !(TrampolineRelayEntityUnsafeAccessors.BlindedKeptCltvExpiryDelta(instance).HasValue));
+            blindedKeptCltvExpiryDelta.SetSetter(
+                TrampolineRelayEntity (TrampolineRelayEntity instance, ushort? value) =>
+                {
+                    TrampolineRelayEntityUnsafeAccessors.BlindedKeptCltvExpiryDelta(instance) = value;
+                    return instance;
+                });
+            blindedKeptCltvExpiryDelta.SetMaterializationSetter(
+                TrampolineRelayEntity (TrampolineRelayEntity instance, ushort? value) =>
+                {
+                    TrampolineRelayEntityUnsafeAccessors.BlindedKeptCltvExpiryDelta(instance) = value;
+                    return instance;
+                });
+            blindedKeptCltvExpiryDelta.SetAccessors(
+                ushort? (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.BlindedKeptCltvExpiryDelta(((TrampolineRelayEntity)(entry.Entity))),
+                ushort? (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.BlindedKeptCltvExpiryDelta(((TrampolineRelayEntity)(entry.Entity))),
+                ushort? (IInternalEntry entry) => entry.ReadOriginalValue<ushort?>(blindedKeptCltvExpiryDelta, 2),
+                ushort? (IInternalEntry entry) => entry.GetCurrentValue<ushort?>(blindedKeptCltvExpiryDelta));
+            blindedKeptCltvExpiryDelta.SetPropertyIndexes(
+                index: 2,
+                originalValueIndex: 2,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            blindedKeptCltvExpiryDelta.TypeMapping = IntTypeMapping.Default.Clone(
+                comparer: new ValueComparer<ushort>(
+                    bool (ushort v1, ushort v2) => v1 == v2,
+                    int (ushort v) => ((int)v),
+                    ushort (ushort v) => v),
+                keyComparer: new ValueComparer<ushort>(
+                    bool (ushort v1, ushort v2) => v1 == v2,
+                    int (ushort v) => ((int)v),
+                    ushort (ushort v) => v),
+                providerValueComparer: new ValueComparer<int>(
+                    bool (int v1, int v2) => v1 == v2,
+                    int (int v) => v,
+                    int (int v) => v),
+                converter: new ValueConverter<ushort, int>(
+                    int (ushort v) => ((int)v),
+                    ushort (int v) => ((ushort)v)),
+                jsonValueReaderWriter: new JsonConvertedValueReaderWriter<ushort, int>(
+                    JsonInt32ReaderWriter.Instance,
+                    new ValueConverter<ushort, int>(
+                        int (ushort v) => ((int)v),
+                        ushort (int v) => ((ushort)v))));
+            blindedKeptCltvExpiryDelta.SetComparer(new NullableValueComparer<ushort>(blindedKeptCltvExpiryDelta.TypeMapping.Comparer));
+            blindedKeptCltvExpiryDelta.SetKeyComparer(new NullableValueComparer<ushort>(blindedKeptCltvExpiryDelta.TypeMapping.KeyComparer));
+            blindedKeptCltvExpiryDelta.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
+
             var cltvExpiryOut = runtimeEntityType.AddProperty(
                 "CltvExpiryOut",
                 typeof(uint),
@@ -167,11 +224,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             cltvExpiryOut.SetAccessors(
                 uint (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.CltvExpiryOut(((TrampolineRelayEntity)(entry.Entity))),
                 uint (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.CltvExpiryOut(((TrampolineRelayEntity)(entry.Entity))),
-                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(cltvExpiryOut, 2),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(cltvExpiryOut, 3),
                 uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(cltvExpiryOut));
             cltvExpiryOut.SetPropertyIndexes(
-                index: 2,
-                originalValueIndex: 2,
+                index: 3,
+                originalValueIndex: 3,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -224,11 +281,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             completedAt.SetAccessors(
                 DateTimeOffset? (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.CompletedAt(((TrampolineRelayEntity)(entry.Entity))),
                 DateTimeOffset? (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.CompletedAt(((TrampolineRelayEntity)(entry.Entity))),
-                DateTimeOffset? (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset?>(completedAt, 3),
+                DateTimeOffset? (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset?>(completedAt, 4),
                 DateTimeOffset? (IInternalEntry entry) => entry.GetCurrentValue<DateTimeOffset?>(completedAt));
             completedAt.SetPropertyIndexes(
-                index: 3,
-                originalValueIndex: 3,
+                index: 4,
+                originalValueIndex: 4,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -281,11 +338,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             createdAt.SetAccessors(
                 DateTimeOffset (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.CreatedAt(((TrampolineRelayEntity)(entry.Entity))),
                 DateTimeOffset (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.CreatedAt(((TrampolineRelayEntity)(entry.Entity))),
-                DateTimeOffset (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset>(createdAt, 4),
+                DateTimeOffset (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset>(createdAt, 5),
                 DateTimeOffset (IInternalEntry entry) => entry.GetCurrentValue<DateTimeOffset>(createdAt));
             createdAt.SetPropertyIndexes(
-                index: 4,
-                originalValueIndex: 4,
+                index: 5,
+                originalValueIndex: 5,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -337,11 +394,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             failureCode.SetAccessors(
                 ushort? (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.FailureCode(((TrampolineRelayEntity)(entry.Entity))),
                 ushort? (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.FailureCode(((TrampolineRelayEntity)(entry.Entity))),
-                ushort? (IInternalEntry entry) => entry.ReadOriginalValue<ushort?>(failureCode, 5),
+                ushort? (IInternalEntry entry) => entry.ReadOriginalValue<ushort?>(failureCode, 6),
                 ushort? (IInternalEntry entry) => entry.GetCurrentValue<ushort?>(failureCode));
             failureCode.SetPropertyIndexes(
-                index: 5,
-                originalValueIndex: 5,
+                index: 6,
+                originalValueIndex: 6,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -394,11 +451,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             failureReason.SetAccessors(
                 string (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.FailureReason(((TrampolineRelayEntity)(entry.Entity))),
                 string (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.FailureReason(((TrampolineRelayEntity)(entry.Entity))),
-                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(failureReason, 6),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(failureReason, 7),
                 string (IInternalEntry entry) => entry.GetCurrentValue<string>(failureReason));
             failureReason.SetPropertyIndexes(
-                index: 6,
-                originalValueIndex: 6,
+                index: 7,
+                originalValueIndex: 7,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -446,11 +503,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             feeEarnedMsat.SetAccessors(
                 long? (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.FeeEarnedMsat(((TrampolineRelayEntity)(entry.Entity))),
                 long? (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.FeeEarnedMsat(((TrampolineRelayEntity)(entry.Entity))),
-                long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(feeEarnedMsat, 7),
+                long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(feeEarnedMsat, 8),
                 long? (IInternalEntry entry) => entry.GetCurrentValue<long?>(feeEarnedMsat));
             feeEarnedMsat.SetPropertyIndexes(
-                index: 7,
-                originalValueIndex: 7,
+                index: 8,
+                originalValueIndex: 8,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -495,11 +552,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             incomingTotalMsat.SetAccessors(
                 long (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.IncomingTotalMsat(((TrampolineRelayEntity)(entry.Entity))),
                 long (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.IncomingTotalMsat(((TrampolineRelayEntity)(entry.Entity))),
-                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(incomingTotalMsat, 8),
+                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(incomingTotalMsat, 9),
                 long (IInternalEntry entry) => entry.GetCurrentValue<long>(incomingTotalMsat));
             incomingTotalMsat.SetPropertyIndexes(
-                index: 8,
-                originalValueIndex: 8,
+                index: 9,
+                originalValueIndex: 9,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -542,11 +599,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             nextEncryptedRecipientData.SetAccessors(
                 byte[] (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.NextEncryptedRecipientData(((TrampolineRelayEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.NextEncryptedRecipientData(((TrampolineRelayEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(nextEncryptedRecipientData, 9),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(nextEncryptedRecipientData, 10),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(nextEncryptedRecipientData));
             nextEncryptedRecipientData.SetPropertyIndexes(
-                index: 9,
-                originalValueIndex: 9,
+                index: 10,
+                originalValueIndex: 10,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -593,11 +650,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             nextNodeId.SetAccessors(
                 CompactPubKey? (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.NextNodeId(((TrampolineRelayEntity)(entry.Entity))),
                 CompactPubKey? (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.NextNodeId(((TrampolineRelayEntity)(entry.Entity))),
-                CompactPubKey? (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey?>(nextNodeId, 10),
+                CompactPubKey? (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey?>(nextNodeId, 11),
                 CompactPubKey? (IInternalEntry entry) => entry.GetCurrentValue<CompactPubKey?>(nextNodeId));
             nextNodeId.SetPropertyIndexes(
-                index: 10,
-                originalValueIndex: 10,
+                index: 11,
+                originalValueIndex: 11,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -654,11 +711,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             nextPathKey.SetAccessors(
                 byte[] (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.NextPathKey(((TrampolineRelayEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.NextPathKey(((TrampolineRelayEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(nextPathKey, 11),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(nextPathKey, 12),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(nextPathKey));
             nextPathKey.SetPropertyIndexes(
-                index: 11,
-                originalValueIndex: 11,
+                index: 12,
+                originalValueIndex: 12,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -705,11 +762,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             nextTrampolinePacket.SetAccessors(
                 byte[] (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.NextTrampolinePacket(((TrampolineRelayEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.NextTrampolinePacket(((TrampolineRelayEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(nextTrampolinePacket, 12),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(nextTrampolinePacket, 13),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(nextTrampolinePacket));
             nextTrampolinePacket.SetPropertyIndexes(
-                index: 12,
-                originalValueIndex: 12,
+                index: 13,
+                originalValueIndex: 13,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -755,11 +812,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             outgoingPaymentSecret.SetAccessors(
                 byte[] (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.OutgoingPaymentSecret(((TrampolineRelayEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.OutgoingPaymentSecret(((TrampolineRelayEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(outgoingPaymentSecret, 13),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(outgoingPaymentSecret, 14),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(outgoingPaymentSecret));
             outgoingPaymentSecret.SetPropertyIndexes(
-                index: 13,
-                originalValueIndex: 13,
+                index: 14,
+                originalValueIndex: 14,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -806,11 +863,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             preimage.SetAccessors(
                 byte[] (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.Preimage(((TrampolineRelayEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.Preimage(((TrampolineRelayEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(preimage, 14),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(preimage, 15),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(preimage));
             preimage.SetPropertyIndexes(
-                index: 14,
-                originalValueIndex: 14,
+                index: 15,
+                originalValueIndex: 15,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -857,11 +914,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             recipientBlindedPaths.SetAccessors(
                 byte[] (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.RecipientBlindedPaths(((TrampolineRelayEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.RecipientBlindedPaths(((TrampolineRelayEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(recipientBlindedPaths, 15),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(recipientBlindedPaths, 16),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(recipientBlindedPaths));
             recipientBlindedPaths.SetPropertyIndexes(
-                index: 15,
-                originalValueIndex: 15,
+                index: 16,
+                originalValueIndex: 16,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -907,11 +964,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             recipientFeatures.SetAccessors(
                 byte[] (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.RecipientFeatures(((TrampolineRelayEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.RecipientFeatures(((TrampolineRelayEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(recipientFeatures, 16),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(recipientFeatures, 17),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(recipientFeatures));
             recipientFeatures.SetPropertyIndexes(
-                index: 16,
-                originalValueIndex: 16,
+                index: 17,
+                originalValueIndex: 17,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -957,11 +1014,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             status.SetAccessors(
                 byte (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.Status(((TrampolineRelayEntity)(entry.Entity))),
                 byte (IInternalEntry entry) => TrampolineRelayEntityUnsafeAccessors.Status(((TrampolineRelayEntity)(entry.Entity))),
-                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(status, 17),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(status, 18),
                 byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(status));
             status.SetPropertyIndexes(
-                index: 17,
-                originalValueIndex: 17,
+                index: 18,
+                originalValueIndex: 18,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -997,6 +1054,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
         {
             var paymentHash = runtimeEntityType.FindProperty("PaymentHash");
             var amountOutMsat = runtimeEntityType.FindProperty("AmountOutMsat");
+            var blindedKeptCltvExpiryDelta = runtimeEntityType.FindProperty("BlindedKeptCltvExpiryDelta");
             var cltvExpiryOut = runtimeEntityType.FindProperty("CltvExpiryOut");
             var completedAt = runtimeEntityType.FindProperty("CompletedAt");
             var createdAt = runtimeEntityType.FindProperty("CreatedAt");
@@ -1020,7 +1078,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType1 = ((TrampolineRelayEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<Hash, long, uint, DateTimeOffset?, DateTimeOffset, ushort?, string, long?, long, byte[], CompactPubKey?, byte[], byte[], byte[], byte[], byte[], byte[], byte>(((ValueComparer<Hash>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash>(paymentHash)), ((ValueComparer<long>)(((IProperty)amountOutMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(amountOutMsat)), ((ValueComparer<uint>)(((IProperty)cltvExpiryOut).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(cltvExpiryOut)), (source.GetCurrentValue<DateTimeOffset?>(completedAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)completedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(completedAt))), ((ValueComparer<DateTimeOffset>)(((IProperty)createdAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(createdAt)), (source.GetCurrentValue<ushort?>(failureCode) == null ? null : ((ValueComparer<ushort?>)(((IProperty)failureCode).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort?>(failureCode))), (source.GetCurrentValue<string>(failureReason) == null ? null : ((ValueComparer<string>)(((IProperty)failureReason).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(failureReason))), (source.GetCurrentValue<long?>(feeEarnedMsat) == null ? null : ((ValueComparer<long?>)(((IProperty)feeEarnedMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(feeEarnedMsat))), ((ValueComparer<long>)(((IProperty)incomingTotalMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(incomingTotalMsat)), (source.GetCurrentValue<byte[]>(nextEncryptedRecipientData) == null ? null : ((ValueComparer<byte[]>)(((IProperty)nextEncryptedRecipientData).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(nextEncryptedRecipientData))), (source.GetCurrentValue<CompactPubKey?>(nextNodeId) == null ? null : ((ValueComparer<CompactPubKey?>)(((IProperty)nextNodeId).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey?>(nextNodeId))), (source.GetCurrentValue<byte[]>(nextPathKey) == null ? null : ((ValueComparer<byte[]>)(((IProperty)nextPathKey).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(nextPathKey))), (source.GetCurrentValue<byte[]>(nextTrampolinePacket) == null ? null : ((ValueComparer<byte[]>)(((IProperty)nextTrampolinePacket).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(nextTrampolinePacket))), (source.GetCurrentValue<byte[]>(outgoingPaymentSecret) == null ? null : ((ValueComparer<byte[]>)(((IProperty)outgoingPaymentSecret).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(outgoingPaymentSecret))), (source.GetCurrentValue<byte[]>(preimage) == null ? null : ((ValueComparer<byte[]>)(((IProperty)preimage).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(preimage))), (source.GetCurrentValue<byte[]>(recipientBlindedPaths) == null ? null : ((ValueComparer<byte[]>)(((IProperty)recipientBlindedPaths).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(recipientBlindedPaths))), (source.GetCurrentValue<byte[]>(recipientFeatures) == null ? null : ((ValueComparer<byte[]>)(((IProperty)recipientFeatures).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(recipientFeatures))), ((ValueComparer<byte>)(((IProperty)status).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(status)))));
+                    return ((ISnapshot)(new Snapshot<Hash, long, ushort?, uint, DateTimeOffset?, DateTimeOffset, ushort?, string, long?, long, byte[], CompactPubKey?, byte[], byte[], byte[], byte[], byte[], byte[], byte>(((ValueComparer<Hash>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash>(paymentHash)), ((ValueComparer<long>)(((IProperty)amountOutMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(amountOutMsat)), (source.GetCurrentValue<ushort?>(blindedKeptCltvExpiryDelta) == null ? null : ((ValueComparer<ushort?>)(((IProperty)blindedKeptCltvExpiryDelta).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort?>(blindedKeptCltvExpiryDelta))), ((ValueComparer<uint>)(((IProperty)cltvExpiryOut).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(cltvExpiryOut)), (source.GetCurrentValue<DateTimeOffset?>(completedAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)completedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(completedAt))), ((ValueComparer<DateTimeOffset>)(((IProperty)createdAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(createdAt)), (source.GetCurrentValue<ushort?>(failureCode) == null ? null : ((ValueComparer<ushort?>)(((IProperty)failureCode).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort?>(failureCode))), (source.GetCurrentValue<string>(failureReason) == null ? null : ((ValueComparer<string>)(((IProperty)failureReason).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(failureReason))), (source.GetCurrentValue<long?>(feeEarnedMsat) == null ? null : ((ValueComparer<long?>)(((IProperty)feeEarnedMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(feeEarnedMsat))), ((ValueComparer<long>)(((IProperty)incomingTotalMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(incomingTotalMsat)), (source.GetCurrentValue<byte[]>(nextEncryptedRecipientData) == null ? null : ((ValueComparer<byte[]>)(((IProperty)nextEncryptedRecipientData).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(nextEncryptedRecipientData))), (source.GetCurrentValue<CompactPubKey?>(nextNodeId) == null ? null : ((ValueComparer<CompactPubKey?>)(((IProperty)nextNodeId).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey?>(nextNodeId))), (source.GetCurrentValue<byte[]>(nextPathKey) == null ? null : ((ValueComparer<byte[]>)(((IProperty)nextPathKey).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(nextPathKey))), (source.GetCurrentValue<byte[]>(nextTrampolinePacket) == null ? null : ((ValueComparer<byte[]>)(((IProperty)nextTrampolinePacket).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(nextTrampolinePacket))), (source.GetCurrentValue<byte[]>(outgoingPaymentSecret) == null ? null : ((ValueComparer<byte[]>)(((IProperty)outgoingPaymentSecret).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(outgoingPaymentSecret))), (source.GetCurrentValue<byte[]>(preimage) == null ? null : ((ValueComparer<byte[]>)(((IProperty)preimage).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(preimage))), (source.GetCurrentValue<byte[]>(recipientBlindedPaths) == null ? null : ((ValueComparer<byte[]>)(((IProperty)recipientBlindedPaths).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(recipientBlindedPaths))), (source.GetCurrentValue<byte[]>(recipientFeatures) == null ? null : ((ValueComparer<byte[]>)(((IProperty)recipientFeatures).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(recipientFeatures))), ((ValueComparer<byte>)(((IProperty)status).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(status)))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => Snapshot.Empty);
@@ -1037,11 +1095,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     return ((ISnapshot)(new Snapshot<Hash>(((ValueComparer<Hash>)(((IProperty)paymentHash).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<Hash>(paymentHash)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 18,
+                propertyCount: 19,
                 navigationCount: 0,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 18,
+                originalValueCount: 19,
                 shadowCount: 0,
                 relationshipCount: 1,
                 storeGeneratedCount: 0));

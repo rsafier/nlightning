@@ -4,6 +4,10 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-04 by the zc-int integrator (branch `zc-int` from `wip/fafo` at `cd5c2c5d`, `origin/wip/zcleanup1` merged with `--no-ff`; the migration `AddTrampolineRelayBlindedDelta` regenerated after `AddDualFundTaprootAttempts`): Summary recounted from the entries (854), no duplicate IDs.
+
+Updated 2026-10-04 by the NL-923/NL-925/NL-940 lane (branch `wip/zcleanup1`): NL-925 (low) fixed in 7be91cb2 (a stored origin is authoritative for the first-hop check of an unrecorded HTLC); NL-923 (low) fixed in e2e94132 (the blinded relay's kept cltv_expiry_delta persisted on the relay row, migration `AddTrampolineRelayBlindedDelta`); NL-940 (low) fixed in 8625883e (getroute --trampoline quotes the outer route to a trampoline node).
+
 Updated 2026-10-04 by the taproot wave t03 integrator (branch `wip/taproot-t03` from `wip/fafo` at `6b0d9e12`; lanes SMALL, ECL, T4L, RBF, SPL, T4R, RV4, ECL2, FC, RVR and RVS merged with `--no-ff`; lane branches `tap3-*` hold the originals): taproot range NL-1050..NL-1079: fixed NL-904 (item 4), NL-957, NL-960, NL-965, NL-966, NL-969, NL-970, NL-971 (opens; liquidity ads with taproot splices stay refused), NL-978, NL-986, NL-987, and new NL-1051, NL-1055, NL-1058, NL-1060, NL-1065, NL-1078, NL-1079 (high); new open NL-1050, NL-1059, NL-1061, NL-1062 (NL-1052..NL-1054, NL-1056, NL-1057, NL-1063, NL-1064, NL-1066..NL-1077 unused). Summary recounted from the entries (854), no duplicate IDs.
 
 Updated 2026-10-04 by the taproot wave t02 integrator (follow-up on wip/fafo 2e455bc2): NL-959 fixed and verified by the full matrix `tap2-mx2`; NL-958 note; the NL-983 fix of wip/nl983 proven on taproot channels against LND (`o983b-taproot` 3/3, `o983b-day0` 3/3) after a test-only fix of the mempool scan (2578448b); Summary recounted (841).
@@ -173,9 +177,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 81 | 83 |
+| open | 0 | 0 | 2 | 78 | 80 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
-| fixed | 15 | 68 | 218 | 446 | 747 |
+| fixed | 15 | 68 | 218 | 449 | 750 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 3 | 4 | 7 |
 | **Total** | **15** | **68** | **230** | **541** | **854** |
@@ -3053,12 +3057,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TRAMPOLINE_PLAN TR3/TR4
 
 ### NL-940 `getroute` cannot quote a route through a trampoline node
-- **Status:** open
+- **Status:** fixed (8625883e)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Daemon/Handlers/GetRouteClientHandler.cs`, `Application/Payments/Routing/` (`IRouteQueryService`)
 - **Evidence:** split off NL-899 (d78d6e7e): `getroute` plans our own routes only; a payment that `payinvoice --trampoline` or `Node:Payments:Trampoline=Auto` would send through a trampoline node has no quote. Only the help text says so.
-- **Fix sketch:** an optional `--trampoline <node>` on `getroute` that quotes the outer route to the trampoline node plus its cached (or default) trampoline policy and CLTV delta, printed as a two-layer route.
+- **Fix:** `getroute --trampoline <node_id>` (IPC request key 4, response key 8 `Trampoline`). `QuoteRouteAsync` gains the node and, as `CreateTrampolineSessionAsync`/`TryBuildTrampolineAttempt` build a payer's attempt, plans the outer route to it: the target's amount is the payee's plus the node's policy fee (`GetCachedTrampolinePolicy`, else the `PaymentSendOptions` defaults), the final expiry the payee's plus the policy delta (the planner's existing `AbsoluteFinalCltv` hook), `SupportsMpp` from `TrampolineAcceptsMpp`, and the policy's fee is part of the fee limit. The response's `Trampoline` section carries the node, the payee with its amount and absolute expiry, the policy (learnt vs default flagged) and its fee; the last outer hop shows that fee as its own, the total fee includes it, and the printer adds a `Trampoline layer:` block. The node being us or the destination is `invalid_operation`. Tests: `TrampolinePaymentHarnessTests.Given_ATrampolinePeer_When_BobAsksForARouteThroughIt_Then_TheOuterRouteAndThePolicyAreQuoted` (the quote equals what `payinvoice --trampoline` then sends: the same first-hop amount and expiry), `GetRouteIpcHandlerTests.Given_ATrampolineQuote_When_GetRoute_Then_TheOuterRouteAndItsPolicyCrossTheWire` and the round-trip, `ClientAppTests` parse cases, `PrinterSnapshotTests.Given_ATrampolineRoute_When_Printed_Then_MatchesSnapshot`.
 - **Blocks/Blocked-by:** Related NL-899, NL-875
 - **Plan ref:** TRAMPOLINE_PLAN TR4
 
@@ -3094,12 +3098,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TRAMPOLINE_PLAN §10 (D-NL922-1)
 
 ### NL-923 A blinded trampoline relay's kept delta after a restart is an upper bound
-- **Status:** open
+- **Status:** fixed (e2e94132)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Trampoline/TrampolineRelayService.cs` (`KeptBlindedDeltaOf`)
 - **Evidence:** NL-922 keeps the hop's delta (the scid-named channel's, grace included) in memory per collecting relay, since the relay row stores the next node, not the channel. After a restart between the last part's save and `Sending`, the Collecting replay uses the largest of `Node:Routing:CltvExpiryDelta` and the current deltas of our open channels to the stored node, never resolving the scid again. A set whose `payment_relay` paid a smaller channel delta (or a delta in grace) is then refused with `invalid_onion_blinding` (safe, rare).
-- **Fix sketch:** store the hop's kept delta (or the named channel id) on the relay row (migration), or re-derive it from a re-peeled part onion without resolving the next node.
+- **Fix:** the relay row keeps the delta: `TrampolineRelayModel.BlindedKeptCltvExpiryDelta` (null for an unblinded relay) is set by the first part's price check and raised by a later part's (`KeepBlindedDelta`, persisted in the same save as the part row), and `KeptBlindedDeltaOf` reads the live value, then the row's, and only for rows stored before the migration falls back to the old upper bound. Migration `AddTrampolineRelayBlindedDelta` on all three providers (compiled models regenerated). Tests: `BlindedTrampolineRelayTests.Given_AChannelDeltaBelowTheNodesAndARestart_When_TheCollectingReplayCompletesTheSet_Then_TheKeptDeltaIsRead` (fails without the fix: the upper bound 40 refuses a set whose `payment_relay` paid 36), `TrampolineRelayPersistenceTests.Given_SchemaFromBeforeAddTrampolineRelayBlindedDelta_When_Migrated_Then_TheKeptDeltaSurvives` (+ the Docker Postgres twin); the attempts round-trip now seeds its pre-migration relay with raw SQL (the repository cannot write a schema the current model maps a newer column of).
 - **Blocks/Blocked-by:** follow-up of NL-922
 - **Plan ref:** TRAMPOLINE_PLAN §10
 
@@ -3116,12 +3120,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TRAMPOLINE_PLAN TR4
 
 ### NL-925 A payment through a trampoline node that is our peer stores its only outer hop under the payee, so the first-hop match fails
-- **Status:** open
+- **Status:** fixed (7be91cb2)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`BuildHops`, `MatchesFirstHop` in `MatchOutcomeAsync` and `FindAttemptHtlcs(matchFirstHop: true)`)
 - **Evidence:** found while fixing NL-924 (2026-10-03). The stored route of a trampoline payment names the payee for its last hop (`PaymentModel` requires its route to end at the payee). When the trampoline node is our direct peer the outer route has one hop, so `Route[0].NodeId` is the payee and `MatchesFirstHop` (channel peer = first hop) never matches. It only matters for a row without a recorded HTLC id (a crash between the offer and `AddOutgoingHtlc`): a failure of that HTLC is then `Unmatched` and the row stays in flight until the next start or retry reconciles it through the stored origin (`FindHtlcsByOriginAsync`); a fulfill is still recorded (late-fulfill path).
-- **Fix sketch:** skip the first-hop check when the HTLC's stored origin is `Local(hash)` (the check is for rows from before NL-250), or compare the first hop against `PaymentTrampolineHops` hop 0 for a trampoline payment.
+- **Fix:** (7be91cb2) `MatchOutcomeAsync` runs the first-hop check only when the origin lookup stored none (the check is for rows from before NL-250): a stored origin equal to the payment's is authoritative, so the failure is matched and the row fails at once; the same rename for a blinded path's one-hop route (`BlindedStartIndex`) is covered too. `ReconcileUnrecordedAsync` needed no change (its by-origin fallback already found the HTLC). Tests: `PaymentServiceTests.Given_ATrampolinePeersHtlcWithALocalOrigin_When_Failed_Then_ThePaymentFails` (fails without the fix) and `Given_NoStoredOriginAndAnotherPeersHtlc_When_Failed_Then_ThePaymentStaysInFlight` (pins the pre-NL-250 heuristic).
 - **Blocks/Blocked-by:** related NL-924, NL-875
 - **Plan ref:** —
 

@@ -50,6 +50,13 @@ public sealed class TrampolineRelayModel
     /// <summary>The next node's <c>outgoing_cltv_value</c> of the trampoline payload.</summary>
     public uint CltvExpiryOut { get; }
 
+    /// <summary>
+    /// The <c>cltv_expiry_delta</c> a blinded hop's price check keeps (the largest of its parts': a policy may change
+    /// between them), so the completion after a restart evaluates the same delta the parts paid (NL-923); null for an
+    /// unblinded relay or a relay stored before the migration (whose completion then uses the safe upper bound).
+    /// </summary>
+    public ushort? BlindedKeptCltvExpiryDelta { get; private set; }
+
     /// <summary>The outer onion's <c>total_msat</c>: the sum the incoming set must reach.</summary>
     public LightningMoney IncomingTotal { get; }
 
@@ -89,13 +96,15 @@ public sealed class TrampolineRelayModel
     /// <param name="nextPathKey">Its <c>path_key</c>.</param>
     /// <param name="recipientFeatures">The recipient's features.</param>
     /// <param name="recipientBlindedPaths">The recipient's blinded paths (raw TLV bytes).</param>
+    /// <param name="blindedKeptCltvExpiryDelta">The delta a blinded hop's first part's price check keeps.</param>
     /// <exception cref="ArgumentException">Neither a next node nor blinded paths, or a path key without its
     /// encrypted recipient data (or the reverse).</exception>
     public TrampolineRelayModel(Hash paymentHash, CompactPubKey? nextNodeId, LightningMoney amountOut,
                                 uint cltvExpiryOut, LightningMoney incomingTotal, DateTimeOffset createdAt,
                                 byte[]? nextTrampolinePacket = null, byte[]? nextEncryptedRecipientData = null,
                                 byte[]? nextPathKey = null, byte[]? recipientFeatures = null,
-                                byte[]? recipientBlindedPaths = null)
+                                byte[]? recipientBlindedPaths = null,
+                                ushort? blindedKeptCltvExpiryDelta = null)
     {
         ArgumentNullException.ThrowIfNull(amountOut);
         ArgumentNullException.ThrowIfNull(incomingTotal);
@@ -119,6 +128,7 @@ public sealed class TrampolineRelayModel
         NextPathKey = Copy(nextPathKey);
         RecipientFeatures = Copy(recipientFeatures);
         RecipientBlindedPaths = Copy(recipientBlindedPaths);
+        BlindedKeptCltvExpiryDelta = blindedKeptCltvExpiryDelta;
         Status = TrampolineRelayStatus.Collecting;
     }
 
@@ -132,7 +142,8 @@ public sealed class TrampolineRelayModel
                                                uint cltvExpiryOut, LightningMoney incomingTotal,
                                                LightningMoney? feeEarned, byte[]? outgoingPaymentSecret,
                                                Secret? preimage, ushort? failureCode, string? failureReason,
-                                               DateTimeOffset createdAt, DateTimeOffset? completedAt)
+                                               DateTimeOffset createdAt, DateTimeOffset? completedAt,
+                                               ushort? blindedKeptCltvExpiryDelta = null)
     {
         if (!Enum.IsDefined(status))
             throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown trampoline relay status.");
@@ -151,6 +162,7 @@ public sealed class TrampolineRelayModel
                                         recipientFeatures, recipientBlindedPaths)
         {
             Status = status,
+            BlindedKeptCltvExpiryDelta = blindedKeptCltvExpiryDelta,
             FeeEarned = feeEarned,
             OutgoingPaymentSecret = Copy(outgoingPaymentSecret),
             Preimage = preimage,
@@ -158,6 +170,19 @@ public sealed class TrampolineRelayModel
             FailureReason = failureReason,
             CompletedAt = completedAt
         };
+    }
+
+    /// <summary>
+    /// Raises <see cref="BlindedKeptCltvExpiryDelta"/> to a later part's kept delta (a policy may change between
+    /// parts) and returns whether it grew (the caller persists the row then).
+    /// </summary>
+    public bool KeepBlindedDelta(ushort keptCltvExpiryDelta)
+    {
+        if (BlindedKeptCltvExpiryDelta >= keptCltvExpiryDelta)
+            return false;
+
+        BlindedKeptCltvExpiryDelta = keptCltvExpiryDelta;
+        return true;
     }
 
     /// <summary>

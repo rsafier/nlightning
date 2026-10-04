@@ -51,6 +51,7 @@ public class TrampolineRelayDbRepository : BaseDbRepository<TrampolineRelayEntit
             NextTrampolinePacket = relay.NextTrampolinePacket?.ToArray(),
             AmountOutMsat = ToMsat(relay.AmountOut),
             CltvExpiryOut = relay.CltvExpiryOut,
+            BlindedKeptCltvExpiryDelta = relay.BlindedKeptCltvExpiryDelta,
             IncomingTotalMsat = ToMsat(relay.IncomingTotal),
             CreatedAt = relay.CreatedAt
         };
@@ -362,7 +363,7 @@ public class TrampolineRelayDbRepository : BaseDbRepository<TrampolineRelayEntit
                                             entity.OutgoingPaymentSecret,
                                             entity.Preimage is { } preimage ? new Secret(preimage) : (Secret?)null,
                                             entity.FailureCode, entity.FailureReason, entity.CreatedAt,
-                                            entity.CompletedAt);
+                                            entity.CompletedAt, entity.BlindedKeptCltvExpiryDelta);
     }
 
     private static TrampolineRelayPartModel MapPartToDomain(TrampolineRelayPartEntity entity)
@@ -377,6 +378,7 @@ public class TrampolineRelayDbRepository : BaseDbRepository<TrampolineRelayEntit
     private static void MapMutableFields(TrampolineRelayModel relay, TrampolineRelayEntity entity)
     {
         entity.Status = (byte)relay.Status;
+        entity.BlindedKeptCltvExpiryDelta = relay.BlindedKeptCltvExpiryDelta;
         entity.FeeEarnedMsat = relay.FeeEarned is { } fee ? ToMsat(fee) : null;
         entity.OutgoingPaymentSecret = relay.OutgoingPaymentSecret?.ToArray();
         entity.Preimage = relay.Preimage is { } preimage ? ((byte[])preimage).ToArray() : null;

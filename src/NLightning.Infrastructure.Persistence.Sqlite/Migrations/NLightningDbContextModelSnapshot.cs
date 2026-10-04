@@ -2458,6 +2458,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<long>("AmountOutMsat")
                         .HasColumnType("INTEGER");
 
+                    b.Property<ushort?>("BlindedKeptCltvExpiryDelta")
+                        .HasColumnType("INTEGER");
+
                     b.Property<uint>("CltvExpiryOut")
                         .HasColumnType("INTEGER");
 

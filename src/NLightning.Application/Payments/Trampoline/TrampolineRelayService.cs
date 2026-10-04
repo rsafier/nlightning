@@ -89,7 +89,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
     private readonly ConcurrentDictionary<Hash, PendingFailure> _failures = new();
 
     // NL-922: the cltv_expiry_delta each collecting blinded relay keeps (its parts' price check), until it leaves
-    // collecting; memory only (see KeptBlindedDeltaOf for a restart)
+    // collecting; the row persists the same value (NL-923), so after a restart KeptBlindedDeltaOf reads it there
     private readonly ConcurrentDictionary<Hash, ushort> _blindedHopDeltas = new();
     private readonly ConcurrentDictionary<Task, byte> _backgroundTasks = new();
     private readonly CancellationTokenSource _disposeCts = new();
@@ -298,6 +298,8 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
             }
 
             await relays.AddPartAsync(CreatePart(channelId, htlc, onion));
+            if (onion.Blinded is not null && relay.KeepBlindedDelta(blindedHopDelta))
+                await relays.UpdateAsync(relay);
             await unitOfWork.SaveChangesAsync();
             KeepBlindedHopDelta(htlc.PaymentHash, onion, blindedHopDelta);
             return await CheckSetLockedAsync(unitOfWork, htlc.PaymentHash, cancellationToken);
@@ -322,7 +324,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
             return null;
         }
 
-        if (CreateRelay(htlc, onion, nextNodeId) is not { } created)
+        if (CreateRelay(htlc, onion, nextNodeId, blindedHopDelta) is not { } created)
         {
             _logger.LogWarning("Trampoline part {HtlcId} of channel {ChannelId} for {PaymentHash} lacks its relay "
                              + "instructions: failing it", htlc.Id, channelId, htlc.PaymentHash);
@@ -453,10 +455,8 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
         return null;
     }
 
-    /// <summary>
-    /// Remembers the delta a joined blinded part keeps until its relay leaves collecting (the largest of its parts': a
-    /// policy may change between them).
-    /// </summary>
+    /// <summary>Remembers the delta a joined blinded part keeps until its relay leaves collecting (the largest of its
+    /// parts': a policy may change between them), in memory and on the relay row (NL-923).</summary>
     private void KeepBlindedHopDelta(Hash paymentHash, IncomingOnionTrampolineRelay onion, ushort keptCltvExpiryDelta)
     {
         if (onion.Blinded is not null)
@@ -465,15 +465,18 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
     }
 
     /// <summary>
-    /// The delta a blinded relay keeps at its completion: its parts' (<see cref="KeepBlindedHopDelta"/>), or, when
-    /// none joined since this process started (a restart between the last part's save and <c>Sending</c>), the most
-    /// that <c>Node:Routing</c> or any open channel of ours to the stored next node asks: the relay keeps the node,
-    /// not the channel its recipient data named, and the scid is never resolved again.
+    /// The delta a blinded relay keeps at its completion: its parts' (<see cref="KeepBlindedHopDelta"/>), or the row's
+    /// persisted one, or, when the row has none (stored before the migration, NL-923), the most that
+    /// <c>Node:Routing</c> or any open channel of ours to the stored next node asks: the relay keeps the node, not the
+    /// channel its recipient data named, and the scid is never resolved again.
     /// </summary>
     private ushort KeptBlindedDeltaOf(TrampolineRelayModel relay)
     {
         if (_blindedHopDeltas.TryGetValue(relay.PaymentHash, out var kept))
             return kept;
+
+        if (relay.BlindedKeptCltvExpiryDelta is { } persisted)
+            return persisted;
 
         var delta = Routing.CltvExpiryDelta;
         if (relay.NextNodeId is not { } nextNodeId || _channelPolicyProvider is not { } provider)
@@ -488,7 +491,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
 
     /// <summary>The relay row of a first part, or null when the onion lacks an instruction.</summary>
     private TrampolineRelayModel? CreateRelay(HtlcRecord htlc, IncomingOnionTrampolineRelay onion,
-                                              CompactPubKey? nextNodeId)
+                                              CompactPubKey? nextNodeId, ushort blindedHopDelta)
     {
         if (onion.AmountToForward is not { IsZero: false } amountOut || onion.OutgoingCltvValue is not { } cltvOut
          || onion.IncomingTotal is not { } total)
@@ -509,7 +512,8 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
         return new TrampolineRelayModel(htlc.PaymentHash, nextNodeId, amountOut, cltvOut, total,
                                         _timeProvider.GetUtcNow(), NextPacketOf(onion, nextNodeId), recipientData,
                                         nextPathKey,
-                                        onion.RecipientFeatures?.Features.ToArray(), blindedPaths);
+                                        onion.RecipientFeatures?.Features.ToArray(), blindedPaths,
+                                        onion.Blinded is not null ? blindedHopDelta : null);
     }
 
     private static byte[]? NextPacketOf(IncomingOnionTrampolineRelay onion, CompactPubKey? nextNodeId) =>

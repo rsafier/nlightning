@@ -46,6 +46,10 @@ public class TrampolineRelayEntity
     /// <summary>The next node's <c>outgoing_cltv_value</c>.</summary>
     public required uint CltvExpiryOut { get; set; }
 
+    /// <summary>The kept <c>cltv_expiry_delta</c> of a blinded hop's price check (NL-923); null for an unblinded relay
+    /// or a relay stored before the migration.</summary>
+    public ushort? BlindedKeptCltvExpiryDelta { get; set; }
+
     /// <summary>The outer onion's <c>total_msat</c>, in millisatoshi.</summary>
     public required long IncomingTotalMsat { get; set; }
 

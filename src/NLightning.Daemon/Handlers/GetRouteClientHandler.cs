@@ -15,7 +15,10 @@ using Interfaces;
 /// </summary>
 /// <remarks>
 /// A zero amount, our own node id, no processed block yet or no route within the limits is
-/// <see cref="ErrorCodes.InvalidOperation"/> with the planner's reason.
+/// <see cref="ErrorCodes.InvalidOperation"/> with the planner's reason. A trampoline node
+/// (<see cref="GetRouteClientRequest.TrampolineNode"/>, NL-940) quotes the outer route to it around its cached or
+/// the default trampoline policy, which the response's <see cref="GetRouteClientResponse.Trampoline"/> section
+/// carries.
 /// </remarks>
 public sealed class GetRouteClientHandler : IClientCommandHandler<GetRouteClientRequest, GetRouteClientResponse>
 {
@@ -39,22 +42,35 @@ public sealed class GetRouteClientHandler : IClientCommandHandler<GetRouteClient
         try
         {
             var quote = await _routeQueryService.QuoteRouteAsync(request.NodeId, request.Amount, request.MaxFee,
-                                                                 request.FinalCltvDelta, ct);
+                                                                 request.FinalCltvDelta, request.TrampolineNode, ct);
             var route = quote.Route;
+            var trampoline = quote.TrampolineLayer;
             var hops = new List<GetRouteHop>(route.Hops.Count);
             for (var i = 0; i < route.Hops.Count; i++)
             {
                 var previous = i == 0 ? null : route.Hops[i - 1];
                 var received = previous?.AmountToForward ?? route.FirstHopAmount;
-                var fee = route.Hops[i].IsFinal ? LightningMoney.Zero : received - route.Hops[i].AmountToForward;
+                var fee = route.Hops[i].IsFinal
+                              ? trampoline?.Fee ?? LightningMoney.Zero
+                              : received - route.Hops[i].AmountToForward;
                 hops.Add(new GetRouteHop(route.Hops[i].NodeId,
                                          previous?.OutgoingShortChannelId ?? quote.Channel.ShortChannelId, received,
                                          previous?.OutgoingCltvValue ?? route.FirstHopCltvExpiry, fee));
             }
 
-            return new GetRouteClientResponse(quote.Channel.ChannelId, hops, route.FirstHopAmount, route.Fee,
+            return new GetRouteClientResponse(quote.Channel.ChannelId, hops, route.FirstHopAmount,
+                                              route.Fee + (trampoline?.Fee ?? LightningMoney.Zero),
                                               route.FirstHopCltvExpiry, quote.BlockHeight, quote.Probability,
-                                              quote.Description);
+                                              quote.Description,
+                                              trampoline is null
+                                                  ? null
+                                                  : new GetRouteTrampoline(trampoline.TrampolineNode,
+                                                                           trampoline.Payee, trampoline.Amount,
+                                                                           trampoline.PayeeCltvExpiry,
+                                                                           trampoline.Policy.FeeBaseMsat,
+                                                                           trampoline.Policy.FeeProportionalMillionths,
+                                                                           trampoline.Policy.CltvExpiryDelta,
+                                                                           trampoline.Fee, trampoline.PolicyLearnt));
         }
         catch (Exception e) when (e is ArgumentException || e.GetType() == typeof(InvalidOperationException))
         {

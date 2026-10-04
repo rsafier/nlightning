@@ -82,7 +82,7 @@ internal static class TrampolineRelaySchemaRoundTrip
         var full = new TrampolineRelayModel(HashOf(0x01), s_next, LightningMoney.MilliSatoshis(long.MaxValue),
                                             uint.MaxValue, LightningMoney.MilliSatoshis(long.MaxValue), s_now,
                                             Bytes(0x10, 1_366), Bytes(0x20, 300), s_payee, Bytes(0x30, 8),
-                                            Bytes(0x40, 500));
+                                            Bytes(0x40, 500), blindedKeptCltvExpiryDelta: 34);
         var blinded = new TrampolineRelayModel(HashOf(0x02), null, LightningMoney.MilliSatoshis(1), 0,
                                                LightningMoney.MilliSatoshis(2), s_now.AddMinutes(1),
                                                recipientBlindedPaths: Bytes(0x50, 200));
@@ -283,6 +283,7 @@ internal static class TrampolineRelaySchemaRoundTrip
         Assert.Equal(expected.NextTrampolinePacket, actual.NextTrampolinePacket);
         Assert.Equal(expected.AmountOut, actual.AmountOut);
         Assert.Equal(expected.CltvExpiryOut, actual.CltvExpiryOut);
+        Assert.Equal(expected.BlindedKeptCltvExpiryDelta, actual.BlindedKeptCltvExpiryDelta);
         Assert.Equal(expected.IncomingTotal, actual.IncomingTotal);
         Assert.Equal(expected.FeeEarned, actual.FeeEarned);
         Assert.Equal(expected.OutgoingPaymentSecret, actual.OutgoingPaymentSecret);

@@ -537,10 +537,12 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     /// <inheritdoc />
     /// <remarks>
     /// Planned by <see cref="PaymentRoutePlanner"/> as a payment's first round with one part (no shadow CLTV offset, so
-    /// the answer is stable), over the same usable channels and the same graph; nothing is stored or sent.
+    /// the answer is stable), over the same usable channels and the same graph; nothing is stored or sent. With a
+    /// trampoline node, the outer route is planned as a payment through it would plan it (to the node, around its
+    /// cached or the default policy, NL-940).
     /// </remarks>
     public async Task<RouteQuote> QuoteRouteAsync(CompactPubKey payee, LightningMoney amount, LightningMoney? maxFee,
-                                                  ushort? finalCltvDelta,
+                                                  ushort? finalCltvDelta, CompactPubKey? trampolineNode = null,
                                                   CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(amount);
@@ -549,6 +551,11 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         var ourNodeId = _secureKeyManager.GetNodePubKey();
         if (payee == ourNodeId)
             throw new ArgumentException("The destination is this node.", nameof(payee));
+        if (trampolineNode == ourNodeId)
+            throw new ArgumentException("The trampoline node cannot be this node.", nameof(trampolineNode));
+        if (trampolineNode == payee)
+            throw new ArgumentException("The destination is the trampoline node: quote it without one.",
+                                        nameof(trampolineNode));
 
         var height = _blockchainMonitor.LastProcessedBlockHeight;
         if (height == 0)
@@ -556,19 +563,59 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
 
         var channels = await GetUsableChannelsAsync(cancellationToken);
         var graph = _graphPathSource?.CreateContext(0);
-        var target = new PaymentTarget(payee, new Hash(new byte[32]), new Secret(new byte[32]), amount,
-                                       finalCltvDelta ?? DefaultFinalCltvDelta, []);
-        var request = new PaymentPlanRequest(target, amount.MilliSatoshi, amount.MilliSatoshi,
-                                             (maxFee ?? _sendOptions.Value.GetMaxFee(amount)).MilliSatoshi, 1, height,
+
+        // A trampoline quote's outer leg (as CreateTrampolineSessionAsync and TryBuildTrampolineAttempt build it):
+        // to the node, what it must receive in total (the payee's amount plus its fee), expiring at the payee's
+        // expiry plus its delta; its fee is part of the fee limit, so the planner gets what is left of it
+        TrampolineQuote? trampolineLayer = null;
+        var target = payee;
+        var targetAmount = amount;
+        var minFinalDelta = finalCltvDelta ?? DefaultFinalCltvDelta;
+        var feeLimit = maxFee ?? _sendOptions.Value.GetMaxFee(amount);
+        uint? absoluteFinalCltv = null;
+        if (trampolineNode is { } node)
+        {
+            var sendOptions = _sendOptions.Value;
+            var learnt = GetCachedTrampolinePolicy(node);
+            var policy = learnt ?? new TrampolinePolicy(sendOptions.TrampolineFeeBaseMsat,
+                                                        sendOptions.TrampolineFeeProportionalMillionths,
+                                                        sendOptions.TrampolineCltvExpiryDelta);
+            var payeeCltv = checked(height + minFinalDelta + HintRouteBuilder.FinalCltvSafetyOffset);
+            try
+            {
+                var trampolineFee = policy.FeeMsat(amount.MilliSatoshi);
+                trampolineLayer = new TrampolineQuote(node, payee, amount, payeeCltv, policy, learnt is not null,
+                                                      LightningMoney.MilliSatoshis(trampolineFee));
+                targetAmount = LightningMoney.MilliSatoshis(checked(amount.MilliSatoshi + trampolineFee));
+                feeLimit = LightningMoney.MilliSatoshis(Math.Max(feeLimit.MilliSatoshi - trampolineFee, 0));
+            }
+            catch (OverflowException)
+            {
+                throw new InvalidOperationException("The trampoline budget overflows.");
+            }
+
+            target = node;
+            minFinalDelta = 0;
+            absoluteFinalCltv = checked(payeeCltv + policy.CltvExpiryDelta);
+        }
+
+        var paymentTarget = new PaymentTarget(target, new Hash(new byte[32]), new Secret(new byte[32]), targetAmount,
+                                              minFinalDelta, [],
+                                              SupportsMpp: trampolineNode is { } chosen
+                                                               ? TrampolineAcceptsMpp(chosen)
+                                                               : false);
+        var request = new PaymentPlanRequest(paymentTarget, targetAmount.MilliSatoshi, targetAmount.MilliSatoshi,
+                                             feeLimit.MilliSatoshi, 1, height,
                                              ourNodeId, channels.Select(ToCandidate).ToList(),
                                              CreateLiquidityProbe(channels, height), new RouteConstraints(),
-                                             _sendOptions.Value.MinPartMsat, null, graph);
+                                             _sendOptions.Value.MinPartMsat, null, graph,
+                                             AbsoluteFinalCltv: absoluteFinalCltv);
         if (!_planner.TryPlan(request, out var planned, out var reason))
             throw new InvalidOperationException(reason);
 
         var part = planned[0];
         return new RouteQuote(part.Route, part.Channel, EstimateProbability(part.Route, graph), height,
-                              part.Description);
+                              part.Description, trampolineLayer);
     }
 
     /// <summary>
@@ -2563,11 +2610,14 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             return (payment, OutcomeMatch.Unmatched);
         }
 
-        // No id recorded (a crash or a failed save around the offer). Origins are not stored before NL-250, so the
-        // HTLC's record, while channel memory still has it, must match the attempt's first hop
-        if (payment.Route.Count > 0 && _channelMemoryRepository.TryGetChannel(channelId, out var channel)
-                                    && channel.Commitments?.GetHtlc(HtlcDirection.Outgoing, htlcId) is { } htlc
-                                    && !MatchesFirstHop(payment.Route[0], channel, htlc))
+        // No id recorded (a crash or a failed save around the offer). Origins are not stored before NL-250, so an HTLC
+        // without one must match the attempt's first hop, while channel memory still has its record; a stored origin
+        // already proves the HTLC ours, and the first hop is no guide for a route whose only hop names the payee (a
+        // trampoline payment through our peer, NL-925)
+        if (origin is null && payment.Route.Count > 0
+                           && _channelMemoryRepository.TryGetChannel(channelId, out var channel)
+                           && channel.Commitments?.GetHtlc(HtlcDirection.Outgoing, htlcId) is { } htlc
+                           && !MatchesFirstHop(payment.Route[0], channel, htlc))
             return (payment, OutcomeMatch.Unmatched);
 
         if (otherLive)

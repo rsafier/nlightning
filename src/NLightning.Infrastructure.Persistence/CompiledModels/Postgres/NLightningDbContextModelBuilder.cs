@@ -17,7 +17,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
     public partial class NLightningDbContextModel
     {
         private NLightningDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("f826305a-594b-40cd-b3d5-7f047f254306"), entityTypeCount: 56)
+            : base(skipDetectChanges: false, modelId: new Guid("5322b22d-2c41-42e8-b84c-2dcc1e324dcb"), entityTypeCount: 56)
         {
         }
 
@@ -7600,6 +7600,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity", null, relationalModel);
             var amount_out_msatColumnBase0 = new ColumnBase<ColumnMappingBase>("amount_out_msat", "bigint", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("amount_out_msat", amount_out_msatColumnBase0);
+            var blinded_kept_cltv_expiry_deltaColumnBase = new ColumnBase<ColumnMappingBase>("blinded_kept_cltv_expiry_delta", "integer", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("blinded_kept_cltv_expiry_delta", blinded_kept_cltv_expiry_deltaColumnBase);
             var cltv_expiry_outColumnBase0 = new ColumnBase<ColumnMappingBase>("cltv_expiry_out", "bigint", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("cltv_expiry_out", cltv_expiry_outColumnBase0);
             var completed_atColumnBase2 = new ColumnBase<ColumnMappingBase>("completed_at", "bigint", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
@@ -7676,6 +7681,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             defaultTableMappings53.Add(nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)payment_hashColumnBase11, trampolineRelayEntity.FindProperty("PaymentHash")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amount_out_msatColumnBase0, trampolineRelayEntity.FindProperty("AmountOutMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blinded_kept_cltv_expiry_deltaColumnBase, trampolineRelayEntity.FindProperty("BlindedKeptCltvExpiryDelta")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)cltv_expiry_outColumnBase0, trampolineRelayEntity.FindProperty("CltvExpiryOut")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)completed_atColumnBase2, trampolineRelayEntity.FindProperty("CompletedAt")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)created_atColumnBase15, trampolineRelayEntity.FindProperty("CreatedAt")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
@@ -7702,6 +7708,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var amount_out_msatColumn0 = new Column("amount_out_msat", "bigint", trampoline_relaysTable);
             trampoline_relaysTable.Columns.Add("amount_out_msat", amount_out_msatColumn0);
             amount_out_msatColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(amount_out_msatColumn0);
+            var blinded_kept_cltv_expiry_deltaColumn = new Column("blinded_kept_cltv_expiry_delta", "integer", trampoline_relaysTable)
+            {
+                IsNullable = true
+            };
+            trampoline_relaysTable.Columns.Add("blinded_kept_cltv_expiry_delta", blinded_kept_cltv_expiry_deltaColumn);
+            blinded_kept_cltv_expiry_deltaColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<int>(blinded_kept_cltv_expiry_deltaColumn);
             var cltv_expiry_outColumn0 = new Column("cltv_expiry_out", "bigint", trampoline_relaysTable);
             trampoline_relaysTable.Columns.Add("cltv_expiry_out", cltv_expiry_outColumn0);
             cltv_expiry_outColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(cltv_expiry_outColumn0);
@@ -7792,6 +7804,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             tableMappings53.Add(trampoline_relaysTableMapping);
             RelationalModel.CreateColumnMapping(payment_hashColumn11, trampolineRelayEntity.FindProperty("PaymentHash")!, trampoline_relaysTableMapping);
             RelationalModel.CreateColumnMapping(amount_out_msatColumn0, trampolineRelayEntity.FindProperty("AmountOutMsat")!, trampoline_relaysTableMapping);
+            RelationalModel.CreateColumnMapping(blinded_kept_cltv_expiry_deltaColumn, trampolineRelayEntity.FindProperty("BlindedKeptCltvExpiryDelta")!, trampoline_relaysTableMapping);
             RelationalModel.CreateColumnMapping(cltv_expiry_outColumn0, trampolineRelayEntity.FindProperty("CltvExpiryOut")!, trampoline_relaysTableMapping);
             RelationalModel.CreateColumnMapping(completed_atColumn2, trampolineRelayEntity.FindProperty("CompletedAt")!, trampoline_relaysTableMapping);
             RelationalModel.CreateColumnMapping(created_atColumn15, trampolineRelayEntity.FindProperty("CreatedAt")!, trampoline_relaysTableMapping);

@@ -498,6 +498,67 @@ public class PrinterSnapshotTests
     }
 
     [Fact]
+    public void Given_ATrampolineRoute_When_Printed_Then_MatchesSnapshot()
+    {
+        // Arrange (NL-940): our one-hop outer route to the trampoline node around the default policy
+        var route = new GetRouteIpcResponse
+        {
+            ChannelId = new ChannelId(Enumerable.Repeat((byte)0xC1, 32).ToArray()),
+            Hops =
+            [
+                new GetRouteHopIpcInfo
+                {
+                    NodeId = s_payee,
+                    ShortChannelId = (300UL << 40) | (1UL << 16),
+                    AmountMsat = 1_002_000,
+                    CltvExpiry = 1_319,
+                    FeeMsat = 2_000
+                }
+            ],
+            AmountMsat = 1_002_000,
+            FeeMsat = 2_000,
+            CltvExpiry = 1_319,
+            BlockHeight = 700,
+            Probability = 0.6,
+            Description = "direct channel 300x1x0",
+            Trampoline = new GetRouteTrampolineIpcInfo
+            {
+                TrampolineNode = s_payee,
+                Payee = s_payee,
+                AmountMsat = 1_000_000,
+                PayeeCltvExpiry = 743,
+                FeeBaseMsat = 1_000,
+                FeeProportionalMillionths = 1_000,
+                CltvExpiryDelta = 576,
+                FeeMsat = 2_000,
+                PolicyLearnt = false
+            }
+        };
+
+        // Act
+        var output = Print(w => new GetRoutePrinter(w).Print(route));
+
+        // Assert
+        Assert.Equal(Lines(
+                         "Route: 1 hop(s), direct channel 300x1x0",
+                         $"  Our Channel Id:     {Hex(0xc1)}",
+                         "  Amount (msat):      1002000",
+                         "  Fee (msat):         2000",
+                         "  CLTV Expiry:        1319 (+619 blocks from 700)",
+                         "  Probability:        0.6",
+                         Separator,
+                         $"  Hop 0:              02{Hex(0x11)}",
+                         "    Channel:          300x1x0",
+                         "    Amount (msat):    1002000, fee 2000",
+                         "    CLTV Expiry:      1319",
+                         Separator,
+                         "  Trampoline layer:",
+                         $"    Node:             02{Hex(0x11)} (default policy)",
+                         "    Policy:           1000 msat + 1000 ppm, delta 576 (fee 2000 msat)",
+                         $"    Payee:            02{Hex(0x11)} receives 1000000 msat at CLTV 743"), output);
+    }
+
+    [Fact]
     public void Given_GraphDescription_When_Printed_Then_MatchesSnapshot()
     {
         // Arrange (BOLT 7 G5-T4): one sync peer, one plain peer, a one-channel page with more to come, no node page

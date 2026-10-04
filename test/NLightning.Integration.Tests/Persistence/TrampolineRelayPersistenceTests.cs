@@ -42,6 +42,22 @@ public class TrampolineRelayPersistenceTests
         // Act & Assert
         await TrampolineRelayAttemptsSchemaRoundTrip.AssertAsync(
             () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)),
-            TestContext.Current.CancellationToken);
+            DatabaseType.Sqlite, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Given_SchemaFromBeforeAddTrampolineRelayBlindedDelta_When_Migrated_Then_TheKeptDeltaSurvives()
+    {
+        // Arrange (NL-923: the SQLite run of the kept-delta round trip the Docker Postgres test shares)
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        var options = new DbContextOptionsBuilder<NLightningDbContext>()
+                     .UseSqlite(connection, x => x.MigrationsAssembly("NLightning.Infrastructure.Persistence.Sqlite"))
+                     .Options;
+
+        // Act & Assert
+        await TrampolineRelayBlindedDeltaSchemaRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)),
+            DatabaseType.Sqlite, TestContext.Current.CancellationToken);
     }
 }

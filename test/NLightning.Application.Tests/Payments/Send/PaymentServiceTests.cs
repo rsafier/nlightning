@@ -12,6 +12,7 @@ using Bolt11.Models;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Enums;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
@@ -780,6 +781,49 @@ public class PaymentServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ATrampolinePeersHtlcWithALocalOrigin_When_Failed_Then_ThePaymentFails()
+    {
+        // Arrange: a crash between the offer's save and the save of the HTLC id. The only outer hop of a payment
+        // through a trampoline node that is our peer is stored under the payee (BuildHops), so the channel's peer
+        // never matches it (NL-925); the stored origin proves the HTLC ours
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight));
+        _channelState.Setup(s => s.GetHtlcOriginAsync(s_channelId, new HtlcKey(HtlcDirection.Outgoing, 9)))
+                     .ReturnsAsync(HtlcOrigin.Local(hash));
+        WithChannelHtlc(hash, 9, new TestNodeKeyManager(0x0e).NodeId);
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(s_channelId, 9, hash, HtlcRemoval.Fail(new byte[292])),
+                          TestContext.Current.CancellationToken);
+
+        // Assert: the origin is authoritative, so the first-hop mismatch does not leave the payment in flight
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Failed, stored!.Status);
+        Assert.Equal(9UL, stored.OutgoingHtlcId);
+    }
+
+    [Fact]
+    public async Task Given_NoStoredOriginAndAnotherPeersHtlc_When_Failed_Then_ThePaymentStaysInFlight()
+    {
+        // Arrange: production before NL-250 stores no origin, and channel memory still holds the HTLC record on a
+        // channel of a peer the stored route never names: the first-hop check must still refuse it
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight));
+        WithChannelHtlc(hash, 9, new TestNodeKeyManager(0x0e).NodeId);
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(s_channelId, 9, hash, HtlcRemoval.Fail(new byte[292])),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(handled);
+        Assert.Equal(PaymentStatus.InFlight, (await _payments.GetByPaymentHashAsync(hash))!.Status);
+    }
+
+    [Fact]
     public async Task Given_HtlcIdNotRecordedAndForwardedOrigin_When_Failed_Then_Ignored()
     {
         // Arrange: same hash, but the HTLC forwards someone else's payment
@@ -906,6 +950,44 @@ public class PaymentServiceTests : IDisposable
     private static Secret Preimage() => new(RandomNumberGenerator.GetBytes(32));
 
     private static Hash HashOf(Secret preimage) => new(SHA256.HashData((byte[])preimage));
+
+    private delegate bool TryGetChannelCallback(ChannelId channelId, out ChannelModel? channel);
+
+    /// <summary>
+    /// Channel memory holds our open channel to <paramref name="peerNodeId"/> (a peer the payee's route never names,
+    /// e.g. a trampoline node, NL-925) with one non-final outgoing HTLC of the payment: its amount and CLTV expiry are
+    /// the stored first hop's, so only the peer differs.
+    /// </summary>
+    private void WithChannelHtlc(Hash paymentHash, ulong htlcId, CompactPubKey peerNodeId)
+    {
+        var channel = new ChannelModel(new ChannelParams(), s_channelId, null, null, true, null, null,
+                                       LightningMoney.Satoshis(100_000),
+                                       new ChannelKeySetModel(0, peerNodeId, peerNodeId, peerNodeId, peerNodeId,
+                                                              peerNodeId, peerNodeId),
+                                       0, 0, LightningMoney.Zero, null, 0, peerNodeId, 0, ChannelState.Open,
+                                       ChannelVersion.V1);
+        var htlc = new HtlcRecord(HtlcDirection.Outgoing, htlcId, s_amount.MilliSatoshi, paymentHash, Height + 21,
+                                  HtlcState.SentAddAckRevocation);
+        var party = new CommitmentParty(354, 10_000, 1_000, 30, 1_000_000_000);
+        var @params = new CommitmentParams(true, 1_000_000, false, party, party);
+        const ulong localMsat = 700_000_000;
+        const ulong remoteMsat = 300_000_000;
+        channel.UpdateCommitments(ChannelCommitments.Restore(
+                                       s_channelId, @params, localMsat, remoteMsat, [htlc],
+                                       [new FeeUpdate(0, 1_000, HtlcState.SentAddAckRevocation)], htlcId + 1, 0,
+                                       new LocalCommit(1, new CommitmentSpec(CommitmentSide.Local, 1_000, localMsat,
+                                                                             remoteMsat, []), null),
+                                       new RemoteCommit(1, new CommitmentSpec(CommitmentSide.Remote, 1_000, localMsat,
+                                                                              remoteMsat, []),
+                                                        peerNodeId),
+                                       null, peerNodeId));
+        _channels.Setup(c => c.TryGetChannel(s_channelId, out It.Ref<ChannelModel?>.IsAny))
+                 .Returns(new TryGetChannelCallback((ChannelId _, out ChannelModel? found) =>
+                 {
+                     found = channel;
+                     return true;
+                 }));
+    }
 
     private sealed class ShiftedTimeProvider : TimeProvider
     {
