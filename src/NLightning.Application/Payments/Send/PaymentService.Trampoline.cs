@@ -842,11 +842,8 @@ public sealed partial class PaymentService
 
         var outerSecrets = route.Select(h => h.SharedSecret).ToList();
         var attribution = VerifyOuterAttribution(outerSecrets, removal);
-        // The stored route names the payee for its last hop: that hop is the trampoline node, every attempt's inner
-        // hop 0 (NL-924)
-        var attributionText = DescribeOuterAttribution(route, attribution,
-                                                       hops.Where(h => h.HopIndex == 0)
-                                                           .MaxBy(h => h.Attempt)?.NodeId);
+        // The stored route names the payee for its last hop: that hop is the trampoline node, inner hop 0 of the
+        // attempt whose trampoline onion the error decrypts with (the newest when none does; NL-924)
         var last = route.Count - 1;
         foreach (var attempt in hops.GroupBy(h => h.Attempt).OrderByDescending(g => g.Key))
         {
@@ -855,6 +852,8 @@ public sealed partial class PaymentService
                                                                                    .ToList(), removal.Reason.Span);
             if (decrypted is null)
                 continue;
+
+            var attributionText = DescribeOuterAttribution(route, attribution, inner[0].NodeId);
 
             var code = decrypted.Code;
             var codeText = code is { } known ? $"{known} (0x{(ushort)known:X4})" : "an unreadable failure";
@@ -876,7 +875,9 @@ public sealed partial class PaymentService
         }
 
         return (null, attribution.InvalidHopIndex,
-                "The HTLC failed with an error onion no hop of either route authenticated" + attributionText, null,
+                "The HTLC failed with an error onion no hop of either route authenticated"
+              + DescribeOuterAttribution(route, attribution,
+                                         hops.Where(h => h.HopIndex == 0).MaxBy(h => h.Attempt)?.NodeId), null,
                 attribution);
     }
 
