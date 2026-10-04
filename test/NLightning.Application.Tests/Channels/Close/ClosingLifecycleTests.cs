@@ -723,6 +723,36 @@ public class ClosingLifecycleTests
     }
 
     [Fact]
+    public async Task Given_TheStoredCloseWatchedAfterItsBlock_When_TheFundingSpendIsHandled_Then_TheWatchGetsTheBlock()
+    {
+        // Arrange - NL-983 (seen in the LND taproot proof): the peer's closing_sig for our transaction was handled
+        // while the spend of the block holding it waited for the channel's lock, so its watch has no height
+        var channel = CreateClosingChannel(ChannelState.Closing);
+        var stored = SimpleClose(channel, true, new Script((byte[])channel.RemoteShutdownScript!));
+        channel.SetClosingTransaction(stored);
+        var channelId = channel.ChannelId;
+        _memory.Setup(m => m.TryGetChannel(channelId, out channel)).Returns(true);
+        var watch = new WatchedTransactionModel(channelId, stored.TxId, 6);
+        _watchedDb.Setup(r => r.GetByTransactionIdAsync(stored.TxId)).ReturnsAsync(watch);
+        CreateManager();
+
+        // Act
+        _monitor.Raise(m => m.OnWatchedOutpointSpent += null, _monitor.Object,
+                       new OutpointSpentEventArgs(channelId, stored, 700, 3));
+
+        // Assert: the watch counts from block 700, saved and followed by the monitor; the channel is unchanged
+        await WaitUntilAsync(() => _monitor.Invocations.Any(i => i.Method.Name
+                                                             == nameof(IBlockchainMonitor.TrackWatchedTransaction)));
+        _monitor.Verify(m => m.TrackWatchedTransaction(watch), Times.Once);
+        Assert.Equal(700U, watch.FirstSeenAtHeight);
+        Assert.Equal(3U, watch.TransactionIndex);
+        _watchedDb.Verify(r => r.Update(watch), Times.Once);
+        Assert.Equal(["save"], _saveOrder);
+        Assert.Equal(stored.TxId, channel.ClosingTransaction!.TxId);
+        Assert.Empty(_persisted);
+    }
+
+    [Fact]
     public async Task Given_Negotiating_When_FundingSpentBySimpleCloseShapeWithTwoForeignOutputs_Then_NotAMutualClose()
     {
         // Arrange: a 0xFFFFFFFD spend with neither output to our script is not a closing transaction of ours

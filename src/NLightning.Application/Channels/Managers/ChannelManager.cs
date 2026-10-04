@@ -888,6 +888,41 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     }
 
     /// <summary>
+    /// The stored closing transaction spent the funding output in this block (NL-983): its watch must count from this
+    /// block. A closing transaction signed after the monitor processed its block (the peer's <c>closing_sig</c> or
+    /// <c>closing_complete</c> handled while this spend waited for the channel's lock) was watched without a height, and
+    /// the monitor never looks at a processed block again, so the watch would never reach its depth. Under the
+    /// channel's lock; nothing to do when the watch already has its height.
+    /// </summary>
+    private async Task EnsureCloseWatchSeenAsync(OutpointSpentEventArgs args)
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var watch = await unitOfWork.WatchedTransactionDbRepository.GetByTransactionIdAsync(args.SpendingTransaction.TxId);
+        if (watch is { FirstSeenAtHeight: not null } or { IsCompleted: true })
+            return;
+
+        if (watch is null)
+        {
+            watch = new WatchedTransactionModel(args.ChannelId, args.SpendingTransaction.TxId,
+                                                GetCloseOptions().ConfirmationDepth);
+            watch.SetHeightAndIndex(args.BlockHeight, args.TransactionIndex);
+            unitOfWork.WatchedTransactionDbRepository.Add(watch);
+        }
+        else
+        {
+            watch.SetHeightAndIndex(args.BlockHeight, args.TransactionIndex);
+            unitOfWork.WatchedTransactionDbRepository.Update(watch);
+        }
+
+        await unitOfWork.SaveChangesAsync();
+        _blockchainMonitor.TrackWatchedTransaction(watch);
+        _logger.LogInformation(
+            "Closing transaction {TxId} of channel {ChannelId} was seen in block {Height} before it was watched there",
+            args.SpendingTransaction.TxId, args.ChannelId, args.BlockHeight);
+    }
+
+    /// <summary>
     /// NL-983: the mutual close of <paramref name="channel"/> that spent its funding output in the active chain (the
     /// funding watch's spend), when it is not the stored closing transaction: a later <c>closing_complete</c> or
     /// <c>closing_sig</c> replaced the stored one after the funding-spend path had matched it. Read from its block (or
@@ -1057,9 +1092,14 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         var spend = args.SpendingTransaction;
         {
             using var channelLock = await _channelLockProvider.AcquireAsync(channelId);
-            if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel)
-             || channel.ClosingTransaction?.TxId == spend.TxId)
+            if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel))
                 return SpendHandOver.None;
+
+            if (channel.ClosingTransaction?.TxId == spend.TxId)
+            {
+                await EnsureCloseWatchSeenAsync(args);
+                return SpendHandOver.None;
+            }
 
             // A splice transaction of this channel spends the funding output (the current one, or the one a lock
             // replaced, on a replayed block) without closing it (splicing plan §3.6, FundingSpendKind.Splice): the
