@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-04 by the taproot wave t03 integrator (branch `wip/taproot-t03` from `wip/fafo` at `6b0d9e12`; lanes SMALL, ECL, T4L, RBF, SPL, T4R, RV4, ECL2, FC, RVR and RVS merged with `--no-ff`; lane branches `tap3-*` hold the originals): taproot range NL-1050..NL-1079: fixed NL-904 (item 4), NL-957, NL-960, NL-965, NL-966, NL-969, NL-970, NL-971 (opens; liquidity ads with taproot splices stay refused), NL-978, NL-986, NL-987, and new NL-1051, NL-1055, NL-1058, NL-1060, NL-1065, NL-1078, NL-1079 (high); new open NL-1050, NL-1059, NL-1061, NL-1062 (NL-1052..NL-1054, NL-1056, NL-1057, NL-1063, NL-1064, NL-1066..NL-1077 unused). Summary recounted from the entries (854), no duplicate IDs.
+
 Updated 2026-10-04 by the taproot wave t02 integrator (follow-up on wip/fafo 2e455bc2): NL-959 fixed and verified by the full matrix `tap2-mx2`; NL-958 note; the NL-983 fix of wip/nl983 proven on taproot channels against LND (`o983b-taproot` 3/3, `o983b-day0` 3/3) after a test-only fix of the mempool scan (2578448b); Summary recounted (841).
 
 Updated 2026-10-04 by the NL-924 lane (worktree branch `worktree-agent-af41d6157ae6ff1e1`, from `wip/fafo` at `d8c6cc6e`): NL-924 (low) new and fixed in d6324dc3, 449de393, 094d4709 and 2f334449 (payer review follow-ups of NL-898, NL-980, NL-982), review fixes in 71ddf9b2, 0dcd85d2, 11ad3c56, e16c114e and a362a343; NL-925 (low, open) new: a trampoline peer's one-hop outer route fails the first-hop match. Summary rows recounted from the entries after merging wip/fafo at `34c708d4`: 839, no duplicate IDs.
@@ -171,12 +173,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 1 | 6 | 83 | 90 |
+| open | 0 | 0 | 2 | 81 | 83 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
-| fixed | 15 | 66 | 211 | 437 | 729 |
+| fixed | 15 | 68 | 218 | 446 | 747 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 3 | 4 | 7 |
-| **Total** | **15** | **67** | **227** | **534** | **843** |
+| **Total** | **15** | **68** | **230** | **541** | **854** |
 
 ### Epics
 
@@ -1983,7 +1985,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-966 Simple taproot on chain: HTLC outputs, revoked HTLC penalties, second-level outputs and anchors are not resolved (T4)
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lanes T4L and T4R)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `Application/Onchain/Resolvers/{Local,Remote,Revoked}CommitResolver.cs` (the `UnsupportedTaprootOutputs` guards), `Domain/Onchain/Factories/SweepInputFactory.cs` (`RequireNotTaproot`), `Infrastructure.Bitcoin/Builders/HtlcTransactionBuilder.cs` (`EstimateAnchorBaseWeight`/`AddFeeInputs` throw for taproot), `Onchain/HtlcWitnessParser`, `Onchain/Anchors/AnchorCpfpService*` (taproot skipped)
