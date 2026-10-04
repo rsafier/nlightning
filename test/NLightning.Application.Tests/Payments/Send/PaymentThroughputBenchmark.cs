@@ -11,8 +11,9 @@ using Harness;
 /// An e2e payment-throughput benchmark over the production payment stack (real onions, real signatures, real
 /// <see cref="Application.Payments.PaymentService"/> and invoice service, in-memory message FIFOs): Bob pays Carol's
 /// invoice directly (one channel) and David's over the Bob–Carol–David route (one hop), serially (C=1) and with 8
-/// concurrent payers (C=8), each measured over a 15 s sampling window: average time-to-resolution (invoice accepted
-/// to fulfillment, wall clock) and completed payments per second.
+/// concurrent payers (C=8), each measured over a 10 s sampling window: average time-to-resolution (invoice accepted
+/// to fulfillment, wall clock) and completed payments per second. Every scenario runs twice: with one channel per
+/// pair and with four channels between each pair (more paths for the route planner).
 /// </summary>
 /// <remarks>
 /// Explicit (<c>Category=Benchmark</c>): run it with
@@ -23,7 +24,7 @@ using Harness;
 /// </remarks>
 public class PaymentThroughputBenchmark(ITestOutputHelper output)
 {
-    private const int WindowSeconds = 15;
+    private const int WindowSeconds = 10;
     private const int WarmupPayments = 10;
     private static readonly LightningMoney s_amount = LightningMoney.MilliSatoshis(10_000);
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(30);
@@ -33,23 +34,27 @@ public class PaymentThroughputBenchmark(ITestOutputHelper output)
     public async Task DirectAndOneHopPaymentThroughput()
     {
         List<(string Scenario, WindowResult Window)> results = [];
-        results.Add(("direct C=1 (Alice-Bob)", await RunWindowAsync(payeeIsDirect: true, concurrency: 1)));
-        results.Add(("direct C=8 (Alice-Bob)", await RunWindowAsync(payeeIsDirect: true, concurrency: 8)));
-        results.Add(("routed C=1 (Alice-Bob-Carol)", await RunWindowAsync(payeeIsDirect: false, concurrency: 1)));
-        results.Add(("routed C=8 (Alice-Bob-Carol)", await RunWindowAsync(payeeIsDirect: false, concurrency: 8)));
+        results.Add(("direct C=1 x1ch", await RunWindowAsync(payeeIsDirect: true, concurrency: 1)));
+        results.Add(("direct C=8 x1ch", await RunWindowAsync(payeeIsDirect: true, concurrency: 8)));
+        results.Add(("routed C=1 x1ch", await RunWindowAsync(payeeIsDirect: false, concurrency: 1)));
+        results.Add(("routed C=8 x1ch", await RunWindowAsync(payeeIsDirect: false, concurrency: 8)));
+        results.Add(("direct C=1 x4ch", await RunWindowAsync(payeeIsDirect: true, concurrency: 1, fourChannels: true)));
+        results.Add(("direct C=8 x4ch", await RunWindowAsync(payeeIsDirect: true, concurrency: 8, fourChannels: true)));
+        results.Add(("routed C=1 x4ch", await RunWindowAsync(payeeIsDirect: false, concurrency: 1, fourChannels: true)));
+        results.Add(("routed C=8 x4ch", await RunWindowAsync(payeeIsDirect: false, concurrency: 8, fourChannels: true)));
 
         output.WriteLine("");
-        output.WriteLine($"{"scenario",-28} {"payments",-10} {"p/s",-10} {"avg ms",-10} {"p50 ms",-10} {"p95 ms",-10} {"failed",-8}");
+        output.WriteLine($"{"scenario",-20} {"payments",-10} {"p/s",-10} {"avg ms",-10} {"p50 ms",-10} {"p95 ms",-10} {"failed",-8}");
         foreach (var (scenario, window) in results)
             output.WriteLine(
-                $"{scenario,-28} {window.Completed,-10} {window.PaymentsPerSecond,-10:F1} {window.AverageMs,-10:F2} {window.MedianMs,-10:F2} {window.P95Ms,-10:F2} {window.Failed,-8}");
+                $"{scenario,-20} {window.Completed,-10} {window.PaymentsPerSecond,-10:F1} {window.AverageMs,-10:F2} {window.MedianMs,-10:F2} {window.P95Ms,-10:F2} {window.Failed,-8}");
     }
 
-    private async Task<WindowResult> RunWindowAsync(bool payeeIsDirect, int concurrency)
+    private async Task<WindowResult> RunWindowAsync(bool payeeIsDirect, int concurrency, bool fourChannels = false)
     {
         // Bob plays Alice, Carol plays Bob, David plays Carol; capacity is raised so no window can drain a balance
         using var harness = new PaymentHarness(new PaymentHarnessTopology(BobUsesGraph: true, UseRealClock: true,
-                             BobCarolFundingSatoshis: 100_000_000));
+                             BobCarolFundingSatoshis: 100_000_000, FourChannelsPerPair: fourChannels));
         harness.Bob.GraphView = harness.BuildGraph((uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds());
         var payer = harness.Bob;
         var payee = payeeIsDirect ? harness.Carol : harness.David;

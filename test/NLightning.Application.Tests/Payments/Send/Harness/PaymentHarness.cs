@@ -86,12 +86,36 @@ internal sealed class PaymentHarness : IDisposable
     public static readonly ShortChannelId ScidBobCarol2 = new(402, 3, 0);
     public static readonly ShortChannelId ScidCarolDavid2 = new(403, 4, 1);
     public static readonly ShortChannelId ScidDavidErin = new(404, 5, 0);
+    public static readonly ShortChannelId ScidBobCarol3 = new(405, 6, 0);
+    public static readonly ShortChannelId ScidBobCarol4 = new(406, 7, 0);
+    public static readonly ShortChannelId ScidCarolDavid3 = new(407, 8, 1);
+    public static readonly ShortChannelId ScidCarolDavid4 = new(408, 9, 1);
 
     private static readonly ChannelId s_bobCarolId = new(Enumerable.Repeat((byte)0xBC, 32).ToArray());
     private static readonly ChannelId s_carolDavidId = new(Enumerable.Repeat((byte)0xCD, 32).ToArray());
     private static readonly ChannelId s_bobCarol2Id = new(Enumerable.Repeat((byte)0xBD, 32).ToArray());
     private static readonly ChannelId s_carolDavid2Id = new(Enumerable.Repeat((byte)0xCE, 32).ToArray());
     private static readonly ChannelId s_davidErinId = new(Enumerable.Repeat((byte)0xDE, 32).ToArray());
+    private static readonly ChannelId s_bobCarol3Id = new(Enumerable.Repeat((byte)0xBF, 32).ToArray());
+    private static readonly ChannelId s_bobCarol4Id = new(Enumerable.Repeat((byte)0xB1, 32).ToArray());
+    private static readonly ChannelId s_carolDavid3Id = new(Enumerable.Repeat((byte)0xCF, 32).ToArray());
+    private static readonly ChannelId s_carolDavid4Id = new(Enumerable.Repeat((byte)0xD1, 32).ToArray());
+
+    private static readonly (ChannelId Id, ShortChannelId Scid)[] s_bobCarolChannels =
+    [
+        (s_bobCarolId, ScidBobCarol),
+        (s_bobCarol2Id, ScidBobCarol2),
+        (s_bobCarol3Id, ScidBobCarol3),
+        (s_bobCarol4Id, ScidBobCarol4)
+    ];
+
+    private static readonly (ChannelId Id, ShortChannelId Scid)[] s_carolDavidChannels =
+    [
+        (s_carolDavidId, ScidCarolDavid),
+        (s_carolDavid2Id, ScidCarolDavid2),
+        (s_carolDavid3Id, ScidCarolDavid3),
+        (s_carolDavid4Id, ScidCarolDavid4)
+    ];
 
     public PaymentHarnessNode Bob { get; }
     public PaymentHarnessNode Carol { get; }
@@ -130,14 +154,29 @@ internal sealed class PaymentHarness : IDisposable
         foreach (var node in Nodes)
             node.Network = this;
 
-        OpenChannel(Bob, 1, Carol, 1, s_bobCarolId, ScidBobCarol, 0x71, topology.BobCarolFundingSatoshis,
-                    topology.BobCarolPushSatoshis);
-        OpenChannel(Carol, 2, David, 1, s_carolDavidId, ScidCarolDavid, 0x72, FundingSatoshis, PushSatoshis);
-        if (topology.SecondBobCarol)
-            OpenChannel(Bob, 2, Carol, 3, s_bobCarol2Id, ScidBobCarol2, 0x73, topology.BobCarolFundingSatoshis,
+        if (topology.FourChannelsPerPair)
+        {
+            for (var i = 0; i < s_bobCarolChannels.Length; i++)
+                OpenChannel(Bob, (uint)(i + 1), Carol, (uint)(i + 1), s_bobCarolChannels[i].Id,
+                            s_bobCarolChannels[i].Scid, (byte)(0x81 + i), topology.BobCarolFundingSatoshis,
+                            topology.BobCarolPushSatoshis);
+            for (var i = 0; i < s_carolDavidChannels.Length; i++)
+                OpenChannel(Carol, (uint)(i + 5), David, (uint)(i + 1), s_carolDavidChannels[i].Id,
+                            s_carolDavidChannels[i].Scid, (byte)(0x85 + i), FundingSatoshis, PushSatoshis);
+        }
+        else
+        {
+            OpenChannel(Bob, 1, Carol, 1, s_bobCarolId, ScidBobCarol, 0x71, topology.BobCarolFundingSatoshis,
                         topology.BobCarolPushSatoshis);
-        if (topology.SecondCarolDavid)
-            OpenChannel(Carol, 4, David, 2, s_carolDavid2Id, ScidCarolDavid2, 0x74, FundingSatoshis, PushSatoshis);
+            OpenChannel(Carol, 2, David, 1, s_carolDavidId, ScidCarolDavid, 0x72, FundingSatoshis, PushSatoshis);
+            if (topology.SecondBobCarol)
+                OpenChannel(Bob, 2, Carol, 3, s_bobCarol2Id, ScidBobCarol2, 0x73, topology.BobCarolFundingSatoshis,
+                            topology.BobCarolPushSatoshis);
+            if (topology.SecondCarolDavid)
+                OpenChannel(Carol, 4, David, 2, s_carolDavid2Id, ScidCarolDavid2, 0x74, FundingSatoshis,
+                            PushSatoshis);
+        }
+
         if (Erin is not null)
             OpenChannel(David, 3, Erin, 1, s_davidErinId, ScidDavidErin, 0x75, FundingSatoshis, PushSatoshis);
     }
@@ -254,14 +293,24 @@ internal sealed class PaymentHarness : IDisposable
             });
         }
 
-        Add(ScidBobCarol, Bob, Carol, Topology.BobCarolFundingSatoshis);
-        Add(ScidCarolDavid, Carol, David, FundingSatoshis);
-        if (Topology.SecondBobCarol)
-            Add(ScidBobCarol2, Bob, Carol, Topology.BobCarolFundingSatoshis);
-        if (Topology.SecondCarolDavid)
-            Add(ScidCarolDavid2, Carol, David, FundingSatoshis);
-        if (Erin is not null)
-            Add(ScidDavidErin, David, Erin, FundingSatoshis);
+        if (Topology.FourChannelsPerPair)
+        {
+            foreach (var (_, scid) in s_bobCarolChannels)
+                Add(scid, Bob, Carol, Topology.BobCarolFundingSatoshis);
+            foreach (var (_, scid) in s_carolDavidChannels)
+                Add(scid, Carol, David, FundingSatoshis);
+        }
+        else
+        {
+            Add(ScidBobCarol, Bob, Carol, Topology.BobCarolFundingSatoshis);
+            Add(ScidCarolDavid, Carol, David, FundingSatoshis);
+            if (Topology.SecondBobCarol)
+                Add(ScidBobCarol2, Bob, Carol, Topology.BobCarolFundingSatoshis);
+            if (Topology.SecondCarolDavid)
+                Add(ScidCarolDavid2, Carol, David, FundingSatoshis);
+            if (Erin is not null)
+                Add(ScidDavidErin, David, Erin, FundingSatoshis);
+        }
 
         return new GraphSnapshot(channels, []);
     }
@@ -864,6 +913,8 @@ internal sealed class StagedStateStore(HarnessStateStore store) : IChannelStateD
 /// BOLT 7 plan G4-T3).</param>
 /// <param name="UseRealClock">The nodes' payment stack runs on <see cref="TimeProvider.System"/> instead of the
 /// stepped clock, so wall-clock benchmarks measure real time (nothing else steps the clocks then).</param>
+/// <param name="FourChannelsPerPair">Four channels between Bob and Carol and four between Carol and David, instead
+/// of one of each (more paths for the route planner); excludes the <c>Second*</c> flags.</param>
 [ExcludeFromCodeCoverage]
 internal sealed record PaymentHarnessTopology(
     bool SecondBobCarol = false,
@@ -872,4 +923,5 @@ internal sealed record PaymentHarnessTopology(
     ulong BobCarolPushSatoshis = PaymentHarness.PushSatoshis,
     bool Erin = false,
     bool BobUsesGraph = false,
-    bool UseRealClock = false);
+    bool UseRealClock = false,
+    bool FourChannelsPerPair = false);
