@@ -260,10 +260,17 @@ public sealed class CdkPaymentProcessorSafetyTests : CdkProcessorTestBase
         using var stream = Client.WaitPaymentEvent(new EmptyRequest(), cancellationToken: Ct);
         await WaitForStreamAsync();
 
-        // Act: a failure while retrying, then the success
+        // Act: a failure while retrying, then the success. NL-985: the success's row is served only once the
+        // processor read the failed one; switched before, the failure read the success and recorded the quote Paid,
+        // so the success event found nothing left to report (the test failed whenever its processor was fast)
         payment.Fail(null, null, "Retrying.", DateTimeOffset.UtcNow);
         PaymentService.Setup(s => s.IsPaying(hash)).Returns(true);
+        var failureRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        PaymentService.Setup(s => s.GetPaymentAsync(hash, It.IsAny<CancellationToken>()))
+                      .Callback(() => failureRead.TrySetResult())
+                      .ReturnsAsync(payment);
         Hub.Publish(new PaymentFailedEvent(hash, "Retrying.", DateTimeOffset.UtcNow));
+        await failureRead.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct);
         var succeeded = Payment(hash, LightningMoney.Satoshis(2_000), MintLabel);
         succeeded.Succeed(Preimage, DateTimeOffset.UtcNow);
         PaymentService.Setup(s => s.GetPaymentAsync(hash, It.IsAny<CancellationToken>())).ReturnsAsync(succeeded);

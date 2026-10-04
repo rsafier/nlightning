@@ -30,6 +30,9 @@ using Domain.LiquidityAds.Enums;
 using Domain.LiquidityAds.Interfaces;
 using Domain.LiquidityAds.Models;
 using Domain.Money;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Interfaces;
+using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Handlers;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -49,6 +52,7 @@ public class ClosingLifecycleTests
     private readonly Mock<IChannelDbRepository> _channelDb = new();
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<IWatchedTransactionDbRepository> _watchedDb = new();
+    private readonly Mock<IWatchedOutpointDbRepository> _outpointsDb = new();
     private readonly Mock<Domain.Protocol.InteractiveTx.Interfaces.IInteractiveTxSessionDbRepository> _sessionsDb = new();
     private readonly Mock<IBitcoinChainService> _chain = new();
     private readonly ClosingNegotiationRegistry _registry = new();
@@ -70,6 +74,7 @@ public class ClosingLifecycleTests
                    .Returns(Task.CompletedTask);
         _unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(_channelDb.Object);
         _unitOfWork.SetupGet(u => u.WatchedTransactionDbRepository).Returns(_watchedDb.Object);
+        _unitOfWork.SetupGet(u => u.WatchedOutpointDbRepository).Returns(_outpointsDb.Object);
         _unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository).Returns(_sessionsDb.Object);
         _channelDb.Setup(r => r.UpdateAsync(It.IsAny<ChannelModel>()))
                   .Callback((ChannelModel c) => _persisted.Add(c.State))
@@ -405,6 +410,81 @@ public class ClosingLifecycleTests
     }
 
     [Fact]
+    public async Task Given_ALaterClosingTxReplacedTheOneABlockHolds_When_ThatOneReachesItsDepth_Then_ItIsRecordedAndClosesTheChannel()
+    {
+        // Arrange (NL-983): a block holds one mutual close of the channel (the funding watch's spend); a later
+        // closing_sig made another one the stored closing transaction before this build refused that
+        var channel = CreateClosingChannel(ChannelState.Closing);
+        channel.SetClosingTransaction(MutualClose(channel));
+        var channelId = channel.ChannelId;
+        _memory.Setup(m => m.TryGetChannel(channelId, out channel)).Returns(true);
+        var confirmed = SimpleClose(channel, true, new Script((byte[])channel.RemoteShutdownScript!));
+        SetupFundingSpentInBlock(channel, confirmed);
+        CreateManager();
+
+        // Act
+        _monitor.Raise(m => m.OnTransactionConfirmed += null, _monitor.Object, Confirmed(channelId, confirmed.TxId));
+
+        // Assert: the transaction the block holds is the close, recorded in the Closed save
+        await WaitUntilAsync(() => channel.State == ChannelState.Closed);
+        Assert.Equal(confirmed.TxId, channel.ClosingTransaction!.TxId);
+        Assert.Equal([ChannelState.Closed], _persisted);
+        Assert.Equal(confirmed.TxId, Assert.Single(_accountingEvents).TxId);
+        _memory.Verify(m => m.TryRemoveChannel(channelId), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_AClosingChannelWhoseFundingABlockSpentByAnotherMutualClose_When_RegisteredAtStartup_Then_ItIsRecordedAndClosed()
+    {
+        // Arrange (NL-983): a node stuck in Closing by the bug (its stored transaction was replaced after the one the
+        // block holds was matched, and that one's watch completed) restarts
+        var channel = CreateClosingChannel(ChannelState.Closing);
+        var stale = MutualClose(channel);
+        channel.SetClosingTransaction(stale);
+        var confirmed = SimpleClose(channel, true, new Script((byte[])channel.RemoteShutdownScript!));
+        SetupFundingSpentInBlock(channel, confirmed);
+        _watchedDb.Setup(r => r.GetByTransactionIdAsync(confirmed.TxId))
+                  .ReturnsAsync(Confirmed(channel.ChannelId, confirmed.TxId).WatchedTransaction);
+        var manager = CreateManager();
+
+        // Act
+        await manager.RegisterExistingChannelAsync(channel);
+
+        // Assert: recorded, then closed by its completed watch; the stale one is not rebroadcast
+        Assert.Equal(ChannelState.Closed, channel.State);
+        Assert.Equal(confirmed.TxId, channel.ClosingTransaction!.TxId);
+        Assert.Equal([ChannelState.Closing, ChannelState.Closed], _persisted);
+        _memory.Verify(m => m.TryRemoveChannel(channel.ChannelId), Times.Once);
+        _chain.Verify(c => c.SendTransactionAsync(It.IsAny<Transaction>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_TheFundingSpentByATransactionThatIsNoMutualClose_When_ItReachesItsDepth_Then_StillClosing()
+    {
+        // Arrange (NL-983): only a mutual close of the channel is adopted (a commitment goes to the on-chain watcher)
+        var channel = CreateClosingChannel(ChannelState.Closing);
+        channel.SetClosingTransaction(MutualClose(channel));
+        var channelId = channel.ChannelId;
+        _memory.Setup(m => m.TryGetChannel(channelId, out channel)).Returns(true);
+        var other = Transaction.Create(Network.RegTest);
+        other.Inputs.Add(new OutPoint(new uint256((byte[])channel.FundingOutput!.TransactionId!.Value), 0),
+                         sequence: new Sequence(0x80000001));
+        other.Outputs.Add(new TxOut(Money.Satoshis(990_000), new Key().PubKey.WitHash));
+        var spend = new SignedTransaction(new TxId(other.GetHash().ToBytes()), other.ToBytes());
+        SetupFundingSpentInBlock(channel, spend);
+        CreateManager();
+
+        // Act
+        _monitor.Raise(m => m.OnTransactionConfirmed += null, _monitor.Object, Confirmed(channelId, spend.TxId));
+        await Task.Delay(200, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(ChannelState.Closing, channel.State);
+        Assert.NotEqual(spend.TxId, channel.ClosingTransaction!.TxId);
+        Assert.Empty(_persisted);
+    }
+
+    [Fact]
     public async Task Given_ClosingAtStartup_When_Registered_Then_ClosingTransactionRebroadcast()
     {
         // Arrange
@@ -699,6 +779,24 @@ public class ClosingLifecycleTests
         Assert.False(registryEntry.ShutdownReceivedOnConnection);
         Assert.Empty(raised);
         Assert.Equal(1, reestablishRequests);
+    }
+
+    /// <summary>
+    /// A block at 600 holds <paramref name="spend"/>: the funding watch records it as the funding output's spend and
+    /// the chain service serves the block (NL-983).
+    /// </summary>
+    private void SetupFundingSpentInBlock(ChannelModel channel, SignedTransaction spend)
+    {
+        var fundingTxId = channel.FundingOutput!.TransactionId!.Value;
+        var blockHash = new Hash(Enumerable.Repeat((byte)0x60, 32).ToArray());
+        var watch = new WatchedOutpointModel(fundingTxId, 0, channel.ChannelId, WatchedOutpointPurpose.FundingOutput);
+        watch.MarkSpent(spend.TxId, 600, blockHash);
+        _outpointsDb.Setup(r => r.GetAsync(fundingTxId, 0)).ReturnsAsync(watch);
+
+        var block = Network.RegTest.Consensus.ConsensusFactory.CreateBlock();
+        block.Transactions.Add(Transaction.Load(CreateRawTx(), Network.RegTest));
+        block.Transactions.Add(Transaction.Load(spend.RawTxBytes, Network.RegTest));
+        _chain.Setup(c => c.GetBlockAsync(new uint256((byte[])blockHash))).ReturnsAsync(block);
     }
 
     private ChannelManager CreateManager(Action<IServiceCollection>? configure = null)

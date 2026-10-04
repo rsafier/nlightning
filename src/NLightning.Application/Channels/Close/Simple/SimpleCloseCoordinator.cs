@@ -33,8 +33,8 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// (<see cref="ChannelState.Negotiating"/>); the first fully signed transaction (ours completed by a
 /// <c>closing_sig</c>, or the peer's we signed) moves the channel to <see cref="ChannelState.Closing"/>. A channel in
 /// Closing still signs a new <c>closing_complete</c> of the peer and sends one of its own on request (RBF); the last
-/// signed transaction is the stored one, and whichever of them confirms closes the channel (ChannelManager records a
-/// spend of the funding output by another one of them).
+/// signed transaction is the stored one until a block holds a spend of the funding output (NL-983), and whichever of
+/// them confirms closes the channel (ChannelManager records a spend of the funding output by another one of them).
 /// </summary>
 /// <remarks>
 /// Scoped; every method runs under the channel's lock and returns the messages to send in wire order. Each fully
@@ -302,7 +302,7 @@ public sealed class SimpleCloseCoordinator
             channel.ReplaceRemoteShutdownScript(closerScript);
         }
 
-        await RecordClosingTransactionAsync(channel, closingTransaction, false);
+        var recorded = await RecordClosingTransactionAsync(channel, closingTransaction, false);
         _logger.LogInformation(
             "Signed the peer's closing transaction {TxId} for channel {ChannelId} ({Kind}, fee {Fee} sat, lock time {LockTime})",
             closingTransaction.TxId, channelId, kind, feeSat, payload.LockTime);
@@ -310,7 +310,8 @@ public sealed class SimpleCloseCoordinator
         var reply = new ClosingSigMessage(
             new ClosingSigPayload(channelId, closerScript, localScript, payload.FeeSatoshis, payload.LockTime),
             ClosingSignatures.Single(kind, ourSignature));
-        await BroadcastAsync(channel, closingTransaction);
+        if (recorded)
+            await BroadcastAsync(channel, closingTransaction);
         return [reply];
     }
 
@@ -370,11 +371,12 @@ public sealed class SimpleCloseCoordinator
         var closingTransaction = _closingTransactionBuilder.AddWitness(variant.Unsigned, funding,
                                                                        variant.OurSignature!.Value, peerSignature);
         entry.SimpleProposal = null;
-        await RecordClosingTransactionAsync(channel, closingTransaction, true);
+        var recorded = await RecordClosingTransactionAsync(channel, closingTransaction, true);
         _logger.LogInformation(
             "The peer signed our closing transaction {TxId} for channel {ChannelId} ({Kind}, fee {Fee} sat)",
             closingTransaction.TxId, channelId, kind, sent.FeeSatoshis.Satoshi);
-        await BroadcastAsync(channel, closingTransaction);
+        if (recorded)
+            await BroadcastAsync(channel, closingTransaction);
         return [];
     }
 
@@ -451,7 +453,7 @@ public sealed class SimpleCloseCoordinator
             channel.ReplaceRemoteShutdownScript(closerScript);
         }
 
-        await RecordClosingTransactionAsync(channel, closingTransaction, false);
+        var recorded = await RecordClosingTransactionAsync(channel, closingTransaction, false);
         _logger.LogInformation(
             "Signed the peer's taproot closing transaction {TxId} for channel {ChannelId} ({Kind}, fee {Fee} sat, lock time {LockTime})",
             closingTransaction.TxId, channelId, kind, payload.FeeSatoshis.Satoshi, payload.LockTime);
@@ -463,7 +465,8 @@ public sealed class SimpleCloseCoordinator
                                   payload.LockTime),
             new ClosingSignatures(), ClosingPartialSignatures.Single(kind, ourPartial),
             new NextCloseeNonceTlv(nextCloseeNonce));
-        await BroadcastAsync(channel, closingTransaction);
+        if (recorded)
+            await BroadcastAsync(channel, closingTransaction);
         return [reply];
     }
 
@@ -515,11 +518,12 @@ public sealed class SimpleCloseCoordinator
                              + "of ours is possible until the peer re-sends its shutdown", channelId);
 
         entry.SimpleProposal = null;
-        await RecordClosingTransactionAsync(channel, closingTransaction, true);
+        var recorded = await RecordClosingTransactionAsync(channel, closingTransaction, true);
         _logger.LogInformation(
             "The peer signed our taproot closing transaction {TxId} for channel {ChannelId} ({Kind}, fee {Fee} sat)",
             closingTransaction.TxId, channelId, kind, proposal.Payload.FeeSatoshis.Satoshi);
-        await BroadcastAsync(channel, closingTransaction);
+        if (recorded)
+            await BroadcastAsync(channel, closingTransaction);
         return [];
     }
 
@@ -576,15 +580,29 @@ public sealed class SimpleCloseCoordinator
 
     /// <summary>
     /// Stores <paramref name="closingTransaction"/> as the channel's closing transaction (Closing, first time) and
-    /// stages its watch in the same save; then tracks the watch and completes the IPC waiters.
+    /// stages its watch in the same save; then tracks the watch and completes the IPC waiters. Nothing is stored once a
+    /// processed block holds another spend of the funding output (NL-983): this one can no longer confirm, and
+    /// replacing the stored one (the spend <c>ChannelManager</c> already matched) left the channel Closing when that
+    /// one reached its depth. A spend still in the mempool does not stop it (RBF; whichever confirms is recorded by
+    /// <c>ChannelManager</c>'s funding-spend path).
     /// </summary>
     /// <param name="channel">The channel.</param>
     /// <param name="closingTransaction">The fully signed closing transaction.</param>
     /// <param name="localIsCloser">We sent its <c>closing_complete</c> (we pay its fee); false for the peer's
     /// (NL-610).</param>
-    private async Task RecordClosingTransactionAsync(ChannelModel channel, SignedTransaction closingTransaction,
-                                                     bool localIsCloser)
+    /// <returns>False when it was not stored (and must not be broadcast).</returns>
+    private async Task<bool> RecordClosingTransactionAsync(ChannelModel channel, SignedTransaction closingTransaction,
+                                                           bool localIsCloser)
     {
+        if (await GetConfirmedFundingSpendAsync(channel) is { } spentBy && spentBy != closingTransaction.TxId)
+        {
+            _logger.LogWarning(
+                "Closing transaction {TxId} of channel {ChannelId} is not recorded: a block already holds {SpentBy}, which spent the funding output (stored: {Stored})",
+                closingTransaction.TxId, channel.ChannelId, spentBy,
+                channel.ClosingTransaction?.TxId.ToString() ?? "none");
+            return false;
+        }
+
         channel.SetClosingTransaction(closingTransaction);
         channel.SetCloseTerms(MutualCloseProtocol.Simple, localIsCloser);
         if (channel.State < ChannelState.Closing)
@@ -605,6 +623,18 @@ public sealed class SimpleCloseCoordinator
         if (watch is not null)
             _blockchainMonitor!.TrackWatchedTransaction(watch);
         _registry.Get(channel.ChannelId).CompleteWaiters(closingTransaction.TxId);
+        return true;
+    }
+
+    /// <summary>The transaction that spent the channel's funding output in the active chain, from its watch.</summary>
+    private async Task<TxId?> GetConfirmedFundingSpendAsync(ChannelModel channel)
+    {
+        if (channel.FundingOutput is not { TransactionId: { } fundingTxId, Index: { } fundingIndex }
+         || _unitOfWork.WatchedOutpointDbRepository is not { } outpoints)
+            return null;
+
+        var watch = await outpoints.GetAsync(fundingTxId, fundingIndex);
+        return watch is { IsSpent: true } ? watch.SpentByTransactionId : null;
     }
 
     /// <summary>Publishes a closing transaction; a failure (e.g. a conflicting one with a higher fee) is logged.</summary>

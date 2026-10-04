@@ -801,6 +801,28 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         }
 
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+        // NL-983: a block holds another mutual close of the channel (a later closing_complete or closing_sig replaced
+        // the stored one after the funding spend was matched): that one is the close, watched from its block
+        if (await TryAdoptFundingSpendAsync(scope, channel, null) is { } adopted)
+        {
+            closingTransaction = adopted.Spend;
+            WatchedTransactionModel? adoptedWatch = null;
+            if (await unitOfWork.WatchedTransactionDbRepository.GetByTransactionIdAsync(closingTransaction.TxId) is null)
+            {
+                adoptedWatch = new WatchedTransactionModel(channel.ChannelId, closingTransaction.TxId,
+                                                           GetCloseOptions().ConfirmationDepth);
+                adoptedWatch.SetHeightAndIndex(adopted.Height, adopted.Index);
+                unitOfWork.WatchedTransactionDbRepository.Add(adoptedWatch);
+            }
+
+            await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+            await unitOfWork.SaveChangesAsync();
+            _channelMemoryRepository.UpdateChannel(channel);
+            if (adoptedWatch is not null)
+                _blockchainMonitor.TrackWatchedTransaction(adoptedWatch);
+        }
+
         var watch = await unitOfWork.WatchedTransactionDbRepository.GetByTransactionIdAsync(closingTransaction.TxId);
         if (watch is { IsCompleted: true })
         {
@@ -863,6 +885,59 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             _blockchainMonitor.StopWatchingOutpointSpend(fundingTxId, fundingIndex);
         _logger.LogInformation("Channel {ChannelId} is closed: closing transaction {TxId} confirmed",
                                channel.ChannelId, channel.ClosingTransaction?.TxId);
+    }
+
+    /// <summary>
+    /// NL-983: the mutual close of <paramref name="channel"/> that spent its funding output in the active chain (the
+    /// funding watch's spend), when it is not the stored closing transaction: a later <c>closing_complete</c> or
+    /// <c>closing_sig</c> replaced the stored one after the funding-spend path had matched it. Read from its block (or
+    /// by txid), checked with <see cref="IsMutualCloseOf"/> and set as the channel's closing transaction in memory;
+    /// the caller saves it. Null when there is nothing to adopt (no spend, the stored one, not
+    /// <paramref name="confirmedTxId"/>, not a mutual close, or not readable). Under the channel's lock.
+    /// </summary>
+    private async Task<(SignedTransaction Spend, uint Height, uint Index)?> TryAdoptFundingSpendAsync(
+        IServiceScope scope, ChannelModel channel, TxId? confirmedTxId)
+    {
+        if (channel.FundingOutput is not { TransactionId: { } fundingTxId, Index: { } fundingIndex }
+         || scope.ServiceProvider.GetRequiredService<IUnitOfWork>().WatchedOutpointDbRepository is not { } outpoints)
+            return null;
+
+        var outpoint = await outpoints.GetAsync(fundingTxId, fundingIndex);
+        if (outpoint is not { SpentByTransactionId: { } spentBy, SpentAtHeight: { } height }
+         || spentBy == channel.ClosingTransaction?.TxId || (confirmedTxId is { } confirmed && confirmed != spentBy)
+         || scope.ServiceProvider.GetService<IBitcoinChainService>() is not { } chainService)
+            return null;
+
+        try
+        {
+            var spentByHash = new uint256((byte[])spentBy);
+            var block = outpoint.SpentBlockHash is { } blockHash
+                            ? await chainService.GetBlockAsync(new uint256((byte[])blockHash))
+                            : null;
+            block ??= await chainService.GetBlockAsync(height);
+            var index = block?.Transactions.FindIndex(t => t.GetHash() == spentByHash) ?? -1;
+            if (index < 0)
+                return null;
+
+            var spend = new SignedTransaction(spentBy, block!.Transactions[index].ToBytes());
+            if (!IsMutualCloseOf(channel, spend))
+                return null;
+
+            _logger.LogWarning(
+                "Channel {ChannelId} ({State}) was closed by mutual close {TxId} at height {Height}, not by the stored {Stored}; recording it",
+                channel.ChannelId, Enum.GetName(channel.State), spentBy, height,
+                channel.ClosingTransaction?.TxId.ToString() ?? "none");
+            channel.SetClosingTransaction(spend);
+            var (protocol, localIsCloser) = CloseTermsOf(channel, spend);
+            channel.SetCloseTerms(protocol, localIsCloser);
+            return (spend, height, (uint)index);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Could not read {TxId}, which spent the funding output of channel {ChannelId}",
+                               spentBy, channel.ChannelId);
+            return null;
+        }
     }
 
     private ChannelCloseOptions GetCloseOptions() =>
@@ -2291,9 +2366,11 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             }
 
             // The agreed mutual close transaction reached its depth (N10); a Failed channel that signed it before it
-            // failed closes too (NL-312; Failed 35 → Closed 40 is strictly increasing)
+            // failed closes too (NL-312; Failed 35 → Closed 40 is strictly increasing). NL-983: so does another of
+            // its mutual closes that spent the funding output, when a later one replaced it as the stored one
             if (channel.State is ChannelState.Closing or ChannelState.Failed && confirmedTxId is { } txId
-             && channel.ClosingTransaction?.TxId == txId)
+             && (channel.ClosingTransaction?.TxId == txId
+              || await TryAdoptFundingSpendAsync(scope, channel, txId) is not null))
             {
                 await CompleteCloseAsync(scope, channel, firstSeenAtHeight);
                 return;

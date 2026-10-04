@@ -167,12 +167,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 1 | 7 | 81 | 89 |
+| open | 0 | 1 | 6 | 81 | 88 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
-| fixed | 15 | 66 | 210 | 434 | 725 |
+| fixed | 15 | 66 | 211 | 435 | 727 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
-| duplicate | 0 | 0 | 3 | 3 | 6 |
-| **Total** | **15** | **67** | **227** | **528** | **837** |
+| duplicate | 0 | 0 | 3 | 4 | 7 |
+| **Total** | **15** | **67** | **227** | **530** | **839** |
 
 ### Epics
 
@@ -2002,7 +2002,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-983 A late `closing_sig` replaces a mutual close that already confirmed, and the channel stays Closing
-- **Status:** open
+- **Status:** fixed (wip/nl983)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Close/Simple/SimpleCloseCoordinator.cs` (`HandleClosingSig` → `RecordClosingTransactionAsync`; probably also the `closing_complete` path near line 270); the mutual-close spend and confirmation handling in `ChannelManager`
@@ -2016,9 +2016,41 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
   - Diagnostics: `TestResults/cluster/trreg-mx1/day0/` in the main checkout (output.log.gz, diag, rerun-1).
   - Funds are not at risk (the close confirmed). The channel row never reaches Closed.
 - **Fix sketch:** once the funding output is seen spent by one of the channel's mutual closes, in the mempool or confirmed, a later `closing_complete`/`closing_sig` must not replace the stored closing transaction. Alternatively, `CompleteCloseAsync` accepts the confirmed spend the funding watch recorded. Add a regression test that delivers `closing_sig` after the peer's closing transaction has confirmed.
-- **Seen again:** taproot wave t02 matrix `tap2-mx1` (wip/taproot-t02, 2026-10-03): `Day0FlowTests` step 8, the same order (day0-a reached Closed with 5ebc41db, day0-b broadcast 81757136 after it and stayed Closing), class green rerun alone (`/Users/ms/nlightning-tap2/TestResults/cluster/tap2-mx1/day0/`); the taproot LND proof waits for both `closing_sig`s before mining to avoid it (NL-976). In the same matrix `ClnOfferPayTests.Given_AnAmountlessClnOffer_*` failed once with `SqliteException` 5 "unable to delete/modify collation sequence due to active statements" in `SqliteConnection.Close` (test node teardown; green rerun alone; no ledger ID left in the taproot range, so noted here for the next integrator to number).
+- **Seen again:** taproot wave t02 matrix `tap2-mx1` (wip/taproot-t02, 2026-10-03): `Day0FlowTests` step 8, the same order (day0-a reached Closed with 5ebc41db, day0-b broadcast 81757136 after it and stayed Closing), class green rerun alone (`/Users/ms/nlightning-tap2/TestResults/cluster/tap2-mx1/day0/`); the taproot LND proof waits for both `closing_sig`s before mining to avoid it (NL-976). In the same matrix `ClnOfferPayTests.Given_AnAmountlessClnOffer_*` failed once with `SqliteException` 5 "unable to delete/modify collation sequence due to active statements" in `SqliteConnection.Close` (test node teardown; green rerun alone; no ledger ID left in the taproot range, so noted here for the next integrator to number; now NL-984).
+- **Fix:** two layers (wip/nl983).
+  - `SimpleCloseCoordinator.RecordClosingTransactionAsync` stores nothing once the funding output's watch records a spend in a processed block by another transaction (`IWatchedOutpointDbRepository.GetAsync`, `IsSpent`): the late transaction is neither stored nor broadcast. This covers all four paths (`closing_complete` and `closing_sig`, legacy ECDSA and MuSig2 taproot), so both roles. The closee still answers a late `closing_complete` with its `closing_sig`. A spend still only in the mempool does not stop it: an RBF replacement must be stored, and whichever transaction confirms is recorded by the existing funding-spend path (`RecordMutualCloseSpendAsync`).
+  - `ChannelManager.TryAdoptFundingSpendAsync`: when a Closing or Failed channel's watched transaction reaches its depth and it is not the stored one, the funding watch's spender is read from its block (`IBitcoinChainService.GetBlockAsync`). If it is a mutual close of the channel (`IsMutualCloseOf`), it becomes the closing transaction in the Closed save. `ResumeClosingAsync` does the same at startup (it watches the adopted transaction from its block when no watch exists), so a node already stuck in Closing by this bug closes at its next start.
+  - The legacy `ChannelCloseCoordinator` has no such replacement: a Closing channel only answers `closing_signed` with the stored fee, and `FinalizeAsync` runs only before Closing.
+- **Tests:**
+  - `SimpleCloseHarnessTests.Given_ThePeersClosingTxConfirmed_When_ALateClosingSigArrives_*` (closer role) and `Given_OurStoredClosingTxConfirmed_When_ThePeerBumpsWithALateClosingComplete_*` (closee role), each for legacy and taproot channels, with the new `CloseHarness.CloseHoldingAsync`/`FundingSpentInBlockAsync`/`RaiseConfirmed`. Both fail without the fix (4 cases).
+  - `ClosingLifecycleTests.Given_ALaterClosingTxReplacedTheOneABlockHolds_*` and `Given_AClosingChannelWhoseFundingABlockSpentByAnotherMutualClose_When_RegisteredAtStartup_*` (adoption) fail without the fix.
+  - Pass with and without the fix: the mempool variant `Given_ThePeersClosingTxInTheMempool_When_ALateClosingSigArrives_*` (legacy and taproot), which the funding-spend path already handled, and the negative case `Given_TheFundingSpentByATransactionThatIsNoMutualClose_*`.
+  - `LndTaprootFlowTests` no longer waits for both `closing_sig`s before it mines (NL-976 workaround removed).
 - **Blocks/Blocked-by:** Related NL-913, NL-859 (probably the same bug, seen against Eclair), NL-877
 - **Plan ref:** BOLT2 N11
+
+### NL-984 `ClnOfferPayTests` teardown fails once with a SQLite "collation sequence" error
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnOfferPayTests.cs` (`Given_AnAmountlessClnOffer_*`); the test node's teardown (`NLightningTestNode`, `SqliteConnection.Close`)
+- **Evidence:** taproot wave t02 matrix `tap2-mx1` (2026-10-03): `SqliteException` 5 "unable to delete/modify collation sequence due to active statements" in `SqliteConnection.Close` while the test node was disposed. Green on the class rerun alone (first noted in NL-983's entry).
+- **Fix sketch:** the connection is closed while a statement of another component (a background loop the node did not stop yet) is still active. Find which service still holds a reader at disposal, and stop it before the database goes.
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** —
+
+### NL-985 `CdkPaymentProcessorSafetyTests.Given_AMeltPendingAtTheTimeout_When_AnAttemptFailsWhileRetrying_*` failed whenever it ran alone
+- **Status:** fixed (wip/nl983)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Daemon.Tests/Cashu/CdkPaymentProcessorSafetyTests.cs`
+- **Evidence:** run alone, the test failed every time: `RpcException` Cancelled at its 20 s stream read. It passed inside the full Daemon.Tests run. Reproduced on origin/wip/fafo 6a37a263.
+  - The cause was a race in the test, not in the processor. The test published `PaymentFailedEvent` and then, at once, switched the `GetPaymentAsync` mock to the succeeded payment.
+  - When the processor's event pump was slower than the test thread (always when run alone), the failed event read the succeeded row. It recorded the quote `Paid` and returned nothing, so the success event found a final quote and reported nothing either.
+  - In the loaded full run, the pump usually read the failed row first.
+- **Fix:** the test waits until the processor has read the failed payment (a callback on the mock) before it serves the succeeded one. Green 3 times alone, and with its class.
+- **Blocks/Blocked-by:** Related NL-999
+- **Plan ref:** —
 
 ### NL-986 `openchannel` suggests `bumpopen` after a simple taproot open, whose RBF is refused
 - **Status:** open
@@ -7599,13 +7631,14 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** LIQUIDITY_ADS_PLAN LA6
 
 ### NL-859 `EclairCloseTests`' simple close by Eclair timed out once in a full Eclair category run
-- **Status:** open
+- **Status:** duplicate of NL-983
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Eclair/EclairCloseTests.cs` (`Given_SimpleCloseNegotiated_When_EclairCloses_Then_WeSignAndBothClose`)
 - **Evidence:** NL-850 LA7 (2026-10-03): the full `Category=Interop.Eclair` run (34 tests: 31 passed, 2 `Explicit` not run, 1 failed) failed this test waiting for "our channel is Closed": `closing_complete`/`closing_sig` went both ways, our channel stayed Closing, Eclair no longer listed the channel and the channel was not reestablished (`reestablished=False`). The class passes 4/4 alone. The liquidity ads lease check added to `ChannelManager.CompleteCloseAsync` reads an empty purchase list for this channel and does nothing, so the failure is most likely order-dependent (state left by the earlier classes on the shared Eclair node or bitcoind, or the closing transaction's confirmation not reaching our chain monitor in time).
 - **Fix sketch:** Rerun the category to see whether it reproduces; if it does, log our chain monitor's view of the closing txid (watch registered, confirmations) when the wait times out and check whether Eclair's simple close broadcast a transaction other than the one we stored (the RBF'd variant), which our funding-spend path should still accept as the mutual close.
-- **Blocks/Blocked-by:** Related NL-850, NL-486
+- **Duplicate:** the symptoms match NL-983: `closing_complete`/`closing_sig` went both ways, Eclair (the peer) was closed, and our channel stayed Closing without a reestablish. The LA7 run's logs were not kept, so the overwrite itself is not shown. The fix and its cluster proof are in NL-983 (`--suite eclair` with `EclairCloseTests`).
+- **Blocks/Blocked-by:** Duplicate of NL-983; related NL-850, NL-486
 - **Plan ref:** LIQUIDITY_ADS_PLAN LA7
 
 ### NL-858 The Eclair test image cannot be built behind a TLS-intercepting proxy
