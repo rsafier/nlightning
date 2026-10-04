@@ -1960,6 +1960,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-970, NL-1078
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Dual-funded RBF")
 
+### NL-1061 Eclair fails a simple taproot channel when we lost an interactive-tx attempt it is signing (crash before our commitment-step save)
+- **Status:** open
+- **Severity:** low
+- **Kind:** interop gap
+- **Location:** `src/NLightning.Application/Channels/Reestablish/ReestablishService.cs` (`CreateOwnAsync`), `src/NLightning.Application/InteractiveTx/InteractiveTxDriver.cs` (`ConstructAsync`)
+- **Evidence:** taproot wave t03 review (lane RVS) of NL-965/NL-970 against Eclair 0.14.3 `Helpers.Syncing.checkCommitNonces`: when Eclair holds a signing session (`SpliceWaitingForSigs`, `RbfWaitingForSigs`) of a taproot channel, our `channel_reestablish` MUST name its txid in `next_local_nonces`, or Eclair fails the channel (`MissingCommitNonce`, a force close). If Eclair sends the last `tx_complete` and we crash before `ConstructAsync`'s save (the session row is written in that handler, before our `commitment_signed`), we come back without the attempt and cannot name it; a non-taproot channel would only get our `tx_abort` for its `next_funding`. The window is one message handler, and the spec does not say what a node without the attempt must send.
+- **Fix sketch:** wait for the peer's `channel_reestablish` before sending ours when an unknown `next_funding` is possible, and add an entry for its txid (the deterministic nonce of the next rotated key bound to that txid) before answering `tx_abort`; or have the spec/Eclair accept a missing entry for an attempt the peer then aborts.
+- **Blocks/Blocked-by:** Related NL-965, NL-970
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
+
 ### NL-966 Simple taproot on chain: HTLC outputs, revoked HTLC penalties, second-level outputs and anchors are not resolved (T4)
 - **Status:** open
 - **Severity:** high
