@@ -2001,7 +2001,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             // none, BOLTs PR 836): its hold times are recorded and a hop whose HMAC failed is blamed as for any payment
             (code, interpretation) = (trampoline.Code, trampoline.Interpretation);
             sourceIndex = trampoline.SourceIndex ?? (trampoline.Code is null ? attribution.InvalidHopIndex : null);
-            reason = trampoline.Reason + DescribeOuterAttribution(part.Hops, attribution);
+            reason = trampoline.Reason
+                   + DescribeOuterAttribution(part.Hops, attribution, session.Trampoline?.TrampolineNode);
             (retry, note) = trampoline.Retry is { } decided
                                 ? (decided, trampoline.Note!)
                                 : _retryPolicy.Decide(part, failed.Removal.Kind, interpretation, session.Constraints,
@@ -2478,8 +2479,10 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     /// The last hop of a route that ends in a blinded path is stored under <paramref name="payee"/> (the recipient's
     /// real id when the caller knew it, e.g. a BOLT 12 <c>invoice_node_id</c>), not under its blinded id, so the row
     /// names its payee; the shared secret is the one of the blinded hop. So is the last hop of a route to a trampoline
-    /// node (<paramref name="toTrampoline"/>, NL-875): the row names the payee behind it, the shared secret is the
-    /// trampoline node's outer one, and the trampoline node is hop 0 of the payment's <c>PaymentTrampolineHops</c>.
+    /// node (<paramref name="toTrampoline"/>, NL-875): the row names the payee behind it (<see cref="PaymentModel"/>
+    /// requires its route to end at the payee), the shared secret is the trampoline node's outer one, and the
+    /// trampoline node is hop 0 of the payment's <c>PaymentTrampolineHops</c>. That hop's hold time is therefore the
+    /// trampoline node's, and failure reasons name the trampoline node for it (NL-924).
     /// </remarks>
     private static List<PaymentHop> BuildHops(PaymentRoute route, IReadOnlyList<Secret> sharedSecrets,
                                               ShortChannelId firstChannel, CompactPubKey payee,
