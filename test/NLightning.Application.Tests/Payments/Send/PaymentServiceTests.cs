@@ -19,7 +19,10 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Money;
+using Domain.Node.Interfaces;
+using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
@@ -57,6 +60,7 @@ public class PaymentServiceTests : IDisposable
     private readonly Mock<IChannelOperations> _channelOperations = new();
     private readonly Mock<IChannelMemoryRepository> _channels = new();
     private readonly Mock<IBlockchainMonitor> _blockchainMonitor = new();
+    private readonly Mock<IPeerManager> _peerManager = new();
     private readonly ShiftedTimeProvider _time = new();
     private readonly ServiceProvider _provider;
 
@@ -89,6 +93,7 @@ public class PaymentServiceTests : IDisposable
         services.AddSingleton(_channels.Object);
         services.AddSingleton(_channelOperations.Object);
         services.AddSingleton(new Mock<IPeerLivenessProbe>().Object);
+        services.AddSingleton(_peerManager.Object);
         services.AddSingleton<TimeProvider>(_time);
         services.AddScoped(_ => unitOfWork.Object);
         services.AddScoped<IPaymentDbRepository>(_ => _payments);
@@ -299,6 +304,136 @@ public class PaymentServiceTests : IDisposable
         var succeeded = Assert.Single(_accounting.Saved);
         Assert.Equal(AccountingEventKind.PaymentSucceeded, succeeded.Kind);
         Assert.Equal(-(long)s_amount.MilliSatoshi, succeeded.AmountMsat);
+    }
+
+    [Fact]
+    public async Task Given_AFailedRowWithoutARecordedHtlc_When_AnHtlcIsFulfilledLate_Then_NoFeeIsTakenFromTheRoute()
+    {
+        // Arrange (NL-924): the row's route pays Carol 1,000 msat, but no HTLC was recorded for it, so the fulfilled
+        // HTLC may be another part's (no stored part names it either)
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(FailedRowThroughCarol(hash, htlcId: null));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 7, hash,
+                                                                         preimage),
+                                                                     TestContext.Current.CancellationToken);
+
+        // Assert: succeeded with the preimage, the fee unknown (zero) in the row and the books
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.True(stored.Fee.IsZero);
+        Assert.Equal(0, Assert.Single(_accounting.Saved, e => e.Kind == AccountingEventKind.PaymentSucceeded).FeeMsat);
+    }
+
+    [Fact]
+    public async Task Given_AFailedRowWithItsHtlcRecorded_When_ThatHtlcIsFulfilledLate_Then_ItsRoutesFeeIsRecorded()
+    {
+        // Arrange
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(FailedRowThroughCarol(hash, htlcId: 7));
+
+        // Act
+        await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 7, hash, preimage),
+                                                       TestContext.Current.CancellationToken);
+
+        // Assert
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.Equal(1_000UL, stored.Fee.MilliSatoshi);
+    }
+
+    [Theory]
+    [InlineData(true, 1_000UL)]
+    [InlineData(false, 0UL)]
+    public async Task Given_AFailedRowAndAStoredPartOfTheFulfilledHtlc_When_FulfilledLate_Then_ThePartsFeeOnlyIfWhole(
+        bool partCarriedTheWholeAmount, ulong expectedFeeMsat)
+    {
+        // Arrange (NL-924): no HTLC recorded on the row; the stored part of HTLC 7 paid Carol 1,000 msat for the whole
+        // amount, or for half of it (one part of a split: the others' fees are unknown)
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(FailedRowThroughCarol(hash, htlcId: null));
+        var delivered = partCarriedTheWholeAmount ? s_amount.MilliSatoshi : s_amount.MilliSatoshi / 2;
+        await _parts.AddAsync(new PaymentPartModel(hash, 0, s_channelId, 7, PaymentPartState.InFlight,
+                                                   RouteThroughCarol(delivered)));
+
+        // Act
+        await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 7, hash, preimage),
+                                                       TestContext.Current.CancellationToken);
+
+        // Assert
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.Equal(expectedFeeMsat, stored.Fee.MilliSatoshi);
+    }
+
+    [Theory]
+    [InlineData(PaymentPartState.InFlight, 0UL)]
+    [InlineData(PaymentPartState.Failed, 3_001UL)]
+    public async Task Given_ASplitTrampolineOuterLeg_When_APartAboveTheAmountIsFulfilledLate_Then_NoFeeUnlessItWasAlone(
+        PaymentPartState otherPartState, ulong expectedFeeMsat)
+    {
+        // Arrange (NL-924): a trampoline payment's outer parts add up to the amount plus the trampoline fee, so one part
+        // may deliver more than the amount (here amount + 2,001 msat, its first hop 1,000 msat more) while another part
+        // of 5,000 msat is in flight, or failed (then the fulfilled part paid alone)
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(FailedRowThroughCarol(hash, htlcId: null));
+        await _parts.AddAsync(new PaymentPartModel(hash, 0, s_channelId, 7, PaymentPartState.InFlight,
+                                                   RouteThroughCarol(s_amount.MilliSatoshi + 2_001)));
+        await _parts.AddAsync(new PaymentPartModel(hash, 1, s_channelId, 8, otherPartState, RouteThroughCarol(5_000)));
+
+        // Act
+        await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 7, hash, preimage),
+                                                       TestContext.Current.CancellationToken);
+
+        // Assert: a part of a live split says nothing of the payment's fee
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.Equal(expectedFeeMsat, stored.Fee.MilliSatoshi);
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void Given_ATrampolinePeerAndItsInitFeatures_When_AskedWhetherItTakesASplitOuterLeg_Then_BasicMppDecides(
+        bool peerSupportsBasicMpp, bool expected)
+    {
+        // Arrange (NL-924): the trampoline node is a connected peer whose init sets basic_mpp or not; we do not
+        // advertise basic_mpp ourselves, so the negotiated set never has it: the peer's own features decide
+        var trampoline = new TestNodeKeyManager(0x0d).NodeId;
+        var peerService = new Mock<IPeerService>();
+        peerService.SetupGet(p => p.Features).Returns(new FeatureOptions { BasicMpp = FeatureSupport.No });
+        peerService.SetupGet(p => p.PeerFeatures).Returns(new FeatureOptions
+        {
+            BasicMpp = peerSupportsBasicMpp ? FeatureSupport.Optional : FeatureSupport.No
+        });
+        var peer = new PeerModel(trampoline, "127.0.0.1", 9735, "IPv4");
+        peer.SetPeerService(peerService.Object);
+        _peerManager.Setup(m => m.GetPeer(trampoline)).Returns(peer);
+
+        // Act
+        var accepts = Service.TrampolineAcceptsMpp(trampoline);
+
+        // Assert
+        Assert.Equal(expected, accepts);
+    }
+
+    [Fact]
+    public void Given_ATrampolineNodeNeitherPeerNorInTheGraph_When_AskedWhetherItTakesASplitOuterLeg_Then_Yes()
+    {
+        // Arrange: nothing is known of its features (BOLTs PR 836: a trampoline node collects the outer parts)
+        var trampoline = new TestNodeKeyManager(0x0d).NodeId;
+
+        // Act
+        var accepts = Service.TrampolineAcceptsMpp(trampoline);
+
+        // Assert
+        Assert.True(accepts);
     }
 
     [Fact]
@@ -748,6 +883,25 @@ public class PaymentServiceTests : IDisposable
                                     status == PaymentStatus.InFlight ? null : now, [hop],
                                     isTrampolineRelay: isTrampolineRelay);
     }
+
+    /// <summary>A failed row whose route paid Carol 1,000 msat to deliver the whole amount (NL-924).</summary>
+    private PaymentModel FailedRowThroughCarol(Hash hash, ulong? htlcId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return PaymentModel.Restore(hash, null, _payee.NodeId, s_amount, LightningMoney.Zero, now,
+                                    PaymentStatus.Failed, htlcId is null ? (ChannelId?)null : s_channelId, htlcId,
+                                    null, null, null, "failed", now, RouteThroughCarol(s_amount.MilliSatoshi));
+    }
+
+    /// <summary>Our HTLC to Carol (1,000 msat above <paramref name="deliveredMsat"/>), then the payee.</summary>
+    private List<PaymentHop> RouteThroughCarol(ulong deliveredMsat) =>
+    [
+        new(new TestNodeKeyManager(0x0e).NodeId, new ShortChannelId(400, 1, 0),
+            LightningMoney.MilliSatoshis(deliveredMsat + 1_000), Height + 61,
+            new Secret(RandomNumberGenerator.GetBytes(32))),
+        new(_payee.NodeId, new ShortChannelId(401, 1, 0), LightningMoney.MilliSatoshis(deliveredMsat), Height + 21,
+            new Secret(RandomNumberGenerator.GetBytes(32)))
+    ];
 
     private static Secret Preimage() => new(RandomNumberGenerator.GetBytes(32));
 

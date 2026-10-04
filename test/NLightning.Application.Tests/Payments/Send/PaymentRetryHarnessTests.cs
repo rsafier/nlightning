@@ -367,6 +367,78 @@ public class PaymentRetryHarnessTests
     }
 
     [Fact]
+    public async Task Given_ARestBelowCarolsHtlcMinimum_When_BobSplitsOverHisTwoChannels_Then_NoPartIsRefused()
+    {
+        // Arrange (NL-924): two equal Bob-Carol channels; the amount is 500 msat above what one can send, and Carol
+        // takes HTLCs of at least 1,000 msat (her harness party): filling one channel would leave 500 msat for the
+        // other, which the engine refuses (B2-ADD-S06)
+        using var harness = Harness(new PaymentHarnessTopology(SecondBobCarol: true));
+        var sendable = LocalLiquidityEstimator.MaxSendableMsat(harness.Bob.Channel(harness.BobCarol).Commitments!, [],
+                                                               PaymentHarness.BlockHeight + 144);
+        Assert.Equal(1_000UL, harness.Bob.Channel(harness.BobCarol2).Commitments!.Params.Remote.HtlcMinimumMsat);
+        var invoice = await harness.Carol.CreateMppInvoiceAsync(LightningMoney.MilliSatoshis(sendable + 500), []);
+
+        // Act
+        var result = await PayAsync(harness, invoice.Bolt11!, new PayInvoiceOptions
+        {
+            Timeout = TimeSpan.FromSeconds(5)
+        });
+
+        // Assert: one round of two parts, both offered (none refused), each at least Carol's minimum, at no fee
+        Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
+        Assert.Equal(2, result.Parts);
+        Assert.Equal(2, result.Attempts);
+        Assert.True(result.Payment.Fee.IsZero);
+        var received = harness.Carol.Switch.Received.ToList();
+        Assert.Equal(2, received.Count);
+        Assert.All(received, r => Assert.True(r.AmountMsat >= 1_000, $"{r.AmountMsat} msat"));
+        Assert.Equal(sendable + 500, received.Aggregate(0UL, (sum, r) => sum + r.AmountMsat));
+    }
+
+    [Fact]
+    public async Task Given_APartRefusedBelowThePeersHtlcMinimum_When_Replanned_Then_TheChannelTakesALargerPart()
+    {
+        // Arrange (NL-924): two equal Bob-Carol channels and an amount neither carries alone; the engine refuses the
+        // first round's larger part over the amount (B2-ADD-S01) and its smaller part as below Carol's htlc_minimum_msat
+        // (B2-ADD-S06, as if her minimum had changed since the plan)
+        using var harness = Harness(new PaymentHarnessTopology(SecondBobCarol: true));
+        var sendable = LocalLiquidityEstimator.MaxSendableMsat(harness.Bob.Channel(harness.BobCarol).Commitments!, [],
+                                                               PaymentHarness.BlockHeight + 144);
+        var refused = new List<(ChannelId Channel, ulong AmountMsat, string Rule)>();
+        harness.Bob.OfferRefusal = (channelId, amount) =>
+        {
+            if (refused.Count >= 2)
+                return null;
+
+            var rule = refused.Count == 0 ? "B2-ADD-S01" : "B2-ADD-S06";
+            refused.Add((channelId, amount.MilliSatoshi, rule));
+            return new Domain.Exceptions.CommitmentRefusedException(rule, "refused by the test");
+        };
+        var invoice = await harness.Carol.CreateMppInvoiceAsync(LightningMoney.MilliSatoshis(sendable + 500), []);
+
+        // Act
+        var result = await PayAsync(harness, invoice.Bolt11!, new PayInvoiceOptions
+        {
+            Timeout = TimeSpan.FromSeconds(5)
+        });
+
+        // Assert: the channel refused as too small is planned again with a larger part, not avoided
+        Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
+        Assert.Equal(2, refused.Count);
+        Assert.Equal(4, result.Attempts);
+        var (minimumChannel, refusedMsat, _) = refused[1];
+        var received = harness.Carol.Switch.Received.ToList();
+        Assert.Equal(2, received.Count);
+        Assert.Equal(sendable + 500, received.Aggregate(0UL, (sum, r) => sum + r.AmountMsat));
+        // The second round's parts (the refused ones were never offered, so never stored)
+        var offered = await harness.Bob.Parts.GetForPaymentAsync(invoice.PaymentHash);
+        Assert.Equal(2, offered.Count);
+        var onMinimumChannel = Assert.Single(offered, p => p.ChannelId == minimumChannel);
+        Assert.True(onMinimumChannel.Hops[0].Amount.MilliSatoshi > refusedMsat,
+                    $"{onMinimumChannel.Hops[0].Amount.MilliSatoshi} msat");
+    }
+
+    [Fact]
     public async Task Given_HtlcsDisabledOnBob_When_HePays_Then_EachChannelIsTriedOnceAndTheRefusalIsReported()
     {
         // Arrange: the engine's preconditions refuse every HTLC (B2-NO-02), whatever its amount

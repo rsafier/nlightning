@@ -842,7 +842,8 @@ public sealed partial class PaymentService
 
         var outerSecrets = route.Select(h => h.SharedSecret).ToList();
         var attribution = VerifyOuterAttribution(outerSecrets, removal);
-        var attributionText = DescribeOuterAttribution(route, attribution);
+        // The stored route names the payee for its last hop: that hop is the trampoline node, inner hop 0 of the
+        // attempt whose trampoline onion the error decrypts with (the newest when none does; NL-924)
         var last = route.Count - 1;
         foreach (var attempt in hops.GroupBy(h => h.Attempt).OrderByDescending(g => g.Key))
         {
@@ -851,6 +852,8 @@ public sealed partial class PaymentService
                                                                                    .ToList(), removal.Reason.Span);
             if (decrypted is null)
                 continue;
+
+            var attributionText = DescribeOuterAttribution(route, attribution, inner[0].NodeId);
 
             var code = decrypted.Code;
             var codeText = code is { } known ? $"{known} (0x{(ushort)known:X4})" : "an unreadable failure";
@@ -872,7 +875,9 @@ public sealed partial class PaymentService
         }
 
         return (null, attribution.InvalidHopIndex,
-                "The HTLC failed with an error onion no hop of either route authenticated" + attributionText, null,
+                "The HTLC failed with an error onion no hop of either route authenticated"
+              + DescribeOuterAttribution(route, attribution,
+                                         hops.Where(h => h.HopIndex == 0).MaxBy(h => h.Attempt)?.NodeId), null,
                 attribution);
     }
 
@@ -895,19 +900,27 @@ public sealed partial class PaymentService
     /// <summary>
     /// What the outer layer's <c>attribution_data</c> adds to a trampoline failure's reason: the outer hop whose HMAC
     /// did not verify (it shares the blame with its upstream neighbour) and the verified hold times; empty without
-    /// attribution.
+    /// attribution. The last outer hop is <paramref name="trampolineNode"/>, named as such, the hold time it reported
+    /// included (NL-924: the stored route names the payee for that hop).
     /// </summary>
     private static string DescribeOuterAttribution(IReadOnlyList<PaymentHop> outerRoute,
-                                                   AttributionVerification attribution)
+                                                   AttributionVerification attribution, CompactPubKey? trampolineNode)
     {
         if (!attribution.IsPresent)
             return "";
 
         var tampered = attribution.InvalidHopIndex is { } invalid
-                           ? $"; the attribution_data of outer hop {invalid} ({DescribeHop(outerRoute, invalid)}) did "
-                           + "not verify"
+                           ? $"; the attribution_data of outer hop {invalid} ("
+                           + (invalid == outerRoute.Count - 1 && trampolineNode is { } node
+                                  ? $"the trampoline node {node}"
+                                  : DescribeHop(outerRoute, invalid))
+                           + ") did not verify"
                            : "";
-        return tampered + DescribeHoldTimes(attribution);
+        var last = outerRoute.Count - 1;
+        var trampolineHoldTime = trampolineNode is { } trampoline && last >= 0 && attribution.HoldTimes.Count > last
+                                     ? $" (the last from the trampoline node {trampoline})"
+                                     : "";
+        return tampered + DescribeHoldTimes(attribution) + trampolineHoldTime;
     }
 
     /// <summary>The stored trampoline hops of a payment (every attempt); none when the unit of work stores none.

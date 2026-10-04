@@ -158,6 +158,52 @@ public class TrampolinePaymentHarnessTests
         Assert.Equal(amount.MilliSatoshi, david.Received.Aggregate(0UL, (sum, p) => sum + p.AmountMsat));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_ChannelsTooSmallAndCarolsAnnouncedFeatures_When_PaidThroughCarol_Then_SplitOnlyWithBasicMpp(
+        bool carolAnnouncesBasicMpp)
+    {
+        // Arrange (NL-924): no single channel carries 2,000,000 sat; Bob knows Carol only from her node_announcement
+        // (no peer manager), which sets trampoline_routing and, or not, basic_mpp
+        using var harness = new PaymentHarness(new PaymentHarnessTopology(SecondBobCarol: true, SecondCarolDavid: true,
+                                                                          BobUsesGraph: true));
+        var carol = new HarnessTrampolineNode(harness.Carol);
+        var david = new HarnessTrampolineNode(harness.David);
+        var timestamp = (uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var features = new FeatureSet();
+        features.SetFeature(Feature.OptionTrampolineRouting, false);
+        if (carolAnnouncesBasicMpp)
+            features.SetFeature(Feature.BasicMpp, false);
+        harness.Bob.GraphView = new GraphSnapshot(harness.BuildGraph(timestamp).Channels,
+                                                  [
+                                                      new GraphNode(harness.Carol.NodeId, timestamp,
+                                                                    features.GetWireBytes(), new byte[32],
+                                                                    new byte[3])
+                                                  ]);
+        var amount = LightningMoney.Satoshis(2_000_000);
+        var invoice = await CreateInvoiceAsync(harness.David, amount);
+
+        // Act
+        var result = await harness.RunAsync(harness.Bob.PaymentService.PayInvoiceAsync(
+                                                invoice.Bolt11!, null, Through(harness.Carol),
+                                                TestContext.Current.CancellationToken));
+
+        // Assert: with basic_mpp the outer leg is split; without it Bob offers no part he would have to split
+        if (carolAnnouncesBasicMpp)
+        {
+            Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
+            Assert.True(result.Parts >= 2);
+            Assert.Equal(amount.MilliSatoshi, david.Received.Aggregate(0UL, (sum, p) => sum + p.AmountMsat));
+        }
+        else
+        {
+            Assert.Equal(PaymentStatus.Failed, result.Payment.Status);
+            Assert.Contains("cannot be split", result.Payment.FailureReason);
+            Assert.Empty(carol.Received);
+        }
+    }
+
     [Fact]
     public async Task Given_CarolAsksForAHigherFee_When_Paid_Then_BobCachesHerPolicyAndRetriesAtIt()
     {

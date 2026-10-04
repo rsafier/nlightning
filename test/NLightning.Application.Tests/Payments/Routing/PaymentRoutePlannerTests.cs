@@ -370,6 +370,115 @@ public class PaymentRoutePlannerTests
         Assert.Equal(s_toDavid2, Assert.Single(parts!).Channel);
     }
 
+    #region NL-924: the peer's htlc_minimum_msat on our channels
+
+    [Fact]
+    public void Given_TheRestBelowTheOtherChannelsHtlcMinimum_When_Split_Then_TheLargerPartLeavesEnough()
+    {
+        // Arrange: no channel carries the amount alone; filled to its whole sendable, David2 would leave 500 msat for
+        // David1, whose peer takes HTLCs of at least 1,000 msat (the engine refuses a smaller one, B2-ADD-S06)
+        var toDavid1 = s_toDavid1 with { HtlcMinimumMsat = 1_000 };
+        _liquidity[toDavid1.ChannelId] = 600_000;
+        _liquidity[s_toDavid2.ChannelId] = 700_000;
+
+        // Act
+        var planned = Planner().TryPlan(Request(Target(true), 700_500, 0, 16, toDavid1, s_toDavid2), out var parts,
+                                        out var reason);
+
+        // Assert: David2 takes less, leaving David1 his minimum (the last part needs no MinPartMsat); together the amount
+        Assert.True(planned, reason);
+        Assert.Equal(2, parts!.Count);
+        Assert.Equal((s_toDavid2, 699_500UL), (parts[0].Channel, parts[0].Route.Amount.MilliSatoshi));
+        Assert.Equal((toDavid1, 1_000UL), (parts[1].Channel, parts[1].Route.Amount.MilliSatoshi));
+        Assert.All(parts, p => Assert.True(p.Route.FirstHopAmount.MilliSatoshi >= p.Channel.HtlcMinimumMsat));
+    }
+
+    [Fact]
+    public void Given_ARestBelowAMinimumAndADepletedThirdChannel_When_Split_Then_TheLargerPartStillLeavesEnough()
+    {
+        // Arrange: as above, with a third channel to David that has no minimum but can send only 100 msat: it cannot
+        // take the 500 msat rest either, so it must not hide David1's minimum
+        var toDavid1 = s_toDavid1 with { HtlcMinimumMsat = 1_000 };
+        var toDavid3 = new LocalChannelCandidate(new ChannelId(Enumerable.Repeat((byte)0xD3, 32).ToArray()), s_david,
+                                                 new ShortChannelId(202, 1, 0));
+        _liquidity[toDavid1.ChannelId] = 600_000;
+        _liquidity[s_toDavid2.ChannelId] = 700_000;
+        _liquidity[toDavid3.ChannelId] = 100;
+
+        // Act
+        var planned = Planner().TryPlan(Request(Target(true), 700_500, 0, 16, toDavid1, s_toDavid2, toDavid3),
+                                        out var parts, out var reason);
+
+        // Assert
+        Assert.True(planned, reason);
+        Assert.Equal(2, parts!.Count);
+        Assert.Equal((s_toDavid2, 699_500UL), (parts[0].Channel, parts[0].Route.Amount.MilliSatoshi));
+        Assert.Equal((toDavid1, 1_000UL), (parts[1].Channel, parts[1].Route.Amount.MilliSatoshi));
+    }
+
+    [Fact]
+    public void Given_ARestBelowTheNextPathsMinimumButItsFeesRaiseTheFirstHop_When_Split_Then_NothingIsShifted()
+    {
+        // Arrange: David2 (no fee) carries all but 500 msat; the rest goes through Carol's hint (2,000 msat + 500 ppm),
+        // whose first hop (2,500 msat) is above our channel's 1,000 msat minimum although 500 msat is below it; our
+        // channel to Carol can send 5,000 msat, too little for MinPartMsat and its fee
+        var toCarol1 = s_toCarol1 with { HtlcMinimumMsat = 1_000 };
+        _liquidity[s_toDavid2.ChannelId] = 700_000;
+        _liquidity[toCarol1.ChannelId] = 5_000;
+
+        // Act
+        var planned = Planner().TryPlan(Request(Target(true, [CarolHint()]), 700_500, 100_000, 16, s_toDavid2,
+                                                toCarol1), out var parts, out var reason);
+
+        // Assert: the rest as it is, through Carol
+        Assert.True(planned, reason);
+        Assert.Equal(2, parts!.Count);
+        Assert.Equal((s_toDavid2, 700_000UL), (parts[0].Channel, parts[0].Route.Amount.MilliSatoshi));
+        Assert.Equal((toCarol1, 500UL), (parts[1].Channel, parts[1].Route.Amount.MilliSatoshi));
+        Assert.Equal(2_500UL, parts[1].Route.FirstHopAmount.MilliSatoshi);
+    }
+
+    [Fact]
+    public void Given_AnAmountBelowAChannelsHtlcMinimum_When_Planned_Then_ThatChannelIsNotUsed()
+    {
+        // Arrange: David1 carries the amount but takes nothing below 1,000 msat; David2 has no minimum
+        var toDavid1 = s_toDavid1 with { HtlcMinimumMsat = 1_000 };
+        _liquidity[toDavid1.ChannelId] = 600_000;
+        _liquidity[s_toDavid2.ChannelId] = 1_000;
+
+        // Act
+        var onlyDavid1 = Planner().TryPlan(Request(Target(true), 500, 0, 16, toDavid1), out _, out var reason);
+        var both = Planner().TryPlan(Request(Target(true), 500, 0, 16, toDavid1, s_toDavid2), out var parts, out _);
+
+        // Assert
+        Assert.False(onlyDavid1);
+        Assert.Contains("takes HTLCs of at least 1000 msat", reason);
+        Assert.True(both);
+        Assert.Equal(s_toDavid2, Assert.Single(parts!).Channel);
+    }
+
+    [Fact]
+    public void Given_AMinimumLearntFromARefusal_When_Planned_Then_TheChannelOnlyGetsAPartAboveIt()
+    {
+        // Arrange: the engine refused 20,000 msat on David1 as below the peer's minimum (its state moved since)
+        _liquidity[s_toDavid1.ChannelId] = 600_000;
+        _liquidity[s_toDavid2.ChannelId] = 700_000;
+        _constraints.RaiseLocalHtlcMinimum(s_toDavid1.ChannelId, 20_000);
+
+        // Act
+        var planned = Planner().TryPlan(Request(Target(true), 700_010, 0, 16, s_toDavid1, s_toDavid2), out var parts,
+                                        out var reason);
+
+        // Assert
+        Assert.True(planned, reason);
+        Assert.Equal(2, parts!.Count);
+        var onDavid1 = Assert.Single(parts, p => p.Channel == s_toDavid1);
+        Assert.Equal(20_001UL, onDavid1.Route.Amount.MilliSatoshi);
+        Assert.Equal(700_010UL, parts.Aggregate(0UL, (sum, p) => sum + p.Route.Amount.MilliSatoshi));
+    }
+
+    #endregion
+
     [Fact]
     public void Given_ExtraCltv_When_Planned_Then_TheFinalCltvIsHigher()
     {
