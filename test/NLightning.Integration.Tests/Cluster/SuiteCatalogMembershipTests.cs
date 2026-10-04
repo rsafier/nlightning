@@ -9,6 +9,7 @@ using Docker.Interop.Eclair;
 using Docker.Interop.Ldk;
 using Docker.Interop.Tor;
 using Docker.Onchain;
+using Docker.Taproot;
 using TestCollections;
 using Testing.Cluster.Run.Matrix;
 
@@ -36,6 +37,7 @@ public class SuiteCatalogMembershipTests
         ["eclair2"] = EclairInteropCollection.Name,
         ["ldk"] = LdkInteropCollection.Name,
         ["tor"] = TorInteropCollection.Name,
+        ["taproot"] = LndTaprootRegtestCollection.Name,
         ["cashu"] = CashuMintCollection.Name,
         ["postgres"] = "postgres"
     };

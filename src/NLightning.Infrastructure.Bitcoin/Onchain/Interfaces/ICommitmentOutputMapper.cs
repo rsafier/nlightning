@@ -49,4 +49,13 @@ public interface ICommitmentOutputMapper
     /// <c>1 OP_CSV</c>).</param>
     IReadOnlyList<CommitmentOutputDescriptor> FindPaymentToRemote(ChainTx onChain, CompactPubKey ourPaymentBasepoint,
                                                                   bool hasAnchors);
+
+    /// <summary>
+    /// <see cref="FindPaymentToRemote(ChainTx, CompactPubKey, bool)"/> for a simple taproot channel (NL-877 T4): the
+    /// <c>to_remote</c> is the P2TR output of the NUMS internal key and the leaf
+    /// <c>&lt;payment_basepoint&gt; OP_CHECKSIGVERIFY 1 OP_CSV</c>; each one found carries its leaf and control block.
+    /// </summary>
+    IReadOnlyList<CommitmentOutputDescriptor> FindSimpleTaprootPaymentToRemote(ChainTx onChain,
+                                                                               CompactPubKey ourPaymentBasepoint) =>
+        throw new NotSupportedException("This mapper does not map simple taproot commitments");
 }

@@ -18,7 +18,7 @@ public class ChannelReadyMessageTypeSerializer : IMessageTypeSerializer<ChannelR
     /// The <c>channel_ready_tlvs</c> types this node understands. BOLT 1: an unknown even type MUST fail the stream.
     /// </summary>
     private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
-        new HashSet<BigSize> { TlvConstants.ShortChannelId };
+        new HashSet<BigSize> { TlvConstants.ShortChannelId, TaprootTlvConstants.NextLocalNonce };
 
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
@@ -80,9 +80,12 @@ public class ChannelReadyMessageTypeSerializer : IMessageTypeSerializer<ChannelR
                 shortChannelIdTlv = tlvConverter.ConvertFromBase(baseShortChannelId!);
             }
 
-            return new ChannelReadyMessage(payload, shortChannelIdTlv);
+            var nextLocalNonceTlv =
+                extension.ReadTlv<NextLocalNonceTlv>(TaprootTlvConstants.NextLocalNonce, _tlvConverterFactory);
+
+            return new ChannelReadyMessage(payload, shortChannelIdTlv, nextLocalNonceTlv);
         }
-        catch (SerializationException e)
+        catch (Exception e) when (e is SerializationException or InvalidCastException)
         {
             throw new MessageSerializationException("Error deserializing ChannelReadyMessage", e);
         }

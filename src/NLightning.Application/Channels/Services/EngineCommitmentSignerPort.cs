@@ -31,9 +31,11 @@ public sealed class EngineCommitmentSignerPort : ICommitmentSigner
     /// <exception cref="InvalidOperationException">The channel is not in memory.</exception>
     /// <remarks>A null <paramref name="funding"/>, or the channel's current one, signs against the channel's funding
     /// output exactly as before splicing; a pending splice funding is signed against its own outpoint and keys
-    /// (splicing plan SP1-C).</remarks>
+    /// (splicing plan SP1-C). A simple taproot channel is signed with a MuSig2 partial signature against
+    /// <paramref name="remoteVerificationNonce"/> (NL-877 T3).</remarks>
     public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
-                                                     CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint)
+                                                     CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint,
+                                                     MusigPublicNonce? remoteVerificationNonce = null)
     {
         ArgumentNullException.ThrowIfNull(spec);
         if (spec.Holder != CommitmentSide.Remote)
@@ -45,7 +47,7 @@ public sealed class EngineCommitmentSignerPort : ICommitmentSigner
 
         return _commitmentSigningService
               .SignRemoteCommitment(channel, funding, CommitmentTxSpec.FromCommitmentSpec(spec), number,
-                                    remotePerCommitmentPoint)
+                                    remotePerCommitmentPoint, remoteVerificationNonce)
               .ToCommitmentSignatures();
     }
 }

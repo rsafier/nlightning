@@ -20,7 +20,8 @@ public class ClosingSigMessageTests
                                                                               + ClosingCompleteMessageTests.Sig1Hex;
 
     private readonly ClosingSigMessageTypeSerializer _serializer =
-        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvStreamSerializer);
+        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
+            SerializerHelper.TlvStreamSerializer);
 
     private readonly MessageSerializer _messageSerializer =
         new(NullLogger<MessageSerializer>.Instance,

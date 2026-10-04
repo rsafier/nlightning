@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Channels.Services;
 
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
@@ -23,6 +24,7 @@ using Domain.Protocol.Tlv;
 using Domain.Serialization.Interfaces;
 using Interfaces;
 using Quiescence;
+using Taproot;
 
 /// <summary>
 /// Runs commitment state machine transitions for the BOLT 2 normal-operation handlers (plan N6-T1, decision D3):
@@ -206,7 +208,10 @@ public sealed class ChannelStateTransitionService
 
     /// <summary>
     /// Builds our <c>revoke_and_ack</c> for a persisted <c>commitment_signed</c>: tells the signer the new local
-    /// commitment is persisted, then releases the secret of the revoked one (invariant I3: only after the save).
+    /// commitment is persisted, then releases the secret of the revoked one (invariant I3: only after the save). A
+    /// simple taproot channel's carries <c>next_local_nonces</c>: per active funding, our verification nonce for the
+    /// commitment the peer's next <c>commitment_signed</c> creates (<see cref="OutboundRevokeAndAck.NextCommitmentNumber"/>;
+    /// counter-derived, so a retransmission repeats it).
     /// </summary>
     public RevokeAndAckMessage CreateRevokeAndAck(ChannelModel channel, OutboundRevokeAndAck revokeAndAck)
     {
@@ -218,7 +223,53 @@ public sealed class ChannelStateTransitionService
         var secret = _lightningSigner.RevealPerCommitmentSecret(channel.ChannelId,
                                                                 revokeAndAck.RevokedCommitmentNumber);
         var nextPoint = _lightningSigner.GetPerCommitmentPoint(channel.ChannelId, revokeAndAck.NextCommitmentNumber);
-        return _messageFactory.CreateRevokeAndAckMessage(channel.ChannelId, secret, nextPoint);
+        if (!channel.ChannelParams.OptionSimpleTaproot)
+            return _messageFactory.CreateRevokeAndAckMessage(channel.ChannelId, secret, nextPoint);
+
+        var nonces = TaprootChannelNonces.CreateLocalNonces(_lightningSigner, channel,
+                                                            revokeAndAck.NextCommitmentNumber);
+        return _messageFactory.CreateRevokeAndAckMessage(channel.ChannelId, secret, nextPoint, nonces);
+    }
+
+    /// <summary>
+    /// Simple taproot channels (NL-877 T3): <see cref="ChannelCommitments.ResignRemoteNextCommit"/> with this scope's
+    /// commitment signer, for the retransmission of our unacked <c>commitment_signed</c> after a reconnection. The
+    /// caller persists the result (<see cref="CommitAsync"/>) before it sends anything.
+    /// </summary>
+    public CommitmentsResult ResignRemoteNextCommit(ChannelCommitments commitments)
+    {
+        ArgumentNullException.ThrowIfNull(commitments);
+        return commitments.ResignRemoteNextCommit(_commitmentSigner);
+    }
+
+    /// <summary>
+    /// The peer's signatures of a received <c>commitment_signed</c> as the engine takes them. On a simple taproot
+    /// channel (bolt-simple-taproot.md §Channel Operation) the 64-byte <c>signature</c> must be all zeros and the
+    /// MuSig2 partial signature is <c>partial_signature_with_nonce</c> (its absence is refused by the engine,
+    /// TAPROOT-CS-R01); the TLV is ignored on the other channel types.
+    /// </summary>
+    /// <exception cref="ChannelFailedException">A non-zero <c>signature</c> on a simple taproot channel (MUST fail the
+    /// channel).</exception>
+    public static CommitmentSignatures ToReceivedSignatures(ChannelModel channel, CommitmentSignedMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(message);
+        var payload = message.Payload;
+        if (!channel.ChannelParams.OptionSimpleTaproot)
+            return new CommitmentSignatures(payload.Signature, payload.HtlcSignatures.ToList());
+
+        if (!payload.Signature.IsZero)
+            throw new ChannelFailedException(channel.ChannelId,
+                                             "[TAPROOT-CS-R00] commitment_signed with a non-zero signature on a simple "
+                                           + "taproot channel", "commitment_signed signature must be zero")
+            {
+                RequirementId = "TAPROOT-CS-R00"
+            };
+
+        return new CommitmentSignatures(payload.Signature, payload.HtlcSignatures.ToList())
+        {
+            PartialSignature = message.PartialSignatureWithNonceTlv?.PartialSignatureWithNonce
+        };
     }
 
     /// <summary>
@@ -330,9 +381,7 @@ public sealed class ChannelStateTransitionService
         {
             var members = batch.Messages
                                .Select(m => new ReceivedCommitmentSigned(m.FundingTxIdTlv?.FundingTxId,
-                                                                         new CommitmentSignatures(
-                                                                             m.Payload.Signature,
-                                                                             m.Payload.HtlcSignatures.ToList())))
+                                                                         ToReceivedSignatures(channel, m)))
                                .ToList();
             result = commitments.ReceiveCommitBatch(members, _commitmentVerifier);
         }
@@ -452,16 +501,15 @@ public sealed class ChannelStateTransitionService
                 _messageFactory.CreateUpdateFailMalformedHtlcMessage(channelId, malformed.Id, malformed.Sha256OfOnion,
                                                                      malformed.FailureCode),
             OutboundUpdateFee fee => _messageFactory.CreateUpdateFeeMessage(channelId, fee.FeeratePerKw),
+            // A simple taproot channel's: zero signature, the MuSig2 partial signature with our signing nonce in
+            // partial_signature_with_nonce, the BIP 340 HTLC signatures (bolt-simple-taproot.md §Channel Operation)
+            OutboundCommitmentSigned { Signatures.PartialSignature: { } partial } signed =>
+                _messageFactory.CreateCommitmentSignedMessage(channelId, partial, signed.Signatures.HtlcSignatures,
+                                                              GetFundingTxId(channel, signed)),
             OutboundCommitmentSigned signed =>
                 _messageFactory.CreateCommitmentSignedMessage(channelId, signed.Signatures.Signature,
                                                               signed.Signatures.HtlcSignatures,
-                                                              // After a splice lock the engine's current funding
-                                                              // is the new one; ChannelModel.FundingOutput is not
-                                                              signed.FundingTxId
-                                                           ?? channel.Commitments?.Params.Funding?.FundingTxId
-                                                           ?? channel.FundingOutput?.TransactionId
-                                                           ?? throw new InvalidOperationException(
-                                                                  $"Channel {channelId} has no funding txid")),
+                                                              GetFundingTxId(channel, signed)),
             OutboundStartBatch batch =>
                 _messageFactory.CreateStartBatchMessage(channelId, checked((ushort)batch.BatchSize)),
             OutboundRevokeAndAck =>
@@ -469,6 +517,16 @@ public sealed class ChannelStateTransitionService
             _ => throw new InvalidOperationException($"Unknown outbound message {outbound?.GetType().Name}")
         };
     }
+
+    /// <summary>
+    /// The <c>funding_txid</c> TLV of a <c>commitment_signed</c>: the engine's (after a splice lock the engine's
+    /// current funding is the new one; <see cref="ChannelModel.FundingOutput"/> is not).
+    /// </summary>
+    private static TxId GetFundingTxId(ChannelModel channel, OutboundCommitmentSigned signed) =>
+        signed.FundingTxId
+     ?? channel.Commitments?.Params.Funding?.FundingTxId
+     ?? channel.FundingOutput?.TransactionId
+     ?? throw new InvalidOperationException($"Channel {channel.ChannelId} has no funding txid");
 
     #endregion
 
@@ -485,16 +543,26 @@ public sealed class ChannelStateTransitionService
     /// <param name="maxDustHtlcExposureMsat">Our <c>max_dust_htlc_exposure_msat</c> policy
     /// (<c>NodeOptions.MaxDustHtlcExposureMsat</c>), stored with the snapshot (NL-242, NL-254); null disables the
     /// check.</param>
+    /// <param name="remoteNextNonce">Simple taproot channels (NL-877 T3): the peer's <c>channel_ready</c>
+    /// <c>next_local_nonce</c>, its verification nonce for its next commitment (null when not received yet). The
+    /// peer's signature of our first commitment is then <see cref="ChannelModel.LastReceivedPartialSignature"/>.</param>
     /// <exception cref="InvalidOperationException">The funding output is not known.</exception>
     /// <exception cref="ArgumentException">The balances do not add up to the funding amount.</exception>
     public static ChannelCommitments CreateInitialCommitments(ChannelModel channel,
                                                               CompactPubKey remoteCurrentPerCommitmentPoint,
                                                               CompactPubKey remoteNextPerCommitmentPoint,
-                                                              ulong? maxDustHtlcExposureMsat = null)
+                                                              ulong? maxDustHtlcExposureMsat = null,
+                                                              MusigPublicNonce? remoteNextNonce = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
 
-        var signatures = channel.LastReceivedSignature is { } signature
+        CommitmentSignatures? signatures;
+        if (channel.ChannelParams.OptionSimpleTaproot)
+            signatures = channel.LastReceivedPartialSignature is { } partial
+                             ? CommitmentSignatures.Taproot(partial, [])
+                             : null;
+        else
+            signatures = channel.LastReceivedSignature is { } signature
                              ? new CommitmentSignatures(signature, [])
                              : null;
         return ChannelCommitments.Create(channel.ChannelId,
@@ -502,7 +570,8 @@ public sealed class ChannelStateTransitionService
                                          channel.LocalBalance.MilliSatoshi, channel.RemoteBalance.MilliSatoshi,
                                          checked((uint)channel.ChannelParams.FeeRateAmountPerKw.Satoshi),
                                          remoteCurrentPerCommitmentPoint, remoteNextPerCommitmentPoint, signatures,
-                                         channel.LocalCommitmentNumber, channel.RemoteCommitmentNumber);
+                                         channel.LocalCommitmentNumber, channel.RemoteCommitmentNumber,
+                                         remoteNextNonce);
     }
 
     #endregion

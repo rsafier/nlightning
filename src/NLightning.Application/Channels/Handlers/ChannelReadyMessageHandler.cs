@@ -9,6 +9,7 @@ using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Crypto.Constants;
+using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
@@ -19,6 +20,7 @@ using Domain.Protocol.Messages;
 using DualFunding;
 using Interfaces;
 using Services;
+using Taproot;
 
 public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMessage>
 {
@@ -26,6 +28,7 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
     private readonly DualFundedOpenService? _dualFundedOpenService;
     private readonly ILogger<ChannelReadyMessageHandler> _logger;
     private readonly ulong? _maxDustHtlcExposureMsat;
+    private readonly IMusig2Service? _musig2;
     private readonly IUnitOfWork _unitOfWork;
 
     /// <param name="channelMemoryRepository">The channels in memory.</param>
@@ -35,11 +38,15 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
     /// (<see cref="NodeOptions.MaxDustHtlcExposureMsat"/>, NL-254); without it the state has none.</param>
     /// <param name="dualFundedOpenService">Defers an early <c>channel_ready</c> of a dual-funded open with several
     /// signed RBF attempts until our confirmation tells which one confirmed (NL-528); none without dual funding.</param>
+    /// <param name="musig2">Checks that a simple taproot channel's <c>next_local_nonce</c> parses as two points
+    /// (registered by <c>AddBitcoinInfrastructure</c>); without it only the nonce's presence is checked.</param>
     public ChannelReadyMessageHandler(IChannelMemoryRepository channelMemoryRepository,
                                       ILogger<ChannelReadyMessageHandler> logger, IUnitOfWork unitOfWork,
                                       IOptions<NodeOptions>? nodeOptions = null,
-                                      DualFundedOpenService? dualFundedOpenService = null)
+                                      DualFundedOpenService? dualFundedOpenService = null,
+                                      IMusig2Service? musig2 = null)
     {
+        _musig2 = musig2;
         _channelMemoryRepository = channelMemoryRepository;
         _dualFundedOpenService = dualFundedOpenService;
         _logger = logger;
@@ -86,6 +93,10 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
                                               payload.ChannelId,
                                               "This channel requires a ShortChannelIdTlv to be provided");
 
+        // Simple taproot channels (bolt-simple-taproot.md §channel_ready): next_local_nonce, the peer's verification
+        // nonce for its next commitment, is required (MUST fail the channel otherwise; NL-877 T5)
+        var taprootNonce = GetTaprootNonce(channel, message);
+
         // NL-528: a dual-funded open with several signed RBF attempts builds its first commitment state on the attempt
         // that confirmed, which only our own confirmation tells; the peer's channel_ready waits for it
         if (currentState == ChannelState.V1FundingSigned && channel.Version == ChannelVersion.V2
@@ -102,7 +113,7 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
         {
             if (channel.Commitments is null)
                 firstSnapshot = TryCreateFirstSnapshot(channel, channel.RemoteKeySet.CurrentPerCommitmentCompactPoint,
-                                                       payload.SecondPerCommitmentPoint);
+                                                       payload.SecondPerCommitmentPoint, taprootNonce);
 
             channel.RemoteKeySet.UpdatePerCommitmentPoint(payload.SecondPerCommitmentPoint);
         }
@@ -117,6 +128,12 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
             channel.RemoteAlias = aliasTlv.ShortChannelId;
             aliasLearned = true;
         }
+
+        // A re-sent channel_ready of a simple taproot channel (LND sends one after channel_reestablish while neither side
+        // signed a commitment since the open, with the nonce of its channel_reestablish) carries the peer's verification
+        // nonce for its commitment 1 again: taken while that is still the next one, ignored after
+        if (firstSnapshot is null && taprootNonce is { } resentNonce)
+            await TakeResentTaprootNonceAsync(channel, resentNonce);
 
         switch (currentState)
         {
@@ -195,12 +212,13 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
     /// inconsistent: the channel then works as before, without HTLCs.
     /// </summary>
     private ChannelCommitments? TryCreateFirstSnapshot(ChannelModel channel, CompactPubKey remoteCurrentPoint,
-                                                       CompactPubKey remoteNextPoint)
+                                                       CompactPubKey remoteNextPoint, MusigPublicNonce? taprootNonce)
     {
         try
         {
             return ChannelStateTransitionService.CreateInitialCommitments(channel, remoteCurrentPoint,
-                                                                          remoteNextPoint, _maxDustHtlcExposureMsat);
+                                                                          remoteNextPoint, _maxDustHtlcExposureMsat,
+                                                                          taprootNonce);
         }
         catch (Exception e) when (e is ArgumentException or InvalidOperationException or OverflowException)
         {
@@ -240,6 +258,54 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
             _logger.LogError(ex, "Failed to persist channel {ChannelId} to database", channel.ChannelId);
             throw;
         }
+    }
+
+    /// <summary>
+    /// The <c>next_local_nonce</c> of a simple taproot channel's <c>channel_ready</c> (null for the other channel types,
+    /// whose TLV is ignored).
+    /// </summary>
+    /// <exception cref="ChannelFailedException">The nonce is absent or does not parse as two points.</exception>
+    private MusigPublicNonce? GetTaprootNonce(ChannelModel channel, ChannelReadyMessage message)
+    {
+        if (!channel.ChannelParams.OptionSimpleTaproot)
+            return null;
+
+        if (message.NextLocalNonceTlv is not { } nonceTlv)
+            throw new ChannelFailedException(channel.ChannelId,
+                                             "[TAPROOT-CR-R01] channel_ready without next_local_nonce on a simple "
+                                           + "taproot channel", "channel_ready without next_local_nonce")
+            {
+                RequirementId = "TAPROOT-CR-R01"
+            };
+
+        if (_musig2 is not null && !TaprootChannelNonces.IsValidPublicNonce(_musig2, nonceTlv.Nonce))
+            throw new ChannelFailedException(channel.ChannelId,
+                                             "[TAPROOT-CR-R01] channel_ready next_local_nonce is not two points",
+                                             "channel_ready next_local_nonce does not parse")
+            {
+                RequirementId = "TAPROOT-CR-R01"
+            };
+
+        return nonceTlv.Nonce;
+    }
+
+    /// <summary>
+    /// Takes a re-sent <c>channel_ready</c>'s nonce while the peer's next commitment is still its commitment 1 (no
+    /// commitment signed since the open, nothing unacked); saved before it replaces the engine's.
+    /// </summary>
+    private async Task TakeResentTaprootNonceAsync(ChannelModel channel, MusigPublicNonce nonce)
+    {
+        if (channel.Commitments is not { RemoteNextCommit: null, RemoteCommit.Number: 0, LocalCommit.Number: 0 }
+                                   commitments
+         || commitments.Params.Funding is not { } funding
+         || (commitments.RemoteNextNonces.TryGetValue(funding.FundingTxId, out var known) && known == nonce))
+            return;
+
+        var result = commitments.ReceiveChannelReadyNonce(nonce);
+        await _unitOfWork.ChannelStateDbRepository.ApplyAsync(result.Next, result.Transition);
+        await _unitOfWork.SaveChangesAsync();
+        channel.UpdateCommitments(result.Next);
+        _channelMemoryRepository.UpdateChannel(channel);
     }
 
     private static bool ShouldReplaceAlias()

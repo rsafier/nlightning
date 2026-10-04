@@ -14,6 +14,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Crypto.Interfaces;
 using Domain.Enums;
 using Domain.Money;
 using Domain.Node.Options;
@@ -41,6 +42,9 @@ internal sealed class CloseHarness : IDisposable
     };
 
     public TwoNodeHarness Harness { get; }
+
+    /// <summary>The channel is a simple taproot channel (its funding output is the MuSig2 P2TR key).</summary>
+    public bool IsSimpleTaproot { get; }
     public HarnessNode Alice => Harness.Alice;
     public HarnessNode Bob => Harness.Bob;
 
@@ -52,11 +56,14 @@ internal sealed class CloseHarness : IDisposable
     /// </param>
     /// <param name="simpleClose">Both nodes negotiated <c>option_simple_close</c> (BOLT2 plan N11): the close uses
     /// <c>closing_complete</c>/<c>closing_sig</c>.</param>
+    /// <param name="simpleTaproot">A simple taproot channel (NL-877 T5): MuSig2 closing signatures over the P2TR
+    /// funding output.</param>
     public CloseHarness(uint aliceFeeratePerKw = 2_500, uint bobFeeratePerKw = 2_500, bool aliceSendsFeeRange = true,
                         bool bobSendsFeeRange = true, Action<string, IServiceCollection>? configure = null,
-                        bool simpleClose = false)
+                        bool simpleClose = false, bool simpleTaproot = false)
     {
-        Harness = new TwoNodeHarness(configureServices: (node, services) =>
+        IsSimpleTaproot = simpleTaproot;
+        Harness = new TwoNodeHarness(simpleTaproot: simpleTaproot, configureServices: (node, services) =>
         {
             var isAlice = node.Name == "Alice";
             var published = _published[node.Name];
@@ -116,11 +123,29 @@ internal sealed class CloseHarness : IDisposable
             return published.ToList();
     }
 
-    /// <summary>The funding output both nodes spend.</summary>
-    public TxOut FundingTxOut() =>
-        new FundingOutput(LightningMoney.Satoshis(TwoNodeHarness.FundingSatoshis),
-                          new PubKey(Alice.Basepoints.FundingPubKey), new PubKey(Bob.Basepoints.FundingPubKey))
-           .ToTxOut();
+    /// <summary>
+    /// The funding output both nodes spend: the P2WSH 2-of-2, or for a simple taproot channel the BIP 86 key path of
+    /// <c>KeyAgg(KeySort(both funding keys))</c>.
+    /// </summary>
+    public TxOut FundingTxOut()
+    {
+        if (!IsSimpleTaproot)
+            return new FundingOutput(LightningMoney.Satoshis(TwoNodeHarness.FundingSatoshis),
+                                     new PubKey(Alice.Basepoints.FundingPubKey),
+                                     new PubKey(Bob.Basepoints.FundingPubKey)).ToTxOut();
+
+        var aggregate = Alice.Services.GetRequiredService<IMusig2Service>().AggregateTaprootKeyPath(Alice.Basepoints.FundingPubKey,
+                                                                    Bob.Basepoints.FundingPubKey);
+        return new TxOut(Money.Satoshis(TwoNodeHarness.FundingSatoshis),
+                         new Script(aggregate.GetTaprootScriptPubKey()));
+    }
+
+    /// <summary>Script execution of <paramref name="tx"/>'s only input against <see cref="FundingTxOut"/>.</summary>
+    public void AssertSpendsFunding(Transaction tx)
+    {
+        var error = tx.CreateValidator([FundingTxOut()]).ValidateInput(0).Error;
+        Assert.True(error is null, error?.ToString());
+    }
 
     /// <summary>Asserts both nodes closed with the same, fully signed transaction that spends the funding output.
     /// </summary>
@@ -136,8 +161,7 @@ internal sealed class CloseHarness : IDisposable
         Assert.Equal(bobTx.TxId, Assert.Single(Published(Bob)).TxId);
 
         var tx = Transaction.Load(aliceTx.RawTxBytes, Network.RegTest);
-        Assert.True(tx.Inputs.AsIndexedInputs().First().VerifyScript(FundingTxOut(), out var error),
-                    error.ToString());
+        AssertSpendsFunding(tx);
         return tx;
     }
 

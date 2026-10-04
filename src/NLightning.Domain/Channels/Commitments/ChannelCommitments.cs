@@ -93,6 +93,19 @@ public sealed record ChannelCommitments
     /// <summary>The current funding and the pending ones, or null when the engine has no funding data.</summary>
     public FundingSet? Fundings => Params.Funding is { } current ? new FundingSet(current, PendingFundings) : null;
 
+    /// <summary>
+    /// Simple taproot channels (bolt-simple-taproot.md, NL-877 T3): the peer's verification nonce for its next
+    /// commitment, per active funding txid (<c>next_local_nonce</c> of <c>channel_ready</c>, then the
+    /// <c>next_local_nonces</c> map of <c>revoke_and_ack</c> or <c>channel_reestablish</c>). Our partial signature of the
+    /// peer's commitment on a funding needs its entry, and signing consumes it (one nonce signs one session); the next
+    /// one comes with the peer's <c>revoke_and_ack</c>. Always empty for the other channel types.
+    /// </summary>
+    public ImmutableDictionary<TxId, MusigPublicNonce> RemoteNextNonces { get; private init; } =
+        ImmutableDictionary<TxId, MusigPublicNonce>.Empty;
+
+    /// <summary>True for a simple taproot channel (<see cref="CommitmentParams.OptionSimpleTaproot"/>).</summary>
+    public bool IsSimpleTaproot => Params.OptionSimpleTaproot;
+
     private ChannelCommitments(ChannelId channelId, CommitmentParams @params, ulong localBalanceMsat,
                                ulong remoteBalanceMsat, ImmutableSortedDictionary<HtlcKey, HtlcRecord> htlcs,
                                ImmutableList<FeeUpdate> feeUpdates, ulong localNextHtlcId, ulong remoteNextHtlcId,
@@ -129,13 +142,18 @@ public sealed record ChannelCommitments
     /// <param name="localCommitRemoteSignatures">The peer's signatures of our current commitment.</param>
     /// <param name="localCommitmentNumber">Our current commitment number.</param>
     /// <param name="remoteCommitmentNumber">The peer's current commitment number.</param>
-    /// <exception cref="ArgumentException">The balances don't add up to the funding amount.</exception>
+    /// <param name="remoteNextNonce">Simple taproot channels: the peer's verification nonce for its next commitment on
+    /// the current funding (<c>channel_ready</c>'s <c>next_local_nonce</c>); null when not known yet (it can be given
+    /// later with <see cref="ReceiveChannelReadyNonce"/>). Must be null for the other channel types.</param>
+    /// <exception cref="ArgumentException">The balances don't add up to the funding amount, or a nonce is given for a
+    /// channel that is not simple taproot or has no funding data.</exception>
     public static ChannelCommitments Create(ChannelId channelId, CommitmentParams @params, ulong localBalanceMsat,
                                             ulong remoteBalanceMsat, uint feeratePerKw,
                                             CompactPubKey remoteCurrentPerCommitmentPoint,
                                             CompactPubKey? remoteNextPerCommitmentPoint,
                                             CommitmentSignatures? localCommitRemoteSignatures = null,
-                                            ulong localCommitmentNumber = 0, ulong remoteCommitmentNumber = 0)
+                                            ulong localCommitmentNumber = 0, ulong remoteCommitmentNumber = 0,
+                                            MusigPublicNonce? remoteNextNonce = null)
     {
         ArgumentNullException.ThrowIfNull(@params);
         if (checked(localBalanceMsat + remoteBalanceMsat) != @params.FundingMsat)
@@ -149,11 +167,24 @@ public sealed record ChannelCommitments
         var remoteSpec =
             new CommitmentSpec(CommitmentSide.Remote, feeratePerKw, localBalanceMsat, remoteBalanceMsat, []);
 
-        return new ChannelCommitments(channelId, @params, localBalanceMsat, remoteBalanceMsat, noHtlcs, fees, 0, 0,
-                                      new LocalCommit(localCommitmentNumber, localSpec, localCommitRemoteSignatures),
-                                      new RemoteCommit(remoteCommitmentNumber, remoteSpec,
-                                                       remoteCurrentPerCommitmentPoint),
-                                      null, remoteNextPerCommitmentPoint);
+        var created = new ChannelCommitments(channelId, @params, localBalanceMsat, remoteBalanceMsat, noHtlcs, fees, 0,
+                                             0,
+                                             new LocalCommit(localCommitmentNumber, localSpec,
+                                                             localCommitRemoteSignatures),
+                                             new RemoteCommit(remoteCommitmentNumber, remoteSpec,
+                                                              remoteCurrentPerCommitmentPoint),
+                                             null, remoteNextPerCommitmentPoint);
+        if (remoteNextNonce is not { } nonce)
+            return created;
+
+        if (!@params.OptionSimpleTaproot || @params.Funding is not { } funding)
+            throw new ArgumentException("A remote nonce needs a simple taproot channel with funding data",
+                                        nameof(remoteNextNonce));
+
+        return created with
+        {
+            RemoteNextNonces = ImmutableDictionary<TxId, MusigPublicNonce>.Empty.Add(funding.FundingTxId, nonce)
+        };
     }
 
     /// <summary>
@@ -167,9 +198,14 @@ public sealed record ChannelCommitments
                                              ulong remoteNextHtlcId, LocalCommit localCommit,
                                              RemoteCommit remoteCommit, RemoteNextCommit? remoteNextCommit,
                                              CompactPubKey? remoteNextPerCommitmentPoint,
-                                             IEnumerable<ChannelFunding>? pendingFundings = null)
+                                             IEnumerable<ChannelFunding>? pendingFundings = null,
+                                             IReadOnlyDictionary<TxId, MusigPublicNonce>? remoteNextNonces = null)
     {
         ArgumentNullException.ThrowIfNull(@params);
+        if (remoteNextNonces is { Count: > 0 } && !@params.OptionSimpleTaproot)
+            throw new ArgumentException("Remote nonces are stored for a channel that is not simple taproot",
+                                        nameof(remoteNextNonces));
+
         var htlcMap = ImmutableSortedDictionary.CreateBuilder<HtlcKey, HtlcRecord>();
         foreach (var htlc in htlcs)
         {
@@ -199,7 +235,12 @@ public sealed record ChannelCommitments
         var restored = new ChannelCommitments(channelId, @params, localBalanceMsat, remoteBalanceMsat,
                                               htlcMap.ToImmutable(), fees, localNextHtlcId, remoteNextHtlcId,
                                               localCommit, remoteCommit, remoteNextCommit,
-                                              remoteNextPerCommitmentPoint);
+                                              remoteNextPerCommitmentPoint)
+        {
+            RemoteNextNonces = remoteNextNonces is null
+                                   ? ImmutableDictionary<TxId, MusigPublicNonce>.Empty
+                                   : remoteNextNonces.ToImmutableDictionary()
+        };
         var total = checked(localBalanceMsat + remoteBalanceMsat);
         if (total != @params.FundingMsat)
             throw new ArgumentException($"Balances add up to {total} msat, not {@params.FundingMsat}");
@@ -404,10 +445,20 @@ public sealed record ChannelCommitments
 
     /// <summary>
     /// We may sign now: changes are pending, no signed commitment is waiting for its <c>revoke_and_ack</c> (D7,
-    /// B2-CS-S06) and we know the peer's next per-commitment point.
+    /// B2-CS-S06), we know the peer's next per-commitment point and, for a simple taproot channel, its verification
+    /// nonce on every active funding (<see cref="RemoteNextNonces"/>).
     /// </summary>
     public bool CanSendCommit => RemoteNextCommit is null && RemoteNextPerCommitmentPoint.HasValue
-                              && HasPendingChangesForRemote;
+                              && HasPendingChangesForRemote && HasRemoteNoncesForActiveFundings;
+
+    /// <summary>
+    /// True when every active funding has a verification nonce of the peer in <see cref="RemoteNextNonces"/>; always
+    /// true for a channel that is not simple taproot.
+    /// </summary>
+    public bool HasRemoteNoncesForActiveFundings =>
+        !IsSimpleTaproot || (Params.Funding is { } current && RemoteNextNonces.ContainsKey(current.FundingTxId)
+                                                            && PendingFundings.All(
+                                                                   f => RemoteNextNonces.ContainsKey(f.FundingTxId)));
 
     /// <summary>
     /// No HTLC is left in either commitment (dust ones included), every fee update is in both commitments and no
@@ -692,6 +743,9 @@ public sealed record ChannelCommitments
             throw new CommitmentRefusedException("B2-CS-S06", "The peer's next per-commitment point is unknown");
         if (!HasPendingChangesForRemote)
             throw new CommitmentRefusedException("B2-CS-S01", "No updates to sign");
+        if (!HasRemoteNoncesForActiveFundings)
+            throw new CommitmentRefusedException("TAPROOT-NONCE",
+                                                 "The peer's verification nonce for its next commitment is unknown");
 
         var advanced = Advance(HtlcEvent.SendCommit, out var settled);
         var spec = advanced.BuildSpec(CommitmentSide.Remote);
@@ -715,7 +769,9 @@ public sealed record ChannelCommitments
             RemoteNextCommit = new RemoteNextCommit(commit, signatures)
             {
                 PendingFundingSignatures = pendingSignatures
-            }
+            },
+            // Each nonce signed one session: the peer's revoke_and_ack brings the next ones
+            RemoteNextNonces = ImmutableDictionary<TxId, MusigPublicNonce>.Empty
         };
 
         // The funding_txid TLV names the engine's current funding, which a lock moves (byte-identical before a splice)
@@ -737,9 +793,22 @@ public sealed record ChannelCommitments
     private CommitmentSignatures SignRemote(ICommitmentSigner signer, ChannelFunding? funding, ulong number,
                                             CommitmentSpec spec, CompactPubKey point)
     {
-        var signatures = signer.SignRemoteCommitment(ChannelId, funding, number, spec, point);
+        MusigPublicNonce? nonce = null;
+        if (IsSimpleTaproot)
+        {
+            var fundingTxId = (funding ?? Params.Funding)?.FundingTxId
+                           ?? throw new InvalidOperationException("A simple taproot engine needs its funding data");
+            nonce = RemoteNextNonces.TryGetValue(fundingTxId, out var found)
+                        ? found
+                        : throw new CommitmentRefusedException(
+                              "TAPROOT-NONCE", $"No verification nonce of the peer for funding {fundingTxId}");
+        }
+
+        var signatures = signer.SignRemoteCommitment(ChannelId, funding, number, spec, point, nonce);
+        if (IsSimpleTaproot && signatures.PartialSignature is null)
+            throw new InvalidOperationException("The signer returned no partial signature for a simple taproot channel");
         var expected =
-            CommitmentFeeCalculator.UntrimmedHtlcCount(spec, Params.Remote.DustLimitSatoshis, Params.OptionAnchors);
+            CommitmentFeeCalculator.UntrimmedHtlcCount(spec, Params.Remote.DustLimitSatoshis, Params.Format);
         if (signatures.HtlcSignatures.Count != expected)
             throw new InvalidOperationException(
                 $"Signer returned {signatures.HtlcSignatures.Count} HTLC signatures, expected {expected}");
@@ -848,7 +917,11 @@ public sealed record ChannelCommitments
         members.AddRange(PendingFundings.Zip(pendingSignatures, (f, s) => ((ChannelFunding?)f, SpecFor(spec, f),
                                                                           s.Signatures)));
         var expected =
-            CommitmentFeeCalculator.UntrimmedHtlcCount(spec, Params.Local.DustLimitSatoshis, Params.OptionAnchors);
+            CommitmentFeeCalculator.UntrimmedHtlcCount(spec, Params.Local.DustLimitSatoshis, Params.Format);
+        foreach (var (funding, _, memberSignatures) in members)
+            if (IsSimpleTaproot && memberSignatures.PartialSignature is null)
+                throw FailChannel("TAPROOT-CS-R01",
+                                  $"commitment_signed without partial_signature_with_nonce{Label(funding)}");
         foreach (var (funding, _, memberSignatures) in members)
             if (memberSignatures.HtlcSignatures.Count != expected)
                 throw Violation("B2-CS-R02",
@@ -877,10 +950,19 @@ public sealed record ChannelCommitments
     /// <see cref="IncomingHtlcLockedIn"/> for every incoming HTLC this locks in, and <see cref="OutgoingHtlcFailed"/>
     /// (failures only) then <see cref="OutgoingHtlcSettled"/> for every outgoing HTLC whose removal becomes irrevocable.
     /// </remarks>
-    /// <exception cref="CommitmentViolationException">No <c>commitment_signed</c> outstanding (B2-RAA-R03) or a wrong
-    /// secret (B2-RAA-R01, must fail the channel).</exception>
+    /// <param name="perCommitmentSecret">The revealed secret.</param>
+    /// <param name="nextPerCommitmentPoint">The peer's point for the commitment after the one it now holds.</param>
+    /// <param name="verifier">The secret verifier.</param>
+    /// <param name="nextLocalNonces">Simple taproot channels: the message's <c>next_local_nonces</c> (funding txid to
+    /// the peer's verification nonce for its next commitment), which replace <see cref="RemoteNextNonces"/>; every
+    /// active funding needs an entry (entries for other fundings are dropped). Ignored for the other channel
+    /// types.</param>
+    /// <exception cref="CommitmentViolationException">No <c>commitment_signed</c> outstanding (B2-RAA-R03), a wrong
+    /// secret (B2-RAA-R01, must fail the channel), or, for a simple taproot channel, no nonce for an active funding
+    /// (must fail the channel).</exception>
     public CommitmentsResult ReceiveRevoke(Secret perCommitmentSecret, CompactPubKey nextPerCommitmentPoint,
-                                           IRevocationVerifier verifier)
+                                           IRevocationVerifier verifier,
+                                           IReadOnlyDictionary<TxId, MusigPublicNonce>? nextLocalNonces = null)
     {
         ArgumentNullException.ThrowIfNull(verifier);
         if (RemoteNextCommit is not { } pending)
@@ -890,12 +972,14 @@ public sealed record ChannelCommitments
                                                    $"per_commitment_secret does not match remote commitment {RemoteCommit.Number}",
                                                    ChannelId)
             { MustFailChannel = true };
+        var nonces = IsSimpleTaproot ? CheckRemoteNonces(nextLocalNonces, "revoke_and_ack") : RemoteNextNonces;
 
         var next = Advance(HtlcEvent.RecvRevoke, out var settled) with
         {
             RemoteCommit = pending.Commit,
             RemoteNextCommit = null,
-            RemoteNextPerCommitmentPoint = nextPerCommitmentPoint
+            RemoteNextPerCommitmentPoint = nextPerCommitmentPoint,
+            RemoteNextNonces = nonces
         };
         var result = Result(next, [], settled);
 
@@ -925,6 +1009,133 @@ public sealed record ChannelCommitments
         var others = signedOn.Where(f => f.FundingTxId != current).ToList();
         return others.Count == 0 ? null : others;
     }
+
+    #region Simple taproot nonces
+
+    /// <summary>
+    /// Simple taproot channels: the peer's <c>channel_ready</c> <c>next_local_nonce</c>, its verification nonce for its
+    /// next commitment on the current funding. Replaces <see cref="RemoteNextNonces"/> (a re-sent
+    /// <c>channel_ready</c> after a reconnection carries the same nonce as its <c>channel_reestablish</c>).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Not a simple taproot channel, or no funding data.</exception>
+    public CommitmentsResult ReceiveChannelReadyNonce(MusigPublicNonce nonce)
+    {
+        if (!IsSimpleTaproot)
+            throw new InvalidOperationException("Only a simple taproot channel takes the peer's verification nonce");
+        var current = Params.Funding
+                   ?? throw new InvalidOperationException("A simple taproot engine needs its funding data");
+
+        return Result(this with
+        {
+            RemoteNextNonces = ImmutableDictionary<TxId, MusigPublicNonce>.Empty.Add(current.FundingTxId, nonce)
+        }, []);
+    }
+
+    /// <summary>
+    /// Simple taproot channels: the peer's <c>next_local_nonces</c> outside a <c>revoke_and_ack</c> (its
+    /// <c>channel_reestablish</c>): replaces <see cref="RemoteNextNonces"/> with the entries of the active fundings.
+    /// A retransmitted <c>commitment_signed</c> is then signed again with these (<see cref="ResignRemoteNextCommit"/>).
+    /// </summary>
+    /// <exception cref="CommitmentViolationException">An active funding has no entry (must fail the channel).</exception>
+    /// <exception cref="InvalidOperationException">Not a simple taproot channel, or no funding data.</exception>
+    public CommitmentsResult ReceiveRemoteNonces(IReadOnlyDictionary<TxId, MusigPublicNonce> nextLocalNonces)
+    {
+        ArgumentNullException.ThrowIfNull(nextLocalNonces);
+        if (!IsSimpleTaproot)
+            throw new InvalidOperationException("Only a simple taproot channel takes the peer's verification nonces");
+
+        return Result(this with { RemoteNextNonces = CheckRemoteNonces(nextLocalNonces, "channel_reestablish") }, []);
+    }
+
+    /// <summary>
+    /// Simple taproot channels: signs the unacked <see cref="RemoteNextCommit"/> again (same number and content) for
+    /// its retransmission after a reconnection, with the peer's verification nonces from its
+    /// <c>channel_reestablish</c> (<see cref="ReceiveRemoteNonces"/>), which this consumes. A MuSig2 signature is never
+    /// replayed byte for byte (bolt-simple-taproot.md: fresh signing nonce, the peer's new verification nonce); the new
+    /// signatures replace the stored sent ones.
+    /// </summary>
+    /// <returns>A result whose outbound is the <c>commitment_signed</c> (a <c>start_batch</c> group with pending
+    /// splices), as <see cref="SendCommit"/>'s.</returns>
+    /// <exception cref="CommitmentRefusedException">No unacked commitment, or a nonce is missing.</exception>
+    /// <exception cref="InvalidOperationException">Not a simple taproot channel.</exception>
+    public CommitmentsResult ResignRemoteNextCommit(ICommitmentSigner signer)
+    {
+        ArgumentNullException.ThrowIfNull(signer);
+        if (!IsSimpleTaproot)
+            throw new InvalidOperationException("Only a simple taproot channel signs its retransmission again");
+        if (RemoteNextCommit is not { } unacked)
+            throw new CommitmentRefusedException("B2-RE-CS", "No unacked commitment_signed to sign again");
+        if (!HasRemoteNoncesForActiveFundings)
+            throw new CommitmentRefusedException("TAPROOT-NONCE",
+                                                 "The peer's verification nonce for its next commitment is unknown");
+
+        var commit = unacked.Commit;
+        var signatures = SignRemote(signer, Params.Funding, commit.Number, commit.Spec, commit.PerCommitmentPoint);
+        var pendingSignatures = PendingFundings
+                               .Select(f => new FundingSignatures(
+                                           f.FundingTxId,
+                                           SignRemote(signer, f, commit.Number, SpecFor(commit.Spec, f),
+                                                      commit.PerCommitmentPoint)))
+                               .ToList();
+        var next = this with
+        {
+            RemoteNextCommit = new RemoteNextCommit(commit, signatures) { PendingFundingSignatures = pendingSignatures },
+            RemoteNextNonces = ImmutableDictionary<TxId, MusigPublicNonce>.Empty
+        };
+
+        if (pendingSignatures.Count == 0)
+            return Result(next, [new OutboundCommitmentSigned(commit.Number, signatures, Params.Funding?.FundingTxId)]);
+
+        var outbound = new List<CommitmentOutbound>(pendingSignatures.Count + 2)
+        {
+            new OutboundStartBatch(pendingSignatures.Count + 1),
+            new OutboundCommitmentSigned(commit.Number, signatures, Params.Funding!.FundingTxId)
+        };
+        outbound.AddRange(pendingSignatures.Select(s => new OutboundCommitmentSigned(commit.Number, s.Signatures,
+                                                                                     s.FundingTxId)));
+        return Result(next, outbound);
+    }
+
+    /// <summary>
+    /// The peer's nonce map restricted to the active fundings (BOLT simple taproot: a missing entry for an active
+    /// funding fails the channel).
+    /// </summary>
+    private ImmutableDictionary<TxId, MusigPublicNonce> CheckRemoteNonces(
+        IReadOnlyDictionary<TxId, MusigPublicNonce>? nonces, string message)
+    {
+        var current = Params.Funding
+                   ?? throw new InvalidOperationException("A simple taproot engine needs its funding data");
+        if (nonces is null || nonces.Count == 0)
+            throw FailChannel("TAPROOT-NONCE-R01", $"{message} without next_local_nonces on a simple taproot channel");
+
+        var builder = ImmutableDictionary.CreateBuilder<TxId, MusigPublicNonce>();
+        foreach (var fundingTxId in PendingFundings.Select(f => f.FundingTxId).Prepend(current.FundingTxId))
+        {
+            if (!nonces.TryGetValue(fundingTxId, out var nonce))
+                throw FailChannel("TAPROOT-NONCE-R01",
+                                  $"{message} has no next_local_nonces entry for active funding {fundingTxId}");
+
+            builder[fundingTxId] = nonce;
+        }
+
+        return builder.ToImmutable();
+    }
+
+    /// <summary>The nonces of <see cref="RemoteNextNonces"/> that are still for active fundings.</summary>
+    private ImmutableDictionary<TxId, MusigPublicNonce> NoncesOfActiveFundings(ChannelCommitments next) =>
+        next.RemoteNextNonces.IsEmpty
+            ? next.RemoteNextNonces
+            : next.RemoteNextNonces.RemoveRange(next.RemoteNextNonces.Keys
+                                                    .Where(t => next.Params.Funding?.FundingTxId != t
+                                                             && next.PendingFundings.All(f => f.FundingTxId != t))
+                                                    .ToList());
+
+    private static bool SameNonces(ImmutableDictionary<TxId, MusigPublicNonce> left,
+                                   ImmutableDictionary<TxId, MusigPublicNonce> right) =>
+        left.Count == right.Count
+     && left.All(e => right.TryGetValue(e.Key, out var other) && other.Equals(e.Value));
+
+    #endregion
 
     /// <summary>
     /// On disconnect, reverses every update the peer sent that no <c>commitment_signed</c> of the peer covered (BOLT 2
@@ -1079,7 +1290,7 @@ public sealed record ChannelCommitments
 
         var spec = SpecFor(LocalCommit.Spec, funding);
         var expected =
-            CommitmentFeeCalculator.UntrimmedHtlcCount(spec, Params.Local.DustLimitSatoshis, Params.OptionAnchors);
+            CommitmentFeeCalculator.UntrimmedHtlcCount(spec, Params.Local.DustLimitSatoshis, Params.Format);
         if (signatures.HtlcSignatures.Count != expected)
             throw FailChannel("B2-CS-R02",
                               $"num_htlcs {signatures.HtlcSignatures.Count}, expected {expected} on splice funding {funding.FundingTxId}");
@@ -1151,6 +1362,7 @@ public sealed record ChannelCommitments
             RemoteCommit = RebaseOn(RemoteCommit, locked),
             RemoteNextCommit = remoteNext
         };
+        next = next with { RemoteNextNonces = NoncesOfActiveFundings(next) };
         return Result(next, [], retired: retired);
     }
 
@@ -1206,6 +1418,7 @@ public sealed record ChannelCommitments
                                    }
                                    : null
         };
+        next = next with { RemoteNextNonces = NoncesOfActiveFundings(next) };
         return Result(next, [], retired: discarded.Select(f => f with { Status = ChannelFundingStatus.Discarded })
                                                   .ToList());
     }
@@ -1255,7 +1468,8 @@ public sealed record ChannelCommitments
                               || !ReferenceEquals(RemoteNextCommit, next.RemoteNextCommit),
             ScalarsChanged: LocalBalanceMsat != next.LocalBalanceMsat || RemoteBalanceMsat != next.RemoteBalanceMsat
                          || LocalNextHtlcId != next.LocalNextHtlcId || RemoteNextHtlcId != next.RemoteNextHtlcId
-                         || !Nullable.Equals(RemoteNextPerCommitmentPoint, next.RemoteNextPerCommitmentPoint),
+                         || !Nullable.Equals(RemoteNextPerCommitmentPoint, next.RemoteNextPerCommitmentPoint)
+                         || !SameNonces(RemoteNextNonces, next.RemoteNextNonces),
             FundingsChanged: !PendingFundings.SequenceEqual(next.PendingFundings)
                           || !Equals(Params.Funding, next.Params.Funding),
             RetiredFundings: retired);

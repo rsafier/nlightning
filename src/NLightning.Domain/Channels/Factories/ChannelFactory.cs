@@ -1,6 +1,8 @@
 namespace NLightning.Domain.Channels.Factories;
 
 using Bitcoin.Interfaces;
+using Bitcoin.Transactions.Enums;
+using Bitcoin.Transactions.Extensions;
 using Bitcoin.Transactions.Factories;
 using Bitcoin.Transactions.Outputs;
 using Bitcoin.ValueObjects;
@@ -15,6 +17,7 @@ using Exceptions;
 using Interfaces;
 using Models;
 using Money;
+using Node;
 using Node.Options;
 using Policies;
 using Protocol.Interfaces;
@@ -125,14 +128,18 @@ public class ChannelFactory : IChannelFactory
         var localParams = CreateLocalParamsAsNonInitiator(payload, localUpfrontShutdownScript,
                                                           negotiatedFeatures.OptionSplice > FeatureSupport.No);
 
-        // The channel type decides anchors, not the init features (the opener may pick a type without them)
+        // The channel type decides anchors, not the init features (the opener may pick a type without them); a simple
+        // taproot type (NL-877 T5, accepted by the validator only when negotiated and private) keeps the anchors
+        // semantics
         var optionAnchorOutputs = message.ChannelTypeTlv?.Features.IsFeatureSet(Feature.OptionAnchors, true) ?? false;
+        var isSimpleTaproot = TaprootChannelType.IsTaprootChannelType(message.ChannelTypeTlv?.Features);
         // The opener's announce_channel bit is stored with the channel (NL-341): a public channel is announced once it
         // is deep enough (BOLT 7). The validator refused it together with option_scid_alias in the channel type
         var channelParams = new ChannelParams(localParams, remoteParams, payload.FeeRatePerKw, minimumDepth,
                                               optionAnchorOutputs, useScidAlias)
         {
-            AnnounceChannel = payload.ChannelFlags.AnnounceChannel
+            AnnounceChannel = payload.ChannelFlags.AnnounceChannel,
+            OptionSimpleTaproot = isSimpleTaproot
         };
 
         // Generate the commitment number (the remote is the opener: opener basepoint first)
@@ -200,8 +207,15 @@ public class ChannelFactory : IChannelFactory
         var currentFeeRatePerKw = request.FeeRatePerKw
                                ?? LightningMoney.Satoshis(_nodeOptions.GetCommitmentFeeRatePerKw(
                                                               (await _feeService.GetFeeRatePerKwAsync()).Satoshi));
+        // A simple taproot channel only when the operator asks for it (plan D-T2: anchors stay the default type of our
+        // opens; NL-877 T5)
+        if (request.IsSimpleTaproot)
+            CheckSimpleTaprootOpen(request, negotiatedFeatures);
         var hasAnchors = negotiatedFeatures.OptionAnchors > FeatureSupport.No;
-        var expectedFee = CommitmentFeeCalculator.FunderCost((ulong)currentFeeRatePerKw.Satoshi, hasAnchors, 0);
+        var format = request.IsSimpleTaproot
+                         ? CommitmentFormat.SimpleTaproot
+                         : CommitmentFormatExtensions.FromOptionAnchors(hasAnchors);
+        var expectedFee = CommitmentFeeCalculator.FunderCost((ulong)currentFeeRatePerKw.Satoshi, format, 0);
         if (request.FundingAmount < expectedFee + channelReserveAmount)
             throw new ChannelErrorException($"Funding amount is too small to cover fees: {request.FundingAmount}");
 
@@ -281,7 +295,8 @@ public class ChannelFactory : IChannelFactory
                                               request.FeeRatePerKw ?? currentFeeRatePerKw, minimumDepth,
                                               negotiatedFeatures.OptionAnchors != FeatureSupport.No, useScidAlias)
         {
-            AnnounceChannel = request.IsPublic
+            AnnounceChannel = request.IsPublic,
+            OptionSimpleTaproot = request.IsSimpleTaproot
         };
 
         try
@@ -295,6 +310,27 @@ public class ChannelFactory : IChannelFactory
         {
             throw new ChannelErrorException("Error creating commitment transaction", e);
         }
+    }
+
+    /// <summary>
+    /// Our simple taproot open (NL-877 T5): our <c>Features:OptionSimpleTaproot</c> advertised (the experimental gate:
+    /// <c>Features:AllowExperimentalFeatures</c>), the peer supporting it and <c>option_simple_close</c> (the spec's
+    /// dependency; LND and Eclair refuse it otherwise), and a private channel (the spec forbids
+    /// <c>announce_channel</c>; taproot gossip is T7).
+    /// </summary>
+    private void CheckSimpleTaprootOpen(OpenChannelClientRequest request, FeatureOptions negotiatedFeatures)
+    {
+        if (!_nodeOptions.Features.IsSimpleTaprootAdvertised)
+            throw new ChannelErrorException(
+                "Simple taproot channels are not enabled on this node: set Features:OptionSimpleTaproot=Optional "
+              + "and Features:AllowExperimentalFeatures=true");
+        if (negotiatedFeatures.OptionSimpleTaproot == FeatureSupport.No)
+            throw new ChannelErrorException("The peer does not support simple taproot channels (feature bits 80/81)");
+        if (negotiatedFeatures.OptionSimpleClose == FeatureSupport.No)
+            throw new ChannelErrorException(
+                "A simple taproot channel needs option_simple_close, which the peer did not negotiate");
+        if (request.IsPublic)
+            throw new ChannelErrorException("Simple taproot channels are private: --public can't be used with them");
     }
 
     /// <summary>

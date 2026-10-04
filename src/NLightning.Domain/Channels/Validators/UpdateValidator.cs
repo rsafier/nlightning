@@ -70,12 +70,12 @@ internal static class UpdateValidator
             {
                 var holderDust = p.Holder(view.Holder).DustLimitSatoshis;
                 var spec = view.ToSpec();
-                var baseFee = (long)CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(spec, holderDust, p.OptionAnchors)
+                var baseFee = (long)CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(spec, holderDust, p.Format)
                             * 1_000;
                 if (view.LocalMsat - baseFee < reserve)
                     throw Refused("B2-ADD-S01",
                                   $"We could not pay the {view.Holder} commitment fee above our reserve after this HTLC{on}");
-                if (view.LocalMsat - (long)CommitmentFeeCalculator.FunderCostMsat(spec, holderDust, p.OptionAnchors)
+                if (view.LocalMsat - (long)CommitmentFeeCalculator.FunderCostMsat(spec, holderDust, p.Format)
                   < reserve)
                     throw Refused("B2-ADD-S02", $"We could not pay both anchors above our reserve after this HTLC{on}");
             }
@@ -87,7 +87,7 @@ internal static class UpdateValidator
                 var spiked = view.ToSpec(checked(view.FeeratePerKw * 2));
                 var spikeCost = (long)CommitmentFeeCalculator.FunderCostMsat(spiked,
                                                                              p.Holder(view.Holder).DustLimitSatoshis,
-                                                                             p.OptionAnchors)
+                                                                             p.Format)
                               + (long)(spiked.FeeratePerKw * (ulong)WeightConstants.HtlcOutputWeight / 1000) * 1_000;
                 if (view.LocalMsat - spikeCost < reserve)
                     throw Refused("B2-ADD-S03",
@@ -106,7 +106,7 @@ internal static class UpdateValidator
             {
                 var funderCost = (long)CommitmentFeeCalculator.FunderCostMsat(view.ToSpec(),
                                                                      p.Holder(view.Holder).DustLimitSatoshis,
-                                                                     p.OptionAnchors);
+                                                                     p.Format);
                 if (view.RemoteMsat - funderCost < funding.RemoteReserveMsat)
                     throw Refused("B2-ADD-S04",
                                   $"The funder could not pay the fee of the {view.Holder} commitment after this HTLC{on}");
@@ -149,7 +149,7 @@ internal static class UpdateValidator
             var cost = p.LocalIsFunder
                            ? 0
                            : (long)CommitmentFeeCalculator.FunderCostMsat(view.ToSpec(), p.Local.DustLimitSatoshis,
-                                                                          p.OptionAnchors);
+                                                                          p.Format);
             // The lenient reserve on spliced fundings (D9, Q3): Eclair keeps 1 % of the capacity there
             var remoteReserve = enforceLimits ? funding.RemoteReceiveReserveMsat : 0;
             if (view.RemoteMsat - cost < remoteReserve)
@@ -170,7 +170,7 @@ internal static class UpdateValidator
         {
             var view = current.Shift(funding.LocalDeltaMsat, funding.RemoteDeltaMsat);
             var cost = (long)CommitmentFeeCalculator.FunderCostMsat(view.ToSpec(), p.Remote.DustLimitSatoshis,
-                                                                   p.OptionAnchors);
+                                                                   p.Format);
             if (view.LocalMsat - cost < funding.LocalReserveMsat)
                 throw Refused("B2-FEE-R03",
                               $"We could not pay feerate {next.LatestFeeratePerKw} above our reserve on the peer's commitment{funding.Label}");
@@ -196,7 +196,7 @@ internal static class UpdateValidator
             var spec = funding.Funding is { } f && !funding.IsCurrent
                            ? ChannelCommitments.SpecFor(currentSpec, f)
                            : currentSpec;
-            var cost = (long)CommitmentFeeCalculator.FunderCostMsat(spec, p.Local.DustLimitSatoshis, p.OptionAnchors);
+            var cost = (long)CommitmentFeeCalculator.FunderCostMsat(spec, p.Local.DustLimitSatoshis, p.Format);
             if ((long)spec.RemoteMsat - cost < 0)
                 throw Violation(next, "B2-FEE-R03",
                                 $"The funder cannot afford feerate {next.LatestFeeratePerKw} on our commitment{funding.Label}");
@@ -230,7 +230,7 @@ internal static class UpdateValidator
         foreach (var funding in current.ActiveFundingViews())
         {
             var fundingSpec = funding.Funding is { } f && !funding.IsCurrent ? ChannelCommitments.SpecFor(spec, f) : spec;
-            var cost = CommitmentFeeCalculator.FunderCostMsat(fundingSpec, p.Local.DustLimitSatoshis, p.OptionAnchors);
+            var cost = CommitmentFeeCalculator.FunderCostMsat(fundingSpec, p.Local.DustLimitSatoshis, p.Format);
             if (fundingSpec.RemoteMsat >= cost)
                 continue;
 
@@ -248,10 +248,10 @@ internal static class UpdateValidator
         var p = commitments.Params;
         var holderDust = p.Holder(view.Holder).DustLimitSatoshis;
         if (!CommitmentFeeCalculator.IsHtlcTrimmed(htlc.AmountMsat, htlc.IsOfferedBy(view.Holder), holderDust,
-                                                   view.FeeratePerKw, p.OptionAnchors))
+                                                   view.FeeratePerKw, p.Format))
             return;
 
-        var exposure = CommitmentFeeCalculator.TrimmedHtlcTotalMsat(view.ToSpec(), holderDust, p.OptionAnchors);
+        var exposure = CommitmentFeeCalculator.TrimmedHtlcTotalMsat(view.ToSpec(), holderDust, p.Format);
         if (exposure > maxDust)
             throw Refused(requirementId,
                           $"Dust exposure {exposure} msat on the {view.Holder} commitment would exceed {maxDust} msat");

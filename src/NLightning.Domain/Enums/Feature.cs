@@ -216,5 +216,15 @@ public enum Feature
     /// <remarks>
     /// Only accepts onion messages from peers with a channel (not supported; known so dependencies can be validated).
     /// </remarks>
-    OptionOnionMessagesOnlyChannels = 67
+    OptionOnionMessagesOnlyChannels = 67,
+
+    /// <summary>
+    /// 80 is for the compulsory bit, 81 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Simple taproot channels (<c>option_simple_taproot</c>, BOLTs PR #995 final bits; contexts I and N, and a channel
+    /// type bit). The staging bits 180/181 are never advertised and not listed here (a peer's 181 is an unknown odd bit).
+    /// Not supported yet (NL-877; experimental, see <c>FeatureOptions.ExperimentalFeatures</c>).
+    /// </remarks>
+    OptionSimpleTaproot = 81
 }

@@ -42,6 +42,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     private static readonly string[] s_stateOnlyColumns =
     [
         nameof(ChannelEntity.RemoteNextPerCommitmentPoint),
+        nameof(ChannelEntity.RemoteNextNonces),
         nameof(ChannelEntity.SentCommitDiff),
         nameof(ChannelEntity.LastSentOrder),
         nameof(ChannelEntity.MaxDustHtlcExposureMsat),
@@ -484,10 +485,14 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             RemoteCommitmentNumber = channelModel.RemoteCommitmentNumber,
             LastSentSignature = channelModel.LastSentSignature?.Value ?? null,
             LastReceivedSignature = channelModel.LastReceivedSignature?.Value ?? null,
+            LastReceivedPartialSignature = channelModel.LastReceivedPartialSignature?.ToBytes(),
 
             RemoteAlias = channelModel.RemoteAlias,
 
             RemoteNextPerCommitmentPoint = channelModel.Commitments?.RemoteNextPerCommitmentPoint,
+            RemoteNextNonces = channelModel.Commitments is { } commitments
+                                   ? CommitmentStateEncoding.EncodeRemoteNonces(commitments.RemoteNextNonces)
+                                   : null,
             SentCommitDiff = channelModel.SentCommitDiff?.ToArray(),
             LastSentOrder = (byte)channelModel.LastSentCommitmentMessage,
             ErrorSent = channelModel.ErrorSent?.ToArray(),
@@ -592,6 +597,8 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         };
         // The current funding's key index (NL-495): the signer's view of a spliced channel uses its rotated key
         channelModel.SetLocalFundingKeyIndex(splicedFunding?.LocalFundingKeyIndex ?? 0);
+        if (channelEntity.LastReceivedPartialSignature is { } partialSignature)
+            channelModel.UpdateLastReceivedPartialSignature(new MusigPartialSignatureWithNonce(partialSignature));
         if (channelEntity.ErrorSent is not null)
             channelModel.MarkErrorSent(channelEntity.ErrorSent);
         if (channelEntity.DataLossDetected)

@@ -89,22 +89,26 @@ internal sealed class PeerStorageTestContext : IDisposable
     /// <summary>The channels <see cref="IChannelDbRepository.ExistsAsync"/> knows.</summary>
     public HashSet<ChannelId> KnownChannelIds { get; } = [];
 
-    public ChannelModel AddChannel(CompactPubKey peer, ChannelState state = ChannelState.Open, bool known = true)
+    public ChannelModel AddChannel(CompactPubKey peer, ChannelState state = ChannelState.Open, bool known = true,
+                                   bool simpleTaproot = false)
     {
-        var channel = CreateChannel(peer, state);
+        var channel = CreateChannel(peer, state, simpleTaproot);
         Channels.Add(channel);
         if (known)
             KnownChannelIds.Add(channel.ChannelId);
         return channel;
     }
 
-    public static ChannelModel CreateChannel(CompactPubKey peer, ChannelState state)
+    public static ChannelModel CreateChannel(CompactPubKey peer, ChannelState state, bool simpleTaproot = false)
     {
         var pubKey = new CompactPubKey(new Key().PubKey.ToBytes());
         var party = new ChannelParty(LightningMoney.Satoshis(354), LightningMoney.Satoshis(1_000),
                                      LightningMoney.Satoshis(1), 30, LightningMoney.Satoshis(100_000), 144, null);
         var channelParams = new ChannelParams(party, party, LightningMoney.Satoshis(253), 3, false,
-                                              FeatureSupport.No);
+                                              FeatureSupport.No)
+        {
+            OptionSimpleTaproot = simpleTaproot
+        };
         var keySet = new ChannelKeySetModel(0, pubKey, pubKey, pubKey, pubKey, pubKey, pubKey);
         return new ChannelModel(channelParams, new ChannelId(RandomUtils.GetBytes(32)), null, null, true, null,
                                 null, LightningMoney.Satoshis(100_000), keySet, 0, 0, LightningMoney.Zero, null, 0,

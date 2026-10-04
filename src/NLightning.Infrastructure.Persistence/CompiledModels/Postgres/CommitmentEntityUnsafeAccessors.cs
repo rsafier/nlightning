@@ -36,6 +36,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Number>k__BackingField")]
         public static extern ref ulong Number(CommitmentEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<PartialSignature>k__BackingField")]
+        public static extern ref byte[] PartialSignature(CommitmentEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<PerCommitmentPoint>k__BackingField")]
         public static extern ref byte[] PerCommitmentPoint(CommitmentEntity @this);
 

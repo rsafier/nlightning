@@ -78,9 +78,9 @@ internal sealed class RemoteResolutionTestContext : IDisposable
 
     public ChannelCloseModel Close { get; private set; } = null!;
 
-    public RemoteResolutionTestContext(bool hasAnchors = false)
+    public RemoteResolutionTestContext(bool hasAnchors = false, bool simpleTaproot = false)
     {
-        Pair = new RealSigningCommitmentPair(hasAnchors);
+        Pair = new RealSigningCommitmentPair(hasAnchors || simpleTaproot, simpleTaproot);
         Store.Channels[Channel.ChannelId] = Channel;
 
         var services = new ServiceCollection();
@@ -246,6 +246,13 @@ internal sealed class RemoteResolutionTestContext : IDisposable
     {
         var tx = Transaction.Load(broadcast.RawTransaction, Network.Main);
         var spent = CommitmentTx.Outputs[(int)tx.Inputs[0].PrevOut.N];
+        if (spent.ScriptPubKey.IsScriptType(ScriptType.Taproot))
+        {
+            // BIP 341 needs every spent output (one input here)
+            error = tx.CreateValidator([spent]).ValidateInput(0).Error ?? ScriptError.OK;
+            return error == ScriptError.OK;
+        }
+
         return tx.Inputs.AsIndexedInputs().First().VerifyScript(spent, out error);
     }
 

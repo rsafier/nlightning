@@ -36,7 +36,7 @@
 #
 # Usage: scripts/run-cluster.sh [options] [-- extra xunit v3 runner args]
 #       --matrix [S,...]  the suite matrix (lnd, cln, gossip, eclair, ldk, eclair2, day0, onchain, anchors, faults,
-#                         abcd, postgres, tor; default all). Not with -n, --suite, --class/--method, --project or --trait
+#                         abcd, taproot, postgres, tor; default all). Not with -n, --suite, --class/--method, --project or --trait
 #       --max-namespaces M  matrix: run namespaces its suites may hold at once (default 12 = the machine's cap,
 #                         RunAdmission.DefaultMaxRuns, read through `nltg-cluster matrix cap`, NL-844; a suite
 #                         whose parallel collections need more runs with -parallel none when that fits)

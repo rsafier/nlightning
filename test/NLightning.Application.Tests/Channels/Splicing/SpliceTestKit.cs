@@ -90,14 +90,15 @@ internal sealed class SpliceHarness : IDisposable
     /// registration wins; lane SP2-B).</param>
     /// <param name="configureNode">Per-node node options, e.g. the liquidity ads rates a node sells at (NL-850; the
     /// other node sees them as its peer's <c>init</c> rates).</param>
+    /// <param name="simpleTaproot">A simple taproot channel (NL-877 T5: its splices are refused, NL-965).</param>
     public SpliceHarness(Action<string, SpliceOptions>? configureSplice = null, bool realEngine = false,
                          bool announceChannel = false,
                          Action<HarnessNode, IServiceCollection>? configureServices = null,
-                         Action<string, NodeOptions>? configureNode = null)
+                         Action<string, NodeOptions>? configureNode = null, bool simpleTaproot = false)
     {
         RealEngine = realEngine;
         _configureNode = configureNode;
-        Harness = new TwoNodeHarness(announceChannel: announceChannel,
+        Harness = new TwoNodeHarness(announceChannel: announceChannel, simpleTaproot: simpleTaproot,
                                      configureServices: (node, services) =>
                                      {
                                          Configure(node, services, configureSplice);

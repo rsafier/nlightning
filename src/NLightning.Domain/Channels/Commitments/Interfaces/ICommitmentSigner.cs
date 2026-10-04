@@ -26,7 +26,13 @@ public interface ICommitmentSigner
     /// <param name="number">The remote commitment number being signed.</param>
     /// <param name="spec">The commitment content; its <see cref="CommitmentSpec.Holder"/> is the remote side.</param>
     /// <param name="remotePerCommitmentPoint">The peer's per-commitment point for <paramref name="number"/>.</param>
-    /// <returns>The commitment signature and one HTLC signature per untrimmed HTLC, in commitment output order.</returns>
+    /// <param name="remoteVerificationNonce">Simple taproot channels (NL-877 T3): the peer's verification nonce for
+    /// this commitment on that funding (<see cref="ChannelCommitments.RemoteNextNonces"/>), which the engine consumes;
+    /// null for the other channel types.</param>
+    /// <returns>The commitment signature and one HTLC signature per untrimmed HTLC, in commitment output order; for a
+    /// simple taproot channel the zero <see cref="CommitmentSignatures.Signature"/> and the
+    /// <see cref="CommitmentSignatures.PartialSignature"/>.</returns>
     CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
-                                              CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint);
+                                              CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint,
+                                              MusigPublicNonce? remoteVerificationNonce = null);
 }

@@ -73,9 +73,9 @@ public sealed class AnchorCpfpServiceTests : IDisposable
 
     private delegate bool TryGetChannelCallback(ChannelId channelId, out ChannelModel? channel);
 
-    private void Init(bool hasAnchors)
+    private void Init(bool hasAnchors, bool simpleTaproot = false)
     {
-        _pair = new RealSigningCommitmentPair(hasAnchors);
+        _pair = new RealSigningCommitmentPair(hasAnchors, simpleTaproot);
         _channel = _pair.Alice.Channel;
         _wallet.AddUtxo(0x51, 50_000);
         _wallet.AddUtxo(0x52, 30_000);
@@ -1072,6 +1072,30 @@ public sealed class AnchorCpfpServiceTests : IDisposable
     /// Alice offers an HTLC (expiry 600; 20,000 sat unless given, below her 546 sat dust limit it is trimmed), the
     /// dance settles, and she fails the channel: our commitment row.
     /// </summary>
+    [Fact]
+    public async Task Given_SimpleTaprootChannel_When_CommitmentBroadcastOrPeerCommitmentSeen_Then_NoChild()
+    {
+        // Arrange: a failed taproot channel whose (MuSig2-signed) commitment is broadcast; its anchors are P2TR
+        // outputs keyed to the delayed/remote keys, which this service cannot spend yet (taproot plan T4)
+        Dispose();
+        Init(hasAnchors: true, simpleTaproot: true);
+        var commitment = BroadcastCommitment();
+
+        // Act
+        await Service.OnCommitmentBroadcastAsync(_channel.ChannelId, TestContext.Current.CancellationToken);
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        Service.OnPeerCommitmentInMempool(_channel.ChannelId, commitment.ToSignedTransaction(), false);
+        await Service.WhenIdleAsync();
+
+        // Assert: skipped cleanly, before any estimate, reservation, child or publication
+        Assert.Empty(_estimateTargets);
+        Assert.Empty(_store.Children);
+        Assert.Empty(_wallet.Reserved(_channel.ChannelId));
+        Assert.Equal(0, _wallet.ReleaseCount);
+        Assert.Empty(_published);
+        Assert.DoesNotContain(_store.Rows, r => r.Purpose == BroadcastPurpose.PeerCommitment);
+    }
+
     private BroadcastTransactionModel BroadcastCommitment(ulong htlcMsat = 20_000_000)
     {
         _pair.Add(_pair.Alice, htlcMsat, RealSigningCommitmentPair.Preimage(1), HtlcExpiry);

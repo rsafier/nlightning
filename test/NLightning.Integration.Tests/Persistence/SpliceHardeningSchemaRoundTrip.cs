@@ -75,10 +75,12 @@ internal static class SpliceHardeningSchemaRoundTrip
         {
             // Migrations roll back one at a time, each in its own transaction: the later ones went, this one refused
             Assert.Equal(later, await context.Database.GetPendingMigrationsAsync(cancellationToken));
+            // Only the column this migration owns: later migrations' columns (AddSimpleTaprootChannels) are gone
             Assert.All(await context.Commitments.AsNoTracking()
                                     .Where(c => c.ChannelId == channel.ChannelId)
+                                    .Select(c => c.SignedOnFundings)
                                     .ToListAsync(cancellationToken),
-                       c => Assert.Equal(96, c.SignedOnFundings!.Length));
+                       signedOn => Assert.Equal(96, signedOn!.Length));
             Assert.Equal(2, await context.Peers.CountAsync(cancellationToken));
 
             // Without the record the rollback runs and drops the inbound-only peer; the migration applies again

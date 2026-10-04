@@ -9,6 +9,7 @@ using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.InteractiveTx.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Tlv;
 using InteractiveTx.Interfaces;
 using InteractiveTx.Models;
 
@@ -44,6 +45,14 @@ internal sealed class DualFundHost : IInteractiveTxHost
                                                                             IUnitOfWork unitOfWork,
                                                                             CancellationToken cancellationToken) =>
         _service.CreateCommitmentSignedAsync(_negotiation, session, unitOfWork);
+
+    /// <inheritdoc />
+    public CommitNoncesTlv? GetLocalCommitNonces(TxId fundingTxId) =>
+        _service.GetLocalCommitNonces(_negotiation, fundingTxId);
+
+    /// <inheritdoc />
+    public string? AcceptRemoteCommitNonces(ConstructedInteractiveTx transaction, CommitNoncesTlv? remoteNonces) =>
+        _service.AcceptRemoteCommitNonces(_negotiation, transaction, remoteNonces);
 
     /// <inheritdoc />
     public Task<CompactSignature?> SignSharedInputAsync(ConstructedInteractiveTx transaction,

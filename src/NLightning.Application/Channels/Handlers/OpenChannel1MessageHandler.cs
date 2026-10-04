@@ -5,9 +5,11 @@ namespace NLightning.Application.Channels.Handlers;
 
 using Close;
 using Domain.Bitcoin.Constants;
+using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
+using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Constants;
@@ -18,6 +20,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Tlv;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Taproot;
 
 public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Message>
 {
@@ -25,8 +28,10 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
     private readonly IBlockchainMonitor? _blockchainMonitor;
     private readonly IChannelFactory _channelFactory;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
+    private readonly ILightningSigner? _lightningSigner;
     private readonly ILogger<OpenChannel1MessageHandler> _logger;
     private readonly IMessageFactory _messageFactory;
+    private readonly IMusig2Service? _musig2;
     private readonly INodeDrainState? _nodeDrainState;
     private readonly GossipOptions _gossipOptions;
     private readonly NodeOptions _nodeOptions;
@@ -40,6 +45,10 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
     /// anchors reserve (NL-379); registered by <c>AddBitcoinInfrastructure</c>.</param>
     /// <param name="upfrontShutdownScriptSource">Our <c>upfront_shutdown_script</c> when
     /// <c>option_upfront_shutdown_script</c> is negotiated (NL-045); without it a zero-length script is sent.</param>
+    /// <param name="lightningSigner">Our verification nonce of a simple taproot channel's <c>accept_channel</c>
+    /// (NL-877 T5); without it a taproot channel is refused.</param>
+    /// <param name="musig2">Checks the opener's simple taproot <c>next_local_nonce</c>; without it a taproot channel
+    /// is refused.</param>
     public OpenChannel1MessageHandler(IChannelFactory channelFactory, IChannelMemoryRepository channelMemoryRepository,
                                       ILogger<OpenChannel1MessageHandler> logger, IMessageFactory messageFactory,
                                       IBlockchainMonitor? blockchainMonitor = null,
@@ -47,8 +56,11 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
                                       IOptions<NodeOptions>? nodeOptions = null,
                                       IAnchorReserveService? anchorReserveService = null,
                                       UpfrontShutdownScriptSource? upfrontShutdownScriptSource = null,
-                                      INodeDrainState? nodeDrainState = null)
+                                      INodeDrainState? nodeDrainState = null, ILightningSigner? lightningSigner = null,
+                                      IMusig2Service? musig2 = null)
     {
+        _lightningSigner = lightningSigner;
+        _musig2 = musig2;
         _nodeDrainState = nodeDrainState;
         _upfrontShutdownScriptSource = upfrontShutdownScriptSource;
         _anchorReserveService = anchorReserveService;
@@ -114,6 +126,12 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
         _logger.LogTrace("Created Channel with fundingPubKey: {fundingPubKey}",
                          channel.LocalKeySet.FundingCompactPubKey);
 
+        // Simple taproot channels (bolt-simple-taproot.md §open_channel, NL-877 T5): the opener's next_local_nonce, its
+        // verification nonce for its commitment 0, is required and must parse as two points; our funding_signed
+        // partial signature is made against it. The factory's validator refused the type unless negotiated and private
+        if (channel.ChannelParams.OptionSimpleTaproot)
+            channel.RemoteOpeningNonce = GetOpeningNonce(message);
+
         // NL-379: as fundee of an anchors channel we still pay the CPFP child of our commitment and the fee inputs of
         // our HTLC transactions from the wallet, so refuse the channel when the confirmed balance can't keep the anchors
         // reserve with it (LND does the same). The channel type decided the anchors, as it does in the factory. Once
@@ -164,17 +182,51 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
         var channelTypeTlv = message.ChannelTypeTlv
                           ?? throw new ChannelErrorException("Channel type was not provided", payload.ChannelId);
 
-        // Create the reply message with the values we announce, never the opener's (NL-194)
-        var acceptChannel1ReplyMessage = _messageFactory
-           .CreateAcceptChannel1Message(channel.ChannelParams.Local, channelTypeTlv,
-                                        channel.LocalKeySet.DelayedPaymentCompactBasepoint,
-                                        channel.LocalKeySet.CurrentPerCommitmentCompactPoint,
-                                        channel.LocalKeySet.FundingCompactPubKey,
-                                        channel.LocalKeySet.HtlcCompactBasepoint, channel.ChannelParams.MinimumDepth,
-                                        channel.LocalKeySet.PaymentCompactBasepoint,
-                                        channel.LocalKeySet.RevocationCompactBasepoint, channel.ChannelId,
-                                        upfrontShutdownScriptTlv);
+        // Create the reply message with the values we announce, never the opener's (NL-194). A simple taproot
+        // channel's carries our verification nonce for our commitment 0 (next_local_nonce, counter-derived: commitment
+        // 0 has no funding txid yet)
+        var acceptChannel1ReplyMessage = channel.ChannelParams.OptionSimpleTaproot
+                                             ? _messageFactory.CreateAcceptChannel1Message(
+                                                 channel.ChannelParams.Local, channelTypeTlv,
+                                                 channel.LocalKeySet.DelayedPaymentCompactBasepoint,
+                                                 channel.LocalKeySet.CurrentPerCommitmentCompactPoint,
+                                                 channel.LocalKeySet.FundingCompactPubKey,
+                                                 channel.LocalKeySet.HtlcCompactBasepoint,
+                                                 channel.ChannelParams.MinimumDepth,
+                                                 channel.LocalKeySet.PaymentCompactBasepoint,
+                                                 channel.LocalKeySet.RevocationCompactBasepoint, channel.ChannelId,
+                                                 upfrontShutdownScriptTlv,
+                                                 _lightningSigner!.GetLocalVerificationNonce(
+                                                     channel.LocalKeySet.KeyIndex, null, 0))
+                                             : _messageFactory.CreateAcceptChannel1Message(
+                                                 channel.ChannelParams.Local, channelTypeTlv,
+                                                 channel.LocalKeySet.DelayedPaymentCompactBasepoint,
+                                                 channel.LocalKeySet.CurrentPerCommitmentCompactPoint,
+                                                 channel.LocalKeySet.FundingCompactPubKey,
+                                                 channel.LocalKeySet.HtlcCompactBasepoint,
+                                                 channel.ChannelParams.MinimumDepth,
+                                                 channel.LocalKeySet.PaymentCompactBasepoint,
+                                                 channel.LocalKeySet.RevocationCompactBasepoint, channel.ChannelId,
+                                                 upfrontShutdownScriptTlv);
 
         return [acceptChannel1ReplyMessage];
+    }
+
+    /// <summary>The opener's simple taproot <c>next_local_nonce</c>, checked (MUST fail the channel otherwise).</summary>
+    private MusigPublicNonce GetOpeningNonce(OpenChannel1Message message)
+    {
+        if (_lightningSigner is null || _musig2 is null)
+            throw new ChannelErrorException("Simple taproot channels need the signer and MuSig2 services",
+                                            message.Payload.ChannelId, "We don't support option_simple_taproot");
+
+        if (message.NextLocalNonceTlv is not { } nonceTlv)
+            throw new ChannelErrorException("open_channel of a simple taproot channel without next_local_nonce",
+                                            message.Payload.ChannelId, "open_channel without next_local_nonce");
+
+        if (!TaprootChannelNonces.IsValidPublicNonce(_musig2, nonceTlv.Nonce))
+            throw new ChannelErrorException("open_channel next_local_nonce is not two points",
+                                            message.Payload.ChannelId, "next_local_nonce does not parse");
+
+        return nonceTlv.Nonce;
     }
 }

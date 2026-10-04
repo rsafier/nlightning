@@ -20,7 +20,9 @@ public interface ICommitmentVerifier
     /// null means the channel's only funding).</param>
     /// <param name="number">Our new local commitment number.</param>
     /// <param name="spec">The commitment content; its <see cref="CommitmentSpec.Holder"/> is the local side.</param>
-    /// <param name="signatures">The peer's signatures from <c>commitment_signed</c>.</param>
+    /// <param name="signatures">The peer's signatures from <c>commitment_signed</c>; for a simple taproot channel its
+    /// <see cref="CommitmentSignatures.PartialSignature"/> is checked against our verification nonce for
+    /// <paramref name="number"/> on that funding.</param>
     /// <returns>False when any signature is invalid; the engine then rejects the <c>commitment_signed</c>.</returns>
     bool VerifyLocalCommitment(ChannelId channelId, ChannelFunding? funding, ulong number, CommitmentSpec spec,
                                CommitmentSignatures signatures);

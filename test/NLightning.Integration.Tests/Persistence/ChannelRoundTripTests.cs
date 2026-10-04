@@ -53,14 +53,24 @@ public class ChannelRoundTripTests
         new(AddressType.P2Wpkh, 7, true, "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080");
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Given_ChannelWithEveryFieldSet_When_Reloaded_Then_EveryFieldIsEqual(bool isInitiator)
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public async Task Given_ChannelWithEveryFieldSet_When_Reloaded_Then_EveryFieldIsEqual(bool isInitiator,
+        bool simpleTaproot)
     {
-        // Arrange
+        // Arrange (simple taproot, NL-877 T3: the channel type, the peer's partial signatures with their nonces and
+        // its next verification nonces, migration AddSimpleTaprootChannels)
         await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
         await AddChangeAddressAsync(db);
-        var channel = CreateFullChannel(isInitiator);
+        var channel = CreateFullChannel(isInitiator, simpleTaproot: simpleTaproot);
+        if (simpleTaproot)
+        {
+            Assert.NotNull(channel.Commitments!.LocalCommit.RemoteSignatures!.PartialSignature);
+            Assert.NotNull(channel.Commitments.RemoteNextCommit!.SentSignatures.PartialSignature);
+            Assert.NotEmpty(channel.Commitments.RemoteNextNonces);
+        }
 
         // Act
         var reloaded = await SaveAndReloadAsync(db, channel);
@@ -375,7 +385,7 @@ public class ChannelRoundTripTests
 
     private static ChannelModel CreateFullChannel(bool isInitiator,
                                                   LightningMoney? localBalance = null,
-                                                  LightningMoney? remoteBalance = null)
+                                                  LightningMoney? remoteBalance = null, bool simpleTaproot = false)
     {
         // Every per-side value differs between the sides and from every other field
         var local = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(10_001),
@@ -389,7 +399,8 @@ public class ChannelRoundTripTests
                                               FeatureSupport.Compulsory)
         {
             HasInferredParams = true,
-            AnnounceChannel = true
+            AnnounceChannel = true,
+            OptionSimpleTaproot = simpleTaproot
         };
 
         var localKeySet = new ChannelKeySetModel(9, s_key1, s_key2, s_key3, s_key4, s_key5, s_key6, 281474976710650);
@@ -442,11 +453,21 @@ public class ChannelRoundTripTests
         Assert.NotNull(driver.TryPeerAdd());
         Assert.NotNull(driver.TryUsAdd(3_000_000));
         Assert.NotNull(driver.TryUsCommit());
+        if (simpleTaproot)
+            // The peer's channel_reestablish nonces (its last revoke_and_ack's were consumed by our signature)
+            driver.ReplaceUs(driver.Us.ReceiveRemoteNonces(new Dictionary<TxId, MusigPublicNonce>
+            {
+                [fundingOutput.TransactionId!.Value] =
+                    CommitmentDanceDriver.Nonce(CommitmentDanceDriver.PeerTag, channel.LocalCommitmentNumber + 9)
+            }).Next);
         channel.UpdateCommitments(driver.Us, new ChannelStateExtras
         {
             SentCommitDiff = CommitmentDanceDriver.DiffFor(driver.Us.RemoteNextCommit!.Commit.Number),
             LastSent = LastSentCommitmentMessage.CommitmentSigned
         });
+        if (simpleTaproot)
+            channel.UpdateLastReceivedPartialSignature(
+                new MusigPartialSignatureWithNonce(Enumerable.Range(0, 98).Select(i => (byte)(i + 7)).ToArray()));
         channel.MarkErrorSent(new byte[] { 0x00, 0x11, 0x42 });
         channel.MarkDataLossDetected();
         // Close state (N10, migration AddShutdownState)
@@ -501,6 +522,7 @@ public class ChannelRoundTripTests
         Assert.Equal(expected.CommitmentNumber!.ObscuringFactor, actual.CommitmentNumber.ObscuringFactor);
         Assert.Equal(expected.LastSentSignature, actual.LastSentSignature);
         Assert.Equal(expected.LastReceivedSignature, actual.LastReceivedSignature);
+        Assert.Equal(expected.LastReceivedPartialSignature, actual.LastReceivedPartialSignature);
 
         // Local side
         Assert.Equal(expected.LocalBalance, actual.LocalBalance);

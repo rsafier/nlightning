@@ -9,6 +9,8 @@ using NBitcoin;
 
 namespace NLightning.Application.Tests.Channels.DualFunding;
 
+using Application.Channels.Close;
+using Application.Channels.Close.Handlers;
 using Application.Channels.DualFunding;
 using Application.Channels.Handlers;
 using Application.Channels.Handlers.Interfaces;
@@ -88,6 +90,10 @@ internal sealed class DualFundHarness : IAsyncDisposable
     /// <summary>When set, messages sent while it returns true are dropped (a link that is down).</summary>
     public bool LinkDown { get; set; }
 
+    /// <summary>When set, every message a node sends goes through it first (sender name, message) and the result is
+    /// queued instead (a peer that sends something else).</summary>
+    public Func<string, IChannelMessage, IChannelMessage>? Rewrite { get; set; }
+
     /// <summary>What the nodes negotiated (<c>option_dual_fund</c> and the defaults, anchors included).</summary>
     public FeatureOptions NegotiatedFeatures { get; set; } = new() { DualFund = FeatureSupport.Optional };
 
@@ -107,13 +113,21 @@ internal sealed class DualFundHarness : IAsyncDisposable
     /// </summary>
     public bool WithPeerServices { get; }
 
+    /// <summary>
+    /// Whether each node also runs the mutual close (the production <c>AddChannelCloseServices</c> with the
+    /// <c>shutdown</c>, <c>closing_signed</c>, <c>closing_complete</c> and <c>closing_sig</c> handlers, a fixed P2WPKH
+    /// shutdown script per node; closing transactions land in <see cref="DualFundNode.PublishedClosings"/>).
+    /// </summary>
+    public bool WithClose { get; }
+
     private DualFundHarness(string directory, long bobContributionSat, TimeSpan openTimeout, bool allowRbf,
-                            bool withPeerServices)
+                            bool withPeerServices, bool withClose)
     {
         _directory = directory;
         OpenTimeout = openTimeout;
         AllowRbf = allowRbf;
         WithPeerServices = withPeerServices;
+        WithClose = withClose;
         Alice = new DualFundNode(this, "Alice", 0xA1, Path.Combine(directory, "alice.db"), 0);
         Bob = new DualFundNode(this, "Bob", 0xB0, Path.Combine(directory, "bob.db"), bobContributionSat);
     }
@@ -130,13 +144,15 @@ internal sealed class DualFundHarness : IAsyncDisposable
     /// that never meant to time out after about 30 s; tests of the timeout pass their own).</param>
     /// <param name="allowRbf">The nodes' <c>Node:DualFund:AllowRbf</c> (default true, as in production).</param>
     /// <param name="withPeerServices">See <see cref="WithPeerServices"/>.</param>
+    /// <param name="withClose">See <see cref="WithClose"/>.</param>
     public static async Task<DualFundHarness> CreateAsync(long bobContributionSat, TimeSpan? openTimeout = null,
-                                                          bool allowRbf = true, bool withPeerServices = false)
+                                                          bool allowRbf = true, bool withPeerServices = false,
+                                                          bool withClose = false)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"nltg-dual-fund-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         var harness = new DualFundHarness(directory, bobContributionSat, openTimeout ?? DefaultOpenTimeout,
-                                          allowRbf, withPeerServices);
+                                          allowRbf, withPeerServices, withClose);
         foreach (var node in harness.Nodes)
             await node.StartAsync(migrate: true);
         return harness;
@@ -267,6 +283,9 @@ internal sealed class DualFundHarness : IAsyncDisposable
             return;
         }
 
+        if (Rewrite is { } rewrite)
+            message = rewrite(from.Name, message);
+
         _links.GetOrAdd((from.Name, Other(from).Name), _ => new ConcurrentQueue<IChannelMessage>()).Enqueue(message);
     }
 
@@ -345,6 +364,10 @@ internal sealed class DualFundNode
     /// <summary>Every funding (and other) transaction this node handed to its chain monitor, in order.</summary>
     public List<BroadcastTransactionModel> Published { get; } = [];
 
+    /// <summary>The closing transactions this node asked its chain monitor to publish (<see cref="DualFundHarness.WithClose"/>).
+    /// </summary>
+    public List<SignedTransaction> PublishedClosings { get; } = [];
+
     public List<IChannelMessage> Received { get; } = [];
     public List<IChannelMessage> Dropped { get; } = [];
     public List<Exception> Errors { get; } = [];
@@ -399,6 +422,13 @@ internal sealed class DualFundNode
                              Published.Add(b);
                      })
                     .ReturnsAsync(true);
+        ChainMonitor.Setup(m => m.PublishTransactionAsync(It.IsAny<SignedTransaction>()))
+                    .Callback<SignedTransaction>(t =>
+                     {
+                         lock (PublishedClosings)
+                             PublishedClosings.Add(t);
+                     })
+                    .Returns(Task.CompletedTask);
 
         _provider = BuildProvider();
         if (migrate)
@@ -512,6 +542,8 @@ internal sealed class DualFundNode
         var feeService = new Mock<IFeeService>();
         feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
                   .ReturnsAsync(() => LightningMoney.Satoshis(_harness.FeeEstimatePerKw));
+        feeService.Setup(f => f.GetCachedFeeRatePerKw())
+                  .Returns(() => LightningMoney.Satoshis(_harness.FeeEstimatePerKw));
 
         var services = new ServiceCollection();
         services.AddLogging();
@@ -606,7 +638,28 @@ internal sealed class DualFundNode
         services.AddScoped<IChannelMessageHandler<CommitmentSignedMessage>, CommitmentSignedMessageHandler>();
         services.AddScoped<IChannelMessageHandler<RevokeAndAckMessage>, RevokeAndAckMessageHandler>();
         services.AddScoped<IChannelMessageHandler<UpdateFeeMessage>, UpdateFeeMessageHandler>();
+        if (_harness.WithClose)
+        {
+            // One P2WPKH shutdown script per node, as CloseHarness does
+            var script = new BitcoinScript(new Key(Enumerable.Repeat(Name == "Alice" ? (byte)0xA7 : (byte)0xB7, 32)
+                                                              .ToArray())
+                                          .PubKey.WitHash.ScriptPubKey.ToBytes());
+            services.AddScoped<ShutdownScriptProvider>(_ => new FixedShutdownScriptProvider(script));
+            services.AddChannelCloseServices();
+            services.AddScoped<IChannelMessageHandler<ShutdownMessage>, ShutdownMessageHandler>();
+            services.AddScoped<IChannelMessageHandler<ClosingSignedMessage>, ClosingSignedMessageHandler>();
+            services.AddScoped<IChannelMessageHandler<ClosingCompleteMessage>, ClosingCompleteMessageHandler>();
+            services.AddScoped<IChannelMessageHandler<ClosingSigMessage>, ClosingSigMessageHandler>();
+        }
+
         return services.BuildServiceProvider();
+    }
+
+    private sealed class FixedShutdownScriptProvider(BitcoinScript script)
+        : ShutdownScriptProvider(Microsoft.Extensions.Options.Options.Create(new NodeOptions()),
+                                 new Mock<IBitcoinWalletService>().Object)
+    {
+        public override Task<BitcoinScript> GetLocalScriptAsync(ChannelModel channel) => Task.FromResult(script);
     }
 
     /// <summary>Publishes through the node's channel manager, which is built after the provider.</summary>

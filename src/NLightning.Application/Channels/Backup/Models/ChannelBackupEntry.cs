@@ -43,6 +43,13 @@ public sealed record ChannelBackupEntry
     /// <summary>Whether the channel uses <c>option_anchors</c> (our <c>to_remote</c> then waits one block).</summary>
     public required bool OptionAnchorOutputs { get; init; }
 
+    /// <summary>
+    /// Whether the channel is a simple taproot channel (<c>option_simple_taproot</c>, NL-877 T5): a MuSig2 P2TR funding
+    /// output and P2TR commitment outputs (its <c>to_remote</c> is a 1-CSV tapscript leaf under the NUMS key). Flag bit 4
+    /// of a version 2 plaintext; such a channel also has <see cref="OptionAnchorOutputs"/>.
+    /// </summary>
+    public bool OptionSimpleTaproot { get; init; }
+
     /// <summary>Whether the channel is announced (public).</summary>
     public bool AnnounceChannel { get; init; }
 

@@ -8,6 +8,7 @@ namespace NLightning.Application.Channels.DualFunding;
 
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.Transactions.Extensions;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
@@ -15,6 +16,7 @@ using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Closing;
+using Domain.Channels.Commitments;
 using Domain.Channels.DualFunding;
 using Domain.Channels.DualFunding.Interfaces;
 using Domain.Channels.DualFunding.Models;
@@ -28,6 +30,7 @@ using Domain.Channels.Validators;
 using Domain.Channels.Validators.Parameters;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.Hashes;
+using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
@@ -35,6 +38,7 @@ using Domain.LiquidityAds;
 using Domain.LiquidityAds.Enums;
 using Domain.LiquidityAds.Models;
 using Domain.Money;
+using Domain.Node;
 using Domain.Node.Constants;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
@@ -170,6 +174,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         if (request.LocalFundingAmount >= Domain.Channels.Constants.ChannelConstants.LargeChannelAmount
          && features.LargeChannels == FeatureSupport.No)
             throw new InvalidOperationException("The peer doesn't support large channels");
+        if (request.SimpleTaproot)
+            CheckTaprootOpen(features, request.IsPublic, request.Liquidity is not null);
 
         var fundingFeerate = request.FundingFeeratePerKw ?? await EstimateFeerateAsync(cancellationToken);
         // The commitment feerate from our estimate is at least Node:MinCommitmentFeeRatePerKw (NL-564)
@@ -207,7 +213,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                       LightningMoney.Satoshis(requestFunding.RequestedSat),
                                                       checked((long)fees.TotalMsat), true,
                                                       CommitmentFeeCalculator.FunderCost(commitmentFeerate,
-                                                          features.OptionAnchors > FeatureSupport.No, 0))
+                                                          CommitmentFormatExtensions.FromOptionAnchors(
+                                                              features.OptionAnchors > FeatureSupport.No), 0))
                 is { } violation)
                 throw new InvalidOperationException($"Cannot buy {requestFunding.RequestedSat} sat: {violation}");
 
@@ -226,7 +233,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                               LightningMoney.Satoshis(commitmentFeerate), _nodeOptions.MinimumDepth,
                                               optionAnchors, useScidAlias)
         {
-            AnnounceChannel = request.IsPublic
+            AnnounceChannel = request.IsPublic,
+            OptionSimpleTaproot = request.SimpleTaproot
         };
         var channelType = channelParams.ToChannelType().GetWireBytes() ?? [];
 
@@ -251,7 +259,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             LiquidityRequest = liquidityRequest,
             Pending = new DualFundNegotiation.PendingOpen(keyIndex, basepoints, firstPoint, localParams, channelType,
                                                           commitmentFeerate, request.IsPublic, optionAnchors,
-                                                          useScidAlias),
+                                                          useScidAlias, request.SimpleTaproot),
             OpenCompletion = new TaskCompletionSource<DualFundedOpenResult>(
                 TaskCreationOptions.RunContinuationsAsynchronously)
         };
@@ -339,7 +347,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                 ToSelfDelay = payload.ToSelfDelay,
                 MaxAcceptedHtlcs = payload.MaxAcceptedHtlcs,
                 DustLimitAmount = payload.DustLimitAmount,
-                ChannelReserveAmount = reserve
+                ChannelReserveAmount = reserve,
+                // The dual-funded open signs MuSig2 commitments (tx_complete commit_nonces, NL-877 T5)
+                AllowSimpleTaproot = true
             }, out _);
             _channelOpenValidator.CheckMaxHtlcValueInFlight(total, payload.MaxHtlcValueInFlightAmount);
 
@@ -349,7 +359,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                   LightningMoney.Satoshis(pending.CommitmentFeeratePerKw),
                                                   payload.MinimumDepth, pending.OptionAnchors, pending.UseScidAlias)
             {
-                AnnounceChannel = pending.IsPublic
+                AnnounceChannel = pending.IsPublic,
+                OptionSimpleTaproot = pending.SimpleTaproot
             };
             var remoteKeySet = ChannelKeySetModel.CreateForRemote(payload.FundingCompactPubKey,
                                                                   payload.RevocationCompactBasepoint,
@@ -408,7 +419,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                     new InteractiveTxContributionRequest(
                                         channelId, InteractiveTxPurpose.DualFund, negotiation.LocalShare, [],
                                         negotiation.FundingFeeratePerKw,
-                                        DualFundingRules.GetOpenerExtraWeight(GetFundingScript(channel)),
+                                        DualFundingRules.GetOpenerExtraWeight(FundingScriptOf(channel)),
                                         negotiation.RemoteRequiresConfirmedInputs));
             try
             {
@@ -475,6 +486,12 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                     $"Channel {channelId} is not waiting for its funding (channel_ready sent or received)");
             if (negotiation.CompletedTxIds.Count == 0 || negotiation.LastContribution is not { } previous)
                 throw new InvalidOperationException($"Channel {channelId} has no signed funding transaction to replace");
+
+            // Each attempt of a simple taproot open needs its own stored partial signature of our commitment 0, which
+            // the interactive-tx rows cannot hold yet (NL-970)
+            if (channel.ChannelParams.OptionSimpleTaproot)
+                throw new InvalidOperationException(
+                    $"Channel {channelId}: RBF of a simple taproot dual-funded open is not supported yet (NL-970)");
 
             // No attempt runs (the driver refuses a second one): shares a refused attempt took are dropped
             negotiation.RestoreShares();
@@ -575,7 +592,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                   checked((long)fees.TotalMsat), negotiation.IsOpener,
                                                   CommitmentFeeCalculator.FunderCost(
                                                       (ulong)channelParams.FeeRateAmountPerKw.Satoshi,
-                                                      channelParams.OptionAnchorOutputs, 0))
+                                                      channelParams.CommitmentFormat, 0))
             is { } violation)
             throw new InvalidOperationException($"Cannot buy {request.RequestedSat} sat: {violation}");
 
@@ -607,7 +624,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                        new InteractiveTxContributionRequest(negotiation.ChannelId, InteractiveTxPurpose.DualFundRbf,
                                                             share, [], feeratePerKw,
                                                             DualFundingRules.GetOpenerExtraWeight(
-                                                                GetFundingScript(channel)),
+                                                                FundingScriptOf(channel)),
                                                             negotiation.RemoteRequiresConfirmedInputs,
                                                             FundWeightWithoutAmount: true), cancellationToken);
         }
@@ -758,7 +775,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             FeeRatePerKw = LightningMoney.Satoshis(payload.CommitmentFeeRatePerKw),
             DustLimitAmount = payload.DustLimitAmount,
             ChannelReserveAmount = reserve,
-            ChannelFlags = payload.ChannelFlags
+            ChannelFlags = payload.ChannelFlags,
+            // The dual-funded open signs MuSig2 commitments (tx_complete commit_nonces, NL-877 T5)
+            AllowSimpleTaproot = true
         }, out var minimumDepth);
         _channelOpenValidator.CheckMaxHtlcValueInFlight(total, payload.MaxHtlcValueInFlightAmount);
 
@@ -772,6 +791,13 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         var channelId = ChannelIdV2.Derive(_sha256, basepoints.RevocationBasepoint, payload.RevocationBasepoint);
 
         var optionAnchors = message.ChannelTypeTlv!.Features.IsFeatureSet(Feature.OptionAnchors, true);
+
+        // A simple taproot type passed the validator (option_simple_taproot negotiated, not announced); no liquidity
+        // sale goes with it yet (NL-971)
+        var simpleTaproot = TaprootChannelType.IsTaprootChannelType(message.ChannelTypeTlv.Features);
+        if (simpleTaproot && sale is not null)
+            throw new ChannelErrorException("Refusing the liquidity request of a simple taproot open", temporaryId,
+                                            "liquidity ads are not offered for taproot channels");
         var useScidAlias = negotiatedFeatures.ScidAlias == FeatureSupport.No
                                ? FeatureSupport.No
                                : message.ChannelTypeTlv.Features.IsFeatureSet(Feature.OptionScidAlias, true)
@@ -781,7 +807,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                               LightningMoney.Satoshis(payload.CommitmentFeeRatePerKw), minimumDepth,
                                               optionAnchors, useScidAlias)
         {
-            AnnounceChannel = payload.ChannelFlags.AnnounceChannel
+            AnnounceChannel = payload.ChannelFlags.AnnounceChannel,
+            OptionSimpleTaproot = simpleTaproot
         };
         var remoteKeySet = ChannelKeySetModel.CreateForRemote(payload.FundingPubKey, payload.RevocationBasepoint,
                                                               payload.PaymentBasepoint,
@@ -799,7 +826,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             if (DualFundLiquidity.GetBalanceViolation(localContribution, payload.FundingAmount,
                                                       -checked((long)saleFees.Value.TotalMsat), false,
                                                       CommitmentFeeCalculator.FunderCost(
-                                                          payload.CommitmentFeeRatePerKw, optionAnchors, 0))
+                                                          payload.CommitmentFeeRatePerKw,
+                                                          CommitmentFormatExtensions.FromOptionAnchors(optionAnchors),
+                                                          0))
                 is { } liquidityViolation)
                 throw new ChannelErrorException($"Refusing the liquidity request: {liquidityViolation}", temporaryId,
                                                 liquidityViolation);
@@ -822,7 +851,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         if (sale is not null)
         {
             // Our will_fund signs the rate and the new funding output's script with the node key
-            var willFund = GetLiquidityAds()!.CreateWillFund(sale.Request.Rate, GetFundingScript(channel));
+            var willFund = GetLiquidityAds()!.CreateWillFund(sale.Request.Rate, FundingScriptOf(channel));
             negotiation.AttemptLiquidity = new DualFundLiquidity(LiquidityPurchaseRole.Seller, sale.Request, willFund,
                                                                  saleFees!.Value, sale.Request.RequestedSat);
             negotiation.Sale = sale;
@@ -831,9 +860,10 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                    saleFees.Value.TotalSat);
         }
 
-        // NL-379: as for a v1 open, an anchors channel we cannot back with the anchors reserve is refused
+        // NL-379: as for a v1 open, an anchors channel we cannot back with the anchors reserve is refused (a simple
+        // taproot channel has anchors too)
         var anchorReserve = _serviceProvider.GetService<IAnchorReserveService>();
-        if (optionAnchors && anchorReserve is not null)
+        if (channelParams.OptionAnchorOutputs && anchorReserve is not null)
         {
             try
             {
@@ -882,7 +912,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                               LightningMoney.Satoshis(payload.CommitmentFeeRatePerKw), minimumDepth,
                                               optionAnchors, useScidAlias)
             {
-                AnnounceChannel = payload.ChannelFlags.AnnounceChannel
+                AnnounceChannel = payload.ChannelFlags.AnnounceChannel,
+                OptionSimpleTaproot = simpleTaproot
             };
             channel = CreateChannel(channelParams, channelId, CreateLocalKeySet(keyIndex, basepoints, firstPoint),
                                     remoteKeySet, peerPubKey, false, negotiation.LocalShare, payload.FundingAmount,
@@ -998,13 +1029,53 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     internal SharedFundingSpec GetSharedFunding(DualFundNegotiation negotiation)
     {
         var channel = negotiation.Channel ?? throw new InvalidOperationException("The channel is not known yet");
-        return new SharedFundingSpec(null, GetFundingScript(channel), negotiation.Total, LightningMoney.Zero,
+        return new SharedFundingSpec(null, FundingScriptOf(channel), negotiation.Total, LightningMoney.Zero,
                                      LightningMoney.Zero, negotiation.LocalShare, negotiation.RemoteShare);
     }
 
     /// <summary>
+    /// Our <c>commit_nonces</c> for a <c>tx_complete</c> of a simple taproot open (BOLTs PR #1324; Eclair 0.14.3
+    /// <c>InteractiveTxBuilder</c>): our verification nonces of our first commitment and the next one on the funding
+    /// transaction negotiated so far, <paramref name="fundingTxId"/> (bound to it, commitment 0 included: each
+    /// transaction, so each RBF attempt, gets its own). Null for any other channel type.
+    /// </summary>
+    internal CommitNoncesTlv? GetLocalCommitNonces(DualFundNegotiation negotiation, TxId fundingTxId)
+    {
+        if (negotiation.Channel is not { ChannelParams.OptionSimpleTaproot: true } channel)
+            return null;
+
+        var keyIndex = channel.LocalKeySet.KeyIndex;
+        var number = channel.LocalCommitmentNumber;
+        // The key index overload binds the txid it is given, commitment 0 included (NL-972): the nonce the signer
+        // derives for this dual-funded channel once it is registered
+        return new CommitNoncesTlv(_lightningSigner.GetLocalVerificationNonce(keyIndex, fundingTxId, number),
+                                   _lightningSigner.GetLocalVerificationNonce(keyIndex, fundingTxId, number + 1));
+    }
+
+    /// <summary>
+    /// The peer's <c>commit_nonces</c> of the constructed transaction (BOLTs PR #1324): a simple taproot open cannot
+    /// sign without them, so a missing one ends the negotiation with <c>tx_abort</c> (Eclair's
+    /// <c>MissingCommitNonce</c>). Kept for our <c>commitment_signed</c> (the current nonce) and the channel's first
+    /// commitment state (the next one). Ignored for any other channel type.
+    /// </summary>
+    internal string? AcceptRemoteCommitNonces(DualFundNegotiation negotiation, ConstructedInteractiveTx transaction,
+                                              CommitNoncesTlv? remoteNonces)
+    {
+        if (negotiation.Channel is not { ChannelParams.OptionSimpleTaproot: true })
+            return null;
+
+        if (remoteNonces is null)
+            return $"MissingCommitNonce: tx_complete without commit_nonces for funding {transaction.TxId}";
+
+        negotiation.RemoteCommitNonces = remoteNonces;
+        return null;
+    }
+
+    /// <summary>
     /// The commitment step: the funding outpoint of the constructed transaction, our signature of the peer's first
-    /// commitment (zero HTLCs), and the channel staged in <see cref="ChannelState.V1FundingSigned"/> with it.
+    /// commitment (zero HTLCs), and the channel staged in <see cref="ChannelState.V1FundingSigned"/> with it. A simple
+    /// taproot channel's signature is a MuSig2 partial signature against the peer's current commit nonce of its
+    /// <c>tx_complete</c> (BOLTs PR #1324); its RBF is refused before this step (NL-970).
     /// </summary>
     internal async Task<IReadOnlyList<IChannelMessage>> CreateCommitmentSignedAsync(
         DualFundNegotiation negotiation, InteractiveTxSessionModel session, IUnitOfWork unitOfWork)
@@ -1016,7 +1087,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                  ?? throw new InvalidOperationException("The negotiated transaction has no funding output");
         var output = transaction.Outputs[(int)index];
         if (output.Amount.MilliSatoshi != negotiation.Total.MilliSatoshi
-         || output.ScriptPubKey != GetFundingScript(channel))
+         || output.ScriptPubKey != FundingScriptOf(channel))
             throw new InvalidOperationException("The funding output is not the channel's");
 
         var isFirstAttempt = channel.State == ChannelState.V1Opening;
@@ -1031,13 +1102,35 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         }
 
         CompactSignature signature;
-        if (isFirstAttempt)
+        CommitmentSignedMessage commitmentSigned;
+        if (channel.ChannelParams.OptionSimpleTaproot)
+        {
+            if (!isFirstAttempt)
+                throw new InvalidOperationException(
+                    "An RBF attempt of a simple taproot dual-funded open is not supported (NL-970)");
+
+            var remoteNonces = negotiation.RemoteCommitNonces
+                            ?? throw new InvalidOperationException("The peer's commit_nonces are missing");
+            channel.FundingOutput!.TransactionId = transaction.TxId;
+            channel.FundingOutput.Index = checked((ushort)index);
+            RegisterWithSigner(channel);
+            var partial = _lightningSigner.SignRemoteCommitmentPartial(channel.ChannelId, transaction.TxId,
+                                                                       BuildCommitment(channel,
+                                                                                       CommitmentSide.Remote),
+                                                                       remoteNonces.CommitNonce);
+            signature = CommitmentSignatures.ZeroSignature;
+            commitmentSigned = _messageFactory.CreateCommitmentSignedMessage(channel.ChannelId, partial, [],
+                                                                             transaction.TxId);
+        }
+        else if (isFirstAttempt)
         {
             channel.FundingOutput!.TransactionId = transaction.TxId;
             channel.FundingOutput.Index = checked((ushort)index);
             RegisterWithSigner(channel);
             signature = _lightningSigner.SignChannelTransaction(channel.ChannelId,
                                                                 BuildCommitment(channel, CommitmentSide.Remote));
+            commitmentSigned = _messageFactory.CreateCommitmentSignedMessage(channel.ChannelId, signature, [],
+                                                                             transaction.TxId);
         }
         else
         {
@@ -1048,6 +1141,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             RegisterRbfFunding(channel, session);
             signature = _lightningSigner.SignChannelTransaction(channel.ChannelId, transaction.TxId,
                                                                 BuildCommitment(channel, CommitmentSide.Remote));
+            commitmentSigned = _messageFactory.CreateCommitmentSignedMessage(channel.ChannelId, signature, [],
+                                                                             transaction.TxId);
         }
 
         channel.UpdateLastSentSignature(signature);
@@ -1084,10 +1179,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
         _logger.LogInformation("Signed the first commitment of channel {ChannelId} for funding {TxId}",
                                channel.ChannelId, transaction.TxId);
-        return
-        [
-            _messageFactory.CreateCommitmentSignedMessage(channel.ChannelId, signature, [], transaction.TxId)
-        ];
+        return [commitmentSigned];
     }
 
     /// <summary>
@@ -1412,6 +1504,10 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         if (IsDraining())
             return InteractiveTxRbfDecision.Reject(NodeDrain.Refusal("tx_init_rbf"));
 
+        // A simple taproot open is not bumped yet (NL-970): BOLT 2 lets us answer tx_abort for any reason
+        if (negotiation.Channel is { ChannelParams.OptionSimpleTaproot: true })
+            return InteractiveTxRbfDecision.Reject("RBF of a simple taproot dual-funded open is not supported");
+
         if (await GetRbfRefusalAsync(negotiation) is { } refusal)
             return InteractiveTxRbfDecision.Reject(refusal);
 
@@ -1516,7 +1612,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                       negotiation.IsOpener,
                                                       CommitmentFeeCalculator.FunderCost(
                                                           (ulong)channelParams.FeeRateAmountPerKw.Satoshi,
-                                                          channelParams.OptionAnchorOutputs, 0))
+                                                          channelParams.CommitmentFormat, 0))
                 is { } balanceViolation)
                 return InteractiveTxRbfDecision.Reject($"liquidity ads: {balanceViolation}");
 
@@ -1555,7 +1651,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             }
 
             ChangeSharesForRbf(negotiation, localShare, remoteShare);
-            var willFund = liquidityAds.CreateWillFund(request.Rate, GetFundingScript(channel));
+            var willFund = liquidityAds.CreateWillFund(request.Rate, FundingScriptOf(channel));
             negotiation.AttemptLiquidity = new DualFundLiquidity(LiquidityPurchaseRole.Seller, request, willFund, fees,
                                                                  request.RequestedSat);
             negotiation.EndSale();
@@ -1597,7 +1693,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             negotiation.LiquidityRequest = null;
             var channel = negotiation.Channel!;
             var check = CheckWillFund(negotiation, liquidityRequest, message.ProvideFundingTlv?.WillFund,
-                                      GetFundingScript(channel), negotiation.LocalShare,
+                                      FundingScriptOf(channel), negotiation.LocalShare,
                                       LightningMoney.Satoshis(theirs),
                                       (uint)channel.ChannelParams.FeeRateAmountPerKw.Satoshi,
                                       channel.ChannelParams.OptionAnchorOutputs);
@@ -1646,7 +1742,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
         var openerShare = negotiation.IsOpener ? localShare : remoteShare;
         var fee = CommitmentFeeCalculator.FunderCost((ulong)channelParams.FeeRateAmountPerKw.Satoshi,
-                                                     channelParams.OptionAnchorOutputs, 0);
+                                                     channelParams.CommitmentFormat, 0);
         if (openerShare < fee)
             return $"the opener's contribution {openerShare} cannot pay the first commitment's fee {fee}";
 
@@ -1710,7 +1806,31 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                               && !fundingTxIdTlv.FundingTxId.Equals(pendingTxId))
             violation = $"commitment_signed for funding {fundingTxIdTlv.FundingTxId}, not {pendingTxId}";
 
-        if (violation is null)
+        var isTaproot = channel.ChannelParams.OptionSimpleTaproot;
+        var partialSignature = message.PartialSignatureWithNonceTlv?.PartialSignatureWithNonce;
+        if (violation is null && isTaproot)
+        {
+            // Simple taproot (BOLTs PR #1324): the peer's MuSig2 partial signature of our commitment 0, made against our
+            // tx_complete commit nonce on this funding; the ECDSA field is the zero signature
+            if (partialSignature is not { } partial)
+            {
+                violation = "commitment_signed of a simple taproot open without partial_signature_with_nonce";
+            }
+            else
+            {
+                try
+                {
+                    _lightningSigner.ValidateLocalCommitmentPartialSignature(
+                        channelId, pendingTxId, channel.LocalCommitmentNumber, partial,
+                        BuildCommitment(channel, CommitmentSide.Local));
+                }
+                catch (SignerException e)
+                {
+                    violation = $"invalid commitment partial signature: {e.Message}";
+                }
+            }
+        }
+        else if (violation is null)
         {
             var localCommitment = BuildCommitment(channel, CommitmentSide.Local);
             try
@@ -1736,13 +1856,18 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         }
 
         var previousSignature = channel.LastReceivedSignature;
-        channel.UpdateLastReceivedSignature(message.Payload.Signature);
+        var previousPartialSignature = channel.LastReceivedPartialSignature;
+        if (isTaproot)
+            channel.UpdateLastReceivedPartialSignature(partialSignature);
+        else
+            channel.UpdateLastReceivedSignature(message.Payload.Signature);
         await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
         try
         {
-            // Stored with the attempt (NL-528): whichever signed attempt confirms can still be closed unilaterally
+            // Stored with the attempt (NL-528): whichever signed attempt confirms can still be closed unilaterally. A
+            // simple taproot open has one attempt (NL-970): the partial signature is the channel row's
             var replies = await driver.OnCommitmentSignedReceivedAsync(channelId, unitOfWork, cancellationToken,
-                                                                       message.Payload.Signature);
+                                                                       isTaproot ? null : message.Payload.Signature);
 
             // The driver abandons an attempt it cannot sign for (NL-867): nothing is pending then
             negotiation.CommitmentSignedReceived = negotiation.PendingTxId is not null;
@@ -1752,6 +1877,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         {
             if (previousSignature is not null)
                 channel.UpdateLastReceivedSignature(previousSignature);
+            if (isTaproot)
+                channel.UpdateLastReceivedPartialSignature(previousPartialSignature);
             throw;
         }
     }
@@ -2042,7 +2169,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
     /// <summary>
     /// Our <c>commitment_signed</c> for the pending attempt again (BOLT 2 <c>next_funding</c> retransmission; RFC 6979
-    /// makes it the same signature).
+    /// makes it the same signature). A simple taproot open is signed again with a fresh nonce against the peer's
+    /// <c>channel_reestablish</c> <c>current_commit_nonce</c> (BOLTs PR #1324; Eclair Channel.scala:2736-2742), never
+    /// replayed; without that nonce nothing is retransmitted (logged).
     /// </summary>
     internal CommitmentSignedMessage? CreateCommitmentSignedRetransmission(DualFundNegotiation negotiation)
     {
@@ -2050,6 +2179,21 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             return null;
 
         var remoteCommitment = BuildCommitment(channel, CommitmentSide.Remote);
+        if (channel.ChannelParams.OptionSimpleTaproot)
+        {
+            if (negotiation.RemoteCurrentCommitNonce is not { } remoteNonce)
+            {
+                _logger.LogWarning("Our commitment_signed of the simple taproot open {ChannelId} is due again but the "
+                                 + "peer's channel_reestablish carried no current_commit_nonce; not re-signing it",
+                                   channel.ChannelId);
+                return null;
+            }
+
+            var partial = _lightningSigner.SignRemoteCommitmentPartial(channel.ChannelId, txId, remoteCommitment,
+                                                                       remoteNonce);
+            return _messageFactory.CreateCommitmentSignedMessage(channel.ChannelId, partial, [], txId);
+        }
+
         var signature = negotiation.CompletedTxIds.Count > 0
                             ? _lightningSigner.SignChannelTransaction(channel.ChannelId, txId, remoteCommitment)
                             : _lightningSigner.SignChannelTransaction(channel.ChannelId, remoteCommitment);
@@ -2057,7 +2201,10 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     }
 
     /// <summary>Forgets a channel's negotiation (memory only; the channel closed or was forgotten).</summary>
-    internal bool Forget(ChannelId channelId) => _negotiations.TryRemove(channelId, out _);
+    internal bool Forget(ChannelId channelId)
+    {
+        return _negotiations.TryRemove(channelId, out _);
+    }
 
     /// <summary>Whether a dual-funded open is known for <paramref name="channelId"/> (tests and diagnostics).</summary>
     public bool IsOpening(ChannelId channelId) => _negotiations.ContainsKey(channelId);
@@ -2170,7 +2317,39 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                 ChannelState.V1Opening, ChannelVersion.V2);
     }
 
-    /// <summary>The channel's P2WSH 2-of-2 funding script (BOLT 3).</summary>
+    /// <summary>
+    /// The channel's funding script: the P2WSH 2-of-2 (BOLT 3), or for a simple taproot channel the P2TR output of the
+    /// BIP 86-tweaked MuSig2 aggregate of both funding keys (bolt-simple-taproot.md §Funding Transaction Output).
+    /// </summary>
+    private BitcoinScript FundingScriptOf(ChannelModel channel)
+    {
+        if (!channel.ChannelParams.OptionSimpleTaproot)
+            return GetFundingScript(channel);
+
+        var funding = channel.FundingOutput ?? throw new InvalidOperationException("The channel has no funding output");
+        var musig2 = _serviceProvider.GetService<IMusig2Service>()
+                  ?? throw new InvalidOperationException("No MuSig2 service is registered");
+        return new BitcoinScript(musig2.AggregateTaprootKeyPath(funding.LocalFundingPubKey, funding.RemoteFundingPubKey)
+                                       .GetTaprootScriptPubKey());
+    }
+
+    /// <summary>
+    /// The gates of a simple taproot dual-funded open, ours or the peer's (taproot wave t02 lane V2): the type needs
+    /// <c>option_simple_taproot</c> negotiated, a taproot channel is never announced (bolt-simple-taproot.md: until
+    /// taproot gossip exists), and no liquidity ads purchase or sale goes with it yet (NL-971).
+    /// </summary>
+    private static void CheckTaprootOpen(FeatureOptions features, bool isPublic, bool withLiquidity)
+    {
+        if (features.OptionSimpleTaproot == FeatureSupport.No)
+            throw new InvalidOperationException("option_simple_taproot is not negotiated with the peer");
+        if (isPublic)
+            throw new InvalidOperationException("A simple taproot channel must be private (no --public)");
+        if (withLiquidity)
+            throw new InvalidOperationException(
+                "Liquidity ads are not supported with a simple taproot channel yet (NL-971)");
+    }
+
+    /// <summary>The channel's P2WSH 2-of-2 funding script (BOLT 3); not a simple taproot channel's.</summary>
     internal static BitcoinScript GetFundingScript(ChannelModel channel)
     {
         var funding = channel.FundingOutput ?? throw new InvalidOperationException("The channel has no funding output");
@@ -2212,7 +2391,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         if (DualFundLiquidity.GetBalanceViolation(localShare, sellerContribution, liquidity.LocalFeeMsat,
                                                   negotiation.IsOpener,
                                                   CommitmentFeeCalculator.FunderCost(commitmentFeeratePerKw,
-                                                                                     optionAnchors, 0))
+                                                                                     CommitmentFormatExtensions
+                                                                                        .FromOptionAnchors(optionAnchors),
+                                                                                     0))
             is { } violation)
             return new LiquidityCheck($"liquidity ads: {violation}", null);
 

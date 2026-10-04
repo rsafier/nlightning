@@ -89,11 +89,29 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
             // Build the output and the transactions
             var localUnsignedCommitmentTransaction = _commitmentTransactionBuilder.Build(localCommitmentTransaction);
 
-            // Validate remote signature for our local commitment transaction
-            _lightningSigner.ValidateSignature(channel.ChannelId, payload.Signature, localUnsignedCommitmentTransaction);
+            if (channel.ChannelParams.OptionSimpleTaproot)
+            {
+                // Simple taproot channels (bolt-simple-taproot.md §funding_signed, NL-877 T5): the accepter's MuSig2
+                // partial signature of our commitment 0 (required), checked against our open_channel verification
+                // nonce; kept to sign our commitment 0 for broadcast
+                var partial = message.PartialSignatureWithNonceTlv?.PartialSignatureWithNonce
+                           ?? throw new ChannelErrorException(
+                                  "funding_signed of a simple taproot channel without partial_signature_with_nonce",
+                                  channel.ChannelId, "funding_signed without partial_signature_with_nonce");
+                _lightningSigner.ValidateLocalCommitmentPartialSignature(channel.ChannelId, null,
+                                                                         channel.LocalCommitmentNumber, partial,
+                                                                         localUnsignedCommitmentTransaction);
+                channel.UpdateLastReceivedPartialSignature(partial);
+            }
+            else
+            {
+                // Validate remote signature for our local commitment transaction
+                _lightningSigner.ValidateSignature(channel.ChannelId, payload.Signature,
+                                                   localUnsignedCommitmentTransaction);
 
-            // Update the channel with the new signature
-            channel.UpdateLastReceivedSignature(payload.Signature);
+                // Update the channel with the new signature
+                channel.UpdateLastReceivedSignature(payload.Signature);
+            }
 
             // Get the locked utxos to create the funding transaction
             var utxos = _utxoMemoryRepository.GetLockedUtxosForChannel(channel.ChannelId);

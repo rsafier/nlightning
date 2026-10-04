@@ -64,6 +64,61 @@ public class ChannelStateDbRepositoryTests
         Assert.Contains("ReceivedRevoke", kinds);
     }
 
+    [Theory]
+    [InlineData(3)]
+    [InlineData(11)]
+    public async Task Given_SimpleTaprootDance_When_EachTransitionIsPersistedAndReloaded_Then_NoncesAndPartialSignaturesRoundTrip(
+        int seed)
+    {
+        // Arrange (NL-877 T3, migration AddSimpleTaprootChannels)
+        await using var harness = await StateHarness.CreateAsync(seed, simpleTaproot: true);
+        var sawNonces = false;
+        var sawPartial = false;
+
+        // Act & Assert: the peer's nonces are consumed by our signatures and renewed by its revoke_and_acks, and every
+        // stored commitment signature keeps its MuSig2 partial signature
+        for (var i = 0; i < 40; i++)
+        {
+            var result = harness.Driver.NextTransition();
+            await harness.PersistAsync(result);
+            await harness.AssertReloadEqualsAsync();
+            sawNonces |= !result.Next.RemoteNextNonces.IsEmpty;
+            sawPartial |= result.Next.LocalCommit.RemoteSignatures?.PartialSignature is not null
+                       && result.Next.LocalCommit.Number > 0;
+        }
+
+        var channel = await harness.ReloadChannelAsync();
+        Assert.True(channel.ChannelParams.OptionSimpleTaproot);
+        CommitmentsAssert.Equal(harness.Driver.Us, channel.Commitments!);
+        Assert.True(sawNonces);
+        Assert.True(sawPartial);
+    }
+
+    [Fact]
+    public async Task Given_TaprootNoncesOnly_When_ReestablishNoncesApplied_Then_TheyAreSavedAndReloaded()
+    {
+        // Arrange: our commitment_signed consumed the peer's nonce
+        await using var harness = await StateHarness.CreateAsync(simpleTaproot: true);
+        await harness.PersistAsync(harness.Driver.TryUsAdd(5_000_000)!);
+        await harness.PersistAsync(harness.Driver.TryUsCommit()!);
+        Assert.Empty((await harness.LoadAsync()).Commitments.RemoteNextNonces);
+        var fundingTxId = harness.Driver.Us.Params.Funding!.FundingTxId;
+
+        // Act: channel_reestablish brings the peer's nonce again (a transition with no other change)
+        var result = harness.Driver.Us.ReceiveRemoteNonces(new Dictionary<Domain.Bitcoin.ValueObjects.TxId,
+            Domain.Crypto.ValueObjects.MusigPublicNonce>
+        {
+            [fundingTxId] = CommitmentDanceDriver.Nonce(CommitmentDanceDriver.PeerTag, 1)
+        });
+        harness.Driver.ReplaceUs(result.Next);
+        await harness.PersistAsync(result);
+
+        // Assert
+        var reloaded = await harness.AssertReloadEqualsAsync();
+        Assert.Equal(CommitmentDanceDriver.Nonce(CommitmentDanceDriver.PeerTag, 1),
+                     reloaded.Commitments.RemoteNextNonces[fundingTxId]);
+    }
+
     [Fact]
     public async Task Given_UnackedCommitmentSigned_When_Reloaded_Then_MidDanceStateIsIdentical()
     {
@@ -578,10 +633,11 @@ public class ChannelStateDbRepositoryTests
             _interceptor = interceptor;
         }
 
-        public static async Task<StateHarness> CreateAsync(int seed = 1, IInterceptor? interceptor = null)
+        public static async Task<StateHarness> CreateAsync(int seed = 1, IInterceptor? interceptor = null,
+                                                           bool simpleTaproot = false)
         {
             var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
-            var channel = SqliteDbTestContext.CreateChannel(true);
+            var channel = SqliteDbTestContext.CreateChannel(true, simpleTaproot: simpleTaproot);
             var driver = new CommitmentDanceDriver(channel.ChannelId, CommitmentParams.FromChannel(channel),
                                                    channel.LocalBalance.MilliSatoshi,
                                                    channel.RemoteBalance.MilliSatoshi, seed: seed);

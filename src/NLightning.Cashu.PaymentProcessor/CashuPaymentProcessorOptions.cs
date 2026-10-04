@@ -77,6 +77,15 @@ public sealed class CashuPaymentProcessorOptions
     /// </summary>
     public ulong MaxOnchainFeeSat { get; set; } = 25_000;
 
+    /// <summary>The most melts paid at once; one more answers <c>RESOURCE_EXHAUSTED</c> (NL-1000).</summary>
+    public int MaxConcurrentMelts { get; set; } = 8;
+
+    /// <summary>The most <c>WaitPaymentEvent</c> streams open at once (NL-1000).</summary>
+    public int MaxEventStreams { get; set; } = 4;
+
+    /// <summary>The most TCP connections the processor's server accepts at once (NL-1000).</summary>
+    public int MaxConnections { get; set; } = 16;
+
     /// <summary>How long a melt waits for the payment's outcome before answering <c>PENDING</c>, in seconds.</summary>
     public int PaymentTimeoutSeconds { get; set; } = 60;
 
@@ -178,6 +187,12 @@ public sealed class CashuPaymentProcessorOptions
                      + "quoted reserve must be payable.");
         if (MaxOnchainFeeSat == 0)
             errors.Add($"{SectionName}:MaxOnchainFeeSat is 0.");
+        if (MaxConcurrentMelts is < 1 or > 1_000)
+            errors.Add($"{SectionName}:MaxConcurrentMelts {MaxConcurrentMelts} is outside 1-1000.");
+        if (MaxEventStreams is < 1 or > 100)
+            errors.Add($"{SectionName}:MaxEventStreams {MaxEventStreams} is outside 1-100.");
+        if (MaxConnections is < 1 or > 1_000)
+            errors.Add($"{SectionName}:MaxConnections {MaxConnections} is outside 1-1000.");
         if (PaymentTimeoutSeconds is < 1 or > 600)
             errors.Add($"{SectionName}:PaymentTimeoutSeconds {PaymentTimeoutSeconds} is outside 1-600.");
         if (string.IsNullOrWhiteSpace(Label))

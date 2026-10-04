@@ -27,20 +27,36 @@ public sealed class ChannelReestablishMessage : BaseChannelMessage
     /// </summary>
     public MyCurrentFundingLockedTlv? MyCurrentFundingLockedTlv { get; }
 
+    /// <summary>
+    /// Simple taproot channels <c>next_local_nonces</c> (TLV 22): the sender's verification nonces for its next
+    /// commitment, one per active funding (and, as Eclair 0.14.3 does, one for a pending splice or RBF attempt).
+    /// Required on a simple taproot channel, absent otherwise.
+    /// </summary>
+    public NextLocalNoncesTlv? NextLocalNoncesTlv { get; }
+
+    /// <summary>
+    /// BOLTs PR #1324 <c>current_commit_nonce</c> (TLV 24): sent while the sender still misses the peer's
+    /// <c>commitment_signed</c> for an interactive transaction of a simple taproot channel.
+    /// </summary>
+    public CurrentCommitNonceTlv? CurrentCommitNonceTlv { get; }
+
     public ChannelReestablishMessage(ChannelReestablishPayload payload, NextFundingTlv? nextFundingTlv = null,
-                                     MyCurrentFundingLockedTlv? myCurrentFundingLockedTlv = null)
+                                     MyCurrentFundingLockedTlv? myCurrentFundingLockedTlv = null,
+                                     NextLocalNoncesTlv? nextLocalNoncesTlv = null,
+                                     CurrentCommitNonceTlv? currentCommitNonceTlv = null)
         : base(MessageTypes.ChannelReestablish, payload)
     {
         NextFundingTlv = nextFundingTlv;
         MyCurrentFundingLockedTlv = myCurrentFundingLockedTlv;
+        NextLocalNoncesTlv = nextLocalNoncesTlv;
+        CurrentCommitNonceTlv = currentCommitNonceTlv;
 
-        if (NextFundingTlv is null && MyCurrentFundingLockedTlv is null)
+        if (NextFundingTlv is null && MyCurrentFundingLockedTlv is null && NextLocalNoncesTlv is null
+         && CurrentCommitNonceTlv is null)
             return;
 
+        // BOLT 1: ascending type order (1, 5, 22, 24)
         Extension = new TlvStream();
-        if (NextFundingTlv is not null)
-            Extension.Add(NextFundingTlv);
-        if (MyCurrentFundingLockedTlv is not null)
-            Extension.Add(MyCurrentFundingLockedTlv);
+        Extension.Add(NextFundingTlv, MyCurrentFundingLockedTlv, NextLocalNoncesTlv, CurrentCommitNonceTlv);
     }
 }

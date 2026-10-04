@@ -20,8 +20,10 @@ public static class SweepInputFactory
                                      CompactPubKey ourPerCommitmentPoint)
     {
         RequireKind(output, OutputDescriptorKind.DelayedToLocal);
+        RequireTaprootScriptPath(output);
         return new SweepInput(commitmentTxId, output.Vout, output.AmountSat, SweepSpendKind.DelayedOutput,
-                              RequireScript(output), output.CsvDelay, PerCommitmentPoint: ourPerCommitmentPoint);
+                              RequireScript(output), output.CsvDelay, PerCommitmentPoint: ourPerCommitmentPoint,
+                              TaprootControlBlock: output.TaprootControlBlock, SpentScriptPubKey: output.ScriptPubKey);
     }
 
     /// <summary>
@@ -44,8 +46,10 @@ public static class SweepInputFactory
                                       CompactPubKey ourPaymentBasepoint)
     {
         RequireKind(output, OutputDescriptorKind.PaymentToRemote);
+        RequireTaprootScriptPath(output);
         return new SweepInput(commitmentTxId, output.Vout, output.AmountSat, SweepSpendKind.PaymentToRemote,
-                              output.WitnessScript, output.CsvDelay, WitnessPubKey: ourPaymentBasepoint);
+                              output.WitnessScript, output.CsvDelay, WitnessPubKey: ourPaymentBasepoint,
+                              TaprootControlBlock: output.TaprootControlBlock, SpentScriptPubKey: output.ScriptPubKey);
     }
 
     /// <summary>An HTLC we offered, on the peer's commitment, after <c>cltv_expiry</c> (B5-RMT-LO-02).</summary>
@@ -56,6 +60,7 @@ public static class SweepInputFactory
                                               CompactPubKey remotePerCommitmentPoint)
     {
         RequireKind(output, OutputDescriptorKind.RemoteReceivedHtlc);
+        RequireNotTaproot(output);
         var htlc = output.Htlc ?? throw new ArgumentException("An HTLC descriptor has its HTLC", nameof(output));
         return new SweepInput(commitmentTxId, output.Vout, output.AmountSat, SweepSpendKind.HtlcTimeoutClaim,
                               RequireScript(output), output.CsvDelay, htlc.CltvExpiry, remotePerCommitmentPoint);
@@ -70,6 +75,7 @@ public static class SweepInputFactory
                                                CompactPubKey remotePerCommitmentPoint, byte[] preimage)
     {
         RequireKind(output, OutputDescriptorKind.RemoteOfferedHtlc);
+        RequireNotTaproot(output);
         if (preimage is not { Length: CryptoConstants.Sha256HashLen })
             throw new ArgumentException("A preimage claim needs the 32-byte preimage", nameof(preimage));
 
@@ -91,12 +97,21 @@ public static class SweepInputFactory
                                      CompactPubKey revocationPubKey)
     {
         ArgumentNullException.ThrowIfNull(output);
+        if (output.Kind == OutputDescriptorKind.RevokedToLocal)
+            RequireTaprootScriptPath(output);
+        else
+            RequireNotTaproot(output);
+
         return output.Kind switch
         {
+            // Simple taproot: the revocation leaf <local_delayedpubkey> OP_DROP <revocation_pubkey> OP_CHECKSIG, spent
+            // with <revocation_sig> <leaf> <control_block>
             OutputDescriptorKind.RevokedToLocal => new SweepInput(commitmentTxId, output.Vout, output.AmountSat,
                                                                   SweepSpendKind.RevokedDelayedOutput,
                                                                   RequireScript(output),
-                                                                  PerCommitmentSecret: perCommitmentSecret),
+                                                                  PerCommitmentSecret: perCommitmentSecret,
+                                                                  TaprootControlBlock: output.TaprootControlBlock,
+                                                                  SpentScriptPubKey: output.ScriptPubKey),
             OutputDescriptorKind.RevokedHtlc => new SweepInput(commitmentTxId, output.Vout, output.AmountSat,
                                                                SweepSpendKind.RevokedHtlc, RequireScript(output),
                                                                PerCommitmentSecret: perCommitmentSecret,
@@ -115,6 +130,25 @@ public static class SweepInputFactory
         ArgumentNullException.ThrowIfNull(witnessScript);
         return new SweepInput(theirHtlcTxId, 0, amountSat, SweepSpendKind.RevokedDelayedOutput, witnessScript,
                               PerCommitmentSecret: perCommitmentSecret);
+    }
+
+    /// <summary>
+    /// A simple taproot output is spent here only by script path, with its leaf and control block (NL-877 T4): anything
+    /// else (an HTLC output, a key-path penalty) is not built by this factory yet.
+    /// </summary>
+    private static void RequireTaprootScriptPath(CommitmentOutputDescriptor output)
+    {
+        if (output.IsSimpleTaproot && (output.TaprootControlBlock is null || output.WitnessScript is null))
+            throw new ArgumentException($"The simple taproot {output.Kind} output {output.Vout} has no leaf and control "
+                                      + "block to spend it with", nameof(output));
+    }
+
+    /// <summary>The spends of simple taproot HTLC outputs are not built yet (NL-966).</summary>
+    private static void RequireNotTaproot(CommitmentOutputDescriptor output)
+    {
+        if (output.IsSimpleTaproot)
+            throw new ArgumentException($"Spending the simple taproot {output.Kind} output {output.Vout} is not "
+                                      + "supported yet (NL-966)", nameof(output));
     }
 
     private static void RequireKind(CommitmentOutputDescriptor output, OutputDescriptorKind kind)

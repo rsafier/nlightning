@@ -242,49 +242,52 @@ public static class CommitmentFeeCalculator
 
     #region CommitmentSpec (commitment state machine)
 
+    // NL-904 item 1: these take the channel's CommitmentFormat only (no bool hasAnchors form), so a simple taproot
+    // channel is charged its own commitment weight (968 + 172 per HTLC) and never the anchors one (1,124)
+
     /// <summary>
     /// True when <paramref name="htlc"/> produces no output in the commitment held by <paramref name="spec"/>'s
     /// holder (its value goes to fees).
     /// </summary>
     public static bool IsHtlcTrimmed(CommitmentSpec spec, SpecHtlc htlc, ulong holderDustLimitSatoshis,
-                                     bool hasAnchors)
+                                     CommitmentFormat format)
     {
         ArgumentNullException.ThrowIfNull(spec);
         return IsHtlcTrimmed(htlc.AmountMsat, htlc.IsOfferedBy(spec.Holder), holderDustLimitSatoshis,
-                             spec.FeeratePerKw, hasAnchors);
+                             spec.FeeratePerKw, format);
     }
 
     /// <summary>
     /// Number of HTLC outputs of the commitment (= <c>num_htlcs</c> of its <c>commitment_signed</c>), trimmed with
     /// the holder's dust limit.
     /// </summary>
-    public static int UntrimmedHtlcCount(CommitmentSpec spec, ulong holderDustLimitSatoshis, bool hasAnchors)
+    public static int UntrimmedHtlcCount(CommitmentSpec spec, ulong holderDustLimitSatoshis, CommitmentFormat format)
     {
         ArgumentNullException.ThrowIfNull(spec);
-        return spec.Htlcs.Count(h => !IsHtlcTrimmed(spec, h, holderDustLimitSatoshis, hasAnchors));
+        return spec.Htlcs.Count(h => !IsHtlcTrimmed(spec, h, holderDustLimitSatoshis, format));
     }
 
     /// <summary>Sum (msat) of the HTLCs trimmed from the commitment: its dust exposure.</summary>
-    public static ulong TrimmedHtlcTotalMsat(CommitmentSpec spec, ulong holderDustLimitSatoshis, bool hasAnchors)
+    public static ulong TrimmedHtlcTotalMsat(CommitmentSpec spec, ulong holderDustLimitSatoshis,
+                                             CommitmentFormat format)
     {
         ArgumentNullException.ThrowIfNull(spec);
-        return spec.Htlcs.Where(h => IsHtlcTrimmed(spec, h, holderDustLimitSatoshis, hasAnchors))
+        return spec.Htlcs.Where(h => IsHtlcTrimmed(spec, h, holderDustLimitSatoshis, format))
                    .Aggregate(0UL, (sum, h) => checked(sum + h.AmountMsat));
     }
 
     /// <summary>Base commitment fee (satoshis) of <paramref name="spec"/>, trimmed with the holder's dust limit.</summary>
     public static ulong CommitmentBaseFeeSatoshis(CommitmentSpec spec, ulong holderDustLimitSatoshis,
-                                                  bool hasAnchors) =>
-        CommitmentBaseFeeSatoshis(spec.FeeratePerKw, hasAnchors,
-                                  UntrimmedHtlcCount(spec, holderDustLimitSatoshis, hasAnchors));
+                                                  CommitmentFormat format) =>
+        CommitmentBaseFeeSatoshis(spec.FeeratePerKw, format, UntrimmedHtlcCount(spec, holderDustLimitSatoshis, format));
 
     /// <summary>
     /// What the funder pays on top of its HTLCs for this commitment, in msat: the base fee plus both anchors
-    /// (<c>2 * 330</c> sat) with <c>option_anchors</c>.
+    /// (<c>2 * 330</c> sat) with anchor outputs (<c>option_anchors</c> or <c>option_simple_taproot</c>).
     /// </summary>
-    public static ulong FunderCostMsat(CommitmentSpec spec, ulong holderDustLimitSatoshis, bool hasAnchors) =>
-        checked(FunderCostSatoshis(spec.FeeratePerKw, hasAnchors,
-                                   UntrimmedHtlcCount(spec, holderDustLimitSatoshis, hasAnchors)) * 1_000);
+    public static ulong FunderCostMsat(CommitmentSpec spec, ulong holderDustLimitSatoshis, CommitmentFormat format) =>
+        checked(FunderCostSatoshis(spec.FeeratePerKw, format,
+                                   UntrimmedHtlcCount(spec, holderDustLimitSatoshis, format)) * 1_000);
 
     #endregion
 }

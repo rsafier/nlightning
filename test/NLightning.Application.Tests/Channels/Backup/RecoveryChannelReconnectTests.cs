@@ -9,16 +9,19 @@ using Application.Channels.Managers;
 using Application.Channels.Services;
 using Application.Protocol.Factories;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Protocol.Tlv;
 using Domain.Serialization.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Crypto.Hashes;
@@ -71,6 +74,48 @@ public class RecoveryChannelReconnectTests
     }
 
     [Fact]
+    public async Task Given_ATaprootRecoveryChannel_When_ThePeerConnects_Then_TheDataLossReestablishCarriesTheNonceMap()
+    {
+        // Arrange (NL-974: LND 0.21 checks next_local_nonces before the data-loss numbers; without it the link fails
+        // without a force close and the restored funds wait on the peer's operator)
+        var recovery = CreateRecoveryChannel(1, simpleTaproot: true);
+        _channels.Add(recovery);
+        var nonce = new MusigPublicNonce(Enumerable.Repeat((byte)0x02, MusigConstants.PublicNonceLen).ToArray());
+        var fundingTxId = recovery.FundingOutput!.TransactionId!.Value;
+        _signer.Setup(s => s.GetLocalVerificationNonce(recovery.LocalKeySet.KeyIndex, fundingTxId, 1UL))
+               .Returns(nonce);
+        var manager = CreateManager();
+
+        // Act
+        await manager.OnPeerConnectedAsync(recovery.RemoteNodeId);
+
+        // Assert
+        var reestablish = Assert.IsType<ChannelReestablishMessage>(Assert.Single(_raised).Message);
+        Assert.Equal(0UL, reestablish.Payload.NextCommitmentNumber);
+        var nonces = Assert.IsType<NextLocalNoncesTlv>(reestablish.NextLocalNoncesTlv).Nonces;
+        Assert.True(nonces.TryGetNonce(fundingTxId, out var sent));
+        Assert.Equal(nonce, sent);
+        Assert.Equal(1, nonces.Count);
+    }
+
+    [Fact]
+    public async Task Given_AnAnchorsRecoveryChannel_When_ThePeerConnects_Then_NoNonceMap()
+    {
+        // Arrange
+        _channels.Add(CreateRecoveryChannel(1));
+        var manager = CreateManager();
+
+        // Act
+        await manager.OnPeerConnectedAsync(_channels[0].RemoteNodeId);
+
+        // Assert
+        var reestablish = Assert.IsType<ChannelReestablishMessage>(Assert.Single(_raised).Message);
+        Assert.Null(reestablish.NextLocalNoncesTlv);
+        _signer.Verify(s => s.GetLocalVerificationNonce(It.IsAny<uint>(), It.IsAny<TxId?>(), It.IsAny<ulong>()),
+                       Times.Never);
+    }
+
+    [Fact]
     public async Task Given_TheSignerDoesNotKnowTheChannel_When_ThePeerConnects_Then_OurPaymentBasepointIsThePoint()
     {
         // Arrange
@@ -105,9 +150,9 @@ public class RecoveryChannelReconnectTests
         Assert.Empty(_raised);
     }
 
-    private ChannelModel CreateRecoveryChannel(byte tag)
+    private ChannelModel CreateRecoveryChannel(byte tag, bool simpleTaproot = false)
     {
-        var entry = ChannelBackupService.CreateEntry(_data.AddChannel(tag), null);
+        var entry = ChannelBackupService.CreateEntry(_data.AddChannel(tag, simpleTaproot: simpleTaproot), null);
         using var sha256 = new Sha256();
         return RecoveryChannels.Create(entry, _data.Signer.Object.GetChannelBasepoints(entry.KeyIndex), sha256);
     }

@@ -49,7 +49,7 @@ public sealed class VerifyChanBackupClientHandler
                                                      c.Entry.FundingTxId, c.Entry.FundingOutputIndex,
                                                      c.Entry.CapacitySat, c.Entry.ShortChannelId,
                                                      c.Entry.IsInitiator, c.Entry.OptionAnchorOutputs, c.KeysMatch,
-                                                     c.LocalState))
+                                                     c.LocalState, c.Entry.OptionSimpleTaproot))
                                          .ToList()
                            : [];
         return new VerifyChanBackupClientResponse(verification.IsValid, verification.Error,

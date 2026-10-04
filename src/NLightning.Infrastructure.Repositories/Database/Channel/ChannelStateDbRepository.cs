@@ -490,7 +490,9 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
                                                      channel.RemoteNextPerCommitmentPoint,
                                                      pendingFundings.Count == 0
                                                          ? null
-                                                         : pendingFundings.Select(p => p.Funding).ToList());
+                                                         : pendingFundings.Select(p => p.Funding).ToList(),
+                                                     CommitmentStateEncoding.DecodeRemoteNonces(
+                                                         channel.RemoteNextNonces));
         }
         catch (ArgumentException e)
         {
@@ -589,6 +591,7 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         channel.LocalRevocationNumber = next.LocalCommit.Number;
         channel.RemoteRevocationNumber = next.RemoteCommit.Number;
         channel.RemoteNextPerCommitmentPoint = next.RemoteNextPerCommitmentPoint;
+        channel.RemoteNextNonces = CommitmentStateEncoding.EncodeRemoteNonces(next.RemoteNextNonces);
         channel.MaxDustHtlcExposureMsat = next.Params.MaxDustHtlcExposureMsat;
 
         if (extras?.SentCommitDiff is { } diff)
@@ -674,7 +677,12 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         row.Signature is null
             ? null
             : new CommitmentSignatures(new CompactSignature(row.Signature),
-                                       CommitmentStateEncoding.DecodeSignatures(row.HtlcSignatures ?? []));
+                                       CommitmentStateEncoding.DecodeSignatures(row.HtlcSignatures ?? []))
+            {
+                PartialSignature = row.PartialSignature is null
+                                       ? null
+                                       : new MusigPartialSignatureWithNonce(row.PartialSignature)
+            };
 
     internal static CompactPubKey MapPoint(CommitmentEntity row) =>
         new(row.PerCommitmentPoint
@@ -792,6 +800,7 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         entity.HtlcSignatures = signatures is null
                                     ? null
                                     : CommitmentStateEncoding.EncodeSignatures(signatures.HtlcSignatures);
+        entity.PartialSignature = signatures?.PartialSignature?.ToBytes();
         entity.SignedOnFundings = CommitmentStateEncoding.EncodeSignedOnFundings(signedOnFundings);
 
         if (isNew)

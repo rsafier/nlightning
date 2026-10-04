@@ -22,13 +22,15 @@ public sealed record RestoreChanBackupClientResponse(
 /// <param name="Outcome">What was done: <c>Restore</c>, <c>AlreadyExists</c>, <c>KeysMismatch</c>, <c>Duplicate</c>
 /// or <c>Failed</c>.</param>
 /// <param name="Detail">Why, or what happens next.</param>
+/// <param name="OptionSimpleTaproot">Whether it is a simple taproot channel (NL-877 T5).</param>
 public sealed record ChanRestoreChannelInfo(
     ChannelId ChannelId,
     CompactPubKey RemoteNodeId,
     ulong CapacitySat,
     bool OptionAnchors,
     string Outcome,
-    string Detail);
+    string Detail,
+    bool OptionSimpleTaproot = false);
 
 /// <summary>The connection to one peer after the restore.</summary>
 /// <param name="NodeId">The peer.</param>

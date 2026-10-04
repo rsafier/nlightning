@@ -79,9 +79,10 @@ internal sealed class RevokedBreachKit : IDisposable
                                           RevokedChainTx.TxId, RevokedNumber, SpentAtHeight,
                                           new Hash(new byte[32]), DateTimeOffset.UtcNow);
 
-    public RevokedBreachKit(RevokedCommitResolverOptions? options = null, bool hasAnchors = false)
+    public RevokedBreachKit(RevokedCommitResolverOptions? options = null, bool hasAnchors = false,
+                            bool simpleTaproot = false)
     {
-        Pair = new RealSigningCommitmentPair(hasAnchors);
+        Pair = new RealSigningCommitmentPair(hasAnchors || simpleTaproot, simpleTaproot);
 
         var services = new ServiceCollection();
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
@@ -336,9 +337,19 @@ internal sealed class RevokedBreachKit : IDisposable
     {
         var tx = LoadBroadcast(txId);
         var indexed = tx.Inputs.AsIndexedInputs().ToList();
+        var spentOutputs = indexed.Select(i => SpentOutput(i.PrevOut, spentFrom)).ToArray();
+        if (spentOutputs.Any(o => o.ScriptPubKey.IsScriptType(ScriptType.Taproot)))
+        {
+            // BIP 341: every spent output at once (simple taproot, NL-877 T4)
+            var validator = tx.CreateValidator(spentOutputs);
+            foreach (var input in indexed)
+                Assert.True(validator.ValidateInput((int)input.Index).Error is null, $"input {input.Index}");
+            return;
+        }
+
         foreach (var input in indexed)
         {
-            var spent = SpentOutput(input.PrevOut, spentFrom);
+            var spent = spentOutputs[input.Index];
             Assert.True(input.VerifyScript(spent, out var error), $"input {input.Index}: {error}");
         }
     }

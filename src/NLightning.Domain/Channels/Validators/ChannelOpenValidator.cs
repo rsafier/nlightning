@@ -6,6 +6,7 @@ using Domain.Enums;
 using Exceptions;
 using Interfaces;
 using Money;
+using Node;
 using Node.Options;
 using Parameters;
 
@@ -169,7 +170,8 @@ public class ChannelOpenValidator : IChannelOpenValidator
             // The initial commitment is built with the peer's feerate_per_kw, so use it when present.
             var feeRatePerKw = parameters.FeeRatePerKw ?? parameters.CurrentFeeRatePerKw;
             var hasAnchors = parameters.NegotiatedFeatures.OptionAnchors > FeatureSupport.No;
-            var expectedFee = CommitmentFeeCalculator.FunderCost((ulong)feeRatePerKw.Satoshi, hasAnchors, 0);
+            var format = TaprootChannelType.GetCommitmentFormat(parameters.ChannelTypeTlv?.Features, hasAnchors);
+            var expectedFee = CommitmentFeeCalculator.FunderCost((ulong)feeRatePerKw.Satoshi, format, 0);
             if (parameters.FundingAmount < expectedFee + parameters.ChannelReserveAmount)
                 throw new ChannelErrorException(
                     $"Funding amount is too small to cover fees: {parameters.FundingAmount}");
@@ -205,14 +207,19 @@ public class ChannelOpenValidator : IChannelOpenValidator
             throw new ChannelErrorException("ChannelTypeTlv is not present");
 
         // BOLT 2: fail the channel if the channel_type is not suitable. We know option_static_remotekey, optionally
-        // with option_anchors, and the option_scid_alias/option_zeroconf variations; channel types only use even bits
+        // with option_anchors, the simple taproot type (bit 80 alone, NL-877 T5) and the option_scid_alias/
+        // option_zeroconf variations; channel types only use even bits
+        var isTaproot = parameters.ChannelTypeTlv.Features.IsFeatureSet(Feature.OptionSimpleTaproot, true);
         foreach (var bit in parameters.ChannelTypeTlv.Features.GetSetBits())
-            if (!s_supportedChannelTypeBits.Contains(bit))
+            if (!s_supportedChannelTypeBits.Contains(bit) && !(isTaproot && bit == TaprootChannelType.CompulsoryBit))
                 throw new ChannelErrorException($"Unsupported channel type bit {bit}",
                                                 "ChannelTypeTlv: This channel type is not supported");
 
+        // A simple taproot type skips the option_static_remotekey/option_anchors checks: its own rules apply
+        if (isTaproot)
+            CheckSimpleTaprootChannelType(parameters);
         // Check if OptionStaticRemoteKey is Compulsory
-        if (!parameters.ChannelTypeTlv.Features.IsFeatureSet(Feature.OptionStaticRemoteKey, true))
+        else if (!parameters.ChannelTypeTlv.Features.IsFeatureSet(Feature.OptionStaticRemoteKey, true))
             throw new ChannelErrorException("Static remote key feature is compulsory but not set by peer",
                                             "ChannelTypeTlv: Static remote key is compulsory");
 
@@ -241,5 +248,36 @@ public class ChannelOpenValidator : IChannelOpenValidator
 
             minimumDepth = 0U;
         }
+    }
+
+    /// <summary>
+    /// The simple taproot channel type (bolt-simple-taproot.md, NL-877 T5): bit 80 without
+    /// <c>option_static_remotekey</c> and <c>option_anchors</c> (LND 0.21 accepts exactly {80} plus 46 and/or 50), only
+    /// in a flow that can run it (<see cref="ChannelOpenMandatoryValidationParameters.AllowSimpleTaproot"/>), with
+    /// <c>option_simple_taproot</c> and <c>option_simple_close</c> negotiated (our advertisement included, so the
+    /// experimental gate applies), and never for a public channel (the spec: the opener MUST NOT set
+    /// <c>announce_channel</c>; taproot gossip is T7).
+    /// </summary>
+    private static void CheckSimpleTaprootChannelType(ChannelOpenMandatoryValidationParameters parameters)
+    {
+        if (!TaprootChannelType.IsTaprootChannelType(parameters.ChannelTypeTlv!.Features))
+            throw new ChannelErrorException("A simple taproot channel type can't have option_static_remotekey or "
+                                          + "option_anchors", "ChannelTypeTlv: This channel type is not supported");
+
+        if (!parameters.AllowSimpleTaproot)
+            throw new ChannelErrorException("A simple taproot channel type is not supported in this open flow",
+                                            "ChannelTypeTlv: This channel type is not supported");
+
+        if (parameters.NegotiatedFeatures.OptionSimpleTaproot == FeatureSupport.No)
+            throw new ChannelErrorException("option_simple_taproot is not negotiated but requested by peer",
+                                            "ChannelTypeTlv: We don't support option_simple_taproot");
+
+        if (parameters.NegotiatedFeatures.OptionSimpleClose == FeatureSupport.No)
+            throw new ChannelErrorException("A simple taproot channel needs option_simple_close, which is not negotiated",
+                                            "ChannelTypeTlv: option_simple_taproot needs option_simple_close");
+
+        if (parameters.ChannelFlags is { AnnounceChannel: true })
+            throw new ChannelErrorException("A simple taproot channel can't be public (announce_channel is set)",
+                                            "taproot channel type for public channel");
     }
 }
