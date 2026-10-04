@@ -167,12 +167,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 1 | 6 | 79 | 86 |
+| open | 0 | 1 | 6 | 81 | 88 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
 | fixed | 15 | 66 | 211 | 435 | 727 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 3 | 4 | 7 |
-| **Total** | **15** | **67** | **227** | **528** | **837** |
+| **Total** | **15** | **67** | **227** | **530** | **839** |
 
 ### Epics
 
@@ -2028,6 +2028,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
   - `LndTaprootFlowTests` no longer waits for both `closing_sig`s before it mines (NL-976 workaround removed).
 - **Blocks/Blocked-by:** Related NL-913, NL-859 (probably the same bug, seen against Eclair), NL-877
 - **Plan ref:** BOLT2 N11
+
 ### NL-984 `ClnOfferPayTests` teardown fails once with a SQLite "collation sequence" error
 - **Status:** open
 - **Severity:** low
@@ -2051,6 +2052,25 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-999
 - **Plan ref:** —
 
+### NL-986 `openchannel` suggests `bumpopen` after a simple taproot open, whose RBF is refused
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Client` (the open-channel printer's "Bump its fee before it confirms with: bumpopen ..." hint)
+- **Evidence:** first live taproot channel on Mutinynet (2026-10-03, FAFO→FAFO2, build c5ab09cb, channel b934ee4f…): after the dual-funded taproot open the client printed the `bumpopen` hint, but RBF of a dual-funded taproot open is refused (NL-970).
+- **Fix sketch:** leave the hint out for a taproot channel, or print that its RBF is not supported yet.
+- **Blocks/Blocked-by:** Related NL-970, NL-877
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md`
+
+### NL-987 `listchannels` does not show the channel type (taproot or anchors)
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Client/Printers` (listchannels), the channel list IPC response
+- **Evidence:** first live taproot channel on Mutinynet (2026-10-03, build c5ab09cb): nothing in `listchannels` marks channel b934ee4f… as simple taproot; only the funding output on chain (v1_p2tr) tells.
+- **Fix sketch:** add the channel type (anchors, static_remotekey, simple taproot) to the channel info response (a new key) and print it.
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** —
 ### NL-056 HTLC-success / HTLC-timeout second-stage transactions not implemented
 - **Status:** fixed (dfe8866, b222896)
 - **Severity:** high
