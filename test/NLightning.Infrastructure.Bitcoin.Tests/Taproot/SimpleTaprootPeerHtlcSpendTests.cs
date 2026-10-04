@@ -7,7 +7,6 @@ using Bitcoin.Outputs;
 using Bitcoin.Signers;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.ValueObjects;
-using Domain.Channels.Commitments;
 using Domain.Channels.Models;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
@@ -67,7 +66,7 @@ public class SimpleTaprootPeerHtlcSpendTests
         // Arrange: Bob's offered HTLC 1 (cltv 503, preimage index 3) is an offered output of Bob's commitment
         var (kit, _, commitment, map) = PeerCommitment();
         var output = Assert.Single(map.Outputs, o => o is { Kind: OutputDescriptorKind.RemoteOfferedHtlc, Htlc.Id: 1 });
-        var preimage = s_preimages[3];
+        var preimage = Preimages[3];
         var input = SweepInputFactory.HtlcPreimageClaim(output, commitment.TxId, map.PerCommitmentPoint, preimage);
 
         // Act
@@ -86,7 +85,7 @@ public class SimpleTaprootPeerHtlcSpendTests
         Assert.Equal(preimage, (byte[])read);
 
         // A wrong preimage fails the leaf's hash check
-        var wrong = Load(Sweep(kit.Alice, input with { Preimage = s_preimages[2] }));
+        var wrong = Load(Sweep(kit.Alice, input with { Preimage = Preimages[2] }));
         Assert.NotNull(wrong.CreateValidator([Output(commitment, output.Vout)]).ValidateInput(0).Error);
     }
 
@@ -100,7 +99,7 @@ public class SimpleTaprootPeerHtlcSpendTests
         var point = PointOf(secret);
         var commitment = Build(kit.Alice, channel, CommitmentSide.Remote, point);
         var map = Mapper(kit.Alice).Map(channel, Spec(alice: true), CommitmentCase.Revoked, Number, point, commitment);
-        var revocationPubKey = s_keyDerivation.DeriveRevocationPubKey(channel.LocalKeySet.RevocationCompactBasepoint,
+        var revocationPubKey = KeyDerivation.DeriveRevocationPubKey(channel.LocalKeySet.RevocationCompactBasepoint,
                                                                       point);
         var outputs = map.Outputs.Where(o => o.Kind is OutputDescriptorKind.RevokedHtlc
                                                  or OutputDescriptorKind.RevokedToLocal)
@@ -109,8 +108,8 @@ public class SimpleTaprootPeerHtlcSpendTests
         // Act: one batch with to_local (revocation leaf) and the four HTLC outputs (key path)
         var inputs = outputs.Select(o => SweepInputFactory.Penalty(o, commitment.TxId, secret, revocationPubKey))
                             .ToList();
-        var builder = new SweepTransactionBuilder(s_options);
-        var tx = Load(builder.Sign(builder.Build(inputs, s_destination, 2_500), kit.Alice,
+        var builder = new SweepTransactionBuilder(SweepOptions);
+        var tx = Load(builder.Sign(builder.Build(inputs, SweepDestination, 2_500), kit.Alice,
                                    TaprootSignerKit.ChannelId));
 
         // Assert: four 1-item witnesses, all inputs valid by execution against every spent output (BIP 341)
@@ -169,7 +168,7 @@ public class SimpleTaprootPeerHtlcSpendTests
                                                                 output.ScriptPubKey.ToBytes(),
                                                                 output.DelayLeaf.Script.ToBytes(),
                                                                 output.GetControlBlock(output.DelayLeaf), other);
-        var unsigned = new SweepTransactionBuilder(s_options).Build([input], s_destination, 2_500);
+        var unsigned = new SweepTransactionBuilder(SweepOptions).Build([input], SweepDestination, 2_500);
 
         // Act / Assert
         Assert.Throws<Domain.Exceptions.SignerException>(
@@ -255,8 +254,8 @@ public class SimpleTaprootPeerHtlcSpendTests
     private static (Transaction Parent, TaprootHtlcResolutionOutput Output) SecondLevel(ChannelModel channel,
         CompactPubKey point, long amountSat)
     {
-        var revocation = s_keyDerivation.DeriveRevocationPubKey(channel.LocalKeySet.RevocationCompactBasepoint, point);
-        var theirDelayed = s_keyDerivation.DerivePublicKey(channel.RemoteKeySet!.DelayedPaymentCompactBasepoint, point);
+        var revocation = KeyDerivation.DeriveRevocationPubKey(channel.LocalKeySet.RevocationCompactBasepoint, point);
+        var theirDelayed = KeyDerivation.DerivePublicKey(channel.RemoteKeySet!.DelayedPaymentCompactBasepoint, point);
         var output = new TaprootHtlcResolutionOutput(LightningMoney.Satoshis(amountSat), new PubKey(theirDelayed),
                                                      new PubKey(revocation), AliceToSelfDelay);
         var parent = Transaction.Create(Network.Main);

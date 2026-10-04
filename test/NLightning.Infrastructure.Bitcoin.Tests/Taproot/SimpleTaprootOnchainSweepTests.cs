@@ -42,9 +42,9 @@ public class SimpleTaprootOnchainSweepTests
     internal const ushort AliceToSelfDelay = 144;
     private const ushort BobToSelfDelay = 120;
 
-    internal static readonly KeyDerivationService s_keyDerivation = new(new Secp256K1Math());
-    internal static readonly IOptions<NodeOptions> s_options = Microsoft.Extensions.Options.Options.Create(new NodeOptions());
-    internal static readonly byte[] s_destination = new Key(Enumerable.Repeat((byte)0x44, 32).ToArray())
+    internal static readonly KeyDerivationService KeyDerivation = new(new Secp256K1Math());
+    internal static readonly IOptions<NodeOptions> SweepOptions = Microsoft.Extensions.Options.Options.Create(new NodeOptions());
+    internal static readonly byte[] SweepDestination = new Key(Enumerable.Repeat((byte)0x44, 32).ToArray())
                                                   .PubKey.WitHash.ScriptPubKey.ToBytes();
 
     [Fact]
@@ -181,7 +181,7 @@ public class SimpleTaprootOnchainSweepTests
             SpendKind = SweepSpendKind.DelayedOutput,
             PerCommitmentPoint = bobPoint
         };
-        var unsigned = new SweepTransactionBuilder(s_options).Build([input], s_destination, 2_500);
+        var unsigned = new SweepTransactionBuilder(SweepOptions).Build([input], SweepDestination, 2_500);
 
         // Act / Assert
         Assert.Throws<Domain.Exceptions.SignerException>(
@@ -192,8 +192,8 @@ public class SimpleTaprootOnchainSweepTests
 
     internal static SignedTransaction Sweep(LocalLightningSigner signer, SweepInput input)
     {
-        var builder = new SweepTransactionBuilder(s_options);
-        var unsigned = builder.Build([input], s_destination, 2_500);
+        var builder = new SweepTransactionBuilder(SweepOptions);
+        var unsigned = builder.Build([input], SweepDestination, 2_500);
         return builder.Sign(unsigned, signer, TaprootSignerKit.ChannelId);
     }
 
@@ -222,14 +222,14 @@ public class SimpleTaprootOnchainSweepTests
                         : factory.CreateCommitmentTransactionModel(channel, Spec(channel.IsInitiator), side, Number,
                                                                    remotePoint!.Value);
         Assert.True(model.IsSimpleTaproot);
-        var built = new CommitmentTransactionBuilder(s_options).BuildWithOutputMap(model);
+        var built = new CommitmentTransactionBuilder(SweepOptions).BuildWithOutputMap(model);
         return ChainTxMapper.FromTransaction(Transaction.Load(built.Transaction.RawTxBytes, Network.Main));
     }
 
     internal static CommitmentOutputMapper Mapper(LocalLightningSigner signer) =>
-        new(Factory(signer), new CommitmentTransactionBuilder(s_options));
+        new(Factory(signer), new CommitmentTransactionBuilder(SweepOptions));
 
-    internal static readonly byte[][] s_preimages =
+    internal static readonly byte[][] Preimages =
         Enumerable.Range(1, 4).Select(i => Enumerable.Repeat((byte)i, 32).ToArray()).ToArray();
 
     /// <summary>Alice's view: 600,000 sat local, 380,000 sat remote, two HTLCs each way.</summary>
@@ -250,14 +250,14 @@ public class SimpleTaprootOnchainSweepTests
     private static Htlc Htlc(ulong id, ulong amountMsat, bool aliceOffers, uint expiry, bool aliceView)
     {
         var index = (aliceOffers ? 0 : 2) + (int)id;
-        Hash paymentHash = System.Security.Cryptography.SHA256.HashData(s_preimages[index]);
+        Hash paymentHash = System.Security.Cryptography.SHA256.HashData(Preimages[index]);
         var direction = aliceOffers == aliceView ? HtlcDirection.Outgoing : HtlcDirection.Incoming;
         return new Htlc(LightningMoney.MilliSatoshis(amountMsat), null, direction, expiry, id, 0, paymentHash,
                         HtlcState.Offered);
     }
 
     internal static CommitmentTransactionModelFactory Factory(LocalLightningSigner signer) =>
-        new(new CommitmentKeyDerivationService(s_keyDerivation, signer), signer);
+        new(new CommitmentKeyDerivationService(KeyDerivation, signer), signer);
 
     /// <summary>A simple taproot channel of the kit; each side announces its own to_self_delay.</summary>
     internal static ChannelModel CreateChannel(TaprootSignerKit kit, bool alice)
