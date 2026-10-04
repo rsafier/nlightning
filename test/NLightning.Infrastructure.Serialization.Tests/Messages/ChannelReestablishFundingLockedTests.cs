@@ -8,11 +8,11 @@ using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Factories;
 using Helpers;
 using Serialization.Messages;
-using Serialization.Messages.Types;
 
 /// <summary>
 /// BOLT 2 <c>channel_reestablish_tlvs</c> type 5 (<c>my_current_funding_locked</c>, SP-RE-02; SP1-A-T2): read and
@@ -37,9 +37,8 @@ public class ChannelReestablishFundingLockedTests
                                              SerializerHelper.TlvConverterFactory,
                                              SerializerHelper.TlvStreamSerializer));
 
-    private readonly ChannelReestablishMessageTypeSerializer _serializer =
-        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
-            SerializerHelper.TlvStreamSerializer);
+    private readonly IMessageTypeSerializer<ChannelReestablishMessage> _serializer =
+        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ChannelReestablishMessage>()!;
 
     [Fact]
     public async Task Given_MyCurrentFundingLocked_When_RoundTripped_Then_ItIsByteExact()

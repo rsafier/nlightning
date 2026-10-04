@@ -6,22 +6,20 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class UpdateFailHtlcMessageTests
 {
     private const string PayloadHex =
         "00000000000000000000000000000000000000000000000000000000000000000000000000000000000F567CBDADB00B825448B2E414487D73";
 
-    private readonly UpdateFailHtlcMessageTypeSerializer _updateFailHtlcMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<UpdateFailHtlcMessage> _updateFailHtlcMessageTypeSerializer;
 
     public UpdateFailHtlcMessageTests()
     {
         _updateFailHtlcMessageTypeSerializer =
-            new UpdateFailHtlcMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                                    SerializerHelper.TlvConverterFactory,
-                                                    SerializerHelper.TlvStreamSerializer);
+            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<UpdateFailHtlcMessage>()!;
     }
 
     #region Deserialize

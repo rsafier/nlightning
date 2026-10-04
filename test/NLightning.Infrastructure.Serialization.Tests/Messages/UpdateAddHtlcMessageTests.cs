@@ -5,9 +5,9 @@ using Domain.Money;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class UpdateAddHtlcMessageTests
 {
@@ -22,14 +22,12 @@ public class UpdateAddHtlcMessageTests
     private static readonly byte[] s_paymentHash =
         Convert.FromHexString("567cbdadb00b825448b2e414487d73a97f657f0634166d3ab3f3a2cc1042eda5");
 
-    private readonly UpdateAddHtlcMessageTypeSerializer _updateAddHtlcMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<UpdateAddHtlcMessage> _updateAddHtlcMessageTypeSerializer;
 
     public UpdateAddHtlcMessageTests()
     {
         _updateAddHtlcMessageTypeSerializer =
-            new UpdateAddHtlcMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                                   SerializerHelper.TlvConverterFactory,
-                                                   SerializerHelper.TlvStreamSerializer);
+            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<UpdateAddHtlcMessage>()!;
     }
 
     #region Deserialize

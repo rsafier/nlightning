@@ -1,5 +1,6 @@
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
+using Domain.Protocol.Messages;
 using Domain.Serialization.Interfaces;
 using Exceptions;
 using Helpers;
@@ -69,7 +70,7 @@ public class MessageExtensionStrictnessTests
 
         return messageName switch
         {
-            "init" => (new InitMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+            "init" => (SerializerHelper.MessageTypeSerializerFactory.GetSerializer<InitMessage>()!,
                        "00000000"),
             "open_channel" => (
                 new OpenChannel1MessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
@@ -98,7 +99,7 @@ public class MessageExtensionStrictnessTests
                 new ChannelReadyMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
                 Zero32 + Point),
             "channel_reestablish" => (
-                new ChannelReestablishMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ChannelReestablishMessage>()!,
                 Zero32 + "0000000000000001" + "0000000000000002" + Zero32 + Point),
             "closing_signed" => (
                 new ClosingSignedMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
@@ -112,17 +113,17 @@ public class MessageExtensionStrictnessTests
                 Zero32 + "0000000000000002"
               + "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320"),
             "commitment_signed" => (
-                new CommitmentSignedMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<CommitmentSignedMessage>()!,
                 // channel_id, signature, num_htlcs = 0, funding_txid
                 Zero32
               + "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320"
               + "0000" + "0120" + Zero32),
             "tx_add_input" => (
-                new TxAddInputMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxAddInputMessage>()!,
                 // channel_id, serial_id, prevtx_len = 4, prevtx, prevtx_vout, sequence
                 Zero32 + "0000000000000002" + "0004" + "00010203" + "00000000" + "FFFFFFFD"),
             "tx_add_input_shared" => (
-                new TxAddInputMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxAddInputMessage>()!,
                 // channel_id, serial_id, prevtx_len = 0, prevtx_vout, sequence, shared_input_txid
                 Zero32 + "0000000000000002" + "0000" + "00000000" + "FFFFFFFD" + "0020" + Zero32),
             "tx_signatures" => (
@@ -144,7 +145,7 @@ public class MessageExtensionStrictnessTests
                 // channel_id, signature
                 Zero32 + new string('0', 128)),
             "revoke_and_ack" => (
-                new RevokeAndAckMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<RevokeAndAckMessage>()!,
                 // channel_id, per_commitment_secret, next_per_commitment_point
                 Zero32 + Zero32 + Point),
             "shutdown" => (

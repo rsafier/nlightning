@@ -12,6 +12,7 @@ public static class SerializerHelper
     public static readonly TlvConverterFactory TlvConverterFactory;
     public static readonly TlvStreamSerializer TlvStreamSerializer;
     public static readonly TlvSerializer TlvSerializer;
+    public static readonly MessageTypeSerializerFactory MessageTypeSerializerFactory;
 
     static SerializerHelper()
     {
@@ -22,5 +23,7 @@ public static class SerializerHelper
         TlvStreamSerializer =
             new TlvStreamSerializer(TlvConverterFactory, new TlvSerializer(ValueObjectSerializerFactory));
         TlvSerializer = new TlvSerializer(ValueObjectSerializerFactory);
+        MessageTypeSerializerFactory =
+            new MessageTypeSerializerFactory(PayloadSerializerFactory, TlvConverterFactory, TlvStreamSerializer);
     }
 }

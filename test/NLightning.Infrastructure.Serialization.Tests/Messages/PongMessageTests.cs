@@ -2,17 +2,17 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class PongMessageTests
 {
-    private readonly PongMessageTypeSerializer _pongMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<PongMessage> _pongMessageTypeSerializer;
 
     public PongMessageTests()
     {
         _pongMessageTypeSerializer =
-            new PongMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
+            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<PongMessage>()!;
     }
 
     [Fact]

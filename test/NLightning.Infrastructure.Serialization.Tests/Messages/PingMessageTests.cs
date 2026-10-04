@@ -2,17 +2,17 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class PingMessageTests
 {
-    private readonly PingMessageTypeSerializer _pingMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<PingMessage> _pingMessageTypeSerializer;
 
     public PingMessageTests()
     {
         _pingMessageTypeSerializer =
-            new PingMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
+            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<PingMessage>()!;
     }
 
     [Fact]

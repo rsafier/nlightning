@@ -3,18 +3,17 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 using Domain.Channels.ValueObjects;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class RevokeAndAckMessageTests
 {
-    private readonly RevokeAndAckMessageTypeSerializer _revokeAndAckMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<RevokeAndAckMessage> _revokeAndAckMessageTypeSerializer;
 
     public RevokeAndAckMessageTests()
     {
         _revokeAndAckMessageTypeSerializer =
-            new RevokeAndAckMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
-                                                  SerializerHelper.TlvStreamSerializer);
+            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<RevokeAndAckMessage>()!;
     }
 
     [Fact]

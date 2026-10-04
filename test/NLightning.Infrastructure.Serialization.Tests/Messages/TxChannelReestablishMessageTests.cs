@@ -5,20 +5,18 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class ChannelReestablishMessageTests
 {
-    private readonly ChannelReestablishMessageTypeSerializer _channelReestablishMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<ChannelReestablishMessage> _channelReestablishMessageTypeSerializer;
 
     public ChannelReestablishMessageTests()
     {
         _channelReestablishMessageTypeSerializer =
-            new ChannelReestablishMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                                        SerializerHelper.TlvConverterFactory,
-                                                        SerializerHelper.TlvStreamSerializer);
+            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ChannelReestablishMessage>()!;
     }
 
     #region Deserialize

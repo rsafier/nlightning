@@ -16,6 +16,7 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
     private readonly ITlvStreamSerializer _tlvStreamSerializer;
+    private readonly Wire.WireRegistry _wireRegistry;
 
     public MessageTypeSerializerFactory(IPayloadSerializerFactory payloadSerializerFactory,
                                         ITlvConverterFactory tlvConverterFactory,
@@ -24,6 +25,7 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _payloadSerializerFactory = payloadSerializerFactory;
         _tlvConverterFactory = tlvConverterFactory;
         _tlvStreamSerializer = tlvStreamSerializer;
+        _wireRegistry = new Wire.WireRegistry(tlvConverterFactory);
 
         RegisterSerializers();
         RegisterTypeDictionary();
@@ -31,11 +33,18 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
 
     public IMessageTypeSerializer<TMessageType>? GetSerializer<TMessageType>() where TMessageType : IMessage
     {
+        // Migrated messages are wire definitions; the hand-written serializers serve the rest
+        if (_wireRegistry.Get<TMessageType>() is { } wire)
+            return wire as IMessageTypeSerializer<TMessageType>;
+
         return _serializers.GetValueOrDefault(typeof(TMessageType)) as IMessageTypeSerializer<TMessageType>;
     }
 
     public IMessageTypeSerializer? GetSerializer(MessageTypes messageType)
     {
+        if (_wireRegistry.Get(messageType) is { } wire)
+            return wire;
+
         var type = _messageTypeDictionary.GetValueOrDefault(messageType);
         if (type is null)
             return null;
@@ -54,30 +63,20 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _serializers.Add(typeof(ChannelReadyMessage),
                          new ChannelReadyMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                                _tlvStreamSerializer));
-        _serializers.Add(typeof(ChannelReestablishMessage),
-                         new ChannelReestablishMessageTypeSerializer(_payloadSerializerFactory,
-                                                                     _tlvConverterFactory, _tlvStreamSerializer));
         _serializers.Add(typeof(ClosingSignedMessage),
-                         new ClosingSignedMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
-                                                                _tlvStreamSerializer));
+                 new ClosingSignedMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                        _tlvStreamSerializer));
         _serializers.Add(typeof(ClosingCompleteMessage),
                          new ClosingCompleteMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
         _serializers.Add(typeof(ClosingSigMessage),
                          new ClosingSigMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                              _tlvStreamSerializer));
-        _serializers.Add(typeof(CommitmentSignedMessage),
-                         new CommitmentSignedMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
-                                                                   _tlvStreamSerializer));
-        _serializers.Add(typeof(ErrorMessage), new ErrorMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(FundingCreatedMessage),
                          new FundingCreatedMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                                   _tlvStreamSerializer));
         _serializers.Add(typeof(FundingSignedMessage),
                          new FundingSignedMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                                  _tlvStreamSerializer));
-        _serializers.Add(typeof(InitMessage),
-                         new InitMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
-                                                       _tlvStreamSerializer));
         _serializers.Add(typeof(OpenChannel1Message),
                          new OpenChannel1MessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                                _tlvStreamSerializer));
@@ -86,19 +85,14 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
                                                                _tlvStreamSerializer));
         _serializers.Add(typeof(OnionMessageMessage),
                          new OnionMessageMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
-        _serializers.Add(typeof(PingMessage), new PingMessageTypeSerializer(_payloadSerializerFactory));
-        _serializers.Add(typeof(PongMessage), new PongMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(PeerStorageMessage),
-                         new PeerStorageMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
+         new PeerStorageMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
         _serializers.Add(typeof(PeerStorageRetrievalMessage),
                          new PeerStorageRetrievalMessageTypeSerializer(_payloadSerializerFactory,
                                                                        _tlvStreamSerializer));
-        _serializers.Add(typeof(RevokeAndAckMessage),
-                         new RevokeAndAckMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
-                                                               _tlvStreamSerializer));
         _serializers.Add(typeof(ShutdownMessage),
-                         new ShutdownMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
-                                                           _tlvStreamSerializer));
+                 new ShutdownMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                   _tlvStreamSerializer));
         _serializers.Add(typeof(SpliceAckMessage),
                          new SpliceAckMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                             _tlvStreamSerializer));
@@ -115,11 +109,8 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _serializers.Add(typeof(TxAckRbfMessage),
                          new TxAckRbfMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                            _tlvStreamSerializer));
-        _serializers.Add(typeof(TxAddInputMessage),
-                         new TxAddInputMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
-                                                             _tlvStreamSerializer));
         _serializers.Add(typeof(TxAddOutputMessage),
-                         new TxAddOutputMessageTypeSerializer(_payloadSerializerFactory));
+                 new TxAddOutputMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(TxCompleteMessage),
                          new TxCompleteMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                              _tlvStreamSerializer));
@@ -133,19 +124,6 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _serializers.Add(typeof(TxSignaturesMessage),
                          new TxSignaturesMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                                _tlvStreamSerializer));
-        _serializers.Add(typeof(UpdateAddHtlcMessage),
-                         new UpdateAddHtlcMessageTypeSerializer(_payloadSerializerFactory,
-                                                                _tlvConverterFactory, _tlvStreamSerializer));
-        _serializers.Add(typeof(UpdateFailHtlcMessage),
-                         new UpdateFailHtlcMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
-                                                                 _tlvStreamSerializer));
-        _serializers.Add(typeof(UpdateFailMalformedHtlcMessage),
-                         new UpdateFailMalformedHtlcMessageTypeSerializer(_payloadSerializerFactory));
-        _serializers.Add(typeof(UpdateFeeMessage), new UpdateFeeMessageTypeSerializer(_payloadSerializerFactory));
-        _serializers.Add(typeof(UpdateFulfillHtlcMessage),
-                         new UpdateFulfillHtlcMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
-                                                                    _tlvStreamSerializer));
-        _serializers.Add(typeof(WarningMessage), new WarningMessageTypeSerializer(_payloadSerializerFactory));
 
         // BOLT 7 gossip queries are parsed so the node can answer them
         _serializers.Add(typeof(QueryShortChannelIdsMessage),
@@ -182,23 +160,16 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _messageTypeDictionary.Add(MessageTypes.AcceptChannel, typeof(AcceptChannel1Message));
         _messageTypeDictionary.Add(MessageTypes.AcceptChannel2, typeof(AcceptChannel2Message));
         _messageTypeDictionary.Add(MessageTypes.ChannelReady, typeof(ChannelReadyMessage));
-        _messageTypeDictionary.Add(MessageTypes.ChannelReestablish, typeof(ChannelReestablishMessage));
         _messageTypeDictionary.Add(MessageTypes.ClosingSigned, typeof(ClosingSignedMessage));
         _messageTypeDictionary.Add(MessageTypes.ClosingComplete, typeof(ClosingCompleteMessage));
         _messageTypeDictionary.Add(MessageTypes.ClosingSig, typeof(ClosingSigMessage));
-        _messageTypeDictionary.Add(MessageTypes.CommitmentSigned, typeof(CommitmentSignedMessage));
-        _messageTypeDictionary.Add(MessageTypes.Error, typeof(ErrorMessage));
         _messageTypeDictionary.Add(MessageTypes.FundingCreated, typeof(FundingCreatedMessage));
         _messageTypeDictionary.Add(MessageTypes.FundingSigned, typeof(FundingSignedMessage));
-        _messageTypeDictionary.Add(MessageTypes.Init, typeof(InitMessage));
         _messageTypeDictionary.Add(MessageTypes.OpenChannel, typeof(OpenChannel1Message));
         _messageTypeDictionary.Add(MessageTypes.OpenChannel2, typeof(OpenChannel2Message));
         _messageTypeDictionary.Add(MessageTypes.OnionMessage, typeof(OnionMessageMessage));
-        _messageTypeDictionary.Add(MessageTypes.Ping, typeof(PingMessage));
-        _messageTypeDictionary.Add(MessageTypes.Pong, typeof(PongMessage));
         _messageTypeDictionary.Add(MessageTypes.PeerStorage, typeof(PeerStorageMessage));
         _messageTypeDictionary.Add(MessageTypes.PeerStorageRetrieval, typeof(PeerStorageRetrievalMessage));
-        _messageTypeDictionary.Add(MessageTypes.RevokeAndAck, typeof(RevokeAndAckMessage));
         _messageTypeDictionary.Add(MessageTypes.Shutdown, typeof(ShutdownMessage));
         _messageTypeDictionary.Add(MessageTypes.SpliceAck, typeof(SpliceAckMessage));
         _messageTypeDictionary.Add(MessageTypes.SpliceInit, typeof(SpliceInitMessage));
@@ -207,19 +178,12 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _messageTypeDictionary.Add(MessageTypes.Stfu, typeof(StfuMessage));
         _messageTypeDictionary.Add(MessageTypes.TxAbort, typeof(TxAbortMessage));
         _messageTypeDictionary.Add(MessageTypes.TxAckRbf, typeof(TxAckRbfMessage));
-        _messageTypeDictionary.Add(MessageTypes.TxAddInput, typeof(TxAddInputMessage));
         _messageTypeDictionary.Add(MessageTypes.TxAddOutput, typeof(TxAddOutputMessage));
         _messageTypeDictionary.Add(MessageTypes.TxComplete, typeof(TxCompleteMessage));
         _messageTypeDictionary.Add(MessageTypes.TxInitRbf, typeof(TxInitRbfMessage));
         _messageTypeDictionary.Add(MessageTypes.TxRemoveInput, typeof(TxRemoveInputMessage));
         _messageTypeDictionary.Add(MessageTypes.TxRemoveOutput, typeof(TxRemoveOutputMessage));
         _messageTypeDictionary.Add(MessageTypes.TxSignatures, typeof(TxSignaturesMessage));
-        _messageTypeDictionary.Add(MessageTypes.UpdateAddHtlc, typeof(UpdateAddHtlcMessage));
-        _messageTypeDictionary.Add(MessageTypes.UpdateFailHtlc, typeof(UpdateFailHtlcMessage));
-        _messageTypeDictionary.Add(MessageTypes.UpdateFailMalformedHtlc, typeof(UpdateFailMalformedHtlcMessage));
-        _messageTypeDictionary.Add(MessageTypes.UpdateFee, typeof(UpdateFeeMessage));
-        _messageTypeDictionary.Add(MessageTypes.UpdateFulfillHtlc, typeof(UpdateFulfillHtlcMessage));
-        _messageTypeDictionary.Add(MessageTypes.Warning, typeof(WarningMessage));
 
         _messageTypeDictionary.Add(MessageTypes.ChannelAnnouncement, typeof(ChannelAnnouncementMessage));
         _messageTypeDictionary.Add(MessageTypes.NodeAnnouncement, typeof(NodeAnnouncementMessage));

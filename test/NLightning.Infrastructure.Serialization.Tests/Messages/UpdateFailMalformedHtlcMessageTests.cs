@@ -4,17 +4,17 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class UpdateFailMalformedHtlcMessageTests
 {
-    private readonly UpdateFailMalformedHtlcMessageTypeSerializer _updateFailMalformedHtlcMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<UpdateFailMalformedHtlcMessage> _updateFailMalformedHtlcMessageTypeSerializer;
 
     public UpdateFailMalformedHtlcMessageTests()
     {
         _updateFailMalformedHtlcMessageTypeSerializer =
-            new UpdateFailMalformedHtlcMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
+            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<UpdateFailMalformedHtlcMessage>()!;
     }
 
     #region Deserialize
