@@ -7,6 +7,7 @@ using Exceptions;
 using Interfaces;
 using Messages;
 using Models;
+using Money;
 using Payloads;
 using Protocol.Interfaces;
 using Tlv;
@@ -511,7 +512,29 @@ public sealed class InteractiveTxSession
 
         InteractiveTxInput input;
         var prevTx = payload.PrevTx;
-        if (prevTx is null || prevTx.Length == 0)
+        if ((prevTx is null || prevTx.Length == 0) && message.PrevTxDetailsTlv is { } details)
+        {
+            // BOLTs PR #1324 (NL-957): a taproot input described by prevtx_details instead of its prevtx
+            if (message.SharedInputTxIdTlv is not null)
+                return Fail(new InteractiveTxRuleViolation("IT-R-01", "shared_input_txid with prevtx_details"));
+
+            violation = InteractiveTxRules.CheckPrevTxDetails(details.PrevTxId, details.AmountSatoshis,
+                                                              details.ScriptPubKey, payload.PrevTxVout,
+                                                              IsOutpointAdded);
+            if (violation is not null)
+                return Fail(violation);
+
+            if (Parameters.SharedFunding?.SharedInput is { } fundingInput && details.PrevTxId == fundingInput.TxId
+                                                                          && payload.PrevTxVout == fundingInput.Vout)
+                return Fail(new InteractiveTxRuleViolation("SP-TX-01",
+                                                           "the current funding output added with prevtx_details instead of shared_input_txid"));
+
+            input = new InteractiveTxInput(payload.SerialId, InteractiveTxParty.Remote, details.PrevTxId,
+                                           payload.PrevTxVout, payload.Sequence,
+                                           LightningMoney.Satoshis(details.AmountSatoshis), details.ScriptPubKey, null,
+                                           false);
+        }
+        else if (prevTx is null || prevTx.Length == 0)
         {
             var expected = Parameters.SharedFunding?.SharedInput;
             violation = InteractiveTxRules.CheckSharedInputAdd(message.SharedInputTxIdTlv?.FundingTxId,
@@ -527,6 +550,10 @@ public sealed class InteractiveTxSession
         {
             if (message.SharedInputTxIdTlv is not null)
                 return Fail(new InteractiveTxRuleViolation("IT-R-01", "shared_input_txid with a prevtx"));
+
+            // BOLTs PR #1324: "if prevtx_len is not 0: prevtx_details is also set" fails the negotiation
+            if (message.PrevTxDetailsTlv is not null)
+                return Fail(new InteractiveTxRuleViolation("IT-R-01", "prevtx_details with a prevtx"));
 
             var inspection = prevTxInspector.Inspect(prevTx, payload.PrevTxVout);
             violation = InteractiveTxRules.CheckPrevTx(inspection, payload.PrevTxVout, IsOutpointAdded);

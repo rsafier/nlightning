@@ -257,6 +257,8 @@ public class TlvStreamSerializerTests
                                                         Nonce(0x28))])),
             new PartialSignatureWithNonceTlv(new MusigPartialSignatureWithNonce(
                                                  Enumerable.Repeat((byte)0x29, 98).ToArray())),
+            new PrevTxDetailsTlv(new TxId(Enumerable.Repeat((byte)0x2c, 32).ToArray()), 100_000,
+                                 new BitcoinScript([0x51, 0x20, .. Enumerable.Repeat((byte)0x2d, 32)])),
             new SharedInputPartialSignatureTlv(new MusigPartialSignatureWithNonce(
                                                    Enumerable.Repeat((byte)0x2a, 98).ToArray())),
             new ShutdownNonceTlv(Nonce(0x2b)),

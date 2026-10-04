@@ -140,6 +140,30 @@ public class InteractiveTxDriverTests
     }
 
     [Fact]
+    public async Task Given_RequireConfirmedInputsSent_When_ThePeerAddsAnUnconfirmedPrevTxDetailsInput_Then_TxAbort()
+    {
+        // Arrange (NL-957: a taproot input described by prevtx_details is checked by its outpoint)
+        var ct = TestContext.Current.CancellationToken;
+        var node = CreateNode();
+        var peer = CreateNode(0x22);
+        var txId = new Domain.Bitcoin.ValueObjects.TxId(Enumerable.Repeat((byte)0x5a, 32).ToArray());
+        node.Inspector.Unconfirmed.Add(txId);
+        var terms = node.Terms(s_channelId, peer, false, 1_000, false) with { LocalRequiresConfirmedInputs = true };
+        await node.Driver.StartAsync(terms, node.Host, ct);
+        var details = new Domain.Protocol.Tlv.PrevTxDetailsTlv(txId, 100_000,
+                                                               (byte[])[0x51, 0x20, .. new byte[32]]);
+
+        // Act
+        var replies = await node.Driver.ReceiveAsync(
+                          new TxAddInputMessage(new TxAddInputPayload(s_channelId, 0, [], 0, 0xFFFFFFFD), null, details),
+                          peer.NodeId, node.UnitOfWork, ct);
+
+        // Assert
+        var abort = Assert.IsType<TxAbortMessage>(Assert.Single(replies));
+        Assert.Contains("unconfirmed", System.Text.Encoding.ASCII.GetString(abort.Payload.Data));
+    }
+
+    [Fact]
     public async Task Given_ANegotiationWithAnotherPeer_When_AMessageArrives_Then_TxAbortAndTheNegotiationIsKept()
     {
         // Arrange

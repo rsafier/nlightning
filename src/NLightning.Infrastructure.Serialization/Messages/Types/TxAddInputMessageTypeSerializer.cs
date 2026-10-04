@@ -15,11 +15,17 @@ using Interfaces;
 public class TxAddInputMessageTypeSerializer : IMessageTypeSerializer<TxAddInputMessage>
 {
     /// <summary>
-    /// The <c>tx_add_input_tlvs</c> types this node understands (BOLT 2: type 0 <c>shared_input_txid</c>). BOLT 1: an
-    /// unknown even type MUST fail the stream.
+    /// The <c>tx_add_input_tlvs</c> types this node understands (BOLT 2: type 0 <c>shared_input_txid</c>; BOLTs PR #1324:
+    /// type 2 <c>prevtx_details</c>, and Eclair 0.14.3's odd 1111 for the same record, NL-957). BOLT 1: an unknown even
+    /// type MUST fail the stream.
     /// </summary>
     private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
-        new HashSet<BigSize> { InteractiveTxTlvConstants.SharedInputTxId };
+        new HashSet<BigSize>
+        {
+            InteractiveTxTlvConstants.SharedInputTxId,
+            InteractiveTxTlvConstants.PrevTxDetails,
+            InteractiveTxTlvConstants.PrevTxDetailsEclair
+        };
 
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
@@ -81,7 +87,18 @@ public class TxAddInputMessageTypeSerializer : IMessageTypeSerializer<TxAddInput
                 sharedInputTxIdTlv = tlvConverter.ConvertFromBase(baseSharedInputTxId!);
             }
 
-            return new TxAddInputMessage(payload, sharedInputTxIdTlv);
+            // prevtx_details: the spec's type 2 wins over Eclair's prototype 1111 when a peer sends both
+            PrevTxDetailsTlv? prevTxDetailsTlv = null;
+            if (extension.TryGetTlv(InteractiveTxTlvConstants.PrevTxDetails, out var basePrevTxDetails)
+             || extension.TryGetTlv(InteractiveTxTlvConstants.PrevTxDetailsEclair, out basePrevTxDetails))
+            {
+                var tlvConverter = _tlvConverterFactory.GetConverter<PrevTxDetailsTlv>()
+                                ?? throw new SerializationException(
+                                       $"No serializer found for tlv type {nameof(PrevTxDetailsTlv)}");
+                prevTxDetailsTlv = tlvConverter.ConvertFromBase(basePrevTxDetails!);
+            }
+
+            return new TxAddInputMessage(payload, sharedInputTxIdTlv, prevTxDetailsTlv);
         }
         catch (SerializationException e)
         {
