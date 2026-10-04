@@ -4,7 +4,7 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
-Updated 2026-10-04 by the NL-923/NL-925/NL-940 lane (branch `wip/zcleanup1`): NL-925 (low) fixed in 7be91cb2 (a stored origin is authoritative for the first-hop check of an unrecorded HTLC); NL-923 (low) fixed in e2e94132 (the blinded relay's kept cltv_expiry_delta persisted on the relay row, migration `AddTrampolineRelayBlindedDelta`).
+Updated 2026-10-04 by the NL-923/NL-925/NL-940 lane (branch `wip/zcleanup1`): NL-925 (low) fixed in 7be91cb2 (a stored origin is authoritative for the first-hop check of an unrecorded HTLC); NL-923 (low) fixed in e2e94132 (the blinded relay's kept cltv_expiry_delta persisted on the relay row, migration `AddTrampolineRelayBlindedDelta`); NL-940 (low) fixed in 8625883e (getroute --trampoline quotes the outer route to a trampoline node).
 
 Updated 2026-10-04 by the taproot wave t02 integrator (follow-up on wip/fafo 2e455bc2): NL-959 fixed and verified by the full matrix `tap2-mx2`; NL-958 note; the NL-983 fix of wip/nl983 proven on taproot channels against LND (`o983b-taproot` 3/3, `o983b-day0` 3/3) after a test-only fix of the mempool scan (2578448b); Summary recounted (841).
 
@@ -173,9 +173,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 1 | 6 | 81 | 88 |
+| open | 0 | 1 | 6 | 80 | 87 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
-| fixed | 15 | 66 | 211 | 439 | 731 |
+| fixed | 15 | 66 | 211 | 440 | 732 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 3 | 4 | 7 |
 | **Total** | **15** | **67** | **227** | **534** | **843** |
@@ -2984,12 +2984,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TRAMPOLINE_PLAN TR3/TR4
 
 ### NL-940 `getroute` cannot quote a route through a trampoline node
-- **Status:** open
+- **Status:** fixed (8625883e)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Daemon/Handlers/GetRouteClientHandler.cs`, `Application/Payments/Routing/` (`IRouteQueryService`)
 - **Evidence:** split off NL-899 (d78d6e7e): `getroute` plans our own routes only; a payment that `payinvoice --trampoline` or `Node:Payments:Trampoline=Auto` would send through a trampoline node has no quote. Only the help text says so.
-- **Fix sketch:** an optional `--trampoline <node>` on `getroute` that quotes the outer route to the trampoline node plus its cached (or default) trampoline policy and CLTV delta, printed as a two-layer route.
+- **Fix:** `getroute --trampoline <node_id>` (IPC request key 4, response key 8 `Trampoline`). `QuoteRouteAsync` gains the node and, as `CreateTrampolineSessionAsync`/`TryBuildTrampolineAttempt` build a payer's attempt, plans the outer route to it: the target's amount is the payee's plus the node's policy fee (`GetCachedTrampolinePolicy`, else the `PaymentSendOptions` defaults), the final expiry the payee's plus the policy delta (the planner's existing `AbsoluteFinalCltv` hook), `SupportsMpp` from `TrampolineAcceptsMpp`, and the policy's fee is part of the fee limit. The response's `Trampoline` section carries the node, the payee with its amount and absolute expiry, the policy (learnt vs default flagged) and its fee; the last outer hop shows that fee as its own, the total fee includes it, and the printer adds a `Trampoline layer:` block. The node being us or the destination is `invalid_operation`. Tests: `TrampolinePaymentHarnessTests.Given_ATrampolinePeer_When_BobAsksForARouteThroughIt_Then_TheOuterRouteAndThePolicyAreQuoted` (the quote equals what `payinvoice --trampoline` then sends: the same first-hop amount and expiry), `GetRouteIpcHandlerTests.Given_ATrampolineQuote_When_GetRoute_Then_TheOuterRouteAndItsPolicyCrossTheWire` and the round-trip, `ClientAppTests` parse cases, `PrinterSnapshotTests.Given_ATrampolineRoute_When_Printed_Then_MatchesSnapshot`.
 - **Blocks/Blocked-by:** Related NL-899, NL-875
 - **Plan ref:** TRAMPOLINE_PLAN TR4
 
