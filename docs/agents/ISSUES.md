@@ -1940,6 +1940,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-965, NL-478
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Backups")
 
+### NL-1078 A splice RBF could make a simple taproot channel's active fundings exceed the 16-entry nonce map
+- **Status:** fixed (wip/taproot-t03, lane RVS)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Channels/Splicing/SpliceRules.cs` (`WouldExceedBatch`, `SpliceRbfConditions.MaxActiveFundings`), `src/NLightning.Application/Channels/Splicing/SpliceService.Rbf.cs` (`GetRbfConditions`, `GetMaxActiveFundings`)
+- **Evidence:** taproot wave t03 review (lane RVS) of NL-965. SP-OP-04 allowed 20 active fundings (19 pending RBF attempts plus the current funding; past 10 attempts only at the quick-confirmation feerate, which is cheap when the mempool is empty). On a simple taproot channel every active funding needs one entry in the `next_local_nonces` (type 22) of our `revoke_and_ack` and `channel_reestablish`, and `FundingNonces` holds at most 16 (LND's limit; its constructor throws past it). A peer bumping its splice 16 times (one block apart, NL-520) made `TaprootChannelNonces.CreateLocalNonces` throw on our next `revoke_and_ack` and every `channel_reestablish`: the channel could neither sign nor reconnect until the splice locked or the HTLC deadlines failed it.
+- **Fix:** `SpliceRbfConditions.MaxActiveFundings` (20 by default) is 16 on a simple taproot channel (`SpliceService.GetMaxActiveFundings`), for our `tx_init_rbf` (refused) and the peer's (`tx_abort`). The unsigned attempt that our `channel_reestablish` names besides the active fundings is the new attempt the rule already counts, so the map never exceeds 16. Tests: `SpliceRbfRulesTests` (taproot rows of both sides), `SpliceTaprootHarnessTests.Given_AChannel_When_ItsSpliceRbfBatchLimitIsRead_*`.
+- **Blocks/Blocked-by:** Related NL-965, NL-489
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Splicing")
+
 ### NL-966 Simple taproot on chain: HTLC outputs, revoked HTLC penalties, second-level outputs and anchors are not resolved (T4)
 - **Status:** open
 - **Severity:** high

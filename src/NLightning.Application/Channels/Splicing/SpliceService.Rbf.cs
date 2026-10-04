@@ -7,6 +7,7 @@ using Channels.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Constants;
+using Domain.Channels.Commitments;
 using Domain.Channels.Models;
 using Domain.Channels.Quiescence;
 using Domain.Channels.Splicing;
@@ -27,6 +28,7 @@ using Domain.Protocol.InteractiveTx.Interfaces;
 using Domain.Protocol.InteractiveTx.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Models;
 using Domain.Protocol.Tlv;
 using InteractiveTx;
 using InteractiveTx.Models;
@@ -712,7 +714,18 @@ public sealed partial class SpliceService
             negotiatedFeatures is { ZeroConf: not FeatureSupport.No },
             lastAttemptIsRecent,
             quickFeerate,
-            _options.MaxRbfAttempts);
+            _options.MaxRbfAttempts)
+        {
+            MaxActiveFundings = GetMaxActiveFundings(channel)
+        };
+
+    /// <summary>
+    /// The most active fundings a splice RBF may make on <paramref name="channel"/> (SP-OP-04): 20, or 16 on a simple
+    /// taproot channel, whose <c>next_local_nonces</c> holds one entry per active funding and at most
+    /// <see cref="FundingNonces.MaxEntries"/> (NL-1078).
+    /// </summary>
+    internal static int GetMaxActiveFundings(ChannelModel channel) =>
+        channel.ChannelParams.OptionSimpleTaproot ? FundingNonces.MaxEntries : ChannelCommitments.MaxActiveFundings;
 
     /// <summary>
     /// BOLT 2 "another RBF attempt has been created recently" for a peer's <c>tx_init_rbf</c> (NL-520,
