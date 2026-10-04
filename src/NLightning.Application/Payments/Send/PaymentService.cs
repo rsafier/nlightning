@@ -673,7 +673,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                                + "preimage and marking the payment succeeded", fulfilled.HtlcId, fulfilled.ChannelId,
                                  payment.PaymentHash, payment.Status, payment.OutgoingHtlcId,
                                  payment.OutgoingChannelId);
-                payment = WithPreimage(payment, fulfilled, now);
+                payment = WithPreimage(payment, fulfilled, now,
+                                       await GetFulfilledPartAsync(scope, payment, fulfilled));
             }
 
             await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().UpdateAsync(payment);
@@ -1642,6 +1643,29 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     }
 
     /// <summary>
+    /// The stored part of a fulfilled HTLC of a failed row (for its fee, NL-924); null for any other row, when none is
+    /// stored or it cannot be read (logged).
+    /// </summary>
+    private async Task<PaymentPartModel?> GetFulfilledPartAsync(IServiceScope scope, PaymentModel payment,
+                                                                OutgoingHtlcFulfilled fulfilled)
+    {
+        if (payment.Status != PaymentStatus.Failed)
+            return null;
+
+        try
+        {
+            return await scope.ServiceProvider.GetRequiredService<IPaymentPartDbRepository>()
+                              .GetByHtlcAsync(payment.PaymentHash, fulfilled.ChannelId, fulfilled.HtlcId);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not read the stored part of payment {PaymentHash} for HTLC {HtlcId} on channel "
+                              + "{ChannelId}", payment.PaymentHash, fulfilled.HtlcId, fulfilled.ChannelId);
+            return null;
+        }
+    }
+
+    /// <summary>
     /// The HTLC of a part whose offer threw: a non-final outgoing HTLC on its channel with its hash, amount and expiry
     /// that no other part of the payment has.
     /// </summary>
@@ -1957,7 +1981,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             }
             else
             {
-                payment = WithPreimage(payment, fulfilled, now);
+                payment = WithPreimage(payment, fulfilled, now, await GetFulfilledPartAsync(scope, payment, fulfilled));
             }
 
             await repository.UpdateAsync(payment);
@@ -2557,23 +2581,46 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     /// <summary>
     /// The payment marked succeeded with a proven preimage, whatever its status (see the class remarks).
     /// </summary>
+    /// <param name="payment">The stored row.</param>
+    /// <param name="fulfilled">The fulfill.</param>
+    /// <param name="completedAt">When.</param>
+    /// <param name="fulfilledPart">The stored part of the fulfilled HTLC (<c>PaymentParts</c>), when there is one.
+    /// </param>
     private static PaymentModel WithPreimage(PaymentModel payment, OutgoingHtlcFulfilled fulfilled,
-                                             DateTimeOffset completedAt)
+                                             DateTimeOffset completedAt, PaymentPartModel? fulfilledPart = null)
     {
         var (channelId, htlcId) = payment.OutgoingHtlcId is { } recordedId
                                       ? (payment.OutgoingChannelId!.Value, recordedId)
                                       : (fulfilled.ChannelId, fulfilled.HtlcId);
-        // A failed row records no fee (NL-982): when the fulfilled HTLC is the row's and carried the whole amount, its
-        // fee is what it carried above the amount; otherwise it stays unknown (zero)
-        var fee = payment.Fee;
-        if (payment.Status == PaymentStatus.Failed && (channelId, htlcId) == (fulfilled.ChannelId, fulfilled.HtlcId)
-                                                   && payment.Route.Count > 0
-                                                   && payment.Route[0].Amount > payment.Amount)
-            fee = payment.Route[0].Amount - payment.Amount;
+        var fee = payment.Status == PaymentStatus.Failed ? LateFulfillFee(payment, fulfilled, fulfilledPart) : payment.Fee;
         return PaymentModel.Restore(payment.PaymentHash, payment.Bolt11, payment.PayeeNodeId, payment.Amount,
                                     fee, payment.CreatedAt, PaymentStatus.Succeeded, channelId, htlcId,
                                     fulfilled.PaymentPreimage, null, null, null, completedAt, payment.Route,
                                     payment.Bolt12, payment.Keysend, payment.IsTrampolineRelay);
+    }
+
+    /// <summary>
+    /// The fee of a failed row fulfilled late (a failed row records none, NL-982): what the fulfilled HTLC carried above
+    /// the amount when it carried the whole amount alone and is known to be that HTLC: the row's own recorded HTLC
+    /// (<see cref="PaymentModel.OutgoingHtlcId"/>, its stored route) or a stored part of the payment (its hops);
+    /// otherwise unknown, zero (NL-924: a row without a recorded HTLC took any fulfilled HTLC as its own).
+    /// </summary>
+    private static LightningMoney LateFulfillFee(PaymentModel payment, OutgoingHtlcFulfilled fulfilled,
+                                                 PaymentPartModel? fulfilledPart)
+    {
+        if (payment.OutgoingHtlcId is { } recordedId && payment.OutgoingChannelId == fulfilled.ChannelId
+                                                     && recordedId == fulfilled.HtlcId
+                                                     && payment.Route.Count > 0
+                                                     && payment.Route[0].Amount > payment.Amount)
+            return payment.Route[0].Amount - payment.Amount;
+
+        if (fulfilledPart is { Hops.Count: > 0 } part && part.ChannelId == fulfilled.ChannelId
+                                                      && part.HtlcId == fulfilled.HtlcId
+                                                      && part.Hops[^1].Amount >= payment.Amount
+                                                      && part.Hops[0].Amount > payment.Amount)
+            return part.Hops[0].Amount - payment.Amount;
+
+        return LightningMoney.Zero;
     }
 
     private async Task WaitAsync(Task outcome, TimeSpan timeout, CancellationToken cancellationToken)

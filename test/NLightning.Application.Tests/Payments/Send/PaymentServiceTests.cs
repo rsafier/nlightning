@@ -306,6 +306,71 @@ public class PaymentServiceTests : IDisposable
         Assert.Equal(-(long)s_amount.MilliSatoshi, succeeded.AmountMsat);
     }
 
+    [Fact]
+    public async Task Given_AFailedRowWithoutARecordedHtlc_When_AnHtlcIsFulfilledLate_Then_NoFeeIsTakenFromTheRoute()
+    {
+        // Arrange (NL-924): the row's route pays Carol 1,000 msat, but no HTLC was recorded for it, so the fulfilled
+        // HTLC may be another part's (no stored part names it either)
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(FailedRowThroughCarol(hash, htlcId: null));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 7, hash,
+                                                                         preimage),
+                                                                     TestContext.Current.CancellationToken);
+
+        // Assert: succeeded with the preimage, the fee unknown (zero) in the row and the books
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.True(stored.Fee.IsZero);
+        Assert.Equal(0, Assert.Single(_accounting.Saved, e => e.Kind == AccountingEventKind.PaymentSucceeded).FeeMsat);
+    }
+
+    [Fact]
+    public async Task Given_AFailedRowWithItsHtlcRecorded_When_ThatHtlcIsFulfilledLate_Then_ItsRoutesFeeIsRecorded()
+    {
+        // Arrange
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(FailedRowThroughCarol(hash, htlcId: 7));
+
+        // Act
+        await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 7, hash, preimage),
+                                                       TestContext.Current.CancellationToken);
+
+        // Assert
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.Equal(1_000UL, stored.Fee.MilliSatoshi);
+    }
+
+    [Theory]
+    [InlineData(true, 1_000UL)]
+    [InlineData(false, 0UL)]
+    public async Task Given_AFailedRowAndAStoredPartOfTheFulfilledHtlc_When_FulfilledLate_Then_ThePartsFeeOnlyIfWhole(
+        bool partCarriedTheWholeAmount, ulong expectedFeeMsat)
+    {
+        // Arrange (NL-924): no HTLC recorded on the row; the stored part of HTLC 7 paid Carol 1,000 msat for the whole
+        // amount, or for half of it (one part of a split: the others' fees are unknown)
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(FailedRowThroughCarol(hash, htlcId: null));
+        var delivered = partCarriedTheWholeAmount ? s_amount.MilliSatoshi : s_amount.MilliSatoshi / 2;
+        await _parts.AddAsync(new PaymentPartModel(hash, 0, s_channelId, 7, PaymentPartState.InFlight,
+                                                   RouteThroughCarol(delivered)));
+
+        // Act
+        await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 7, hash, preimage),
+                                                       TestContext.Current.CancellationToken);
+
+        // Assert
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.Equal(expectedFeeMsat, stored.Fee.MilliSatoshi);
+    }
+
     [Theory]
     [InlineData(true, true)]
     [InlineData(false, false)]
@@ -790,6 +855,25 @@ public class PaymentServiceTests : IDisposable
                                     status == PaymentStatus.InFlight ? null : now, [hop],
                                     isTrampolineRelay: isTrampolineRelay);
     }
+
+    /// <summary>A failed row whose route paid Carol 1,000 msat to deliver the whole amount (NL-924).</summary>
+    private PaymentModel FailedRowThroughCarol(Hash hash, ulong? htlcId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return PaymentModel.Restore(hash, null, _payee.NodeId, s_amount, LightningMoney.Zero, now,
+                                    PaymentStatus.Failed, htlcId is null ? (ChannelId?)null : s_channelId, htlcId,
+                                    null, null, null, "failed", now, RouteThroughCarol(s_amount.MilliSatoshi));
+    }
+
+    /// <summary>Our HTLC to Carol (1,000 msat above <paramref name="deliveredMsat"/>), then the payee.</summary>
+    private List<PaymentHop> RouteThroughCarol(ulong deliveredMsat) =>
+    [
+        new(new TestNodeKeyManager(0x0e).NodeId, new ShortChannelId(400, 1, 0),
+            LightningMoney.MilliSatoshis(deliveredMsat + 1_000), Height + 61,
+            new Secret(RandomNumberGenerator.GetBytes(32))),
+        new(_payee.NodeId, new ShortChannelId(401, 1, 0), LightningMoney.MilliSatoshis(deliveredMsat), Height + 21,
+            new Secret(RandomNumberGenerator.GetBytes(32)))
+    ];
 
     private static Secret Preimage() => new(RandomNumberGenerator.GetBytes(32));
 
