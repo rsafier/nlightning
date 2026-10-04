@@ -37,8 +37,9 @@ using Domain.Routing.Pathfinding;
 /// channels, the split rules below) comes before any hint or graph path, single-part or not (NL-980). Split (only
 /// with <see cref="PaymentTarget.SupportsMpp"/> and at least two parts allowed): paths by fee for the whole amount,
 /// cheapest first, then by what they can send; each takes the largest amount that fits (at least
-/// <see cref="PaymentPlanRequest.MinPartMsat"/> unless that is all that is left; a part that would leave a rest below
-/// every later path's minimum leaves max(that minimum, <see cref="PaymentPlanRequest.MinPartMsat"/>) instead, NL-924),
+/// <see cref="PaymentPlanRequest.MinPartMsat"/> unless that is all that is left; a part whose rest no later path takes
+/// only because of an <c>htlc_minimum_msat</c> leaves the smallest such minimum instead, and the split without that
+/// shift is tried when the shifted one fails, NL-924),
 /// until the amount is covered, within <see cref="PaymentPlanRequest.MaxParts"/>. Every part carries <c>total_msat</c> =
 /// <see cref="PaymentPlanRequest.TotalMsat"/>.</para>
 /// <para>Graph paths (BOLT 7 plan G4-T3, decision D7; only with <see cref="PaymentPlanRequest.Graph"/>): when no direct
@@ -247,10 +248,26 @@ public sealed class PaymentRoutePlanner
         return false;
     }
 
+    /// <summary>
+    /// The greedy split (see the class remarks); when it left room for a rest some later path refused as below its
+    /// minimum (<see cref="LeaveForTheRest"/>) and still failed, the split without that shift is tried too (NL-924).
+    /// </summary>
     private bool TrySplit(PaymentPlanRequest request, List<CandidatePath> paths,
                           IReadOnlyDictionary<ShortChannelId, ulong> inFlight,
                           [NotNullWhen(true)] out IReadOnlyList<PlannedPart>? parts, out string failureReason)
     {
+        if (TrySplitOnce(request, paths, inFlight, true, out parts, out failureReason, out var shifted) || !shifted)
+            return parts is not null;
+
+        return TrySplitOnce(request, paths, inFlight, false, out parts, out failureReason, out _);
+    }
+
+    private bool TrySplitOnce(PaymentPlanRequest request, List<CandidatePath> paths,
+                              IReadOnlyDictionary<ShortChannelId, ulong> inFlight, bool leaveForTheRest,
+                              [NotNullWhen(true)] out IReadOnlyList<PlannedPart>? parts, out string failureReason,
+                              out bool shifted)
+    {
+        shifted = false;
         var finalCltv = FinalCltv(request);
         var total = LightningMoney.MilliSatoshis(request.TotalMsat);
 
@@ -289,12 +306,13 @@ public sealed class PaymentRoutePlanner
             if (amount < remaining && amount < request.MinPartMsat)
                 continue;
 
-            var shifted = amount < remaining
-                              ? LeaveForTheRest(request, path, ordered, index, remaining, amount, feeLeft, onChannel,
-                                                hintAssigned)
-                              : null;
-            if (shifted is { } smaller)
+            if (leaveForTheRest && amount < remaining
+             && LeaveForTheRest(request, path, route, ordered, index, remaining, amount, feeLeft, localAssigned,
+                                hintAssigned) is { } smaller)
+            {
                 (amount, route) = smaller;
+                shifted = true;
+            }
 
             planned.Add(new PlannedPart(path.Channel, route, path.Description));
             onChannel.Add(route.FirstHopAmount.MilliSatoshi);
@@ -324,38 +342,57 @@ public sealed class PaymentRoutePlanner
 
     /// <summary>
     /// A smaller part for <paramref name="path"/> when the rest it would leave (<paramref name="remaining"/> -
-    /// <paramref name="amount"/>) is below what every later path takes at least (its first channel's and its hops'
-    /// <c>htlc_minimum_msat</c>; NL-924): the part then leaves max(that minimum,
-    /// <see cref="PaymentPlanRequest.MinPartMsat"/>) instead, when the smaller part still fits and is a whole part
-    /// itself. Null: keep the part as it is.
+    /// <paramref name="amount"/>) fits no later path only because of a minimum (NL-924): no later path takes the rest
+    /// (<see cref="TryFit"/> with this part's channel and hint usage counted), but some would without the
+    /// <c>htlc_minimum_msat</c>s. The part then leaves the smallest of those paths' minimums (their first channel's and
+    /// hops' <c>htlc_minimum_msat</c>; <see cref="PaymentPlanRequest.MinPartMsat"/> does not apply to the last part),
+    /// when the smaller part still fits and is at least <see cref="PaymentPlanRequest.MinPartMsat"/>. Null: keep the
+    /// part as it is.
     /// </summary>
     private (ulong Amount, PaymentRoute Route)? LeaveForTheRest(PaymentPlanRequest request, CandidatePath path,
-                                                               List<CandidatePath> ordered, int index, ulong remaining,
-                                                               ulong amount, ulong feeLeft,
-                                                               IReadOnlyList<ulong> onChannel,
+                                                               PaymentRoute route, List<CandidatePath> ordered,
+                                                               int index, ulong remaining, ulong amount, ulong feeLeft,
+                                                               IReadOnlyDictionary<ChannelId, List<ulong>> localAssigned,
                                                                IReadOnlyDictionary<ShortChannelId, ulong> hintAssigned)
     {
-        if (index + 1 >= ordered.Count)
-            return null;
+        var rest = remaining - amount;
+        var restFeeLeft = feeLeft - route.Fee.MilliSatoshi;
+        var hintWithPart = new Dictionary<ShortChannelId, ulong>(hintAssigned);
+        for (var i = 0; i < path.Hops.Count; i++)
+        {
+            var scid = path.Hops[i].ShortChannelId;
+            hintWithPart[scid] = hintWithPart.GetValueOrDefault(scid) + route.Hops[i].AmountToForward.MilliSatoshi;
+        }
 
-        var floor = ordered.Skip(index + 1).Min(PathMinimumMsat);
-        if (remaining - amount >= floor)
-            return null;
+        ulong? floor = null;
+        for (var j = index + 1; j < ordered.Count; j++)
+        {
+            var later = ordered[j];
+            List<ulong> onLater = [.. localAssigned.GetValueOrDefault(later.Channel.ChannelId) ?? []];
+            if (later.Channel.ChannelId == path.Channel.ChannelId)
+                onLater.Add(route.FirstHopAmount.MilliSatoshi);
 
-        var leave = Math.Max(floor, request.MinPartMsat);
-        if (leave >= remaining)
+            if (TryFit(request, later, rest, restFeeLeft, onLater, hintWithPart, out _, out _))
+                return null;
+
+            if (TryFit(request, later, rest, restFeeLeft, onLater, hintWithPart, out _, out _, ignoreMinimums: true))
+                floor = Math.Min(floor ?? ulong.MaxValue, PathMinimumMsat(later));
+        }
+
+        if (floor is not { } leave || leave <= rest || leave >= remaining)
             return null;
 
         var smaller = remaining - leave;
         if (smaller < request.MinPartMsat
-         || !TryFit(request, path, smaller, feeLeft, onChannel, hintAssigned, out var route, out _))
+         || !TryFit(request, path, smaller, feeLeft, localAssigned.GetValueOrDefault(path.Channel.ChannelId) ?? [],
+                    hintAssigned, out var smallerRoute, out _))
             return null;
 
-        return (smaller, route);
+        return (smaller, smallerRoute);
 
         ulong PathMinimumMsat(CandidatePath candidate)
         {
-            var minimum = Math.Max(1, LocalMinimumMsat(request, candidate.Channel));
+            var minimum = LocalMinimumMsat(request, candidate.Channel);
             for (var i = 0; i < candidate.Hops.Count; i++)
             {
                 if (candidate.Limits is { } limits)
