@@ -137,7 +137,8 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   at its pod IP; the wallet init container creates the wallet), removed with the namespace. Its config is pinned by
   `EclairBackendTests`; a failed test dumps its log through `EclairFixture.DumpSellerLogAsync`.
 - Run: `scripts/run-cluster.sh -n 1 --suite eclair` and `--suite eclair2` (no Docker lock; the catalog runs
-  `EclairSpliceTests`, the longest class, as `eclair2`, its own process and Eclair topology, NL-841; `--class` for one
+  `EclairSpliceTests`, the longest class, as `eclair2`, its own process and Eclair topology, NL-841, with the taproot
+  splice proofs `EclairTaprootSpliceTests` since taproot wave t03; `--class` for one
   class, `--explicit on` adds the Explicit E-X1 open). `scripts/run-interop.sh eclair` only prints these commands and
   exits 2 (NL-866).
 
