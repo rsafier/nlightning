@@ -234,7 +234,7 @@ public static class SpliceRules
                         + "not ensure quick confirmation");
         if (WouldExceedBatch(conditions))
             return Refuse("SP-OP-04",
-                          $"another attempt would exceed {ChannelCommitments.MaxActiveFundings} active fundings");
+                          $"another attempt would exceed {conditions.MaxActiveFundings} active fundings");
         if (GetRbfAttemptCount(conditions) >= conditions.MaxRbfAttempts)
             return Refuse("SPR-T2",
                           $"{GetRbfAttemptCount(conditions)} RBF attempts reach Splice:MaxRbfAttempts "
@@ -304,7 +304,7 @@ public static class SpliceRules
                          + "does not ensure quick confirmation");
         if (WouldExceedBatch(conditions))
             return TxAbort("SP-OP-04",
-                           $"another attempt would exceed {ChannelCommitments.MaxActiveFundings} active fundings");
+                           $"another attempt would exceed {conditions.MaxActiveFundings} active fundings");
 
         return null;
     }
@@ -370,9 +370,12 @@ public static class SpliceRules
         GetRbfAttemptCount(conditions) > MaxRbfAttemptsAtAnyFeerate
      && (conditions.QuickConfirmationFeeratePerKw is not { } quick || feeratePerKw < quick);
 
-    /// <summary>SP-OP-04: the new attempt makes the current funding plus every pending one exceed a batch of 20.</summary>
+    /// <summary>
+    /// SP-OP-04: the new attempt makes the current funding plus every pending one exceed a batch of
+    /// <see cref="SpliceRbfConditions.MaxActiveFundings"/> (20; 16 on a simple taproot channel).
+    /// </summary>
     private static bool WouldExceedBatch(SpliceRbfConditions conditions) =>
-        conditions.PendingAttemptCount + 2 > ChannelCommitments.MaxActiveFundings;
+        conditions.PendingAttemptCount + 2 > conditions.MaxActiveFundings;
 
     #endregion
 
@@ -616,6 +619,15 @@ public sealed record SpliceRbfConditions(
     /// confirm, so none is started or accepted.
     /// </summary>
     public bool AttemptConfirmed { get; init; }
+
+    /// <summary>
+    /// The most active fundings (the current one, every pending attempt and the new one) a splice RBF may make:
+    /// <see cref="ChannelCommitments.MaxActiveFundings"/>, or on a simple taproot channel
+    /// <see cref="Protocol.Models.FundingNonces.MaxEntries"/> (16, NL-1078): every active funding needs an entry in the
+    /// <c>next_local_nonces</c> of our <c>revoke_and_ack</c> and <c>channel_reestablish</c>, which holds at most 16 (LND's
+    /// limit), so a 17th funding would leave the channel unable to send either.
+    /// </summary>
+    public int MaxActiveFundings { get; init; } = ChannelCommitments.MaxActiveFundings;
 }
 
 /// <summary>

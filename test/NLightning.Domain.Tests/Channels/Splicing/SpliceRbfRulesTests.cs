@@ -81,6 +81,18 @@ public class SpliceRbfRulesTests
         { "a batch of 20 (18 pending + the current + the new one)",
           s_initiator with { PendingAttemptCount = 18, MaxRbfAttempts = 30, QuickConfirmationFeeratePerKw = 1 },
           2_000, 0, null },
+        { "simple taproot: a batch above 16 (15 pending + the current + the new one, NL-1078)",
+          s_initiator with
+          {
+              PendingAttemptCount = 15, MaxRbfAttempts = 30, QuickConfirmationFeeratePerKw = 1, MaxActiveFundings = 16
+          },
+          2_000, 0, "SP-OP-04" },
+        { "simple taproot: a batch of 16 (14 pending + the current + the new one)",
+          s_initiator with
+          {
+              PendingAttemptCount = 14, MaxRbfAttempts = 30, QuickConfirmationFeeratePerKw = 1, MaxActiveFundings = 16
+          },
+          2_000, 0, null },
         { "splice-out RBF above our balance (SP-S-02)", s_initiator, 2_000, -600_001, "SP-S-02" }
     };
 
@@ -166,7 +178,13 @@ public class SpliceRbfRulesTests
           s_receiver with { Channel = s_receiver.Channel with { SpliceNegotiating = true } }, 2_000, null, "SPR-T1",
           SpliceRuleAction.TxAbort },
         { "a batch above 20", s_receiver with { PendingAttemptCount = 19, QuickConfirmationFeeratePerKw = 1 }, 2_000,
-          null, "SP-OP-04", SpliceRuleAction.TxAbort }
+          null, "SP-OP-04", SpliceRuleAction.TxAbort },
+        { "simple taproot: a batch above 16 (NL-1078)",
+          s_receiver with { PendingAttemptCount = 15, QuickConfirmationFeeratePerKw = 1, MaxActiveFundings = 16 },
+          2_000, null, "SP-OP-04", SpliceRuleAction.TxAbort },
+        { "simple taproot: a batch of 16",
+          s_receiver with { PendingAttemptCount = 14, QuickConfirmationFeeratePerKw = 1, MaxActiveFundings = 16 },
+          2_000, null, null, null }
     };
 
     [Theory]

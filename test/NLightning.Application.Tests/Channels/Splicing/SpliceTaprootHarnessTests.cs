@@ -6,6 +6,7 @@ namespace NLightning.Application.Tests.Channels.Splicing;
 
 using Application.Channels.Safety;
 using Application.Channels.Safety.Interfaces;
+using Application.Channels.Splicing;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Channels.Enums;
@@ -331,6 +332,22 @@ public class SpliceTaprootHarnessTests
                                               .RawTransaction, Network.RegTest);
         Assert.Equal(new OutPoint(spliceTx.GetHash(), splice.OutputIndex), commitment.Inputs.Single().PrevOut);
         Assert.Null(commitment.CreateValidator([spliceTx.Outputs[splice.OutputIndex]]).ValidateInput(0).Error);
+    }
+
+    [Theory]
+    [InlineData(true, 16)]
+    [InlineData(false, 20)]
+    public void Given_AChannel_When_ItsSpliceRbfBatchLimitIsRead_Then_TaprootStaysWithinTheNonceMap(bool simpleTaproot,
+        int expected)
+    {
+        // Arrange: NL-1078, every active funding of a taproot channel needs a next_local_nonces entry (at most 16)
+        using var harness = new SpliceHarness(realEngine: true, simpleTaproot: simpleTaproot);
+
+        // Act
+        var limit = SpliceService.GetMaxActiveFundings(harness.Alice.Node.Channel);
+
+        // Assert
+        Assert.Equal(expected, limit);
     }
 
     [Fact]

@@ -1952,6 +1952,36 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-558, NL-965, NL-1058
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T6
 
+### NL-1078 A splice RBF could make a simple taproot channel's active fundings exceed the 16-entry nonce map
+- **Status:** fixed (wip/taproot-t03, lane RVS)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Channels/Splicing/SpliceRules.cs` (`WouldExceedBatch`, `SpliceRbfConditions.MaxActiveFundings`), `src/NLightning.Application/Channels/Splicing/SpliceService.Rbf.cs` (`GetRbfConditions`, `GetMaxActiveFundings`)
+- **Evidence:** taproot wave t03 review (lane RVS) of NL-965. SP-OP-04 allowed 20 active fundings (19 pending RBF attempts plus the current funding; past 10 attempts only at the quick-confirmation feerate, which is cheap when the mempool is empty). On a simple taproot channel every active funding needs one entry in the `next_local_nonces` (type 22) of our `revoke_and_ack` and `channel_reestablish`, and `FundingNonces` holds at most 16 (LND's limit; its constructor throws past it). A peer bumping its splice 16 times (one block apart, NL-520) made `TaprootChannelNonces.CreateLocalNonces` throw on our next `revoke_and_ack` and every `channel_reestablish`: the channel could neither sign nor reconnect until the splice locked or the HTLC deadlines failed it.
+- **Fix:** `SpliceRbfConditions.MaxActiveFundings` (20 by default) is 16 on a simple taproot channel (`SpliceService.GetMaxActiveFundings`), for our `tx_init_rbf` (refused) and the peer's (`tx_abort`). The unsigned attempt that our `channel_reestablish` names besides the active fundings is the new attempt the rule already counts, so the map never exceeds 16. Tests: `SpliceRbfRulesTests` (taproot rows of both sides), `SpliceTaprootHarnessTests.Given_AChannel_When_ItsSpliceRbfBatchLimitIsRead_*`.
+- **Blocks/Blocked-by:** Related NL-965, NL-489
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Splicing")
+
+### NL-1060 A simple taproot dual-funded open could be bumped past the 16-entry nonce map of its channel_reestablish
+- **Status:** fixed (wip/taproot-t03, lane RVS)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`GetRbfRefusalAsync`); `src/NLightning.Application/Channels/Taproot/TaprootChannelNonces.cs` (`CreatePendingOpenNonces`)
+- **Evidence:** taproot wave t03 review (lane RVS) of the lane SPL/RBF merge in `ReestablishService.CreateOwnAsync`. While a dual-funded open waits for its funding, our `next_local_nonces` has an entry for every signed attempt and for the attempt being signed (NL-970), and `FundingNonces` holds at most 16 (it throws past it). The RBF of a dual-funded open had no attempt cap at all (no block between attempts either), so a peer could bump the open 16 times in a few seconds: `CreateOwnAsync` then threw on every reconnection and the channel could never reestablish (nor exchange `channel_ready` once an attempt confirmed). Reproduced in-process: with the fix stashed, the 17th attempt was signed and the reconnection never completed.
+- **Fix:** a simple taproot open with 16 signed attempts refuses another (our `bumpopen` gets the reason, the peer's `tx_init_rbf` a `tx_abort`), so the map holds at most 16. Test: `DualFundTaprootRbfTests.Given_ATaprootOpenWithSixteenSignedAttempts_*` (15 bumps, both refusals, both `channel_reestablish` with 16 entries).
+- **Blocks/Blocked-by:** Related NL-970, NL-1078
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Dual-funded RBF")
+
+### NL-1061 Eclair fails a simple taproot channel when we lost an interactive-tx attempt it is signing (crash before our commitment-step save)
+- **Status:** open
+- **Severity:** low
+- **Kind:** interop gap
+- **Location:** `src/NLightning.Application/Channels/Reestablish/ReestablishService.cs` (`CreateOwnAsync`), `src/NLightning.Application/InteractiveTx/InteractiveTxDriver.cs` (`ConstructAsync`)
+- **Evidence:** taproot wave t03 review (lane RVS) of NL-965/NL-970 against Eclair 0.14.3 `Helpers.Syncing.checkCommitNonces`: when Eclair holds a signing session (`SpliceWaitingForSigs`, `RbfWaitingForSigs`) of a taproot channel, our `channel_reestablish` MUST name its txid in `next_local_nonces`, or Eclair fails the channel (`MissingCommitNonce`, a force close). If Eclair sends the last `tx_complete` and we crash before `ConstructAsync`'s save (the session row is written in that handler, before our `commitment_signed`), we come back without the attempt and cannot name it; a non-taproot channel would only get our `tx_abort` for its `next_funding`. The window is one message handler, and the spec does not say what a node without the attempt must send.
+- **Fix sketch:** wait for the peer's `channel_reestablish` before sending ours when an unknown `next_funding` is possible, and add an entry for its txid (the deterministic nonce of the next rotated key bound to that txid) before answering `tx_abort`; or have the spec/Eclair accept a missing entry for an attempt the peer then aborts.
+- **Blocks/Blocked-by:** Related NL-965, NL-970
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
+
 ### NL-966 Simple taproot on chain: HTLC outputs, revoked HTLC penalties, second-level outputs and anchors are not resolved (T4)
 - **Status:** open
 - **Severity:** high
