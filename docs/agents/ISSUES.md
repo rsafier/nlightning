@@ -1950,6 +1950,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-965, NL-489
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Splicing")
 
+### NL-1060 A simple taproot dual-funded open could be bumped past the 16-entry nonce map of its channel_reestablish
+- **Status:** fixed (wip/taproot-t03, lane RVS)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`GetRbfRefusalAsync`); `src/NLightning.Application/Channels/Taproot/TaprootChannelNonces.cs` (`CreatePendingOpenNonces`)
+- **Evidence:** taproot wave t03 review (lane RVS) of the lane SPL/RBF merge in `ReestablishService.CreateOwnAsync`. While a dual-funded open waits for its funding, our `next_local_nonces` has an entry for every signed attempt and for the attempt being signed (NL-970), and `FundingNonces` holds at most 16 (it throws past it). The RBF of a dual-funded open had no attempt cap at all (no block between attempts either), so a peer could bump the open 16 times in a few seconds: `CreateOwnAsync` then threw on every reconnection and the channel could never reestablish (nor exchange `channel_ready` once an attempt confirmed). Reproduced in-process: with the fix stashed, the 17th attempt was signed and the reconnection never completed.
+- **Fix:** a simple taproot open with 16 signed attempts refuses another (our `bumpopen` gets the reason, the peer's `tx_init_rbf` a `tx_abort`), so the map holds at most 16. Test: `DualFundTaprootRbfTests.Given_ATaprootOpenWithSixteenSignedAttempts_*` (15 bumps, both refusals, both `channel_reestablish` with 16 entries).
+- **Blocks/Blocked-by:** Related NL-970, NL-1078
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Dual-funded RBF")
+
 ### NL-966 Simple taproot on chain: HTLC outputs, revoked HTLC penalties, second-level outputs and anchors are not resolved (T4)
 - **Status:** open
 - **Severity:** high

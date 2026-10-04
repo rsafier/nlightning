@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace NLightning.Application.Tests.Channels.DualFunding;
 
 using Application.Channels.Safety;
+using Application.InteractiveTx;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.ValueObjects;
@@ -16,6 +17,7 @@ using Domain.Node.Options;
 using Domain.Protocol.InteractiveTx;
 using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Models;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using InteractiveTx.TestDoubles;
 
@@ -234,6 +236,50 @@ public class DualFundTaprootRbfTests
         var abort = Assert.IsType<TxAbortMessage>(reply);
         Assert.Contains("partial signature", System.Text.Encoding.ASCII.GetString(abort.Payload.Data));
         Assert.Equal([open.FundingTxId!.Value], harness.Bob.DualFund.GetSignedFundingTxIds(open.ChannelId));
+    }
+
+    [Fact]
+    public async Task Given_ATaprootOpenWithSixteenSignedAttempts_When_EitherSideBumps_Then_RefusedAndReestablishFits()
+    {
+        // Arrange (NL-1060): the open and 15 bumps, 16 signed attempts, every one an entry of our next_local_nonces
+        await using var harness = await CreateTaprootHarnessAsync();
+        var open = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(Request(harness),
+                                                                           TestContext.Current.CancellationToken));
+        Assert.True(open.FailureReason is null, $"{open.FailureReason}\n{harness.Describe()}");
+        var channelId = open.ChannelId;
+        var feerate = 2_500u;
+        for (var i = 0; i < FundingNonces.MaxEntries - 1; i++)
+        {
+            feerate = (uint)InteractiveTxDriver.GetMinimumRbfFeeratePerKw(feerate);
+            var bumped = await harness.RunAsync(harness.Alice.DualFund.BumpAsync(
+                                                    channelId, feerate, TestContext.Current.CancellationToken));
+            Assert.True(bumped.FailureReason is null, $"bump {i + 1}: {bumped.FailureReason}\n{harness.Describe()}");
+        }
+
+        Assert.Equal(FundingNonces.MaxEntries, harness.Bob.DualFund.GetSignedFundingTxIds(channelId).Count);
+        feerate = (uint)InteractiveTxDriver.GetMinimumRbfFeeratePerKw(feerate);
+        var initRbf = new TxInitRbfMessage(new Domain.Protocol.Payloads.TxInitRbfPayload(channelId, feerate, 500),
+                                           new Domain.Protocol.Tlv.FundingOutputContributionTlv(s_aliceShare));
+
+        // Act
+        var bump = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => harness.RunAsync(harness.Alice.DualFund.BumpAsync(channelId, feerate,
+                                                                    TestContext.Current.CancellationToken)));
+        await harness.DeliverAsync(harness.Alice, initRbf);
+        var reply = harness.TakeNext(harness.Bob);
+
+        // Assert: refused both ways, and each side's channel_reestablish still carries all 16 nonces
+        Assert.Contains("next_local_nonces", bump.Message);
+        var abort = Assert.IsType<TxAbortMessage>(reply);
+        Assert.Contains("next_local_nonces", System.Text.Encoding.ASCII.GetString(abort.Payload.Data));
+        await harness.ReconnectAsync();
+        await harness.PumpAsync();
+        foreach (var node in harness.Nodes)
+        {
+            var reestablish = (ChannelReestablishMessage)harness.Transcript.Last(
+                t => t.From == node.Name && t.Message is ChannelReestablishMessage).Message;
+            Assert.Equal(FundingNonces.MaxEntries, reestablish.NextLocalNoncesTlv!.Nonces.Count);
+        }
     }
 
     /// <summary>

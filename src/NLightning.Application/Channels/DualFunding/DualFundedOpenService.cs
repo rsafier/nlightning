@@ -1381,6 +1381,14 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         if (await GetConfirmedAttemptAsync(negotiation, null) is { } confirmed)
             return $"the funding transaction {confirmed} already has a confirmation";
 
+        // Simple taproot (NL-1060): our channel_reestablish names every signed attempt and the one being signed in
+        // next_local_nonces, which holds at most 16 entries (LND's limit; FundingNonces refuses more): a 17th attempt
+        // would leave the channel unable to reestablish
+        if (negotiation.Channel.ChannelParams.OptionSimpleTaproot
+         && negotiation.CompletedTxIds.Count >= FundingNonces.MaxEntries)
+            return $"{negotiation.CompletedTxIds.Count} signed attempts already fill the {FundingNonces.MaxEntries} "
+                 + "entries of a simple taproot channel's next_local_nonces";
+
         // Simple taproot (NL-970): every signed attempt must keep the peer's partial signature of our commitment 0, or
         // the channel could not follow (nor force close) that attempt if it is the one that confirms; a row signed by
         // a build before migration AddDualFundTaprootAttempts has none
