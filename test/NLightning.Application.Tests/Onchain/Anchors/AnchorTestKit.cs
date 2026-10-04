@@ -341,6 +341,26 @@ internal static class AnchorTx
         }
     }
 
+    /// <summary>
+    /// Every input executed with all the outputs the transaction spends (BIP 341: a taproot input commits to them all),
+    /// the commitment's from <paramref name="commitment"/>, the others from the wallet.
+    /// </summary>
+    public static void AssertAllScriptsValid(Transaction tx, Transaction commitment, FakeAnchorWallet wallet)
+    {
+        var spentOutputs = tx.Inputs.Select((input, i) => input.PrevOut.Hash == commitment.GetHash()
+                                                              ? commitment.Outputs[input.PrevOut.N]
+                                                              : wallet.GetSpentOutput(input.PrevOut)
+                                                             ?? throw new InvalidOperationException(
+                                                                    $"Input {i} spends an unknown output"))
+                             .ToArray();
+        var validator = tx.CreateValidator(spentOutputs);
+        for (var i = 0; i < tx.Inputs.Count; i++)
+        {
+            var error = validator.ValidateInput(i).Error;
+            Assert.True(error is null, $"input {i}: {error}");
+        }
+    }
+
     /// <summary>The child's own fee: the anchor plus its wallet inputs minus its outputs.</summary>
     public static ulong ChildFee(Transaction child, FakeAnchorWallet wallet)
     {

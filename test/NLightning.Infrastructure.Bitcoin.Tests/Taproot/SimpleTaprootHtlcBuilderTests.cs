@@ -10,7 +10,7 @@ using Domain.Money;
 
 /// <summary>
 /// The taproot paths of <see cref="HtlcTransactionBuilder"/> outside the vectors' happy path: what a
-/// build result carries, the preimage rules of the witness, the fee-input paths kept for T4, and the cltv tie-break of
+/// build result carries, the preimage rules of the witness, the fee inputs of a combined transaction, and the cltv tie-break of
 /// two taproot offered HTLC outputs with the same script.
 /// </summary>
 public class SimpleTaprootHtlcBuilderTests
@@ -62,18 +62,27 @@ public class SimpleTaprootHtlcBuilderTests
     }
 
     [Fact]
-    public void Given_ATaprootHtlcTransaction_When_AskedForFeeInputs_Then_NotSupportedYet()
+    public void Given_ATaprootHtlcTransaction_When_FeeInputsAreAdded_Then_TheResultKeepsTheLeafAndEverySpentOutput()
     {
-        // Arrange: the taproot HTLC transaction's weights with fee inputs are lane T4's
+        // Arrange (NL-904 item 4): one wallet input after the HTLC input
         var harness = new SimpleTaprootVectorHarness(SimpleTaprootVectors.Transactions[1]);
         var (_, _, htlcTxs) = harness.Build();
         var built = harness.HtlcBuilder.Build(htlcTxs[0]);
+        var walletScript = new Key(Enumerable.Repeat((byte)0x21, 32).ToArray()).PubKey.WitHash.ScriptPubKey.ToBytes();
+        var feeInput = new Domain.Onchain.Models.AnchorFeeInput(new byte[32], 3, 50_000, walletScript,
+                                                                Domain.Onchain.Models.AnchorFeeInput.P2WpkhInputWeight);
 
-        // Act / Assert
-        Assert.Throws<NotSupportedException>(() => harness.HtlcBuilder.EstimateAnchorBaseWeight(htlcTxs[0], built,
-                                                                                                22));
-        Assert.Throws<NotSupportedException>(() => harness.HtlcBuilder.AddFeeInputs(htlcTxs[0], built, [],
-                                                                                   new byte[22], 1000));
+        // Act
+        var combined = harness.HtlcBuilder.AddFeeInputs(htlcTxs[0], built, [feeInput], walletScript, 1_000);
+
+        // Assert
+        Assert.True(combined.BuildResult.IsTaproot);
+        Assert.Equal(built.ControlBlock, combined.BuildResult.ControlBlock);
+        Assert.Equal(built.SpentScriptPubKey, combined.BuildResult.SpentScriptPubKey);
+        var spent = Assert.Single(combined.BuildResult.FeeInputSpentOutputs!);
+        Assert.Equal(3u, spent.Index);
+        Assert.Equal(50_000, spent.Amount.Satoshi);
+        Assert.Equal(feeInput.ScriptPubKey, (byte[])spent.ScriptPubKey);
     }
 
     [Fact]

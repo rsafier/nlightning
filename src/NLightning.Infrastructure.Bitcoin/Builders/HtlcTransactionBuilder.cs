@@ -9,6 +9,7 @@ using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Closing;
 using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
@@ -32,6 +33,7 @@ public class HtlcTransactionBuilder : IHtlcTransactionBuilder
     public const int MaxFeeInputs = 200;
 
     private const int MaxSignatureLength = 73;
+    private const int TaprootSignatureLength = 64;
     private const long InputNonWitnessWeight = 4 * 41;
 
     private readonly Network _network;
@@ -117,7 +119,6 @@ public class HtlcTransactionBuilder : IHtlcTransactionBuilder
         ArgumentNullException.ThrowIfNull(transaction);
         ArgumentNullException.ThrowIfNull(buildResult);
         ArgumentOutOfRangeException.ThrowIfNegative(changeScriptLength);
-        ThrowIfSimpleTaproot(transaction);
 
         return EstimateWeight(transaction, buildResult, [], changeScriptLength);
     }
@@ -131,7 +132,6 @@ public class HtlcTransactionBuilder : IHtlcTransactionBuilder
         ArgumentNullException.ThrowIfNull(buildResult);
         ArgumentNullException.ThrowIfNull(feeInputs);
         ArgumentNullException.ThrowIfNull(changeScript);
-        ThrowIfSimpleTaproot(transaction);
         if (!transaction.HasAnchors)
             throw new ArgumentException("Only an option_anchors HTLC transaction (SIGHASH_SINGLE|ANYONECANPAY) can take "
                                       + "fee inputs: a SIGHASH_ALL peer signature would no longer verify",
@@ -187,8 +187,21 @@ public class HtlcTransactionBuilder : IHtlcTransactionBuilder
         if (change is { } changeSat)
             tx.Outputs.Add(new TxOut(Money.Satoshis(changeSat), new Script(changeScript)));
 
-        var combined = new HtlcTransactionBuildResult(new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes()),
-                                                      buildResult.SpentWitnessScript, buildResult.SpentAmount);
+        var combinedTransaction = new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes());
+        var combined = transaction.IsSimpleTaproot
+                           // NL-904 item 4: our SIGHASH_DEFAULT signature commits to every spent output, so the result
+                           // keeps the leaf, its control block and the fee inputs' outputs for the signer
+                           ? buildResult with
+                           {
+                               Transaction = combinedTransaction,
+                               FeeInputSpentOutputs = feeInputs.Select(i => new SpentOutput(
+                                                                           i.TxId, i.Vout,
+                                                                           LightningMoney.Satoshis(i.AmountSat),
+                                                                           new BitcoinScript(i.ScriptPubKey)))
+                                                               .ToList()
+                           }
+                           : new HtlcTransactionBuildResult(combinedTransaction, buildResult.SpentWitnessScript,
+                                                            buildResult.SpentAmount);
         return new AnchorHtlcTransaction(combined, feeInputs.ToList(), fee, change, weight);
     }
 
@@ -201,7 +214,7 @@ public class HtlcTransactionBuilder : IHtlcTransactionBuilder
     private static long EstimateWeight(HtlcTransactionModel transaction, HtlcTransactionBuildResult buildResult,
                                        IReadOnlyList<AnchorFeeInput> feeInputs, int? changeScriptLength)
     {
-        const int htlcOutputScriptLength = 34; // P2WSH
+        const int htlcOutputScriptLength = 34; // P2WSH or P2TR
         var inputCount = 1 + feeInputs.Count;
         var outputCount = changeScriptLength is null ? 1 : 2;
         var nonWitness = 4L + CompactSizeLength(inputCount) + 41 * inputCount + CompactSizeLength(outputCount)
@@ -211,12 +224,31 @@ public class HtlcTransactionBuilder : IHtlcTransactionBuilder
 
         var scriptLength = ((byte[])buildResult.SpentWitnessScript).Length;
         var preimageLength = transaction.Type == HtlcTransactionType.Success ? CryptoConstants.Sha256HashLen : 0;
-        var htlcWitness = 1 + ItemSize(0) + 2 * ItemSize(MaxSignatureLength) + ItemSize(preimageLength)
-                        + ItemSize(scriptLength);
+        var htlcWitness = transaction.IsSimpleTaproot
+                              ? EstimateSimpleTaprootWitness(transaction, buildResult, scriptLength)
+                              : 1 + ItemSize(0) + 2 * ItemSize(MaxSignatureLength) + ItemSize(preimageLength)
+                              + ItemSize(scriptLength);
 
         // Each fee input's weight includes its 41 non-witness bytes: count them once
         var feeInputsWitness = feeInputs.Sum(i => i.InputWeight - InputNonWitnessWeight);
         return 4 * nonWitness + 2 + htlcWitness + feeInputsWitness;
+    }
+
+    /// <summary>
+    /// The witness of a simple taproot HTLC transaction's input 0:
+    /// <c>&lt;remotesig||0x83&gt; &lt;localsig&gt; [&lt;preimage&gt;] &lt;leaf&gt; &lt;control block&gt;</c> (65 and 64 bytes, no
+    /// empty item for an HTLC-timeout).
+    /// </summary>
+    private static int EstimateSimpleTaprootWitness(HtlcTransactionModel transaction,
+                                                    HtlcTransactionBuildResult buildResult, int scriptLength)
+    {
+        var controlBlock = buildResult.ControlBlock
+                        ?? throw new ArgumentException("The build result is not a simple taproot HTLC transaction",
+                                                       nameof(buildResult));
+        var isSuccess = transaction.Type == HtlcTransactionType.Success;
+        return 1 + ItemSize(TaprootSignatureLength + 1) + ItemSize(TaprootSignatureLength)
+             + (isSuccess ? ItemSize(CryptoConstants.Sha256HashLen) : 0) + ItemSize(scriptLength)
+             + ItemSize(controlBlock.Length);
     }
 
     private static void ValidateFeeInputs(IReadOnlyList<AnchorFeeInput> feeInputs, OutPoint htlcOutPoint)
@@ -317,13 +349,6 @@ public class HtlcTransactionBuilder : IHtlcTransactionBuilder
 
         return new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes(),
                                      [remoteHtlcSignature, localHtlcSignature]);
-    }
-
-    private static void ThrowIfSimpleTaproot(HtlcTransactionModel transaction)
-    {
-        if (transaction.IsSimpleTaproot)
-            throw new NotSupportedException("Fee inputs for simple taproot HTLC transactions are not supported yet "
-                                          + "(NL-877 T4): their witness weights differ from the P2WSH ones");
     }
 
     private static TaprootHtlcOutput CreateSimpleTaprootSpentOutput(HtlcOutputInfo htlcOutput)

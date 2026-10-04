@@ -77,6 +77,13 @@ using Local;
 /// again. The HTLC output stays at index 0 of the combined transaction, so the second-level row and sweep are the same
 /// as without anchors.
 /// </para>
+/// <para>
+/// Simple taproot channels (NL-966, NL-904 item 4) take the same path: the HTLC transaction spends its tapscript leaf
+/// with the control block, and our BIP 340 <c>SIGHASH_DEFAULT</c> signature is made after the fee inputs are added, over
+/// every spent output (<see cref="HtlcTransactionBuildResult.FeeInputSpentOutputs"/>); the peer's 0x83 signature still
+/// pairs input and output 0. The second-level output is P2TR on the revocation key with one delay leaf, swept by script
+/// path.
+/// </para>
 /// </remarks>
 public sealed class LocalCommitResolver : IOutputResolver
 {
@@ -101,7 +108,6 @@ public sealed class LocalCommitResolver : IOutputResolver
     private readonly LocalCommitResolverOptions _options;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ISweepTransactionBuilder _sweepTransactionBuilder;
-    private readonly UnsupportedTaprootOutputs _unsupportedTaproot = new();
 
     public LocalCommitResolver(ICommitmentOutputMapper outputMapper, IHtlcTransactionBuilder htlcTransactionBuilder,
                                ISweepTransactionBuilder sweepTransactionBuilder, ILightningSigner lightningSigner,
@@ -407,16 +413,6 @@ public sealed class LocalCommitResolver : IOutputResolver
                                           List<OutputResolverAction> actions, CancellationToken cancellationToken)
     {
         var row = context.GetRow(context.CommitmentTxId, descriptor.Vout)!;
-
-        // NL-966: our simple taproot HTLC transactions (zero fee, wallet fee inputs, script-path signatures) are not
-        // built yet; the output stays recorded and is alerted once, the to_local sweep goes on
-        if (descriptor is { IsSimpleTaproot: true, Htlc: not null })
-        {
-            _unsupportedTaproot.Report(context.Channel.ChannelId, context.CommitmentTxId, descriptor.Vout,
-                                       descriptor.Kind, descriptor.AmountSat, actions);
-            return;
-        }
-
         var record = descriptor.Htlc is { } htlc ? context.Commitments?.GetHtlc(htlc.Direction, htlc.Id) : null;
         var spend = await GetSpendAsync(context, row);
         OutputResolutionModel? child = null;
@@ -935,9 +931,11 @@ public sealed class LocalCommitResolver : IOutputResolver
                     channelId, new HtlcSigningContext(combined.BuildResult, context.Map.PerCommitmentPoint, true));
                 var withHtlcWitness = _htlcTransactionBuilder.AddWitness(model, combined.BuildResult, remoteSignature,
                                                                          localSignature, preimage);
+                // A simple taproot HTLC output is P2TR: a P2TR fee input's signature commits to its scriptPubKey
                 var htlcInput = new SpentOutput(
                     context.CommitmentTxId, descriptor.Vout, built.SpentAmount,
-                    new Script((byte[])built.SpentWitnessScript).WitHash.ScriptPubKey.ToBytes());
+                    built.SpentScriptPubKey
+                 ?? new Script((byte[])built.SpentWitnessScript).WitHash.ScriptPubKey.ToBytes());
                 var signed = await _feeInputProvider.SignAsync(withHtlcWitness, combined.FeeInputs, htlcInput,
                                                                cancellationToken);
                 if (signed.TxId != combined.BuildResult.Transaction.TxId)
@@ -1117,14 +1115,29 @@ public sealed class LocalCommitResolver : IOutputResolver
         if (descriptor.SecondLevel is not { } model)
             return null;
 
-        var output = new HtlcResolutionOutput(model.OutputAmount, new PubKey(model.LocalDelayedPubKey),
-                                              new PubKey(model.RevocationPubKey), model.ToSelfDelay);
         var amountSat = spender is { Outputs.Count: > 0 }
                             ? spender.Outputs[0].AmountSat
                             : (ulong)model.OutputAmount.Satoshi;
-        var data = new OutputDescriptorData(amountSat, (byte[])output.BitcoinScriptPubKey, (byte[])output.RedeemBitcoinScript,
-                                            model.ToSelfDelay, model.HasAnchors, context.Map.PerCommitmentPoint,
-                                            descriptor.Htlc);
+        OutputDescriptorData data;
+        if (model.IsSimpleTaproot)
+        {
+            // NL-966: P2TR on the revocation key with one delay leaf, swept by script path with its control block
+            var taproot = new TaprootHtlcResolutionOutput(model.OutputAmount, new PubKey(model.LocalDelayedPubKey),
+                                                          new PubKey(model.RevocationPubKey), model.ToSelfDelay);
+            data = new OutputDescriptorData(amountSat, (byte[])taproot.BitcoinScriptPubKey,
+                                            taproot.DelayLeaf.Script.ToBytes(), model.ToSelfDelay, model.HasAnchors,
+                                            context.Map.PerCommitmentPoint, descriptor.Htlc,
+                                            taproot.GetControlBlock(taproot.DelayLeaf));
+        }
+        else
+        {
+            var output = new HtlcResolutionOutput(model.OutputAmount, new PubKey(model.LocalDelayedPubKey),
+                                                  new PubKey(model.RevocationPubKey), model.ToSelfDelay);
+            data = new OutputDescriptorData(amountSat, (byte[])output.BitcoinScriptPubKey,
+                                            (byte[])output.RedeemBitcoinScript, model.ToSelfDelay, model.HasAnchors,
+                                            context.Map.PerCommitmentPoint, descriptor.Htlc);
+        }
+
         var row = new OutputResolutionModel
         {
             TransactionId = htlcTxId,
@@ -1145,7 +1158,9 @@ public sealed class LocalCommitResolver : IOutputResolver
     private static SweepInput? ToSecondLevelInput(LocalCommitContext context, OutputResolutionModel row) =>
         OutputDescriptorData.TryDecode(row) is { WitnessScript: { } witnessScript } data
             ? SweepInputFactory.SecondLevelOutput(row.TransactionId, data.AmountSat, witnessScript, data.CsvDelay,
-                                                  data.PerCommitmentPoint ?? context.Map.PerCommitmentPoint)
+                                                  data.PerCommitmentPoint ?? context.Map.PerCommitmentPoint,
+                                                  data.TaprootControlBlock,
+                                                  data.TaprootControlBlock is null ? null : data.ScriptPubKey)
             : null;
 
     /// <summary>

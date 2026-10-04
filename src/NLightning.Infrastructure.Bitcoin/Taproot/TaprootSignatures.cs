@@ -57,21 +57,52 @@ public static class TaprootSignatures
     /// <see cref="HtlcTransactionBuildResult.SpentWitnessScript"/> of the output
     /// <see cref="HtlcTransactionBuildResult.SpentScriptPubKey"/>.
     /// </summary>
+    /// <param name="built">The HTLC transaction as built, or combined with wallet fee inputs.</param>
+    /// <param name="sigHash">The sighash type.</param>
+    /// <param name="network">The network the transaction parses on.</param>
+    /// <param name="allowFeeInputs">
+    /// True for the holder's own signature (NL-904 item 4): the transaction may then carry wallet fee inputs after input
+    /// 0, whose spent outputs (<see cref="HtlcTransactionBuildResult.FeeInputSpentOutputs"/>, one per input, outpoints
+    /// checked) the <c>SIGHASH_DEFAULT</c> digest commits to. Otherwise the transaction must have exactly one input.
+    /// </param>
     public static uint256 ComputeHtlcSigHash(HtlcTransactionBuildResult built, TaprootSigHash sigHash,
-                                             Network network)
+                                             Network network, bool allowFeeInputs = false)
     {
         ArgumentNullException.ThrowIfNull(built);
         if (!built.IsTaproot || built.SpentScriptPubKey is null)
             throw new ArgumentException("Not a simple taproot HTLC transaction", nameof(built));
 
         var tx = Transaction.Load(built.Transaction.RawTxBytes, network);
+        var spent = new List<TxOut>
+        {
+            new(Money.Satoshis(built.SpentAmount.Satoshi), new Script((byte[])built.SpentScriptPubKey.Value))
+        };
         if (tx.Inputs.Count != 1)
-            throw new ArgumentException("A taproot HTLC transaction has exactly one input", nameof(built));
+        {
+            if (!allowFeeInputs)
+                throw new ArgumentException("A taproot HTLC transaction has exactly one input", nameof(built));
 
-        var spent = new TxOut(Money.Satoshis(built.SpentAmount.Satoshi),
-                              new Script((byte[])built.SpentScriptPubKey.Value));
+            var feeOutputs = built.FeeInputSpentOutputs;
+            if (feeOutputs is null || feeOutputs.Count != tx.Inputs.Count - 1)
+                throw new ArgumentException("A taproot HTLC transaction with fee inputs needs the output each of them "
+                                          + "spends", nameof(built));
+
+            for (var i = 1; i < tx.Inputs.Count; i++)
+            {
+                var feeOutput = feeOutputs[i - 1];
+                var prevOut = tx.Inputs[i].PrevOut;
+                if (prevOut.N != feeOutput.Index || prevOut.Hash != new uint256((byte[])feeOutput.TxId))
+                    throw new ArgumentException($"The spent output given for input {i} is not the one it spends",
+                                                nameof(built));
+
+                spent.Add(new TxOut(Money.Satoshis(feeOutput.Amount.Satoshi),
+                                    new Script((byte[])feeOutput.ScriptPubKey)));
+            }
+        }
+
         var leaf = new TapScript(new Script((byte[])built.SpentWitnessScript), SimpleTaprootScripts.LeafVersion);
-        return tx.GetSignatureHashTaproot([spent], new TaprootExecutionData(0, leaf.LeafHash) { SigHash = sigHash });
+        return tx.GetSignatureHashTaproot(spent.ToArray(),
+                                          new TaprootExecutionData(0, leaf.LeafHash) { SigHash = sigHash });
     }
 
     /// <summary>

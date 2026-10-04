@@ -80,7 +80,7 @@ public sealed class LocalCommitResolutionTests
     }
 
     [Fact]
-    public async Task Given_OurTaprootCommitmentWithHtlcs_When_TheCsvPasses_Then_ToLocalSweptByTheDelayLeafAndHtlcsAlerted()
+    public async Task Given_OurTaprootCommitmentWithHtlcsAndNoWallet_When_TheCsvPasses_Then_ToLocalSweptAndHtlcsWaitForFeeInputs()
     {
         // Arrange (NL-877 T4 safety floor): a simple taproot channel with an HTLC each way, our commitment on chain
         using var harness = new LocalCommitResolutionHarness(pair =>
@@ -103,9 +103,10 @@ public sealed class LocalCommitResolutionTests
         Assert.Equal(3, input.WitScript.PushCount);
         harness.AssertAllInputsVerify(sweep);
 
-        // No HTLC transaction is built for the taproot HTLC outputs (NL-966): they are alerted, never thrown on
+        // Without a wallet fee-input provider the zero-fee taproot HTLC transactions cannot be built (NL-966 (1)):
+        // nothing is broadcast for them and the next block tries again; they are no longer alerted as unsupported
         Assert.Empty(harness.Broadcast(BroadcastPurpose.HtlcTransaction));
-        Assert.Contains(harness.Alerts, a => a.RequirementId == "NL-966");
+        Assert.DoesNotContain(harness.Alerts, a => a.RequirementId == "NL-966");
         Assert.All(harness.Rows.Values.Where(r => r.HtlcId is not null), r => Assert.Null(r.ResolvingTransactionId));
     }
 
