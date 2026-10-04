@@ -32,6 +32,9 @@ using Services.Ipc;
 ///   - the HTLC expiry monitor and the BOLT 5 resolvers run at the next start - but logs a warning and reports the
 ///   nearest <c>cltv_expiry</c> and the blocks until our deadline for it.</item>
 /// </list>
+/// <para>HTLCs of a channel that resolves on chain (Failed, OnchainResolving) never refuse or delay the shutdown: they
+/// cannot be settled over the link and the resolvers take them up at the next start. An accepted shutdown reports
+/// them with the nearest <c>cltv_expiry</c> and logs a warning (NL-1006).</para>
 /// <para>A second <c>shutdown</c> while one runs is refused.</para>
 /// </remarks>
 internal sealed class ShutdownClientHandler : IClientCommandHandler<ShutdownClientRequest, ShutdownClientResponse>
@@ -103,8 +106,11 @@ internal sealed class ShutdownClientHandler : IClientCommandHandler<ShutdownClie
         {
             _logger.LogInformation("Shutdown requested over IPC: no HTLC in flight on {Channels} channel(s); refusing "
                                  + "new activity and stopping the node", summary.ChannelCount);
+            var response = summary.HtlcsResolvingOnChain > 0
+                ? Stopped(summary.ChannelCount, _busyStateMonitor.Snapshot())
+                : new ShutdownClientResponse(summary.ChannelCount);
             _shutdownTrigger.RequestStop();
-            return new ShutdownClientResponse(summary.ChannelCount);
+            return response;
         }
 
         var busy = _busyStateMonitor.Snapshot();
@@ -136,8 +142,9 @@ internal sealed class ShutdownClientHandler : IClientCommandHandler<ShutdownClie
         if (result.Drained)
         {
             _logger.LogInformation("Shutdown accepted over IPC: the node is drained; stopping");
+            var response = Stopped(result.Snapshot.ChannelCount, result.Snapshot);
             _shutdownTrigger.RequestStop();
-            return new ShutdownClientResponse(result.Snapshot.ChannelCount) { Outcome = ShutdownOutcome.Stopped };
+            return response;
         }
 
         if (request.Force)
@@ -151,10 +158,33 @@ internal sealed class ShutdownClientHandler : IClientCommandHandler<ShutdownClie
         {
             Outcome = ShutdownOutcome.TimedOut,
             HtlcsInFlight = result.Snapshot.HtlcsInFlight,
+            HtlcsResolvingOnChain = result.Snapshot.HtlcsResolvingOnChain,
             NegotiationCount = result.Snapshot.NegotiationCount,
             BusyChannels = result.Snapshot.Channels.Select(ToBusyChannel).ToList(),
             NearestCltvExpiry = result.Snapshot.NearestCltvExpiry,
             BlocksUntilDeadline = result.Snapshot.BlocksUntilDeadline
+        };
+    }
+
+    /// <summary>
+    /// An accepted stop with nothing left to drain; HTLCs resolving on chain are reported with the nearest expiry
+    /// (NL-1006).
+    /// </summary>
+    private ShutdownClientResponse Stopped(int channelCount, NodeBusyState busy)
+    {
+        if (busy.HtlcsResolvingOnChain == 0)
+            return new ShutdownClientResponse(channelCount) { Outcome = ShutdownOutcome.Stopped };
+
+        _logger.LogWarning("Stopping with {Htlcs} HTLC(s) resolving on chain: the on-chain resolvers take them up at "
+                         + "the next start, so the node MUST be back before their deadlines. Nearest cltv_expiry "
+                         + "{Expiry}, our deadline in {Blocks} block(s)", busy.HtlcsResolvingOnChain,
+                           busy.NearestCltvExpiry, busy.BlocksUntilDeadline);
+        return new ShutdownClientResponse(channelCount)
+        {
+            Outcome = ShutdownOutcome.Stopped,
+            HtlcsResolvingOnChain = busy.HtlcsResolvingOnChain,
+            NearestCltvExpiry = busy.NearestCltvExpiry,
+            BlocksUntilDeadline = busy.BlocksUntilDeadline
         };
     }
 
@@ -163,6 +193,7 @@ internal sealed class ShutdownClientHandler : IClientCommandHandler<ShutdownClie
         {
             Outcome = ShutdownOutcome.Forced,
             HtlcsInFlight = busy.HtlcsInFlight,
+            HtlcsResolvingOnChain = busy.HtlcsResolvingOnChain,
             NegotiationCount = busy.NegotiationCount,
             BusyChannels = busy.Channels.Select(ToBusyChannel).ToList(),
             NearestCltvExpiry = busy.NearestCltvExpiry,

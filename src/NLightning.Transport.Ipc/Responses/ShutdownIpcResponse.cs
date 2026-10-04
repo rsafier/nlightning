@@ -35,6 +35,9 @@ public sealed class ShutdownIpcResponse
     /// <summary>The blocks that remain until our deadline to act on it; -1 when the height is unknown (NL-592).</summary>
     [Key(6)] public int BlocksUntilDeadline { get; init; }
 
+    /// <summary>The HTLCs of channels that resolve on chain; they never refuse or delay a shutdown (NL-1006).</summary>
+    [Key(7)] public int HtlcsResolvingOnChain { get; init; }
+
     public static ShutdownIpcResponse FromClientResponse(ShutdownClientResponse clientResponse)
     {
         ArgumentNullException.ThrowIfNull(clientResponse);
@@ -46,7 +49,8 @@ public sealed class ShutdownIpcResponse
             NegotiationCount = clientResponse.NegotiationCount,
             BusyChannels = clientResponse.BusyChannels.Select(ShutdownBusyChannelIpc.From).ToList(),
             NearestCltvExpiry = clientResponse.NearestCltvExpiry,
-            BlocksUntilDeadline = clientResponse.BlocksUntilDeadline
+            BlocksUntilDeadline = clientResponse.BlocksUntilDeadline,
+            HtlcsResolvingOnChain = clientResponse.HtlcsResolvingOnChain
         };
     }
 }

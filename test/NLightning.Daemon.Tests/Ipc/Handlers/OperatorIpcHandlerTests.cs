@@ -128,6 +128,24 @@ public class OperatorIpcHandlerTests
     }
 
     [Fact]
+    public async Task Given_HtlcsOnlyOnAChannelResolvingOnChain_When_DisconnectWithoutForce_Then_Disconnected()
+    {
+        // Arrange - NL-1006: the HTLCs of a force-closed channel are settled on chain, never over the link
+        ConnectPeer(s_alice);
+        _channels.Add(CreateChannelWithHtlcs(CreateChannelId(1), s_alice, ChannelState.OnchainResolving));
+        var handler = GetDisconnectHandler();
+
+        // Act
+        var response = await handler.HandleAsync(CreateEnvelope(ClientCommand.DisconnectPeer,
+                                                                new DisconnectPeerIpcRequest { NodeId = s_alice }),
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(IpcEnvelopeKind.Response, response.Kind);
+        _peerManagerMock.Verify(x => x.DisconnectPeer(s_alice, null), Times.Once);
+    }
+
+    [Fact]
     public async Task Given_PeerNotConnected_When_Disconnect_Then_InvalidOperation()
     {
         // Arrange
@@ -172,6 +190,8 @@ public class OperatorIpcHandlerTests
         _channels.Add(CreateChannelWithHtlcs(CreateChannelId(1), s_alice));
         _channels.Add(CreateChannel(CreateChannelId(2), s_alice, ChannelState.V1FundingSigned));
         _channels.Add(CreateChannel(CreateChannelId(3), s_alice, ChannelState.Stale));
+        // NL-1006: listpeers keeps showing the HTLCs of a channel resolving on chain
+        _channels.Add(CreateChannelWithHtlcs(CreateChannelId(4), s_alice, ChannelState.OnchainResolving));
         var handler = new ListPeersIpcHandler(_peerManagerMock.Object, _channelMemoryRepositoryMock.Object,
                                               NullLogger<ListPeersIpcHandler>.Instance);
 
@@ -185,8 +205,8 @@ public class OperatorIpcHandlerTests
             response.Payload, s_options, TestContext.Current.CancellationToken);
         Assert.NotNull(payload.Peers);
         var aliceInfo = Assert.Single(payload.Peers, p => p.Id == s_alice);
-        Assert.Equal(2U, aliceInfo.ChannelQty);
-        Assert.Equal(2U, aliceInfo.HtlcsInFlight);
+        Assert.Equal(3U, aliceInfo.ChannelQty);
+        Assert.Equal(4U, aliceInfo.HtlcsInFlight);
         Assert.Equal("127.0.0.1:9735", aliceInfo.Address);
         Assert.True(aliceInfo.Connected);
         var bobInfo = Assert.Single(payload.Peers, p => p.Id == s_bob);
@@ -284,6 +304,64 @@ public class OperatorIpcHandlerTests
         trigger.StopIfRequested();
         trigger.StopIfRequested();
         lifetime.Verify(x => x.StopApplication(), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(ChannelState.OnchainResolving)]
+    [InlineData(ChannelState.Failed)]
+    public async Task Given_HtlcsOnlyOnAChannelResolvingOnChain_When_Shutdown_Then_StoppedAndTheyAreReported(
+        ChannelState state)
+    {
+        // Arrange - NL-1006 (FAFO2, 2026-10-04): a force-closed channel whose HTLC the peer had claimed on chain
+        // refused "1 HTLC(s) are in flight on 1 channel(s)"; no drain settles it, the resolvers resume after a restart
+        _channels.Add(CreateChannelWithHtlcs(CreateChannelId(1), s_alice, state));
+        _channels.Add(CreateChannel(CreateChannelId(2), s_bob, ChannelState.Open));
+        _busyStateMonitor.Default = ShutdownDrainWaiterTests.FakeBusyMonitor.Idle(2) with
+        {
+            HtlcsResolvingOnChain = 2,
+            NearestCltvExpiry = 500,
+            BlocksUntilDeadline = 40
+        };
+        var provider = BuildServices().BuildServiceProvider();
+        var handler = GetHandler(provider, ClientCommand.Shutdown);
+
+        // Act
+        var response = await handler.HandleAsync(CreateEnvelope(ClientCommand.Shutdown, new ShutdownIpcRequest()),
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(IpcEnvelopeKind.Response, response.Kind);
+        var payload = MessagePackSerializer.Deserialize<ShutdownIpcResponse>(
+            response.Payload, s_options, TestContext.Current.CancellationToken);
+        Assert.Equal(ShutdownOutcome.Stopped, payload.Outcome);
+        Assert.Equal(2, payload.ChannelCount);
+        Assert.Equal(0, payload.HtlcsInFlight);
+        Assert.Equal(2, payload.HtlcsResolvingOnChain);
+        Assert.Equal(500u, payload.NearestCltvExpiry);
+        Assert.Equal(40, payload.BlocksUntilDeadline);
+        Assert.True(provider.GetRequiredService<NodeShutdownTrigger>().IsStopRequested);
+    }
+
+    [Fact]
+    public async Task Given_HtlcsOnAnOpenAndAnOnchainChannel_When_Shutdown_Then_RefusedNamingOnlyTheOpenOne()
+    {
+        // Arrange
+        _channels.Add(CreateChannelWithHtlcs(CreateChannelId(1), s_alice, ChannelState.OnchainResolving));
+        _channels.Add(CreateChannelWithHtlcs(CreateChannelId(2), s_bob));
+        var provider = BuildServices().BuildServiceProvider();
+        var handler = GetHandler(provider, ClientCommand.Shutdown);
+
+        // Act
+        var response = await handler.HandleAsync(CreateEnvelope(ClientCommand.Shutdown, new ShutdownIpcRequest()),
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(IpcEnvelopeKind.Error, response.Kind);
+        var error = MessagePackSerializer.Deserialize<IpcError>(response.Payload, s_options,
+                                                                TestContext.Current.CancellationToken);
+        Assert.Contains("2 HTLC(s) are in flight on 1 channel(s)", error.Message);
+        Assert.Contains($"{CreateChannelId(2)} (2)", error.Message);
+        Assert.DoesNotContain(CreateChannelId(1).ToString(), error.Message);
     }
 
     [Fact]
@@ -448,9 +526,10 @@ public class OperatorIpcHandlerTests
         return peer;
     }
 
-    private static ChannelModel CreateChannelWithHtlcs(ChannelId channelId, CompactPubKey peerId)
+    private static ChannelModel CreateChannelWithHtlcs(ChannelId channelId, CompactPubKey peerId,
+                                                       ChannelState state = ChannelState.Open)
     {
-        var channel = CreateChannel(channelId, peerId, ChannelState.Open);
+        var channel = CreateChannel(channelId, peerId, state);
         channel.UpdateCommitments(CreateSnapshot(channelId,
         [
             Record(HtlcDirection.Outgoing, 0, HtlcState.SentAddAckRevocation),

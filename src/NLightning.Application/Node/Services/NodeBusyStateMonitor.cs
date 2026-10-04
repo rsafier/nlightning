@@ -16,14 +16,15 @@ using InteractiveTx.Interfaces;
 
 /// <summary>
 /// What still keeps the node busy for a <c>shutdown --wait</c> (NL-592): the HTLCs in flight on every channel that is
-/// not Closed or Stale, and the negotiations that are mid-flight.
+/// not Closed or Stale and still settles them over the link, and the negotiations that are mid-flight.
 /// </summary>
 /// <param name="ChannelCount">The channels that are not Closed or Stale.</param>
-/// <param name="HtlcsInFlight">Their HTLCs in flight (<see cref="ChannelHtlcs.InFlight"/>, the same count the first
-/// pass refused on, NL-591).</param>
+/// <param name="HtlcsInFlight">Their HTLCs in flight that can still be settled over the link
+/// (<see cref="ChannelHtlcs.InFlightOffChain"/>, the same count the first pass refuses on, NL-591, NL-1006).</param>
 /// <param name="NegotiationCount">How many channels carry a negotiation that is mid-flight.</param>
 /// <param name="Channels">The busy channels: the ones with HTLCs in flight and/or a mid-flight negotiation.</param>
-/// <param name="NearestCltvExpiry">The nearest <c>cltv_expiry</c> among the in-flight HTLCs, 0 when none.</param>
+/// <param name="NearestCltvExpiry">The nearest <c>cltv_expiry</c> among the in-flight HTLCs, 0 when none; the ones
+/// resolving on chain included.</param>
 /// <param name="BlocksUntilDeadline">
 /// The blocks that remain until our deadline to act on the nearest-deadline HTLC
 /// (<see cref="HtlcDeadlinePolicy"/>'s rule), -1 when the height is unknown.</param>
@@ -33,6 +34,10 @@ using InteractiveTx.Interfaces;
 /// a splice, an RBF of one, or the driver's probe), or an open that is not signed yet (<c>V1Opening</c>,
 /// <c>V1FundingCreated</c>, <c>V2Opening</c>). A signed-but-unconfirmed open or splice is not mid-flight: it is
 /// persisted and survives the restart (reestablish, <c>next_funding</c>, the splice depth watcher).</para>
+/// <para>The HTLCs of a channel that resolves on chain (<see cref="ChannelHtlcs.ResolvesOnChain"/>: Failed,
+/// OnchainResolving) never keep the node busy: no wait settles them, and the expiry monitor and the BOLT 5 resolvers
+/// take them up again at the next start. They are counted in <see cref="HtlcsResolvingOnChain"/> and still give the
+/// nearest expiry and deadline, so a shutdown can report them (NL-1006).</para>
 /// <para>Reads are taken without the channel locks (the driver's and the quiescence service's contract allows stale
 /// reads for diagnostics): a shutdown waits for the clear state to hold for a settle period, which covers a read taken
 /// while a transition lands.</para>
@@ -41,6 +46,9 @@ public sealed record NodeBusyState(int ChannelCount, int HtlcsInFlight, int Nego
                                    IReadOnlyList<NodeBusyChannel> Channels, uint NearestCltvExpiry,
                                    int BlocksUntilDeadline)
 {
+    /// <summary>The HTLCs in flight on channels that resolve on chain; not in <see cref="HtlcsInFlight"/>.</summary>
+    public int HtlcsResolvingOnChain { get; init; }
+
     /// <summary>Whether anything would keep a <c>shutdown --wait</c> waiting.</summary>
     public bool IsBusy => HtlcsInFlight > 0 || NegotiationCount > 0;
 }
@@ -97,13 +105,17 @@ public sealed class NodeBusyStateMonitor : INodeBusyStateMonitor
         var channels = _channelMemoryRepository.FindChannels(IsActive);
         var busy = new List<NodeBusyChannel>();
         var htlcsInFlight = 0;
+        var htlcsOnChain = 0;
         var negotiations = 0;
         uint nearestExpiry = 0;
         uint? earliestDeadline = null;
 
         foreach (var channel in channels)
         {
-            var htlcs = ChannelHtlcs.InFlight(channel);
+            if (ChannelHtlcs.ResolvesOnChain(channel))
+                htlcsOnChain += ChannelHtlcs.InFlight(channel);
+
+            var htlcs = ChannelHtlcs.InFlightOffChain(channel);
             var negotiating = IsNegotiating(channel);
             if (htlcs > 0 || negotiating)
             {
@@ -136,7 +148,10 @@ public sealed class NodeBusyStateMonitor : INodeBusyStateMonitor
             : (int)Math.Max(0, earliestDeadline.Value - height);
 
         return new NodeBusyState(channels.Count, htlcsInFlight, negotiations, busy, nearestExpiry,
-                                 blocksUntilDeadline);
+                                 blocksUntilDeadline)
+        {
+            HtlcsResolvingOnChain = htlcsOnChain
+        };
     }
 
     private static bool IsActive(ChannelModel channel) =>

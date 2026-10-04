@@ -4,11 +4,11 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
-Updated 2026-10-04 by the zc-int integrator (branch `zc-int` from `wip/fafo` at `cd5c2c5d`, `origin/wip/zcleanup1` merged with `--no-ff`; the migration `AddTrampolineRelayBlindedDelta` regenerated after `AddDualFundTaprootAttempts`): Summary recounted from the entries (854), no duplicate IDs.
+Updated 2026-10-04 by the zc-int integrator (branch `zc-int` from `wip/fafo` at `cd5c2c5d`, `origin/wip/zcleanup1` merged with `--no-ff`; the migration `AddTrampolineRelayBlindedDelta` regenerated after `AddDualFundTaprootAttempts`): NL-1006 (low) new and fixed. Summary recounted from the entries (855), no duplicate IDs.
 
 Updated 2026-10-04 by the NL-923/NL-925/NL-940 lane (branch `wip/zcleanup1`): NL-925 (low) fixed in 7be91cb2 (a stored origin is authoritative for the first-hop check of an unrecorded HTLC); NL-923 (low) fixed in e2e94132 (the blinded relay's kept cltv_expiry_delta persisted on the relay row, migration `AddTrampolineRelayBlindedDelta`); NL-940 (low) fixed in 8625883e (getroute --trampoline quotes the outer route to a trampoline node).
 
-Updated 2026-10-04 by the taproot wave t03 integrator (branch `wip/taproot-t03` from `wip/fafo` at `6b0d9e12`; lanes SMALL, ECL, T4L, RBF, SPL, T4R, RV4, ECL2, FC, RVR and RVS merged with `--no-ff`; lane branches `tap3-*` hold the originals): taproot range NL-1050..NL-1079: fixed NL-904 (item 4), NL-957, NL-960, NL-965, NL-966, NL-969, NL-970, NL-971 (opens; liquidity ads with taproot splices stay refused), NL-978, NL-986, NL-987, and new NL-1051, NL-1055, NL-1058, NL-1060, NL-1065, NL-1078, NL-1079 (high); new open NL-1050, NL-1059, NL-1061, NL-1062 (NL-1052..NL-1054, NL-1056, NL-1057, NL-1063, NL-1064, NL-1066..NL-1077 unused). Summary recounted from the entries (854), no duplicate IDs.
+Updated 2026-10-04 by the taproot wave t03 integrator (branch `wip/taproot-t03` from `wip/fafo` at `6b0d9e12`; lanes SMALL, ECL, T4L, RBF, SPL, T4R, RV4, ECL2, FC, RVR and RVS merged with `--no-ff`; lane branches `tap3-*` hold the originals): taproot range NL-1050..NL-1079: fixed NL-904 (item 4), NL-957, NL-960, NL-965, NL-966, NL-969, NL-970, NL-971 (opens; liquidity ads with taproot splices stay refused), NL-978, NL-986, NL-987, and new NL-1051, NL-1055, NL-1058, NL-1060, NL-1065, NL-1078, NL-1079 (high); new open NL-1050, NL-1059, NL-1061, NL-1062 (NL-1052..NL-1054, NL-1056, NL-1057, NL-1063, NL-1064, NL-1066..NL-1077 unused). NL-1006 (low) new and fixed. Summary recounted from the entries (855), no duplicate IDs.
 
 Updated 2026-10-04 by the taproot wave t02 integrator (follow-up on wip/fafo 2e455bc2): NL-959 fixed and verified by the full matrix `tap2-mx2`; NL-958 note; the NL-983 fix of wip/nl983 proven on taproot channels against LND (`o983b-taproot` 3/3, `o983b-day0` 3/3) after a test-only fix of the mempool scan (2578448b); Summary recounted (841).
 
@@ -179,10 +179,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 2 | 78 | 80 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
-| fixed | 15 | 68 | 218 | 449 | 750 |
+| fixed | 15 | 68 | 218 | 450 | 751 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 3 | 4 | 7 |
-| **Total** | **15** | **68** | **230** | **541** | **854** |
+| **Total** | **15** | **68** | **230** | **542** | **855** |
 
 ### Epics
 
@@ -8966,6 +8966,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Evidence:** Cashu integration round 3 (2026-10-03, `wip/cashu-int` at `84593e26`, full non-Docker run on net10.0 while the cluster ran other agents' suites): the blame collector found the test inactive for 5 min and aborted Application.Tests (3,953 of 4,061 run). The class passed 5/5 alone three times, and Application.Tests passed 4,061/4,061 when run again. Nothing in it was changed by the Cashu work (two real peer managers over loopback).
 - **Fix sketch:** Read the hang dump of such a run (the simultaneous-connect tie-break waiting on a connection that never completes?); bound the test's waits so it fails instead of hanging.
 - **Blocks/Blocked-by:** Related NL-239, NL-240
+- **Plan ref:** —
+
+### NL-1006 `shutdown` refused (and `--wait` waited) on HTLCs of a force-closed channel already resolved on chain
+- **Status:** fixed (this commit)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Handlers/ShutdownClientHandler.cs`, `Handlers/PeerChannelSummary.cs`, `src/NLightning.Application/Node/Services/NodeBusyStateMonitor.cs`, `src/NLightning.Domain/Channels/Models/ChannelHtlcs.cs`
+- **Evidence:** Live on Mutinynet (FAFO2, 2026-10-04): `nltg shutdown` answered "1 HTLC(s) are in flight on 1 channel(s): 823309b382fd3e7884d9fd09152cb0a32e8906078d23c93f2d55d2cc71f82361 (1)" for a channel that was force-closed and OnchainResolving, whose only HTLC the peer had already claimed on chain with the preimage (confirmed). The count (`ChannelHtlcs.InFlight`, the engine snapshot's non-final records) covered every channel that is not Closed/Stale, and the NL-592 drain used the same count, so `--wait` would have waited until the channel was Closed (the CSV delay + 100 blocks). `disconnect` refused the same way.
+- **Fix:** `ChannelHtlcs.ResolvesOnChain` (Failed or OnchainResolving: no update any more, the HTLCs are settled on chain and the expiry monitor and BOLT 5 resolvers take them up after a restart) and `ChannelHtlcs.InFlightOffChain`; `PeerChannelSummary.HtlcsInFlight` (the `shutdown` and `disconnect` refusals) and `NodeBusyState.HtlcsInFlight`/`Channels` (the `--wait` drain) count only HTLCs that can still be settled over the link. The safety reporting stays: `NodeBusyState.HtlcsResolvingOnChain` and the nearest `cltv_expiry`/deadline still cover those HTLCs, every accepted `shutdown` answer carries `HtlcsResolvingOnChain` (IPC `ShutdownIpcResponse` key 7) with the nearest expiry, the daemon logs a warning, and the CLI prints them; `listpeers` keeps counting them. Tests (fail without the fix): `OperatorIpcHandlerTests.Given_HtlcsOnlyOnAChannelResolvingOnChain_When_Shutdown_Then_StoppedAndTheyAreReported` (OnchainResolving and Failed), `Given_HtlcsOnAnOpenAndAnOnchainChannel_When_Shutdown_Then_RefusedNamingOnlyTheOpenOne`, `Given_HtlcsOnlyOnAChannelResolvingOnChain_When_DisconnectWithoutForce_Then_Disconnected`, the listpeers case, `NodeBusyStateMonitorTests.Given_HtlcsOnlyOnAChannelResolvingOnChain_*` and `Given_HtlcsOnAnOpenAndAnOnchainChannel_*`; `ShutdownPrinterTests`.
+- **Blocks/Blocked-by:** Related NL-591, NL-592, NL-595
 - **Plan ref:** —
 
 ## Docs

@@ -36,6 +36,14 @@ public sealed class ShutdownPrinter : IPrinter<ShutdownIpcResponse>
         _output.WriteLine("  Channels:          {0}", item.ChannelCount);
         if (item.ChannelCount > 0)
             _output.WriteLine("  They reestablish when the node starts again.");
+        if (item.HtlcsResolvingOnChain > 0)
+        {
+            _output.WriteLine("  HTLCs on chain:    {0} (force-closed channels; the on-chain resolvers resume at the",
+                              item.HtlcsResolvingOnChain);
+            _output.WriteLine("                     next start)");
+            PrintNearestExpiry(item);
+            _output.WriteLine("  Have the node back before the deadlines.");
+        }
     }
 
     private void PrintTimedOut(ShutdownIpcResponse item)
@@ -49,24 +57,30 @@ public sealed class ShutdownPrinter : IPrinter<ShutdownIpcResponse>
     {
         _output.WriteLine("Node is stopping (forced with activity in flight)");
         PrintBusy(item);
-        if (item.NearestCltvExpiry > 0)
-        {
-            if (item.BlocksUntilDeadline >= 0)
-                _output.WriteLine("  Nearest HTLC expiry: block {0} (our deadline to act: in {1} block(s))",
-                                  item.NearestCltvExpiry, item.BlocksUntilDeadline);
-            else
-                _output.WriteLine("  Nearest HTLC expiry: block {0} (current height unknown)",
-                                  item.NearestCltvExpiry);
-        }
+        PrintNearestExpiry(item);
 
         _output.WriteLine("  Nothing was broadcast or force-closed; the HTLC expiry monitor and the on-chain");
         _output.WriteLine("  resolvers run at the next start. Have the node back before the deadlines.");
+    }
+
+    private void PrintNearestExpiry(ShutdownIpcResponse item)
+    {
+        if (item.NearestCltvExpiry == 0)
+            return;
+
+        if (item.BlocksUntilDeadline >= 0)
+            _output.WriteLine("  Nearest HTLC expiry: block {0} (our deadline to act: in {1} block(s))",
+                              item.NearestCltvExpiry, item.BlocksUntilDeadline);
+        else
+            _output.WriteLine("  Nearest HTLC expiry: block {0} (current height unknown)", item.NearestCltvExpiry);
     }
 
     private void PrintBusy(ShutdownIpcResponse item)
     {
         _output.WriteLine("  Channels:          {0}", item.ChannelCount);
         _output.WriteLine("  HTLCs in flight:   {0}", item.HtlcsInFlight);
+        if (item.HtlcsResolvingOnChain > 0)
+            _output.WriteLine("  HTLCs on chain:    {0}", item.HtlcsResolvingOnChain);
         _output.WriteLine("  Negotiations:      {0}", item.NegotiationCount);
         foreach (var channel in item.BusyChannels)
         {

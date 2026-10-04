@@ -28,6 +28,12 @@ public sealed class ShutdownClientResponse
     /// </summary>
     public int HtlcsInFlight { get; init; }
 
+    /// <summary>
+    /// The HTLCs of channels that resolve on chain (Failed, OnchainResolving) at the same moments, in every outcome:
+    /// they never keep the node from stopping, and the on-chain resolvers take them up at the next start (NL-1006).
+    /// </summary>
+    public int HtlcsResolvingOnChain { get; init; }
+
     /// <summary>The negotiations (splices, RBFs, opens, quiescences) still running at the same moments.</summary>
     public int NegotiationCount { get; init; }
 
@@ -35,9 +41,9 @@ public sealed class ShutdownClientResponse
     public IReadOnlyList<ShutdownBusyChannel> BusyChannels { get; init; } = [];
 
     /// <summary>
-    /// The nearest <c>cltv_expiry</c> among the in-flight HTLCs (<see cref="ShutdownOutcome.Forced"/>, NL-592);
-    /// 0 when none was in flight. Stopping is safe for funds while the node is back before the HTLC deadlines: the
-    /// expiry monitor and BOLT 5 resolvers run at the start.
+    /// The nearest <c>cltv_expiry</c> among the in-flight HTLCs (<see cref="ShutdownOutcome.Forced"/>, NL-592, or any
+    /// outcome with <see cref="HtlcsResolvingOnChain"/>, NL-1006); 0 when none was in flight. Stopping is safe for
+    /// funds while the node is back before the HTLC deadlines: the expiry monitor and BOLT 5 resolvers run at the start.
     /// </summary>
     public uint NearestCltvExpiry { get; init; }
 

@@ -82,6 +82,50 @@ public sealed class NodeBusyStateMonitorTests
         Assert.Equal(500u, state.NearestCltvExpiry);
     }
 
+    [Theory]
+    [InlineData(ChannelState.OnchainResolving)]
+    [InlineData(ChannelState.Failed)]
+    public void Given_HtlcsOnlyOnAChannelResolvingOnChain_When_Snapshotted_Then_NotBusyButReportedWithTheirExpiry(
+        ChannelState state)
+    {
+        // Arrange - NL-1006: a force-closed channel's HTLC (resolved on chain, the channel waiting for CSV + 100
+        // blocks) kept shutdown --wait waiting until the channel was Closed; no wait can settle it off chain
+        _channels.AddChannel(Channel(1, state, Outgoing(0, cltv: 470)));
+        _channels.AddChannel(Channel(2, ChannelState.Open));
+        _blockchainMonitorMock.SetupGet(m => m.LastProcessedBlockHeight).Returns(400u);
+        _quiescenceMock.Setup(q => q.GetState(It.IsAny<ChannelId>())).Returns(QuiescenceState.None);
+
+        // Act
+        var busy = CreateMonitor().Snapshot();
+
+        // Assert: not busy, but its expiry is still reported for the operator
+        Assert.False(busy.IsBusy);
+        Assert.Equal(0, busy.HtlcsInFlight);
+        Assert.Empty(busy.Channels);
+        Assert.Equal(1, busy.HtlcsResolvingOnChain);
+        Assert.Equal(2, busy.ChannelCount);
+        Assert.Equal(470u, busy.NearestCltvExpiry);
+        Assert.True(busy.BlocksUntilDeadline >= 0);
+    }
+
+    [Fact]
+    public void Given_HtlcsOnAnOpenAndAnOnchainChannel_When_Snapshotted_Then_OnlyTheOpenOnesKeepItBusy()
+    {
+        // Arrange
+        _channels.AddChannel(Channel(1, ChannelState.OnchainResolving, Outgoing(0), Incoming(0)));
+        _channels.AddChannel(Channel(2, ChannelState.Open, Incoming(5)));
+        _quiescenceMock.Setup(q => q.GetState(It.IsAny<ChannelId>())).Returns(QuiescenceState.None);
+
+        // Act
+        var state = CreateMonitor().Snapshot();
+
+        // Assert
+        Assert.True(state.IsBusy);
+        Assert.Equal(1, state.HtlcsInFlight);
+        Assert.Equal(2, state.HtlcsResolvingOnChain);
+        Assert.Equal(Id(2).ToString(), Assert.Single(state.Channels).ChannelId);
+    }
+
     [Fact]
     public void Given_ClosedAndStaleChannels_When_Snapshotted_Then_Ignored()
     {

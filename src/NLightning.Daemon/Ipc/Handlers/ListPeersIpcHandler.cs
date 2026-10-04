@@ -53,7 +53,8 @@ internal class ListPeersIpcHandler : IIpcCommandHandler
                         Features = peer.Features,
                         Id = peer.NodeId,
                         ChannelQty = (uint)summary.ChannelCount,
-                        HtlcsInFlight = (uint)summary.HtlcsInFlight
+                        // Every HTLC still in flight, the ones resolving on chain included (NL-1006)
+                        HtlcsInFlight = (uint)(summary.HtlcsInFlight + summary.HtlcsResolvingOnChain)
                     });
                 }
             }

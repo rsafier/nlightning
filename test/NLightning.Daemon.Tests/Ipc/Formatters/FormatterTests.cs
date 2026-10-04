@@ -136,7 +136,8 @@ public class FormatterTests
             NegotiationCount = 1,
             BusyChannels = [new ShutdownBusyChannelIpc { ChannelId = new string('c', 64), HtlcsInFlight = 2 }],
             NearestCltvExpiry = 500,
-            BlocksUntilDeadline = 40
+            BlocksUntilDeadline = 40,
+            HtlcsResolvingOnChain = 3
         };
 
         // Act
@@ -162,6 +163,7 @@ public class FormatterTests
         Assert.Equal(1, result.NegotiationCount);
         Assert.Equal(500u, result.NearestCltvExpiry);
         Assert.Equal(40, result.BlocksUntilDeadline);
+        Assert.Equal(3, result.HtlcsResolvingOnChain);
         var busy = Assert.Single(result.BusyChannels);
         Assert.Equal(new string('c', 64), busy.ChannelId);
         Assert.Equal(2, busy.HtlcsInFlight);
