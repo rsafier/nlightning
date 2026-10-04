@@ -593,7 +593,8 @@ internal sealed class FakeSpliceStatePort(string nodeName, ILightningSigner sign
 
     public Task<CommitmentSignedMessage> SignSpliceCommitmentAsync(ChannelModel channel, ChannelFunding funding,
                                                                    IUnitOfWork unitOfWork,
-                                                                   CancellationToken cancellationToken)
+                                                                   CancellationToken cancellationToken,
+                                                                   MusigPublicNonce? remoteNonce = null)
     {
         var number = channel.Commitments!.RemoteCommit.Number;
         Signed.Add((funding.FundingTxId, number));
@@ -607,7 +608,8 @@ internal sealed class FakeSpliceStatePort(string nodeName, ILightningSigner sign
 
     public Task ReceiveSpliceCommitmentAsync(ChannelModel channel, ChannelFunding funding,
                                              CommitmentSignedMessage message, IUnitOfWork unitOfWork,
-                                             CancellationToken cancellationToken)
+                                             CancellationToken cancellationToken,
+                                             MusigPublicNonce? remoteNextNonce = null)
     {
         var number = channel.Commitments!.LocalCommit.Number;
         var peer = nodeName == "Alice" ? "Bob" : "Alice";

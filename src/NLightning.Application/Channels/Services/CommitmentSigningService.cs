@@ -212,7 +212,11 @@ public sealed class CommitmentSigningService
     {
         var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(funding.CapacitySatoshis),
                                                   funding.LocalFundingPubKey, funding.RemoteFundingPubKey,
-                                                  funding.FundingTxId, funding.OutputIndex);
+                                                  funding.FundingTxId, funding.OutputIndex)
+        {
+            // A simple taproot channel's splice funding is the MuSig2 P2TR output too (NL-965)
+            IsSimpleTaproot = model.IsSimpleTaproot
+        };
         var (holderKey, counterpartyKey) = holder == CommitmentSide.Local
                                                ? (funding.LocalFundingPubKey, funding.RemoteFundingPubKey)
                                                : (funding.RemoteFundingPubKey, funding.LocalFundingPubKey);

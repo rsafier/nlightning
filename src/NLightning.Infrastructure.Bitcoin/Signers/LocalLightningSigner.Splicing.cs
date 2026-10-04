@@ -103,8 +103,8 @@ public partial class LocalLightningSigner
         lock (GetCommitmentLock(channelId))
         {
             var signingInfo = GetRegisteredSigningInfo(channelId);
-            ThrowIfTaproot(channelId, signingInfo, "sign a splice's shared input (splicing a taproot channel is not "
-                                                 + "supported yet)");
+            ThrowIfTaproot(channelId, signingInfo, "sign a splice's shared input with ECDSA (a taproot shared input "
+                                                 + "is signed with SignSpliceSharedInputPartial)");
             ThrowIfDataLoss(channelId, "sign a splice's shared input");
             ThrowIfBroadcastSigned(channelId, "sign a splice's shared input");
 
@@ -163,8 +163,8 @@ public partial class LocalLightningSigner
         ArgumentNullException.ThrowIfNull(unsignedSpliceTransaction);
         ArgumentNullException.ThrowIfNull(remoteSignature);
         var signingInfo = GetRegisteredSigningInfo(channelId);
-        ThrowIfTaproot(channelId, signingInfo, "check a splice's shared input signature (splicing a taproot channel "
-                                             + "is not supported yet)");
+        ThrowIfTaproot(channelId, signingInfo, "check an ECDSA shared input signature (a taproot shared input is "
+                                             + "checked by AggregateSpliceSharedInputSignature)");
         var current = FromSigningInfo(signingInfo);
 
         var tx = LoadTransaction(channelId, unsignedSpliceTransaction, "splice");
@@ -384,6 +384,15 @@ public partial class LocalLightningSigner
 
     private void RegisterFundingLocked(ChannelId channelId, ChannelSigningInfo signingInfo, ChannelFunding funding)
     {
+        // NL-965: a taproot splice rotates its funding key. Key 0's verification nonces of a v1-opened channel have a
+        // commitment 0 without a txid (NL-972), which a splice funding on the same key would share
+        if (signingInfo is { IsSimpleTaproot: true } && funding.LocalFundingKeyIndex == 0
+                                                     && funding.Kind is ChannelFundingKind.Splice
+                                                                     or ChannelFundingKind.SpliceRbf)
+            throw new SignerException(
+                $"Splice funding {funding.FundingTxId} of a simple taproot channel must use a rotated funding key",
+                channelId, "Internal error");
+
         // The funding key must be ours at the stated index: a wrong index would sign a script we cannot spend
         using (var key = GenerateFundingPrivateKey(signingInfo.ChannelKeyIndex, funding.LocalFundingKeyIndex))
         {

@@ -1910,7 +1910,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T3, D-T4
 
 ### NL-965 Splicing a simple taproot channel is refused
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane SPL)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `Application/Channels/Splicing/SpliceService.cs` (`ThrowIfSimpleTaproot`, `TaprootSpliceRefusal`), `SpliceService.Rbf.cs`
@@ -1918,6 +1918,27 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Plan T5 "Splicing": MuSig2 shared-input signing in the signer (signing nonce sent in tx_complete 6), the taproot splice funding script, the PR #1324 TLVs through the interactive-tx driver and `ReestablishPlanner`; then drop the refusal.
 - **Blocks/Blocked-by:** Related NL-877, NL-953, NL-957
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T5
+- **t03 lane SPL:** splice in, splice out and splice RBF of a simple taproot channel in both roles, as Eclair 0.14.3 speaks BOLTs PR #1324: `tx_complete` `commit_nonces` (our verification nonces of the current and next local commitment on the negotiated txid, with the splice's rotated funding key; always txid-bound) and `funding_nonce` (one JIT signing nonce per attempt), required from the peer (`MissingCommitNonce`/`MissingFundingNonce` → `tx_abort`); the splice `commitment_signed` a MuSig2 partial signature against the peer's current commit nonce, its next nonce taken into the engine with its splice `commitment_signed`; the shared input signed at the commitment step (the nonce cannot be stored, D-T4) and the partial signature stored with the session row (witness blob format 2, no migration), sent in `tx_signatures` type 2 only after the peer's `commitment_signed`; the peer's type 2 required and verified (SP-SIG-01); a taproot splice always rotates the funding key (key 0's v1 commitment 0 nonce has no txid, NL-972); `channel_reestablish` names the splice in negotiation in type 22 and sends type 24 while the peer's splice `commitment_signed` is missing, and our splice `commitment_signed` is re-signed against the peer's type 24, never replayed (an unparsable type 24 is ignored, the retransmission then waits: the splice half of NL-969 (a)); force close on a pending or locked splice funding by key-path aggregate. Liquidity ads with a taproot splice stay refused (NL-971). Proofs: `SpliceTaprootHarnessTests`, the taproot cases of `SpliceConformanceTests` (reestablish flows, a crash at every save of either side), `SimpleTaprootSpliceSigningTests` (shared input script-executed against the previous P2TR output). Follow-ups NL-1058, NL-1059. The shared input needs no `prevtx_details` (NL-957): it already omits prevtx with `shared_input_txid`; Eclair's wallet taproot inputs without prevtx need NL-957 (lane ECL).
+
+### NL-1058 A splice `commitment_signed` that crosses our `tx_abort` is taken as a normal one (warning and close)
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (`commitment_signed` case), `Channels/Handlers/CommitmentSignedMessageHandler.cs`
+- **Evidence:** taproot wave t03 lane SPL (`SpliceTaprootHarnessTests.Given_ATaprootSplice_When_ThePeersTxCompleteHasNoFundingNonce_*`): we abort a splice at the commitment step (here a missing `funding_nonce`) while the peer, which already constructed the transaction, sends its splice `commitment_signed` (`funding_txid` = the aborted splice). With no splice negotiation left, `ISpliceCommitmentReceiver.IsSpliceCommitmentSigned` is false and the message is handled as a normal `commitment_signed`: its signature does not verify against our next commitment, so the peer gets `warning` + close (B2-CS-R01). Any channel type (the ECDSA path behaves the same); the reconnection recovers, no funds at risk.
+- **Fix sketch:** ignore a `commitment_signed` whose `funding_txid` names neither the current funding nor an active pending one while our `tx_abort` waits for its echo (BOLT 2: after `tx_abort`, ignore everything but `tx_abort`).
+- **Blocks/Blocked-by:** Related NL-965
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
+
+### NL-1059 Restoring a static channel backup does not follow a simple taproot channel's splices
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Backup/SpliceSpendFollower.cs` (`Matches`, `GetCandidateOutputs`, `TryParseFundingWitness`)
+- **Evidence:** taproot wave t03 lane SPL. The follower recognizes a splice's new funding output as the P2WSH 2-of-2 of our rotated key and the peer's known key, and learns a peer's rotated key from the 2-of-2 witness of its spend. A taproot splice creates a MuSig2 P2TR output and spends by key path, whose witness names no key: a restored taproot channel follows only a splice its backup named as pending, and stops at any other (the peer's rotated key is unknown).
+- **Fix sketch:** match P2TR outputs of `KeyAgg(our candidate keys, the peer's known keys)` for a taproot entry; past a splice the backup did not name, ask the peer (peer storage, or the peer's `channel_reestablish` after the restore) rather than the chain.
+- **Blocks/Blocked-by:** Related NL-965, NL-478
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Backups")
 
 ### NL-966 Simple taproot on chain: HTLC outputs, revoked HTLC penalties, second-level outputs and anchors are not resolved (T4)
 - **Status:** open
@@ -6331,6 +6352,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **t03 lane RBF:** the missing type-24 half fixed: a retransmission due (the peer's `next_funding` bit 0) without a usable `current_commit_nonce` is answered with our `tx_abort` "MissingCommitNonce" while our `tx_signatures` are not sent (`DualFundedOpenService.AbortForMissingCommitNonceAsync`; a first attempt then ends Stale, an RBF attempt goes back to the last signed one; after our `tx_signatures` it is logged only), and a type-24 nonce that does not parse as two points is treated as missing (`ReceiveCurrentCommitNonce`, REVC (a)). Tests: `DualFundTaprootTests.Given_ANextFundingWithoutAUsableCurrentCommitNonce_*` (missing, unparsable). REVC (b), the cosmetic partial-transaction build in `InteractiveTxDriver.WithCommitNonces`, moved to NL-1062.
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
+- **t03 lane SPL:** for a simple taproot splice (NL-965) an unparsable `current_commit_nonce` is ignored (logged) and our splice `commitment_signed` is not retransmitted until a valid one comes; the dual-funded open's half of (a) stays with the open.
 
 ### NL-970 RBF of a simple taproot dual-funded open is refused in both directions
 - **Status:** fixed (wip/taproot-t03, lane RBF)

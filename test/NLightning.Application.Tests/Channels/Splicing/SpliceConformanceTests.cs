@@ -120,11 +120,13 @@ public class SpliceConformanceTests
     /// side retransmits its <c>commitment_signed</c> byte for byte, then Bob sends <c>tx_signatures</c> first and Alice
     /// answers: FundingTx2 is pending on both.
     /// </summary>
-    [Fact]
-    public async Task Given_BothCommitSigsLost_When_Reconnected_Then_BothAreRetransmittedAndTheSpliceCompletes()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_BothCommitSigsLost_When_Reconnected_Then_BothAreRetransmittedAndTheSpliceCompletes(bool taproot)
     {
-        // Arrange
-        using var harness = new SpliceHarness(realEngine: true);
+        // Arrange (also on a simple taproot channel, NL-965: PR #1324 nonces through channel_reestablish)
+        using var harness = new SpliceHarness(realEngine: true, simpleTaproot: taproot);
         harness.Alice.Fund(SpliceIn + 200_000);
         var start = StartSplice(harness);
         await PumpUntilAsync(harness, (_, m) => m is CommitmentSignedMessage);
@@ -154,8 +156,12 @@ public class SpliceConformanceTests
             "Alice:ChannelReestablish", "Bob:ChannelReestablish", "Bob:CommitmentSigned", "Alice:CommitmentSigned",
             "Bob:TxSignatures", "Alice:TxSignatures"
         ], Sequence(harness, mark, IsSigningStep));
-        AssertSameBytes(harness, lostAlice, Retransmitted<CommitmentSignedMessage>(harness, mark, "Alice"));
-        AssertSameBytes(harness, lostBob, Retransmitted<CommitmentSignedMessage>(harness, mark, "Bob"));
+        AssertRetransmittedCommitment(harness, lostAlice,
+                                      Retransmitted<CommitmentSignedMessage>(harness, mark, "Alice"), taproot);
+        AssertRetransmittedCommitment(harness, lostBob,
+                                      Retransmitted<CommitmentSignedMessage>(harness, mark, "Bob"), taproot);
+        if (taproot)
+            AssertTaprootReestablishNonces(harness, mark, spliceTxId);
         AssertPendingOnBoth(harness, spliceTxId);
         await AssertUsableAsync(harness, spliceTxId);
     }
@@ -166,11 +172,13 @@ public class SpliceConformanceTests
     /// <c>channel_reestablish</c> she resumes it from her stored rows: Bob's retransmitted <c>commitment_signed</c> is
     /// taken as the splice's (not as a commitment update), and both <c>tx_signatures</c> follow.
     /// </summary>
-    [Fact]
-    public async Task Given_BothCommitSigsLostAndTheInitiatorRestarted_When_Reconnected_Then_TheSpliceCompletes()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_BothCommitSigsLostAndTheInitiatorRestarted_When_Reconnected_Then_TheSpliceCompletes(bool taproot)
     {
-        // Arrange
-        using var harness = new SpliceHarness(realEngine: true);
+        // Arrange (also on a simple taproot channel, NL-965: PR #1324 nonces through channel_reestablish)
+        using var harness = new SpliceHarness(realEngine: true, simpleTaproot: taproot);
         harness.Alice.Fund(SpliceIn + 200_000);
         var start = StartSplice(harness);
         await PumpUntilAsync(harness, (_, m) => m is CommitmentSignedMessage);
@@ -191,7 +199,8 @@ public class SpliceConformanceTests
             "Alice:ChannelReestablish", "Bob:ChannelReestablish", "Bob:CommitmentSigned", "Alice:CommitmentSigned",
             "Bob:TxSignatures", "Alice:TxSignatures"
         ], Sequence(harness, mark, IsSigningStep));
-        AssertSameBytes(harness, lostAlice, Retransmitted<CommitmentSignedMessage>(harness, mark, "Alice"));
+        AssertRetransmittedCommitment(harness, lostAlice,
+                                      Retransmitted<CommitmentSignedMessage>(harness, mark, "Alice"), taproot);
         AssertPendingOnBoth(harness, spliceTxId);
         await AssertUsableAsync(harness, spliceTxId);
     }
@@ -202,11 +211,13 @@ public class SpliceConformanceTests
     /// <c>commitment_signed</c> is retransmitted byte for byte, Alice's is taken as the splice's, and he sends
     /// <c>tx_signatures</c> first.
     /// </summary>
-    [Fact]
-    public async Task Given_BothCommitSigsLostAndTheAccepterRestarted_When_Reconnected_Then_TheSpliceCompletes()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_BothCommitSigsLostAndTheAccepterRestarted_When_Reconnected_Then_TheSpliceCompletes(bool taproot)
     {
-        // Arrange
-        using var harness = new SpliceHarness(realEngine: true);
+        // Arrange (also on a simple taproot channel, NL-965: PR #1324 nonces through channel_reestablish)
+        using var harness = new SpliceHarness(realEngine: true, simpleTaproot: taproot);
         harness.Alice.Fund(SpliceIn + 200_000);
         var start = StartSplice(harness);
         await PumpUntilAsync(harness, (_, m) => m is CommitmentSignedMessage);
@@ -236,8 +247,12 @@ public class SpliceConformanceTests
             "Alice:ChannelReestablish", "Bob:ChannelReestablish", "Bob:CommitmentSigned", "Alice:CommitmentSigned",
             "Bob:TxSignatures", "Alice:TxSignatures"
         ], Sequence(harness, mark, IsSigningStep));
-        AssertSameBytes(harness, lostAlice, Retransmitted<CommitmentSignedMessage>(harness, mark, "Alice"));
-        AssertSameBytes(harness, lostBob, Retransmitted<CommitmentSignedMessage>(harness, mark, "Bob"));
+        AssertRetransmittedCommitment(harness, lostAlice,
+                                      Retransmitted<CommitmentSignedMessage>(harness, mark, "Alice"), taproot);
+        AssertRetransmittedCommitment(harness, lostBob,
+                                      Retransmitted<CommitmentSignedMessage>(harness, mark, "Bob"), taproot);
+        if (taproot)
+            AssertTaprootReestablishNonces(harness, mark, spliceTxId);
         AssertPendingOnBoth(harness, spliceTxId);
         await AssertUsableAsync(harness, spliceTxId);
     }
@@ -250,11 +265,13 @@ public class SpliceConformanceTests
     /// SP-T-05: Bob's <c>tx_signatures</c> (he signs first) is lost. Both ask with <c>next_funding</c> without bit 0;
     /// Bob retransmits his <c>tx_signatures</c> (identical), Alice then sends hers.
     /// </summary>
-    [Fact]
-    public async Task Given_TheFirstTxSignaturesLost_When_Reconnected_Then_ItIsRetransmittedAndTheSpliceCompletes()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_TheFirstTxSignaturesLost_When_Reconnected_Then_ItIsRetransmittedAndTheSpliceCompletes(bool taproot)
     {
-        // Arrange
-        using var harness = new SpliceHarness(realEngine: true);
+        // Arrange (also on a simple taproot channel, NL-965: PR #1324 nonces through channel_reestablish)
+        using var harness = new SpliceHarness(realEngine: true, simpleTaproot: taproot);
         harness.Alice.Fund(SpliceIn + 200_000);
         var start = StartSplice(harness);
         await PumpUntilAsync(harness, (from, m) => from == "Bob" && m is TxSignaturesMessage);
@@ -290,11 +307,13 @@ public class SpliceConformanceTests
     /// Both still name FundingTx2 without bit 0; Bob's <c>tx_signatures</c> are rebuilt byte for byte from his stored
     /// row, Alice then signs.
     /// </summary>
-    [Fact]
-    public async Task Given_TheFirstTxSignaturesLostAndTheSenderRestarted_When_Reconnected_Then_ItIsRebuiltFromItsRow()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_TheFirstTxSignaturesLostAndTheSenderRestarted_When_Reconnected_Then_ItIsRebuiltFromItsRow(bool taproot)
     {
-        // Arrange
-        using var harness = new SpliceHarness(realEngine: true);
+        // Arrange (also on a simple taproot channel, NL-965: PR #1324 nonces through channel_reestablish)
+        using var harness = new SpliceHarness(realEngine: true, simpleTaproot: taproot);
         harness.Alice.Fund(SpliceIn + 200_000);
         var start = StartSplice(harness);
         await PumpUntilAsync(harness, (from, m) => from == "Bob" && m is TxSignaturesMessage);
@@ -332,11 +351,13 @@ public class SpliceConformanceTests
     /// She resumes the negotiation from her stored row on <c>channel_reestablish</c>, takes Bob's retransmitted
     /// <c>tx_signatures</c> and signs her wallet inputs.
     /// </summary>
-    [Fact]
-    public async Task Given_TheFirstTxSignaturesLostAndTheReceiverRestarted_When_Reconnected_Then_SheSignsAfterResuming()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_TheFirstTxSignaturesLostAndTheReceiverRestarted_When_Reconnected_Then_SheSignsAfterResuming(bool taproot)
     {
-        // Arrange
-        using var harness = new SpliceHarness(realEngine: true);
+        // Arrange (also on a simple taproot channel, NL-965: PR #1324 nonces through channel_reestablish)
+        using var harness = new SpliceHarness(realEngine: true, simpleTaproot: taproot);
         harness.Alice.Fund(SpliceIn + 200_000);
         var start = StartSplice(harness);
         await PumpUntilAsync(harness, (from, m) => from == "Bob" && m is TxSignaturesMessage);
@@ -723,18 +744,22 @@ public class SpliceConformanceTests
     /// every active funding.
     /// </summary>
     [Theory]
-    [InlineData("Alice")]
-    [InlineData("Bob")]
+    [InlineData("Alice", false)]
+    [InlineData("Bob", false)]
+    [InlineData("Alice", true)]
+    [InlineData("Bob", true)]
     public async Task Given_ACrashAtEverySpliceSave_When_TheNodeRestarts_Then_BothSidesAgreeAndTheChannelWorks(
-        string crashing)
+        string crashing, bool taproot)
     {
-        var saves = await MeasureSpliceSavesAsync(crashing);
+        // A simple taproot channel too (NL-965, D-T4): the shared input's signing nonce dies with the process, the
+        // stored partial signature does not, and no MuSig2 nonce signs twice (the signer would refuse)
+        var saves = await MeasureSpliceSavesAsync(crashing, taproot);
         Assert.InRange(saves, 2, 200);
         for (var crashAt = 1; crashAt <= saves; crashAt++)
         {
             // Arrange
-            var context = $"{crashing} crashed at save {crashAt} of {saves}";
-            using var harness = new SpliceHarness(realEngine: true);
+            var context = $"{crashing} crashed at save {crashAt} of {saves} (taproot {taproot})";
+            using var harness = new SpliceHarness(realEngine: true, simpleTaproot: taproot);
             harness.Alice.Fund(SpliceIn + 200_000);
             var node = crashing == "Alice" ? harness.Alice : harness.Bob;
             node.Node.Store.CrashAtSave = node.Node.Store.Saves + crashAt;
@@ -786,9 +811,9 @@ public class SpliceConformanceTests
     }
 
     /// <summary>How many saves <paramref name="crashing"/> makes from Alice's splice-in request until both signed.</summary>
-    private static async Task<int> MeasureSpliceSavesAsync(string crashing)
+    private static async Task<int> MeasureSpliceSavesAsync(string crashing, bool taproot = false)
     {
-        using var harness = new SpliceHarness(realEngine: true);
+        using var harness = new SpliceHarness(realEngine: true, simpleTaproot: taproot);
         harness.Alice.Fund(SpliceIn + 200_000);
         var node = crashing == "Alice" ? harness.Alice : harness.Bob;
         var before = node.Node.Store.Saves;
@@ -1041,6 +1066,39 @@ public class SpliceConformanceTests
                                 ? $"{t.From}:CommitmentSigned:{cs.FundingTxIdTlv?.FundingTxId}"
                                 : $"{t.From}:{Enum.GetName(t.Message.Type)}")
                .ToList();
+
+    /// <summary>
+    /// A retransmitted splice <c>commitment_signed</c>: byte-identical to the lost original (SP2-A-T2), or for a simple
+    /// taproot channel signed again with a fresh signing nonce, never replayed (BOLTs PR #1324, NL-965).
+    /// </summary>
+    private static void AssertRetransmittedCommitment(SpliceHarness harness, CommitmentSignedMessage original,
+                                                      CommitmentSignedMessage again, bool taproot)
+    {
+        if (!taproot)
+        {
+            AssertSameBytes(harness, original, again);
+            return;
+        }
+
+        Assert.Equal(original.FundingTxIdTlv!.FundingTxId, again.FundingTxIdTlv!.FundingTxId);
+        Assert.True(again.Payload.Signature.IsZero);
+        Assert.NotEqual(original.PartialSignatureWithNonceTlv!.PartialSignatureWithNonce.PublicNonce,
+                        again.PartialSignatureWithNonceTlv!.PartialSignatureWithNonce.PublicNonce);
+    }
+
+    /// <summary>
+    /// Both <c>channel_reestablish</c> of a taproot channel name the splice in negotiation in <c>next_local_nonces</c>
+    /// and carry <c>current_commit_nonce</c> while the peer's splice <c>commitment_signed</c> is missing (PR #1324).
+    /// </summary>
+    private static void AssertTaprootReestablishNonces(SpliceHarness harness, int mark, TxId spliceTxId)
+    {
+        foreach (var name in new[] { "Alice", "Bob" })
+        {
+            var reestablish = Reestablish(harness, mark, name);
+            Assert.Contains(reestablish.NextLocalNoncesTlv!.Nonces.Entries, e => e.FundingTxId == spliceTxId);
+            Assert.NotNull(reestablish.CurrentCommitNonceTlv);
+        }
+    }
 
     /// <summary>The retransmission is byte-identical to the lost original (SP2-A-T2).</summary>
     private static void AssertSameBytes(SpliceHarness harness, IChannelMessage original, IChannelMessage again)

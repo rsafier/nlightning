@@ -694,10 +694,14 @@ internal sealed class HarnessNode : IDisposable
         if (!_outbox.TryDequeue(out var message))
             return false;
 
+        message = Rewrite?.Invoke(message) ?? message;
         Peer.Received.Add(message);
         await Peer.ChannelManager.HandleChannelMessageAsync(message, NegotiatedFeatures, NodeId);
         return true;
     }
+
+    /// <summary>Changes a message of this node on its way to the peer (a peer that breaks a rule); null: none.</summary>
+    public Func<IChannelMessage, IChannelMessage>? Rewrite { get; set; }
 
     /// <summary>
     /// Takes the next message this node sends and records it as received by the peer without delivering it (a caller

@@ -281,6 +281,8 @@ internal static class InteractiveTxSessionSchemaRoundTrip
         AssertWitnessesEqual(expected.TheirWitnesses, actual.TheirWitnesses);
         Assert.Equal(expected.OurSharedInputSignature, actual.OurSharedInputSignature);
         Assert.Equal(expected.TheirSharedInputSignature, actual.TheirSharedInputSignature);
+        Assert.Equal(expected.OurSharedInputPartialSignature, actual.OurSharedInputPartialSignature);
+        Assert.Equal(expected.TheirSharedInputPartialSignature, actual.TheirSharedInputPartialSignature);
         Assert.Equal(expected.LocalFundingSatoshis, actual.LocalFundingSatoshis);
         Assert.Equal(expected.TheirCommitmentSignature, actual.TheirCommitmentSignature);
         Assert.Equal(expected.TheirCommitmentPartialSignature, actual.TheirCommitmentPartialSignature);

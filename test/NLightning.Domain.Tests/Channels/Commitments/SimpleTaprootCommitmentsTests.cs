@@ -235,6 +235,56 @@ public class SimpleTaprootCommitmentsTests
                         CommitmentSignatures.Taproot(Partial(1), []));
     }
 
+    [Fact]
+    public void Given_TaprootSplice_When_SignedWithoutTheTxCompleteNonce_Then_RefusedElseSignedWithItAlone()
+    {
+        // Arrange (NL-965: the splice commitment_signed signs the peer's current commitment on the new funding against
+        // its tx_complete commit_nonces, not against RemoteNextNonces, which stay for the next commitment)
+        var c = CreateTaproot(nonce: Nonce(1));
+        var splice = SpliceTestKit.Splice(0x22, 1_100_000, 100_000, 0);
+        var signer = new TaprootSigner();
+
+        // Act
+        var refused = Assert.Throws<CommitmentRefusedException>(() => c.SignSpliceCommitment(splice, signer));
+        var result = c.SignSpliceCommitment(splice, signer, Nonce(5));
+
+        // Assert
+        Assert.Equal("TAPROOT-NONCE", refused.RequirementId);
+        Assert.Equal([Nonce(5)], signer.Nonces);
+        var outbound = Assert.IsType<OutboundCommitmentSigned>(Assert.Single(result.Outbound));
+        Assert.Equal(Partial(5), outbound.Signatures.PartialSignature);
+        Assert.Equal(splice.FundingTxId, outbound.FundingTxId);
+        Assert.Equal(Nonce(1), Assert.Single(result.Next.RemoteNextNonces).Value);
+    }
+
+    [Fact]
+    public void Given_TaprootSplice_When_ThePeersCommitmentIsReceived_Then_ItsNextNonceMakesTheFundingSignable()
+    {
+        // Arrange
+        var c = CreateTaproot(nonce: Nonce(1));
+        var splice = SpliceTestKit.Splice(0x22, 1_100_000, 100_000, 0);
+        var signatures = CommitmentSignatures.Taproot(Partial(7), []);
+
+        // Act
+        var missing = Assert.Throws<CommitmentViolationException>(
+            () => c.ReceiveSpliceCommitment(splice, signatures, new FakeCommitmentVerifier()));
+        var unsigned = Assert.Throws<CommitmentViolationException>(
+            () => c.ReceiveSpliceCommitment(splice, new CommitmentSignatures(CommitmentSignatures.ZeroSignature, []),
+                                            new FakeCommitmentVerifier(), Nonce(3)));
+        var received = c.ReceiveSpliceCommitment(splice, signatures, new FakeCommitmentVerifier(), Nonce(3)).Next;
+        var signer = new TaprootSigner();
+        var batch = received.Add(10_000 * Sat).Next.SendCommit(signer);
+
+        // Assert: both fundings signed, each against its own nonce
+        Assert.Equal("TAPROOT-NONCE-R01", missing.RequirementId);
+        Assert.Equal("TAPROOT-CS-R01", unsigned.RequirementId);
+        Assert.Equal(Nonce(3), received.RemoteNextNonces[splice.FundingTxId]);
+        Assert.Equal(Nonce(1), received.RemoteNextNonces[s_funding.FundingTxId]);
+        Assert.True(received.HasRemoteNoncesForActiveFundings);
+        Assert.Equal([Nonce(1), Nonce(3)], signer.Nonces);
+        Assert.Equal(2, batch.Outbound.OfType<OutboundCommitmentSigned>().Count());
+    }
+
     #endregion
 
     #region Fees by format (NL-904 item 1)

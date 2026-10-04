@@ -150,12 +150,12 @@ public class InteractiveTxSessionDbRepository : BaseDbRepository<InteractiveTxSe
         entity.ConstructedTx = session.ConstructedTx is null
                                    ? null
                                    : InteractiveTxSessionEncoding.EncodeConstructedTx(session.ConstructedTx);
-        entity.OurWitnesses = session.OurWitnesses is null
-                                  ? null
-                                  : InteractiveTxSessionEncoding.EncodeWitnesses(session.OurWitnesses);
-        entity.TheirWitnesses = session.TheirWitnesses is null
-                                    ? null
-                                    : InteractiveTxSessionEncoding.EncodeWitnesses(session.TheirWitnesses);
+        // A simple taproot splice's MuSig2 shared input partial signature (98 bytes, NL-965) rides in the witness blob
+        // of its side (format version 2): no column of its own, and every other row keeps format version 1
+        entity.OurWitnesses = InteractiveTxSessionEncoding.EncodeSignatures(session.OurWitnesses,
+                                                                            session.OurSharedInputPartialSignature);
+        entity.TheirWitnesses = InteractiveTxSessionEncoding.EncodeSignatures(session.TheirWitnesses,
+                                                                              session.TheirSharedInputPartialSignature);
         entity.OurSharedInputSignature = session.OurSharedInputSignature?.Value.ToArray();
         entity.TheirSharedInputSignature = session.TheirSharedInputSignature?.Value.ToArray();
         entity.LocalFundingSatoshis = session.LocalFundingSatoshis;
@@ -181,6 +181,9 @@ public class InteractiveTxSessionDbRepository : BaseDbRepository<InteractiveTxSe
             throw new InvalidOperationException(
                 $"Interactive-tx session {entity.SessionId} has an unknown state {entity.State}");
 
+        var (ourWitnesses, ourPartialSignature) = InteractiveTxSessionEncoding.DecodeSignatures(entity.OurWitnesses);
+        var (theirWitnesses, theirPartialSignature) =
+            InteractiveTxSessionEncoding.DecodeSignatures(entity.TheirWitnesses);
         return new InteractiveTxSessionModel
         {
             ChannelId = entity.ChannelId,
@@ -196,12 +199,10 @@ public class InteractiveTxSessionDbRepository : BaseDbRepository<InteractiveTxSe
             ConstructedTx = entity.ConstructedTx is null
                                 ? null
                                 : InteractiveTxSessionEncoding.DecodeConstructedTx(entity.ConstructedTx),
-            OurWitnesses = entity.OurWitnesses is null
-                               ? null
-                               : InteractiveTxSessionEncoding.DecodeWitnesses(entity.OurWitnesses),
-            TheirWitnesses = entity.TheirWitnesses is null
-                                 ? null
-                                 : InteractiveTxSessionEncoding.DecodeWitnesses(entity.TheirWitnesses),
+            OurWitnesses = ourWitnesses,
+            OurSharedInputPartialSignature = ourPartialSignature,
+            TheirWitnesses = theirWitnesses,
+            TheirSharedInputPartialSignature = theirPartialSignature,
             OurSharedInputSignature = entity.OurSharedInputSignature is null
                                           ? null
                                           : new CompactSignature(entity.OurSharedInputSignature),

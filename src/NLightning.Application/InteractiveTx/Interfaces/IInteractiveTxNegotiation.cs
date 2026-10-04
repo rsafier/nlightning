@@ -36,6 +36,9 @@ public interface IInteractiveTxNegotiation
     /// <inheritdoc cref="InteractiveTxSession.RemoteSharedInputSignature"/>
     CompactSignature? RemoteSharedInputSignature { get; }
 
+    /// <inheritdoc cref="InteractiveTxSession.RemoteSharedInputPartialSignature"/>
+    MusigPartialSignatureWithNonce? RemoteSharedInputPartialSignature => null;
+
     /// <inheritdoc cref="InteractiveTxSession.Start"/>
     InteractiveTxNegotiationStep Start();
 
@@ -54,6 +57,14 @@ public interface IInteractiveTxNegotiation
     /// <inheritdoc cref="InteractiveTxSession.SendTxSignatures"/>
     InteractiveTxNegotiationStep SendTxSignatures(IReadOnlyList<Witness> localWitnesses,
                                                   CompactSignature? sharedInputSignature);
+
+    /// <inheritdoc cref="InteractiveTxSession.SendTxSignatures(IReadOnlyList{Witness}, CompactSignature?, MusigPartialSignatureWithNonce?)"/>
+    InteractiveTxNegotiationStep SendTxSignatures(IReadOnlyList<Witness> localWitnesses,
+                                                  CompactSignature? sharedInputSignature,
+                                                  MusigPartialSignatureWithNonce? sharedInputPartialSignature) =>
+        sharedInputPartialSignature is null
+            ? SendTxSignatures(localWitnesses, sharedInputSignature)
+            : throw new NotSupportedException("This engine does not sign taproot shared inputs");
 
     /// <inheritdoc cref="InteractiveTxSession.Abort"/>
     InteractiveTxNegotiationStep Abort(string reason);

@@ -4,6 +4,7 @@ namespace NLightning.Infrastructure.Repositories.Database.Channel;
 
 using Domain.Bitcoin.ValueObjects;
 using Domain.Crypto.Constants;
+using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Protocol.InteractiveTx;
 using Domain.Protocol.InteractiveTx.Enums;
@@ -18,6 +19,13 @@ using Domain.Protocol.InteractiveTx.Models;
 internal static class InteractiveTxSessionEncoding
 {
     public const byte FormatVersion = 1;
+
+    /// <summary>
+    /// The witness blob of a side that also holds a MuSig2 <c>shared_input_partial_signature</c> (a simple taproot splice,
+    /// NL-965): a presence byte and the witness list (format 1's body) when there is one, then the 98-byte partial
+    /// signature with its nonce. Rows without one keep <see cref="FormatVersion"/>.
+    /// </summary>
+    public const byte SharedInputPartialSignatureFormatVersion = 2;
 
     public static byte[] EncodeInputs(IReadOnlyList<InteractiveTxInput> inputs)
     {
@@ -142,6 +150,55 @@ internal static class InteractiveTxSessionEncoding
         return writer.ToArray();
     }
 
+    /// <summary>
+    /// A side's witness blob: null when it has neither witnesses nor a shared input partial signature, format 1 (the
+    /// witnesses alone) without the partial signature, format 2 with it.
+    /// </summary>
+    public static byte[]? EncodeSignatures(IReadOnlyList<Witness>? witnesses,
+                                           MusigPartialSignatureWithNonce? partialSignature)
+    {
+        if (partialSignature is not { } partial)
+            return witnesses is null ? null : EncodeWitnesses(witnesses);
+
+        var writer = new BlobWriter(SharedInputPartialSignatureFormatVersion);
+        writer.WriteBool(witnesses is not null);
+        if (witnesses is not null)
+        {
+            writer.WriteU32((uint)witnesses.Count);
+            foreach (var witness in witnesses)
+                writer.WriteBytes(witness);
+        }
+
+        writer.WriteFixed(partial.ToBytes(), MusigConstants.PartialSignatureWithNonceLen);
+        return writer.ToArray();
+    }
+
+    /// <summary>The witnesses and shared input partial signature of a side's blob (<see cref="EncodeSignatures"/>).</summary>
+    public static (List<Witness>? Witnesses, MusigPartialSignatureWithNonce? PartialSignature) DecodeSignatures(
+        byte[]? bytes)
+    {
+        if (bytes is null)
+            return (null, null);
+
+        if (bytes.Length == 0 || bytes[0] != SharedInputPartialSignatureFormatVersion)
+            return (DecodeWitnesses(bytes), null);
+
+        var reader = new BlobReader(bytes, "witnesses", SharedInputPartialSignatureFormatVersion);
+        List<Witness>? witnesses = null;
+        if (reader.ReadBool())
+        {
+            var count = reader.ReadCount();
+            witnesses = new List<Witness>(count);
+            for (var i = 0; i < count; i++)
+                witnesses.Add(new Witness(reader.ReadBytes()));
+        }
+
+        var partial = new MusigPartialSignatureWithNonce(
+            reader.ReadFixed(MusigConstants.PartialSignatureWithNonceLen));
+        reader.EnsureEnd();
+        return (witnesses, partial);
+    }
+
     public static List<Witness> DecodeWitnesses(byte[] bytes)
     {
         var reader = new BlobReader(bytes, "witnesses");
@@ -226,9 +283,9 @@ internal static class InteractiveTxSessionEncoding
     {
         private readonly MemoryStream _stream = new();
 
-        public BlobWriter()
+        public BlobWriter(byte version = FormatVersion)
         {
-            _stream.WriteByte(FormatVersion);
+            _stream.WriteByte(version);
         }
 
         public void WriteByte(byte value) => _stream.WriteByte(value);
@@ -277,16 +334,16 @@ internal static class InteractiveTxSessionEncoding
         private readonly string _name;
         private int _offset;
 
-        public BlobReader(byte[] bytes, string name)
+        public BlobReader(byte[] bytes, string name, byte expectedVersion = FormatVersion)
         {
             ArgumentNullException.ThrowIfNull(bytes);
             _bytes = bytes;
             _name = name;
 
             var version = ReadByte();
-            if (version != FormatVersion)
+            if (version != expectedVersion)
                 throw new InvalidOperationException(
-                    $"Interactive-tx {_name} blob has format version {version}, expected {FormatVersion}");
+                    $"Interactive-tx {_name} blob has format version {version}, expected {expectedVersion}");
         }
 
         public byte ReadByte()
