@@ -137,6 +137,67 @@ public class DualFundTaprootRbfTests
     }
 
     [Fact]
+    public async Task Given_ARestartDuringATaprootRbfAttempt_When_ThePeerForgotIt_Then_BackOnTheSignedAttemptsAndFollowed()
+    {
+        // Arrange: two signed attempts, then a third that only one node constructed (its commitment_signed stored it
+        // and moved its channel to it) before the link drops
+        await using var harness = await CreateTaprootHarnessAsync();
+        var open = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(Request(harness),
+                                                                           TestContext.Current.CancellationToken));
+        Assert.True(open.FailureReason is null, $"{open.FailureReason}\n{harness.Describe()}");
+        var channelId = open.ChannelId;
+        var second = await harness.RunAsync(harness.Alice.DualFund.BumpAsync(channelId, 5_000,
+                                                                             TestContext.Current.CancellationToken));
+        Assert.True(second.FailureReason is null, $"{second.FailureReason}\n{harness.Describe()}");
+        List<TxId> signed = [open.FundingTxId!.Value, second.FundingTxId!.Value];
+        var third = harness.Alice.DualFund.BumpAsync(channelId, 7_000, TestContext.Current.CancellationToken);
+        await harness.PumpAsync((_, _) => harness.Nodes.Any(n => n.Channel(channelId).FundingOutput!.TransactionId
+                                                                   != signed[1]));
+        var constructed = harness.Nodes.Single(n => n.Channel(channelId).FundingOutput!.TransactionId != signed[1]);
+        var pending = constructed.Channel(channelId).FundingOutput!.TransactionId!.Value;
+
+        // Act: the node that stored the attempt restarts; the reconnection's next_funding names an attempt the other
+        // node does not know
+        await harness.RestartAsync(constructed);
+        await harness.ReconnectAsync();
+        await harness.PumpAsync();
+        if (constructed == harness.Bob)
+            Assert.NotNull((await third.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken))
+                              .FailureReason);
+
+        // Assert: next_local_nonces carry every signed attempt (and the restarted node's unsigned one), the forgotten
+        // attempt is aborted, nothing fails, and both nodes are back on the latest signed attempt
+        foreach (var node in harness.Nodes)
+        {
+            var reestablish = (ChannelReestablishMessage)harness.Transcript.Last(
+                t => t.From == node.Name && t.Message is ChannelReestablishMessage).Message;
+            var entries = reestablish.NextLocalNoncesTlv!.Nonces.Entries.Select(e => e.FundingTxId).ToList();
+            Assert.All(signed, txId => Assert.Contains(txId, entries));
+            Assert.Equal(node == constructed, entries.Contains(pending));
+        }
+
+        Assert.Contains(harness.Transcript, t => t.Message is TxAbortMessage);
+        foreach (var node in harness.Nodes)
+        {
+            Assert.Empty(node.Errors);
+            Assert.Equal(ChannelState.V1FundingSigned, node.Channel(channelId).State);
+            Assert.Equal(signed[1], node.Channel(channelId).FundingOutput!.TransactionId);
+            var stored = await node.InScopeAsync(u => u.ChannelDbRepository.GetByIdAsync(channelId));
+            Assert.Equal(signed[1], stored!.FundingOutput!.TransactionId);
+        }
+
+        // ...and the first attempt, confirming, is followed and opens the channel
+        await harness.ConfirmFundingAsync(channelId, signed[0]);
+        foreach (var node in harness.Nodes)
+        {
+            Assert.True(node.Channel(channelId).State == ChannelState.Open, harness.Describe());
+            Assert.Equal(signed[0], node.Channel(channelId).FundingOutput!.TransactionId);
+        }
+
+        await AssertForceCloseValidAsync(harness.Bob, channelId, signed[0], 0);
+    }
+
+    [Fact]
     public async Task Given_ARowSignedWithoutAPartialSignature_When_EitherSideBumps_Then_TheRbfIsRefused()
     {
         // Arrange: an open signed by an older build (its attempt row has no partial signature, before migration

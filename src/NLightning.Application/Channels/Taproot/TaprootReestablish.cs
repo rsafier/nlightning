@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Application.Channels.Taproot;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Models;
 using Domain.Exceptions;
@@ -39,7 +40,15 @@ public sealed class TaprootReestablish
     /// </summary>
     /// <exception cref="ChannelFailedException">The map is absent, misses an active funding or holds a nonce that
     /// does not parse (MUST fail the channel).</exception>
-    public async Task ReceiveNoncesAsync(ChannelModel channel, ChannelReestablishMessage message)
+    /// <param name="channel">The channel (under its lock).</param>
+    /// <param name="message">The peer's <c>channel_reestablish</c>.</param>
+    /// <param name="signedOpenAttempts">For a dual-funded open waiting for its funding, its fully signed attempts
+    /// (<c>ReestablishService.GetSignedOpenAttemptsAsync</c>): the map must hold each of them, and the channel's funding
+    /// output (an RBF attempt still being signed) only when the peer's <c>next_funding</c> names it, as Eclair 0.14.3
+    /// checks (<c>Helpers.Syncing.checkCommitNonces</c>; a peer that forgot the attempt has no nonce for it, and the
+    /// attempt is then aborted; NL-970). Null for any other channel: every active funding needs its entry.</param>
+    public async Task ReceiveNoncesAsync(ChannelModel channel, ChannelReestablishMessage message,
+                                         IReadOnlyCollection<TxId>? signedOpenAttempts = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
         ArgumentNullException.ThrowIfNull(message);
@@ -53,7 +62,17 @@ public sealed class TaprootReestablish
         var nonces = TaprootChannelNonces.ToDictionary(noncesTlv.Nonces);
         if (channel.Commitments is not { } commitments)
         {
-            foreach (var txId in TaprootChannelNonces.GetActiveFundingTxIds(channel))
+            var active = TaprootChannelNonces.GetActiveFundingTxIds(channel);
+            IReadOnlyList<TxId> required = active;
+            if (signedOpenAttempts is not null)
+            {
+                TxId? namedByPeer = message.NextFundingTlv is { } nextFunding
+                                        ? new TxId(nextFunding.NextFundingTxId)
+                                        : (TxId?)null;
+                required = signedOpenAttempts.Concat(active.Where(txId => txId == namedByPeer)).Distinct().ToList();
+            }
+
+            foreach (var txId in required)
                 if (!nonces.ContainsKey(txId))
                     throw Fail(channel, $"channel_reestablish has no next_local_nonces entry for funding {txId}");
             return;

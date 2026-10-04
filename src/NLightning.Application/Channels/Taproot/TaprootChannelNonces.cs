@@ -53,6 +53,25 @@ public static class TaprootChannelNonces
     }
 
     /// <summary>
+    /// Our <c>next_local_nonces</c> of a dual-funded open still waiting for its funding (no commitment state yet): an
+    /// entry for every fully signed attempt (<paramref name="signedAttempts"/>, any of them may confirm) and for the
+    /// channel's funding output (an RBF attempt still being signed), as Eclair 0.14.3 sends them for its active
+    /// commitments and its RBF signing session (NL-970). Derived through the key index (every attempt is a funding on
+    /// our original key, bound to its txid), so a replaced attempt the signer no longer signs for still has its nonce.
+    /// </summary>
+    public static FundingNonces CreatePendingOpenNonces(ILightningSigner signer, ChannelModel channel,
+                                                        IEnumerable<TxId> signedAttempts, ulong localCommitmentNumber)
+    {
+        ArgumentNullException.ThrowIfNull(signer);
+        ArgumentNullException.ThrowIfNull(signedAttempts);
+        var keyIndex = channel.LocalKeySet.KeyIndex;
+        return new FundingNonces(signedAttempts.Concat(GetActiveFundingTxIds(channel))
+                                               .Distinct()
+                                               .Select(txId => (txId, signer.GetLocalVerificationNonce(
+                                                                          keyIndex, txId, localCommitmentNumber))));
+    }
+
+    /// <summary>
     /// Our verification nonce for local commitment <paramref name="localCommitmentNumber"/> on the channel's current
     /// funding (the <c>next_local_nonce</c> of <c>channel_ready</c>).
     /// </summary>

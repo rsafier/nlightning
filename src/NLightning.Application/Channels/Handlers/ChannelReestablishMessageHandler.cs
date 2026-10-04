@@ -201,7 +201,11 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
 
         // Simple taproot channels: the peer's next_local_nonces replace its verification nonces before anything is
         // retransmitted (a missing map or entry fails the channel; NL-877 T3)
-        await _taproot.ReceiveNoncesAsync(channel, message);
+        // (a dual-funded open waiting for its funding: one entry per signed RBF attempt, NL-970)
+        await _taproot.ReceiveNoncesAsync(channel, message,
+                                          channel.ChannelParams.OptionSimpleTaproot
+                                              ? await _reestablishService.GetSignedOpenAttemptsAsync(channel)
+                                              : null);
 
         // A dual-funded open waiting for its funding resumes its negotiation first (the driver forgot it on a restart),
         // so the peer's retransmitted tx_signatures and our own rebuilt ones find it
