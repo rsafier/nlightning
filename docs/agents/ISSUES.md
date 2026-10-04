@@ -6293,12 +6293,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 
 ### NL-960 The D-T4 crash-injection proof of simple taproot channels has no Postgres (or SQL Server) run
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane SMALL)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Channels/Taproot/TaprootSqliteCrashTests.cs`, `TaprootOpenHarness.cs`
 - **Evidence:** Taproot wave t02 lane OPS proved plan D-T4 in process: the two-node harness (in-memory store, a crash at every save, `TaprootHarnessTests`) and a SQLite v1-open harness on the production repositories (an EF `SaveChangesInterceptor` kills the database at every save of a payment each way, `TaprootSqliteCrashTests`): no signing nonce is ever sent twice, every accepted partial signature verified, one commitment transaction per local commitment number. The plan asks for all three providers; the harness builds its nodes on SQLite files only, and a Postgres server exists only on the cluster (`scripts/run-cluster.sh --matrix postgres`, NL-866). The taproot columns themselves round-trip on Postgres through the existing persistence tests (lane STATE).
 - **Fix sketch:** give `TaprootOpenHarness` a provider switch and run `TaprootSqliteCrashTests` in the cluster's `postgres` suite (the persistence layer has no provider-specific code for the taproot columns, so the expectation is a green run).
+- **t03 lane SMALL:** `TaprootOpenHarness.CreateAsync(ITaprootHarnessDatabase?)` takes the nodes' databases (`SqliteTaprootHarnessDatabase` by default); the proof itself moved to `Channels/Taproot/TaprootCrashProof.RunAsync(crashing, createDatabase)`, which `TaprootSqliteCrashTests` runs on SQLite and `Integration.Tests/Docker/TaprootPostgresCrashTests` (collection `postgres`, trait `Database=Postgres`, each node on a copy of a migrated template database) on the `postgres` suite's server; Integration.Tests links the harness, the proof and the three small helpers they use (`RecordingPaymentHandler`, `HarnessLinkProbe`, `SqliteTestPools`, now files of their own). `SuiteCatalog` selects the class in `postgres` and leaves it out of `lnd`. Cluster run 2026-10-04 (`scripts/run-cluster.sh --suite postgres -n 1`, batch rc-20261004024442): 31/31 green, Alice 21 and Bob 21 crash points (54 s and 57 s), suite wall 173 s. SQL Server stays unported (owner decision).
 - **Blocks/Blocked-by:** Related NL-877, NL-956
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T3, D-T4
 

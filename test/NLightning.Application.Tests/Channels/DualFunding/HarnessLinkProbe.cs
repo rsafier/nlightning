@@ -27,4 +27,3 @@ internal sealed class HarnessLinkProbe : IPeerLivenessProbe
 
     public void Clear() => _links.Clear();
 }
-
