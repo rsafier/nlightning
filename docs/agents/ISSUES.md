@@ -8969,7 +8969,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-1006 `shutdown` refused (and `--wait` waited) on HTLCs of a force-closed channel already resolved on chain
-- **Status:** fixed (this commit)
+- **Status:** fixed (f1f92eba)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Daemon/Handlers/ShutdownClientHandler.cs`, `Handlers/PeerChannelSummary.cs`, `src/NLightning.Application/Node/Services/NodeBusyStateMonitor.cs`, `src/NLightning.Domain/Channels/Models/ChannelHtlcs.cs`
