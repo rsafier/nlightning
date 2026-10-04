@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 0 | 72 | 72 |
+| open | 0 | 0 | 0 | 75 | 75 |
 | in-progress | 0 | 0 | 3 | 0 | 3 |
 | fixed | 15 | 68 | 218 | 451 | 752 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **230** | **543** | **856** |
+| **Total** | **15** | **68** | **230** | **546** | **859** |
 
 ### Epics
 
@@ -9090,3 +9090,34 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Done: a taproot row whose data has no control block takes the mapped descriptor's data (same scriptPubKey) in the round, staged as an upsert, as `RemoteCommitResolver` does for the peer's commitments.
 - **Blocks/Blocked-by:** Related NL-966, NL-877
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T4
+
+### NL-1008 Pod `exec` to the Kubernetes API returns HTTP 500 under a full matrix load, failing `faults` tests
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster` (`KubernetesHelper.ExecAsync`, used by `FaultInjector.ListProcessesAsync`), `test/NLightning.Integration.Tests/Cluster/Live/PartitionClusterTests.cs`
+- **Evidence:** the full matrix with `--coverage` (batch cov-full, 2026-10-04, wip/fafo aa0fd592 + cluster-cov) failed `faults` twice, a different test each time (`Given_AnHtlcInFlightToAFrozenCln_*`, then on the class rerun `Given_AClnThatNeverAnswersOurReestablish_*`), both after about 45 s with `WebSocketException: The server returned status code '500' when status code '101' was expected` from the pod exec that freezes CLN. The faults suite alone was green with and without coverage (6/6). OrbStack's API server under 11 namespaces of load; possibly behind some NL-989 reruns too.
+- **Fix sketch:** retry the exec upgrade a few times with backoff on a 5xx before failing the fault injection; log the API server's response body.
+- **Blocks/Blocked-by:** Related NL-989
+- **Plan ref:** `TEST_HARNESS_PLAN.md`
+
+### NL-1052 `LndTaprootFlowTests` close test expects our closing txid, but with simple close either side's transaction may confirm
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Taproot/LndTaprootFlowTests.cs` (`Given_WeOpenAPrivateTaprootChannel_When_PaymentsAndWeClose_Then_AllWorkAndTheCloseConfirms`)
+- **Evidence:** cov-full (2026-10-04): `Assert.Equal() Failure: Strings differ` on the closing txid (expected dcdb9339…, actual 9864995e…); green alone. Under `option_simple_close` each side proposes and signs its own closing transaction, so two conflicting closes exist and either may confirm (NL-983 handled the same race in the product).
+- **Fix sketch:** accept either side's closing transaction (the confirmed spend of the funding output), as `SimpleCloseCoordinator` does.
+- **Blocks/Blocked-by:** Related NL-983, NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T6
+
+### NL-1053 `EclairTaprootOnchainTests` force close timed out waiting for a resolution transaction to confirm (coverage run)
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Eclair/EclairTaprootOnchainTests.cs` (`Given_HtlcsInFlightBothWays_When_WeForceCloseATaprootChannel_Then_EachOutputIsResolvedOnChain`, `MineUntilAsync`)
+- **Evidence:** cov-full (2026-10-04, under coverlet instrumentation, about 1.9x slower): `TimeoutException: Not in time: 173e1105… confirmed` from `MineUntilResolvedAsync`; green on the class rerun alone. Green in both t03 cluster runs and the tap3-mx1 matrix without coverage. Likely the mining loop's bound against a slower node; not yet ruled out that the transaction was published late.
+- **Fix sketch:** read the run's diag for when 173e1105 was published; scale `MineUntilAsync`'s bound with the run's timeout factor or wait for the broadcast before mining.
+- **Blocks/Blocked-by:** Related NL-966, NL-957
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T6
+
