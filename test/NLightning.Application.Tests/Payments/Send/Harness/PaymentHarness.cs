@@ -116,14 +116,14 @@ internal sealed class PaymentHarness : IDisposable
             FeeBaseMsat = 1_000,
             FeeProportionalMillionths = 100,
             CltvExpiryDelta = 40
-        }, topology.BobUsesGraph);
+        }, topology.BobUsesGraph, topology.UseRealClock);
         Carol = new PaymentHarnessNode("carol", 0xC0, new RoutingOptions
         {
             FeeBaseMsat = 2_000,
             FeeProportionalMillionths = 500,
             CltvExpiryDelta = 40
-        });
-        David = new PaymentHarnessNode("david", 0xD0, new RoutingOptions());
+        }, useRealClock: topology.UseRealClock);
+        David = new PaymentHarnessNode("david", 0xD0, new RoutingOptions(), useRealClock: topology.UseRealClock);
         if (topology.Erin)
             Erin = new PaymentHarnessNode("erin", 0xE0, new RoutingOptions());
         Nodes = Erin is null ? [Bob, Carol, David] : [Bob, Carol, David, Erin];
@@ -409,7 +409,8 @@ internal sealed class PaymentHarnessNode : IDisposable
     /// <summary>Every graph snapshot the node's payments read (to prove a failure never changed it).</summary>
     public ConcurrentQueue<IGraphView> GraphReads { get; } = new();
 
-    public PaymentHarnessNode(string name, byte seed, RoutingOptions routing, bool usesGraph = false)
+    public PaymentHarnessNode(string name, byte seed, RoutingOptions routing, bool usesGraph = false,
+                              bool useRealClock = false)
     {
         Name = name;
         KeyManager = new HarnessKeyManager(seed);
@@ -446,8 +447,9 @@ internal sealed class PaymentHarnessNode : IDisposable
         services.AddSingleton(ChannelUpdates.Object);
         services.AddPaymentsServices();
         // Before AddPaymentSendServices' TryAdd(TimeProvider.System): the node's clock is stepped, so a test owns
-        // when payment timeouts fire (NL-465)
-        services.AddSingleton<TimeProvider>(Clock);
+        // when payment timeouts fire (NL-465) — unless the node runs on the real clock (wall-clock benchmarks),
+        // where the payment stack keeps TimeProvider.System semantics
+        services.AddSingleton<TimeProvider>(useRealClock ? TimeProvider.System : Clock);
         services.AddPaymentSendServices();
         if (usesGraph)
         {
@@ -860,6 +862,8 @@ internal sealed class StagedStateStore(HarnessStateStore store) : IChannelStateD
 /// <param name="Erin">A fourth node, Erin, with a David–Erin channel (David funds it), <c>ScidDavidErin</c>.</param>
 /// <param name="BobUsesGraph">Bob's payments route over a gossip graph (<see cref="PaymentHarnessNode.GraphView"/>,
 /// BOLT 7 plan G4-T3).</param>
+/// <param name="UseRealClock">The nodes' payment stack runs on <see cref="TimeProvider.System"/> instead of the
+/// stepped clock, so wall-clock benchmarks measure real time (nothing else steps the clocks then).</param>
 [ExcludeFromCodeCoverage]
 internal sealed record PaymentHarnessTopology(
     bool SecondBobCarol = false,
@@ -867,4 +871,5 @@ internal sealed record PaymentHarnessTopology(
     ulong BobCarolFundingSatoshis = PaymentHarness.FundingSatoshis,
     ulong BobCarolPushSatoshis = PaymentHarness.PushSatoshis,
     bool Erin = false,
-    bool BobUsesGraph = false);
+    bool BobUsesGraph = false,
+    bool UseRealClock = false);
