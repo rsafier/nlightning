@@ -17,7 +17,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
     public partial class NLightningDbContextModel
     {
         private NLightningDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("4833bf8c-a448-4075-b167-c70b3ec40435"), entityTypeCount: 56)
+            : base(skipDetectChanges: false, modelId: new Guid("f826305a-594b-40cd-b3d5-7f047f254306"), entityTypeCount: 56)
         {
         }
 
@@ -4671,6 +4671,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityTableBase.Columns.Add("session_id", session_idColumnBase);
             var stateColumnBase5 = new ColumnBase<ColumnMappingBase>("state", "smallint", nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityTableBase.Columns.Add("state", stateColumnBase5);
+            var their_commitment_partial_signatureColumnBase = new ColumnBase<ColumnMappingBase>("their_commitment_partial_signature", "bytea", nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityTableBase.Columns.Add("their_commitment_partial_signature", their_commitment_partial_signatureColumnBase);
             var their_commitment_signatureColumnBase = new ColumnBase<ColumnMappingBase>("their_commitment_signature", "bytea", nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityTableBase)
             {
                 IsNullable = true
@@ -4713,6 +4718,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)purposeColumnBase2, interactiveTxSessionEntity.FindProperty("Purpose")!, nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)resolved_atColumnBase, interactiveTxSessionEntity.FindProperty("ResolvedAt")!, nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)stateColumnBase5, interactiveTxSessionEntity.FindProperty("State")!, nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)their_commitment_partial_signatureColumnBase, interactiveTxSessionEntity.FindProperty("TheirCommitmentPartialSignature")!, nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)their_commitment_signatureColumnBase, interactiveTxSessionEntity.FindProperty("TheirCommitmentSignature")!, nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)their_shared_input_signatureColumnBase, interactiveTxSessionEntity.FindProperty("TheirSharedInputSignature")!, nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)their_witnessesColumnBase, interactiveTxSessionEntity.FindProperty("TheirWitnesses")!, nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase);
@@ -4797,6 +4803,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var stateColumn5 = new Column("state", "smallint", interactive_tx_sessionsTable);
             interactive_tx_sessionsTable.Columns.Add("state", stateColumn5);
             stateColumn5.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(stateColumn5);
+            var their_commitment_partial_signatureColumn = new Column("their_commitment_partial_signature", "bytea", interactive_tx_sessionsTable)
+            {
+                IsNullable = true
+            };
+            interactive_tx_sessionsTable.Columns.Add("their_commitment_partial_signature", their_commitment_partial_signatureColumn);
+            their_commitment_partial_signatureColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(their_commitment_partial_signatureColumn);
             var their_commitment_signatureColumn = new Column("their_commitment_signature", "bytea", interactive_tx_sessionsTable)
             {
                 IsNullable = true
@@ -4844,6 +4856,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping(purposeColumn2, interactiveTxSessionEntity.FindProperty("Purpose")!, interactive_tx_sessionsTableMapping);
             RelationalModel.CreateColumnMapping(resolved_atColumn, interactiveTxSessionEntity.FindProperty("ResolvedAt")!, interactive_tx_sessionsTableMapping);
             RelationalModel.CreateColumnMapping(stateColumn5, interactiveTxSessionEntity.FindProperty("State")!, interactive_tx_sessionsTableMapping);
+            RelationalModel.CreateColumnMapping(their_commitment_partial_signatureColumn, interactiveTxSessionEntity.FindProperty("TheirCommitmentPartialSignature")!, interactive_tx_sessionsTableMapping);
             RelationalModel.CreateColumnMapping(their_commitment_signatureColumn, interactiveTxSessionEntity.FindProperty("TheirCommitmentSignature")!, interactive_tx_sessionsTableMapping);
             RelationalModel.CreateColumnMapping(their_shared_input_signatureColumn, interactiveTxSessionEntity.FindProperty("TheirSharedInputSignature")!, interactive_tx_sessionsTableMapping);
             RelationalModel.CreateColumnMapping(their_witnessesColumn, interactiveTxSessionEntity.FindProperty("TheirWitnesses")!, interactive_tx_sessionsTableMapping);

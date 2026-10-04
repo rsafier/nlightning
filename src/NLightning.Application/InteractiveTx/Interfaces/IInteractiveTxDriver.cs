@@ -57,11 +57,16 @@ public interface IInteractiveTxDriver
     /// <param name="theirCommitmentSignature">The peer's signature of our commitment for the new funding, stored with
     /// the negotiation (<see cref="InteractiveTxSessionModel.TheirCommitmentSignature"/>) when the host keeps no other
     /// copy per attempt (a dual-funded open); null leaves it unset.</param>
+    /// <param name="theirCommitmentPartialSignature">The peer's MuSig2 partial signature (with nonce) of our commitment
+    /// for the new funding, for a simple taproot dual-funded open, stored the same way
+    /// (<see cref="InteractiveTxSessionModel.TheirCommitmentPartialSignature"/>, NL-970); null leaves it unset.</param>
     /// <exception cref="InvalidOperationException">No constructed negotiation waits for a commitment_signed.</exception>
     Task<IReadOnlyList<IChannelMessage>> OnCommitmentSignedReceivedAsync(ChannelId channelId, IUnitOfWork unitOfWork,
                                                                          CancellationToken cancellationToken = default,
                                                                          CompactSignature? theirCommitmentSignature =
-                                                                             null);
+                                                                             null,
+                                                                         MusigPartialSignatureWithNonce?
+                                                                             theirCommitmentPartialSignature = null);
 
     /// <summary>
     /// Requests an RBF of the channel's completed negotiation with <c>tx_init_rbf</c> (IT-RBF-01). The new attempt

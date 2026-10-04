@@ -126,7 +126,7 @@ public sealed class OpenChannelClientHandler
         // Liquidity ads (NL-850): buying inbound liquidity rides on open_channel2, so it implies a v2 open
         CheckLiquidityRequest(request);
 
-        // Simple taproot channels (NL-877 T5): private, no liquidity purchase (NL-971)
+        // Simple taproot channels (NL-877 T5): private (a liquidity purchase may go with them, NL-971)
         CheckSimpleTaprootRequest(request);
 
         // NL-602 A3-T1: refused before anything is sent; stored with the channel's first save
@@ -464,9 +464,9 @@ public sealed class OpenChannelClientHandler
 
     /// <summary>
     /// <c>openchannel --channel-type taproot</c> (NL-877 T5), before anything is looked up: a simple taproot channel is
-    /// private (the spec forbids <c>announce_channel</c>, taproot gossip is T7) and buys no liquidity (no
-    /// <c>--request-inbound</c>: liquidity ads are not wired for the taproot funding script and weight yet, NL-971). It
-    /// may open v1 or dual-funded (<c>--dual-fund</c>, or v2 by default by the NL-551 rules).
+    /// private (the spec forbids <c>announce_channel</c>, taproot gossip is T7). It may open v1 or dual-funded
+    /// (<c>--dual-fund</c>, or v2 by default by the NL-551 rules), and buy liquidity (<c>--request-inbound</c>, a v2 open
+    /// over the P2TR funding script, NL-971).
     /// </summary>
     internal static void CheckSimpleTaprootRequest(OpenChannelClientRequest request)
     {
@@ -477,10 +477,6 @@ public sealed class OpenChannelClientHandler
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       "Simple taproot channels are private: --public can't be used with "
                                     + "--channel-type taproot");
-        if (request.RequestInboundSat is not null)
-            throw new ClientException(ErrorCodes.InvalidOperation,
-                                      "Buying inbound liquidity (--request-inbound) is not supported with "
-                                    + "--channel-type taproot yet (NL-971)");
     }
 
     /// <summary>

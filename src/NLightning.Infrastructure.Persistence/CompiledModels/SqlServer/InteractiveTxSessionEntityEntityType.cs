@@ -31,7 +31,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 "NLightning.Infrastructure.Persistence.Entities.Channel.InteractiveTxSessionEntity",
                 typeof(InteractiveTxSessionEntity),
                 baseEntityType,
-                propertyCount: 24,
+                propertyCount: 25,
                 unnamedIndexCount: 1,
                 keyCount: 1);
 
@@ -1015,6 +1015,57 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     byte (byte v) => v));
             state.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
+            var theirCommitmentPartialSignature = runtimeEntityType.AddProperty(
+                "TheirCommitmentPartialSignature",
+                typeof(byte[]),
+                propertyInfo: typeof(InteractiveTxSessionEntity).GetProperty("TheirCommitmentPartialSignature", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(InteractiveTxSessionEntity).GetField("<TheirCommitmentPartialSignature>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            theirCommitmentPartialSignature.SetGetter(
+                byte[] (InteractiveTxSessionEntity instance) => InteractiveTxSessionEntityUnsafeAccessors.TheirCommitmentPartialSignature(instance),
+                bool (InteractiveTxSessionEntity instance) => InteractiveTxSessionEntityUnsafeAccessors.TheirCommitmentPartialSignature(instance) == null);
+            theirCommitmentPartialSignature.SetSetter(
+                InteractiveTxSessionEntity (InteractiveTxSessionEntity instance, byte[] value) =>
+                {
+                    InteractiveTxSessionEntityUnsafeAccessors.TheirCommitmentPartialSignature(instance) = value;
+                    return instance;
+                });
+            theirCommitmentPartialSignature.SetMaterializationSetter(
+                InteractiveTxSessionEntity (InteractiveTxSessionEntity instance, byte[] value) =>
+                {
+                    InteractiveTxSessionEntityUnsafeAccessors.TheirCommitmentPartialSignature(instance) = value;
+                    return instance;
+                });
+            theirCommitmentPartialSignature.SetAccessors(
+                byte[] (IInternalEntry entry) => InteractiveTxSessionEntityUnsafeAccessors.TheirCommitmentPartialSignature(((InteractiveTxSessionEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => InteractiveTxSessionEntityUnsafeAccessors.TheirCommitmentPartialSignature(((InteractiveTxSessionEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(theirCommitmentPartialSignature, 19),
+                byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(theirCommitmentPartialSignature));
+            theirCommitmentPartialSignature.SetPropertyIndexes(
+                index: 19,
+                originalValueIndex: 19,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            theirCommitmentPartialSignature.TypeMapping = SqlServerByteArrayTypeMapping.Default.Clone(
+                comparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => ((object)v).GetHashCode(),
+                    byte[] (byte[] v) => v),
+                keyComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()),
+                providerValueComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()),
+                mappingInfo: new RelationalTypeMappingInfo(
+                    storeTypeName: "varbinary(98)",
+                    size: 98));
+            theirCommitmentPartialSignature.AddAnnotation("Relational:ColumnType", "varbinary(98)");
+            theirCommitmentPartialSignature.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
+
             var theirCommitmentSignature = runtimeEntityType.AddProperty(
                 "TheirCommitmentSignature",
                 typeof(byte[]),
@@ -1039,11 +1090,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             theirCommitmentSignature.SetAccessors(
                 byte[] (IInternalEntry entry) => InteractiveTxSessionEntityUnsafeAccessors.TheirCommitmentSignature(((InteractiveTxSessionEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => InteractiveTxSessionEntityUnsafeAccessors.TheirCommitmentSignature(((InteractiveTxSessionEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(theirCommitmentSignature, 19),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(theirCommitmentSignature, 20),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(theirCommitmentSignature));
             theirCommitmentSignature.SetPropertyIndexes(
-                index: 19,
-                originalValueIndex: 19,
+                index: 20,
+                originalValueIndex: 20,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1090,11 +1141,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             theirSharedInputSignature.SetAccessors(
                 byte[] (IInternalEntry entry) => InteractiveTxSessionEntityUnsafeAccessors.TheirSharedInputSignature(((InteractiveTxSessionEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => InteractiveTxSessionEntityUnsafeAccessors.TheirSharedInputSignature(((InteractiveTxSessionEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(theirSharedInputSignature, 20),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(theirSharedInputSignature, 21),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(theirSharedInputSignature));
             theirSharedInputSignature.SetPropertyIndexes(
-                index: 20,
-                originalValueIndex: 20,
+                index: 21,
+                originalValueIndex: 21,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1141,11 +1192,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             theirWitnesses.SetAccessors(
                 byte[] (IInternalEntry entry) => InteractiveTxSessionEntityUnsafeAccessors.TheirWitnesses(((InteractiveTxSessionEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => InteractiveTxSessionEntityUnsafeAccessors.TheirWitnesses(((InteractiveTxSessionEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(theirWitnesses, 21),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(theirWitnesses, 22),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(theirWitnesses));
             theirWitnesses.SetPropertyIndexes(
-                index: 21,
-                originalValueIndex: 21,
+                index: 22,
+                originalValueIndex: 22,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1193,11 +1244,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             txSignaturesReceived.SetAccessors(
                 bool (IInternalEntry entry) => InteractiveTxSessionEntityUnsafeAccessors.TxSignaturesReceived(((InteractiveTxSessionEntity)(entry.Entity))),
                 bool (IInternalEntry entry) => InteractiveTxSessionEntityUnsafeAccessors.TxSignaturesReceived(((InteractiveTxSessionEntity)(entry.Entity))),
-                bool (IInternalEntry entry) => entry.ReadOriginalValue<bool>(txSignaturesReceived, 22),
+                bool (IInternalEntry entry) => entry.ReadOriginalValue<bool>(txSignaturesReceived, 23),
                 bool (IInternalEntry entry) => entry.GetCurrentValue<bool>(txSignaturesReceived));
             txSignaturesReceived.SetPropertyIndexes(
-                index: 22,
-                originalValueIndex: 22,
+                index: 23,
+                originalValueIndex: 23,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1240,11 +1291,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             txSignaturesSent.SetAccessors(
                 bool (IInternalEntry entry) => InteractiveTxSessionEntityUnsafeAccessors.TxSignaturesSent(((InteractiveTxSessionEntity)(entry.Entity))),
                 bool (IInternalEntry entry) => InteractiveTxSessionEntityUnsafeAccessors.TxSignaturesSent(((InteractiveTxSessionEntity)(entry.Entity))),
-                bool (IInternalEntry entry) => entry.ReadOriginalValue<bool>(txSignaturesSent, 23),
+                bool (IInternalEntry entry) => entry.ReadOriginalValue<bool>(txSignaturesSent, 24),
                 bool (IInternalEntry entry) => entry.GetCurrentValue<bool>(txSignaturesSent));
             txSignaturesSent.SetPropertyIndexes(
-                index: 23,
-                originalValueIndex: 23,
+                index: 24,
+                originalValueIndex: 24,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1294,6 +1345,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             var purpose = runtimeEntityType.FindProperty("Purpose");
             var resolvedAt = runtimeEntityType.FindProperty("ResolvedAt");
             var state = runtimeEntityType.FindProperty("State");
+            var theirCommitmentPartialSignature = runtimeEntityType.FindProperty("TheirCommitmentPartialSignature");
             var theirCommitmentSignature = runtimeEntityType.FindProperty("TheirCommitmentSignature");
             var theirSharedInputSignature = runtimeEntityType.FindProperty("TheirSharedInputSignature");
             var theirWitnesses = runtimeEntityType.FindProperty("TheirWitnesses");
@@ -1306,7 +1358,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType1 = ((InteractiveTxSessionEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<ChannelId, Guid, bool, bool, byte[], DateTimeOffset, uint, byte[], bool, byte[], long?, Guid?, uint, byte[], byte[], byte[], byte, DateTimeOffset?, byte, byte[], byte[], byte[], bool, bool>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<Guid>)(((IProperty)sessionId).GetValueComparer())).Snapshot(source.GetCurrentValue<Guid>(sessionId)), ((ValueComparer<bool>)(((IProperty)commitmentSignedReceived).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(commitmentSignedReceived)), ((ValueComparer<bool>)(((IProperty)commitmentSignedSent).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(commitmentSignedSent)), (source.GetCurrentValue<byte[]>(constructedTx) == null ? null : ((ValueComparer<byte[]>)(((IProperty)constructedTx).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(constructedTx))), ((ValueComparer<DateTimeOffset>)(((IProperty)createdAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(createdAt)), ((ValueComparer<uint>)(((IProperty)feeratePerKw).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(feeratePerKw)), (source.GetCurrentValue<byte[]>(inputs) == null ? null : ((ValueComparer<byte[]>)(((IProperty)inputs).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(inputs))), ((ValueComparer<bool>)(((IProperty)isInitiator).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(isInitiator)), (source.GetCurrentValue<byte[]>(localContribution) == null ? null : ((ValueComparer<byte[]>)(((IProperty)localContribution).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(localContribution))), (source.GetCurrentValue<long?>(localFundingSatoshis) == null ? null : ((ValueComparer<long?>)(((IProperty)localFundingSatoshis).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(localFundingSatoshis))), (source.GetCurrentValue<Guid?>(localReservationId) == null ? null : ((ValueComparer<Guid?>)(((IProperty)localReservationId).GetValueComparer())).Snapshot(source.GetCurrentValue<Guid?>(localReservationId))), ((ValueComparer<uint>)(((IProperty)locktime).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(locktime)), (source.GetCurrentValue<byte[]>(ourSharedInputSignature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)ourSharedInputSignature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(ourSharedInputSignature))), (source.GetCurrentValue<byte[]>(ourWitnesses) == null ? null : ((ValueComparer<byte[]>)(((IProperty)ourWitnesses).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(ourWitnesses))), (source.GetCurrentValue<byte[]>(outputs) == null ? null : ((ValueComparer<byte[]>)(((IProperty)outputs).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(outputs))), ((ValueComparer<byte>)(((IProperty)purpose).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(purpose)), (source.GetCurrentValue<DateTimeOffset?>(resolvedAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)resolvedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(resolvedAt))), ((ValueComparer<byte>)(((IProperty)state).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(state)), (source.GetCurrentValue<byte[]>(theirCommitmentSignature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)theirCommitmentSignature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(theirCommitmentSignature))), (source.GetCurrentValue<byte[]>(theirSharedInputSignature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)theirSharedInputSignature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(theirSharedInputSignature))), (source.GetCurrentValue<byte[]>(theirWitnesses) == null ? null : ((ValueComparer<byte[]>)(((IProperty)theirWitnesses).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(theirWitnesses))), ((ValueComparer<bool>)(((IProperty)txSignaturesReceived).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(txSignaturesReceived)), ((ValueComparer<bool>)(((IProperty)txSignaturesSent).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(txSignaturesSent)))));
+                    return ((ISnapshot)(new Snapshot<ChannelId, Guid, bool, bool, byte[], DateTimeOffset, uint, byte[], bool, byte[], long?, Guid?, uint, byte[], byte[], byte[], byte, DateTimeOffset?, byte, byte[], byte[], byte[], byte[], bool, bool>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<Guid>)(((IProperty)sessionId).GetValueComparer())).Snapshot(source.GetCurrentValue<Guid>(sessionId)), ((ValueComparer<bool>)(((IProperty)commitmentSignedReceived).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(commitmentSignedReceived)), ((ValueComparer<bool>)(((IProperty)commitmentSignedSent).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(commitmentSignedSent)), (source.GetCurrentValue<byte[]>(constructedTx) == null ? null : ((ValueComparer<byte[]>)(((IProperty)constructedTx).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(constructedTx))), ((ValueComparer<DateTimeOffset>)(((IProperty)createdAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(createdAt)), ((ValueComparer<uint>)(((IProperty)feeratePerKw).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(feeratePerKw)), (source.GetCurrentValue<byte[]>(inputs) == null ? null : ((ValueComparer<byte[]>)(((IProperty)inputs).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(inputs))), ((ValueComparer<bool>)(((IProperty)isInitiator).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(isInitiator)), (source.GetCurrentValue<byte[]>(localContribution) == null ? null : ((ValueComparer<byte[]>)(((IProperty)localContribution).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(localContribution))), (source.GetCurrentValue<long?>(localFundingSatoshis) == null ? null : ((ValueComparer<long?>)(((IProperty)localFundingSatoshis).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(localFundingSatoshis))), (source.GetCurrentValue<Guid?>(localReservationId) == null ? null : ((ValueComparer<Guid?>)(((IProperty)localReservationId).GetValueComparer())).Snapshot(source.GetCurrentValue<Guid?>(localReservationId))), ((ValueComparer<uint>)(((IProperty)locktime).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(locktime)), (source.GetCurrentValue<byte[]>(ourSharedInputSignature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)ourSharedInputSignature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(ourSharedInputSignature))), (source.GetCurrentValue<byte[]>(ourWitnesses) == null ? null : ((ValueComparer<byte[]>)(((IProperty)ourWitnesses).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(ourWitnesses))), (source.GetCurrentValue<byte[]>(outputs) == null ? null : ((ValueComparer<byte[]>)(((IProperty)outputs).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(outputs))), ((ValueComparer<byte>)(((IProperty)purpose).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(purpose)), (source.GetCurrentValue<DateTimeOffset?>(resolvedAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)resolvedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(resolvedAt))), ((ValueComparer<byte>)(((IProperty)state).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(state)), (source.GetCurrentValue<byte[]>(theirCommitmentPartialSignature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)theirCommitmentPartialSignature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(theirCommitmentPartialSignature))), (source.GetCurrentValue<byte[]>(theirCommitmentSignature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)theirCommitmentSignature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(theirCommitmentSignature))), (source.GetCurrentValue<byte[]>(theirSharedInputSignature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)theirSharedInputSignature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(theirSharedInputSignature))), (source.GetCurrentValue<byte[]>(theirWitnesses) == null ? null : ((ValueComparer<byte[]>)(((IProperty)theirWitnesses).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(theirWitnesses))), ((ValueComparer<bool>)(((IProperty)txSignaturesReceived).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(txSignaturesReceived)), ((ValueComparer<bool>)(((IProperty)txSignaturesSent).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(txSignaturesSent)))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => Snapshot.Empty);
@@ -1323,11 +1375,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     return ((ISnapshot)(new Snapshot<ChannelId, Guid>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<Guid>)(((IProperty)sessionId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<Guid>(sessionId)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 24,
+                propertyCount: 25,
                 navigationCount: 0,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 24,
+                originalValueCount: 25,
                 shadowCount: 0,
                 relationshipCount: 2,
                 storeGeneratedCount: 0));

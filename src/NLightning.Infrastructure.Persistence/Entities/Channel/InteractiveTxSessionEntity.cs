@@ -60,6 +60,12 @@ public class InteractiveTxSessionEntity
     /// </summary>
     public byte[]? TheirCommitmentSignature { get; set; }
 
+    /// <summary>
+    /// The peer's 98-byte MuSig2 partial signature with nonce of our first commitment for the new funding (a simple
+    /// taproot dual-funded open; migration <c>AddDualFundTaprootAttempts</c>, NL-970).
+    /// </summary>
+    public byte[]? TheirCommitmentPartialSignature { get; set; }
+
     public required bool CommitmentSignedSent { get; set; }
     public required bool CommitmentSignedReceived { get; set; }
     public required bool TxSignaturesSent { get; set; }

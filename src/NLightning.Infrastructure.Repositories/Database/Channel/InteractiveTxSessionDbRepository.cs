@@ -160,6 +160,7 @@ public class InteractiveTxSessionDbRepository : BaseDbRepository<InteractiveTxSe
         entity.TheirSharedInputSignature = session.TheirSharedInputSignature?.Value.ToArray();
         entity.LocalFundingSatoshis = session.LocalFundingSatoshis;
         entity.TheirCommitmentSignature = session.TheirCommitmentSignature?.Value.ToArray();
+        entity.TheirCommitmentPartialSignature = session.TheirCommitmentPartialSignature?.ToBytes();
         entity.CommitmentSignedSent = session.CommitmentSignedSent;
         entity.CommitmentSignedReceived = session.CommitmentSignedReceived;
         entity.TxSignaturesSent = session.TxSignaturesSent;
@@ -211,6 +212,10 @@ public class InteractiveTxSessionDbRepository : BaseDbRepository<InteractiveTxSe
             TheirCommitmentSignature = entity.TheirCommitmentSignature is null
                                            ? null
                                            : new CompactSignature(entity.TheirCommitmentSignature),
+            TheirCommitmentPartialSignature = entity.TheirCommitmentPartialSignature is null
+                                                  ? null
+                                                  : new MusigPartialSignatureWithNonce(
+                                                      entity.TheirCommitmentPartialSignature),
             CommitmentSignedSent = entity.CommitmentSignedSent,
             CommitmentSignedReceived = entity.CommitmentSignedReceived,
             TxSignaturesSent = entity.TxSignaturesSent,

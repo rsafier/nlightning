@@ -40,8 +40,8 @@ public sealed class OpenChannelClientRequest
     /// <summary>
     /// Open a simple taproot channel (<c>openchannel --channel-type taproot</c>, <c>option_simple_taproot</c>, NL-877
     /// T5): channel type {80} (plus <c>option_scid_alias</c>/<c>option_zeroconf</c> as for any private channel), a
-    /// MuSig2 funding output. Private only, v1 or dual-funded by the NL-551 rules (no liquidity purchase, NL-971), and
-    /// only while our
+    /// MuSig2 funding output. Private only, v1 or dual-funded by the NL-551 rules (a dual-funded one may buy liquidity,
+    /// NL-971), and only while our
     /// <c>Features:OptionSimpleTaproot</c> is advertised and the peer supports it and <c>option_simple_close</c>.
     /// False keeps the default type (anchors when negotiated).
     /// </summary>

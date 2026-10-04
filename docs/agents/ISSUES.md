@@ -2061,12 +2061,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-986 `openchannel` suggests `bumpopen` after a simple taproot open, whose RBF is refused
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane RBF)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Client` (the open-channel printer's "Bump its fee before it confirms with: bumpopen ..." hint)
 - **Evidence:** first live taproot channel on Mutinynet (2026-10-03, FAFO→FAFO2, build c5ab09cb, channel b934ee4f…): after the dual-funded taproot open the client printed the `bumpopen` hint, but RBF of a dual-funded taproot open is refused (NL-970).
 - **Fix sketch:** leave the hint out for a taproot channel, or print that its RBF is not supported yet.
+- **t03 lane RBF:** fixed by NL-970: RBF of a taproot dual-funded open works, so the hint `bumpopen <channel_id> <feerate_per_kw>` is valid after a taproot open and is kept (`BumpOpenClientHandler`/`BumpOpenIpcHandler` have no taproot refusal; the bump is proven in `DualFundTaprootRbfTests`).
 - **Blocks/Blocked-by:** Related NL-970, NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md`
 
@@ -6319,7 +6320,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-969 Taproot dual-funded open: the peer's tx_complete next nonce is memory only, and a missing current_commit_nonce only logs
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane RBF)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`GetRemoteNextCommitNonce`, `CreateCommitmentSignedRetransmission`), `Channels/Handlers/ChannelReadyMessageHandler.cs` (`GetRemoteNextNonce`)
@@ -6327,27 +6328,40 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** keep the next nonce with the channel row's `RemoteNextNonces` from the commitment step (STATE's column; the snapshot is created at `channel_ready`), and answer a `next_funding` without type 24 with our `tx_abort` while our `tx_signatures` are not sent.
 - **t02 lane V2INT:** the integration with lane OPS made the peer's `channel_ready` `next_local_nonce` required for every simple taproot channel, dual-funded included (TAPROOT-CR-R01, the spec's MUST), so the `tx_complete` next nonce is no longer kept or used (`GetRemoteNextCommitNonce` removed) and the first half of this entry no longer applies; the missing type 24 half stays open.
 - **t02 lane REVC (review):** (a) a `current_commit_nonce` (type 24) that is not two points is not checked as the type-22 map is (`TaprootChannelNonces.ThrowIfUnparsable`); re-signing against it throws `SignerException` out of the reestablish handler, so the peer gets a warning and a disconnect and the pending open stalls until its timeout (no funds at risk); fix: treat it as missing or fail the open. (b) cosmetic: `InteractiveTxDriver.WithCommitNonces` builds the partial transaction for every `tx_complete`, taproot or not, before the host says it wants nonces.
+- **t03 lane RBF:** the missing type-24 half fixed: a retransmission due (the peer's `next_funding` bit 0) without a usable `current_commit_nonce` is answered with our `tx_abort` "MissingCommitNonce" while our `tx_signatures` are not sent (`DualFundedOpenService.AbortForMissingCommitNonceAsync`; a first attempt then ends Stale, an RBF attempt goes back to the last signed one; after our `tx_signatures` it is logged only), and a type-24 nonce that does not parse as two points is treated as missing (`ReceiveCurrentCommitNonce`, REVC (a)). Tests: `DualFundTaprootTests.Given_ANextFundingWithoutAUsableCurrentCommitNonce_*` (missing, unparsable). REVC (b), the cosmetic partial-transaction build in `InteractiveTxDriver.WithCommitNonces`, moved to NL-1062.
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-970 RBF of a simple taproot dual-funded open is refused in both directions
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane RBF)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`BumpAsync`, `DecideRbfAsync`, `CreateCommitmentSignedAsync`), `Infrastructure.Persistence/Entities/Channel/InteractiveTxSessionEntity.cs` (`TheirCommitmentSignature`)
 - **Evidence:** taproot wave t02 lane V2. Every signed RBF attempt of a dual-funded open must keep the peer's signature of our commitment 0 on its own funding, so whichever attempt confirms can be force-closed (NL-528). The interactive-tx row stores it in `TheirCommitmentSignature`, an ECDSA `CompactSignature` (`varbinary(73)` on SQL Server); a taproot attempt's is a 98-byte MuSig2 partial signature with nonce, so it needs a new column (a migration on all three providers), and `OnFundingConfirmedAsync`/`TryGetSignedAttempt`/`RestoreLastSignedFundingAsync`/`MoveSignerToFunding` need taproot paths (re-sign the peer's commitment with a fresh nonce on the followed funding). Until then our `bumpopen` of a taproot open throws "RBF of a simple taproot dual-funded open is not supported yet (NL-970)" and the peer's `tx_init_rbf` gets `tx_abort` (BOLT 2: any reason). The signer side is ready: a dual-funded channel's commitment-0 verification nonce is bound to each attempt's funding txid (`ChannelSigningInfo.IsDualFunded`), and each attempt's `tx_complete` carries its own `commit_nonces`.
 - **Fix sketch:** add `InteractiveTxSessions.TheirCommitmentPartialSignature` (nullable bytes) and the taproot branches of the RBF paths above; prove two attempts and the first one confirming on `DualFundHarness`.
+- **t03 lane RBF:** fixed. Migration `AddDualFundTaprootAttempts` (all three providers, compiled models regenerated): `InteractiveTxSessions.TheirCommitmentPartialSignature` (nullable, `varbinary(98)` on SQL Server), handed to `IInteractiveTxDriver.OnCommitmentSignedReceivedAsync` (`theirCommitmentPartialSignature`) for every taproot attempt, the first one included. `DualFundedOpenService`: the refusals in `BumpAsync`/`DecideRbfAsync`/`CreateCommitmentSignedAsync` lifted; an RBF attempt applies its funding, registers it with the signer as a pending funding and signs the peer's commitment 0 with MuSig2 against the peer's `commit_nonces` of that attempt; `TryGetSignedAttempt` takes the ECDSA signature or the partial one; `OnFundingConfirmedAsync`, `RestoreLastSignedFundingAsync` and the restart rebuild in `GetOrLoadAsync` put the attempt's partial signature back on the channel (`LastReceivedPartialSignature`, our `LastSentSignature` the zero signature) after `MoveSignerToFunding`, so the force close aggregates it with a fresh signing of ours on the followed funding (the commitment-0 verification nonce is bound to each attempt's txid, NL-972); an RBF is refused (our `InvalidOperationException`, the peer's `tx_abort`) when a signed attempt's row has no partial signature (signed by an older build). Found and fixed on the way: a pending open's `channel_reestablish` `next_local_nonces` named only the channel's funding output, and the peer's map had to hold that one, so a restart during an RBF attempt that one node had constructed failed the channel (`TAPROOT-RE-R01`), and Eclair 0.14.3 (which requires a nonce for every active commitment, `Helpers.Syncing.checkCommitNonces`) would refuse our reestablish after any RBF: ours now carry every signed attempt plus the funding output (`TaprootChannelNonces.CreatePendingOpenNonces`, `ReestablishService.GetSignedOpenAttemptsAsync`), and the peer's must hold every signed attempt and the pending one only when its `next_funding` names it. Proofs: `DualFundTaprootRbfTests` (two RBF attempts in each role across a restart of each node, the first and the latest confirming, every row with its partial signature and no ECDSA one, distinct signing nonces and per-attempt verification nonces, both nodes following the confirmed attempt, a force close of commitment 0 from the stored partial signature on each node valid by script execution, payments both ways then a force close of the latest commitment; a restart during an RBF attempt the peer forgot; the older-row refusal), `DualFundLiquidityAdsTests.Given_ATaprootOpenWithAPurchaseBumped_*`, `InteractiveTxSessionSchemaRoundTrip` (the column).
 - **Blocks/Blocked-by:** Related NL-877, NL-528
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-971 Liquidity ads are refused with a simple taproot dual-funded open
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane RBF)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`CheckTaprootOpen`, `AcceptCoreAsync`)
 - **Evidence:** taproot wave t02 lane V2. A taproot open with `--request-inbound` is refused before `open_channel2`, and an `open_channel2` of a taproot type with `request_funding` gets an `error` (as any refused sale). The buyer's checks (`CheckWillFund` over the P2WSH script of both keys, `FunderCost` with the anchors format) and the seller's `will_fund` over the funding script were never exercised with the MuSig2 P2TR script and the taproot commitment weight, and Eclair 0.14.3 sells only in splices, which t02 refuses for taproot channels.
 - **Fix sketch:** pass the channel's format and the P2TR funding script through the liquidity checks, then lift the refusals with a `LiquidityAdsKit` taproot case.
+- **t03 lane RBF:** fixed. The buyer's `CheckWillFund` checks the seller's signature over the MuSig2 P2TR script of both funding keys (`FundingScriptOf(simpleTaproot, ...)`) and the first commitment's fee in the taproot format (`FormatOf`, `ChannelParams.CommitmentFormat` in the RBF), the seller's balance check uses the taproot format and its `will_fund` signs the P2TR script it already used; the refusals in `OpenAsync` (`CheckTaprootOpen`), `AcceptCoreAsync`, the daemon's `CheckSimpleTaprootRequest` and the client's `--channel-type taproot --request-inbound` check are lifted. Proofs: `DualFundLiquidityAdsTests.Given_ATaprootOpenWithAPurchaseBumped_When_TheFirstAttemptConfirms_*` (Alice buys from Bob in a taproot open, `will_fund` over the P2TR funding output, the fee in both first commitments, the purchase repeated in an RBF, the first attempt confirming with its own fee, purchases Active/Replaced, booked, payments both ways), `OpenChannelTaprootClientHandlerTests` (the request reaches `DualFundedOpenRequest` with `Liquidity` and `SimpleTaproot`; the client parses it). Not proven against Eclair: Eclair 0.14.3 sells only in splices (NL-850), and taproot splices are lane SPL's (NL-965).
 - **Blocks/Blocked-by:** Related NL-877, NL-850
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
+
+### NL-1062 `InteractiveTxDriver.WithCommitNonces` builds the partial transaction for every `tx_complete`, taproot or not
+- **Status:** open
+- **Severity:** low
+- **Kind:** cleanup
+- **Location:** `src/NLightning.Application/InteractiveTx/InteractiveTxDriver.cs` (`WithCommitNonces`), `IInteractiveTxHost.GetLocalCommitNonces`
+- **Evidence:** taproot wave t02 lane REVC finding (b), split from NL-969 by t03 lane RBF: the driver builds the transaction negotiated so far before asking the host for `commit_nonces`, also for sessions whose host returns null (every non-taproot open and splice). The wire bytes are unchanged (only `ArgumentException`/`InvalidOperationException` of the builder are caught); it is wasted work on every `tx_complete`.
+- **Fix sketch:** let the host say first whether it wants nonces (e.g. a `WantsCommitNonces` member defaulting to false) and skip the build otherwise. Left to the lane that next edits the driver (taproot splicing, NL-965, also needs `commit_nonces`).
+- **Blocks/Blocked-by:** Related NL-969, NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-976 A late `closing_sig` replaced a confirmed taproot simple close against LND (the NL-983 race)

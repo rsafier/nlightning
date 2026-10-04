@@ -137,9 +137,14 @@ public sealed class ReestablishService
         // Simple taproot channels (NL-877 T3): next_local_nonces, per active funding our verification nonce for the
         // commitment the peer signs next (our next_commitment_number), counter-derived (LND reads only this map), and,
         // while the peer's commitment_signed of a dual-funded open is missing, current_commit_nonce (type 24, lane V2)
-        var nonces = channel.ChannelParams.OptionSimpleTaproot
-                         ? TaprootChannelNonces.CreateLocalNonces(_lightningSigner, channel, own.NextCommitmentNumber)
-                         : null;
+        // (a dual-funded open waiting for its funding: every signed RBF attempt's too, NL-970)
+        var nonces = !channel.ChannelParams.OptionSimpleTaproot
+                         ? null
+                         : await GetSignedOpenAttemptsAsync(channel) is { } signedAttempts
+                             ? TaprootChannelNonces.CreatePendingOpenNonces(_lightningSigner, channel, signedAttempts,
+                                                                            own.NextCommitmentNumber)
+                             : TaprootChannelNonces.CreateLocalNonces(_lightningSigner, channel,
+                                                                      own.NextCommitmentNumber);
         var currentCommitNonce = GetCurrentCommitNonce(channel, localState);
         if (own.NextFunding is null && own.MyCurrentFundingLocked is null && nonces is null
          && currentCommitNonce is null)
@@ -228,6 +233,35 @@ public sealed class ReestablishService
     /// The latest constructed, not aborted interactive-tx row of the channel (rows exist from our
     /// <c>commitment_signed</c> on), or null when there is none or the rows cannot be read.
     /// </summary>
+    /// <summary>
+    /// The fully signed funding attempts of a dual-funded open still waiting for its funding (a
+    /// <see cref="ChannelVersion.V2"/> channel in <see cref="ChannelState.V1FundingSigned"/> without a commitment state),
+    /// oldest first; null for any other channel, or when the interactive-tx rows cannot be read. Any of them may confirm
+    /// (NL-528), so a simple taproot channel's <c>next_local_nonces</c> covers each one (NL-970).
+    /// </summary>
+    public async Task<IReadOnlyList<TxId>?> GetSignedOpenAttemptsAsync(ChannelModel channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        if (channel is not { Version: ChannelVersion.V2, State: ChannelState.V1FundingSigned, Commitments: null })
+            return null;
+
+        try
+        {
+            if (_serviceProvider?.GetService<IUnitOfWork>()?.InteractiveTxSessionDbRepository is not { } sessions)
+                return null;
+
+            var rows = await sessions.GetByChannelIdAsync(channel.ChannelId) ?? [];
+            return rows.Where(s => s is { State: InteractiveTxSessionState.Signed, ConstructedTx: not null })
+                       .OrderBy(s => s.CreatedAt)
+                       .Select(s => s.ConstructedTx!.TxId)
+                       .ToList();
+        }
+        catch (Exception e) when (e is NotSupportedException or NotImplementedException)
+        {
+            return null;
+        }
+    }
+
     private async Task<ReestablishInteractiveTxState?> GetLatestInteractiveTxAsync(ChannelModel channel)
     {
         IReadOnlyList<InteractiveTxSessionModel>? rows;

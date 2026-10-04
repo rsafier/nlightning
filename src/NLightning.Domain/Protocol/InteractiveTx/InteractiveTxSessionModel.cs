@@ -75,6 +75,13 @@ public sealed record InteractiveTxSessionModel
     /// </summary>
     public CompactSignature? TheirCommitmentSignature { get; init; }
 
+    /// <summary>
+    /// The peer's MuSig2 partial signature (with its nonce) of our first commitment for the new funding, from the
+    /// <c>commitment_signed</c> of a simple taproot dual-funded open (whose ECDSA field is zero); null otherwise. As
+    /// <see cref="TheirCommitmentSignature"/>, every signed attempt keeps its own (NL-970).
+    /// </summary>
+    public MusigPartialSignatureWithNonce? TheirCommitmentPartialSignature { get; init; }
+
     /// <summary>Whether our <c>commitment_signed</c> for the new funding was sent.</summary>
     public bool CommitmentSignedSent { get; init; }
 

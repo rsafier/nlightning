@@ -152,7 +152,8 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
     /// <inheritdoc />
     public async Task<IReadOnlyList<IChannelMessage>> OnCommitmentSignedReceivedAsync(
         ChannelId channelId, IUnitOfWork unitOfWork, CancellationToken cancellationToken = default,
-        CompactSignature? theirCommitmentSignature = null)
+        CompactSignature? theirCommitmentSignature = null,
+        MusigPartialSignatureWithNonce? theirCommitmentPartialSignature = null)
     {
         ArgumentNullException.ThrowIfNull(unitOfWork);
 
@@ -170,6 +171,8 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
             {
                 CommitmentSignedReceived = true,
                 TheirCommitmentSignature = theirCommitmentSignature ?? attempt.Model.TheirCommitmentSignature,
+                TheirCommitmentPartialSignature =
+                    theirCommitmentPartialSignature ?? attempt.Model.TheirCommitmentPartialSignature,
                 State = attempt.Negotiation.State
             };
 
