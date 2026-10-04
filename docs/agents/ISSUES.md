@@ -177,10 +177,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 73 | 74 |
+| open | 0 | 0 | 0 | 72 | 72 |
 | in-progress | 0 | 0 | 3 | 0 | 3 |
 | fixed | 15 | 68 | 218 | 451 | 752 |
-| wontfix | 0 | 0 | 5 | 14 | 19 |
+| wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
 | **Total** | **15** | **68** | **230** | **543** | **856** |
 
@@ -6838,7 +6838,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-180 Interop coverage: Docker e2e only against LND and not in CI
-- **Status:** open
+- **Status:** wontfix (owner decision 2026-10-04: interop runs locally on the cluster harness against LND, CLN, Eclair and LDK (NL-820, NL-866); CI does not run it)
 - **Severity:** medium
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/`, `.github/workflows/`
@@ -6848,6 +6848,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-550, NL-551, NL-552
 - **Plan ref:** —
 - **Audit 2026-10-04:** interop now runs against LND, CLN, Eclair and LDK on the cluster harness (NL-820, NL-866); the title and fix sketch above are outdated. Left: CI, which does not run the cluster suites (owner decision 2026-10-02: CI on a cluster deferred).
+- **Owner decision 2026-10-04:** wontfix. Interop coverage is the local cluster matrix (`scripts/run-cluster.sh --matrix`); CI keeps running the non-Docker tests only.
 
 ### NL-181 FakeSha256 returns zeros by default
 - **Status:** fixed (82f2713)
@@ -7131,7 +7132,7 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Plan ref:** BOLT7 Proof G4 (b)(c)
 
 ### NL-377 Bulk graph repository paths are not proven on SQL Server
-- **Status:** open
+- **Status:** wontfix (owner decision 2026-10-04: SQL Server container tests are not run, decision of 2026-09-26; migrations are still generated for SQL Server and HasPendingModelChanges stays false)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `src/NLightning.Infrastructure.Repositories/Database/Gossip/GraphDbRepository.cs` (bulk upserts/deletes), `test/NLightning.Integration.Tests/Docker/SqlServerTests.cs`
@@ -7139,6 +7140,7 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Fix sketch:** Run `SqlServerTests` (graph round trip, bulk section) once per schema-affecting wave, or add a SQL Server service to CI.
 - **Blocks/Blocked-by:** Related NL-347
 - **Plan ref:** BOLT7 G5-T3
+- **Owner decision 2026-10-04:** wontfix. The SQL Server provider keeps its migrations and the non-Docker model checks; its container tests are not run or ported to the cluster.
 
 ### NL-378 The Docker runner scripts print only totals
 - **Status:** fixed (18a56b33)
