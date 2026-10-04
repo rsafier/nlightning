@@ -828,8 +828,11 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
     }
 
     private IReadOnlyList<CommitmentOutputDescriptor> FindToRemote(ChannelModel channel, ChainTx spend) =>
-        _commitmentOutputMapper.FindPaymentToRemote(spend, channel.LocalKeySet.PaymentCompactBasepoint,
-                                                    channel.ChannelParams.OptionAnchorOutputs);
+        channel.ChannelParams.OptionSimpleTaproot
+            ? _commitmentOutputMapper.FindSimpleTaprootPaymentToRemote(spend,
+                                                                       channel.LocalKeySet.PaymentCompactBasepoint)
+            : _commitmentOutputMapper.FindPaymentToRemote(spend, channel.LocalKeySet.PaymentCompactBasepoint,
+                                                          channel.ChannelParams.OptionAnchorOutputs);
 
     /// <summary>
     /// A revoked commitment: the point is <c>secret * G</c> with the peer's secret from our shachain; the spec comes

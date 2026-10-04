@@ -51,6 +51,7 @@ public sealed class OpenChannelClientHandler
     private readonly NodeOptions _nodeOptions;
     private readonly UpfrontShutdownScriptSource? _upfrontShutdownScriptSource;
     private readonly IDualFundedOpenService? _dualFundedOpenService;
+    private readonly ILightningSigner? _lightningSigner;
 
     private ChannelId _channelId = ChannelId.Zero;
     private ChannelId? _upgradedChannelId;
@@ -78,8 +79,10 @@ public sealed class OpenChannelClientHandler
                                     IAnchorReserveService? anchorReserveService = null,
                                     IChannelLockProvider? channelLockProvider = null,
                                     UpfrontShutdownScriptSource? upfrontShutdownScriptSource = null,
-                                    IDualFundedOpenService? dualFundedOpenService = null)
+                                    IDualFundedOpenService? dualFundedOpenService = null,
+                                    ILightningSigner? lightningSigner = null)
     {
+        _lightningSigner = lightningSigner;
         _dualFundedOpenService = dualFundedOpenService;
         _upfrontShutdownScriptSource = upfrontShutdownScriptSource;
         _channelLockProvider = channelLockProvider;
@@ -123,6 +126,9 @@ public sealed class OpenChannelClientHandler
         // Liquidity ads (NL-850): buying inbound liquidity rides on open_channel2, so it implies a v2 open
         CheckLiquidityRequest(request);
 
+        // Simple taproot channels (NL-877 T5): private, no liquidity purchase (NL-971)
+        CheckSimpleTaprootRequest(request);
+
         // NL-602 A3-T1: refused before anything is sent; stored with the channel's first save
         var labels = SourceLabelsGuard.Check(request.Label, request.Tags);
 
@@ -137,6 +143,11 @@ public sealed class OpenChannelClientHandler
         // Check if we're connected to the peer
         var peer = _peerManager.GetPeer(peerId)
                 ?? await _peerManager.ConnectToPeerAsync(new PeerAddressInfo(request.NodeInfo));
+
+        // Simple taproot channels (NL-877 T5): our advertisement, the peer's support and option_simple_close; the open
+        // then goes v1 or v2 by the NL-551 rules like any other (DualFundedOpenRequest.SimpleTaproot on v2)
+        if (request.IsSimpleTaproot)
+            CheckSimpleTaprootPeer(peer);
 
         // Wave DF: a dual-funded (v2) open negotiates the funding transaction interactively, our share from the wallet.
         // NL-551: it is the default when the peer supports it (Eclair refuses a v1 open once option_dual_fund is
@@ -242,14 +253,32 @@ public sealed class OpenChannelClientHandler
                                                                         : ChannelFlag.None);
 
             // Create the openChannel message
-            // funding_satoshis is the whole channel; the pushed part is only the peer's opening balance
-            var openChannel1Message = _messageFactory.CreateOpenChannel1Message(
-                channel.ChannelId, request.FundingAmount, channel.LocalKeySet.FundingCompactPubKey,
-                channel.RemoteBalance, channel.ChannelParams.Local, channel.ChannelParams.FeeRateAmountPerKw,
-                channel.LocalKeySet.RevocationCompactBasepoint,
-                channel.LocalKeySet.PaymentCompactBasepoint, channel.LocalKeySet.DelayedPaymentCompactBasepoint,
-                channel.LocalKeySet.HtlcCompactBasepoint, channel.LocalKeySet.CurrentPerCommitmentCompactPoint,
-                channelFlags, channelTypeTlv, upfrontShutdownScriptTlv);
+            // funding_satoshis is the whole channel; the pushed part is only the peer's opening balance. A simple
+            // taproot channel's carries next_local_nonce: our verification nonce for our commitment 0 (NL-877 T5)
+            var openChannel1Message = channel.ChannelParams.OptionSimpleTaproot
+                                          ? _messageFactory.CreateOpenChannel1Message(
+                                              channel.ChannelId, request.FundingAmount,
+                                              channel.LocalKeySet.FundingCompactPubKey, channel.RemoteBalance,
+                                              channel.ChannelParams.Local, channel.ChannelParams.FeeRateAmountPerKw,
+                                              channel.LocalKeySet.RevocationCompactBasepoint,
+                                              channel.LocalKeySet.PaymentCompactBasepoint,
+                                              channel.LocalKeySet.DelayedPaymentCompactBasepoint,
+                                              channel.LocalKeySet.HtlcCompactBasepoint,
+                                              channel.LocalKeySet.CurrentPerCommitmentCompactPoint, channelFlags,
+                                              channelTypeTlv, upfrontShutdownScriptTlv,
+                                              (_lightningSigner ?? throw new InvalidOperationException(
+                                                   "No signer for the simple taproot open"))
+                                             .GetLocalVerificationNonce(channel.LocalKeySet.KeyIndex, null, 0))
+                                          : _messageFactory.CreateOpenChannel1Message(
+                                              channel.ChannelId, request.FundingAmount,
+                                              channel.LocalKeySet.FundingCompactPubKey, channel.RemoteBalance,
+                                              channel.ChannelParams.Local, channel.ChannelParams.FeeRateAmountPerKw,
+                                              channel.LocalKeySet.RevocationCompactBasepoint,
+                                              channel.LocalKeySet.PaymentCompactBasepoint,
+                                              channel.LocalKeySet.DelayedPaymentCompactBasepoint,
+                                              channel.LocalKeySet.HtlcCompactBasepoint,
+                                              channel.LocalKeySet.CurrentPerCommitmentCompactPoint, channelFlags,
+                                              channelTypeTlv, upfrontShutdownScriptTlv);
 
             if (!peer.TryGetPeerService(out _peerService))
                 throw new ClientException(ErrorCodes.InvalidOperation, "Error getting peerService from peer");
@@ -369,6 +398,7 @@ public sealed class OpenChannelClientHandler
                                                     null, request.IsPublic)
         {
             Labels = labels,
+            SimpleTaproot = request.IsSimpleTaproot,
             Liquidity = request.RequestInboundSat is { } inbound
                             ? new LiquidityRequest(inbound, null, request.MaxLiquidityFeeSat)
                             : null
@@ -430,6 +460,47 @@ public sealed class OpenChannelClientHandler
         if (request.IsZeroConfChannel)
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       "Buying inbound liquidity (--request-inbound) can't be zero-conf");
+    }
+
+    /// <summary>
+    /// <c>openchannel --channel-type taproot</c> (NL-877 T5), before anything is looked up: a simple taproot channel is
+    /// private (the spec forbids <c>announce_channel</c>, taproot gossip is T7) and buys no liquidity (no
+    /// <c>--request-inbound</c>: liquidity ads are not wired for the taproot funding script and weight yet, NL-971). It
+    /// may open v1 or dual-funded (<c>--dual-fund</c>, or v2 by default by the NL-551 rules).
+    /// </summary>
+    internal static void CheckSimpleTaprootRequest(OpenChannelClientRequest request)
+    {
+        if (!request.IsSimpleTaproot)
+            return;
+
+        if (request.IsPublic)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      "Simple taproot channels are private: --public can't be used with "
+                                    + "--channel-type taproot");
+        if (request.RequestInboundSat is not null)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      "Buying inbound liquidity (--request-inbound) is not supported with "
+                                    + "--channel-type taproot yet (NL-971)");
+    }
+
+    /// <summary>
+    /// <c>openchannel --channel-type taproot</c> once the peer is connected: our <c>Features:OptionSimpleTaproot</c>
+    /// advertised (with <c>Features:AllowExperimentalFeatures</c>), the peer supporting it (bits 80/81) and
+    /// <c>option_simple_close</c>.
+    /// </summary>
+    private void CheckSimpleTaprootPeer(PeerModel peer)
+    {
+        if (!_nodeOptions.Features.IsSimpleTaprootAdvertised)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      "Simple taproot channels are not enabled on this node: set "
+                                    + "Features:OptionSimpleTaproot=Optional and Features:AllowExperimentalFeatures=true");
+        if (peer.NegotiatedFeatures.OptionSimpleTaproot == FeatureSupport.No)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      "The peer does not support simple taproot channels (feature bits 80/81)");
+        if (peer.NegotiatedFeatures.OptionSimpleClose == FeatureSupport.No)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      "A simple taproot channel needs option_simple_close, which the peer did not "
+                                    + "negotiate");
     }
 
     /// <summary>

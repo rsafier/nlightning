@@ -2420,8 +2420,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         var feerate = Math.Max(commitments.FeeratePerKw(CommitmentSide.Local), commitments.LatestFeeratePerKw);
         var untrimmed = CommitmentFeeCalculator.UntrimmedHtlcCount(commitments.LocalCommit.Spec,
                                                                    commitmentParams.Local.DustLimitSatoshis,
-                                                                   commitmentParams.OptionAnchors);
-        return CommitmentFeeCalculator.FunderCostSatoshis(feerate, commitmentParams.OptionAnchors, untrimmed + 1)
+                                                                   commitmentParams.Format);
+        return CommitmentFeeCalculator.FunderCostSatoshis(feerate, commitmentParams.Format, untrimmed + 1)
              * 1_000;
     }
 

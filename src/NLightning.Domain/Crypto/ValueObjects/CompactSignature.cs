@@ -18,6 +18,18 @@ public record CompactSignature : IValueObject
         Value = value;
     }
 
+    /// <summary>
+    /// A new all-zero 64-byte signature: the <c>signature</c> field of <c>funding_created</c>, <c>funding_signed</c> and
+    /// <c>commitment_signed</c> in a simple taproot channel, whose real signature is the MuSig2 partial signature in the
+    /// <c>partial_signature_with_nonce</c> TLV.
+    /// </summary>
+    public static CompactSignature Zero => new(new byte[CryptoConstants.MaxSignatureSize]);
+
+    /// <summary>
+    /// Whether this is the all-zero 64-byte placeholder of a simple taproot channel (<see cref="Zero"/>).
+    /// </summary>
+    public bool IsZero => Value.Length == CryptoConstants.MaxSignatureSize && !Value.AsSpan().ContainsAnyExcept((byte)0);
+
     public virtual bool Equals(CompactSignature? other)
     {
         if (other is null)

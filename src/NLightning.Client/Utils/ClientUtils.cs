@@ -49,6 +49,13 @@ public static class ClientUtils
         Console.WriteLine("                               bumpopen attempt), then waits for channel_ready unless");
         Console.WriteLine("                               --no-wait; Ctrl-C after the txid stops waiting, the open");
         Console.WriteLine("                               continues");
+        Console.WriteLine("             [--channel-type taproot|anchors]");
+        Console.WriteLine("                               taproot opens a private simple taproot channel (v1 or");
+        Console.WriteLine("                               dual-funded, no --request-inbound; experimental: needs");
+        Console.WriteLine("                               Features:OptionSimpleTaproot and");
+        Console.WriteLine("                               Features:AllowExperimentalFeatures, and a peer with");
+        Console.WriteLine("                               option_simple_taproot and option_simple_close) [default:");
+        Console.WriteLine("                               anchors]");
         Console.WriteLine("             [--request-inbound <sats> [--max-liquidity-fee <sats>]]");
         Console.WriteLine("                               --request-inbound buys that much inbound liquidity from the");
         Console.WriteLine("                               peer (liquidity ads; a dual-funded open, so no push_sats or");

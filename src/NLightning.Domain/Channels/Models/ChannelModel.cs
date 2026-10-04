@@ -172,6 +172,22 @@ public class ChannelModel
     public CompactSignature? LastSentSignature { get; private set; }
     public CompactSignature? LastReceivedSignature { get; private set; }
 
+    /// <summary>
+    /// Simple taproot channels (NL-877 T3): the peer's MuSig2 partial signature of our first commitment, with its
+    /// signing nonce (<c>funding_created</c>/<c>funding_signed</c> <c>partial_signature_with_nonce</c>), kept as
+    /// <see cref="LastReceivedSignature"/> is for the other channel types (which then holds no usable signature). Null
+    /// for every other channel type.
+    /// </summary>
+    public MusigPartialSignatureWithNonce? LastReceivedPartialSignature { get; private set; }
+
+    /// <summary>
+    /// Simple taproot channels, during a v1 open (NL-877 T5): the peer's <c>next_local_nonce</c> of its
+    /// <c>open_channel</c> (we are the fundee) or <c>accept_channel</c> (we are the funder), its verification nonce for
+    /// its commitment 0, which our <c>funding_signed</c>/<c>funding_created</c> partial signature is made against.
+    /// Memory only: the temporary channel it belongs to is never persisted.
+    /// </summary>
+    public MusigPublicNonce? RemoteOpeningNonce { get; set; }
+
     #endregion
 
     #region Local Information
@@ -262,7 +278,7 @@ public class ChannelModel
         ChannelParams = channelParams;
         ChannelId = channelId;
         CommitmentNumber = commitmentNumber;
-        FundingOutput = fundingOutput;
+        FundingOutput = MarkFormat(fundingOutput);
         IsInitiator = isInitiator;
         LastSentSignature = lastSentSignature;
         LastReceivedSignature = lastReceivedSignature;
@@ -354,7 +370,19 @@ public class ChannelModel
         if (FundingOutput is not null)
             throw new InvalidOperationException("Funding output already set");
 
-        FundingOutput = fundingOutput;
+        FundingOutput = MarkFormat(fundingOutput);
+    }
+
+    /// <summary>
+    /// A simple taproot channel's funding output is the MuSig2 P2TR one (<see cref="FundingOutputInfo.IsSimpleTaproot"/>,
+    /// NL-877 T5): set here, so every builder that reads the channel's funding output builds the right script.
+    /// </summary>
+    private FundingOutputInfo? MarkFormat(FundingOutputInfo? fundingOutput)
+    {
+        if (fundingOutput is not null && ChannelParams.OptionSimpleTaproot)
+            fundingOutput.IsSimpleTaproot = true;
+
+        return fundingOutput;
     }
 
     /// <summary>
@@ -369,7 +397,7 @@ public class ChannelModel
         if (FundingOutput is null)
             throw new InvalidOperationException("The channel has no funding output to replace");
 
-        FundingOutput = fundingOutput;
+        FundingOutput = MarkFormat(fundingOutput);
     }
 
     /// <summary>
@@ -395,7 +423,8 @@ public class ChannelModel
             throw new ArgumentException("The balances must add up to the funding output's amount",
                                         nameof(fundingOutput));
 
-        FundingOutput = fundingOutput;
+        // Callers build the attempt's output from its amount and keys alone: the format follows the channel (NL-979)
+        FundingOutput = MarkFormat(fundingOutput);
         _localBalance = localBalance;
         _remoteBalance = remoteBalance;
         ChannelParams = channelParams;
@@ -409,6 +438,12 @@ public class ChannelModel
     public void UpdateLastReceivedSignature(CompactSignature lastReceivedSignature)
     {
         LastReceivedSignature = lastReceivedSignature;
+    }
+
+    /// <summary>Sets <see cref="LastReceivedPartialSignature"/> (simple taproot channels).</summary>
+    public void UpdateLastReceivedPartialSignature(MusigPartialSignatureWithNonce? lastReceivedPartialSignature)
+    {
+        LastReceivedPartialSignature = lastReceivedPartialSignature;
     }
 
     /// <summary>
@@ -578,7 +613,9 @@ public class ChannelModel
             RemoteNodeId = RemoteNodeId,
             ShortChannelId = ((byte[]?)ShortChannelId)?.Length > 0 ? ShortChannelId : (ShortChannelId?)null,
             AnnounceChannel = AnnounceChannel,
-            LocalFundingKeyIndex = LocalFundingKeyIndex
+            LocalFundingKeyIndex = LocalFundingKeyIndex,
+            IsSimpleTaproot = ChannelParams.OptionSimpleTaproot,
+            IsDualFunded = Version == ChannelVersion.V2
         };
     }
 }

@@ -30,6 +30,19 @@ public sealed record UnsignedSweepTransaction(
 
         var input = Inputs[inputIndex];
         return new SweepSigningContext(Transaction.RawTxBytes, inputIndex, input.WitnessScript, input.AmountSat,
-                                       input.KeyKind, input.PerCommitmentPoint, input.PerCommitmentSecret);
+                                       input.KeyKind, input.PerCommitmentPoint, input.PerCommitmentSecret,
+                                       input.IsTaprootScriptPath ? GetSpentOutputs() : null);
     }
+
+    /// <summary>
+    /// Every output the transaction spends, in input order (a BIP 341 signature commits to all of them).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">An input does not carry its spent scriptPubKey.</exception>
+    public IReadOnlyList<Bitcoin.Wallet.Models.SpentOutput> GetSpentOutputs() =>
+        Inputs.Select(i => new Bitcoin.Wallet.Models.SpentOutput(
+                          i.TxId, i.Vout, Money.LightningMoney.Satoshis(i.AmountSat),
+                          new BitcoinScript(i.SpentScriptPubKey
+                                         ?? throw new InvalidOperationException(
+                                                $"Input {i.TxId}:{i.Vout} has no spent scriptPubKey"))))
+              .ToList();
 }

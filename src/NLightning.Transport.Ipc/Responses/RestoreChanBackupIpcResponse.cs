@@ -30,6 +30,7 @@ public sealed class RestoreChanBackupIpcResponse
                 RemoteNodeId = c.RemoteNodeId,
                 CapacitySat = c.CapacitySat,
                 OptionAnchors = c.OptionAnchors,
+                OptionSimpleTaproot = c.OptionSimpleTaproot,
                 Outcome = c.Outcome,
                 Detail = c.Detail
             }).ToList(),
@@ -54,6 +55,9 @@ public sealed class ChanRestoreChannelIpcInfo
     [Key(3)] public bool OptionAnchors { get; init; }
     [Key(4)] public required string Outcome { get; init; }
     [Key(5)] public required string Detail { get; init; }
+
+    /// <summary>Whether it is a simple taproot channel (NL-877 T5).</summary>
+    [Key(6)] public bool OptionSimpleTaproot { get; init; }
 }
 
 /// <summary>One peer of a <see cref="RestoreChanBackupIpcResponse"/>.</summary>

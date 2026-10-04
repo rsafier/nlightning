@@ -26,7 +26,8 @@ public class FundingCreatedMessageTests
     private const string MessageHex = TemporaryChannelIdHex + FundingTxIdHex + FundingOutputIndexHex + SignatureHex;
 
     private readonly FundingCreatedMessageTypeSerializer _serializer =
-        new(SerializerHelper.PayloadSerializerFactory);
+        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
+            SerializerHelper.TlvStreamSerializer);
 
     [Fact]
     public async Task Given_SpecShapedBytes_When_DeserializeAsync_Then_AllFieldsAreDecoded()

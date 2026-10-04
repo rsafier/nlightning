@@ -12,9 +12,10 @@ using Domain.Protocol.ValueObjects;
 using Models;
 
 /// <summary>
-/// The plaintext of a static channel backup (version 1), all integers big-endian:
+/// The plaintext of a static channel backup (version 1, or 2 when it holds a simple taproot channel), all integers
+/// big-endian:
 /// <code>
-/// u8 version (1) | 32 chain_hash | 33 node_id | u64 created_at (unix seconds) | u16 channel_count
+/// u8 version (1 or 2) | 32 chain_hash | 33 node_id | u64 created_at (unix seconds) | u16 channel_count
 /// channel_count x (u16 record_length | record)
 /// record: 32 channel_id | 33 remote_node_id | 32 funding_txid | u16 funding_output_index | u64 capacity_sat
 ///         | u32 funding_height | u64 short_channel_id (0: none) | u8 flags | u8 channel_version | u8 use_scid_alias
@@ -25,7 +26,8 @@ using Models;
 /// party:   u64 dust_limit_sat | u64 channel_reserve_sat | u64 htlc_minimum_msat | u16 max_accepted_htlcs
 ///         | u64 max_htlc_value_in_flight_msat | u16 to_self_delay
 /// address: u8 type_length | type (UTF-8) | u8 host_length | host (UTF-8) | u16 port
-/// flags:   bit 0 initiator, bit 1 option_anchors, bit 2 announced, bit 3 inferred params
+/// flags:   bit 0 initiator, bit 1 option_anchors, bit 2 announced, bit 3 inferred params, bit 4 simple taproot
+///          (version 2 only)
 /// then, since the splicing revision (still version 1, trailing fields):
 ///         | u32 local_funding_key_index | u8 pending_count | pending_count x pending
 /// pending: 32 txid | u16 output_index | u64 capacity_sat | u32 local_funding_key_index | 33 local_funding_pubkey
@@ -42,16 +44,26 @@ using Models;
 /// version stays 1: an older reader skips them, and its key check refuses a spliced channel's rotated funding key
 /// rather than restoring it with the wrong one.
 /// </para>
+/// <para>
+/// Simple taproot channels (NL-877 T5): a backup that holds one is written as version 2, with flag bit 4 on its
+/// records; the layout is version 1's. A reader that predates it refuses the version instead of ignoring the unknown
+/// flag bit, which would restore a taproot channel as an anchors one (P2WSH scripts its sweeps can't spend). A backup
+/// without taproot channels stays version 1, so older nodes still read it.
+/// </para>
 /// </summary>
 public static class ChannelBackupCodec
 {
-    /// <summary>The plaintext version this codec writes and reads.</summary>
+    /// <summary>The plaintext version this codec writes when no channel is a simple taproot channel.</summary>
     public const byte Version = 1;
+
+    /// <summary>The plaintext version this codec writes when a channel is a simple taproot channel (NL-877 T5).</summary>
+    public const byte TaprootVersion = 2;
 
     private const byte FlagInitiator = 1;
     private const byte FlagAnchors = 2;
     private const byte FlagAnnounced = 4;
     private const byte FlagInferredParams = 8;
+    private const byte FlagSimpleTaproot = 16;
 
     private const int PubKeyLength = CryptoConstants.CompactPubkeyLen;
     private const int HashLength = CryptoConstants.Sha256HashLen;
@@ -66,7 +78,7 @@ public static class ChannelBackupCodec
             throw new ArgumentException($"A backup holds at most {ushort.MaxValue} channels.", nameof(snapshot));
 
         var writer = new Writer();
-        writer.Byte(Version);
+        writer.Byte(snapshot.Channels.Any(c => c.OptionSimpleTaproot) ? TaprootVersion : Version);
         writer.Bytes(snapshot.ChainHash, HashLength);
         writer.Bytes(snapshot.NodeId, PubKeyLength);
         writer.U64((ulong)Math.Max(0, snapshot.CreatedAt.ToUnixTimeSeconds()));
@@ -92,7 +104,7 @@ public static class ChannelBackupCodec
     {
         var reader = new Reader(plaintext);
         var version = reader.Byte();
-        if (version != Version)
+        if (version is not (Version or TaprootVersion))
             throw new ChannelBackupFormatException($"Unknown channel backup version {version}.");
 
         var chainHash = new ChainHash(reader.Bytes(HashLength));
@@ -107,7 +119,7 @@ public static class ChannelBackupCodec
         for (var i = 0; i < count; i++)
         {
             var length = reader.U16();
-            var channel = DecodeRecord(reader.Bytes(length));
+            var channel = DecodeRecord(reader.Bytes(length), version);
             if (!seen.Add(channel.ChannelId))
                 throw new ChannelBackupFormatException($"Channel {channel.ChannelId} is in the backup twice.");
 
@@ -135,7 +147,8 @@ public static class ChannelBackupCodec
         var flags = (byte)((channel.IsInitiator ? FlagInitiator : 0)
                          | (channel.OptionAnchorOutputs ? FlagAnchors : 0)
                          | (channel.AnnounceChannel ? FlagAnnounced : 0)
-                         | (channel.HasInferredParams ? FlagInferredParams : 0));
+                         | (channel.HasInferredParams ? FlagInferredParams : 0)
+                         | (channel.OptionSimpleTaproot ? FlagSimpleTaproot : 0));
         writer.Byte(flags);
         writer.Byte((byte)channel.Version);
         writer.Byte((byte)channel.UseScidAlias);
@@ -188,7 +201,7 @@ public static class ChannelBackupCodec
         return writer.ToArray();
     }
 
-    private static ChannelBackupEntry DecodeRecord(ReadOnlySpan<byte> record)
+    private static ChannelBackupEntry DecodeRecord(ReadOnlySpan<byte> record, byte version)
     {
         var reader = new Reader(record);
         var channelId = new ChannelId(reader.Bytes(HashLength));
@@ -199,9 +212,12 @@ public static class ChannelBackupCodec
         var fundingHeight = reader.U32();
         var scid = reader.U64();
         var flags = reader.Byte();
-        var version = reader.Byte();
-        if (!Enum.IsDefined(typeof(ChannelVersion), version))
-            throw new ChannelBackupFormatException($"Unknown channel version {version}.");
+        var channelVersion = reader.Byte();
+        if (!Enum.IsDefined(typeof(ChannelVersion), channelVersion))
+            throw new ChannelBackupFormatException($"Unknown channel version {channelVersion}.");
+
+        // Bit 4 means simple taproot only in a version 2 backup (version 1 readers ignore unknown bits)
+        var simpleTaproot = version >= TaprootVersion && (flags & FlagSimpleTaproot) != 0;
 
         var scidAlias = reader.Byte();
         if (!Enum.IsDefined(typeof(FeatureSupport), scidAlias))
@@ -262,7 +278,8 @@ public static class ChannelBackupCodec
             OptionAnchorOutputs = (flags & FlagAnchors) != 0,
             AnnounceChannel = (flags & FlagAnnounced) != 0,
             HasInferredParams = (flags & FlagInferredParams) != 0,
-            Version = (ChannelVersion)version,
+            OptionSimpleTaproot = simpleTaproot,
+            Version = (ChannelVersion)channelVersion,
             UseScidAlias = (FeatureSupport)scidAlias,
             MinimumDepth = minimumDepth,
             ChannelType = channelType,

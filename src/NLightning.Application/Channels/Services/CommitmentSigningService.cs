@@ -2,6 +2,7 @@ namespace NLightning.Application.Channels.Services;
 
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.Transactions.Extensions;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
@@ -10,6 +11,7 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Models;
 using Domain.Channels.Splicing;
 using Domain.Crypto.ValueObjects;
+using Domain.Exceptions;
 using Domain.Money;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 
@@ -65,12 +67,23 @@ public sealed class CommitmentSigningService
     /// <param name="spec">The commitment content for that funding (its balances already shifted by the engine).</param>
     /// <param name="remoteCommitmentNumber">The number of the remote commitment being signed.</param>
     /// <param name="remotePerCommitmentPoint">The peer's per-commitment point for that commitment.</param>
+    /// <param name="remoteVerificationNonce">Simple taproot channels (NL-877 T3): the peer's verification nonce for
+    /// that commitment on that funding; the commitment is then signed with a MuSig2 partial signature
+    /// (<see cref="ILightningSigner.SignRemoteCommitmentPartial"/>) and the returned <c>Signature</c> is the zero
+    /// signature. Ignored (null) for the other channel types.</param>
+    /// <exception cref="Domain.Exceptions.SignerException">A simple taproot channel without
+    /// <paramref name="remoteVerificationNonce"/>, or the signer refused.</exception>
     public CommitmentTxSignatures SignRemoteCommitment(ChannelModel channel, ChannelFunding? funding,
                                                      CommitmentTxSpec spec, ulong remoteCommitmentNumber,
-                                                     CompactPubKey remotePerCommitmentPoint)
+                                                     CompactPubKey remotePerCommitmentPoint,
+                                                     MusigPublicNonce? remoteVerificationNonce = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
         ArgumentNullException.ThrowIfNull(spec);
+        var isTaproot = channel.ChannelParams.CommitmentFormat.IsTaproot();
+        if (isTaproot && remoteVerificationNonce is null)
+            throw new SignerException("Signing the peer's simple taproot commitment needs its verification nonce",
+                                      channel.ChannelId);
 
         var model = _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(
             channel, spec, CommitmentSide.Remote, remoteCommitmentNumber, remotePerCommitmentPoint);
@@ -78,6 +91,22 @@ public sealed class CommitmentSigningService
         if (otherFunding is not null)
             model = WithFunding(model, otherFunding, CommitmentSide.Remote);
         var built = _commitmentTransactionBuilder.BuildWithOutputMap(model);
+
+        if (isTaproot)
+        {
+            // MuSig2 (bolt-simple-taproot.md): our partial signature with a fresh signing nonce, against the peer's
+            // verification nonce; the 64-byte signature field is all zeros
+            var partial = _lightningSigner.SignRemoteCommitmentPartial(channel.ChannelId, otherFunding?.FundingTxId,
+                                                                       built.Transaction,
+                                                                       remoteVerificationNonce!.Value);
+            var taprootHtlcSignatures =
+                _lightningSigner.SignRemoteHtlcTransactions(channel.ChannelId, BuildHtlcSigningContexts(model, built));
+            return new CommitmentTxSignatures(built.Transaction.TxId, CommitmentSignatures.ZeroSignature,
+                                              taprootHtlcSignatures)
+            {
+                PartialSignature = partial
+            };
+        }
 
         var signature = otherFunding is null
                             ? _lightningSigner.SignChannelTransaction(channel.ChannelId, built.Transaction)
@@ -107,15 +136,30 @@ public sealed class CommitmentSigningService
     /// </summary>
     /// <exception cref="Domain.Exceptions.SignerException">A signature is missing, malformed, high-S or invalid, or
     /// the funding is not one the signer knows.</exception>
+    /// <param name="channel">The channel (static data).</param>
+    /// <param name="funding">The funding the commitment spends (null or the current funding: the single-funding path).</param>
+    /// <param name="spec">The commitment content.</param>
+    /// <param name="localCommitmentNumber">Our commitment number.</param>
+    /// <param name="signature">The peer's commitment signature (the zero signature on a simple taproot channel).</param>
+    /// <param name="htlcSignatures">The peer's HTLC signatures, in commitment output order.</param>
+    /// <param name="partialSignature">Simple taproot channels (NL-877 T3): the peer's MuSig2 partial signature with its
+    /// signing nonce, checked against our verification nonce for <paramref name="localCommitmentNumber"/>
+    /// (<see cref="ILightningSigner.ValidateLocalCommitmentPartialSignature"/>) instead of
+    /// <paramref name="signature"/>; required for such a channel, ignored for the others.</param>
     public CommitmentTxSignatures VerifyLocalCommitment(ChannelModel channel, ChannelFunding? funding,
                                                       CommitmentTxSpec spec, ulong localCommitmentNumber,
                                                       CompactSignature signature,
-                                                      IReadOnlyList<CompactSignature> htlcSignatures)
+                                                      IReadOnlyList<CompactSignature> htlcSignatures,
+                                                      MusigPartialSignatureWithNonce? partialSignature = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
         ArgumentNullException.ThrowIfNull(spec);
         ArgumentNullException.ThrowIfNull(signature);
         ArgumentNullException.ThrowIfNull(htlcSignatures);
+        var isTaproot = channel.ChannelParams.CommitmentFormat.IsTaproot();
+        if (isTaproot && partialSignature is null)
+            throw new SignerException("The peer's simple taproot commitment_signed has no partial signature",
+                                      channel.ChannelId);
 
         var model = _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(
             channel, spec, CommitmentSide.Local, localCommitmentNumber);
@@ -124,7 +168,11 @@ public sealed class CommitmentSigningService
             model = WithFunding(model, otherFunding, CommitmentSide.Local);
         var built = _commitmentTransactionBuilder.BuildWithOutputMap(model);
 
-        if (otherFunding is null)
+        if (isTaproot)
+            _lightningSigner.ValidateLocalCommitmentPartialSignature(channel.ChannelId, otherFunding?.FundingTxId,
+                                                                     localCommitmentNumber, partialSignature!.Value,
+                                                                     built.Transaction);
+        else if (otherFunding is null)
             _lightningSigner.ValidateSignature(channel.ChannelId, signature, built.Transaction);
         else
             _lightningSigner.ValidateSignature(channel.ChannelId, otherFunding.FundingTxId, signature,
@@ -132,7 +180,10 @@ public sealed class CommitmentSigningService
         _lightningSigner.ValidateLocalHtlcSignatures(channel.ChannelId, BuildHtlcSigningContexts(model, built),
                                                      htlcSignatures);
 
-        return new CommitmentTxSignatures(built.Transaction.TxId, signature, htlcSignatures.ToList());
+        return new CommitmentTxSignatures(built.Transaction.TxId, signature, htlcSignatures.ToList())
+        {
+            PartialSignature = isTaproot ? partialSignature : null
+        };
     }
 
     /// <summary>

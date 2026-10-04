@@ -15,11 +15,19 @@ public sealed class ClosingCompleteMessage : BaseChannelMessage
     /// <summary>The <c>closing_tlvs</c>: the closer's signatures.</summary>
     public ClosingSignatures Signatures { get; }
 
-    public ClosingCompleteMessage(ClosingCompletePayload payload, ClosingSignatures signatures)
+    /// <summary>
+    /// The simple taproot <c>closing_tlvs</c> (types 5, 6 and 7): the closer's MuSig2 partial signatures, each with its
+    /// closer nonce. Empty on other channels.
+    /// </summary>
+    public ClosingPartialSignaturesWithNonce PartialSignatures { get; }
+
+    public ClosingCompleteMessage(ClosingCompletePayload payload, ClosingSignatures signatures,
+                                  ClosingPartialSignaturesWithNonce? partialSignatures = null)
         : base(MessageTypes.ClosingComplete, payload)
     {
         ArgumentNullException.ThrowIfNull(signatures);
         Signatures = signatures;
-        Extension = SimpleClosingTlvs.ToStream(signatures);
+        PartialSignatures = partialSignatures ?? new ClosingPartialSignaturesWithNonce();
+        Extension = SimpleClosingTlvs.ToStream(signatures, PartialSignatures);
     }
 }

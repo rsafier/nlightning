@@ -14,7 +14,8 @@ public class TxCompleteMessageTests
     public TxCompleteMessageTests()
     {
         _txCompleteMessageTypeSerializer =
-            new TxCompleteMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
+            new TxCompleteMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
+                                                SerializerHelper.TlvStreamSerializer);
     }
 
     [Fact]

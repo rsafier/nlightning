@@ -31,11 +31,14 @@ public sealed class SweepSchedulerTests
 {
     private const uint SweepTarget = 6;
 
-    [Fact]
-    public async Task Given_NotConfirmedAfterInterval_Then_ReplacedWithHigherFee()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_NotConfirmedAfterInterval_Then_ReplacedWithHigherFee(bool simpleTaproot)
     {
-        // Arrange: our to_local swept at the CSV, then the sweep stays out of every block
-        using var harness = new LocalCommitResolutionHarness();
+        // Arrange: our to_local swept at the CSV, then the sweep stays out of every block (a simple taproot channel
+        // re-signs its script-path input with BIP 340 over every spent output, NL-877 T4)
+        using var harness = new LocalCommitResolutionHarness(simpleTaproot: simpleTaproot);
         var scheduler = CreateScheduler(harness);
         await harness.ResolveAsync();
         var toLocal = harness.VoutOf(OutputDescriptorKind.DelayedToLocal);

@@ -27,6 +27,7 @@ using Domain.Protocol.Tlv;
 using Gossip.Announcements.Interfaces;
 using Services;
 using Splicing.Interfaces;
+using Taproot;
 
 /// <summary>
 /// Builds our <c>channel_reestablish</c> and checks the peer's secret against our own per-commitment points (BOLT2
@@ -95,14 +96,17 @@ public sealed class ReestablishService
     /// Our <c>channel_reestablish</c> (B2-RE-08..12): <c>next_commitment_number</c> = L + 1,
     /// <c>next_revocation_number</c> = R, the peer's last secret (R - 1, from its persisted shachain; zeroes when
     /// R = 0), our point for commitment L, <c>next_funding</c> while the signing of our latest interactive transaction
-    /// is not finished (SP-RE-01) and, with <c>option_splice</c>, <c>my_current_funding_locked</c> (SP-RE-02).
+    /// is not finished (SP-RE-01), with <c>option_splice</c>, <c>my_current_funding_locked</c> (SP-RE-02), and for a
+    /// simple taproot open still missing the peer's <c>commitment_signed</c> our <c>current_commit_nonce</c> (BOLTs
+    /// PR #1324 type 24: the verification nonce of our commitment 0 on that funding, the one the peer re-signs against).
     /// </summary>
     /// <exception cref="InvalidOperationException">The peer's shachain does not hold secret R - 1.</exception>
     public async Task<ChannelReestablishMessage> CreateOwnAsync(ChannelModel channel,
                                                                 FeatureOptions? negotiatedFeatures = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
-        var own = ReestablishPlanner.CreateOwn(await GetLocalStateAsync(channel, negotiatedFeatures));
+        var localState = await GetLocalStateAsync(channel, negotiatedFeatures);
+        var own = ReestablishPlanner.CreateOwn(localState);
 
         var secret = new byte[ReestablishPlanner.SecretLength];
         if (own.LastReceivedSecretNumber is { } secretNumber)
@@ -129,7 +133,16 @@ public sealed class ReestablishService
 
         var reestablish = _messageFactory.CreateChannelReestablishMessage(channel.ChannelId, own.NextCommitmentNumber,
                                                                          own.NextRevocationNumber, secret, point);
-        if (own.NextFunding is null && own.MyCurrentFundingLocked is null)
+
+        // Simple taproot channels (NL-877 T3): next_local_nonces, per active funding our verification nonce for the
+        // commitment the peer signs next (our next_commitment_number), counter-derived (LND reads only this map), and,
+        // while the peer's commitment_signed of a dual-funded open is missing, current_commit_nonce (type 24, lane V2)
+        var nonces = channel.ChannelParams.OptionSimpleTaproot
+                         ? TaprootChannelNonces.CreateLocalNonces(_lightningSigner, channel, own.NextCommitmentNumber)
+                         : null;
+        var currentCommitNonce = GetCurrentCommitNonce(channel, localState);
+        if (own.NextFunding is null && own.MyCurrentFundingLocked is null && nonces is null
+         && currentCommitNonce is null)
             return reestablish;
 
         return new ChannelReestablishMessage(
@@ -139,7 +152,34 @@ public sealed class ReestablishService
                 : null,
             own.MyCurrentFundingLocked is { } fundingLocked
                 ? new MyCurrentFundingLockedTlv(fundingLocked.TxId, fundingLocked.RetransmitFlags)
-                : null);
+                : null,
+            nonces is null ? null : new NextLocalNoncesTlv(nonces),
+            currentCommitNonce is { } nonce ? new CurrentCommitNonceTlv(nonce) : null);
+    }
+
+    /// <summary>
+    /// BOLTs PR #1324 <c>current_commit_nonce</c> (Eclair <c>InteractiveTxBuilder</c> 1243-1247): sent only while the
+    /// peer's <c>commitment_signed</c> of an unsigned interactive transaction is missing, here a simple taproot
+    /// dual-funded open (splices of taproot channels are refused in wave t02): our verification nonce of the commitment
+    /// the peer must sign again, on that funding. Null otherwise, or when the signer cannot derive it (logged).
+    /// </summary>
+    private MusigPublicNonce? GetCurrentCommitNonce(ChannelModel channel, ReestablishLocalState localState)
+    {
+        if (!channel.ChannelParams.OptionSimpleTaproot
+         || localState.LatestInteractiveTx is not { IsSplice: false, CommitmentSignedReceived: false } pending)
+            return null;
+
+        try
+        {
+            return _lightningSigner.GetLocalVerificationNonce(channel.ChannelId, pending.TxId,
+                                                              channel.LocalCommitmentNumber);
+        }
+        catch (Exception e) when (e is Domain.Exceptions.SignerException or InvalidOperationException)
+        {
+            _logger.LogWarning(e, "No current_commit_nonce for funding {TxId} of channel {ChannelId}", pending.TxId,
+                               channel.ChannelId);
+            return null;
+        }
     }
 
     /// <summary>

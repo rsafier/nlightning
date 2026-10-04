@@ -120,7 +120,8 @@ public static class RecoveryChannels
                                               entry.UseScidAlias)
         {
             AnnounceChannel = entry.AnnounceChannel,
-            HasInferredParams = entry.HasInferredParams
+            HasInferredParams = entry.HasInferredParams,
+            OptionSimpleTaproot = entry.OptionSimpleTaproot
         };
 
         var capacity = LightningMoney.Satoshis(entry.CapacitySat);
@@ -193,13 +194,20 @@ public static class RecoveryChannels
     /// the channel and broadcast its latest commitment, B2-RE-14), <c>next_revocation_number</c> 0 and an all-zero
     /// <c>your_last_per_commitment_secret</c> (we know no secret of the peer). <paramref name="currentPoint"/> fills
     /// <c>my_current_per_commitment_point</c>; our real current point is unknown, and a <c>static_remotekey</c> or
-    /// anchors <c>to_remote</c> does not depend on it.
+    /// anchors <c>to_remote</c> does not depend on it. A simple taproot channel's carries
+    /// <paramref name="nextLocalNonces"/> (NL-974): the peer checks the map before the numbers (LND 0.21 answers a
+    /// taproot <c>channel_reestablish</c> without it with a link failure that never force-closes, Eclair with
+    /// <c>MissingCommitNonce</c>), and nothing ever signs with it (the channel lost data).
     /// </summary>
     public static ChannelReestablishMessage CreateDataLossReestablish(IMessageFactory messageFactory,
                                                                       ChannelId channelId,
-                                                                      CompactPubKey currentPoint)
+                                                                      CompactPubKey currentPoint,
+                                                                      FundingNonces? nextLocalNonces = null)
     {
         ArgumentNullException.ThrowIfNull(messageFactory);
-        return messageFactory.CreateChannelReestablishMessage(channelId, 0, 0, new byte[32], currentPoint);
+        return nextLocalNonces is null
+                   ? messageFactory.CreateChannelReestablishMessage(channelId, 0, 0, new byte[32], currentPoint)
+                   : messageFactory.CreateChannelReestablishMessage(channelId, 0, 0, new byte[32], currentPoint,
+                                                                    nextLocalNonces);
     }
 }

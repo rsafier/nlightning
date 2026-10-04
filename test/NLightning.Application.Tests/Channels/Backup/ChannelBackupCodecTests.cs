@@ -35,6 +35,52 @@ public class ChannelBackupCodecTests
     }
 
     [Fact]
+    public void Given_ASimpleTaprootChannel_When_EncodedAndDecoded_Then_VersionTwoAndTheTaprootFlagRoundTrips()
+    {
+        // Arrange (NL-877 T5)
+        var data = new BackupTestData();
+        var taproot = data.AddChannel(3, scid: new ShortChannelId(700_200, 7, 0), simpleTaproot: true);
+        var anchors = data.AddChannel(4, anchors: true);
+        var snapshot = BackupTestData.SampleSnapshot() with
+        {
+            Channels =
+            [
+                ChannelBackupService.CreateEntry(taproot, data.Peers[0]),
+                ChannelBackupService.CreateEntry(anchors, data.Peers[1])
+            ]
+        };
+
+        // Act
+        var encoded = ChannelBackupCodec.Encode(snapshot);
+        var decoded = ChannelBackupCodec.Decode(encoded);
+
+        // Assert: version 2 (a reader that predates taproot refuses it rather than restore an anchors channel)
+        Assert.Equal(ChannelBackupCodec.TaprootVersion, encoded[0]);
+        Assert.True(decoded.Channels[0].OptionSimpleTaproot);
+        Assert.True(decoded.Channels[0].OptionAnchorOutputs);
+        Assert.False(decoded.Channels[1].OptionSimpleTaproot);
+        for (var i = 0; i < snapshot.Channels.Count; i++)
+            BackupTestData.AssertSameEntry(snapshot.Channels[i], decoded.Channels[i]);
+    }
+
+    [Fact]
+    public void Given_ABackupWithoutTaprootChannels_When_Encoded_Then_ItStaysVersionOneAndFlagBit4IsIgnoredThere()
+    {
+        // Arrange: older nodes keep reading backups without taproot channels
+        var encoded = ChannelBackupCodec.Encode(BackupTestData.SampleSnapshot());
+        const int firstFlagsOffset = 1 + 32 + 33 + 8 + 2 + 2 + 32 + 33 + 32 + 2 + 8 + 4 + 8;
+
+        // Act: a version 1 record whose unknown flag bit 4 is set (an old writer never sets it)
+        encoded[firstFlagsOffset] |= 16;
+        var decoded = ChannelBackupCodec.Decode(encoded);
+
+        // Assert
+        Assert.Equal(ChannelBackupCodec.Version, encoded[0]);
+        Assert.False(decoded.Channels[0].OptionSimpleTaproot);
+        Assert.True(decoded.Channels[0].OptionAnchorOutputs);
+    }
+
+    [Fact]
     public void Given_AnEmptySnapshot_When_EncodedAndDecoded_Then_ItHasNoChannels()
     {
         // Arrange
@@ -78,11 +124,11 @@ public class ChannelBackupCodecTests
     {
         // Arrange
         var encoded = ChannelBackupCodec.Encode(BackupTestData.SampleSnapshot());
-        encoded[0] = 2;
+        encoded[0] = 3;
 
         // Act / Assert
         var e = Assert.Throws<ChannelBackupFormatException>(() => ChannelBackupCodec.Decode(encoded));
-        Assert.Contains("version 2", e.Message);
+        Assert.Contains("version 3", e.Message);
     }
 
     [Fact]

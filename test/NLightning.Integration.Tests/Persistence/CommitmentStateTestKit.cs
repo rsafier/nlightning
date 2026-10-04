@@ -30,6 +30,8 @@ internal sealed class CommitmentDanceDriver
     public const byte PeerTag = 0xB0;
 
     private readonly Random _rng;
+    private readonly bool _taproot;
+    private readonly TxId? _fundingTxId;
     private readonly FakeRevocationVerifier _revocationVerifier = new();
     private readonly FakeCommitmentVerifier _verifier = new();
     private readonly FakeSha256 _sha256 = new();
@@ -45,15 +47,52 @@ internal sealed class CommitmentDanceDriver
                                  ulong peerCommitmentNumber = 0, int seed = 1)
     {
         _rng = new Random(seed);
+        _taproot = usParams.OptionSimpleTaproot;
         var peerParams = new CommitmentParams(!usParams.LocalIsFunder, usParams.FundingSatoshis,
                                               usParams.OptionAnchors, usParams.Remote, usParams.Local);
+        if (_taproot)
+        {
+            // Simple taproot (NL-877 T3): both engines know the funding, keyed by its txid for the nonces
+            var funding = usParams.Funding ?? throw new ArgumentException("A taproot dance needs the funding");
+            _fundingTxId = funding.FundingTxId;
+            peerParams = peerParams with
+            {
+                OptionSimpleTaproot = true,
+                Funding = funding with
+                {
+                    LocalFundingPubKey = funding.RemoteFundingPubKey,
+                    RemoteFundingPubKey = funding.LocalFundingPubKey
+                }
+            };
+        }
+
         Us = ChannelCommitments.Create(channelId, usParams, usBalanceMsat, peerBalanceMsat, feeratePerKw,
                                        Point(PeerTag, peerCommitmentNumber), Point(PeerTag, peerCommitmentNumber + 1),
-                                       Signatures(0, 0), usCommitmentNumber, peerCommitmentNumber);
+                                       Signatures(0, 0, _taproot), usCommitmentNumber, peerCommitmentNumber,
+                                       _taproot ? Nonce(PeerTag, peerCommitmentNumber + 1) : null);
         Peer = ChannelCommitments.Create(channelId, peerParams, peerBalanceMsat, usBalanceMsat, feeratePerKw,
                                          Point(UsTag, usCommitmentNumber), Point(UsTag, usCommitmentNumber + 1),
-                                         Signatures(0, 0), peerCommitmentNumber, usCommitmentNumber);
+                                         Signatures(0, 0, _taproot), peerCommitmentNumber, usCommitmentNumber,
+                                         _taproot ? Nonce(UsTag, usCommitmentNumber + 1) : null);
     }
+
+    /// <summary>
+    /// Simple taproot: a stand-in for <paramref name="node"/>'s verification nonce of its commitment
+    /// <paramref name="number"/>.
+    /// </summary>
+    public static MusigPublicNonce Nonce(byte node, ulong number)
+    {
+        var bytes = new byte[66];
+        bytes[0] = 0x02;
+        bytes[1] = node;
+        BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(2), number);
+        bytes[33] = 0x03;
+        return new MusigPublicNonce(bytes);
+    }
+
+    /// <summary>The <c>next_local_nonces</c> map of <paramref name="node"/> for its commitment <paramref name="number"/>.</summary>
+    private Dictionary<TxId, MusigPublicNonce>? NoncesFor(byte node, ulong number) =>
+        _taproot ? new Dictionary<TxId, MusigPublicNonce> { [_fundingTxId!.Value] = Nonce(node, number) } : null;
 
     /// <summary>Wire-like bytes standing in for the diff we sent with our last <c>commitment_signed</c>.</summary>
     public static byte[] DiffFor(ulong remoteCommitmentNumber) =>
@@ -227,7 +266,7 @@ internal sealed class CommitmentDanceDriver
         if (!Us.CanSendCommit || _pendingRevokeForUs is not null)
             return null;
 
-        var signer = new FakeCommitmentSigner(Us.Params.Remote.DustLimitSatoshis, Us.Params.OptionAnchors);
+        var signer = new FakeCommitmentSigner(Us.Params.Remote.DustLimitSatoshis, Us.Params.Format);
         var result = Us.SendCommit(signer);
         // With a pending splice the batch carries one per funding, the current funding's first; the peer's engine
         // does not follow splices
@@ -245,13 +284,14 @@ internal sealed class CommitmentDanceDriver
         if (!Peer.CanSendCommit || _pendingRevokeForUs is not null)
             return null;
 
-        var signer = new FakeCommitmentSigner(Peer.Params.Remote.DustLimitSatoshis, Peer.Params.OptionAnchors);
+        var signer = new FakeCommitmentSigner(Peer.Params.Remote.DustLimitSatoshis, Peer.Params.Format);
         var sent = Peer.SendCommit(signer);
         var cs = sent.Outbound.OfType<OutboundCommitmentSigned>().Single();
         var result = Us.ReceiveCommit(cs.Signatures, _verifier);
         var raa = result.Outbound.OfType<OutboundRevokeAndAck>().Single();
         Peer = sent.Next.ReceiveRevoke(SecretFor(UsTag, raa.RevokedCommitmentNumber),
-                                       Point(UsTag, raa.NextCommitmentNumber), _revocationVerifier).Next;
+                                       Point(UsTag, raa.NextCommitmentNumber), _revocationVerifier,
+                                       NoncesFor(UsTag, raa.NextCommitmentNumber)).Next;
         Us = result.Next;
         return result;
     }
@@ -263,7 +303,8 @@ internal sealed class CommitmentDanceDriver
             return null;
 
         var result = Us.ReceiveRevoke(SecretFor(PeerTag, raa.RevokedCommitmentNumber),
-                                      Point(PeerTag, raa.NextCommitmentNumber), _revocationVerifier);
+                                      Point(PeerTag, raa.NextCommitmentNumber), _revocationVerifier,
+                                      NoncesFor(PeerTag, raa.NextCommitmentNumber));
         _pendingRevokeForUs = null;
         Us = result.Next;
         return result;
@@ -284,7 +325,7 @@ internal sealed class CommitmentDanceDriver
     {
         var htlcCount = CommitmentFeeCalculator.UntrimmedHtlcCount(Us.BuildSpec(CommitmentSide.Local, funding),
                                                                    Us.Params.Local.DustLimitSatoshis,
-                                                                   Us.Params.OptionAnchors);
+                                                                   Us.Params.Format);
         var result = Us.ReceiveSpliceCommitment(funding, Signatures(0x5C, htlcCount), _verifier);
         Us = result.Next;
         return result;
@@ -349,8 +390,19 @@ internal sealed class CommitmentDanceDriver
         return onion;
     }
 
-    internal static CommitmentSignatures Signatures(byte tag, int htlcCount) =>
-        new(Signature(tag), Enumerable.Range(0, htlcCount).Select(i => Signature((byte)(tag + i + 1))).ToList());
+    internal static CommitmentSignatures Signatures(byte tag, int htlcCount, bool taproot = false)
+    {
+        var htlcSignatures = Enumerable.Range(0, htlcCount).Select(i => Signature((byte)(tag + i + 1))).ToList();
+        if (!taproot)
+            return new CommitmentSignatures(Signature(tag), htlcSignatures);
+
+        var partial = new byte[98];
+        partial[0] = tag;
+        partial[32] = 0x02;
+        partial[65] = 0x03;
+        partial[97] = 0x5A;
+        return CommitmentSignatures.Taproot(new MusigPartialSignatureWithNonce(partial), htlcSignatures);
+    }
 
     private static CompactSignature Signature(byte tag)
     {
@@ -360,11 +412,13 @@ internal sealed class CommitmentDanceDriver
         return new CompactSignature(bytes);
     }
 
-    private sealed class FakeCommitmentSigner(ulong remoteDustSat, bool anchors) : ICommitmentSigner
+    private sealed class FakeCommitmentSigner(ulong remoteDustSat, CommitmentFormat format) : ICommitmentSigner
     {
         public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
-                                                         CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint) =>
-            Signatures((byte)number, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, remoteDustSat, anchors));
+                                                         CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint,
+                                                         MusigPublicNonce? remoteVerificationNonce = null) =>
+            Signatures((byte)number, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, remoteDustSat, format),
+                       remoteVerificationNonce is not null);
     }
 
     private sealed class FakeCommitmentVerifier : ICommitmentVerifier
@@ -396,6 +450,8 @@ internal static class CommitmentsAssert
         Assert.Equal(expected.LocalNextHtlcId, actual.LocalNextHtlcId);
         Assert.Equal(expected.RemoteNextHtlcId, actual.RemoteNextHtlcId);
         Assert.Equal(expected.RemoteNextPerCommitmentPoint, actual.RemoteNextPerCommitmentPoint);
+        Assert.Equal(expected.RemoteNextNonces.OrderBy(e => e.Key.ToString()),
+                     actual.RemoteNextNonces.OrderBy(e => e.Key.ToString()));
         Assert.Equal(expected.FeeUpdates, actual.FeeUpdates);
 
         Assert.Equal(expected.Htlcs.Keys, actual.Htlcs.Keys);
@@ -453,5 +509,6 @@ internal static class CommitmentsAssert
 
         Assert.Equal(expected.Signature, actual!.Signature);
         Assert.Equal(expected.HtlcSignatures, actual.HtlcSignatures);
+        Assert.Equal(expected.PartialSignature, actual.PartialSignature);
     }
 }

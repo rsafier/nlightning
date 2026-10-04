@@ -101,6 +101,7 @@ public sealed class LocalCommitResolver : IOutputResolver
     private readonly LocalCommitResolverOptions _options;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ISweepTransactionBuilder _sweepTransactionBuilder;
+    private readonly UnsupportedTaprootOutputs _unsupportedTaproot = new();
 
     public LocalCommitResolver(ICommitmentOutputMapper outputMapper, IHtlcTransactionBuilder htlcTransactionBuilder,
                                ISweepTransactionBuilder sweepTransactionBuilder, ILightningSigner lightningSigner,
@@ -406,6 +407,16 @@ public sealed class LocalCommitResolver : IOutputResolver
                                           List<OutputResolverAction> actions, CancellationToken cancellationToken)
     {
         var row = context.GetRow(context.CommitmentTxId, descriptor.Vout)!;
+
+        // NL-966: our simple taproot HTLC transactions (zero fee, wallet fee inputs, script-path signatures) are not
+        // built yet; the output stays recorded and is alerted once, the to_local sweep goes on
+        if (descriptor is { IsSimpleTaproot: true, Htlc: not null })
+        {
+            _unsupportedTaproot.Report(context.Channel.ChannelId, context.CommitmentTxId, descriptor.Vout,
+                                       descriptor.Kind, descriptor.AmountSat, actions);
+            return;
+        }
+
         var record = descriptor.Htlc is { } htlc ? context.Commitments?.GetHtlc(htlc.Direction, htlc.Id) : null;
         var spend = await GetSpendAsync(context, row);
         OutputResolutionModel? child = null;

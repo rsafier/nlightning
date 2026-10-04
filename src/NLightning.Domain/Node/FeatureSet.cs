@@ -20,7 +20,10 @@ public class FeatureSet
     /// Dependencies that BOLT 9 no longer lists because the dependency became ASSUMED (e.g. anchors ->
     /// static_remotekey, payment_secret -> var_onion_optin) are intentionally not listed: peers may omit ASSUMED bits,
     /// so requiring them would disconnect spec-compliant peers. The one exception is zero_fee_commitments ->
-    /// option_channel_type, which the current BOLT 9 table still lists even though option_channel_type is ASSUMED.
+    /// option_channel_type, which the current BOLT 9 table still lists even though option_channel_type is ASSUMED;
+    /// option_simple_taproot lists it too (with option_simple_close), as the simple taproot channels proposal does.
+    /// LND 0.21 also makes 81 depend on 23 (anchors); that is not a BOLT 9 dependency, so a peer without 23 is not
+    /// refused here, and our own configuration is checked for it by <c>FeatureOptions.GetValidationErrors</c>.
     /// gossip_queries_ex no longer depends on gossip_queries.
     /// </remarks>
     private static readonly Dictionary<Feature, Feature[]> s_featureDependencies = new()
@@ -31,6 +34,7 @@ public class FeatureSet
         { Feature.OptionZeroconf, [Feature.OptionScidAlias] },
         { Feature.OptionSimpleClose, [Feature.OptionShutdownAnySegwit] },
         { Feature.OptionOnionMessagesOnlyChannels, [Feature.OptionOnionMessages] },
+        { Feature.OptionSimpleTaproot, [Feature.OptionChannelType, Feature.OptionSimpleClose] },
     };
 
     /// <summary>
@@ -83,6 +87,7 @@ public class FeatureSet
         { Feature.OptionSimpleClose, InitAndNode },
         { Feature.OptionSplice, InitAndNode },
         { Feature.OptionOnionMessagesOnlyChannels, InitAndNode },
+        { Feature.OptionSimpleTaproot, InitAndNode | FeatureContext.ChannelType },
     };
 
     internal BitArray FeatureFlags;
@@ -345,8 +350,12 @@ public class FeatureSet
             }
         }
 
-        // Check if all the other node's dependencies are set
-        if (other.AreDependenciesSet())
+        // Check if all the other node's dependencies are set. A peer's option_simple_taproot is read as the unknown odd
+        // bit it was before we knew it while we do not set it ourselves (NL-973): LND with taproot overlay channels
+        // (litd) advertises 81 without option_simple_close, and refusing it would cut nodes that never negotiate
+        // taproot with us off from them
+        if (other.GetMissingDependencies().All(m => m.Feature == Feature.OptionSimpleTaproot
+                                                 && !HasFeature(Feature.OptionSimpleTaproot)))
             return true;
 
         negotiatedFeatureSet = null;

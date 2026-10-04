@@ -87,6 +87,59 @@ internal static class CommitmentStateEncoding
         return signatures;
     }
 
+    /// <summary>Funding txid (32) + public nonce (66): one entry of <c>ChannelEntity.RemoteNextNonces</c>.</summary>
+    public const int RemoteNonceEntryLength = CryptoConstants.Sha256HashLen + MusigConstants.PublicNonceLen;
+
+    /// <summary>
+    /// The blob of <c>ChannelEntity.RemoteNextNonces</c> (simple taproot, NL-877 T3): per funding its txid and the peer's
+    /// verification nonce, sorted by txid bytes (the <c>next_local_nonces</c> layout); null when there is none.
+    /// </summary>
+    public static byte[]? EncodeRemoteNonces(IReadOnlyDictionary<TxId, MusigPublicNonce> nonces)
+    {
+        if (nonces.Count == 0)
+            return null;
+
+        var ordered = nonces.OrderBy(e => (byte[])e.Key, ByteArrayComparer.Instance).ToList();
+        var bytes = new byte[ordered.Count * RemoteNonceEntryLength];
+        for (var i = 0; i < ordered.Count; i++)
+        {
+            var span = bytes.AsSpan(i * RemoteNonceEntryLength, RemoteNonceEntryLength);
+            ((ReadOnlySpan<byte>)ordered[i].Key).CopyTo(span);
+            ((ReadOnlySpan<byte>)ordered[i].Value).CopyTo(span[CryptoConstants.Sha256HashLen..]);
+        }
+
+        return bytes;
+    }
+
+    /// <summary>The map stored by <see cref="EncodeRemoteNonces"/>; empty for null.</summary>
+    /// <exception cref="InvalidOperationException">The blob's length is not a multiple of an entry's.</exception>
+    public static Dictionary<TxId, MusigPublicNonce> DecodeRemoteNonces(byte[]? bytes)
+    {
+        var nonces = new Dictionary<TxId, MusigPublicNonce>();
+        if (bytes is null)
+            return nonces;
+        if (bytes.Length % RemoteNonceEntryLength != 0)
+            throw new InvalidOperationException(
+                $"Remote nonces blob has {bytes.Length} bytes, not a multiple of {RemoteNonceEntryLength}");
+
+        for (var offset = 0; offset < bytes.Length; offset += RemoteNonceEntryLength)
+        {
+            var span = bytes.AsSpan(offset, RemoteNonceEntryLength);
+            nonces[new TxId(span[..CryptoConstants.Sha256HashLen].ToArray())] =
+                new MusigPublicNonce(span[CryptoConstants.Sha256HashLen..].ToArray());
+        }
+
+        return nonces;
+    }
+
+    /// <summary>Lexicographic order of byte arrays.</summary>
+    private sealed class ByteArrayComparer : IComparer<byte[]>
+    {
+        public static readonly ByteArrayComparer Instance = new();
+
+        public int Compare(byte[]? x, byte[]? y) => x.AsSpan().SequenceCompareTo(y);
+    }
+
     /// <summary>Funding txid (32) + local balance delta msat (8) + remote balance delta msat (8), big-endian.</summary>
     public const int SignedOnFundingLength = CryptoConstants.Sha256HashLen + 8 + 8;
 

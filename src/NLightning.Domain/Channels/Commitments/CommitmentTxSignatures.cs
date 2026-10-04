@@ -15,6 +15,13 @@ public sealed record CommitmentTxSignatures(
     CompactSignature Signature,
     IReadOnlyList<CompactSignature> HtlcSignatures)
 {
+    /// <summary>
+    /// Simple taproot channels: the MuSig2 partial signature with its nonce (<see cref="Signature"/> is then the zero
+    /// signature, <see cref="CommitmentSignatures.ZeroSignature"/>); null for the other channel types.
+    /// </summary>
+    public MusigPartialSignatureWithNonce? PartialSignature { get; init; }
+
     /// <summary>The engine's view of these signatures (without the txid).</summary>
-    public CommitmentSignatures ToCommitmentSignatures() => new(Signature, HtlcSignatures);
+    public CommitmentSignatures ToCommitmentSignatures() =>
+        new(Signature, HtlcSignatures) { PartialSignature = PartialSignature };
 }

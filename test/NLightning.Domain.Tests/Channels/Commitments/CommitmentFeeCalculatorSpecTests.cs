@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Tests.Channels.Commitments;
 
 using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.Transactions.Extensions;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
@@ -49,13 +50,13 @@ public class CommitmentFeeCalculatorSpecTests
         // Act
         var timeoutFee = CommitmentFeeCalculator.HtlcTimeoutFeeSatoshis(5000, false);
         var successFee = CommitmentFeeCalculator.HtlcSuccessFeeSatoshis(5000, false);
-        var baseFee = CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(spec, 546, false);
-        var trimmed = CommitmentFeeCalculator.TrimmedHtlcTotalMsat(spec, 546, false);
+        var baseFee = CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(spec, 546, CommitmentFormat.StaticRemoteKey);
+        var trimmed = CommitmentFeeCalculator.TrimmedHtlcTotalMsat(spec, 546, CommitmentFormat.StaticRemoteKey);
 
         // Assert
         Assert.Equal(3315UL, timeoutFee);
         Assert.Equal(3515UL, successFee);
-        Assert.Equal(2, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, 546, false));
+        Assert.Equal(2, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, 546, CommitmentFormat.StaticRemoteKey));
         Assert.Equal(5340UL, baseFee);
         Assert.Equal(7140UL, baseFee + trimmed / 1000);
     }
@@ -80,9 +81,9 @@ public class CommitmentFeeCalculatorSpecTests
         var spec = AppendixCSpec(feeratePerKw);
 
         // Act
-        var baseFee = CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(spec, AppendixCDustLimit, false);
-        var numHtlcs = CommitmentFeeCalculator.UntrimmedHtlcCount(spec, AppendixCDustLimit, false);
-        var trimmedSat = CommitmentFeeCalculator.TrimmedHtlcTotalMsat(spec, AppendixCDustLimit, false) / 1000;
+        var baseFee = CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(spec, AppendixCDustLimit, CommitmentFormat.StaticRemoteKey);
+        var numHtlcs = CommitmentFeeCalculator.UntrimmedHtlcCount(spec, AppendixCDustLimit, CommitmentFormat.StaticRemoteKey);
+        var trimmedSat = CommitmentFeeCalculator.TrimmedHtlcTotalMsat(spec, AppendixCDustLimit, CommitmentFormat.StaticRemoteKey) / 1000;
 
         // Assert
         Assert.Equal(expectedBaseFee, baseFee);
@@ -100,8 +101,8 @@ public class CommitmentFeeCalculatorSpecTests
         var spec = AppendixCSpec(feeratePerKw);
 
         // Act / Assert
-        Assert.Equal(expectedBaseFee, CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(spec, AppendixCDustLimit, false));
-        Assert.Equal(0, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, AppendixCDustLimit, false));
+        Assert.Equal(expectedBaseFee, CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(spec, AppendixCDustLimit, CommitmentFormat.StaticRemoteKey));
+        Assert.Equal(0, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, AppendixCDustLimit, CommitmentFormat.StaticRemoteKey));
     }
 
     [Fact]
@@ -116,8 +117,8 @@ public class CommitmentFeeCalculatorSpecTests
                                       ]);
 
         // Act / Assert
-        Assert.Equal(3, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, AppendixCDustLimit, false));
-        Assert.Equal(253UL * (724 + 3 * 172) / 1000, CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(spec, AppendixCDustLimit, false));
+        Assert.Equal(3, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, AppendixCDustLimit, CommitmentFormat.StaticRemoteKey));
+        Assert.Equal(253UL * (724 + 3 * 172) / 1000, CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(spec, AppendixCDustLimit, CommitmentFormat.StaticRemoteKey));
     }
 
     [Fact]
@@ -133,9 +134,9 @@ public class CommitmentFeeCalculatorSpecTests
         // Act / Assert
         Assert.Equal(0UL, CommitmentFeeCalculator.HtlcTimeoutFeeSatoshis(5000, true));
         Assert.Equal(0UL, CommitmentFeeCalculator.HtlcSuccessFeeSatoshis(5000, true));
-        Assert.Equal(1, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, 546, true));
-        Assert.Equal(5000UL * (1124 + 172) / 1000, CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(spec, 546, true));
-        Assert.Equal((5000UL * (1124 + 172) / 1000 + 660) * 1000, CommitmentFeeCalculator.FunderCostMsat(spec, 546, true));
+        Assert.Equal(1, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, 546, CommitmentFormat.Anchors));
+        Assert.Equal(5000UL * (1124 + 172) / 1000, CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(spec, 546, CommitmentFormat.Anchors));
+        Assert.Equal((5000UL * (1124 + 172) / 1000 + 660) * 1000, CommitmentFeeCalculator.FunderCostMsat(spec, 546, CommitmentFormat.Anchors));
     }
 
     [Fact]
@@ -147,8 +148,8 @@ public class CommitmentFeeCalculatorSpecTests
         var localSpec = new CommitmentSpec(CommitmentSide.Local, 1000, 0, 0, [ours]);
 
         // Act / Assert
-        Assert.Equal(0, CommitmentFeeCalculator.UntrimmedHtlcCount(remoteSpec, 546, false)); // 1240 < 546 + 703
-        Assert.Equal(1, CommitmentFeeCalculator.UntrimmedHtlcCount(localSpec, 546, false)); // 1240 >= 546 + 663
+        Assert.Equal(0, CommitmentFeeCalculator.UntrimmedHtlcCount(remoteSpec, 546, CommitmentFormat.StaticRemoteKey)); // 1240 < 546 + 703
+        Assert.Equal(1, CommitmentFeeCalculator.UntrimmedHtlcCount(localSpec, 546, CommitmentFormat.StaticRemoteKey)); // 1240 >= 546 + 663
     }
 
     [Theory]
@@ -172,10 +173,10 @@ public class CommitmentFeeCalculatorSpecTests
         var factoryFunderCost = CommitmentFeeCalculator.FunderCost(feeratePerKw, anchors, factoryUntrimmed);
 
         // Assert
-        Assert.Equal(factoryUntrimmed, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, AppendixCDustLimit, anchors));
+        Assert.Equal(factoryUntrimmed, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, AppendixCDustLimit, CommitmentFormatExtensions.FromOptionAnchors(anchors)));
         Assert.Equal(factoryFunderCost.MilliSatoshi,
-                     CommitmentFeeCalculator.FunderCostMsat(spec, AppendixCDustLimit, anchors));
+                     CommitmentFeeCalculator.FunderCostMsat(spec, AppendixCDustLimit, CommitmentFormatExtensions.FromOptionAnchors(anchors)));
         Assert.Equal((ulong)CommitmentFeeCalculator.CommitmentBaseFee(feeratePerKw, anchors, factoryUntrimmed).Satoshi,
-                     CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(spec, AppendixCDustLimit, anchors));
+                     CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(spec, AppendixCDustLimit, CommitmentFormatExtensions.FromOptionAnchors(anchors)));
     }
 }

@@ -25,12 +25,15 @@ public sealed record PeerBackupBlob(byte[] Blob, string Fingerprint);
 /// <param name="FundingOutputIndex">The current funding output index, with <paramref name="FundingTxId"/>.</param>
 /// <param name="LocalFundingKeyIndex">Our funding key index of the current funding (splicing plan D5: 0 before any
 /// splice), with <paramref name="FundingTxId"/>.</param>
+/// <param name="IsSimpleTaproot">The channel is a simple taproot channel (NL-877 T5; flag bit 2 of a version 2 entry,
+/// false in a blob written before it).</param>
 public sealed record PeerBackupChannel(
     ChannelId ChannelId,
     CompactPubKey PeerNodeId,
     TxId? FundingTxId = null,
     ushort? FundingOutputIndex = null,
-    uint? LocalFundingKeyIndex = null);
+    uint? LocalFundingKeyIndex = null,
+    bool IsSimpleTaproot = false);
 
 /// <summary>
 /// What one of our backup blobs holds.

@@ -8,6 +8,7 @@ namespace NLightning.Application.Onchain.Anchors;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Constants;
+using Domain.Bitcoin.Transactions.Extensions;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
@@ -127,6 +128,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     private readonly HashSet<TxId> _feeRefusedChildren = [];
     private readonly Dictionary<TxId, uint> _anchorSpentSeenAtTip = [];
     private readonly ConcurrentDictionary<ChannelId, PeerCommitmentSeen> _peerCommitments = new();
+    private readonly ConcurrentDictionary<ChannelId, byte> _taprootSkipLogged = new();
     private readonly Dictionary<TxId, (uint Height, int Count)> _peerCommitmentMissing = [];
     private readonly ConcurrentDictionary<ChannelId, byte> _peerChildChannels = new();
 
@@ -386,11 +388,27 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     }
 
     /// <summary>
+    /// A simple taproot channel (NL-877): its anchors are P2TR outputs keyed to <c>local_delayedpubkey</c>/
+    /// <c>remotepubkey</c>, not the P2WSH funding-key anchors this service spends and signs, so no CPFP child is built
+    /// for it until BOLT 5 support for taproot lands (plan T4). Logged once per channel.
+    /// </summary>
+    private bool IsSkippedTaprootChannel(ChannelModel channel)
+    {
+        if (!channel.ChannelParams.CommitmentFormat.IsTaproot())
+            return false;
+
+        if (_taprootSkipLogged.TryAdd(channel.ChannelId, 0))
+            _logger.LogWarning("Channel {ChannelId} is a simple taproot channel: anchor CPFP is not supported for it "
+                             + "yet (taproot plan T4); its commitments get no child", channel.ChannelId);
+        return true;
+    }
+
+    /// <summary>
     /// An anchor channel that is failed or resolving on chain, or whose peer commitment was seen in the mempool or has
     /// a pending child of ours (the channel may still be <c>Open</c> then: the peer force-closed).
     /// </summary>
     private bool IsRoundChannel(ChannelModel channel) =>
-        channel.ChannelParams.OptionAnchorOutputs
+        channel.ChannelParams.OptionAnchorOutputs && !IsSkippedTaprootChannel(channel)
      && (channel.State is ChannelState.Failed or ChannelState.OnchainResolving
       || ((_peerCommitments.ContainsKey(channel.ChannelId) || _peerChildChannels.ContainsKey(channel.ChannelId))
        && channel.State is not (ChannelState.Closed or ChannelState.Stale)));
@@ -1515,7 +1533,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         var spec = commitments.LocalCommit.Spec;
         var dust = commitments.Params.Local.DustLimitSatoshis;
         var untrimmed = spec.Htlcs.Where(h => !CommitmentFeeCalculator.IsHtlcTrimmed(spec, h, dust,
-                                                                                     commitments.Params.OptionAnchors))
+                                                                                     commitments.Params.Format))
                             .ToList();
         var htlcMsat = untrimmed.Aggregate(0UL, (sum, h) => checked(sum + h.AmountMsat));
         return (AnchorCpfpPolicy.GetDeadline(untrimmed.Select(h => h.CltvExpiry)),

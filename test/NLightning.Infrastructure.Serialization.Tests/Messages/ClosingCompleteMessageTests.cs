@@ -152,8 +152,8 @@ public class ClosingCompleteMessageTests
     [Fact]
     public async Task Given_UnknownOddTlv_When_DeserializeAsync_Then_Ignored()
     {
-        // Arrange: type 5 (odd, unknown)
-        using var stream = new MemoryStream(Convert.FromHexString(FixedHex + "0340" + Sig3Hex + "0501FF"));
+        // Arrange: type 9 (odd, unknown; 5 and 7 are the simple taproot signatures)
+        using var stream = new MemoryStream(Convert.FromHexString(FixedHex + "0340" + Sig3Hex + "0901FF"));
 
         // Act
         var message = await _serializer.DeserializeAsync(stream);

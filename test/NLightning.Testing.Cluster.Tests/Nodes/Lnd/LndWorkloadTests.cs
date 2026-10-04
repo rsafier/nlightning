@@ -76,7 +76,7 @@ public class LndWorkloadTests
         var options = new LndNodeOptions("alice")
         {
             AcceptKeysend = false,
-            ExtraArgs = ["--protocol.rbf-coop-close", "--protocol.simple-taproot-chans"]
+            ExtraArgs = ["--protocol.rbf-coop-close", LndNodeOptions.SimpleTaprootChannelsFlag]
         };
 
         // Act

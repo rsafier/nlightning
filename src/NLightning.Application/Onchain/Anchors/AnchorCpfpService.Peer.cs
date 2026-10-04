@@ -53,6 +53,8 @@ public sealed partial class AnchorCpfpService
         ArgumentNullException.ThrowIfNull(commitment);
         if (!_options.Enabled)
             return;
+        if (_channelMemoryRepository.TryGetChannel(channelId, out var channel) && IsSkippedTaprootChannel(channel))
+            return;
 
         _peerCommitments[channelId] = new PeerCommitmentSeen(commitment.TxId,
                                                              (byte[])commitment.RawTxBytes.Clone(), isNextCommitment);
@@ -533,7 +535,7 @@ public sealed partial class AnchorCpfpService
 
         var dust = commitments.Params.Remote.DustLimitSatoshis;
         var untrimmed = spec.Htlcs.Where(h => !CommitmentFeeCalculator.IsHtlcTrimmed(spec, h, dust,
-                                                                                     commitments.Params.OptionAnchors))
+                                                                                     commitments.Params.Format))
                             .ToList();
         var htlcMsat = untrimmed.Aggregate(0UL, (sum, h) => checked(sum + h.AmountMsat));
         return (AnchorCpfpPolicy.GetDeadline(untrimmed.Select(h => h.CltvExpiry)),

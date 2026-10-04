@@ -32,6 +32,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Models;
 using Domain.Protocol.Payloads;
 using Domain.Serialization.Interfaces;
 using Gossip.Announcements.Interfaces;
@@ -599,6 +600,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
                 // BOLT 2: the closing negotiation restarts on every reconnection (B2-RE-29)
                 _serviceProvider.GetService<ClosingNegotiationRegistry>()?.ResetConnection(channel.ChannelId);
+                // Simple taproot closee nonces are bound to the connection (memory only): the old secrets go
+                if (channel.ChannelParams.OptionSimpleTaproot)
+                    _lightningSigner.ForgetClosingNonces(channel.ChannelId);
                 switch (channel.State)
                 {
                     case ChannelState.Failed or ChannelState.OnchainResolving:
@@ -1184,7 +1188,33 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         }
 
         return RecoveryChannels.CreateDataLossReestablish(scope.ServiceProvider.GetRequiredService<IMessageFactory>(),
-                                                          channel.ChannelId, point);
+                                                          channel.ChannelId, point, CreateRecoveryNonces(channel));
+    }
+
+    /// <summary>
+    /// A simple taproot recovery channel's <c>next_local_nonces</c> (NL-974): without it the peer refuses the
+    /// <c>channel_reestablish</c> before it reads the data-loss numbers (LND 0.21: "remote verification nonce not sent",
+    /// a link failure that never force-closes), so our funds would wait on the peer's operator. One entry for the
+    /// backed-up funding, our counter-derived verification nonce of commitment 1 (key-index derivation: the recovery
+    /// channel may not be registered with the signer). Nothing signs with it: the channel lost data.
+    /// </summary>
+    private FundingNonces? CreateRecoveryNonces(ChannelModel channel)
+    {
+        if (!channel.ChannelParams.OptionSimpleTaproot || channel.FundingOutput?.TransactionId is not { } fundingTxId)
+            return null;
+
+        try
+        {
+            return FundingNonces.Single(fundingTxId,
+                                        _lightningSigner.GetLocalVerificationNonce(channel.LocalKeySet.KeyIndex,
+                                                                                   fundingTxId, 1));
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "No verification nonce for simple taproot recovery channel {ChannelId}; its "
+                              + "channel_reestablish goes without next_local_nonces", channel.ChannelId);
+            return null;
+        }
     }
 
     /// <summary>The text of the channel's stored <c>error</c> (to send it again in reply to a message).</summary>

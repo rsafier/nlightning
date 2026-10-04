@@ -26,7 +26,9 @@ public sealed class ExportChanBackupPrinter : IPrinter<ExportChanBackupIpcRespon
         ArgumentNullException.ThrowIfNull(item);
         _output.WriteLine($"Channel backup: {item.ChannelIds.Count} channel(s), {item.Backup.Length} bytes");
         foreach (var channelId in item.ChannelIds)
-            _output.WriteLine($"  {channelId}");
+            _output.WriteLine(item.SimpleTaprootChannelIds?.Contains(channelId) == true
+                                  ? $"  {channelId} (simple_taproot)"
+                                  : $"  {channelId}");
 
         if (_writtenTo is not null)
             _output.WriteLine($"Written to: {_writtenTo}");
@@ -68,7 +70,7 @@ public sealed class VerifyChanBackupPrinter : IPrinter<VerifyChanBackupIpcRespon
             _output.WriteLine($"    Funding: {channel.FundingTxId}:{channel.FundingOutputIndex}, "
                             + $"{channel.CapacitySat} sat, "
                             + (channel.ShortChannelId is { } scid ? new ShortChannelId(scid).ToString() : "no scid"));
-            _output.WriteLine($"    Type: {(channel.OptionAnchors ? "anchors" : "static_remotekey")}, "
+            _output.WriteLine($"    Type: {ChanBackupChannelIpcInfo.TypeName(channel.OptionSimpleTaproot, channel.OptionAnchors)}, "
                             + $"{(channel.IsInitiator ? "we funded it" : "the peer funded it")}");
             _output.WriteLine($"    Keys: {(channel.KeysMatch ? "derive from this key file" : "DO NOT MATCH")}");
             _output.WriteLine($"    Local state: {channel.LocalState?.ToString() ?? "not in the database"}");
@@ -100,7 +102,7 @@ public sealed class RestoreChanBackupPrinter : IPrinter<RestoreChanBackupIpcResp
         {
             _output.WriteLine($"  {channel.ChannelId}: {channel.Outcome}");
             _output.WriteLine($"    Peer: {channel.RemoteNodeId}, {channel.CapacitySat} sat, "
-                            + (channel.OptionAnchors ? "anchors" : "static_remotekey"));
+                            + ChanBackupChannelIpcInfo.TypeName(channel.OptionSimpleTaproot, channel.OptionAnchors));
             _output.WriteLine($"    {channel.Detail}");
         }
 

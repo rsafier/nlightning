@@ -22,14 +22,22 @@ public sealed class OpenChannel1Message : BaseChannelMessage
     public UpfrontShutdownScriptTlv? UpfrontShutdownScriptTlv { get; }
     public ChannelTypeTlv? ChannelTypeTlv { get; }
 
+    /// <summary>
+    /// Simple taproot channels <c>next_local_nonce</c> (TLV 4): the sender's verification nonce for the first
+    /// commitment the peer signs for it. Required on a simple taproot channel, absent otherwise.
+    /// </summary>
+    public NextLocalNonceTlv? NextLocalNonceTlv { get; }
+
     public OpenChannel1Message(OpenChannel1Payload payload, ChannelTypeTlv? channelTypeTlv,
-                               UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null)
+                               UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null,
+                               NextLocalNonceTlv? nextLocalNonceTlv = null)
         : base(MessageTypes.OpenChannel, payload)
     {
         UpfrontShutdownScriptTlv = upfrontShutdownScriptTlv;
         ChannelTypeTlv = channelTypeTlv;
+        NextLocalNonceTlv = nextLocalNonceTlv;
 
         Extension = new TlvStream();
-        Extension.Add(UpfrontShutdownScriptTlv, ChannelTypeTlv);
+        Extension.Add(UpfrontShutdownScriptTlv, ChannelTypeTlv, NextLocalNonceTlv);
     }
 }

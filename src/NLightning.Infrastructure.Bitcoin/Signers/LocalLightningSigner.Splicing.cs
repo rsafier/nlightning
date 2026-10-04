@@ -103,6 +103,8 @@ public partial class LocalLightningSigner
         lock (GetCommitmentLock(channelId))
         {
             var signingInfo = GetRegisteredSigningInfo(channelId);
+            ThrowIfTaproot(channelId, signingInfo, "sign a splice's shared input (splicing a taproot channel is not "
+                                                 + "supported yet)");
             ThrowIfDataLoss(channelId, "sign a splice's shared input");
             ThrowIfBroadcastSigned(channelId, "sign a splice's shared input");
 
@@ -161,6 +163,8 @@ public partial class LocalLightningSigner
         ArgumentNullException.ThrowIfNull(unsignedSpliceTransaction);
         ArgumentNullException.ThrowIfNull(remoteSignature);
         var signingInfo = GetRegisteredSigningInfo(channelId);
+        ThrowIfTaproot(channelId, signingInfo, "check a splice's shared input signature (splicing a taproot channel "
+                                             + "is not supported yet)");
         var current = FromSigningInfo(signingInfo);
 
         var tx = LoadTransaction(channelId, unsignedSpliceTransaction, "splice");
@@ -178,6 +182,7 @@ public partial class LocalLightningSigner
         lock (GetCommitmentLock(channelId))
         {
             var signingInfo = GetRegisteredSigningInfo(channelId);
+            ThrowIfTaproot(channelId, signingInfo, "sign a channel transaction with an ECDSA signature");
             ThrowIfDataLoss(channelId, "sign a commitment");
             ThrowIfBroadcastSigned(channelId, "sign a channel transaction");
 
@@ -196,6 +201,7 @@ public partial class LocalLightningSigner
         ArgumentNullException.ThrowIfNull(signature);
         ArgumentNullException.ThrowIfNull(unsignedTransaction);
         var signingInfo = GetRegisteredSigningInfo(channelId);
+        ThrowIfTaproot(channelId, signingInfo, "check an ECDSA signature of a channel transaction");
 
         FundingKeys funding;
         lock (GetCommitmentLock(channelId))

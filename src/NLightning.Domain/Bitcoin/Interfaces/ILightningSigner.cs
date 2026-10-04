@@ -354,6 +354,154 @@ public interface ILightningSigner
     #region Splicing (splicing plan SP1-0; implemented by lane SP1-C in LocalLightningSigner.Splicing.cs)
 
     /// <summary>
+    /// Simple taproot channels (bolt-simple-taproot.md, D-T4): our public verification nonce for our local commitment
+    /// <paramref name="localCommitmentNumber"/>, from the counter scheme: BIP 327 <c>NonceGen</c> with <c>rand'</c> the
+    /// commitment's leaf of the MuSig2 shachain whose root is <c>HMAC("taproot-rev-root" || funding_txid,
+    /// sha256(shachain_root))</c>. Nothing is stored: the same inputs give the same nonce, and the signer re-derives the
+    /// secret half only to sign that commitment for broadcast.
+    /// </summary>
+    /// <param name="channelKeyIndex">The channel's key index (usable before the channel id exists: open/accept).</param>
+    /// <param name="fundingTxId">The funding the commitment spends, the nonce's context. Null only for commitment 0 of a
+    /// v1 open, whose nonce is sent in <c>open_channel</c>/<c>accept_channel</c> before the funding txid is known (a v1
+    /// open has one funding transaction). Commitment 0 of a dual-funded open's attempt passes that attempt's txid: the
+    /// attempts are different transactions and must not share a nonce (NL-972). The channel id overload picks the
+    /// context itself (<c>ChannelSigningInfo.IsDualFunded</c>, splices always bound).</param>
+    /// <param name="localCommitmentNumber">Our local commitment number the nonce verifies.</param>
+    MusigPublicNonce GetLocalVerificationNonce(uint channelKeyIndex, TxId? fundingTxId, ulong localCommitmentNumber) =>
+        throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
+    /// <see cref="GetLocalVerificationNonce(uint, TxId?, ulong)"/> for a registered channel. Commitment 0 uses the
+    /// context without a txid only for a channel opened with v1 (<see cref="ChannelSigningInfo.IsDualFunded"/> false); a
+    /// dual-funded channel's commitment 0 is bound to <paramref name="fundingTxId"/> (null: the current funding), as the
+    /// key index overload derives it before registration when given that txid (a dual-funded open's <c>tx_complete</c>
+    /// <c>commit_nonces</c>, NL-972).
+    /// </summary>
+    MusigPublicNonce GetLocalVerificationNonce(ChannelId channelId, TxId? fundingTxId, ulong localCommitmentNumber) =>
+        throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
+    /// Simple taproot channels: our MuSig2 partial signature of the peer's commitment <paramref name="unsignedCommitment"/>
+    /// (key-path spend of the funding output, <c>SIGHASH_DEFAULT</c>) with a fresh just-in-time signing nonce, combined
+    /// with the peer's verification nonce <paramref name="remoteVerificationNonce"/>. The secret nonce is drawn from fresh
+    /// randomness, used once and never stored, so a re-sign (retransmission) always gets a new nonce.
+    /// </summary>
+    /// <param name="channelId">The registered channel.</param>
+    /// <param name="fundingTxId">The funding the commitment spends; null for the channel's current funding.</param>
+    /// <param name="unsignedCommitment">The peer's unsigned commitment transaction.</param>
+    /// <param name="remoteVerificationNonce">The peer's latest <c>next_local_nonce</c>(s) entry for that funding.</param>
+    /// <returns>The <c>partial_signature_with_nonce</c> payload (our partial signature and our signing nonce).</returns>
+    /// <exception cref="Exceptions.SignerException">The channel is not a registered taproot channel, data loss was
+    /// detected, or the nonce does not parse.</exception>
+    MusigPartialSignatureWithNonce SignRemoteCommitmentPartial(ChannelId channelId, TxId? fundingTxId,
+                                                               SignedTransaction unsignedCommitment,
+                                                               MusigPublicNonce remoteVerificationNonce) =>
+        throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
+    /// Simple taproot channels: checks the peer's partial signature of our local commitment
+    /// <paramref name="localCommitmentNumber"/> (<c>PartialSigVerifyInternal</c>), with the aggregate nonce built from
+    /// our verification nonce for that number (<see cref="GetLocalVerificationNonce(ChannelId, TxId?, ulong)"/>) and
+    /// the peer's signing nonce carried in <paramref name="remoteSignature"/>.
+    /// </summary>
+    /// <exception cref="Exceptions.SignerException">The partial signature does not verify or the channel is not a
+    /// registered taproot channel.</exception>
+    void ValidateLocalCommitmentPartialSignature(ChannelId channelId, TxId? fundingTxId, ulong localCommitmentNumber,
+                                                 MusigPartialSignatureWithNonce remoteSignature,
+                                                 SignedTransaction unsignedCommitment) =>
+        throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
+    /// <see cref="SignLocalCommitmentForBroadcast(ChannelId, ulong, SignedTransaction, CompactSignature)"/> for a simple
+    /// taproot channel: re-derives our verification secret nonce for <paramref name="commitmentNumber"/>, signs our
+    /// half, aggregates it with the peer's stored partial signature and returns the transaction with its one-element
+    /// key-path witness. The same guards (I4, I12, S1, SP-I4) apply.
+    /// </summary>
+    SignedTransaction SignLocalCommitmentForBroadcast(ChannelId channelId, TxId? fundingTxId, ulong commitmentNumber,
+                                                      SignedTransaction unsignedCommitment,
+                                                      MusigPartialSignatureWithNonce remoteSignature) =>
+        throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
+    /// Simple taproot channels, <c>option_simple_close</c> (bolt-simple-taproot.md §RBF Cooperative Close): a new
+    /// closee nonce of ours, the <c>shutdown_nonce</c> of our <c>shutdown</c> or the <c>next_closee_nonce</c> of our
+    /// <c>closing_sig</c>. A just-in-time nonce from fresh randomness and our funding key; its secret half stays in the
+    /// signer's memory, keyed by the channel and the public nonce, until
+    /// <see cref="SignClosingAsClosee"/> consumes it or <see cref="ForgetClosingNonces"/> drops it (never persisted: a
+    /// restart starts a new shutdown with new nonces).
+    /// </summary>
+    /// <exception cref="Exceptions.SignerException">The channel is not a registered taproot channel, data loss was
+    /// detected, or a local commitment was signed for broadcast.</exception>
+    MusigPublicNonce CreateClosingNonce(ChannelId channelId) =>
+        throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
+    /// Simple taproot channels: our <c>closing_complete</c> partial signature as the closer, of
+    /// <paramref name="unsignedClosing"/> (its single input spends the current funding output by key path,
+    /// <c>SIGHASH_DEFAULT</c>), with a fresh just-in-time closer nonce and the peer's closee nonce
+    /// <paramref name="remoteCloseeNonce"/> (its <c>shutdown_nonce</c>, or the <c>next_closee_nonce</c> of its last
+    /// <c>closing_sig</c>). Nothing is kept: the result holds what <see cref="AggregateClosingSignature"/> needs.
+    /// </summary>
+    /// <returns>Our partial signature and our closer nonce (the <c>partial_sig_with_nonce</c> payload).</returns>
+    /// <exception cref="Exceptions.SignerException">As <see cref="CreateClosingNonce"/>, or the transaction does not
+    /// spend the current funding output, or the nonce does not parse.</exception>
+    MusigPartialSignatureWithNonce SignClosingAsCloser(ChannelId channelId, SignedTransaction unsignedClosing,
+                                                       MusigPublicNonce remoteCloseeNonce) =>
+        throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
+    /// Simple taproot channels: our <c>closing_sig</c> partial signature as the closee. Checks the closer's partial
+    /// signature <paramref name="remoteCloserSignature"/> first (with our closee nonce
+    /// <paramref name="localCloseeNonce"/>), then signs with the secret half of <paramref name="localCloseeNonce"/>,
+    /// which is consumed: a second call with it throws, so every <c>closing_sig</c> needs a new closee nonce
+    /// (<see cref="CreateClosingNonce"/>, sent as <c>next_closee_nonce</c>).
+    /// </summary>
+    /// <exception cref="Exceptions.SignerException">As <see cref="SignClosingAsCloser"/>, the closee nonce is not one
+    /// of ours (or was used or forgotten), or the closer's partial signature does not verify (the nonce is then kept).
+    /// </exception>
+    MusigPartialSignature SignClosingAsClosee(ChannelId channelId, SignedTransaction unsignedClosing,
+                                              MusigPublicNonce localCloseeNonce,
+                                              MusigPartialSignatureWithNonce remoteCloserSignature) =>
+        throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
+    /// Simple taproot channels: checks the peer's partial signature of <paramref name="unsignedClosing"/>
+    /// (<c>PartialSigVerifyInternal</c> with the peer's funding key), made with <paramref name="remoteNonce"/> in a
+    /// session whose other nonce is our <paramref name="localNonce"/>: as the closer, the peer's <c>closing_sig</c>
+    /// with its closee nonce and our closer nonce; as the closee, the peer's <c>closing_complete</c> with its closer
+    /// nonce and our closee nonce.
+    /// </summary>
+    /// <exception cref="Exceptions.SignerException">The partial signature does not verify, a nonce does not parse, or
+    /// the channel is not a registered taproot channel.</exception>
+    void ValidateClosingPartialSignature(ChannelId channelId, SignedTransaction unsignedClosing,
+                                         MusigPartialSignature remoteSignature, MusigPublicNonce remoteNonce,
+                                         MusigPublicNonce localNonce) =>
+        throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
+    /// Simple taproot channels: the signed closing transaction. Verifies the peer's partial signature, aggregates it
+    /// with ours (<c>PartialSigAgg</c>), checks the BIP 340 signature against the funding output key and returns
+    /// <paramref name="unsignedClosing"/> with its one-element key-path witness (64 bytes, <c>SIGHASH_DEFAULT</c>).
+    /// Every input is public: our partial signature and nonce as <see cref="SignClosingAsCloser"/> or
+    /// <see cref="SignClosingAsClosee"/> (with our closee nonce) gave them, and the peer's.
+    /// </summary>
+    /// <exception cref="Exceptions.SignerException">A partial signature does not verify, the aggregate does not verify,
+    /// or the channel is not a registered taproot channel.</exception>
+    SignedTransaction AggregateClosingSignature(ChannelId channelId, SignedTransaction unsignedClosing,
+                                                MusigPartialSignature localSignature, MusigPublicNonce localNonce,
+                                                MusigPartialSignature remoteSignature,
+                                                MusigPublicNonce remoteNonce) =>
+        throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
+    /// Drops (and zeroes) every closee nonce secret the signer keeps for the channel: when its close negotiation ends,
+    /// is restarted by a reconnection, or the channel is unregistered. Never throws.
+    /// </summary>
+    void ForgetClosingNonces(ChannelId channelId)
+    {
+    }
+
+    /// <summary>
     /// Our funding public key number <paramref name="fundingKeyIndex"/> of the channel (splicing plan D5): index 0 is
     /// the channel's original funding key; each splice rotates to a new index, derived deterministically from the
     /// channel's keys so a static channel backup restores it.

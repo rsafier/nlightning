@@ -38,7 +38,9 @@ public sealed class EngineCommitmentVerifierPort : ICommitmentVerifier
     /// <exception cref="ArgumentException"><paramref name="spec"/> is not a local commitment.</exception>
     /// <exception cref="InvalidOperationException">The channel is not in memory.</exception>
     /// <remarks>A null <paramref name="funding"/>, or the channel's current one, verifies against the channel's funding
-    /// output; a pending splice funding against its own outpoint and keys (splicing plan SP1-C).</remarks>
+    /// output; a pending splice funding against its own outpoint and keys (splicing plan SP1-C). A simple taproot
+    /// channel's <see cref="CommitmentSignatures.PartialSignature"/> is checked against our verification nonce for
+    /// <paramref name="number"/> (NL-877 T3).</remarks>
     public bool VerifyLocalCommitment(ChannelId channelId, ChannelFunding? funding, ulong number, CommitmentSpec spec,
                                       CommitmentSignatures signatures)
     {
@@ -54,7 +56,8 @@ public sealed class EngineCommitmentVerifierPort : ICommitmentVerifier
         try
         {
             _commitmentSigningService.VerifyLocalCommitment(channel, funding, CommitmentTxSpec.FromCommitmentSpec(spec),
-                                                            number, signatures.Signature, signatures.HtlcSignatures);
+                                                            number, signatures.Signature, signatures.HtlcSignatures,
+                                                            signatures.PartialSignature);
             return true;
         }
         catch (SignerException e)

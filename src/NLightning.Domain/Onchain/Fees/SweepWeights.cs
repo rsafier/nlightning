@@ -53,6 +53,11 @@ public static class SweepWeights
         ArgumentNullException.ThrowIfNull(input);
 
         var scriptItem = input.WitnessScript is null ? 0 : ItemSize(input.WitnessScript.Length);
+
+        // Simple taproot script path: <64-byte BIP 340 sig> <leaf> <control_block> (NL-877 T4)
+        if (input.TaprootControlBlock is { } controlBlock)
+            return 1 + ItemSize(64) + scriptItem + ItemSize(controlBlock.Length);
+
         var signature = ItemSize(MaxSignatureLength);
         return input.SpendKind switch
         {

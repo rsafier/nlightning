@@ -58,6 +58,7 @@ public sealed class LocalCommitmentBroadcastBuilder
         ulong number;
         CommitmentTxSpec spec;
         CompactSignature remoteSignature;
+        MusigPartialSignatureWithNonce? remotePartialSignature;
         if (channel.Commitments is { } commitments)
         {
             var localCommit = commitments.LocalCommit;
@@ -68,10 +69,11 @@ public sealed class LocalCommitmentBroadcastBuilder
             number = localCommit.Number;
             spec = CommitmentTxSpec.FromCommitmentSpec(localCommit.Spec);
             remoteSignature = localCommit.RemoteSignatures.Signature;
+            remotePartialSignature = localCommit.RemoteSignatures.PartialSignature;
         }
         else
         {
-            if (channel.LastReceivedSignature is null)
+            if (channel.LastReceivedSignature is null && channel.LastReceivedPartialSignature is null)
                 throw new InvalidOperationException(
                     $"Channel {channel.ChannelId} has no peer signature of its local commitment");
 
@@ -81,14 +83,28 @@ public sealed class LocalCommitmentBroadcastBuilder
 
             number = channel.LocalCommitmentNumber;
             spec = CommitmentTxSpec.FromChannel(channel);
-            remoteSignature = channel.LastReceivedSignature;
+            remoteSignature = channel.LastReceivedSignature ?? CommitmentSignatures.ZeroSignature;
+            remotePartialSignature = channel.LastReceivedPartialSignature;
         }
 
         var model = _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(
             channel, spec, CommitmentSide.Local, number);
         var built = _commitmentTransactionBuilder.BuildWithOutputMap(model);
-        var signed = _lightningSigner.SignLocalCommitmentForBroadcast(channel.ChannelId, number, built.Transaction,
+        SignedTransaction signed;
+        if (channel.ChannelParams.OptionSimpleTaproot)
+        {
+            // MuSig2 (NL-877 T3): our half from the verification nonce of this number, aggregated with the peer's
+            var partial = remotePartialSignature
+                       ?? throw new InvalidOperationException(
+                              $"Local commitment {number} of channel {channel.ChannelId} has no peer partial signature");
+            signed = _lightningSigner.SignLocalCommitmentForBroadcast(channel.ChannelId, null, number,
+                                                                      built.Transaction, partial);
+        }
+        else
+        {
+            signed = _lightningSigner.SignLocalCommitmentForBroadcast(channel.ChannelId, number, built.Transaction,
                                                                       remoteSignature);
+        }
 
         return new SignedLocalCommitment(number, signed, built.HtlcOutputsInTxOrder.Count);
     }
