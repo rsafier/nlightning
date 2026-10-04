@@ -92,6 +92,49 @@ public sealed class SweepSchedulerTests
     }
 
     [Fact]
+    public async Task Given_OurTaprootSecondLevelSweepUnconfirmed_When_Bumped_Then_ReSignedByItsDelayLeafAndValid()
+    {
+        // Arrange (NL-966): a simple taproot HTLC-success confirms, its P2TR output is swept by the delay leaf after the
+        // CSV, then the sweep stays out of every block
+        var wallet = new AnchorTestWallet(true, 60_000);
+        var preimage = RealSigningCommitmentPair.Preimage(2);
+        using var harness = new LocalCommitResolutionHarness(pair =>
+        {
+            var id = pair.Add(pair.Bob, 30_000_000, preimage, 1_020);
+            pair.Settle(pair.Bob);
+            pair.Alice.Apply("fulfill", pair.Alice.State.SendFulfill(id, preimage,
+                                                                     new Infrastructure.Crypto.Hashes.Sha256()));
+        }, feeInputProvider: wallet, simpleTaproot: true);
+        foreach (var funding in wallet.FundingTransactions)
+            harness.AddKnownTransaction(funding);
+        var scheduler = CreateScheduler(harness);
+        await harness.ResolveAsync();
+        var success = Assert.Single(harness.Broadcast(BroadcastPurpose.HtlcTransaction));
+        await harness.MineAsync();
+        await harness.MineToAsync(harness.Height + Csv - 1);
+        var original = Assert.Single(harness.Broadcast(BroadcastPurpose.Sweep),
+                                     t => t.Inputs[0].PrevOut == new OutPoint(success, 0));
+        harness.HoldMempool = true;
+
+        // Act: the round at the sweep target
+        await harness.MineToAsync(harness.Height + SweepTarget);
+        var actions = await PlanAsync(harness, scheduler);
+        await harness.ApplyActionsAsync(actions);
+
+        // Assert: the second-level sweep replaced over the same input, the BIP 340 signature made again, valid
+        var replacementRow = Assert.Single(actions.OfType<BroadcastAction>(),
+                                           a => a.Transaction.ReplacesTransactionId
+                                             == new TxId(original.GetHash().ToBytes())).Transaction;
+        var replacement = Transaction.Load(replacementRow.RawTransaction, Network.Main);
+        Assert.Equal(original.Inputs[0].PrevOut, Assert.Single(replacement.Inputs).PrevOut);
+        Assert.Equal((uint)Csv, replacement.Inputs[0].Sequence.Value);
+        Assert.Equal(3, replacement.Inputs[0].WitScript.PushCount);
+        Assert.NotEqual(original.Inputs[0].WitScript[0], replacement.Inputs[0].WitScript[0]);
+        Assert.True(replacement.Outputs[0].Value < original.Outputs[0].Value);
+        harness.AssertAllInputsVerify(replacement);
+    }
+
+    [Fact]
     public async Task Given_HigherEstimateForTheTarget_When_Bumping_Then_TheEstimateIsPaid()
     {
         // Arrange: the fee market moved up while the sweep waited
