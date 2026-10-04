@@ -6982,6 +6982,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Move `PayUntilSentAsync` to the shared Docker utils and use it wherever LND pays right after an open.
 - **Blocks/Blocked-by:** Related NL-180
 - **Plan ref:** —
+- **Evidence (2026-10-04, codec-redesign matrix):** the same LND router lag also surfaces as `Grpc.Core.RpcException: edge not found` from LND's `BuildRoute`/`SendToRoute` in the cluster `lnd` suite when a test pins a payment to a fresh private channel: 3 such failures in the loaded 4-suite matrix (cln/eclair/ldk green), 1 in the suite-alone rerun with 57/58 green; the class is LND-side, before any of our message bytes are read.
 
 ### NL-331 Docker tests must not assume LND default fees on shared channels
 - **Status:** wontfix (the shared LNUnit fixture is gone with NL-820, 42e96743; the cluster LND network pins each funder's policy at setup, 7a16ab70)
