@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-04 by the NL-924 lane (worktree branch `worktree-agent-af41d6157ae6ff1e1`, from `wip/fafo` at `d8c6cc6e`): NL-924 (low) new and fixed in d6324dc3, 449de393, 094d4709 and 2f334449 (payer review follow-ups of NL-898, NL-980, NL-982); NL-925 (low, open) new: a trampoline peer's one-hop outer route fails the first-hop match. Summary rows recounted from the entries: 811, no duplicate IDs.
+
 Updated 2026-10-03 by the Cashu integrator, round 2 (branch `wip/cashu-int`, after the first landing `74b97a25`): merged the cloud agent's `e6279803`, `a2a87dea` and `354fd1dd` (BOLT 12 and on-chain in the processor, `CashuQuotes`, NL-997 fixed; their NL-900..NL-907 renumbered as before; MPP partial melts are the new NL-1010) and fixed the review's land blockers on the new paths: NL-1001 (unknown-outcome failures never FAILED), NL-1002 (`waitinvoice` disconnect, nil hash), NL-1004 (high: spend cap, fee caps, `server.key` warning) and the round-2 parts of NL-998 and NL-999. NL-1000 now covers only request limits and a rolling budget. Summary rows recounted from the entries after merging wip/fafo at `1683ff22`: 809, no duplicate IDs.
 
 Updated 2026-10-03 by the Cashu integrator (branch `wip/cashu-int` from `origin/wip/cashu` at `b38d2686`, merged with `wip/fafo`): the Cashu entries are renumbered because `wip/fafo` landed NL-900, NL-903, NL-904 and NL-905 first: NL-900 → NL-990 (epic), NL-901 → NL-991 (C0), NL-902 → NL-992 (C1), NL-903 → NL-993 (C2), NL-904 → NL-994 (C3), NL-905 → NL-995 (C4), NL-906 → NL-996 (IL2026), NL-907 → NL-997 (processor follow-ups), in every doc, code comment and test of the Cashu work (old commit messages keep the old IDs; the C0 commit `e5cb13a8` cites its first numbers NL-811 (epic, now NL-990) and NL-812 (C0, now NL-991), which stay unassigned as the harness note below says). The Cashu mint proof (NL-993) moved from Docker to the cluster harness (matrix suite `cashu`). NL-996 fixed in the merge (`12440f0b`). Integration review of the Cashu diff (listener security, payment event stream, `waitinvoice`, the processor against CDK v0.18.1, trampoline interplay): NL-998 (high), NL-999 and NL-1003 fixed; NL-1000, NL-1001 (medium) and NL-1002 open; rejected: none (the sub-sat melt note in the plan was a doc mismatch, fixed in `CASHU_PLAN.md`). Summary rows recounted from the entries after merging wip/fafo at `5d59c5f2`: 804 entries, no duplicate IDs.
@@ -163,12 +165,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 4 | 70 | 74 |
+| open | 0 | 0 | 4 | 71 | 75 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
-| fixed | 14 | 65 | 204 | 430 | 713 |
+| fixed | 14 | 65 | 204 | 431 | 714 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 3 | 5 |
-| **Total** | **14** | **65** | **217** | **513** | **809** |
+| **Total** | **14** | **65** | **217** | **515** | **811** |
 
 ### Epics
 
@@ -2858,6 +2860,27 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** store the hop's kept delta (or the named channel id) on the relay row (migration), or re-derive it from a re-peeled part onion without resolving the next node.
 - **Blocks/Blocked-by:** follow-up of NL-922
 - **Plan ref:** TRAMPOLINE_PLAN §10
+
+### NL-924 Payer review follow-ups: htlc_minimum in direct splits, trampoline MPP gate, attribution hop naming, late-fulfill fee
+- **Status:** fixed (d6324dc3, 449de393, 094d4709, 2f334449)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Routing/PaymentRoutePlanner.cs` (`TrySplit`, `LargestFit`, `TryFit`), `Routing/RouteConstraints.cs`, `Payments/Send/PaymentService.cs` (offer refusals, `ToCandidate`, `WithPreimage`), `PaymentService.TrampolinePayer.cs` (`CreateTrampolineSessionAsync`), `PaymentService.Trampoline.cs` (`DescribeOuterAttribution`, `DescribeStoredFailure`)
+- **Evidence:** adversarial review of the payer changes NL-898, NL-980 and NL-982 (2026-10-03). (1) The NL-980 greedy split filled the largest direct channel to its whole sendable and could leave a rest below the next channel's remote `htlc_minimum_msat` (`MinPartMsat` is waived for the rest, and `LocalChannelCandidate` had no minimum): the engine refused that part (B2-ADD-S06, not one of the liquidity rules), the channel was avoided for the whole payment, the first part waited at the payee until `mpp_timeout` and the payment fell back. (2) The outer leg to a trampoline node was always allowed to split (`SupportsMpp: true`), whatever the node's `basic_mpp`. (3) The stored route of a trampoline payment names the payee for its last hop, so an outer attribution failure there and its hold time were named after the payee instead of the trampoline node. (4) The NL-898 branch of `HandleSessionFailureAsync` also runs for a relay's outgoing leg (`DecideLegFailure`), undocumented and untested. (5) A failed row fulfilled late without a recorded HTLC took the stored route's fee for any fulfilled HTLC, another part's included.
+- **Fix:** (1, d6324dc3) `LocalChannelCandidate.HtlcMinimumMsat` (the peer's `htlc_minimum_msat`, `ChannelParams.Remote`) is enforced by `TryFit` (the binary search of `LargestFit` ignores minimums and checks its result with them); a split part that would leave a rest below every later path's minimum takes less and leaves max(that minimum, `MinPartMsat`) (`LeaveForTheRest`); a B2-ADD-S06 refusal raises that channel's minimum above the refused amount (`RouteConstraints.RaiseLocalHtlcMinimum`) instead of avoiding the channel. (2, 449de393) `TrampolineAcceptsMpp`: `basic_mpp` in the trampoline node's features as a connected peer (`IPeerManager`), else in its `node_announcement`; assumed when neither is known (PR 836: a trampoline node collects the outer parts). (3, 094d4709) the reason names the trampoline node for the last outer hop (an attribution that did not verify there, and "the last from the trampoline node" after the hold times), in a session and from the stored hops after a restart; the stored route keeps the payee there because `PaymentModel` requires its route to end at the payee, so the hold time recorded on that hop is the trampoline node's (documented in `BuildHops` and the Application guide). (4, 094d4709) documented; a relay leg keeps its attribution (hold times and reason on the leg row) and its outcome is decided as without it. (5, 2f334449) `LateFulfillFee`: the fulfilled HTLC's fee only when it is the row's recorded HTLC (`OutgoingHtlcId` not null) or a stored `PaymentParts` part, and it carried the whole amount; otherwise zero. Failed rows stored before NL-982 keep their nonzero `FeeMsat` (no backfill).
+- **Tests (all fail or do not compile at 1683ff22 except the pinning cases: the relay leg, the recorded-HTLC fee, the whole-part fee and the `basic_mpp` case):** `PaymentRoutePlannerTests` (NL-924 region: a rest below the other channel's minimum, an amount below a channel's minimum, a minimum learnt from a refusal), `PaymentRetryHarnessTests.Given_ARestBelowCarolsHtlcMinimum_*` and `Given_APartRefusedBelowThePeersHtlcMinimum_*` (harness `OfferRefusal`), `TrampolinePaymentHarnessTests.Given_ChannelsTooSmallAndCarolsAnnouncedFeatures_*` (both cases), `PaymentServiceTests.Given_ATrampolinePeerAndItsInitFeatures_*`/`Given_ATrampolineNodeNeitherPeerNorInTheGraph_*`, `TrampolineAttributionHarnessTests` (the trampoline node named for the last outer hop; `Given_ARelayLegFailsWithAttribution_*` pins finding 4), `PaymentServiceTests.Given_AFailedRowWithoutARecordedHtlc_*`, `Given_AFailedRowWithItsHtlcRecorded_*`, `Given_AFailedRowAndAStoredPartOfTheFulfilledHtlc_*`.
+- **Blocks/Blocked-by:** follow-up of NL-898, NL-980, NL-982 (NL-875); related NL-925
+- **Plan ref:** TRAMPOLINE_PLAN TR4
+
+### NL-925 A payment through a trampoline node that is our peer stores its only outer hop under the payee, so the first-hop match fails
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`BuildHops`, `MatchesFirstHop` in `MatchOutcomeAsync` and `FindAttemptHtlcs(matchFirstHop: true)`)
+- **Evidence:** found while fixing NL-924 (2026-10-03). The stored route of a trampoline payment names the payee for its last hop (`PaymentModel` requires its route to end at the payee). When the trampoline node is our direct peer the outer route has one hop, so `Route[0].NodeId` is the payee and `MatchesFirstHop` (channel peer = first hop) never matches. It only matters for a row without a recorded HTLC id (a crash between the offer and `AddOutgoingHtlc`): a failure of that HTLC is then `Unmatched` and the row stays in flight until the next start or retry reconciles it through the stored origin (`FindHtlcsByOriginAsync`); a fulfill is still recorded (late-fulfill path).
+- **Fix sketch:** skip the first-hop check when the HTLC's stored origin is `Local(hash)` (the check is for rows from before NL-250), or compare the first hop against `PaymentTrampolineHops` hop 0 for a trampoline payment.
+- **Blocks/Blocked-by:** related NL-924, NL-875
+- **Plan ref:** —
 
 ## BOLT 5: On-chain handling
 
