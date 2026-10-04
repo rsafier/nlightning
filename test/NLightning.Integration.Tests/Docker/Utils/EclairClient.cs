@@ -206,6 +206,18 @@ public sealed class EclairClient : IDisposable
         await CallAsync("rbfopen", cancellationToken, ("channelId", channelId),
                         ("targetFeerateSatByte", feerateSatByte), ("fundingFeeBudgetSatoshis", feeBudgetSat));
 
+    /// <summary>
+    /// <c>sendtoroute</c>: one HTLC of <paramref name="amountMsat"/> for <paramref name="invoice"/> along
+    /// <paramref name="nodeIds"/> (from Eclair itself), with <paramref name="recipientAmountMsat"/> as the MPP total, so
+    /// a part below it is held by the recipient until the rest arrives.
+    /// </summary>
+    public async Task<JsonNode?> SendToRouteAsync(string invoice, IReadOnlyList<string> nodeIds, long amountMsat,
+                                                  long recipientAmountMsat, int finalCltvExpiry,
+                                                  CancellationToken cancellationToken) =>
+        await CallAsync("sendtoroute", cancellationToken, ("invoice", invoice), ("nodeIds", string.Join(",", nodeIds)),
+                        ("amountMsat", amountMsat), ("recipientAmountMsat", recipientAmountMsat),
+                        ("finalCltvExpiry", finalCltvExpiry));
+
     /// <summary><c>forceclose</c>: Eclair publishes its commitment.</summary>
     public async Task<JsonNode?> ForceCloseAsync(string channelId, CancellationToken cancellationToken) =>
         await CallAsync("forceclose", cancellationToken, ("channelId", channelId));

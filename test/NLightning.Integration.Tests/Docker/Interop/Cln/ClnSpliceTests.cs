@@ -982,6 +982,12 @@ public sealed class ClnSpliceTests : IAsyncLifetime
 
         public IReadOnlyList<SpliceWireMessage> Snapshot() => _traffic.ToArray();
 
+        /// <summary>
+        /// When set, every inbound message whose type it accepts is recorded and then dropped, never handled (the
+        /// Eclair taproot on-chain proofs hold an HTLC by never processing the peer's <c>update_fulfill_htlc</c>).
+        /// </summary>
+        public Func<ushort, bool>? DropInbound { get; set; }
+
         /// <summary>The sequence the next recorded message gets.</summary>
         public long CurrentSequence
         {
@@ -1055,6 +1061,8 @@ public sealed class ClnSpliceTests : IAsyncLifetime
                 var wire = new byte[stream.Length - stream.Position];
                 await stream.ReadExactlyAsync(wire);
                 recorder.Record(wire, inbound: true);
+                if (wire.Length >= 2 && recorder.DropInbound?.Invoke(BinaryPrimitives.ReadUInt16BigEndian(wire)) == true)
+                    return null; // recorded, never handled (MessageService ignores a null message)
 
                 using var copy = new MemoryStream(wire, false);
                 return await inner.DeserializeMessageAsync(copy);
