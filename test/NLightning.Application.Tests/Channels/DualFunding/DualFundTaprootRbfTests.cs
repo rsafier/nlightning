@@ -238,6 +238,61 @@ public class DualFundTaprootRbfTests
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_TheSecondCommitmentSignedOfAnRbfAttemptIsLost_When_ANodeRestarts_Then_ItIsSignedAgainAndFollowed(
+        bool restartSender)
+    {
+        // Arrange: a signed open, then a bump whose second commitment_signed is lost on the link
+        await using var harness = await CreateTaprootHarnessAsync();
+        var open = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(Request(harness),
+                                                                           TestContext.Current.CancellationToken));
+        Assert.True(open.FailureReason is null, $"{open.FailureReason}\n{harness.Describe()}");
+        var channelId = open.ChannelId;
+        var before = harness.Transcript.Count(t => t.Message is CommitmentSignedMessage);
+        var bump = harness.Alice.DualFund.BumpAsync(channelId, 5_000, TestContext.Current.CancellationToken);
+        var commitments = 0;
+        await harness.PumpAsync((_, message) => message is CommitmentSignedMessage && ++commitments == 2);
+        var (firstFrom, _) = harness.Transcript.Where(t => t.Message is CommitmentSignedMessage).Skip(before).First();
+        var receiver = firstFrom == "Alice" ? harness.Alice : harness.Bob;
+        var sender = harness.Other(receiver);
+        var lost = Assert.IsType<CommitmentSignedMessage>(harness.TakeNext(sender));
+        var rbfTxId = lost.FundingTxIdTlv!.FundingTxId;
+
+        // Act
+        await harness.RestartAsync(restartSender ? sender : receiver);
+        await harness.ReconnectAsync();
+        await harness.PumpAsync();
+        // (when Alice, the bumping node, restarted, her call ended with the restart)
+        if ((restartSender ? sender : receiver) != harness.Alice)
+            Assert.True((await bump.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken))
+                       .FailureReason is null, harness.Describe());
+
+        // Assert: re-signed with a fresh nonce, both attempts signed on both nodes with the peer's partial signature
+        var resent = (CommitmentSignedMessage)harness.Transcript.Last(t => t.From == sender.Name
+                                                                        && t.Message is CommitmentSignedMessage)
+                                                     .Message;
+        Assert.Equal(rbfTxId, resent.FundingTxIdTlv!.FundingTxId);
+        Assert.NotEqual(lost.PartialSignatureWithNonceTlv!.PartialSignatureWithNonce.PublicNonce,
+                        resent.PartialSignatureWithNonceTlv!.PartialSignatureWithNonce.PublicNonce);
+        foreach (var node in harness.Nodes)
+        {
+            Assert.Empty(node.Errors);
+            var signed = await SignedSessionsAsync(node, channelId);
+            Assert.Equal([open.FundingTxId!.Value, rbfTxId], signed.Select(s => s.ConstructedTx!.TxId));
+            Assert.All(signed, s => Assert.NotNull(s.TheirCommitmentPartialSignature));
+        }
+
+        // ...and either attempt, confirming, is force-closable on both nodes; here the RBF one
+        await harness.ConfirmFundingAsync(channelId, rbfTxId);
+        foreach (var node in harness.Nodes)
+        {
+            Assert.True(node.Channel(channelId).State == ChannelState.Open, harness.Describe());
+            await AssertForceCloseValidAsync(node, channelId, rbfTxId, 0);
+        }
+    }
+
     [Fact]
     public async Task Given_ARowSignedWithoutAPartialSignature_When_EitherSideBumps_Then_TheRbfIsRefused()
     {
