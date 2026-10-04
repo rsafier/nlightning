@@ -77,6 +77,18 @@
 #       --diag M          when to collect diagnostics: failure (default), always or off (NLTG_CLUSTER_DIAG)
 #       --keep-logs       leave the logs of green runs as they are (by default they are gzipped once the summary is
 #                         written: a suite's output.log reaches 0.3-0.8 GB, NL-818)
+#       --coverage        collect code coverage of our own assemblies (NLightning.*, not the test projects) with
+#                         coverlet.console (`dotnet tool install -g coverlet.console`; NLTG_COVERLET overrides the
+#                         command): every run (reruns included) instruments its own copy of the test project's output
+#                         (<run dir>/coverage/bin, deleted afterwards; coverlet rewrites assemblies in place, so the
+#                         shared bin folder is never touched) and writes <run dir>/coverage.cobertura.xml. The test
+#                         process runs under a small wrapper (<run dir>/coverage/target.sh) that records its real exit
+#                         code, so the summary, the flake rule and the hang timeout judge it as without coverage; the
+#                         hang timeout stops the test process itself (TERM, KILL 30 s later), which lets coverlet write
+#                         what it collected. Merge the files with reportgenerator, e.g.
+#                           reportgenerator -reports:"TestResults/cluster/<batch>/**/coverage.cobertura.xml" -targetdir:<dir>
+#       --coverage-timeout-factor F  with --coverage, multiply the suites' hang timeouts by F (default 2; instrumented
+#                         code runs slower; an explicit --timeout is kept as given)
 #
 # Example: the default matrix, every suite that fits started at once within the 12-namespace cap (18 min)
 #   scripts/run-cluster.sh --matrix
@@ -89,6 +101,8 @@
 # Example: the LND suite (the regtest collection), alone; one class of the on-chain suite
 #   scripts/run-cluster.sh -n 1 --suite lnd
 #   scripts/run-cluster.sh -n 1 --suite onchain --class NLightning.Integration.Tests.Docker.BackupRestoreFlowTests
+# Example: the default matrix with code coverage (one coverage.cobertura.xml per run)
+#   scripts/run-cluster.sh --coverage --matrix
 # Example: the scaffold's namespace test 3 times at once; our in-process node against CLN and LND pods
 #   scripts/run-cluster.sh -n 3 --method '*ARunDeploysABusyboxStatefulSet*'
 #   scripts/run-cluster.sh -n 3 -p integration --class NLightning.Integration.Tests.Cluster.Live.InProcessNodeClusterTests
@@ -98,7 +112,8 @@
 # runner (Ctrl-C, TERM) stops its test processes (TERM, KILL after 30 s) and then reaps their namespaces. Every kubectl
 # call of the runner has a 15 s request timeout.
 # Test hook (scripts/tests/run-cluster-tests.sh only): NLTG_RUN_CLUSTER_FAKE_TESTS=<command> runs <command> instead of
-# the test assembly and skips its build check, the cluster check and the reaper.
+# the test assembly and skips its build check, the cluster check and the reaper; with --coverage, NLTG_COVERLET then
+# names a stand-in for coverlet (scripts/tests/fake-coverlet.sh) and a missing test output folder is copied as empty.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -129,6 +144,8 @@ timeout_seconds=""
 filters=()
 extra=()
 fake_tests="${NLTG_RUN_CLUSTER_FAKE_TESTS:-}"
+coverage=0
+coverage_factor=2
 
 die() { echo "run-cluster: $*" >&2; exit 2; }
 
@@ -169,6 +186,8 @@ while [[ $# -gt 0 ]]; do
     --keep) keep=1; shift ;;
     --keep-on-failure) keep=failure; shift ;;
     --keep-logs) keep_logs=1; shift ;;
+    --coverage) coverage=1; shift ;;
+    --coverage-timeout-factor) coverage_factor="${2:?}"; shift 2 ;;
     --diag) diag="${2:?}"; shift 2 ;;
     --trait) trait="${2:?}"; trait_set=1; shift 2 ;;
     --explicit) explicit="${2:?}"; explicit_set=1; shift 2 ;;
@@ -202,6 +221,19 @@ fi
 [[ "$explicit" =~ ^(only|on|off)$ ]] || die "--explicit must be only, on or off"
 if [[ -n "$timeout" ]]; then
   timeout_seconds="$(seconds_of "$timeout")" || die "--timeout must be like 90s, 30m or 2h"
+fi
+[[ "$coverage_factor" =~ ^[1-9][0-9]*$ ]] || die "--coverage-timeout-factor must be a positive whole number"
+coverlet=()
+if (( coverage )); then
+  if [[ -n "${NLTG_COVERLET:-}" ]]; then
+    read -ra coverlet <<< "$NLTG_COVERLET"
+  elif command -v coverlet > /dev/null 2>&1; then
+    coverlet=(coverlet)
+  elif [[ -x "$HOME/.dotnet/tools/coverlet" ]]; then
+    coverlet=("$HOME/.dotnet/tools/coverlet")
+  else
+    die "--coverage needs coverlet.console (dotnet tool install -g coverlet.console)"
+  fi
 fi
 if (( matrix )); then
   batch="${batch:-mx-$(date -u +%Y%m%d%H%M%S)}"
@@ -246,6 +278,9 @@ else
   [[ -f "$test_dll" ]] || die "missing build output ($test_dll); drop --no-build"
   test_cmd=(dotnet "$test_dll")
 fi
+# --coverage: what each run copies and instruments, and where its test assembly lands in the copy
+test_bin="$(dirname "$test_dll")"
+test_dll_name="$(basename "$test_dll")"
 
 # The machine's cap on run namespaces, set in one place (RunAdmission.DefaultMaxRuns, NL-844): --max-namespaces and
 # -j stay within it, as the test processes' own admission (NLTG_MAX_CONCURRENT_RUNS) does.
@@ -306,12 +341,16 @@ fi
 
 # One test process: its own run id, log, xunit XML and diagnostics folder, stopped by its hang timeout (TERM, then KILL
 # 30 s later; marked by a "timedout" file). Writes "<exit code> <wall s> <start epoch>" to <dir>/exit when it ended.
+# With --coverage the process runs under coverlet, on the run's own instrumented copy of the test output (see
+# coverage_command); the exit code is the test process's own (<dir>/coverage/test-exit) and the hang timeout stops the
+# test process (<dir>/test-pid), then coverlet if it has not ended 5 min after that.
 # Usage: run_attempt <dir> <run id> <timeout s> <explicit> <parallel or -> <backend> [xunit filters...]
 run_attempt() {
   local dir="$1" id="$2" limit="$3" mode="$4" parallel="$5" run_backend="$6"
   shift 6
-  local start pid watchdog code parallel_args=()
+  local start pid watchdog code parallel_args=() cmd=("${test_cmd[@]}")
   if [[ "$parallel" != - ]]; then parallel_args=(-parallel "$parallel"); fi
+  if (( coverage )) && [[ -z "$timeout_seconds" ]]; then limit=$(( limit * coverage_factor )); fi
   # Every run's disposal waits until its namespace is gone (NLTG_WAIT_NAMESPACE_DELETION), so a process never holds
   # more namespaces than its count: collections run one after another (-parallel none) never overlap, and a class that
   # builds one topology per test (faults) never creates the next while the last one terminates (NL-840: a faults suite
@@ -319,27 +358,36 @@ run_attempt() {
   local wait_deletion=1
   mkdir -p "$dir"
   echo "$id" > "$dir/run-id"
+  cmd+=(-explicit "$mode" ${parallel_args[@]+"${parallel_args[@]}"} "$@" -xml "$dir/results.xml" -showLiveOutput
+        -noColor ${extra[@]+"${extra[@]}"})
+  if (( coverage )); then
+    coverage_command "$dir" "${cmd[@]}" || { echo "1 0 $(date +%s)" > "$dir/exit"; return 0; }
+  fi
   start=$(date +%s)
   NLTG_TEST_RUN_ID="$id" NLTG_KEEP_NAMESPACE="$keep" NLTG_CLUSTER_DIAG="$diag" NLTG_CLUSTER_DIAG_DIR="$dir/diag" \
     NLTG_TEST_BACKEND="$run_backend" NLTG_WAIT_NAMESPACE_DELETION="$wait_deletion" \
-    "${test_cmd[@]}" -explicit "$mode" ${parallel_args[@]+"${parallel_args[@]}"} "$@" -xml "$dir/results.xml" \
-    -showLiveOutput -noColor ${extra[@]+"${extra[@]}"} > "$dir/output.log" 2>&1 < /dev/null &
+    "${cmd[@]}" > "$dir/output.log" 2>&1 < /dev/null &
   pid=$!
   echo "$pid" > "$dir/pid"
   (
     sleeper=""
     trap 'if [[ -n "$sleeper" ]]; then kill "$sleeper" 2> /dev/null; fi; exit 0' TERM
-    sleep "$limit" &
-    sleeper=$!
-    wait "$sleeper"
+    pause() { sleep "$1" & sleeper=$!; wait "$sleeper"; }
+    pause "$limit"
     if kill -0 "$pid" 2> /dev/null; then
       touch "$dir/timedout"
       echo "run-cluster: $id hit its hang timeout (${limit}s); stopping it"
-      kill -TERM "$pid" 2> /dev/null
-      sleep 30 &
-      sleeper=$!
-      wait "$sleeper"
-      kill -KILL "$pid" 2> /dev/null
+      # Under coverlet the test process itself (coverlet writes its report once that has ended)
+      victim="$pid"
+      if [[ -f "$dir/test-pid" ]]; then victim="$(cat "$dir/test-pid")"; fi
+      kill -TERM "$victim" 2> /dev/null
+      pause 30
+      kill -KILL "$victim" 2> /dev/null
+      if [[ "$victim" != "$pid" ]]; then
+        waited=0
+        while (( waited < 300 )) && kill -0 "$pid" 2> /dev/null; do pause 5; waited=$((waited + 5)); done
+        kill -KILL "$pid" 2> /dev/null
+      fi
     fi
     exit 0
   ) &
@@ -351,8 +399,60 @@ run_attempt() {
   kill -TERM "$watchdog" 2> /dev/null
   wait "$watchdog" 2> /dev/null
   set -e
-  rm -f "$dir/pid" "$dir/watchdog"
+  rm -f "$dir/pid" "$dir/watchdog" "$dir/test-pid"
+  if (( coverage )); then
+    echo "$code" > "$dir/coverage/coverlet-exit"
+    # The test process's own exit code (coverlet reports any failure as 1); coverlet's when the wrapper never wrote
+    # one (it was killed)
+    if [[ -f "$dir/coverage/test-exit" ]]; then code="$(cat "$dir/coverage/test-exit")"; fi
+    if [[ ! -s "$dir/coverage.cobertura.xml" ]]; then
+      echo "run-cluster: $id wrote no coverage (coverlet exit $(cat "$dir/coverage/coverlet-exit"); see output.log)"
+    fi
+    rm -rf "$dir/coverage/bin"
+  fi
   echo "$code $(( $(date +%s) - start )) $start" > "$dir/exit"
+}
+
+# --coverage: replaces cmd (run_attempt's test command) with coverlet over the run's own copy of the test output
+# (<dir>/coverage/bin; APFS/btrfs clones where the file system has them) and a wrapper script that runs the test
+# process, writes its pid to <dir>/test-pid (the hang timeout stops it) and its exit code to <dir>/coverage/test-exit.
+# Usage: coverage_command <dir> <test command...>
+coverage_command() {
+  local dir="$1" copy="$1/coverage/bin" target="$1/coverage/target.sh" i
+  shift
+  local run=("$@")
+  mkdir -p "$dir/coverage"
+  rm -rf "$copy"
+  if [[ -d "$test_bin" ]]; then
+    cp -Rc "$test_bin" "$copy" 2> /dev/null || cp -R --reflink=auto "$test_bin" "$copy" 2> /dev/null \
+      || cp -R "$test_bin" "$copy" || { echo "run-cluster: copying $test_bin for coverage failed" >&2; return 1; }
+  else
+    mkdir -p "$copy" # fake tests (the self-tests): nothing to instrument
+  fi
+  # The test assembly from the copy, so the instrumented NLightning.* next to it are the ones it loads
+  for (( i = 0; i < ${#run[@]}; i++ )); do
+    if [[ "${run[$i]}" == "$test_dll" ]]; then run[$i]="$copy/$test_dll_name"; fi
+  done
+  {
+    echo '#!/usr/bin/env bash'
+    printf '%q ' "${run[@]}"
+    echo '&'
+    echo 'child=$!'
+    printf 'echo "$child" > %q\n' "$dir/test-pid"
+    echo 'wait "$child"'
+    echo 'code=$?'
+    printf 'echo "$code" > %q\n' "$dir/coverage/test-exit"
+    echo 'exit "$code"'
+  } > "$target"
+  chmod +x "$target"
+  rm -f "$dir/coverage/test-exit" "$dir/coverage.cobertura.xml"
+  cmd=("${coverlet[@]}" "$copy/$test_dll_name" --target bash --targetargs "\"$target\""
+       --format cobertura --output "$dir/coverage.cobertura.xml"
+       --include "[NLightning.*]*" --exclude "[*.Tests]*" --exclude "[NLightning.Tests.Utils]*"
+       --exclude "[NLightning.Testing.*]*" --exclude-by-file "**/Migrations/*.cs"
+       --exclude-by-file "**/CompiledModels/**/*.cs" --exclude-by-file "**/obj/**/*.cs"
+       --exclude-by-attribute GeneratedCode --exclude-by-attribute CompilerGenerated
+       --exclude-by-attribute ExcludeFromCodeCoverage --skipautoprops)
 }
 
 # The namespaces of a run whose process has ended (its owner is gone, so the reaper takes them).
@@ -406,6 +506,16 @@ compress_green_logs() {
   wait
 }
 
+# --coverage: the batch's coverage files, and the command that merges them.
+report_coverage() {
+  if (( ! coverage )); then return 0; fi
+  local files
+  files="$(find "$results" -name coverage.cobertura.xml -size +0 | wc -l | tr -d ' ')"
+  echo "run-cluster: $files coverage file(s) under $results; merge them with"
+  echo "  reportgenerator -reports:\"$results/**/coverage.cobertura.xml\" -targetdir:$results/coverage-html" \
+       "-reporttypes:\"Html;TextSummary\""
+}
+
 # Stopping the runner stops its suites, their watchdogs and test processes (TERM; KILL after 30 s, as the hang timeout
 # does), then reaps the batch's namespaces once their owners are gone (kept ones stay, as --keep* asked).
 pids=()
@@ -418,7 +528,7 @@ on_signal() {
   while IFS= read -r f; do kill -TERM "$(cat "$f")" 2> /dev/null || true; done \
     < <(find "$results" -name watchdog -type f 2> /dev/null)
   while IFS= read -r f; do tests+=("$(cat "$f" 2> /dev/null)"); done \
-    < <(find "$results" -name pid -type f 2> /dev/null)
+    < <(find "$results" \( -name pid -o -name test-pid \) -type f 2> /dev/null)
   for pid in ${tests[@]+"${tests[@]}"}; do kill -TERM "$pid" 2> /dev/null || true; done
   deadline=$(( $(date +%s) + 30 ))
   while (( $(date +%s) < deadline )); do
@@ -593,6 +703,7 @@ if (( matrix )); then
   status=${PIPESTATUS[0]}
   set -e
   compress_green_logs
+  report_coverage
   if [[ -z "$fake_tests" ]]; then
     echo "run-cluster: run namespaces left under nltg-spike:"
     cli list || true
@@ -697,6 +808,7 @@ PY
 status=${PIPESTATUS[0]}
 set -e
 compress_green_logs
+report_coverage
 
 if [[ -z "$fake_tests" ]]; then
   echo "run-cluster: run namespaces left under nltg-spike:"
