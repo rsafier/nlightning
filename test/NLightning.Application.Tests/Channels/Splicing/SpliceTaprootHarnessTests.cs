@@ -5,8 +5,8 @@ using NBitcoin;
 namespace NLightning.Application.Tests.Channels.Splicing;
 
 using Application.Channels.Safety;
-using Application.Channels.Splicing;
 using Application.Channels.Safety.Interfaces;
+using Application.Channels.Splicing;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Channels.Enums;
