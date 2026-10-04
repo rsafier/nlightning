@@ -438,6 +438,18 @@ internal sealed class HarnessNode : IDisposable
     public Mock<IGraphDbRepository> GraphDb { get; } = new();
 
     /// <summary>
+    /// The watched-outpoint rows the node's unit of work reads (a loose mock: no spend recorded until a test sets the
+    /// funding output's up, as the chain monitor does for a processed block).
+    /// </summary>
+    public Mock<Domain.Onchain.Interfaces.IWatchedOutpointDbRepository> WatchedOutpoints { get; } = new();
+
+    /// <summary>The interactive-tx rows the node's unit of work deletes when a channel closes (a loose mock).</summary>
+    public Mock<Domain.Protocol.InteractiveTx.Interfaces.IInteractiveTxSessionDbRepository> InteractiveTxSessions
+    {
+        get;
+    } = new();
+
+    /// <summary>
     /// The node's chain monitor (services and channel manager): tip <see cref="TwoNodeHarness.BlockHeight"/> until
     /// <see cref="RaiseBlockAsync"/> or <see cref="SetTip"/>.
     /// </summary>
@@ -527,6 +539,8 @@ internal sealed class HarnessNode : IDisposable
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);
         unitOfWork.SetupGet(u => u.WatchedTransactionDbRepository).Returns(WatchedTransactions.Object);
         unitOfWork.SetupGet(u => u.GraphDbRepository).Returns(GraphDb.Object);
+        unitOfWork.SetupGet(u => u.WatchedOutpointDbRepository).Returns(WatchedOutpoints.Object);
+        unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository).Returns(InteractiveTxSessions.Object);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {
             Store.Commit();

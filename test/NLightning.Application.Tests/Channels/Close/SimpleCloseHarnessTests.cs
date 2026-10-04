@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NLightning.Tests.Utils;
 
 namespace NLightning.Application.Tests.Channels.Close;
 
@@ -543,6 +544,98 @@ public class SimpleCloseHarnessTests
         Assert.Equal(close.Alice.Channel.ClosingTransaction!.TxId, close.Published(close.Alice)[^1].TxId);
         Assert.Equal(MutualCloseProtocol.Simple, close.Alice.Channel.CloseProtocol); // NL-610: we were the closer
         Assert.True(close.Alice.Channel.LocalIsCloser);
+    }
+
+    #endregion
+
+    #region A late message after a funding spend (NL-983)
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_ThePeersClosingTxConfirmed_When_ALateClosingSigArrives_Then_TheConfirmedTxStaysAndClosesTheChannel(
+        bool taproot)
+    {
+        // Arrange: Bob signed Alice's closing transaction (stored, broadcast); Alice's closing_sig for Bob's own one
+        // is still on the link when a block holds Alice's (day-0 step 8 in trreg-mx1 and tap2-mx1)
+        using var close = new CloseHarness(simpleClose: true, simpleTaproot: taproot);
+        var late = await close.CloseHoldingAsync(close.Alice, close.Alice, m => m is ClosingSigMessage);
+        var bobChannel = close.Bob.Channel;
+        var confirmed = bobChannel.ClosingTransaction!;
+        Assert.Equal(ChannelState.Closing, bobChannel.State);
+        Assert.Equal([confirmed.TxId], close.Published(close.Bob).Select(t => t.TxId));
+        await CloseHarness.FundingSpentInBlockAsync(close.Bob, confirmed, 501);
+
+        // Act: the late closing_sig, then the confirmed transaction reaches its depth
+        await CloseHarness.DeliverLateAsync(close.Alice, late);
+        CloseHarness.RaiseConfirmed(close.Bob, confirmed.TxId, 501);
+
+        // Assert: Bob's own transaction (it can't confirm any more) was neither stored nor broadcast, and the one the
+        // block holds closed the channel
+        await WaitFor.TrueAsync(() => bobChannel.State == ChannelState.Closed, TimeSpan.FromSeconds(10),
+                                "Bob's channel is Closed", TestContext.Current.CancellationToken);
+        Assert.Equal(confirmed.TxId, bobChannel.ClosingTransaction!.TxId);
+        Assert.Equal([confirmed.TxId], close.Published(close.Bob).Select(t => t.TxId));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_ThePeersClosingTxInTheMempool_When_ALateClosingSigArrives_Then_ItIsStoredAndTheTxTheBlockHoldsClosesTheChannel(
+        bool taproot)
+    {
+        // Arrange: as above, but Alice's transaction is only in the mempool when her closing_sig arrives
+        using var close = new CloseHarness(simpleClose: true, simpleTaproot: taproot);
+        var late = await close.CloseHoldingAsync(close.Alice, close.Alice, m => m is ClosingSigMessage);
+        var bobChannel = close.Bob.Channel;
+        var alicesTx = bobChannel.ClosingTransaction!;
+
+        // Act: the late closing_sig (a mempool spend does not stop it: it may replace Alice's), then a block holds
+        // Alice's transaction and it reaches its depth
+        await CloseHarness.DeliverLateAsync(close.Alice, late);
+        var bobsTx = bobChannel.ClosingTransaction!;
+        Assert.NotEqual(alicesTx.TxId, bobsTx.TxId);
+        Assert.Equal([alicesTx.TxId, bobsTx.TxId], close.Published(close.Bob).Select(t => t.TxId));
+        await CloseHarness.FundingSpentInBlockAsync(close.Bob, alicesTx, 501);
+        await WaitFor.TrueAsync(() => bobChannel.ClosingTransaction?.TxId == alicesTx.TxId, TimeSpan.FromSeconds(10),
+                                "Bob records the transaction the block holds", TestContext.Current.CancellationToken);
+        CloseHarness.RaiseConfirmed(close.Bob, alicesTx.TxId, 501);
+
+        // Assert
+        await WaitFor.TrueAsync(() => bobChannel.State == ChannelState.Closed, TimeSpan.FromSeconds(10),
+                                "Bob's channel is Closed", TestContext.Current.CancellationToken);
+        Assert.Equal(alicesTx.TxId, bobChannel.ClosingTransaction!.TxId);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_OurStoredClosingTxConfirmed_When_ThePeerBumpsWithALateClosingComplete_Then_ItIsSignedButNotStored(
+        bool taproot)
+    {
+        // Arrange: the close is done both ways and a block holds Bob's stored transaction; Alice then bumps hers
+        // (closee role of the late message)
+        using var close = new CloseHarness(simpleClose: true, simpleTaproot: taproot);
+        var ct = TestContext.Current.CancellationToken;
+        await CloseAsync(close);
+        var bobChannel = close.Bob.Channel;
+        var confirmed = bobChannel.ClosingTransaction!;
+        var publishedBefore = close.Published(close.Bob).Count;
+        await CloseHarness.FundingSpentInBlockAsync(close.Bob, confirmed, 501);
+
+        // Act
+        await close.CloseService(close.Alice)
+                   .CloseChannelAsync(TwoNodeHarness.ChannelId, new ChannelCloseRequest(FeeRatePerKw: 10_000), ct);
+        await close.Harness.PumpAsync();
+        CloseHarness.RaiseConfirmed(close.Bob, confirmed.TxId, 501);
+
+        // Assert: Bob answered the bump (BOLT 2: the closee signs) but kept and broadcast nothing new; the confirmed
+        // transaction closed the channel
+        Assert.Equal(2, close.Alice.Received.OfType<ClosingSigMessage>().Count());
+        await WaitFor.TrueAsync(() => bobChannel.State == ChannelState.Closed, TimeSpan.FromSeconds(10),
+                                "Bob's channel is Closed", ct);
+        Assert.Equal(confirmed.TxId, bobChannel.ClosingTransaction!.TxId);
+        Assert.Equal(publishedBefore, close.Published(close.Bob).Count);
     }
 
     #endregion

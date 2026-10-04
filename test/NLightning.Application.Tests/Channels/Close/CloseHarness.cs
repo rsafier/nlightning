@@ -9,15 +9,21 @@ using Application.Channels.Close;
 using Application.Channels.Close.Handlers;
 using Application.Channels.Handlers;
 using Application.Channels.Handlers.Interfaces;
+using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Crypto.Interfaces;
+using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Models;
+using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Harness;
 using Infrastructure.Bitcoin.Outputs;
@@ -163,6 +169,86 @@ internal sealed class CloseHarness : IDisposable
         var tx = Transaction.Load(aliceTx.RawTxBytes, Network.RegTest);
         AssertSpendsFunding(tx);
         return tx;
+    }
+
+    /// <summary>
+    /// Starts the close from <paramref name="initiator"/> and delivers the messages both ways until both outboxes are
+    /// empty, except the first one <paramref name="holdFrom"/> sends that matches <paramref name="hold"/>: it is taken
+    /// off the link and returned, for <see cref="DeliverLateAsync"/> (NL-983).
+    /// </summary>
+    public async Task<IChannelMessage> CloseHoldingAsync(HarnessNode initiator, HarnessNode holdFrom,
+                                                         Func<IChannelMessage, bool> hold)
+    {
+        await CloseService(initiator).CloseChannelAsync(TwoNodeHarness.ChannelId, new ChannelCloseRequest(),
+                                                        TestContext.Current.CancellationToken);
+        IChannelMessage? held = null;
+        for (var steps = 0; steps < 1_000; steps++)
+        {
+            await Alice.Scheduler.WhenIdleAsync();
+            await Bob.Scheduler.WhenIdleAsync();
+            var aliceSent = await DeliverOrHoldAsync(Alice);
+            var bobSent = await DeliverOrHoldAsync(Bob);
+            if (!aliceSent && !bobSent)
+                return held ?? throw new InvalidOperationException($"{holdFrom.Name} sent no message to hold");
+        }
+
+        throw new InvalidOperationException("The message exchange did not converge");
+
+        async Task<bool> DeliverOrHoldAsync(HarnessNode node)
+        {
+            if (held is null && node == holdFrom && node.PeekNext() is { } next && hold(next))
+                return node.TryTakeNext(out held);
+
+            return await node.DeliverNextAsync();
+        }
+    }
+
+    /// <summary>Hands <paramref name="message"/>, sent earlier by <paramref name="from"/>, to its peer now.</summary>
+    public static Task DeliverLateAsync(HarnessNode from, IChannelMessage message) =>
+        from.Peer.ChannelManager.HandleChannelMessageAsync(message, from.NegotiatedFeatures, from.NodeId);
+
+    /// <summary>
+    /// <paramref name="node"/>'s chain monitor processed a block holding <paramref name="spend"/> at
+    /// <paramref name="height"/>: the funding output's watch records the spend and the spend is raised, as
+    /// <c>BlockchainMonitorService</c> does; returns once the channel manager handled it (its channel lock is free).
+    /// </summary>
+    public static async Task FundingSpentInBlockAsync(HarnessNode node, SignedTransaction spend, uint height)
+    {
+        var funding = node.Channel.FundingOutput!;
+        var fundingTxId = funding.TransactionId!.Value;
+        var fundingIndex = funding.Index!.Value;
+        var blockHash = new Hash(Enumerable.Repeat((byte)height, 32).ToArray());
+        var watch = new WatchedOutpointModel(fundingTxId, fundingIndex, TwoNodeHarness.ChannelId,
+                                             WatchedOutpointPurpose.FundingOutput);
+        watch.MarkSpent(spend.TxId, height, blockHash);
+        node.WatchedOutpoints.Setup(r => r.GetAsync(fundingTxId, fundingIndex)).ReturnsAsync(watch);
+        node.WatchedTransactions.Setup(r => r.GetByTransactionIdAsync(spend.TxId))
+            .ReturnsAsync(() =>
+             {
+                 var seen = new WatchedTransactionModel(TwoNodeHarness.ChannelId, spend.TxId, 6);
+                 seen.SetHeightAndIndex(height, 1);
+                 return seen;
+             });
+        node.ChainMonitor.Raise(m => m.OnWatchedOutpointSpent += null, node.ChainMonitor.Object,
+                                new OutpointSpentEventArgs(TwoNodeHarness.ChannelId, spend, height, 1, fundingTxId,
+                                                           fundingIndex, blockHash));
+        using (await node.Services.GetRequiredService<IChannelLockProvider>()
+                         .AcquireAsync(TwoNodeHarness.ChannelId, TestContext.Current.CancellationToken))
+        {
+        }
+    }
+
+    /// <summary>
+    /// <paramref name="txId"/>'s watch on <paramref name="node"/> reached its depth (6 blocks above
+    /// <paramref name="height"/>): the confirmation is raised to the channel manager.
+    /// </summary>
+    public static void RaiseConfirmed(HarnessNode node, TxId txId, uint height)
+    {
+        var watched = new WatchedTransactionModel(TwoNodeHarness.ChannelId, txId, 6);
+        watched.SetHeightAndIndex(height, 1);
+        watched.MarkAsCompleted();
+        node.ChainMonitor.Raise(m => m.OnTransactionConfirmed += null, node.ChainMonitor.Object,
+                                new TransactionConfirmedEventArgs(watched, height + 5));
     }
 
     public static long OutputTo(Transaction tx, BitcoinScript script) =>
