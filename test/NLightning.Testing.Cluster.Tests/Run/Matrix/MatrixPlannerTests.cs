@@ -148,6 +148,7 @@ public class MatrixPlannerTests
         Assert.Equal(10, fields.Length);
         Assert.Equal(["run", "postgres", "integration", "on", "2", "none", "600"], fields[..7]);
         Assert.Equal("-class NLightning.Integration.Tests.Docker.PostgresTests "
+                   + "-class NLightning.Integration.Tests.Docker.TaprootPostgresCrashTests "
                    + "-class NLightning.Integration.Tests.Cluster.Live.ServerDatabaseClusterTests", fields[7]);
         Assert.Equal("-trait Database=Postgres -trait- Database=SqlServer", fields[8]);
     }

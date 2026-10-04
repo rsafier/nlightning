@@ -18,6 +18,7 @@ using Domain.Channels.Splicing.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
@@ -99,6 +100,35 @@ public class ListChannelsClientHandlerTests
         Assert.Equal(1, info.OfferedHtlcCount);
         Assert.Equal(2, info.ReceivedHtlcCount);
         Assert.False(info.DataLossDetected);
+    }
+
+    public static TheoryData<int, CommitmentFormat> ChannelTypes => new()
+    {
+        { 0, CommitmentFormat.StaticRemoteKey },
+        { 1, CommitmentFormat.Anchors },
+        { 2, CommitmentFormat.SimpleTaproot }
+    };
+
+    [Theory]
+    [MemberData(nameof(ChannelTypes))]
+    public async Task Given_ChannelOfAType_When_HandleAsync_Then_ItsChannelTypeIsReported(int type,
+        CommitmentFormat expected)
+    {
+        // Arrange (NL-987)
+        var channelParams = type switch
+        {
+            0 => new ChannelParams(),
+            1 => new ChannelParams(default, default, LightningMoney.Zero, 0, true, FeatureSupport.No),
+            _ => new ChannelParams() with { OptionSimpleTaproot = true }
+        };
+        SetupMemory(CreateChannel(CreateChannelId(1), s_alice, ChannelState.Open, channelParams: channelParams));
+
+        // Act
+        var response = await CreateHandler().HandleAsync(new ListChannelsClientRequest(),
+                                                         TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(expected, Assert.Single(response.Channels).ChannelType);
     }
 
     [Fact]
@@ -607,9 +637,10 @@ public class ListChannelsClientHandlerTests
                                               LightningMoney? remoteBalance = null,
                                               ICollection<Htlc>? localOfferedHtlcs = null,
                                               ICollection<Htlc>? remoteOfferedHtlcs = null,
-                                              ulong localCommitmentNumber = 0, ulong remoteCommitmentNumber = 0)
+                                              ulong localCommitmentNumber = 0, ulong remoteCommitmentNumber = 0,
+                                              ChannelParams? channelParams = null)
     {
-        return new ChannelModel(new ChannelParams(), channelId, commitmentNumber, fundingOutput, true, null, null,
+        return new ChannelModel(channelParams ?? new ChannelParams(), channelId, commitmentNumber, fundingOutput, true, null, null,
                                 localBalance ?? LightningMoney.Satoshis(100_000),
                                 new ChannelKeySetModel(0, peerId, peerId, peerId, peerId, peerId, peerId), 0, 0,
                                 remoteBalance ?? LightningMoney.Zero, null, 0, peerId, 0, state, ChannelVersion.V1,

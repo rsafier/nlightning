@@ -32,7 +32,7 @@ public static class SuiteCatalog
                 // Classes of the namespace that belong to other suites or are SQL Server only
                 "-class-", $"{Docker}.PostgresTests", "-class-", $"{Docker}.SqlServerTests",
                 "-class-", $"{Docker}.BackupRestoreFlowTests", "-class-", $"{Docker}.ChannelPolicyPublicFlowTests",
-                "-class-", $"{Docker}.SpliceLndObserverTests"
+                "-class-", $"{Docker}.SpliceLndObserverTests", "-class-", $"{Docker}.TaprootPostgresCrashTests"
             ],
             "off", Namespaces: 2, SerialNamespaces: 2, TimeSpan.FromMinutes(90), SuiteRequirement.LndClusterBackend),
         new("cln", "the CLN interop suite (Category=Interop.Cln)", "integration",
@@ -78,8 +78,13 @@ public static class SuiteCatalog
             "integration",
             ["-namespace", $"{Docker}.Taproot"],
             [], "off", 1, 1, TimeSpan.FromMinutes(30), SuiteRequirement.LndClusterBackend),
-        new("postgres", "PostgresTests and ServerDatabaseClusterTests on Postgres pods", "integration",
-            ["-class", $"{Docker}.PostgresTests", "-class", $"{Cluster}.ServerDatabaseClusterTests"],
+        // TaprootPostgresCrashTests: plan D-T4's taproot crash proof on Postgres (NL-960)
+        new("postgres", "PostgresTests, TaprootPostgresCrashTests and ServerDatabaseClusterTests on Postgres pods",
+            "integration",
+            [
+                "-class", $"{Docker}.PostgresTests", "-class", $"{Docker}.TaprootPostgresCrashTests",
+                "-class", $"{Cluster}.ServerDatabaseClusterTests"
+            ],
             ["-trait", "Database=Postgres"], "on", 3, 2, TimeSpan.FromMinutes(10)),
         // Cashu plan C2 (NL-993): CDK's cdk-mintd on our CDK payment processor, with cdk-cli as the wallet (pods)
         new("cashu", "the Cashu mint proof (Category=Interop.Cashu)", "integration",

@@ -670,27 +670,6 @@ internal sealed class DualFundNode
     }
 }
 
-/// <summary>The send side's link: up once the channel manager marked it (channel opened or reestablished).</summary>
-[ExcludeFromCodeCoverage]
-internal sealed class HarnessLinkProbe : IPeerLivenessProbe
-{
-    private readonly ConcurrentDictionary<ChannelId, byte> _links = new();
-
-    public Task<bool> IsAliveAsync(ChannelId channelId, CompactPubKey peerPubKey,
-                                   CancellationToken cancellationToken = default) =>
-        Task.FromResult(_links.ContainsKey(channelId));
-
-    public void MarkLinkUp(ChannelId channelId, CompactPubKey peerPubKey)
-    {
-        _links[channelId] = 0;
-        LinkUp?.Invoke(this, new ChannelLinkUpEventArgs(channelId, peerPubKey));
-    }
-
-    public event EventHandler<ChannelLinkUpEventArgs>? LinkUp;
-
-    public void Clear() => _links.Clear();
-}
-
 /// <summary>Node key and BIP32 channel keys of a harness node, with a channel key counter.</summary>
 [ExcludeFromCodeCoverage]
 internal sealed class DualFundKeyManager : ISecureKeyManager
