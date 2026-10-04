@@ -8979,7 +8979,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-1007 The sub-satoshi part of an HTLC resolved on chain was never booked: `accounting reconcile` showed a channels drift of a few msat
-- **Status:** fixed (this commit)
+- **Status:** fixed (b37114e3)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Domain/Accounting/Books/AccountingPostingRules.cs` (`PostResolution`), `src/NLightning.Application/Onchain/Accounting/OnchainAccounting.cs` (`Resolution`)
