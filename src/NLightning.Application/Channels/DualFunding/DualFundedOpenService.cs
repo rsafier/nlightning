@@ -175,7 +175,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
          && features.LargeChannels == FeatureSupport.No)
             throw new InvalidOperationException("The peer doesn't support large channels");
         if (request.SimpleTaproot)
-            CheckTaprootOpen(features, request.IsPublic, request.Liquidity is not null);
+            CheckTaprootOpen(features, request.IsPublic);
 
         var fundingFeerate = request.FundingFeeratePerKw ?? await EstimateFeerateAsync(cancellationToken);
         // The commitment feerate from our estimate is at least Node:MinCommitmentFeeRatePerKw (NL-564)
@@ -213,8 +213,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                       LightningMoney.Satoshis(requestFunding.RequestedSat),
                                                       checked((long)fees.TotalMsat), true,
                                                       CommitmentFeeCalculator.FunderCost(commitmentFeerate,
-                                                          CommitmentFormatExtensions.FromOptionAnchors(
-                                                              features.OptionAnchors > FeatureSupport.No), 0))
+                                                          FormatOf(request.SimpleTaproot,
+                                                                   features.OptionAnchors > FeatureSupport.No), 0))
                 is { } violation)
                 throw new InvalidOperationException($"Cannot buy {requestFunding.RequestedSat} sat: {violation}");
 
@@ -377,9 +377,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             {
                 negotiation.AttemptLiquidity = CheckWillFund(
                     negotiation, liquidityRequest, message.ProvideFundingTlv?.WillFund,
-                    GetFundingScript(negotiation.Total, pending.Basepoints.FundingPubKey,
-                                     payload.FundingCompactPubKey), negotiation.LocalShare, payload.FundingAmount,
-                    pending.CommitmentFeeratePerKw, pending.OptionAnchors) switch
+                    FundingScriptOf(pending.SimpleTaproot, negotiation.Total, pending.Basepoints.FundingPubKey,
+                                    payload.FundingCompactPubKey), negotiation.LocalShare, payload.FundingAmount,
+                    pending.CommitmentFeeratePerKw, FormatOf(pending.SimpleTaproot, pending.OptionAnchors)) switch
                 {
                     { Refusal: { } refusal } => throw new ChannelErrorException(
                                                     $"Refusing the liquidity of {peerPubKey}: {refusal}", temporaryId,
@@ -786,12 +786,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
         var optionAnchors = message.ChannelTypeTlv!.Features.IsFeatureSet(Feature.OptionAnchors, true);
 
-        // A simple taproot type passed the validator (option_simple_taproot negotiated, not announced); no liquidity
-        // sale goes with it yet (NL-971)
+        // A simple taproot type passed the validator (option_simple_taproot negotiated, not announced); a liquidity
+        // sale goes with it as with any other type, over its P2TR funding script and taproot commitment (NL-971)
         var simpleTaproot = TaprootChannelType.IsTaprootChannelType(message.ChannelTypeTlv.Features);
-        if (simpleTaproot && sale is not null)
-            throw new ChannelErrorException("Refusing the liquidity request of a simple taproot open", temporaryId,
-                                            "liquidity ads are not offered for taproot channels");
         var useScidAlias = negotiatedFeatures.ScidAlias == FeatureSupport.No
                                ? FeatureSupport.No
                                : message.ChannelTypeTlv.Features.IsFeatureSet(Feature.OptionScidAlias, true)
@@ -821,8 +818,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                       -checked((long)saleFees.Value.TotalMsat), false,
                                                       CommitmentFeeCalculator.FunderCost(
                                                           payload.CommitmentFeeRatePerKw,
-                                                          CommitmentFormatExtensions.FromOptionAnchors(optionAnchors),
-                                                          0))
+                                                          FormatOf(simpleTaproot, optionAnchors), 0))
                 is { } liquidityViolation)
                 throw new ChannelErrorException($"Refusing the liquidity request: {liquidityViolation}", temporaryId,
                                                 liquidityViolation);
@@ -1727,7 +1723,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                       FundingScriptOf(channel), negotiation.LocalShare,
                                       LightningMoney.Satoshis(theirs),
                                       (uint)channel.ChannelParams.FeeRateAmountPerKw.Satoshi,
-                                      channel.ChannelParams.OptionAnchorOutputs);
+                                      channel.ChannelParams.CommitmentFormat);
             if (check.Refusal is { } refusal)
             {
                 _logger.LogWarning("Refusing the tx_ack_rbf of channel {ChannelId}: {Reason}", negotiation.ChannelId,
@@ -2427,26 +2423,40 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             return GetFundingScript(channel);
 
         var funding = channel.FundingOutput ?? throw new InvalidOperationException("The channel has no funding output");
-        var musig2 = _serviceProvider.GetService<IMusig2Service>()
-                  ?? throw new InvalidOperationException("No MuSig2 service is registered");
-        return new BitcoinScript(musig2.AggregateTaprootKeyPath(funding.LocalFundingPubKey, funding.RemoteFundingPubKey)
-                                       .GetTaprootScriptPubKey());
+        return FundingScriptOf(true, funding.Amount, funding.LocalFundingPubKey, funding.RemoteFundingPubKey);
     }
 
     /// <summary>
     /// The gates of a simple taproot dual-funded open, ours or the peer's (taproot wave t02 lane V2): the type needs
-    /// <c>option_simple_taproot</c> negotiated, a taproot channel is never announced (bolt-simple-taproot.md: until
-    /// taproot gossip exists), and no liquidity ads purchase or sale goes with it yet (NL-971).
+    /// <c>option_simple_taproot</c> negotiated, and a taproot channel is never announced (bolt-simple-taproot.md: until
+    /// taproot gossip exists). A liquidity ads purchase may go with it (NL-971).
     /// </summary>
-    private static void CheckTaprootOpen(FeatureOptions features, bool isPublic, bool withLiquidity)
+    private static void CheckTaprootOpen(FeatureOptions features, bool isPublic)
     {
         if (features.OptionSimpleTaproot == FeatureSupport.No)
             throw new InvalidOperationException("option_simple_taproot is not negotiated with the peer");
         if (isPublic)
             throw new InvalidOperationException("A simple taproot channel must be private (no --public)");
-        if (withLiquidity)
-            throw new InvalidOperationException(
-                "Liquidity ads are not supported with a simple taproot channel yet (NL-971)");
+    }
+
+    /// <summary>The commitment format of a channel being opened (the first commitment's fee, NL-971).</summary>
+    private static CommitmentFormat FormatOf(bool simpleTaproot, bool optionAnchors) =>
+        simpleTaproot ? CommitmentFormat.SimpleTaproot : CommitmentFormatExtensions.FromOptionAnchors(optionAnchors);
+
+    /// <summary>
+    /// The funding script of two funding keys before the channel exists (the buyer's check of <c>will_fund</c>,
+    /// NL-971): the MuSig2 P2TR output for a simple taproot channel, else the P2WSH 2-of-2.
+    /// </summary>
+    private BitcoinScript FundingScriptOf(bool simpleTaproot, LightningMoney amount, CompactPubKey localFundingPubKey,
+                                          CompactPubKey remoteFundingPubKey)
+    {
+        if (!simpleTaproot)
+            return GetFundingScript(amount, localFundingPubKey, remoteFundingPubKey);
+
+        var musig2 = _serviceProvider.GetService<IMusig2Service>()
+                  ?? throw new InvalidOperationException("No MuSig2 service is registered");
+        return new BitcoinScript(musig2.AggregateTaprootKeyPath(localFundingPubKey, remoteFundingPubKey)
+                                       .GetTaprootScriptPubKey());
     }
 
     /// <summary>The channel's P2WSH 2-of-2 funding script (BOLT 3); not a simple taproot channel's.</summary>
@@ -2474,7 +2484,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     private LiquidityCheck CheckWillFund(DualFundNegotiation negotiation, DualFundLiquidityRequest request,
                                          WillFund? willFund, BitcoinScript fundingScript, LightningMoney localShare,
                                          LightningMoney sellerContribution, uint commitmentFeeratePerKw,
-                                         bool optionAnchors)
+                                         CommitmentFormat commitmentFormat)
     {
         if (GetLiquidityAds() is not { } liquidityAds)
             return new LiquidityCheck("liquidity ads are not available on this node", null);
@@ -2491,9 +2501,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         if (DualFundLiquidity.GetBalanceViolation(localShare, sellerContribution, liquidity.LocalFeeMsat,
                                                   negotiation.IsOpener,
                                                   CommitmentFeeCalculator.FunderCost(commitmentFeeratePerKw,
-                                                                                     CommitmentFormatExtensions
-                                                                                        .FromOptionAnchors(optionAnchors),
-                                                                                     0))
+                                                                                     commitmentFormat, 0))
             is { } violation)
             return new LiquidityCheck($"liquidity ads: {violation}", null);
 

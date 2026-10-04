@@ -27,8 +27,9 @@ using InteractiveTx.TestDoubles;
 /// speaks it): the taproot <c>channel_type</c> in <c>open_channel2</c>/<c>accept_channel2</c>, <c>commit_nonces</c> in
 /// every <c>tx_complete</c> once the transaction can be built, the MuSig2 first <c>commitment_signed</c> both ways
 /// against those nonces, the MuSig2 P2TR funding output, the peer's next nonce in the first commitment state, the
-/// <c>channel_reestablish</c> <c>current_commit_nonce</c> re-sign, and the refusals (no option, public, liquidity ads).
-/// RBF of a taproot open: <see cref="DualFundTaprootRbfTests"/> (NL-970).
+/// <c>channel_reestablish</c> <c>current_commit_nonce</c> re-sign, and the refusals (no option, public). RBF of a
+/// taproot open: <see cref="DualFundTaprootRbfTests"/> (NL-970); liquidity ads with one:
+/// <see cref="DualFundLiquidityAdsTests"/> (NL-971).
 /// </summary>
 public class DualFundTaprootTests
 {
@@ -462,22 +463,17 @@ public class DualFundTaprootTests
     }
 
     [Fact]
-    public async Task Given_ATaprootOpen_When_PublicOrNotNegotiatedOrWithLiquidity_Then_OpenAsyncRefusesIt()
+    public async Task Given_ATaprootOpen_When_PublicOrNotNegotiated_Then_OpenAsyncRefusesIt()
     {
         // Arrange
         await using var harness = await CreateTaprootHarnessAsync(BobShareSat);
         var request = Request(harness);
 
-        // Act / Assert: never announced, liquidity ads not yet (NL-971)
+        // Act / Assert: never announced
         var isPublic = await Assert.ThrowsAsync<InvalidOperationException>(
             () => harness.Alice.DualFund.OpenAsync(request with { IsPublic = true },
                                                    TestContext.Current.CancellationToken));
         Assert.Contains("private", isPublic.Message);
-        var liquidity = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => harness.Alice.DualFund.OpenAsync(
-                request with { Liquidity = new Domain.LiquidityAds.Models.LiquidityRequest(100_000) },
-                TestContext.Current.CancellationToken));
-        Assert.Contains("NL-971", liquidity.Message);
 
         // Without option_simple_taproot on our side
         harness.Alice.Options.Features.OptionSimpleTaproot = FeatureSupport.No;
