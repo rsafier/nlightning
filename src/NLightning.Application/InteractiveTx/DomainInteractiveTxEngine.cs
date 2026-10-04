@@ -35,6 +35,9 @@ public sealed class DomainInteractiveTxEngine : IInteractiveTxEngine
         public IReadOnlyList<Witness>? RemoteWitnesses => session.RemoteWitnesses;
         public CompactSignature? RemoteSharedInputSignature => session.RemoteSharedInputSignature;
 
+        public MusigPartialSignatureWithNonce? RemoteSharedInputPartialSignature =>
+            session.RemoteSharedInputPartialSignature;
+
         public InteractiveTxNegotiationStep Start() => Wrap(session.Start());
 
         public InteractiveTxNegotiationStep Receive(IChannelMessage message, IPrevTxInspector prevTxInspector) =>
@@ -51,6 +54,12 @@ public sealed class DomainInteractiveTxEngine : IInteractiveTxEngine
         public InteractiveTxNegotiationStep SendTxSignatures(IReadOnlyList<Witness> localWitnesses,
                                                              CompactSignature? sharedInputSignature) =>
             Wrap(session.SendTxSignatures(localWitnesses, sharedInputSignature));
+
+        public InteractiveTxNegotiationStep SendTxSignatures(IReadOnlyList<Witness> localWitnesses,
+                                                             CompactSignature? sharedInputSignature,
+                                                             MusigPartialSignatureWithNonce?
+                                                                 sharedInputPartialSignature) =>
+            Wrap(session.SendTxSignatures(localWitnesses, sharedInputSignature, sharedInputPartialSignature));
 
         public InteractiveTxNegotiationStep Abort(string reason) => Wrap(session.Abort(reason));
 

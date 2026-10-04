@@ -371,9 +371,7 @@ public sealed class ReestablishService
         if (row is not { TxSignaturesSent: true, ConstructedTx: { } transaction })
             return null;
 
-        return new TxSignaturesMessage(
-            new TxSignaturesPayload(channel.ChannelId, transaction.TxId, (row.OurWitnesses ?? []).ToList()),
-            row.OurSharedInputSignature is { } signature ? new SharedInputSignatureTlv(signature) : null);
+        return InteractiveTx.InteractiveTxDriver.CreateTxSignatures(channel.ChannelId, transaction, row);
     }
 
     /// <summary>The stored <c>ChannelFundings</c> row's <c>AnnouncementSignaturesReceived</c> of a funding.</summary>

@@ -138,6 +138,10 @@ public sealed partial class SpliceService
                 $"[LA-RBF-01] The pending splice of channel {channel.ChannelId} sold liquidity to the peer: only the buyer "
               + "may bump it (its RBF must request the funding again)");
 
+        if (channel.ChannelParams.OptionSimpleTaproot && (liquidity is not null || latestPurchase is not null))
+            throw new InvalidOperationException($"Channel {channel.ChannelId} is a simple taproot channel: "
+                                              + TaprootLiquidityRefusal + " (NL-971)");
+
         if (liquidity is not null)
             return CreatePurchaseRequest(channel.RemoteNodeId, liquidity, feeratePerKw);
 
@@ -229,6 +233,9 @@ public sealed partial class SpliceService
         sale = null;
         if (GetLiquidityAds() is not { } service)
             return "we do not sell liquidity";
+
+        if (channel.ChannelParams.OptionSimpleTaproot)
+            return TaprootLiquidityRefusal;
 
         if (service.TryStartSale(buyer, request, out var slot) is { } refusal)
             return refusal;

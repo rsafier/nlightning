@@ -10,6 +10,7 @@ using Channels.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -19,6 +20,7 @@ using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Splicing.Interfaces;
 using Domain.Channels.Splicing.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
@@ -35,6 +37,7 @@ using Domain.Protocol.InteractiveTx.Interfaces;
 using Domain.Protocol.InteractiveTx.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Tlv;
 using Exceptions;
 using Gossip.Announcements.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -116,19 +119,11 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         _ = serviceProvider.GetService<SpliceDepthWatcher>();
     }
 
-    /// <summary>The <c>tx_abort</c> data and IPC refusal for a splice of a simple taproot channel (NL-965).</summary>
-    internal const string TaprootSpliceRefusal = "splicing a simple taproot channel is not supported yet";
-
     /// <summary>
-    /// Splicing a simple taproot channel needs a MuSig2 signature of the shared funding input and the taproot nonces
-    /// of BOLTs PR #1324 (NL-965), which are not built: refused before anything is reserved or sent.
+    /// Liquidity ads are not sold or bought with a splice of a simple taproot channel yet (NL-971: the buyer's and the
+    /// seller's checks were never exercised with the P2TR funding script and the taproot commitment weight).
     /// </summary>
-    private static void ThrowIfSimpleTaproot(ChannelModel channel)
-    {
-        if (channel.ChannelParams.OptionSimpleTaproot)
-            throw new InvalidOperationException($"Channel {channel.ChannelId} is a simple taproot channel: "
-                                              + TaprootSpliceRefusal);
-    }
+    internal const string TaprootLiquidityRefusal = "liquidity ads are not supported with simple taproot channels yet";
 
     #region ISpliceService
 
@@ -149,7 +144,10 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
 
         if (!_channelMemoryRepository.TryGetChannel(channelId, out var unlocked))
             throw new KeyNotFoundException($"Channel {channelId} is not loaded");
-        ThrowIfSimpleTaproot(unlocked);
+        var simpleTaproot = unlocked.ChannelParams.OptionSimpleTaproot;
+        if (simpleTaproot && request.Liquidity is not null)
+            throw new InvalidOperationException($"Channel {channelId} is a simple taproot channel: "
+                                              + TaprootLiquidityRefusal + " (NL-971)");
 
         // Everything that needs I/O is done before the lock: the feerate, the splice-out destination
         var feeratePerKw = request.FeeratePerKw ?? await EstimateFeerateAsync(cancellationToken);
@@ -172,7 +170,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
             spliceOutScript = await destination.ResolveAsync(request.SpliceOutAddress, cancellationToken);
             spliceOutAmount = LightningMoney.Satoshis(-request.ContributionSatoshis);
             contribution = -checked(-request.ContributionSatoshis
-                                  + (long)GetSpliceOutFee(spliceOutScript.Value, feeratePerKw).Satoshi);
+                                  + (long)GetSpliceOutFee(spliceOutScript.Value, feeratePerKw, simpleTaproot).Satoshi);
         }
         else
         {
@@ -325,15 +323,6 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         // NL-591: a node draining for its shutdown starts no splice (BOLT 2: MAY send tx_abort for any reason)
         if (IsDraining())
             return EndQuiescenceWithTxAbort(channelId, peerPubKey, NodeDrain.Refusal("splice_init"));
-
-        // NL-877 T5: the shared MuSig2 funding input of a taproot splice is not signed yet (NL-965); tx_abort ends the
-        // quiescence and the channel goes on as it was
-        if (channel.ChannelParams.OptionSimpleTaproot)
-        {
-            _logger.LogWarning("Refusing the splice of simple taproot channel {ChannelId} by {Peer}: not supported yet",
-                               channelId, peerPubKey);
-            return EndQuiescenceWithTxAbort(channelId, peerPubKey, TaprootSpliceRefusal);
-        }
 
         var fundings = _statePort.GetFundings(channel);
         var conditions = GetConditions(channel, negotiatedFeatures, quiescenceState, fundings) with
@@ -609,7 +598,8 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         try
         {
             // SP-CS-02: verified against the new funding at our current commitment number; no revoke_and_ack
-            await _statePort.ReceiveSpliceCommitmentAsync(channel, funding, message, unitOfWork, cancellationToken);
+            await _statePort.ReceiveSpliceCommitmentAsync(channel, funding, message, unitOfWork, cancellationToken,
+                                                          negotiation.RemoteNextCommitNonce);
         }
         catch (SpliceCommitmentException e)
         {
@@ -673,7 +663,8 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
 
         // SP-CS-01: our commitment_signed for the peer's commitment on the new funding (same number, no RAA)
         var commitmentSigned = await _statePort.SignSpliceCommitmentAsync(channel, funding, unitOfWork,
-                                                                          cancellationToken);
+                                                                          cancellationToken,
+                                                                          negotiation.RemoteCurrentCommitNonce);
         negotiation.NewFunding = funding;
 
         // The attempt's purchase row rides in this save (NL-850), like the funding row
@@ -703,6 +694,146 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         return _signer.SignSpliceSharedInput(negotiation.ChannelId, funding.FundingTxId,
                                              new SignedTransaction(transaction.TxId, transaction.UnsignedTx), index);
     }
+
+    #region Simple taproot splices (NL-965, BOLTs PR #1324)
+
+    /// <summary>
+    /// Our <c>commit_nonces</c> for a <c>tx_complete</c> of a taproot splice: our verification nonces of our current
+    /// local commitment and the next one on the transaction negotiated so far, <paramref name="fundingTxId"/>, with the
+    /// splice's rotated funding key (Eclair 0.14.3 <c>InteractiveTxBuilder</c>: <c>localCommitIndex</c> and
+    /// <c>localCommitIndex + 1</c>). Null for any other channel.
+    /// </summary>
+    internal CommitNoncesTlv? GetLocalCommitNonces(SpliceNegotiation negotiation, TxId fundingTxId)
+    {
+        if (!negotiation.IsSimpleTaproot
+         || !_channelMemoryRepository.TryGetChannel(negotiation.ChannelId, out var channel)
+         || channel.Commitments is not { } commitments)
+            return null;
+
+        var number = commitments.LocalCommit.Number;
+        var keyIndex = negotiation.Model.LocalFundingKeyIndex;
+        return new CommitNoncesTlv(_signer.GetLocalVerificationNonce(channel.ChannelId, keyIndex, fundingTxId, number),
+                                   _signer.GetLocalVerificationNonce(channel.ChannelId, keyIndex, fundingTxId,
+                                                                     number + 1));
+    }
+
+    /// <summary>
+    /// Our <c>funding_nonce</c> of a taproot splice attempt: created once (the signer keeps its secret half) and sent in
+    /// every <c>tx_complete</c> of the attempt. Null for any other channel.
+    /// </summary>
+    internal FundingNonceTlv? GetLocalFundingNonce(SpliceNegotiation negotiation)
+    {
+        if (!negotiation.IsSimpleTaproot)
+            return null;
+
+        negotiation.LocalFundingNonce ??= _signer.CreateSpliceFundingNonce(negotiation.ChannelId);
+        return new FundingNonceTlv(negotiation.LocalFundingNonce.Value);
+    }
+
+    /// <summary>
+    /// The peer's <c>commit_nonces</c> of the constructed taproot splice: required (Eclair's
+    /// <c>MissingCommitNonce</c>), parsed as two points each, kept for our splice <c>commitment_signed</c> (the current
+    /// one) and the new funding's next commitment (the next one).
+    /// </summary>
+    internal string? AcceptRemoteCommitNonces(SpliceNegotiation negotiation, ConstructedInteractiveTx transaction,
+                                              CommitNoncesTlv? remoteNonces)
+    {
+        if (!negotiation.IsSimpleTaproot)
+            return null;
+
+        if (remoteNonces is null)
+            return $"MissingCommitNonce: tx_complete without commit_nonces for splice {transaction.TxId}";
+        if (!IsValidNonce(remoteNonces.CommitNonce) || !IsValidNonce(remoteNonces.NextCommitNonce))
+            return $"InvalidCommitNonce: commit_nonces for splice {transaction.TxId} are not two points each";
+
+        negotiation.RemoteCurrentCommitNonce = remoteNonces.CommitNonce;
+        negotiation.RemoteNextCommitNonce = remoteNonces.NextCommitNonce;
+        return null;
+    }
+
+    /// <summary>
+    /// The peer's <c>funding_nonce</c> of the constructed taproot splice: required (BOLTs PR #1324, Eclair's
+    /// <c>MissingFundingNonce</c>), kept for the shared input's signature.
+    /// </summary>
+    internal string? AcceptRemoteFundingNonce(SpliceNegotiation negotiation, ConstructedInteractiveTx transaction,
+                                              FundingNonceTlv? remoteNonce)
+    {
+        if (!negotiation.IsSimpleTaproot)
+            return null;
+
+        if (remoteNonce is null)
+            return $"MissingFundingNonce: tx_complete without funding_nonce for splice {transaction.TxId}";
+        if (!IsValidNonce(remoteNonce.Nonce))
+            return $"InvalidFundingNonce: funding_nonce for splice {transaction.TxId} is not two points";
+
+        negotiation.RemoteFundingNonce = remoteNonce.Nonce;
+        return null;
+    }
+
+    /// <summary>
+    /// The commitment step of a taproot splice (after our splice <c>commitment_signed</c> was made, which registered the
+    /// new funding with the signer): our MuSig2 partial signature of the shared input with the attempt's
+    /// <c>funding_nonce</c>, stored with the session row before our <c>commitment_signed</c> goes out (D-T4).
+    /// </summary>
+    internal MusigPartialSignatureWithNonce? SignSharedInputPartial(SpliceNegotiation negotiation,
+                                                                    ConstructedInteractiveTx transaction)
+    {
+        if (!negotiation.IsSimpleTaproot)
+            return null;
+
+        var funding = negotiation.NewFunding
+                   ?? throw new InvalidOperationException("The splice commitment is not signed yet");
+        var localNonce = negotiation.LocalFundingNonce
+                      ?? throw new InvalidOperationException("No funding_nonce of ours was sent for this splice");
+        var remoteNonce = negotiation.RemoteFundingNonce
+                       ?? throw new InvalidOperationException("The peer sent no funding_nonce for this splice");
+        return _signer.SignSpliceSharedInputPartial(negotiation.ChannelId, funding.FundingTxId,
+                                                    new SignedTransaction(transaction.TxId, transaction.UnsignedTx),
+                                                    GetSharedInputIndex(transaction), GetSpentOutputs(transaction),
+                                                    localNonce, remoteNonce);
+    }
+
+    /// <summary>
+    /// The key-path witness of a taproot splice's shared input from both partial signatures; the peer's is checked
+    /// first (SP-SIG-01, BOLTs PR #1324: "If shared_input_partial_signature is not a valid partial signature ...: MUST
+    /// send an error and fail the channel").
+    /// </summary>
+    internal Witness BuildSharedInputWitness(SpliceNegotiation negotiation, ConstructedInteractiveTx transaction,
+                                             MusigPartialSignatureWithNonce localSignature,
+                                             MusigPartialSignatureWithNonce remoteSignature)
+    {
+        try
+        {
+            var signature = _signer.AggregateSpliceSharedInputSignature(
+                negotiation.ChannelId, new SignedTransaction(transaction.TxId, transaction.UnsignedTx),
+                GetSharedInputIndex(transaction), GetSpentOutputs(transaction), localSignature, remoteSignature);
+            return SpliceFundingScripts.BuildTaprootKeyPathWitness(signature);
+        }
+        catch (Exception e) when (e is SignerException or ArgumentException or FormatException)
+        {
+            throw new ChannelFailedException(negotiation.ChannelId,
+                                             $"[SP-SIG-01] invalid shared_input_partial_signature for splice "
+                                           + $"{transaction.TxId}: {e.Message}",
+                                             "invalid shared_input_partial_signature")
+            {
+                MustBroadcast = true,
+                RequirementId = "SP-SIG-01"
+            };
+        }
+    }
+
+    /// <summary>Every output the splice transaction spends, from its inputs (the shared input's is the current
+    /// funding output).</summary>
+    private static IReadOnlyList<SpentOutput> GetSpentOutputs(ConstructedInteractiveTx transaction) =>
+        transaction.Inputs.Select(i => new SpentOutput(i.PrevTxId, i.PrevTxVout, i.Amount, i.ScriptPubKey)).ToList();
+
+    /// <summary>A peer's public nonce parses as two compressed points (bolt-simple-taproot.md).</summary>
+    private bool IsValidNonce(MusigPublicNonce nonce) =>
+        _serviceProvider.GetService<IMusig2Service>() is not { } musig2
+     || Taproot.TaprootChannelNonces.IsValidPublicNonce(musig2, nonce);
+
+    #endregion
+
 
     internal Witness BuildSharedInputWitness(SpliceNegotiation negotiation, ConstructedInteractiveTx transaction,
                                              CompactSignature localSignature, CompactSignature remoteSignature)
@@ -1413,7 +1544,8 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
                                                            LightningMoney.Satoshis(
                                                                negotiation.Model.LocalContributionSatoshis), [],
                                                            negotiation.Model.FeeratePerKw,
-                                                           (int)GetInitiatorSharedWeight(), true);
+                                                           (int)GetInitiatorSharedWeight(negotiation.IsSimpleTaproot),
+                                                           true);
         return await contributor.ContributeAsync(request, cancellationToken);
     }
 
@@ -1444,7 +1576,8 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
             RemoteMainMsat = commitments.LocalCommit.Spec.RemoteMsat,
             LocalReserveSatoshis = (ulong)channel.ChannelParams.Remote.ChannelReserveAmount.Satoshi,
             RemoteReserveSatoshis = (ulong)channel.ChannelParams.Local.ChannelReserveAmount.Satoshi,
-            SpliceOutAmount = spliceOutAmount
+            SpliceOutAmount = spliceOutAmount,
+            IsSimpleTaproot = channel.ChannelParams.OptionSimpleTaproot
         };
     }
 
@@ -1452,7 +1585,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
     /// The shared input and output (SP-TX-01, SP-TX-03) once both funding keys and contributions are known; each
     /// side's share of the input is its balance, of the output its balance plus its contribution (SP-TX-05).
     /// </summary>
-    private static bool TryPrepareSharedFunding(SpliceNegotiation negotiation, out string reason)
+    private bool TryPrepareSharedFunding(SpliceNegotiation negotiation, out string reason)
     {
         var model = negotiation.Model;
         var current = negotiation.CurrentFunding;
@@ -1473,13 +1606,17 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
             return false;
         }
 
-        var (currentScript, _) = SpliceFundingScripts.Create(current.LocalFundingPubKey, current.RemoteFundingPubKey);
-        var (newScript, _) = SpliceFundingScripts.Create(model.LocalFundingPubKey, remoteKey);
+        // A simple taproot channel's fundings are MuSig2 P2TR outputs, its shared input a key-path spend (NL-965)
+        var taproot = negotiation.IsSimpleTaproot;
+        var musig2 = taproot ? _serviceProvider.GetService<IMusig2Service>() : null;
+        var currentScript = SpliceFundingScripts.CreateScriptPubKey(current.LocalFundingPubKey,
+                                                                    current.RemoteFundingPubKey, taproot, musig2);
+        var newScript = SpliceFundingScripts.CreateScriptPubKey(model.LocalFundingPubKey, remoteKey, taproot, musig2);
         negotiation.NewFundingScript = newScript;
         negotiation.SharedFunding = new SharedFundingSpec(
             new SharedFundingInput(current.FundingTxId, current.OutputIndex,
                                    LightningMoney.Satoshis(current.CapacitySatoshis), currentScript,
-                                   SpliceFundingScripts.SharedInputWeight),
+                                   SpliceFundingScripts.GetSharedInputWeight(taproot), taproot),
             newScript, LightningMoney.Satoshis(capacity.Value), LightningMoney.MilliSatoshis(negotiation.LocalGrossMsat),
             LightningMoney.MilliSatoshis(negotiation.RemoteGrossMsat), LightningMoney.MilliSatoshis(localOut.Value),
             LightningMoney.MilliSatoshis(remoteOut.Value));
@@ -1565,7 +1702,9 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
     /// <summary>D5: a new funding key per splice (the next index after every active funding's), or the current one.</summary>
     private (CompactPubKey PubKey, uint Index) GetNewFundingKey(ChannelModel channel, FundingSet fundings)
     {
-        if (!_options.RotateFundingKey)
+        // A taproot splice always rotates (NL-965): verification nonces are bound to the funding key, and key 0's of a
+        // v1 open have a commitment 0 without a txid (NL-972)
+        if (!_options.RotateFundingKey && !channel.ChannelParams.OptionSimpleTaproot)
             return (fundings.Current.LocalFundingPubKey, fundings.Current.LocalFundingKeyIndex);
 
         var index = checked(fundings.Active.Max(f => f.LocalFundingKeyIndex) + 1);
@@ -1647,15 +1786,16 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
 
     /// <summary>
     /// The weight a splice initiator pays for besides its own inputs and outputs (IT-S-03, SP-TX-03): the common
-    /// fields, the shared input and the new funding output (a P2WSH output, 34-byte script).
+    /// fields, the shared input and the new funding output (a P2WSH output, 34-byte script; a simple taproot channel's
+    /// P2TR output has a 34-byte script too, and its shared input is a key-path spend).
     /// </summary>
-    private static long GetInitiatorSharedWeight() =>
-        CollaborativeFeeCalculator.CommonFieldsWeight + SpliceFundingScripts.SharedInputWeight
+    private static long GetInitiatorSharedWeight(bool simpleTaproot) =>
+        CollaborativeFeeCalculator.CommonFieldsWeight + SpliceFundingScripts.GetSharedInputWeight(simpleTaproot)
       + CollaborativeFeeCalculator.OutputWeight(new BitcoinScript(new byte[34]));
 
     /// <summary>D16: the fee a splice-out we initiate pays from our channel balance.</summary>
-    private static LightningMoney GetSpliceOutFee(BitcoinScript destination, uint feeratePerKw) =>
-        CollaborativeFeeCalculator.FeeForWeight(GetInitiatorSharedWeight()
+    private static LightningMoney GetSpliceOutFee(BitcoinScript destination, uint feeratePerKw, bool simpleTaproot) =>
+        CollaborativeFeeCalculator.FeeForWeight(GetInitiatorSharedWeight(simpleTaproot)
                                               + CollaborativeFeeCalculator.OutputWeight(destination), feeratePerKw);
 
     private static int GetSharedInputIndex(ConstructedInteractiveTx transaction)

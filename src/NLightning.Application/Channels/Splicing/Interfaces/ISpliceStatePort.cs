@@ -3,6 +3,7 @@ namespace NLightning.Application.Channels.Splicing.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Models;
 using Domain.Channels.Splicing;
+using Domain.Crypto.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Messages;
 
@@ -30,11 +31,15 @@ public interface ISpliceStatePort
     /// <paramref name="funding"/> (its outpoint, capacity, keys and the contributions as balance deltas), at the peer's
     /// current commitment number, with the current feerate and signatures for every pending HTLC, and
     /// <c>funding_txid</c> set (SP-OP-02). The funding is registered with the signer (<c>RegisterFunding</c>); what
-    /// must be remembered is staged on <paramref name="unitOfWork"/> (the interactive-tx row is the driver's).
+    /// must be remembered is staged on <paramref name="unitOfWork"/> (the interactive-tx row is the driver's). A simple
+    /// taproot channel (NL-965) signs a MuSig2 partial signature against <paramref name="remoteNonce"/>, the peer's
+    /// verification nonce of that commitment (its <c>tx_complete</c> <c>commit_nonces</c>, or the
+    /// <c>current_commit_nonce</c> of its <c>channel_reestablish</c> for a retransmission).
     /// </summary>
     Task<CommitmentSignedMessage> SignSpliceCommitmentAsync(ChannelModel channel, ChannelFunding funding,
                                                             IUnitOfWork unitOfWork,
-                                                            CancellationToken cancellationToken);
+                                                            CancellationToken cancellationToken,
+                                                            MusigPublicNonce? remoteNonce = null);
 
     /// <summary>
     /// SP-CS-02: verifies the peer's <c>commitment_signed</c> for our commitment spending <paramref name="funding"/> at
@@ -42,8 +47,12 @@ public interface ISpliceStatePort
     /// broadcastable).
     /// </summary>
     /// <exception cref="Exceptions.SpliceCommitmentException">A signature is missing or invalid.</exception>
+    /// <remarks>A simple taproot channel (NL-965) takes <paramref name="remoteNextNonce"/>, the peer's verification
+    /// nonce of its next commitment on the new funding (its <c>tx_complete</c> <c>commit_nonces</c>, or its
+    /// <c>channel_reestablish</c> map), with the funding: the next batch signs that funding against it.</remarks>
     Task ReceiveSpliceCommitmentAsync(ChannelModel channel, ChannelFunding funding, CommitmentSignedMessage message,
-                                      IUnitOfWork unitOfWork, CancellationToken cancellationToken);
+                                      IUnitOfWork unitOfWork, CancellationToken cancellationToken,
+                                      MusigPublicNonce? remoteNextNonce = null);
 
     /// <summary>
     /// After the save of <see cref="ReceiveSpliceCommitmentAsync"/>: invariant SP-I1 (<c>MarkSpliceCommitmentPersisted</c>,

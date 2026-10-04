@@ -502,6 +502,69 @@ public interface ILightningSigner
     }
 
     /// <summary>
+    /// Splicing a simple taproot channel (NL-965, BOLTs PR #1324 <c>commit_nonces</c>): our verification nonce for our
+    /// local commitment <paramref name="localCommitmentNumber"/> on the splice funding <paramref name="fundingTxId"/>,
+    /// whose local funding key is our rotated key <paramref name="fundingKeyIndex"/>, before that funding is registered
+    /// (the <c>tx_complete</c> of its negotiation). Always bound to the txid: once registered, the channel id overload
+    /// derives the same nonce.
+    /// </summary>
+    /// <exception cref="Exceptions.SignerException">The channel is not a registered taproot channel, or
+    /// <paramref name="fundingKeyIndex"/> is 0 (a taproot splice always rotates its funding key).</exception>
+    MusigPublicNonce GetLocalVerificationNonce(ChannelId channelId, uint fundingKeyIndex, TxId fundingTxId,
+                                               ulong localCommitmentNumber) =>
+        throw new NotImplementedException("Taproot wave t03 lane SPL");
+
+    /// <summary>
+    /// Splicing a simple taproot channel (NL-965, BOLTs PR #1324 <c>funding_nonce</c>): a new signing nonce of ours for
+    /// the shared input, the channel's current funding output spent by MuSig2 key path. A just-in-time nonce (fresh
+    /// randomness and our current funding key); its secret half stays in the signer's memory until
+    /// <see cref="SignSpliceSharedInputPartial"/> consumes it (single use, never stored: a restart before that forgets
+    /// it, and so does the negotiation, which is not stored before our <c>commitment_signed</c>).
+    /// </summary>
+    /// <exception cref="Exceptions.SignerException">The channel is not a registered taproot channel, data loss was
+    /// detected, or a local commitment was signed for broadcast.</exception>
+    MusigPublicNonce CreateSpliceFundingNonce(ChannelId channelId) =>
+        throw new NotImplementedException("Taproot wave t03 lane SPL");
+
+    /// <summary>
+    /// Splicing a simple taproot channel (NL-965, BOLTs PR #1324 <c>shared_input_partial_signature</c>): our MuSig2
+    /// partial signature of input <paramref name="sharedInputIndex"/> of the splice transaction, which spends the
+    /// channel's current funding output by key path (BIP 341 <c>SIGHASH_DEFAULT</c> over every spent output,
+    /// <paramref name="spentOutputs"/> in input order), with our nonce <paramref name="localFundingNonce"/> (from
+    /// <see cref="CreateSpliceFundingNonce"/>, consumed) and the peer's <c>funding_nonce</c>.
+    /// </summary>
+    /// <remarks>
+    /// Signed at the commitment step, before our <c>commitment_signed</c> (as Eclair 0.14.3 does): the secret nonce cannot
+    /// be stored (D-T4), so the partial signature is, in the save that precedes our <c>commitment_signed</c>. It is only
+    /// released in <c>tx_signatures</c> after the peer's <c>commitment_signed</c> on the new funding was saved (the
+    /// interactive-tx driver's IT-SIG-03 order, SP-I1); the guards of <see cref="SignSpliceSharedInput"/> apply
+    /// otherwise (the registered pending funding output, data loss, S1).
+    /// </remarks>
+    /// <exception cref="Exceptions.SignerException">A guard refused, the nonce is not a live one of ours, or a nonce
+    /// does not parse.</exception>
+    MusigPartialSignatureWithNonce SignSpliceSharedInputPartial(ChannelId channelId, TxId newFundingTxId,
+                                                                SignedTransaction unsignedSpliceTransaction,
+                                                                int sharedInputIndex,
+                                                                IReadOnlyList<Wallet.Models.SpentOutput> spentOutputs,
+                                                                MusigPublicNonce localFundingNonce,
+                                                                MusigPublicNonce remoteFundingNonce) =>
+        throw new NotImplementedException("Taproot wave t03 lane SPL");
+
+    /// <summary>
+    /// Splicing a simple taproot channel: checks the peer's <c>shared_input_partial_signature</c> (SP-SIG-01), aggregates
+    /// it with ours and returns the 64-byte BIP 340 key-path signature of the shared input (<c>SIGHASH_DEFAULT</c>),
+    /// verified against the current funding output key.
+    /// </summary>
+    /// <exception cref="Exceptions.SignerException">A partial signature does not verify, a nonce does not parse, or the
+    /// aggregate does not verify.</exception>
+    byte[] AggregateSpliceSharedInputSignature(ChannelId channelId, SignedTransaction unsignedSpliceTransaction,
+                                               int sharedInputIndex,
+                                               IReadOnlyList<Wallet.Models.SpentOutput> spentOutputs,
+                                               MusigPartialSignatureWithNonce localSignature,
+                                               MusigPartialSignatureWithNonce remoteSignature) =>
+        throw new NotImplementedException("Taproot wave t03 lane SPL");
+
+    /// <summary>
     /// Our funding public key number <paramref name="fundingKeyIndex"/> of the channel (splicing plan D5): index 0 is
     /// the channel's original funding key; each splice rotates to a new index, derived deterministically from the
     /// channel's keys so a static channel backup restores it.

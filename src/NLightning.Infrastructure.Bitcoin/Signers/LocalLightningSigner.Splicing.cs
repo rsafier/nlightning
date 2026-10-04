@@ -384,6 +384,15 @@ public partial class LocalLightningSigner
 
     private void RegisterFundingLocked(ChannelId channelId, ChannelSigningInfo signingInfo, ChannelFunding funding)
     {
+        // NL-965: a taproot splice rotates its funding key. Key 0's verification nonces of a v1-opened channel have a
+        // commitment 0 without a txid (NL-972), which a splice funding on the same key would share
+        if (signingInfo is { IsSimpleTaproot: true } && funding.LocalFundingKeyIndex == 0
+                                                     && funding.Kind is ChannelFundingKind.Splice
+                                                                     or ChannelFundingKind.SpliceRbf)
+            throw new SignerException(
+                $"Splice funding {funding.FundingTxId} of a simple taproot channel must use a rotated funding key",
+                channelId, "Internal error");
+
         // The funding key must be ours at the stated index: a wrong index would sign a script we cannot spend
         using (var key = GenerateFundingPrivateKey(signingInfo.ChannelKeyIndex, funding.LocalFundingKeyIndex))
         {

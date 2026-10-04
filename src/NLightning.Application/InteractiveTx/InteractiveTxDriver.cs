@@ -363,12 +363,25 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         if (model is not { TxSignaturesSent: true, ConstructedTx: { } transaction })
             return null;
 
-        return new TxSignaturesMessage(
-            new TxSignaturesPayload(channelId, transaction.TxId, (model.OurWitnesses ?? []).ToList()),
-            model.OurSharedInputSignature is { } signature ? new SharedInputSignatureTlv(signature) : null);
+        return CreateTxSignatures(channelId, transaction, model);
 
         static bool Matches(InteractiveTxSessionModel m, TxId txId) =>
             m.ConstructedTx is { } tx && tx.TxId.Equals(txId);
+    }
+
+    /// <summary>
+    /// Our <c>tx_signatures</c> rebuilt from a stored row whose signatures were sent: our witnesses and the shared
+    /// input's signature, ECDSA or (a simple taproot splice) the MuSig2 partial signature.
+    /// </summary>
+    public static TxSignaturesMessage CreateTxSignatures(ChannelId channelId, ConstructedInteractiveTx transaction,
+                                                         InteractiveTxSessionModel model)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentNullException.ThrowIfNull(model);
+        return new TxSignaturesMessage(
+            new TxSignaturesPayload(channelId, transaction.TxId, (model.OurWitnesses ?? []).ToList()),
+            model.OurSharedInputSignature is { } signature ? new SharedInputSignatureTlv(signature) : null,
+            model.OurSharedInputPartialSignature is { } partial ? new SharedInputPartialSignatureTlv(partial) : null);
     }
 
     /// <inheritdoc />
@@ -447,7 +460,10 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         // BOLTs PR #1324: a taproot session's tx_complete carries the sender's commit_nonces, new ones after every
         // change of the transaction; the peer's last ones are for the transaction both tx_complete close
         if (message is TxCompleteMessage txComplete)
+        {
             attempt.RemoteCommitNonces = txComplete.CommitNoncesTlv;
+            attempt.RemoteFundingNonce = txComplete.FundingNonceTlv;
+        }
 
         if (step.Aborted)
         {
@@ -698,6 +714,9 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         if (entry.Host is not { } host || !outbound.Any(m => m is TxCompleteMessage))
             return outbound;
 
+        // A taproot splice's funding_nonce: one per attempt, in every tx_complete of it (BOLTs PR #1324)
+        var fundingNonce = host.GetLocalFundingNonce();
+
         var decorated = new List<IChannelMessage>(outbound.Count);
         foreach (var message in outbound)
         {
@@ -707,6 +726,9 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
                 continue;
             }
 
+            var withFundingNonce = fundingNonce is null || txComplete.FundingNonceTlv is not null
+                                       ? txComplete
+                                       : new TxCompleteMessage(txComplete.Payload, null, fundingNonce);
             ConstructedInteractiveTx transaction;
             try
             {
@@ -715,13 +737,13 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
             }
             catch (Exception e) when (e is ArgumentException or InvalidOperationException)
             {
-                decorated.Add(message);
+                decorated.Add(withFundingNonce);
                 continue;
             }
 
             decorated.Add(host.GetLocalCommitNonces(transaction.TxId) is { } nonces
-                              ? new TxCompleteMessage(txComplete.Payload, nonces, txComplete.FundingNonceTlv)
-                              : message);
+                              ? new TxCompleteMessage(txComplete.Payload, nonces, withFundingNonce.FundingNonceTlv)
+                              : withFundingNonce);
         }
 
         return decorated;
@@ -773,7 +795,8 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         }
 
         // BOLTs PR #1324: a taproot commitment step needs the peer's commit_nonces of the constructed transaction
-        if (entry.Host!.AcceptRemoteCommitNonces(attempt.Negotiation.ConstructedTx!, attempt.RemoteCommitNonces) is
+        if ((entry.Host!.AcceptRemoteCommitNonces(attempt.Negotiation.ConstructedTx!, attempt.RemoteCommitNonces)
+          ?? entry.Host.AcceptRemoteFundingNonce(attempt.Negotiation.ConstructedTx!, attempt.RemoteFundingNonce)) is
             { } nonceRefusal)
             return await RejectAsync(entry, attempt, nonceRefusal, unitOfWork, cancellationToken);
 
@@ -782,6 +805,11 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         try
         {
             commitment = await entry.Host!.CreateCommitmentSignedAsync(model, unitOfWork, cancellationToken);
+
+            // A taproot splice's shared input is signed now, while its funding_nonce is live, and stored with the row
+            // (the secret nonce never is, D-T4); it leaves only in tx_signatures, after the peer's commitment_signed
+            if (await entry.Host.SignSharedInputPartialAsync(model.ConstructedTx!, cancellationToken) is { } partial)
+                model = model with { OurSharedInputPartialSignature = partial };
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -814,6 +842,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
             TxSignaturesReceived = true,
             TheirWitnesses = negotiation.RemoteWitnesses,
             TheirSharedInputSignature = negotiation.RemoteSharedInputSignature,
+            TheirSharedInputPartialSignature = negotiation.RemoteSharedInputPartialSignature,
             State = negotiation.State
         };
 
@@ -854,11 +883,13 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
             throw new SignaturesAbandonedException($"our inputs were spent on chain: {e.Message}");
         }
 
-        var sharedInputSignature = transaction.Inputs.Any(i => i.IsShared)
+        // A taproot splice's shared input was signed at the commitment step (SignSharedInputPartialAsync)
+        var sharedInputPartialSignature = attempt.Model!.OurSharedInputPartialSignature;
+        var sharedInputSignature = transaction.Inputs.Any(i => i.IsShared) && sharedInputPartialSignature is null
                                        ? await entry.Host!.SignSharedInputAsync(transaction, cancellationToken)
                                        : null;
 
-        var step = attempt.Negotiation.SendTxSignatures(witnesses, sharedInputSignature);
+        var step = attempt.Negotiation.SendTxSignatures(witnesses, sharedInputSignature, sharedInputPartialSignature);
         attempt.Negotiation = step.Next;
         attempt.Model = attempt.Model! with
         {
@@ -885,7 +916,13 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         var witnesses = new Dictionary<ulong, Witness>();
         AddWitnesses(witnesses, transaction, InteractiveTxParty.Local, model.OurWitnesses ?? []);
         AddWitnesses(witnesses, transaction, InteractiveTxParty.Remote, attempt.Negotiation.RemoteWitnesses ?? []);
-        if (transaction.Inputs.FirstOrDefault(i => i.IsShared) is { } sharedInput)
+        if (transaction.Inputs.FirstOrDefault(i => i.IsShared) is { } taprootInput
+         && model.OurSharedInputPartialSignature is { } ourPartial)
+            witnesses[taprootInput.SerialId] = entry.Host!.BuildSharedInputWitness(
+                transaction, ourPartial,
+                attempt.Negotiation.RemoteSharedInputPartialSignature
+             ?? throw new InvalidOperationException("The peer's shared_input_partial_signature is missing"));
+        else if (transaction.Inputs.FirstOrDefault(i => i.IsShared) is { } sharedInput)
             witnesses[sharedInput.SerialId] = entry.Host!.BuildSharedInputWitness(
                 transaction,
                 model.OurSharedInputSignature
@@ -1261,6 +1298,12 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         /// null when it sent none.
         /// </summary>
         public CommitNoncesTlv? RemoteCommitNonces { get; set; }
+
+        /// <summary>
+        /// The <c>funding_nonce</c> of the peer's latest <c>tx_complete</c> (BOLTs PR #1324, a taproot splice); null when
+        /// it sent none.
+        /// </summary>
+        public FundingNonceTlv? RemoteFundingNonce { get; set; }
 
         public (IInteractiveTxNegotiation Negotiation, InteractiveTxSessionModel? Model, bool IsCompleted)
             Checkpoint() => (Negotiation, Model, IsCompleted);
