@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-03 by lane NL983 (branch `tap2-nl983` from `wip/fafo` at `c5ab09cb`): NL-983 (medium) fixed in 48230c70 and a55af0e7 (a late `closing_sig`/`closing_complete` no longer replaces a mutual close that spends the funding output, any signed mutual close that confirms closes the channel, and a closing transaction watched after its block gets that block's height); NL-976 stays a duplicate of NL-983 (fixed with it, the LND taproot proof's wait removed); NL-859 (low) is now a duplicate of NL-983 (the same race against Eclair). Summary: open medium 7 -> 6, open low 79 -> 78, fixed medium 210 -> 211, duplicate low 3 -> 4; 835 entries.
+
 Updated 2026-10-03 by the taproot wave t02 integrator (branch `wip/taproot-t02` from `wip/fafo` at `eb166f13`; lanes SIG, WIRE, STATE, REVA, OPS, CLOSE, V2, V2INT, REVB, REVC and LND merged with `--no-ff`, then `origin/wip/fafo` merged and the migration `AddSimpleTaprootChannels` regenerated after `AddTrampolineRelayAttempts`): taproot range NL-953..NL-961 and NL-965..NL-979 used (NL-950..NL-952 and NL-962..NL-964 unused): fixed NL-953, NL-954 (rest in NL-966), NL-955, NL-956, NL-961, NL-972 (critical), NL-973, NL-974 (high), NL-975, NL-977, NL-979; open NL-957..NL-960, NL-965..NL-971, NL-978; NL-976 duplicate of NL-983; NL-904 items 1-3, 5-7 done (item 4 stays with T4). Summary recounted from the entries (835 after merging the Cashu rounds 2 and 3).
 
 Updated 2026-10-03 by the Cashu integrator, round 3 (branch `wip/cashu-int` after the round-2 landing `d8c6cc6e`): the cloud agent's merge spec applied as a checklist. NL-1000 fixed (request limits), the rolling budget split off as NL-1011; NL-999 and NL-1001 extended to the event pump, BOLT 12 refusals and abandoned on-chain melts. The Cashu tests' stream reads are bounded (20 s), so a missing event fails a test instead of hanging its host. NL-1005 added (a PeerManagerConnectTests hang in a loaded full run, green alone). Summary rows recounted from the entries: 811, no duplicate IDs.
@@ -167,11 +169,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 1 | 7 | 79 | 87 |
+| open | 0 | 1 | 6 | 78 | 85 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
-| fixed | 15 | 66 | 210 | 434 | 725 |
+| fixed | 15 | 66 | 211 | 434 | 726 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
-| duplicate | 0 | 0 | 3 | 3 | 6 |
+| duplicate | 0 | 0 | 3 | 4 | 7 |
 | **Total** | **15** | **67** | **227** | **526** | **835** |
 
 ### Epics
@@ -2002,7 +2004,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-983 A late `closing_sig` replaces a mutual close that already confirmed, and the channel stays Closing
-- **Status:** open
+- **Status:** fixed (48230c70, a55af0e7)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Close/Simple/SimpleCloseCoordinator.cs` (`HandleClosingSig` → `RecordClosingTransactionAsync`; probably also the `closing_complete` path near line 270); the mutual-close spend and confirmation handling in `ChannelManager`
@@ -2017,6 +2019,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
   - Funds are not at risk (the close confirmed). The channel row never reaches Closed.
 - **Fix sketch:** once the funding output is seen spent by one of the channel's mutual closes, in the mempool or confirmed, a later `closing_complete`/`closing_sig` must not replace the stored closing transaction. Alternatively, `CompleteCloseAsync` accepts the confirmed spend the funding watch recorded. Add a regression test that delivers `closing_sig` after the peer's closing transaction has confirmed.
 - **Seen again:** taproot wave t02 matrix `tap2-mx1` (wip/taproot-t02, 2026-10-03): `Day0FlowTests` step 8, the same order (day0-a reached Closed with 5ebc41db, day0-b broadcast 81757136 after it and stayed Closing), class green rerun alone (`/Users/ms/nlightning-tap2/TestResults/cluster/tap2-mx1/day0/`); the taproot LND proof waits for both `closing_sig`s before mining to avoid it (NL-976). In the same matrix `ClnOfferPayTests.Given_AnAmountlessClnOffer_*` failed once with `SqliteException` 5 "unable to delete/modify collation sequence due to active statements" in `SqliteConnection.Close` (test node teardown; green rerun alone; no ledger ID left in the taproot range, so noted here for the next integrator to number).
+- **Fix:** lane NL983 (branch `tap2-nl983` from `wip/fafo` at `c5ab09cb`). `SimpleCloseCoordinator.RecordClosingTransactionAsync` no longer replaces a stored closing transaction that already spends the funding output: one seen in a block (its watch has a height; a reorg clears it) or, when a mutual close of the channel is in the mempool (`ClosingNegotiationRegistry.Entry.MempoolFundingSpend`, noted by `ChannelManager` from `OnWatchedOutpointSpentInMempool`), a new one that does not pay more fee (so an RBF that pays more still becomes the stored one); the new transaction is still watched, broadcast and kept in `Entry.SignedClosingTransactions`. Defensively, `ChannelManager.ConfirmFundingAsync` closes a Closing (or Failed, NL-312) channel when a watch of another of its mutual closes reaches its depth (the transaction from that set, the mempool note, or read from the block at the watch's height; never a splice of the channel), and logs "was closed by mutual close X (we had Y)". The LND taproot proof without the NL-976 wait found a second order of the same race (a55af0e7): LND broadcast our closing transaction, its block was processed, and LND's `closing_sig` for it was handled while the funding spend waited for the channel's lock, so the coordinator watched the already confirmed transaction without a height and the spend handler returned early because it was already stored; the handler now gives that watch the block's height (`EnsureCloseWatchSeenAsync`). Tests: `Application.Tests/Channels/Close/LateClosingSigHarnessTests` (16: the late `closing_sig` after the other transaction confirmed or is in the mempool, an RBF round, our higher-fee bump replacing a mempool close; anchors-shaped and simple taproot channels, either side late; 16/16 fail without the fix), `ClosingLifecycleTests` (+4: an unstored signed close or one read from its block closes the channel, a non-close confirmation does not, the late watch gets its height). `LndTaprootFlowTests` mines as soon as the first closing transaction is in the mempool (NL-976 workaround removed). Cluster proofs at a55af0e7: `nl983b-day0` 3/3 green (6/6 each; every run logged "keeps closing transaction", the late `closing_sig` refused), `nl983b-taproot` 3/3 green (2/2 each, mining at the first mempool transaction; the refusal logged in every run), `nl983b-eclair` green (25 + 2 `Explicit`, `EclairCloseTests` included); the first batch at 48230c70 had `day0` 3/3 green (every run logged "keeps closing transaction": the late `closing_sig` was refused) and `eclair` 25/25 (+2 `Explicit`), and found the second order in `taproot` run 1 of 3.
 - **Blocks/Blocked-by:** Related NL-913, NL-859 (probably the same bug, seen against Eclair), NL-877
 - **Plan ref:** BOLT2 N11
 ### NL-056 HTLC-success / HTLC-timeout second-stage transactions not implemented
@@ -6244,7 +6247,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-976 A late `closing_sig` replaced a confirmed taproot simple close against LND (the NL-983 race)
-- **Status:** duplicate of NL-983
+- **Status:** duplicate of NL-983 (fixed with NL-983 in 48230c70 and a55af0e7; the wait for both exchanges before mining is removed from `LndTaprootFlowTests`)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Close/Simple/SimpleCloseCoordinator.cs` (the `closing_sig` path)
@@ -7579,7 +7582,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** LIQUIDITY_ADS_PLAN LA6
 
 ### NL-859 `EclairCloseTests`' simple close by Eclair timed out once in a full Eclair category run
-- **Status:** open
+- **Status:** duplicate of NL-983 (the same race: the test mines as soon as we signed Eclair's `closing_complete`, so Eclair's `closing_sig` for ours can arrive after Eclair's transaction confirmed and replaced it as our closing transaction; both `closing_complete`/`closing_sig` exchanges were seen, our channel stayed Closing and Eclair had forgotten the channel, as NL-983 describes; fixed with NL-983, `eclair` suite green on the cluster)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Eclair/EclairCloseTests.cs` (`Given_SimpleCloseNegotiated_When_EclairCloses_Then_WeSignAndBothClose`)
