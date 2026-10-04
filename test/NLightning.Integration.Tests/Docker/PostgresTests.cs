@@ -297,7 +297,21 @@ public class PostgresTests
 
         // Act & Assert
         await TrampolineRelayAttemptsSchemaRoundTrip.AssertAsync(
-            () => new NLightningDbContext(options, databaseTypeProvider), TestContext.Current.CancellationToken);
+            () => new NLightningDbContext(options, databaseTypeProvider), DatabaseType.PostgreSql,
+            TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Given_PostgresSchemaFromBeforeAddTrampolineRelayBlindedDelta_When_Migrated_Then_TheKeptDeltaSurvives()
+    {
+        // Arrange (NL-923: the kept cltv_expiry_delta of a blinded relay, on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_trampoline_blinded_delta");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await TrampolineRelayBlindedDeltaSchemaRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, databaseTypeProvider), DatabaseType.PostgreSql,
+            TestContext.Current.CancellationToken);
     }
 
     [Fact]

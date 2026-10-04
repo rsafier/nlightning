@@ -36,6 +36,7 @@ public static class TrampolineRelayEntityConfiguration
             entity.Property(e => e.NextTrampolinePacket).IsRequired(false);
             entity.Property(e => e.AmountOutMsat).IsRequired();
             entity.Property(e => e.CltvExpiryOut).IsRequired();
+            entity.Property(e => e.BlindedKeptCltvExpiryDelta).IsRequired(false);
             entity.Property(e => e.IncomingTotalMsat).IsRequired();
             entity.Property(e => e.FeeEarnedMsat).IsRequired(false);
             entity.Property(e => e.OutgoingPaymentSecret).IsRequired(false);

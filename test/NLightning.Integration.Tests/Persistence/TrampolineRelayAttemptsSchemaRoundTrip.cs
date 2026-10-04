@@ -10,6 +10,7 @@ using Domain.Money;
 using Domain.Payments.Models;
 using Domain.Payments.Trampoline;
 using Infrastructure.Persistence.Contexts;
+using Infrastructure.Persistence.Enums;
 using Infrastructure.Repositories.Database.Payment;
 
 /// <summary>
@@ -36,10 +37,12 @@ internal static class TrampolineRelayAttemptsSchemaRoundTrip
     private static readonly ChannelId s_channelB = new(Enumerable.Repeat((byte)0xB2, 32).ToArray());
     private static readonly ChannelId s_channelC = new(Enumerable.Repeat((byte)0xC3, 32).ToArray());
 
-    public static async Task AssertAsync(Func<NLightningDbContext> contextFactory, CancellationToken cancellationToken)
+    public static async Task AssertAsync(Func<NLightningDbContext> contextFactory, DatabaseType databaseType,
+                                         CancellationToken cancellationToken)
     {
         // Arrange: the schema right before AddTrampolineRelayAttempts, with a failed relay of two parts on two
-        // channels (the first attempt of the payer)
+        // channels (the first attempt of the payer). Raw SQL, because the current model maps a column (a later
+        // migration's, NL-923) that this older schema does not have
         await using (var context = contextFactory())
         {
             var migrations = context.Database.GetMigrations().ToList();
@@ -47,15 +50,23 @@ internal static class TrampolineRelayAttemptsSchemaRoundTrip
             await context.GetService<IMigrator>()
                          .MigrateAsync(migrations[migrations.IndexOf(target) - 1], cancellationToken);
 
-            // Only the relay tables are written, which the older schema has
-            var repository = new TrampolineRelayDbRepository(context);
-            var first = Relay(s_now);
-            await repository.AddAsync(first);
-            await repository.AddPartAsync(Part(s_channelA, 1, 600_000));
-            await repository.AddPartAsync(Part(s_channelB, 2, 400_500));
-            first.MarkFailed(0x2019, "fee or expiry insufficient", s_now.AddSeconds(1));
-            await repository.UpdateAsync(first);
-            await context.SaveChangesAsync(cancellationToken);
+            var sql = new MigrationSqlDialect(databaseType);
+            await context.Database.ExecuteSqlRawAsync(
+                sql.Insert("TrampolineRelays",
+                           ("PaymentHash", "{0}"), ("Status", "3"), ("NextNodeId", "{1}"),
+                           ("AmountOutMsat", "1000000"), ("CltvExpiryOut", "800000"),
+                           ("IncomingTotalMsat", "1000500"), ("FailureCode", $"{(ushort)0x2019}"),
+                           ("FailureReason", "{2}"), ("CreatedAt", $"{s_now.UtcTicks}"),
+                           ("CompletedAt", $"{s_now.AddSeconds(1).UtcTicks}")),
+                [(byte[])s_hash, (byte[])s_next, "fee or expiry insufficient"], cancellationToken);
+            foreach (var (channel, htlcId, amount) in new[] { (s_channelA, 1UL, 600_000L), (s_channelB, 2UL, 400_500L) })
+                await context.Database.ExecuteSqlRawAsync(
+                    sql.Insert("TrampolineRelayParts",
+                               ("ChannelId", "{0}"), ("HtlcId", $"{htlcId}"), ("PaymentHash", "{1}"),
+                               ("AmountMsat", $"{amount}"), ("CltvExpiry", "800200"),
+                               ("OuterSharedSecret", "{2}"), ("TrampolineSharedSecret", "{3}")),
+                    [(byte[])channel, (byte[])s_hash, (byte[])SecretOf(0x21), (byte[])SecretOf(0x22)],
+                    cancellationToken);
         }
 
         // Act: the upgrade, then the payer's retry replaces it (the engine's remove + save + add)

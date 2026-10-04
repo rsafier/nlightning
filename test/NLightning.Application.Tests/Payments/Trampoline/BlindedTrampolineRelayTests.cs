@@ -644,6 +644,68 @@ public class BlindedTrampolineRelayTests
         Assert.Empty(harness.Alice.PaymentHandler.Failed);
     }
 
+    [Fact]
+    public async Task Given_AChannelDeltaBelowTheNodesAndARestart_When_TheCollectingReplayCompletesTheSet_Then_TheKeptDeltaIsRead()
+    {
+        // Arrange: setchannelpolicy delta 34 on the Carol-Alice channel (Node:Routing: 40), the payment_relay paying
+        // 36, so the first part's price check keeps the channel's 34 (NL-922), not the node's 40
+        await using var harness = await CreateHarnessWithChannelPoliciesAsync();
+        await SetCarolAlicePolicyAsync(harness, cltvExpiryDelta: 34);
+        PassThePolicyGracePeriod();
+        var payment = await NewPaymentAsync(harness,
+                                            CarolData(ThreeNodeHarness.CarolAliceScid, new BlindedPaymentRelay(36, 10, 100)),
+                                            introduction: true);
+        await PayPartAsync(harness, payment, LightningMoney.MilliSatoshis(400_000));
+        await harness.PumpAsync();
+
+        // Arrange: the last part locks in while Carol's switch is held, and its row is saved as the engine saves it,
+        // then Carol "crashes" before the set completes (a restart between the last part's save and Sending)
+        harness.Carol.SwitchSuspended = true;
+        await PayPartAsync(harness, payment, LightningMoney.MilliSatoshis(600_200));
+        await harness.PumpAsync();
+        var last = harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId).Commitments!.Htlcs.Values
+                          .Where(h => h is { Direction: HtlcDirection.Incoming, Removal: null })
+                          .MaxBy(h => h.Id)!;
+        var lastOnion = Assert.IsType<IncomingOnionTrampolineRelay>(
+            await harness.Carol.Services.GetRequiredService<IncomingOnionProcessor>()
+                         .ProcessAsync(last.OnionRoutingPacket, last.PaymentHash, null, last.PathKey,
+                                       LightningMoney.MilliSatoshis(last.AmountMsat), last.CltvExpiry));
+        await harness.Carol.InScopeAsync(async u =>
+        {
+            await u.TrampolineRelayDbRepository.AddPartAsync(new TrampolineRelayPartModel(
+                                                                 payment.Hash, ThreeNodeHarness.BobCarolChannelId,
+                                                                 last.Id,
+                                                                 LightningMoney.MilliSatoshis(last.AmountMsat),
+                                                                 last.CltvExpiry, lastOnion.OuterSharedSecret,
+                                                                 lastOnion.TrampolineSharedSecret,
+                                                                 payment.OuterSecret));
+            await u.SaveChangesAsync();
+            return true;
+        });
+        Assert.Empty(_legSender.Started);
+
+        // Act: Carol restarts; the Collecting replay completes the set with only the relay row (no part's memory)
+        harness.Carol.SwitchSuspended = false;
+        await harness.RestartAsync(harness.Carol);
+        await harness.Carol.Services.GetRequiredService<TrampolineRelayService>()
+                   .StartAsync(TestContext.Current.CancellationToken);
+        await harness.ReconnectAsync(harness.Carol);
+        await harness.PumpAsync();
+
+        // Assert: the row's kept delta (34) is read, not Node:Routing's 40 (NL-923: on 7be91cb2~ the upper bound 40
+        // refused the set whose payment_relay paid 36 with invalid_onion_blinding); the leg may expire as late as the
+        // channel allows
+        var leg = Assert.Single(_legSender.Started);
+        Assert.Equal(harness.Alice.NodeId, leg.NextNodeId);
+        Assert.Equal(s_amountOut, leg.Amount);
+        Assert.Equal(IncomingCltv - 36, leg.FinalCltvExpiry);
+        Assert.Equal(IncomingCltv - 34, leg.MaxFirstHopCltvExpiry);
+        var (relay, parts) = await GetRelayAsync(harness, payment.Hash);
+        Assert.Equal(TrampolineRelayStatus.Sending, relay.Status);
+        Assert.Equal(2, parts.Count);
+        Assert.Empty(harness.Alice.PaymentHandler.Failed);
+    }
+
     #endregion
 
     #region Helpers
