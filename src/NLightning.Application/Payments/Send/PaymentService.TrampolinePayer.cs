@@ -161,6 +161,33 @@ public sealed partial class PaymentService
         }
     }
 
+    /// <summary>
+    /// Whether the outer leg to <paramref name="trampolineNode"/> may be split (NL-924): <c>basic_mpp</c> in its
+    /// <c>init</c> features when it is a connected peer, else in its <c>node_announcement</c> in the graph; when neither
+    /// is known, true (PR 836: a trampoline node collects every part of the outer onion before it relays).
+    /// </summary>
+    internal bool TrampolineAcceptsMpp(CompactPubKey trampolineNode)
+    {
+        if (ResolvePeerManager() is { } peerManager)
+        {
+            try
+            {
+                if (peerManager.GetPeer(trampolineNode) is { } peer)
+                    return peer.Features.IsFeatureSet(Feature.BasicMpp);
+            }
+            catch (Exception e) when (e is NullReferenceException or InvalidOperationException)
+            {
+                _logger.LogDebug(e, "Could not read the features of peer {Peer}", trampolineNode);
+            }
+        }
+
+        if (_graphPathSource?.GetGraph() is { } graph && graph.TryGetNode(trampolineNode, out var node)
+                                                     && !node.Features.IsEmpty)
+            return FeatureSet.DeserializeFromBytes(node.Features.ToArray()).IsFeatureSet(Feature.BasicMpp);
+
+        return true;
+    }
+
     private IPeerManager? ResolvePeerManager()
     {
         try
@@ -197,7 +224,7 @@ public sealed partial class PaymentService
         var state = new TrampolinePayerState(trampolineNode, recipient, policy,
                                              await GetNextTrampolineAttemptAsync(paymentHash));
         var target = new PaymentTarget(trampolineNode, paymentHash, new Secret(RandomNumberGenerator.GetBytes(32)),
-                                       recipient.Amount, 0, [], SupportsMpp: true);
+                                       recipient.Amount, 0, [], SupportsMpp: TrampolineAcceptsMpp(trampolineNode));
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Paying {PaymentHash} to {Payee} through the trampoline node {Trampoline}",
                                    paymentHash, payeeNodeId, trampolineNode);

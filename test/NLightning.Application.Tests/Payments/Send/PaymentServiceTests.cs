@@ -19,7 +19,10 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Money;
+using Domain.Node.Interfaces;
+using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
@@ -57,6 +60,7 @@ public class PaymentServiceTests : IDisposable
     private readonly Mock<IChannelOperations> _channelOperations = new();
     private readonly Mock<IChannelMemoryRepository> _channels = new();
     private readonly Mock<IBlockchainMonitor> _blockchainMonitor = new();
+    private readonly Mock<IPeerManager> _peerManager = new();
     private readonly ShiftedTimeProvider _time = new();
     private readonly ServiceProvider _provider;
 
@@ -89,6 +93,7 @@ public class PaymentServiceTests : IDisposable
         services.AddSingleton(_channels.Object);
         services.AddSingleton(_channelOperations.Object);
         services.AddSingleton(new Mock<IPeerLivenessProbe>().Object);
+        services.AddSingleton(_peerManager.Object);
         services.AddSingleton<TimeProvider>(_time);
         services.AddScoped(_ => unitOfWork.Object);
         services.AddScoped<IPaymentDbRepository>(_ => _payments);
@@ -299,6 +304,43 @@ public class PaymentServiceTests : IDisposable
         var succeeded = Assert.Single(_accounting.Saved);
         Assert.Equal(AccountingEventKind.PaymentSucceeded, succeeded.Kind);
         Assert.Equal(-(long)s_amount.MilliSatoshi, succeeded.AmountMsat);
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void Given_ATrampolinePeerAndItsInitFeatures_When_AskedWhetherItTakesASplitOuterLeg_Then_BasicMppDecides(
+        bool peerSupportsBasicMpp, bool expected)
+    {
+        // Arrange (NL-924): the trampoline node is a connected peer whose features set basic_mpp or not
+        var trampoline = new TestNodeKeyManager(0x0d).NodeId;
+        var peerService = new Mock<IPeerService>();
+        peerService.SetupGet(p => p.Features).Returns(new FeatureOptions
+        {
+            BasicMpp = peerSupportsBasicMpp ? FeatureSupport.Optional : FeatureSupport.No
+        });
+        var peer = new PeerModel(trampoline, "127.0.0.1", 9735, "IPv4");
+        peer.SetPeerService(peerService.Object);
+        _peerManager.Setup(m => m.GetPeer(trampoline)).Returns(peer);
+
+        // Act
+        var accepts = Service.TrampolineAcceptsMpp(trampoline);
+
+        // Assert
+        Assert.Equal(expected, accepts);
+    }
+
+    [Fact]
+    public void Given_ATrampolineNodeNeitherPeerNorInTheGraph_When_AskedWhetherItTakesASplitOuterLeg_Then_Yes()
+    {
+        // Arrange: nothing is known of its features (BOLTs PR 836: a trampoline node collects the outer parts)
+        var trampoline = new TestNodeKeyManager(0x0d).NodeId;
+
+        // Act
+        var accepts = Service.TrampolineAcceptsMpp(trampoline);
+
+        // Assert
+        Assert.True(accepts);
     }
 
     [Fact]
