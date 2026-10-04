@@ -41,6 +41,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\NLightning.Domain\NLightning.Domain.csproj"/>
+    <ProjectReference Include="..\..\src\NLightning.Domain.Rules\NLightning.Domain.Rules.fsproj"/>
     <ProjectReference Include="..\NLightning.Tests.Utils\NLightning.Tests.Utils.csproj"/>
   </ItemGroup>
 

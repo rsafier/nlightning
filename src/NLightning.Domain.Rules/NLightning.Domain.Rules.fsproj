@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    F# spike (FSHARP_EVALUATION): pure Domain rules written in F#, consumed from C#. References Domain for its types;
+    Domain itself cannot reference this project (it would be a cycle), so consumers reference both.
+  -->
+  <PropertyGroup>
+    <Configurations>Debug;Release;Debug.Native;Debug.Wasm;Release.Native;Release.Wasm</Configurations>
+    <!-- src/Directory.Build.props pins the C# LangVersion to 14, which the F# compiler refuses -->
+    <LangVersion>latest</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsAotCompatible>true</IsAotCompatible>
+    <!-- F# only: do not copy FSharp.Core's resource satellite assemblies for 14 languages -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- The implicit FSharp.Core follows the SDK building (SDK 11 picks a prerelease 11.0.x): pin it -->
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" Version="10.0.103" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="$(Configuration.Contains('Release'))">
+    <Optimize Condition=" '$(Optimize)' == '' ">true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Prelude.fs" />
+    <Compile Include="Channels/Reestablish/ReestablishPlanner.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NLightning.Domain\NLightning.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

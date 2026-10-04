@@ -26,6 +26,7 @@
   <ItemGroup>
     <ProjectReference Include="..\NLightning.Bolt11\NLightning.Bolt11.csproj"/>
     <ProjectReference Include="..\NLightning.Domain\NLightning.Domain.csproj"/>
+    <ProjectReference Include="..\NLightning.Domain.Rules\NLightning.Domain.Rules.fsproj"/>
     <ProjectReference Include="..\NLightning.Infrastructure.Bitcoin\NLightning.Infrastructure.Bitcoin.csproj"/>
     <ProjectReference Include="..\NLightning.Infrastructure\NLightning.Infrastructure.csproj"/>
   </ItemGroup>
