@@ -68,6 +68,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<State>k__BackingField")]
         public static extern ref byte State(InteractiveTxSessionEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<TheirCommitmentPartialSignature>k__BackingField")]
+        public static extern ref byte[] TheirCommitmentPartialSignature(InteractiveTxSessionEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<TheirCommitmentSignature>k__BackingField")]
         public static extern ref byte[] TheirCommitmentSignature(InteractiveTxSessionEntity @this);
 
