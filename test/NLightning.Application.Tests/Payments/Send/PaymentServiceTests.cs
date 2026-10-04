@@ -377,10 +377,12 @@ public class PaymentServiceTests : IDisposable
     public void Given_ATrampolinePeerAndItsInitFeatures_When_AskedWhetherItTakesASplitOuterLeg_Then_BasicMppDecides(
         bool peerSupportsBasicMpp, bool expected)
     {
-        // Arrange (NL-924): the trampoline node is a connected peer whose features set basic_mpp or not
+        // Arrange (NL-924): the trampoline node is a connected peer whose init sets basic_mpp or not; we do not
+        // advertise basic_mpp ourselves, so the negotiated set never has it: the peer's own features decide
         var trampoline = new TestNodeKeyManager(0x0d).NodeId;
         var peerService = new Mock<IPeerService>();
-        peerService.SetupGet(p => p.Features).Returns(new FeatureOptions
+        peerService.SetupGet(p => p.Features).Returns(new FeatureOptions { BasicMpp = FeatureSupport.No });
+        peerService.SetupGet(p => p.PeerFeatures).Returns(new FeatureOptions
         {
             BasicMpp = peerSupportsBasicMpp ? FeatureSupport.Optional : FeatureSupport.No
         });

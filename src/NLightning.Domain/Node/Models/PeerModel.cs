@@ -49,6 +49,20 @@ public class PeerModel
         }
     }
 
+    /// <summary>
+    /// The features the peer advertised in its <c>init</c>, before they were negotiated with ours
+    /// (<see cref="IPeerService.PeerFeatures"/>): what the peer itself supports, e.g. whether a trampoline node takes a
+    /// split outer leg (NL-924), whatever we advertise.
+    /// </summary>
+    public FeatureOptions AdvertisedFeatures
+    {
+        get
+        {
+            return _peerService?.PeerFeatures
+                ?? throw new NullReferenceException($"{nameof(PeerModel)}.{nameof(AdvertisedFeatures)} was null");
+        }
+    }
+
     public PeerAddressInfo PeerAddressInfo
     {
         get

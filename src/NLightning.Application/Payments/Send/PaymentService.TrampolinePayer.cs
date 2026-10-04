@@ -9,6 +9,7 @@ using Domain.Enums;
 using Domain.Money;
 using Domain.Node;
 using Domain.Node.Interfaces;
+using Domain.Node.Models;
 using Domain.Offers.Models;
 using Domain.Payments.Models;
 using Domain.Protocol.Onion.Models;
@@ -162,9 +163,11 @@ public sealed partial class PaymentService
     }
 
     /// <summary>
-    /// Whether the outer leg to <paramref name="trampolineNode"/> may be split (NL-924): <c>basic_mpp</c> in its
-    /// <c>init</c> features when it is a connected peer, else in its <c>node_announcement</c> in the graph; when neither
-    /// is known, true (PR 836: a trampoline node collects every part of the outer onion before it relays).
+    /// Whether the outer leg to <paramref name="trampolineNode"/> may be split (NL-924): <c>basic_mpp</c> in the
+    /// features it advertised in its <c>init</c> when it is a connected peer (<see cref="PeerModel.AdvertisedFeatures"/>,
+    /// not the negotiated set: our own <c>basic_mpp</c> setting does not matter), else in its <c>node_announcement</c>
+    /// in the graph; when neither is known, true (PR 836: a trampoline node collects every part of the outer onion
+    /// before it relays).
     /// </summary>
     internal bool TrampolineAcceptsMpp(CompactPubKey trampolineNode)
     {
@@ -173,7 +176,7 @@ public sealed partial class PaymentService
             try
             {
                 if (peerManager.GetPeer(trampolineNode) is { } peer)
-                    return peer.Features.IsFeatureSet(Feature.BasicMpp);
+                    return peer.AdvertisedFeatures.BasicMpp != FeatureSupport.No;
             }
             catch (Exception e) when (e is NullReferenceException or InvalidOperationException)
             {
