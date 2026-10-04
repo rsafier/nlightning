@@ -103,8 +103,8 @@ public partial class LocalLightningSigner
         lock (GetCommitmentLock(channelId))
         {
             var signingInfo = GetRegisteredSigningInfo(channelId);
-            ThrowIfTaproot(channelId, signingInfo, "sign a splice's shared input (splicing a taproot channel is not "
-                                                 + "supported yet)");
+            ThrowIfTaproot(channelId, signingInfo, "sign a splice's shared input with ECDSA (a taproot shared input "
+                                                 + "is signed with SignSpliceSharedInputPartial)");
             ThrowIfDataLoss(channelId, "sign a splice's shared input");
             ThrowIfBroadcastSigned(channelId, "sign a splice's shared input");
 
@@ -163,8 +163,8 @@ public partial class LocalLightningSigner
         ArgumentNullException.ThrowIfNull(unsignedSpliceTransaction);
         ArgumentNullException.ThrowIfNull(remoteSignature);
         var signingInfo = GetRegisteredSigningInfo(channelId);
-        ThrowIfTaproot(channelId, signingInfo, "check a splice's shared input signature (splicing a taproot channel "
-                                             + "is not supported yet)");
+        ThrowIfTaproot(channelId, signingInfo, "check an ECDSA shared input signature (a taproot shared input is "
+                                             + "checked by AggregateSpliceSharedInputSignature)");
         var current = FromSigningInfo(signingInfo);
 
         var tx = LoadTransaction(channelId, unsignedSpliceTransaction, "splice");
