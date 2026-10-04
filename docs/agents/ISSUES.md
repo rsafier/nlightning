@@ -177,11 +177,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 78 | 80 |
-| in-progress | 0 | 0 | 2 | 0 | 2 |
+| open | 0 | 0 | 1 | 74 | 75 |
+| in-progress | 0 | 0 | 3 | 0 | 3 |
 | fixed | 15 | 68 | 218 | 451 | 752 |
-| wontfix | 0 | 0 | 5 | 10 | 15 |
-| duplicate | 0 | 0 | 3 | 4 | 7 |
+| wontfix | 0 | 0 | 5 | 13 | 18 |
+| duplicate | 0 | 0 | 3 | 5 | 8 |
 | **Total** | **15** | **68** | **230** | **543** | **856** |
 
 ### Epics
@@ -1422,6 +1422,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Re-run Proof Q (a) with `abort_channels` once `OptionSplice` is advertised (SP1/SP2 integration, D13).
 - **Blocks/Blocked-by:** Related NL-042, NL-021
 - **Plan ref:** `SPLICING_PLAN.md` Proof Q (a), §7
+- **Audit 2026-10-04:** D13 made `option_splice` Optional by default, which unblocks the CLN re-run with `abort_channels`; Proof Q (a) still uses `dev-quiesce` and our own `tx_abort`.
 
 ### NL-470 Quiescence and interactive-tx seams left open by wave qit
 - **Status:** fixed (217deff6, 36f7974e, 4e2db398)
@@ -1648,7 +1649,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` Proof SPR
 
 ### NL-523 SpliceLndObserverTests: LND bob sometimes keeps the pre-splice SCID for good
-- **Status:** open
+- **Status:** duplicate of NL-830 (fixed b246306e)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/SpliceLndObserverTests.cs`, `Docker/Day0/Day0Harness.cs` (`WaitLndForgotChannelAsync`)
@@ -1657,6 +1658,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Capture bob's graph and chain-view state when it happens (`describegraph`, LND logs); if LND never prunes a relayed edge whose outpoint it did not watch in time, assert only alice's forgetting and bob's new SCID.
 - **Blocks/Blocked-by:** Related NL-496
 - **Plan ref:** `SPLICING_PLAN.md` SPR-E
+- **Audit 2026-10-04:** same symptom root-caused and fixed as NL-830 (b246306e): the splice ran before bob had the open's edge; `SpliceLndObserverTests` now waits for it; gossip suite green since.
 
 ### NL-524 A simultaneous inbound and outbound connection can both insert the peer row
 - **Status:** fixed (91d90f21, 5eed8421)
@@ -1855,7 +1857,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TAPROOT_CHANNELS_PLAN wave t01 integration
 
 ### NL-904 Simple taproot T3/T4 obligations found by the t01 review (fees by format, the format switch, nonce binding per funding, HTLC fee inputs)
-- **Status:** fixed (wip/taproot-t03, lane T4L)
+- **Status:** fixed (f5cef8f9, item 4; lane T4L merge e8029b7d, landed in cd5c2c5d)
 - **Severity:** medium
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Domain/Bitcoin/Transactions/Factories/CommitmentFeeCalculator.cs` (the `CommitmentSpec` region: `IsHtlcTrimmed`, `UntrimmedHtlcCount`, `TrimmedHtlcTotalMsat`, `CommitmentBaseFeeSatoshis`, `FunderCostMsat` take only `bool hasAnchors`) and its callers (`UpdateValidator`, `ChannelOpenValidator`, `ChannelFactory`, `DualFundedOpenService`, `HtlcSwitch`, `InvoiceService`, `ChannelCloseCoordinator`, `DustExposurePolicy`, `AnchorCpfpService*`); `ChannelParams.CommitmentFormat` and the ~25 places that branch on `OptionAnchorOutputs`; `Musig2Service.GenerateNonce`; `HtlcTransactionBuilder` (`ThrowIfSimpleTaproot`), `TaprootSignatures`, `LocalLightningSigner` HTLC signing
@@ -1916,7 +1918,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T3, D-T4
 
 ### NL-965 Splicing a simple taproot channel is refused
-- **Status:** fixed (wip/taproot-t03, lane SPL)
+- **Status:** fixed (8fa83f36, 2d5cdc78; lane SPL merge 450cade5, landed in cd5c2c5d)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `Application/Channels/Splicing/SpliceService.cs` (`ThrowIfSimpleTaproot`, `TaprootSpliceRefusal`), `SpliceService.Rbf.cs`
@@ -1928,7 +1930,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **t03 lane SPL:** splice in, splice out and splice RBF of a simple taproot channel in both roles, as Eclair 0.14.3 speaks BOLTs PR #1324: `tx_complete` `commit_nonces` (our verification nonces of the current and next local commitment on the negotiated txid, with the splice's rotated funding key; always txid-bound) and `funding_nonce` (one JIT signing nonce per attempt), required from the peer (`MissingCommitNonce`/`MissingFundingNonce` → `tx_abort`); the splice `commitment_signed` a MuSig2 partial signature against the peer's current commit nonce, its next nonce taken into the engine with its splice `commitment_signed`; the shared input signed at the commitment step (the nonce cannot be stored, D-T4) and the partial signature stored with the session row (witness blob format 2, no migration), sent in `tx_signatures` type 2 only after the peer's `commitment_signed`; the peer's type 2 required and verified (SP-SIG-01); a taproot splice always rotates the funding key (key 0's v1 commitment 0 nonce has no txid, NL-972); `channel_reestablish` names the splice in negotiation in type 22 and sends type 24 while the peer's splice `commitment_signed` is missing, and our splice `commitment_signed` is re-signed against the peer's type 24, never replayed (an unparsable type 24 is ignored, the retransmission then waits: the splice half of NL-969 (a)); force close on a pending or locked splice funding by key-path aggregate. Liquidity ads with a taproot splice stay refused (NL-971). Proofs: `SpliceTaprootHarnessTests`, the taproot cases of `SpliceConformanceTests` (reestablish flows, a crash at every save of either side), `SimpleTaprootSpliceSigningTests` (shared input script-executed against the previous P2TR output). Follow-ups NL-1058, NL-1059. The shared input needs no `prevtx_details` (NL-957): it already omits prevtx with `shared_input_txid`; Eclair's wallet taproot inputs without prevtx need NL-957 (lane ECL).
 
 ### NL-1058 A splice `commitment_signed` that crosses our `tx_abort` is taken as a normal one (warning and close)
-- **Status:** fixed (wip/taproot-t03, lane ECL2)
+- **Status:** fixed (24324c11; landed in cd5c2c5d)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (`commitment_signed` case), `Channels/Handlers/CommitmentSignedMessageHandler.cs`
@@ -1949,7 +1951,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Backups")
 
 ### NL-1065 The receiver charged the initiator the segwit marker and flag, refusing Eclair's taproot splice-out by 3 sat
-- **Status:** fixed (wip/taproot-t03, lane ECL2)
+- **Status:** fixed (24324c11; landed in cd5c2c5d)
 - **Severity:** medium
 - **Kind:** interop
 - **Location:** `src/NLightning.Domain/Protocol/InteractiveTx/InteractiveTxRules.cs` (`CheckRemoteFee`), `CollaborativeFeeCalculator.SegwitMarkerAndFlagWeight`
@@ -1959,7 +1961,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T6
 
 ### NL-1078 A splice RBF could make a simple taproot channel's active fundings exceed the 16-entry nonce map
-- **Status:** fixed (wip/taproot-t03, lane RVS)
+- **Status:** fixed (e617792c; landed in cd5c2c5d)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Domain/Channels/Splicing/SpliceRules.cs` (`WouldExceedBatch`, `SpliceRbfConditions.MaxActiveFundings`), `src/NLightning.Application/Channels/Splicing/SpliceService.Rbf.cs` (`GetRbfConditions`, `GetMaxActiveFundings`)
@@ -1969,7 +1971,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Splicing")
 
 ### NL-1060 A simple taproot dual-funded open could be bumped past the 16-entry nonce map of its channel_reestablish
-- **Status:** fixed (wip/taproot-t03, lane RVS)
+- **Status:** fixed (7c77f04d; landed in cd5c2c5d)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`GetRbfRefusalAsync`); `src/NLightning.Application/Channels/Taproot/TaprootChannelNonces.cs` (`CreatePendingOpenNonces`)
@@ -1989,7 +1991,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-966 Simple taproot on chain: HTLC outputs, revoked HTLC penalties, second-level outputs and anchors are not resolved (T4)
-- **Status:** fixed (wip/taproot-t03, lanes T4L and T4R)
+- **Status:** fixed (67e0ee03, 536b1989, 29b2aede, c799a3bd; lane merges e8029b7d, c3c788f5; landed in cd5c2c5d)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `Application/Onchain/Resolvers/{Local,Remote,Revoked}CommitResolver.cs` (the `UnsupportedTaprootOutputs` guards), `Domain/Onchain/Factories/SweepInputFactory.cs` (`RequireNotTaproot`), `Infrastructure.Bitcoin/Builders/HtlcTransactionBuilder.cs` (`EstimateAnchorBaseWeight`/`AddFeeInputs` throw for taproot), `Onchain/HtlcWitnessParser`, `Onchain/Anchors/AnchorCpfpService*` (taproot skipped)
@@ -2079,7 +2081,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-983 A late `closing_sig` replaces a mutual close that already confirmed, and the channel stays Closing
-- **Status:** fixed (wip/nl983)
+- **Status:** fixed (21d6df5b, merge 2e455bc2; second race 4f259b78)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Close/Simple/SimpleCloseCoordinator.cs` (`HandleClosingSig` → `RecordClosingTransactionAsync`; probably also the `closing_complete` path near line 270); the mutual-close spend and confirmation handling in `ChannelManager`
@@ -2118,7 +2120,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-985 `CdkPaymentProcessorSafetyTests.Given_AMeltPendingAtTheTimeout_When_AnAttemptFailsWhileRetrying_*` failed whenever it ran alone
-- **Status:** fixed (wip/nl983)
+- **Status:** fixed (21d6df5b, merge 2e455bc2)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Daemon.Tests/Cashu/CdkPaymentProcessorSafetyTests.cs`
@@ -2131,7 +2133,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-986 `openchannel` suggests `bumpopen` after a simple taproot open, whose RBF is refused
-- **Status:** fixed (wip/taproot-t03, lane RBF)
+- **Status:** fixed (ebc7a0af, through NL-970; landed in cd5c2c5d)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Client` (the open-channel printer's "Bump its fee before it confirms with: bumpopen ..." hint)
@@ -2142,7 +2144,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md`
 
 ### NL-987 `listchannels` does not show the channel type (taproot or anchors)
-- **Status:** fixed (wip/taproot-t03, lane SMALL)
+- **Status:** fixed (c97f0150; landed in cd5c2c5d)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Client/Printers` (listchannels), the channel list IPC response
@@ -2161,6 +2163,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** drive the MPP timeout from the stepped clock (as the de-timing pass did for the switch tests) or widen the wait to an event.
 - **Blocks/Blocked-by:** Related NL-875
 - **Plan ref:** —
+- **Audit 2026-10-04:** the test already runs on the stepped clock (AdvanceAsync 59 s, then 1 s), so the fix sketch's wall-clock guess is likely wrong; the race is more likely the pump/timer callback.
 
 ### NL-989 `PartitionClusterTests` reestablish-deadline case rerun-green in two matrices
 - **Status:** open
@@ -2392,7 +2395,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-877 [EPIC] Simple taproot channels (`option_simple_taproot`, bits 80/81) not implemented
-- **Status:** open
+- **Status:** in-progress (wip/fafo; T0-T6 done, landed in cd5c2c5d; left: owner decision D-T2, T7 gossip NL-878, follow-ups)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** none yet; plan `docs/agents/TAPROOT_CHANNELS_PLAN.md` (T0-T6)
@@ -2406,6 +2409,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 ---
 
 ## BOLT 4: Onion routing
+- **Audit 2026-10-04:** waves t01-t03 landed (T0-T6, LND and Eclair interop incl. force close and penalty, live on Mutinynet 2026-10-04). Left: D-T2 (advertise Optional; `OptionSimpleTaproot` stays in `FeatureOptions.ExperimentalFeatures`), T7 taproot gossip (NL-878, waits for BOLTs #1059), follow-ups NL-1050, NL-1059, NL-1061, NL-1062, NL-958, NL-911, NL-914, NL-915, NL-967, NL-968. Location/Evidence above describe the start of the epic.
 
 ### NL-070 [EPIC] Error onions: failure messages, create / wrap / decrypt (ONION M3)
 - **Status:** fixed (ded60a1, ce3cfeb, 9b2e294, 37df603, a657719, 3c1d68a, a42c33b)
@@ -3993,7 +3997,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G5-T4
 
 ### NL-376 Mutinynet gossip soak: 24 h evaluation pending; RSS and SQLite WAL grow in the first 20 min
-- **Status:** fixed (24 h soaks recorded, see Evidence)
+- **Status:** fixed (e0f3a304)
 - **Severity:** medium
 - **Kind:** test
 - **Location:** `scripts/mutinynet/soak-gossip.sh`, `docs/agents/MUTINYNET.md` ("Gossip soak (G5-T5)")
@@ -5960,6 +5964,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Find the wait it races (as in the de-timing pass, NL-620 style); rerun alone before treating it as a regression.
 - **Blocks/Blocked-by:** Related NL-620
 - **Plan ref:** —
+- **Audit 2026-10-04:** a real race in the test, not timing: `PeerManagerBatchTests` asserts `Assert.Single(Warnings())` right after `WaitForHandledAsync(1)`, before the warning is raised.
 
 ### NL-660 A reclassification of a closed period's entry posts no adjustment (`classify set` / rule changes vs the lock)
 - **Status:** fixed (793931cb)
@@ -6281,6 +6286,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Reset the hash states after use where the API allows it; record the residual in `SECURITY_REVIEW.md` next to SR-09 when T3 wires the signer.
 - **Blocks/Blocked-by:** Related NL-877, NL-437
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T0, T3
+- **Audit 2026-10-04:** partly done: the residual is recorded as SECURITY_REVIEW.md SR-09a (cde672a9); left: the NonceHash/TaggedHash SHA-256 states are not wiped and the hash outputs passed to ScalarFromHash are not zeroed.
 
 ### NL-912 NBitcoin.Secp256k1 3.2.0's MuSig2 accepts the point at infinity in a signer's public nonce
 - **Status:** wontfix (we do not use NBitcoin's MuSig2: D-T3 chose our own BIP 327 module; it stays only as a cross-check in tests)
@@ -6294,7 +6300,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 
 ### NL-957 tx_add_input `prevtx_details` (taproot shared/wallet inputs without prevtx) is not on the wire
-- **Status:** fixed (wip/taproot-t03, lane ECL)
+- **Status:** fixed (2c26da64; lane ECL merge 6f13b8b0, landed in cd5c2c5d)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Serialization/Messages/Types/TxAddInputMessageTypeSerializer.cs`
@@ -6368,7 +6374,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 
 ### NL-960 The D-T4 crash-injection proof of simple taproot channels has no Postgres (or SQL Server) run
-- **Status:** fixed (wip/taproot-t03, lane SMALL)
+- **Status:** fixed (0a476990; landed in cd5c2c5d)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Channels/Taproot/TaprootSqliteCrashTests.cs`, `TaprootOpenHarness.cs`
@@ -6390,7 +6396,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-969 Taproot dual-funded open: the peer's tx_complete next nonce is memory only, and a missing current_commit_nonce only logs
-- **Status:** fixed (wip/taproot-t03, lane RBF)
+- **Status:** fixed (ebc7a0af; landed in cd5c2c5d)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`GetRemoteNextCommitNonce`, `CreateCommitmentSignedRetransmission`), `Channels/Handlers/ChannelReadyMessageHandler.cs` (`GetRemoteNextNonce`)
@@ -6404,7 +6410,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **t03 lane SPL:** for a simple taproot splice (NL-965) an unparsable `current_commit_nonce` is ignored (logged) and our splice `commitment_signed` is not retransmitted until a valid one comes; the dual-funded open's half of (a) stays with the open.
 
 ### NL-970 RBF of a simple taproot dual-funded open is refused in both directions
-- **Status:** fixed (wip/taproot-t03, lane RBF)
+- **Status:** fixed (ebc7a0af, f1c0f553; landed in cd5c2c5d)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`BumpAsync`, `DecideRbfAsync`, `CreateCommitmentSignedAsync`), `Infrastructure.Persistence/Entities/Channel/InteractiveTxSessionEntity.cs` (`TheirCommitmentSignature`)
@@ -6416,7 +6422,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-971 Liquidity ads are refused with a simple taproot dual-funded open
-- **Status:** fixed (wip/taproot-t03, lane RBF)
+- **Status:** fixed (19c779d8; landed in cd5c2c5d)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`CheckTaprootOpen`, `AcceptCoreAsync`)
@@ -6438,7 +6444,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-1079 A bumped taproot dual-funded open failed the channel on a reconnection after one side saw an attempt confirm
-- **Status:** fixed (wip/taproot-t03, lane RVR)
+- **Status:** fixed (3f76617e; landed in cd5c2c5d)
 - **Severity:** high
 - **Kind:** bug (interop, channel failure)
 - **Location:** `src/NLightning.Application/Channels/Taproot/TaprootReestablish.cs` (`ReceiveNoncesAsync`, the pending-open branch added by t03 lane RBF for NL-970)
@@ -6458,7 +6464,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T6
 
 ### NL-977 `LndTestHelpers.FunderAnchorsSat` left out the anchors of LND's final taproot type
-- **Status:** fixed (taproot wave t02 lane LND)
+- **Status:** fixed (3fa0af27; landed through the t02 merge c5ab09cb)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Utils/LndTestHelpers.cs`
@@ -6468,7 +6474,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T6
 
 ### NL-978 The LND taproot interop proof covers no force close, no on-chain HTLC and no LND restart with an HTLC in flight
-- **Status:** fixed (wip/taproot-t03, lane FC)
+- **Status:** fixed (a2d7ae01, 050178f3; lane FC merge f9973079, landed in cd5c2c5d)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `test/NLightning.Integration.Tests/Docker/Taproot/LndTaprootFlowTests.cs` (suite `taproot`)
@@ -6840,6 +6846,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Add an LDK fixture (ldk-server) and a scheduled CI job with Docker.
 - **Blocks/Blocked-by:** Related NL-550, NL-551, NL-552
 - **Plan ref:** —
+- **Audit 2026-10-04:** interop now runs against LND, CLN, Eclair and LDK on the cluster harness (NL-820, NL-866); the title and fix sketch above are outdated. Left: CI, which does not run the cluster suites (owner decision 2026-10-02: CI on a cluster deferred).
 
 ### NL-181 FakeSha256 returns zeros by default
 - **Status:** fixed (82f2713)
@@ -6952,6 +6959,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Run the Docker suite with `-f net11.0`; publish AOT and build Wasm with SDK 11; after GA set `allowPrerelease: false`.
 - **Blocks/Blocked-by:** Related NL-155
 - **Plan ref:** `NET11_PLAN.md` step 6
+- **Audit 2026-10-04:** `scripts/run-cluster.sh` always passes `-p:NltgTargetNet11=false`, so a net11.0 cluster run probably cannot build (not run).
 
 ### NL-310 ChainMonitorPersistenceTests.Given_ReorgOfDepth2 failed once under load
 - **Status:** fixed (548ba85, 368a057)
@@ -6974,7 +6982,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-331 Docker tests must not assume LND default fees on shared channels
-- **Status:** open
+- **Status:** wontfix (the shared LNUnit fixture is gone with NL-820, 42e96743; the cluster LND network pins each funder's policy at setup, 7a16ab70)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/` (shared LNUnit fixture)
@@ -7251,7 +7259,7 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Plan ref:** —
 
 ### NL-469 ReestablishFlowTests could not find alice among the ready LND nodes in a full LND suite run
-- **Status:** open
+- **Status:** wontfix (the Docker LND backend and LNUnit are gone with NL-820, 42e96743; the cluster backend resolves nodes from a fixed list and restarts keep the entry)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/ReestablishFlowTests.cs:64` (`Given_OurNodeRestarts_*`, `GetAlice`)
@@ -7389,9 +7397,10 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Fix sketch:** Capture the failure message on the next occurrence and check the LND wait.
 - **Blocks/Blocked-by:** Related NL-469
 - **Plan ref:** —
+- **Audit 2026-10-04:** not seen on the cluster backend since NL-820; the failure was on the retired Docker/LNUnit LND backend.
 
 ### NL-505 ABCD fixture: LND david answers 'funding failed due to internal error' to carol's open
-- **Status:** open
+- **Status:** wontfix (the LNUnit/Docker LND network build is gone with NL-820, 42e96743; the cluster LndRegtestNetwork builds the network; reopen if it recurs there)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Abcd/` (network build)
@@ -7492,6 +7501,7 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Fix sketch:** None needed while ACINQ publishes no multi-arch release images; revisit if they do.
 - **Blocks/Blocked-by:** Related NL-180
 - **Plan ref:** —
+- **Audit 2026-10-04:** since NL-866 the harness never builds the image (pull policy Never; built by hand per `EclairFixture`); `run-interop.sh eclair --build` no longer exists. Nothing to do while ACINQ publishes no multi-arch image.
 
 ### NL-554 Eclair interop gaps left by the basic lane
 - **Status:** open (partial: eda14abc, d0eeccbf)
@@ -7503,6 +7513,7 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Fix sketch:** Add the proofs that matter for the day-0 goal first (splice in/out with Eclair, RBF of a dual-funded open, attribution_data once NL-332 is decided).
 - **Blocks/Blocked-by:** Related NL-180, NL-332
 - **Plan ref:** —
+- **Audit 2026-10-04:** 710e3c2f added `EclairTaprootOnchainTests` (HTLCs in flight resolved on chain both ways, taproot channels); "taproot channels are not offered by us" above is outdated. Left: `attribution_data` against Eclair and on-chain HTLC resolution on an anchors channel against Eclair.
 
 ### NL-717 Blinded paths named an unannounced channel by its real scid, which Eclair cannot resolve
 - **Status:** fixed (640606fa, fe957403)
@@ -7563,6 +7574,7 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Fix sketch:** Switch to a release tag or an official image once ldk-server publishes one.
 - **Blocks/Blocked-by:** Related NL-180, NL-553
 - **Plan ref:** —
+- **Audit 2026-10-04:** since NL-866 the harness never builds the image (built by hand; the cold build takes 10-20 min); ldk-server is still pinned to dc02b76c.
 
 ### NL-556 LDK interop gaps left by the basic lane
 - **Status:** fixed (8d61d5c1, 55997fef, b177a40f, 43deb91a; merged 4178186b)
@@ -7585,6 +7597,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Cap our `max_fee_satoshis` nearer the estimate (e.g. 1.5x, or a configurable factor) when we fund.
 - **Blocks/Blocked-by:** Related NL-556
 - **Plan ref:** —
+- **Audit 2026-10-04:** the configurable factor exists (`Node:Close:MaxFeeMultiplier`, default 3, `ChannelCloseCoordinator.cs`); only the default or a cap is left.
 
 ### NL-722 A peer that ignores `query_short_channel_ids` (LDK) never sent us its existing graph
 - **Status:** fixed (55997fef, 3655e6f3)
@@ -7736,6 +7749,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Mark the earlier attempts' rows Replaced when a newer attempt is fully signed (or show them as superseded in `liquidityads purchases`), and give a purchase whose funding never confirmed its own outcome (Replaced, or an `Abandoned` status) instead of `ClosedEarly`.
 - **Blocks/Blocked-by:** Related NL-850, NL-529
 - **Plan ref:** LIQUIDITY_ADS_PLAN Record (LA3)
+- **Audit 2026-10-04:** partly done: RBF attempts abandoned before both tx_signatures are marked Replaced (ef13d98d, NL-867; fc3f52ab, NL-870). Left: (a) signed losing siblings stay Pending until the funding confirms; (b) an abandoned never-signed first attempt calls MarkClosed (`DualFundedOpenService`); (c) a close before any confirmation goes through `LiquidityLeases.StageChannelClosedAsync`; in (b) and (c) MarkClosed sets ClosedEarly when LeaseEndHeight is null, so the rows read as a broken lease.
 
 ### NL-853 `bumpsplice` cannot change the liquidity it buys
 - **Status:** open
@@ -7807,6 +7821,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Let the Dockerfile take the zip from the build context when present (a `COPY` of an optional file before the `curl`, the sha256 check unchanged), or pass the proxy CA as a build secret; document the host-download route in `test/CLAUDE.md` (done in LA7).
 - **Blocks/Blocked-by:** Related NL-553
 - **Plan ref:** —
+- **Audit 2026-10-04:** since NL-866 the fixture never builds the image (pull policy Never); the workaround is in test/CLAUDE.md.
 
 ### NL-867 An RBF attempt of a dual-funded open whose earlier attempt confirmed meanwhile failed the connection on every reconnect until the funding depth
 - **Status:** fixed (ef13d98d)
@@ -8252,6 +8267,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Run the full suite with `--blame-hang-timeout 5m --blame-hang-dump-type mini` until it recurs and read the dump's stacks; then move the test to a stepped clock or a bounded event-driven wait like the earlier de-timing pass.
 - **Blocks/Blocked-by:** Related NL-512, NL-565, NL-707
 - **Plan ref:** —
+- **Audit 2026-10-04:** Related NL-1005 (possibly the same Application.Tests hang in a loaded full run).
 
 ### NL-760 A settled invoice's or forward's trimmed incoming HTLC lost at a force close records no loss
 - **Status:** fixed (dda7e123, 86520723)
@@ -8789,7 +8805,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 ## Cashu (ecash)
 
 ### NL-990 Cashu ecash integration (epic)
-- **Status:** in-progress
+- **Status:** in-progress (C0-C2 done; open: NL-994 C3, NL-995 C4, NL-1010, NL-1011)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `docs/agents/CASHU_PLAN.md`; branch `wip/cashu`
@@ -8797,6 +8813,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Waves C0-C4 of `CASHU_PLAN.md`: C0 payment event stream (NL-991), C1 CDK gRPC payment processor (NL-992), C2 proof against `cdk-mintd` (NL-993), C3 native wallet (NL-994), C4 hold invoices + NUT-14 (NL-995).
 - **Blocks/Blocked-by:** NL-991..NL-995
 - **Plan ref:** `docs/agents/CASHU_PLAN.md`
+- **Audit 2026-10-04:** C0 (NL-991, e5cb13a8), C1 (NL-992, f5f69d23), C1b (NL-997), C2 (NL-993) and the review fixes NL-998..NL-1004 landed (merges 74b97a25, d8c6cc6e, 6a37a263); no Cashu branch has unmerged work.
 
 ### NL-991 No notification when an invoice is settled or a payment finishes
 - **Status:** fixed (e5cb13a8)
@@ -8967,6 +8984,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Read the hang dump of such a run (the simultaneous-connect tie-break waiting on a connection that never completes?); bound the test's waits so it fails instead of hanging.
 - **Blocks/Blocked-by:** Related NL-239, NL-240
 - **Plan ref:** —
+- **Audit 2026-10-04:** the test still has three unbounded awaits (`PeerManagerConnectTests` ParkEntered, outbound, inbound), which the fix sketch asks to bound. Related NL-764.
 
 ### NL-1006 `shutdown` refused (and `--wait` waited) on HTLCs of a force-closed channel already resolved on chain
 - **Status:** fixed (f1f92eba)
@@ -8991,7 +9009,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 ## Docs
 
 ### NL-182 REPO_MAP.md has stale pre-M1 claims
-- **Status:** fixed (docs commit "update issue ledger and plans after swarm fixes")
+- **Status:** fixed (6fc7c3a7)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `docs/agents/REPO_MAP.md` §3.2, §3.4, §6.1, §10.1, §10.2
@@ -9001,7 +9019,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-183 Docs say blinded-onion-message vector is unused
-- **Status:** fixed (docs commit "update issue ledger and plans after swarm fixes")
+- **Status:** fixed (6fc7c3a7)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `docs/agents/BOLT_COVERAGE.md` (BOLT 4 vectors row), `docs/agents/ONION_ROUTING_PLAN.md` (open follow-ups)
@@ -9011,7 +9029,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-184 test/CLAUDE.md onion section says there are no BOLT 4 tests
-- **Status:** fixed (docs commit "update issue ledger and plans after swarm fixes")
+- **Status:** fixed (6fc7c3a7)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `test/CLAUDE.md:53-56`
@@ -9041,7 +9059,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-1055 Our unspent anchor on our own or a revoked commitment kept the channel OnchainResolving forever
-- **Status:** fixed (wip/taproot-t03, lane FC)
+- **Status:** fixed (a2d7ae01; landed in cd5c2c5d)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs` (round, after the irrevocable aging); `LocalCommitResolver.IsResolvedHere`, `RevokedCommitResolver` (neither touches `OurAnchor` rows)
@@ -9061,7 +9079,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T4
 
 ### NL-1051 A key-path penalty of a simple taproot HTLC output recorded by a t02 build cannot be fee-bumped
-- **Status:** fixed (wip/taproot-t03, lane RV4)
+- **Status:** fixed (6443a1f5; landed in cd5c2c5d)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Onchain/Resolvers/RevokedCommitResolver.cs` (`PlanOutputAsync`), `Onchain/Fees/SweepScheduler.cs`

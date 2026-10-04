@@ -1,6 +1,6 @@
 # Trampoline Routing: Implementation Plan for NLightning
 
-**Status (2026-10-03, `wip/fafo` @ `c1811bbf`):** TR0-TR5 built and merged (record in §10). Client, relay and target work end to end in-process (13 relay scenarios plus the target proofs); `Feature.OptionTrampolineRouting` stays in `ExperimentalFeatures` until an owner decision. Open follow-ups NL-896..NL-899 (NL-895, blinded hops as trampoline hops, fixed on its lane; §10).
+**Status (2026-10-03, `wip/fafo` @ `c1811bbf`):** TR0-TR5 built and merged (record in §10). Client, relay and target work end to end in-process (13 relay scenarios plus the target proofs); `Feature.OptionTrampolineRouting` stays in `ExperimentalFeatures` until an owner decision. Follow-ups NL-895, NL-897..NL-899, NL-921..NL-925, NL-940 and NL-980..NL-982 are fixed; open: NL-896 (Eclair/LDK interop, blocked on ACINQ/eclair#2819). Enabled on the FAFO Mutinynet nodes (owner decision 2026-10-03; audit 2026-10-04).
 
 **Spec source:** lightning/bolts PR #836, "Trampoline onion format (Feature 56/57)".
 - Author t-bast, branch `trampoline-onion`, head `8f5f37a8`, last rebased 2026-08-28, open.
