@@ -643,6 +643,77 @@ public class ClosingLifecycleTests
     }
 
     [Fact]
+    public async Task Given_ASignedCloseThatIsNotStored_When_ItReachesItsDepth_Then_ItClosesTheChannel()
+    {
+        // Arrange - NL-983: a later closing transaction replaced the stored one after this one spent the funding output
+        var channel = CreateClosingChannel(ChannelState.Closing);
+        var confirmed = SimpleClose(channel, true, new Script((byte[])channel.RemoteShutdownScript!));
+        channel.SetClosingTransaction(s_closingTx);
+        var channelId = channel.ChannelId;
+        _memory.Setup(m => m.TryGetChannel(channelId, out channel)).Returns(true);
+        _registry.Get(channelId).SignedClosingTransactions[confirmed.TxId] = confirmed;
+        CreateManager();
+
+        // Act
+        _monitor.Raise(m => m.OnTransactionConfirmed += null, _monitor.Object, Confirmed(channelId, confirmed.TxId));
+
+        // Assert: Closed with the confirmed transaction recorded, in one save, the chain not asked
+        await WaitUntilAsync(() => channel.State == ChannelState.Closed);
+        Assert.Equal(confirmed.TxId, channel.ClosingTransaction!.TxId);
+        Assert.Equal([ChannelState.Closed], _persisted);
+        _chain.Verify(c => c.GetBlockAsync(It.IsAny<uint>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_AMutualCloseThisProcessDoesNotHold_When_ItReachesItsDepth_Then_ItIsReadFromItsBlockAndCloses()
+    {
+        // Arrange - NL-983 after a restart: the confirmed close is read from the block its watch saw it in
+        var channel = CreateClosingChannel(ChannelState.Closing);
+        var confirmed = SimpleClose(channel, true, new Script((byte[])channel.RemoteShutdownScript!));
+        channel.SetClosingTransaction(s_closingTx);
+        var channelId = channel.ChannelId;
+        _memory.Setup(m => m.TryGetChannel(channelId, out channel)).Returns(true);
+        var block = Network.RegTest.Consensus.ConsensusFactory.CreateBlock();
+        block.Transactions.Add(Transaction.Load(CreateRawTx(), Network.RegTest));
+        block.Transactions.Add(Transaction.Load(confirmed.RawTxBytes, Network.RegTest));
+        _chain.Setup(c => c.GetBlockAsync(600U)).ReturnsAsync(block);
+        CreateManager();
+
+        // Act
+        _monitor.Raise(m => m.OnTransactionConfirmed += null, _monitor.Object, Confirmed(channelId, confirmed.TxId));
+
+        // Assert
+        await WaitUntilAsync(() => channel.State == ChannelState.Closed);
+        Assert.Equal(confirmed.TxId, channel.ClosingTransaction!.TxId);
+        Assert.Equal(confirmed.RawTxBytes, channel.ClosingTransaction.RawTxBytes);
+    }
+
+    [Fact]
+    public async Task Given_AConfirmedTransactionThatIsNotAMutualClose_When_ItReachesItsDepth_Then_StillClosing()
+    {
+        // Arrange: a transaction of the channel's block that does not spend the funding output
+        var channel = CreateClosingChannel(ChannelState.Closing);
+        channel.SetClosingTransaction(s_closingTx);
+        var channelId = channel.ChannelId;
+        _memory.Setup(m => m.TryGetChannel(channelId, out channel)).Returns(true);
+        var other = Transaction.Load(CreateRawTx(), Network.RegTest);
+        var block = Network.RegTest.Consensus.ConsensusFactory.CreateBlock();
+        block.Transactions.Add(other);
+        _chain.Setup(c => c.GetBlockAsync(600U)).ReturnsAsync(block);
+        CreateManager();
+
+        // Act
+        _monitor.Raise(m => m.OnTransactionConfirmed += null, _monitor.Object,
+                       Confirmed(channelId, new TxId(other.GetHash().ToBytes())));
+        await Task.Delay(200, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(ChannelState.Closing, channel.State);
+        Assert.Equal(s_closingTx.TxId, channel.ClosingTransaction!.TxId);
+        Assert.Empty(_persisted);
+    }
+
+    [Fact]
     public async Task Given_Negotiating_When_FundingSpentBySimpleCloseShapeWithTwoForeignOutputs_Then_NotAMutualClose()
     {
         // Arrange: a 0xFFFFFFFD spend with neither output to our script is not a closing transaction of ours

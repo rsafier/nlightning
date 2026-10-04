@@ -443,12 +443,9 @@ public class LndTaprootFlowTests : IAsyncLifetime
                                                       string channelPoint, (long Ours, long Lnd) shares,
                                                       LightningMoney walletBefore, CancellationToken ct)
     {
-        // LND's RBF close: each side sends its closing_complete and the other signs it, MuSig2 both ways. Wait for both
-        // exchanges before a block is mined: a closing_sig that arrives after the other transaction confirmed replaces
-        // our record of the close and the channel stays Closing (NL-983, also seen here in run tap2lnd-2)
-        await Poll.UntilAsync(() => Node.CountLogLines("The peer signed our taproot closing transaction") >= 1
-                                  && Node.CountLogLines("Signed the peer's taproot closing transaction") >= 1,
-                              s_timeout, "both taproot closing transactions signed", ct);
+        // LND's RBF close: each side sends its closing_complete and the other signs it, MuSig2 both ways. The blocks
+        // are mined as soon as the first closing transaction is in the mempool: a closing_sig that arrives after it
+        // confirmed must not replace it as our record of the close (NL-983, seen here in run tap2lnd-2 as NL-976)
 
         // Conflicting transactions: bitcoind keeps one
         var parts = channelPoint.Split(':');

@@ -576,7 +576,10 @@ public sealed class SimpleCloseCoordinator
 
     /// <summary>
     /// Stores <paramref name="closingTransaction"/> as the channel's closing transaction (Closing, first time) and
-    /// stages its watch in the same save; then tracks the watch and completes the IPC waiters.
+    /// stages its watch in the same save; then tracks the watch and completes the IPC waiters. It does not replace a
+    /// stored closing transaction that already spends the funding output (NL-983): one seen in a block, or a mutual
+    /// close in the mempool that pays at least its fee (a later one can't replace it there). It is still watched and
+    /// kept as a candidate, so it closes the channel if it confirms after all.
     /// </summary>
     /// <param name="channel">The channel.</param>
     /// <param name="closingTransaction">The fully signed closing transaction.</param>
@@ -585,8 +588,20 @@ public sealed class SimpleCloseCoordinator
     private async Task RecordClosingTransactionAsync(ChannelModel channel, SignedTransaction closingTransaction,
                                                      bool localIsCloser)
     {
-        channel.SetClosingTransaction(closingTransaction);
-        channel.SetCloseTerms(MutualCloseProtocol.Simple, localIsCloser);
+        var entry = _registry.Get(channel.ChannelId);
+        entry.SignedClosingTransactions[closingTransaction.TxId] = closingTransaction;
+        if (await GetSettledSpendAsync(channel, entry, closingTransaction) is { } settled)
+        {
+            _logger.LogWarning(
+                "Channel {ChannelId} keeps closing transaction {Stored}: {Reason}; the new closing transaction {TxId} is "
+              + "only watched", channel.ChannelId, channel.ClosingTransaction!.TxId, settled, closingTransaction.TxId);
+        }
+        else
+        {
+            channel.SetClosingTransaction(closingTransaction);
+            channel.SetCloseTerms(MutualCloseProtocol.Simple, localIsCloser);
+        }
+
         if (channel.State < ChannelState.Closing)
             channel.UpdateState(ChannelState.Closing);
 
@@ -604,7 +619,46 @@ public sealed class SimpleCloseCoordinator
 
         if (watch is not null)
             _blockchainMonitor!.TrackWatchedTransaction(watch);
-        _registry.Get(channel.ChannelId).CompleteWaiters(closingTransaction.TxId);
+        entry.CompleteWaiters(closingTransaction.TxId);
+    }
+
+    /// <summary>
+    /// Why the stored closing transaction must stay instead of <paramref name="candidate"/> (NL-983), or null when the
+    /// candidate replaces it: the stored one was seen in a block (its watch has a height; a reorg clears it), or a
+    /// mutual close of the channel is in the mempool and the candidate does not pay more fee than it.
+    /// </summary>
+    private async Task<string?> GetSettledSpendAsync(ChannelModel channel, ClosingNegotiationRegistry.Entry entry,
+                                                     SignedTransaction candidate)
+    {
+        if (channel.ClosingTransaction is not { } stored || stored.TxId == candidate.TxId)
+            return null;
+
+        if (await _unitOfWork.WatchedTransactionDbRepository.GetByTransactionIdAsync(stored.TxId) is
+            { FirstSeenAtHeight: { } height })
+            return $"it was seen in block {height}";
+
+        if (entry.MempoolFundingSpend is { } inMempool && inMempool.TxId != candidate.TxId
+         && !PaysMoreFee(candidate, inMempool))
+            return $"mutual close {inMempool.TxId} in the mempool pays at least as much fee";
+
+        return null;
+    }
+
+    /// <summary>
+    /// True when <paramref name="candidate"/> pays a higher fee than <paramref name="other"/>: both spend only the
+    /// funding output, so the one whose outputs carry less pays more. False when either can't be read.
+    /// </summary>
+    private static bool PaysMoreFee(SignedTransaction candidate, SignedTransaction other)
+    {
+        try
+        {
+            return NBitcoin.Transaction.Load(candidate.RawTxBytes, NBitcoin.Network.Main).TotalOut
+                 < NBitcoin.Transaction.Load(other.RawTxBytes, NBitcoin.Network.Main).TotalOut;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     /// <summary>Publishes a closing transaction; a failure (e.g. a conflicting one with a higher fee) is logged.</summary>

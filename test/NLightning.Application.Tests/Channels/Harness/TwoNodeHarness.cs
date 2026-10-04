@@ -527,6 +527,9 @@ internal sealed class HarnessNode : IDisposable
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);
         unitOfWork.SetupGet(u => u.WatchedTransactionDbRepository).Returns(WatchedTransactions.Object);
         unitOfWork.SetupGet(u => u.GraphDbRepository).Returns(GraphDb.Object);
+        // A mutual close that confirms deletes the channel's interactive-tx rows in the Closed save (NL-470)
+        unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository)
+                  .Returns(new Mock<Domain.Protocol.InteractiveTx.Interfaces.IInteractiveTxSessionDbRepository>().Object);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {
             Store.Commit();

@@ -96,6 +96,21 @@ public sealed class ClosingNegotiationRegistry
         /// </summary>
         public MusigPublicNonce? RemoteCloseeNonce { get; set; }
 
+        /// <summary>
+        /// Every fully signed <c>option_simple_close</c> transaction of the channel since this process loaded it (ours
+        /// the peer completed and the peer's we signed, RBF rounds included), by txid: whichever of them confirms closes
+        /// the channel, also when another one is the stored closing transaction (NL-983). Kept across reconnections;
+        /// memory only (the funding-spend path and the chain cover a restart).
+        /// </summary>
+        public Dictionary<TxId, SignedTransaction> SignedClosingTransactions { get; } = [];
+
+        /// <summary>
+        /// The mutual close of the channel last seen spending the funding output in the mempool, or null (NL-983): a
+        /// later closing transaction that does not pay more fee can't replace it there, so it does not become the
+        /// stored one. Kept across reconnections; memory only.
+        /// </summary>
+        public SignedTransaction? MempoolFundingSpend { get; set; }
+
         /// <summary>The IPC caller's close request (feerate, fee_range use), or null for the defaults.</summary>
         public ChannelCloseRequest? Request { get; set; }
 

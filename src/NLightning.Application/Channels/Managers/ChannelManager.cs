@@ -76,6 +76,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         blockchainMonitor.OnNewBlockDetected += HandleNewBlockDetected;
         blockchainMonitor.OnTransactionConfirmed += HandleFundingConfirmationAsync;
         blockchainMonitor.OnWatchedOutpointSpent += HandleWatchedOutpointSpent;
+        blockchainMonitor.OnWatchedOutpointSpentInMempool += HandleWatchedOutpointSpentInMempool;
     }
 
     /// <inheritdoc />
@@ -881,6 +882,44 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         _ = HandleFundingSpentAsync(args);
     }
 
+    private void HandleWatchedOutpointSpentInMempool(object? sender, MempoolSpendEventArgs args)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        _ = NoteMempoolMutualCloseAsync(args);
+    }
+
+    /// <summary>
+    /// An unconfirmed spend of a watched outpoint (NL-983): a mutual close of a closing channel that spends its funding
+    /// output is noted in the channel's close entry, so a later closing transaction that can't replace it in the
+    /// mempool (it pays no more fee) does not become the stored one. Everything else is the mempool reactor's.
+    /// </summary>
+    private async Task NoteMempoolMutualCloseAsync(MempoolSpendEventArgs args)
+    {
+        try
+        {
+            if (args.SpendsUnconfirmedParent
+             || _serviceProvider.GetService<ClosingNegotiationRegistry>() is not { } registry)
+                return;
+
+            using var channelLock = await _channelLockProvider.AcquireAsync(args.ChannelId);
+            if (!_channelMemoryRepository.TryGetChannel(args.ChannelId, out var channel)
+             || channel.State is not (ChannelState.Negotiating or ChannelState.Closing or ChannelState.Failed)
+             || channel.FundingOutput is not { TransactionId: { } fundingTxId, Index: { } fundingIndex }
+             || args.SpentTransactionId != fundingTxId || args.SpentOutputIndex != fundingIndex
+             || !IsMutualCloseOf(channel, args.SpendingTransaction) || !registry.TryGet(args.ChannelId, out var entry))
+                return;
+
+            entry!.MempoolFundingSpend = args.SpendingTransaction;
+            _logger.LogInformation("Mutual close {TxId} of channel {ChannelId} spends its funding output in the mempool",
+                                   args.SpendingTransaction.TxId, args.ChannelId);
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Could not note the unconfirmed spend {TxId} of channel {ChannelId}",
+                               args.SpendingTransaction.TxId, args.ChannelId);
+        }
+    }
+
     /// <summary>
     /// A watched outpoint of a channel was spent (BOLT 5 plan O2-T5). A spend of one of the outputs being resolved goes
     /// to <see cref="IOnchainResolutionExecutor"/>. A funding spend of a closing channel that is a mutual close of this
@@ -1046,6 +1085,49 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         }
 
         return SpendHandOver.None;
+    }
+
+    /// <summary>
+    /// The transaction <paramref name="txId"/> that confirmed at <paramref name="height"/> when it is a mutual close of
+    /// <paramref name="channel"/> (NL-983), or null: one of its signed closing transactions this process holds, the one
+    /// seen in the mempool, or the transaction read from that block. Not a splice of the channel.
+    /// </summary>
+    private async Task<SignedTransaction?> FindConfirmedMutualCloseAsync(IServiceScope scope, ChannelModel channel,
+                                                                        TxId txId, uint height)
+    {
+        SignedTransaction? candidate = null;
+        if (_serviceProvider.GetService<ClosingNegotiationRegistry>() is { } registry
+         && registry.TryGet(channel.ChannelId, out var entry))
+        {
+            if (entry!.SignedClosingTransactions.TryGetValue(txId, out var signed))
+                candidate = signed;
+            else if (entry.MempoolFundingSpend is { } inMempool && inMempool.TxId == txId)
+                candidate = inMempool;
+        }
+
+        if (candidate is null && scope.ServiceProvider.GetService<IBitcoinChainService>() is { } chainService)
+        {
+            try
+            {
+                var block = await chainService.GetBlockAsync(height);
+                var wanted = new uint256((byte[])txId);
+                if (block?.Transactions.FirstOrDefault(t => t.GetHash() == wanted) is { } transaction)
+                    candidate = new SignedTransaction(txId, transaction.ToBytes());
+            }
+            catch (Exception e)
+            {
+                _logger.LogWarning(e, "Could not read block {Height} for transaction {TxId} of channel {ChannelId}",
+                                   height, txId, channel.ChannelId);
+            }
+        }
+
+        if (candidate is null || !IsMutualCloseOf(channel, candidate))
+            return null;
+
+        return _serviceProvider.GetService<ISpliceStatePort>() is { } splicePort
+            && splicePort.GetFundings(channel)?.Find(txId) is not null
+                   ? null
+                   : candidate;
     }
 
     /// <summary>
@@ -2295,6 +2377,23 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             if (channel.State is ChannelState.Closing or ChannelState.Failed && confirmedTxId is { } txId
              && channel.ClosingTransaction?.TxId == txId)
             {
+                await CompleteCloseAsync(scope, channel, firstSeenAtHeight);
+                return;
+            }
+
+            // NL-983: another one of the channel's mutual closes reached its depth (a later closing transaction
+            // replaced the stored one after this one spent the funding output): it is the close
+            if (channel.State is ChannelState.Closing or ChannelState.Failed
+             && channel.ClosingTransaction is { } storedClose && confirmedTxId is { } otherTxId
+             && otherTxId != storedClose.TxId && otherTxId != channel.FundingOutput?.TransactionId
+             && await FindConfirmedMutualCloseAsync(scope, channel, otherTxId, firstSeenAtHeight) is { } confirmedClose)
+            {
+                _logger.LogWarning(
+                    "Channel {ChannelId} ({State}) was closed by mutual close {TxId} (we had {Stored})",
+                    channelId, Enum.GetName(channel.State), otherTxId, storedClose.TxId);
+                channel.SetClosingTransaction(confirmedClose);
+                var (protocol, localIsCloser) = CloseTermsOf(channel, confirmedClose);
+                channel.SetCloseTerms(protocol, localIsCloser);
                 await CompleteCloseAsync(scope, channel, firstSeenAtHeight);
                 return;
             }
