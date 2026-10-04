@@ -72,28 +72,35 @@ public sealed class DualFundReestablish
          { } negotiation)
             return;
 
-        negotiation.RemoteCurrentCommitNonce = nonce;
+        _service.ReceiveCurrentCommitNonce(negotiation, nonce);
     }
 
     /// <summary>
     /// Our <c>commitment_signed</c> for the open's funding transaction <paramref name="fundingTxId"/> again (RFC 6979:
-    /// the same signature as the first time), when it is the negotiation's pending transaction; null otherwise.
+    /// the same signature as the first time), when it is the negotiation's pending transaction; empty otherwise. A
+    /// simple taproot open without the peer's <c>current_commit_nonce</c> answers our <c>tx_abort</c> instead while our
+    /// <c>tx_signatures</c> are not sent (NL-969).
     /// </summary>
-    public async Task<CommitmentSignedMessage?> CreateCommitmentSignedRetransmissionAsync(ChannelModel channel,
-                                                                                        TxId fundingTxId)
+    public async Task<IReadOnlyList<IChannelMessage>> CreateCommitmentSignedRetransmissionAsync(ChannelModel channel,
+                                                                                              TxId fundingTxId)
     {
         ArgumentNullException.ThrowIfNull(channel);
         if (!IsPendingOpen(channel))
-            return null;
+            return [];
 
         var negotiation = await _service.GetOrLoadAsync(channel.ChannelId, _unitOfWork, CancellationToken.None);
         if (negotiation?.PendingTxId is not { } pending || !pending.Equals(fundingTxId))
         {
             _logger.LogInformation("No pending dual-funded transaction {TxId} on channel {ChannelId} to sign again",
                                    fundingTxId, channel.ChannelId);
-            return null;
+            return [];
         }
 
-        return _service.CreateCommitmentSignedRetransmission(negotiation);
+        if (_service.CreateCommitmentSignedRetransmission(negotiation) is { } commitmentSigned)
+            return [commitmentSigned];
+
+        return channel.ChannelParams.OptionSimpleTaproot
+                   ? await _service.AbortForMissingCommitNonceAsync(negotiation, _unitOfWork)
+                   : [];
     }
 }

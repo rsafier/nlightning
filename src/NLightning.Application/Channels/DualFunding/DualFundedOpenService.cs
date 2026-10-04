@@ -487,12 +487,6 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             if (negotiation.CompletedTxIds.Count == 0 || negotiation.LastContribution is not { } previous)
                 throw new InvalidOperationException($"Channel {channelId} has no signed funding transaction to replace");
 
-            // Each attempt of a simple taproot open needs its own stored partial signature of our commitment 0, which
-            // the interactive-tx rows cannot hold yet (NL-970)
-            if (channel.ChannelParams.OptionSimpleTaproot)
-                throw new InvalidOperationException(
-                    $"Channel {channelId}: RBF of a simple taproot dual-funded open is not supported yet (NL-970)");
-
             // No attempt runs (the driver refuses a second one): shares a refused attempt took are dropped
             negotiation.RestoreShares();
             if (await GetRbfRefusalAsync(negotiation) is { } refusal)
@@ -1075,7 +1069,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     /// The commitment step: the funding outpoint of the constructed transaction, our signature of the peer's first
     /// commitment (zero HTLCs), and the channel staged in <see cref="ChannelState.V1FundingSigned"/> with it. A simple
     /// taproot channel's signature is a MuSig2 partial signature against the peer's current commit nonce of its
-    /// <c>tx_complete</c> (BOLTs PR #1324); its RBF is refused before this step (NL-970).
+    /// <c>tx_complete</c> (BOLTs PR #1324), for every attempt (an RBF attempt's on its own funding, NL-970).
     /// </summary>
     internal async Task<IReadOnlyList<IChannelMessage>> CreateCommitmentSignedAsync(
         DualFundNegotiation negotiation, InteractiveTxSessionModel session, IUnitOfWork unitOfWork)
@@ -1098,22 +1092,30 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             // An RBF attempt: the last fully signed attempt stays restorable until this one is signed (OnAbortedAsync)
             negotiation.LastSignedFunding = new DualFundNegotiation.SignedFunding(
                 signedTxId, signedIndex, signedFunding.Amount, channel.LocalBalance, channel.RemoteBalance,
-                channel.ChannelParams, channel.LastSentSignature, channel.LastReceivedSignature);
+                channel.ChannelParams, channel.LastSentSignature, channel.LastReceivedSignature,
+                channel.LastReceivedPartialSignature);
         }
 
         CompactSignature signature;
         CommitmentSignedMessage commitmentSigned;
         if (channel.ChannelParams.OptionSimpleTaproot)
         {
-            if (!isFirstAttempt)
-                throw new InvalidOperationException(
-                    "An RBF attempt of a simple taproot dual-funded open is not supported (NL-970)");
-
             var remoteNonces = negotiation.RemoteCommitNonces
                             ?? throw new InvalidOperationException("The peer's commit_nonces are missing");
-            channel.FundingOutput!.TransactionId = transaction.TxId;
-            channel.FundingOutput.Index = checked((ushort)index);
-            RegisterWithSigner(channel);
+            if (isFirstAttempt)
+            {
+                channel.FundingOutput!.TransactionId = transaction.TxId;
+                channel.FundingOutput.Index = checked((ushort)index);
+                RegisterWithSigner(channel);
+            }
+            else
+            {
+                // An RBF attempt (NL-970): as below, a pending funding of the signer; the peer's current nonce of this
+                // attempt's tx_complete is bound to its txid, as ours is
+                ApplyAttemptFunding(negotiation, channel, transaction.TxId, checked((ushort)index));
+                RegisterRbfFunding(channel, session);
+            }
+
             var partial = _lightningSigner.SignRemoteCommitmentPartial(channel.ChannelId, transaction.TxId,
                                                                        BuildCommitment(channel,
                                                                                        CommitmentSide.Remote),
@@ -1329,11 +1331,22 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         // Without a restart the signer's current funding is still the signed attempt (the unsigned one was only a
         // pending funding); after one it is the attempt the channel row carried (NL-528)
         MoveSignerToFunding(channel, null);
-        channel.UpdateLastSentSignature(signed.LastSentSignature
-                                     ?? _lightningSigner.SignChannelTransaction(
-                                            channel.ChannelId, BuildCommitment(channel, CommitmentSide.Remote)));
-        if (signed.LastReceivedSignature is not null)
-            channel.UpdateLastReceivedSignature(signed.LastReceivedSignature);
+        if (channel.ChannelParams.OptionSimpleTaproot)
+        {
+            // MuSig2 (NL-970): our commitment_signed carried a zero ECDSA signature; the peer's partial signature of
+            // our commitment 0 on that funding is the one its attempt stored
+            channel.UpdateLastSentSignature(CommitmentSignatures.ZeroSignature);
+            if (signed.LastReceivedPartialSignature is not null)
+                channel.UpdateLastReceivedPartialSignature(signed.LastReceivedPartialSignature);
+        }
+        else
+        {
+            channel.UpdateLastSentSignature(signed.LastSentSignature
+                                         ?? _lightningSigner.SignChannelTransaction(
+                                                channel.ChannelId, BuildCommitment(channel, CommitmentSide.Remote)));
+            if (signed.LastReceivedSignature is not null)
+                channel.UpdateLastReceivedSignature(signed.LastReceivedSignature);
+        }
 
         try
         {
@@ -1369,9 +1382,31 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
          || _deferredChannelReady.ContainsKey(negotiation.ChannelId))
             return "channel_ready was already sent or received";
 
-        return await GetConfirmedAttemptAsync(negotiation, null) is { } confirmed
-                   ? $"the funding transaction {confirmed} already has a confirmation"
-                   : null;
+        if (await GetConfirmedAttemptAsync(negotiation, null) is { } confirmed)
+            return $"the funding transaction {confirmed} already has a confirmation";
+
+        // Simple taproot (NL-970): every signed attempt must keep the peer's partial signature of our commitment 0, or
+        // the channel could not follow (nor force close) that attempt if it is the one that confirms; a row signed by
+        // a build before migration AddDualFundTaprootAttempts has none
+        if (negotiation.Channel.ChannelParams.OptionSimpleTaproot
+         && await GetUnfollowableAttemptAsync(negotiation) is { } unfollowable)
+            return $"the signed funding transaction {unfollowable} has no stored partial signature of our first "
+                 + "commitment (signed by an older build), so a replacement could not be followed if it confirms";
+
+        return null;
+    }
+
+    /// <summary>
+    /// A fully signed attempt of the open whose stored row cannot be followed (<see cref="TryGetSignedAttempt"/>: no
+    /// peer signature of our first commitment stored with it), or null.
+    /// </summary>
+    private async Task<TxId?> GetUnfollowableAttemptAsync(DualFundNegotiation negotiation)
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var sessions = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().InteractiveTxSessionDbRepository
+                                  .GetByChannelIdAsync(negotiation.ChannelId);
+        var followable = GetFollowableFundingTxIds(sessions);
+        return negotiation.CompletedTxIds.Where(t => !followable.Contains(t)).Select(t => (TxId?)t).FirstOrDefault();
     }
 
     /// <summary>
@@ -1503,10 +1538,6 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         // tx_abort for any reason); our own bumpopen is refused at the IPC router
         if (IsDraining())
             return InteractiveTxRbfDecision.Reject(NodeDrain.Refusal("tx_init_rbf"));
-
-        // A simple taproot open is not bumped yet (NL-970): BOLT 2 lets us answer tx_abort for any reason
-        if (negotiation.Channel is { ChannelParams.OptionSimpleTaproot: true })
-            return InteractiveTxRbfDecision.Reject("RBF of a simple taproot dual-funded open is not supported");
 
         if (await GetRbfRefusalAsync(negotiation) is { } refusal)
             return InteractiveTxRbfDecision.Reject(refusal);
@@ -1864,10 +1895,11 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
         try
         {
-            // Stored with the attempt (NL-528): whichever signed attempt confirms can still be closed unilaterally. A
-            // simple taproot open has one attempt (NL-970): the partial signature is the channel row's
+            // Stored with the attempt (NL-528): whichever signed attempt confirms can still be closed unilaterally; a
+            // simple taproot open's is the peer's partial signature with its nonce (NL-970)
             var replies = await driver.OnCommitmentSignedReceivedAsync(channelId, unitOfWork, cancellationToken,
-                                                                       isTaproot ? null : message.Payload.Signature);
+                                                                       isTaproot ? null : message.Payload.Signature,
+                                                                       isTaproot ? partialSignature : null);
 
             // The driver abandons an attempt it cannot sign for (NL-867): nothing is pending then
             negotiation.CommitmentSignedReceived = negotiation.PendingTxId is not null;
@@ -1959,7 +1991,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                     signed.LocalShare, signed.RemoteShare, negotiation.GetLocalLiquidityFeeMsat(signed.TxId));
                 negotiation.LastSignedFunding = new DualFundNegotiation.SignedFunding(
                     signed.TxId, signed.Index, signed.Capacity, signedLocal, signedRemote,
-                    WithCapacity(channel.ChannelParams, signed.Capacity), null, signed.TheirSignature);
+                    WithCapacity(channel.ChannelParams, signed.Capacity), null, signed.TheirSignature,
+                    signed.TheirPartialSignature);
                 negotiation.SharesBeforeRbf = (signed.LocalShare, signed.RemoteShare);
             }
         }
@@ -2036,9 +2069,19 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                   attempt.Index), localBalance, remoteBalance,
             WithCapacity(channel.ChannelParams, attempt.Capacity));
         MoveSignerToFunding(channel, confirmedSession);
-        channel.UpdateLastReceivedSignature(attempt.TheirSignature);
-        channel.UpdateLastSentSignature(_lightningSigner.SignChannelTransaction(
-                                            channel.ChannelId, BuildCommitment(channel, CommitmentSide.Remote)));
+        if (attempt.TheirPartialSignature is { } partial)
+        {
+            // Simple taproot (NL-970): the peer's partial signature of our commitment 0 on this attempt, made against our
+            // verification nonce bound to its txid; our half is signed only when we broadcast (key path, MuSig2)
+            channel.UpdateLastReceivedPartialSignature(partial);
+            channel.UpdateLastSentSignature(CommitmentSignatures.ZeroSignature);
+        }
+        else
+        {
+            channel.UpdateLastReceivedSignature(attempt.TheirSignature!.Value);
+            channel.UpdateLastSentSignature(_lightningSigner.SignChannelTransaction(
+                                                channel.ChannelId, BuildCommitment(channel, CommitmentSide.Remote)));
+        }
 
         // The confirmed attempt is the channel's funding broadcast again; every other attempt now double-spends it
         foreach (var other in sessions.Where(x => x.State == InteractiveTxSessionState.Signed
@@ -2115,16 +2158,18 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
     /// <summary>
     /// A fully signed attempt as its stored negotiation describes it: outpoint, capacity, both shares and the peer's
-    /// signature of our first commitment; null when the row lacks any of them (not signed, or stored before
-    /// migration <c>AddDualFundAttempts</c>).
+    /// signature of our first commitment (a simple taproot open's MuSig2 partial signature with nonce, NL-970); null
+    /// when the row lacks any of them (not signed, or stored before migration <c>AddDualFundAttempts</c>, or for a
+    /// taproot attempt <c>AddDualFundTaprootAttempts</c>).
     /// </summary>
     private static SignedAttempt? TryGetSignedAttempt(InteractiveTxSessionModel session)
     {
         if (session is not
             {
                 State: InteractiveTxSessionState.Signed, LocalFundingSatoshis: { } localSatoshis,
-                TheirCommitmentSignature: { } signature, ConstructedTx.SharedOutputIndex: { } index
-            })
+                ConstructedTx.SharedOutputIndex: { } index
+            }
+         || (session.TheirCommitmentSignature is null && session.TheirCommitmentPartialSignature is null))
             return null;
 
         var capacity = session.ConstructedTx.Outputs[(int)index].Amount;
@@ -2133,7 +2178,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             return null;
 
         return new SignedAttempt(session.ConstructedTx.TxId, checked((ushort)index), capacity, local,
-                                 LightningMoney.MilliSatoshis(capacity.MilliSatoshi - local.MilliSatoshi), signature);
+                                 LightningMoney.MilliSatoshis(capacity.MilliSatoshi - local.MilliSatoshi),
+                                 session.TheirCommitmentSignature, session.TheirCommitmentPartialSignature);
     }
 
     /// <summary>
@@ -2165,13 +2211,14 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         LightningMoney Capacity,
         LightningMoney LocalShare,
         LightningMoney RemoteShare,
-        CompactSignature TheirSignature);
+        CompactSignature? TheirSignature,
+        MusigPartialSignatureWithNonce? TheirPartialSignature);
 
     /// <summary>
     /// Our <c>commitment_signed</c> for the pending attempt again (BOLT 2 <c>next_funding</c> retransmission; RFC 6979
     /// makes it the same signature). A simple taproot open is signed again with a fresh nonce against the peer's
     /// <c>channel_reestablish</c> <c>current_commit_nonce</c> (BOLTs PR #1324; Eclair Channel.scala:2736-2742), never
-    /// replayed; without that nonce nothing is retransmitted (logged).
+    /// replayed; without that nonce nothing is retransmitted here (see <see cref="AbortForMissingCommitNonceAsync"/>).
     /// </summary>
     internal CommitmentSignedMessage? CreateCommitmentSignedRetransmission(DualFundNegotiation negotiation)
     {
@@ -2198,6 +2245,59 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                             ? _lightningSigner.SignChannelTransaction(channel.ChannelId, txId, remoteCommitment)
                             : _lightningSigner.SignChannelTransaction(channel.ChannelId, remoteCommitment);
         return _messageFactory.CreateCommitmentSignedMessage(channel.ChannelId, signature, [], txId);
+    }
+
+    /// <summary>
+    /// The peer's <c>channel_reestablish</c> <c>current_commit_nonce</c> (type 24) of a simple taproot open, kept for
+    /// <see cref="CreateCommitmentSignedRetransmission"/>: one that does not parse as two compressed points is treated
+    /// as missing (NL-969), as the signer could not sign against it.
+    /// </summary>
+    internal void ReceiveCurrentCommitNonce(DualFundNegotiation negotiation, MusigPublicNonce? nonce)
+    {
+        if (nonce is { } received && negotiation.Channel is { ChannelParams.OptionSimpleTaproot: true }
+                                  && (_serviceProvider.GetService<IMusig2Service>() is not { } musig2
+                                   || !Taproot.TaprootChannelNonces.IsValidPublicNonce(musig2, received)))
+        {
+            _logger.LogWarning("The current_commit_nonce of channel_reestablish for the simple taproot open {ChannelId} "
+                             + "does not parse; treating it as missing", negotiation.ChannelId);
+            nonce = null;
+        }
+
+        negotiation.RemoteCurrentCommitNonce = nonce;
+    }
+
+    /// <summary>
+    /// Our <c>commitment_signed</c> of a simple taproot open is due again (the peer's <c>next_funding</c>) but the
+    /// peer's <c>channel_reestablish</c> carried no usable <c>current_commit_nonce</c> (NL-969): nothing can be signed,
+    /// so the negotiation is aborted with our <c>tx_abort</c> (returned) while our <c>tx_signatures</c> are not sent
+    /// (IT-ABT-01; a first attempt is then forgotten, an RBF attempt goes back to the last signed one). After our
+    /// <c>tx_signatures</c> nothing can be aborted (logged, empty).
+    /// </summary>
+    internal async Task<IReadOnlyList<IChannelMessage>> AbortForMissingCommitNonceAsync(
+        DualFundNegotiation negotiation, IUnitOfWork unitOfWork)
+    {
+        var driver = GetDriver();
+        if (driver.GetInfo(negotiation.ChannelId) is
+            { State: InteractiveTxSessionState.TxSignaturesSent or InteractiveTxSessionState.Signed })
+        {
+            _logger.LogWarning("Our commitment_signed of the simple taproot open {ChannelId} is due again without the "
+                             + "peer's current_commit_nonce, after our tx_signatures; nothing is sent",
+                               negotiation.ChannelId);
+            return [];
+        }
+
+        const string reason = "MissingCommitNonce: channel_reestablish without a valid current_commit_nonce for our "
+                            + "commitment_signed";
+        _logger.LogWarning("Aborting the simple taproot open {ChannelId}: {Reason}", negotiation.ChannelId, reason);
+        try
+        {
+            return await driver.AbortAsync(negotiation.ChannelId, reason, unitOfWork);
+        }
+        catch (InvalidOperationException e)
+        {
+            _logger.LogWarning(e, "Could not abort the simple taproot open {ChannelId}", negotiation.ChannelId);
+            return [];
+        }
     }
 
     /// <summary>Forgets a channel's negotiation (memory only; the channel closed or was forgotten).</summary>

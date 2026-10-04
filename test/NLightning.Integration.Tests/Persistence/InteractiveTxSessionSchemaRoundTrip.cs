@@ -19,7 +19,8 @@ using Infrastructure.Repositories.Database.Channel;
 /// test and the Docker Postgres test: the schema right before it moves forward, then a session with every field set
 /// and a minimal one round-trip field by field (times to the tick, every blob byte-exact), an update replaces every
 /// mutable field, the list reads are oldest first, the unresolved read leaves out aborted and resolved sessions, a
-/// duplicate key fails the save and a delete removes the row.
+/// duplicate key fails the save and a delete removes the row (with the later columns: <c>AddDualFundAttempts</c>, and
+/// <c>AddDualFundTaprootAttempts</c>'s 98-byte partial signature, NL-970).
 /// </summary>
 internal static class InteractiveTxSessionSchemaRoundTrip
 {
@@ -102,6 +103,7 @@ internal static class InteractiveTxSessionSchemaRoundTrip
             TheirSharedInputSignature = Signature(0x77),
             LocalFundingSatoshis = null,
             TheirCommitmentSignature = Signature(0x78),
+            TheirCommitmentPartialSignature = PartialSignature(0x79),
             CommitmentSignedSent = false,
             TxSignaturesReceived = false,
             State = InteractiveTxSessionState.AwaitingTxSignatures,
@@ -198,6 +200,7 @@ internal static class InteractiveTxSessionSchemaRoundTrip
             TheirSharedInputSignature = Signature(0x22),
             LocalFundingSatoshis = 1_234_567,
             TheirCommitmentSignature = Signature(0x33),
+            TheirCommitmentPartialSignature = PartialSignature(0x34),
             CommitmentSignedSent = true,
             CommitmentSignedReceived = true,
             TxSignaturesSent = true,
@@ -280,6 +283,7 @@ internal static class InteractiveTxSessionSchemaRoundTrip
         Assert.Equal(expected.TheirSharedInputSignature, actual.TheirSharedInputSignature);
         Assert.Equal(expected.LocalFundingSatoshis, actual.LocalFundingSatoshis);
         Assert.Equal(expected.TheirCommitmentSignature, actual.TheirCommitmentSignature);
+        Assert.Equal(expected.TheirCommitmentPartialSignature, actual.TheirCommitmentPartialSignature);
         Assert.Equal(expected.CommitmentSignedSent, actual.CommitmentSignedSent);
         Assert.Equal(expected.CommitmentSignedReceived, actual.CommitmentSignedReceived);
         Assert.Equal(expected.TxSignaturesSent, actual.TxSignaturesSent);
@@ -336,6 +340,10 @@ internal static class InteractiveTxSessionSchemaRoundTrip
 
     private static CompactSignature Signature(byte fill) =>
         new(Enumerable.Range(0, 64).Select(i => (byte)(fill ^ i)).ToArray());
+
+    /// <summary>A 98-byte MuSig2 partial signature with nonce (column <c>TheirCommitmentPartialSignature</c>, NL-970).</summary>
+    private static MusigPartialSignatureWithNonce PartialSignature(byte fill) =>
+        new(Enumerable.Range(0, 98).Select(i => (byte)(fill ^ i)).ToArray());
 
     private static BitcoinScript P2Wpkh(byte fill) => new([0x00, 0x14, .. Enumerable.Repeat(fill, 20)]);
 

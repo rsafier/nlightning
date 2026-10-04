@@ -191,7 +191,8 @@ internal sealed class DualFundNegotiation
 
     /// <summary>
     /// A fully signed attempt's funding outpoint, capacity, balances and parameters (the reserve and in-flight limits
-    /// follow the capacity) and first-commitment signatures.
+    /// follow the capacity) and first-commitment signatures (a simple taproot open's: the peer's MuSig2 partial
+    /// signature with nonce, NL-970).
     /// </summary>
     internal sealed record SignedFunding(
         TxId TransactionId,
@@ -201,7 +202,8 @@ internal sealed class DualFundNegotiation
         LightningMoney RemoteBalance,
         ChannelParams ChannelParams,
         CompactSignature? LastSentSignature,
-        CompactSignature? LastReceivedSignature);
+        CompactSignature? LastReceivedSignature,
+        MusigPartialSignatureWithNonce? LastReceivedPartialSignature = null);
 
     /// <summary>What the opener chose before the peer answered.</summary>
     internal sealed record PendingOpen(

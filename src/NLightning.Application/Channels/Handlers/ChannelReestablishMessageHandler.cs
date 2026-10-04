@@ -372,9 +372,7 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
         if (!latest.IsSplice)
         {
             return _dualFundReestablish is not null
-                && await _dualFundReestablish.CreateCommitmentSignedRetransmissionAsync(channel, latest.TxId) is
-                { } openCommitmentSigned
-                       ? [openCommitmentSigned]
+                       ? await _dualFundReestablish.CreateCommitmentSignedRetransmissionAsync(channel, latest.TxId)
                        : [];
         }
 

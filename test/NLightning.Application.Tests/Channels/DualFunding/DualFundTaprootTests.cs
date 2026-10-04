@@ -27,8 +27,8 @@ using InteractiveTx.TestDoubles;
 /// speaks it): the taproot <c>channel_type</c> in <c>open_channel2</c>/<c>accept_channel2</c>, <c>commit_nonces</c> in
 /// every <c>tx_complete</c> once the transaction can be built, the MuSig2 first <c>commitment_signed</c> both ways
 /// against those nonces, the MuSig2 P2TR funding output, the peer's next nonce in the first commitment state, the
-/// <c>channel_reestablish</c> <c>current_commit_nonce</c> re-sign, and the refusals (no option, public, liquidity ads,
-/// RBF, NL-970).
+/// <c>channel_reestablish</c> <c>current_commit_nonce</c> re-sign, and the refusals (no option, public, liquidity ads).
+/// RBF of a taproot open: <see cref="DualFundTaprootRbfTests"/> (NL-970).
 /// </summary>
 public class DualFundTaprootTests
 {
@@ -418,27 +418,47 @@ public class DualFundTaprootTests
         Assert.NotNull(harness.Bob.Channel(channelId).Commitments!.LocalCommit.RemoteSignatures!.PartialSignature);
     }
 
-    [Fact]
-    public async Task Given_ATaprootDualFundedOpen_When_EitherSideTriesRbf_Then_ItIsRefused()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_ANextFundingWithoutAUsableCurrentCommitNonce_When_OurCommitmentSignedIsDue_Then_TxAbort(
+        bool unparsable)
     {
-        // Arrange
+        // Arrange: the link drops before any commitment_signed is delivered (neither side sent tx_signatures), and
+        // Bob's channel_reestablish reaches Alice without its current_commit_nonce, or with one that is not two points
         await using var harness = await CreateTaprootHarnessAsync(BobShareSat);
-        var result = await OpenTaprootAsync(harness);
-        Assert.True(result.FailureReason is null, $"{result.FailureReason}\n{harness.Describe()}");
-        var initRbf = new TxInitRbfMessage(new TxInitRbfPayload(result.ChannelId, 5_000, 500),
-                                           new FundingOutputContributionTlv(s_aliceShare));
+        var open = harness.Alice.DualFund.OpenAsync(Request(harness), TestContext.Current.CancellationToken);
+        await harness.PumpAsync((_, message) => message is CommitmentSignedMessage);
+        var channelId = harness.Transcript.First(t => t.Message is TxCompleteMessage).Message.Payload.ChannelId;
+        harness.Rewrite = (from, message) =>
+            from == "Bob" && message is ChannelReestablishMessage { CurrentCommitNonceTlv: not null } reestablish
+                ? new ChannelReestablishMessage(reestablish.Payload, reestablish.NextFundingTlv,
+                                                reestablish.MyCurrentFundingLockedTlv, reestablish.NextLocalNoncesTlv,
+                                                unparsable
+                                                    ? new CurrentCommitNonceTlv(new MusigPublicNonce(new byte[66]))
+                                                    : null)
+                : message;
 
         // Act
-        var bump = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => harness.Alice.DualFund.BumpAsync(result.ChannelId, 5_000, TestContext.Current.CancellationToken));
-        await harness.DeliverAsync(harness.Alice, initRbf);
-        var reply = harness.TakeNext(harness.Bob);
+        await harness.DisconnectAsync();
+        await harness.ReconnectAsync();
+        await harness.PumpAsync();
 
-        // Assert: our bumpopen gets a clear error, the peer's tx_init_rbf a tx_abort with the reason (NL-970)
-        Assert.Contains("NL-970", bump.Message);
-        var abort = Assert.IsType<TxAbortMessage>(reply);
-        Assert.Contains("taproot", System.Text.Encoding.ASCII.GetString(abort.Payload.Data));
-        Assert.Equal([result.FundingTxId!.Value], harness.Bob.DualFund.GetSignedFundingTxIds(result.ChannelId));
+        // Assert: Alice cannot sign her commitment_signed again, so she aborts (Eclair's MissingCommitNonce) instead of
+        // leaving the open to its timeout; nothing was signed, nothing is published, and the open ends
+        var reestablish = (ChannelReestablishMessage)harness.Transcript.Single(
+            t => t is { From: "Bob", Message: ChannelReestablishMessage }).Message;
+        Assert.Equal(1, reestablish.NextFundingTlv!.RetransmitFlags & 1);
+        var (_, abort) = harness.Transcript.First(t => t is { From: "Alice", Message: TxAbortMessage });
+        Assert.Contains("MissingCommitNonce",
+                        System.Text.Encoding.ASCII.GetString(((TxAbortMessage)abort).Payload.Data));
+        Assert.DoesNotContain(harness.Transcript, t => t.Message is TxSignaturesMessage);
+        Assert.Empty(harness.Alice.Published);
+        Assert.Empty(harness.Bob.Published);
+        Assert.NotNull((await open.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken))
+                          .FailureReason);
+        var stored = await harness.Alice.InScopeAsync(u => u.ChannelDbRepository.GetByIdAsync(channelId));
+        Assert.Equal(ChannelState.Stale, stored!.State);
     }
 
     [Fact]
