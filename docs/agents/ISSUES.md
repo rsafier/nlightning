@@ -6219,7 +6219,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 
 ### NL-957 tx_add_input `prevtx_details` (taproot shared/wallet inputs without prevtx) is not on the wire
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane ECL)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Serialization/Messages/Types/TxAddInputMessageTypeSerializer.cs`
@@ -6227,6 +6227,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** add a `PrevTxDetailsTlv` read as both 2 and 1111 when the interactive-tx lane needs it (dual-funded taproot opens and splices with Eclair).
 - **Blocks/Blocked-by:** Part of NL-877 (T5/T6, dual-funded taproot and splices)
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T2
+- **t03 lane ECL:** `PrevTxDetailsTlv` (Domain, `InteractiveTxTlvConstants.PrevTxDetails` 2 and `PrevTxDetailsEclair` 1111) and `PrevTxDetailsTlvConverter` (both types); `TxAddInputMessage.PrevTxDetailsTlv`; the serializer reads 2 and 1111 (2 wins when both are present) and 2 is in the known even set. Receive rules (PR #1324, `InteractiveTxRules.CheckPrevTxDetails`/`CheckPrevTxDetailsInputs`): with `prevtx_len` = 0 and `prevtx_details`, the script must be a witness program of version 1-16, the amount at most `MAX_MONEY`, the outpoint new and not the funding outpoint (SP-TX-01); `prevtx_details` together with a `prevtx` or with `shared_input_txid` aborts; at `tx_complete` an input added with details (no prevtx, not shared) requires every input, ours and the shared one included, to be P2TR (IT-R-04); the amount and script feed the transaction model as for a prevtx input (they are what the taproot sighash of our inputs commits to); `require_confirmed_inputs` checks such an input by its outpoint. We never send it: Eclair 0.14.3 sends its own inputs with `prevtx` and reads 1111 only in a splice of a taproot channel, and PR #1324 forbids sending both, so our inputs keep their `prevtx`.
 
 ### NL-958 LND's channel_ready announcement nonces (TLVs 0 and 2) are unknown even types to us
 - **Status:** open

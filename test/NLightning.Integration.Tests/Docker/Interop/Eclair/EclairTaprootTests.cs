@@ -12,7 +12,6 @@ using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Enums;
 using Domain.Money;
-using Domain.Protocol.Messages;
 using Fixtures;
 using Onchain.Anchors;
 using Utils;
@@ -101,23 +100,23 @@ public sealed class EclairTaprootTests : IAsyncLifetime
         await session.AssertWePayEclairAsync(LightningMoney.Satoshis(30_000), ct);
 
         // Act 3: our restart
-        var mark = session.Sent.Mark;
+        var reestablished = CountReestablished(session);
         var before = await session.GetOurChannelAsync(ct);
         await session.Node.StopAsync();
         await session.StartNodeAsync(ct);
 
         // Assert 3
-        await AssertReestablishedAsync(session, mark, before.LocalBalance, ct);
+        await AssertReestablishedAsync(session, reestablished, before.LocalBalance, ct);
         await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(12_000), ct);
         await session.AssertWePayEclairAsync(LightningMoney.Satoshis(7_000), ct);
 
         // Act 4: Eclair's restart
-        mark = session.Sent.Mark;
+        reestablished = CountReestablished(session);
         before = await session.GetOurChannelAsync(ct);
         await _fixture.RestartEclairAsync(ct);
 
         // Assert 4
-        await AssertReestablishedAsync(session, mark, before.LocalBalance, ct);
+        await AssertReestablishedAsync(session, reestablished, before.LocalBalance, ct);
         await session.AssertWePayEclairAsync(LightningMoney.Satoshis(9_000), ct);
         await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(3_000), ct);
 
@@ -129,7 +128,7 @@ public sealed class EclairTaprootTests : IAsyncLifetime
 
         // Assert 5
         await Poll.UntilAsync(() => Task.FromResult(
-                                  session.Node.CountLogLines("Signed the peer's closing transaction") >= 1),
+                                  session.Node.CountLogLines("Signed the peer's taproot closing transaction") >= 1),
                               s_stepTimeout, "we signed Eclair's closing_complete", ct);
         await AssertClosedAsync(session, ours.LocalBalance, walletBefore, ct);
     }
@@ -197,8 +196,8 @@ public sealed class EclairTaprootTests : IAsyncLifetime
         Console.WriteLine($"[nltg] closechannel: {closed.State}, closing tx {closed.ClosingTxId}");
         Assert.Equal(ChannelState.Closing, closed.State);
         await Poll.UntilAsync(() => Task.FromResult(
-                                  session.Node.CountLogLines("The peer signed our closing transaction") >= 1
-                               && session.Node.CountLogLines("Signed the peer's closing transaction") >= 1),
+                                  session.Node.CountLogLines("The peer signed our taproot closing transaction") >= 1
+                               && session.Node.CountLogLines("Signed the peer's taproot closing transaction") >= 1),
                               s_stepTimeout, "closing_complete signed both ways", ct);
         await AssertClosedAsync(session, ours.LocalBalance, walletBefore, ct);
     }
@@ -302,15 +301,20 @@ public sealed class EclairTaprootTests : IAsyncLifetime
         return fundingTx;
     }
 
+    /// <summary>The times our log says the channel was reestablished (the node keeps its log across a restart).</summary>
+    private static int CountReestablished(EclairChannelSession session) =>
+        session.Node.CountLogLines($"Channel {session.ChannelId} reestablished with peer");
+
     /// <summary>
-    /// We sent <c>channel_reestablish</c> on a new connection (Eclair fails a taproot channel whose reestablish lacks
-    /// the type-22 nonces), the channel is usable on both ends, our balance is unchanged and no data loss was seen.
+    /// The channel was reestablished again on a new connection (we processed Eclair's <c>channel_reestablish</c>,
+    /// and Eclair fails a taproot channel whose reestablish lacks the type-22 nonces), the channel is usable on both
+    /// ends, our balance is unchanged and no data loss was seen.
     /// </summary>
-    private static async Task AssertReestablishedAsync(EclairChannelSession session, long mark,
+    private static async Task AssertReestablishedAsync(EclairChannelSession session, int reestablishedBefore,
                                                        LightningMoney balanceBefore, CancellationToken ct)
     {
-        await Poll.UntilAsync(() => session.Sent.CountSent<ChannelReestablishMessage>(session.ChannelId, mark) > 0,
-                              EclairChannelSession.UsableTimeout, "we sent channel_reestablish on a new connection",
+        await Poll.UntilAsync(() => Task.FromResult(CountReestablished(session) > reestablishedBefore),
+                              EclairChannelSession.UsableTimeout, "the channel reestablished on a new connection",
                               ct);
         await session.WaitUsableAsync(ct, requireNoHtlcs: true);
         var after = await session.GetOurChannelAsync(ct);
