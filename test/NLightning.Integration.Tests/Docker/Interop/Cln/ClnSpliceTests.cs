@@ -874,6 +874,24 @@ public sealed class ClnSpliceTests : IAsyncLifetime
             }
         }
 
+        /// <summary>
+        /// <c>tx_signatures</c> of a simple taproot channel's splice carries TLV 2
+        /// <c>shared_input_partial_signature</c> (a 32-byte MuSig2 partial signature and a 66-byte nonce) and no TLV 0.
+        /// </summary>
+        public bool HasSharedInputPartialSignature
+        {
+            get
+            {
+                var offset = BodyOffset + 32;
+                var count = BinaryPrimitives.ReadUInt16BigEndian(Wire.AsSpan(offset, 2));
+                offset += 2;
+                for (var i = 0; i < count; i++)
+                    offset += 2 + BinaryPrimitives.ReadUInt16BigEndian(Wire.AsSpan(offset, 2));
+
+                return FindTlv(offset, 2) is { Length: 98 } && FindTlv(offset, 0) is null;
+            }
+        }
+
         /// <summary><c>start_batch</c>: <c>batch_size</c>.</summary>
         public ushort StartBatchSize => BinaryPrimitives.ReadUInt16BigEndian(Wire.AsSpan(BodyOffset, 2));
 
@@ -964,6 +982,12 @@ public sealed class ClnSpliceTests : IAsyncLifetime
 
         public IReadOnlyList<SpliceWireMessage> Snapshot() => _traffic.ToArray();
 
+        /// <summary>
+        /// When set, every inbound message whose type it accepts is recorded and then dropped, never handled (the
+        /// Eclair taproot on-chain proofs hold an HTLC by never processing the peer's <c>update_fulfill_htlc</c>).
+        /// </summary>
+        public Func<ushort, bool>? DropInbound { get; set; }
+
         /// <summary>The sequence the next recorded message gets.</summary>
         public long CurrentSequence
         {
@@ -1037,6 +1061,8 @@ public sealed class ClnSpliceTests : IAsyncLifetime
                 var wire = new byte[stream.Length - stream.Position];
                 await stream.ReadExactlyAsync(wire);
                 recorder.Record(wire, inbound: true);
+                if (wire.Length >= 2 && recorder.DropInbound?.Invoke(BinaryPrimitives.ReadUInt16BigEndian(wire)) == true)
+                    return null; // recorded, never handled (MessageService ignores a null message)
 
                 using var copy = new MemoryStream(wire, false);
                 return await inner.DeserializeMessageAsync(copy);

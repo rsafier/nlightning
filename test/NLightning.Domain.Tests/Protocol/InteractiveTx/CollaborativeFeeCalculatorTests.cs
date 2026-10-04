@@ -124,7 +124,8 @@ public class CollaborativeFeeCalculatorTests
     [Theory]
     [InlineData(49_999_845, null)] // pays 155 sat: the Appendix's own fee
     [InlineData(49_999_846, null)] // pays 154 sat = floor(609 x 253 / 1000): exactly the agreed feerate
-    [InlineData(49_999_847, "IT-R-04")] // pays 153 sat: below it
+    [InlineData(49_999_847, null)] // pays 153 sat = floor(607 x 253 / 1000): without the segwit marker and flag (NL-1065)
+    [InlineData(49_999_848, "IT-R-04")] // pays 152 sat: below it
     public void Given_OpenerChange_When_TheAccepterChecksTxComplete_Then_BoundaryAtTheAgreedFeerate(long openerChange,
         string? expected)
     {
@@ -292,8 +293,8 @@ public class CollaborativeFeeCalculatorTests
 
     [Theory]
     [InlineData(2_469, null)] // what LDK paid (NL-558): its own estimate charges the shared input 219
-    [InlineData(2_465, null)] // floor(991 wu x 2.488): the least we accept
-    [InlineData(2_464, "IT-R-04")]
+    [InlineData(2_460, null)] // floor(989 wu x 2.488): the least we accept (no segwit marker and flag, NL-1065)
+    [InlineData(2_459, "IT-R-04")]
     public void Given_LdksSpliceIn_When_CheckingTheInitiatorsFee_Then_TheSharedInputIsChargedTheMinimumWitness(
         long paidSats, string? expected)
     {
@@ -329,6 +330,42 @@ public class CollaborativeFeeCalculatorTests
 
         // Assert: 42 common + (164 + 218) shared input + 172 funding output + 271 input + 124 change
         Assert.Equal(991, weight);
+        Assert.Equal(expected, violation?.RequirementId);
+    }
+
+    [Theory]
+    [InlineData(707, null)] // what Eclair 0.14.3 paid: floor(566 wu x 1.25), common fields at 40 wu
+    [InlineData(706, "IT-R-04")]
+    public void Given_EclairsTaprootSpliceOut_When_CheckingTheInitiatorsFee_Then_TheSegwitMarkerAndFlagAreNotCharged(
+        long paidSats, string? expected)
+    {
+        // Arrange: the splice-out Eclair started on a simple taproot channel in the Eclair taproot proof (NL-1065) at
+        // 1,250 sat/kw: only the taproot shared input (164 + 66, no witness margin), the new P2TR funding output and
+        // Eclair's 50,000 sat P2WPKH payout; Eclair's share pays the payout and the fee. We are the non-initiator.
+        const uint feerate = 1_250;
+        var sharedInput = new SharedFundingInput(FundingTxId, 0, LightningMoney.Satoshis(1_100_000), P2Tr, 164 + 66);
+        var newCapacity = 1_100_000 - 50_000 - paidSats;
+        var spec = new SharedFundingSpec(sharedInput, P2Tr, LightningMoney.Satoshis((ulong)newCapacity),
+                                         LightningMoney.Satoshis(500_000), LightningMoney.Satoshis(600_000),
+                                         LightningMoney.Satoshis(500_000),
+                                         LightningMoney.Satoshis((ulong)(600_000 - 50_000 - paidSats)));
+        var inputs = new List<InteractiveTxInput>
+        {
+            new(0, InteractiveTxParty.Remote, FundingTxId, 0, Sequence, sharedInput.Amount, P2Tr, null, true)
+        };
+        var outputs = new List<InteractiveTxOutput>
+        {
+            new(2, InteractiveTxParty.Remote, spec.SharedOutputAmount, P2Tr, true),
+            new(4, InteractiveTxParty.Remote, LightningMoney.Satoshis(50_000), P2Wpkh, false)
+        };
+
+        // Act
+        var weight = CollaborativeFeeCalculator.GetContributionWeight(inputs, outputs, InteractiveTxParty.Remote, true,
+                                                                      spec);
+        var violation = InteractiveTxRules.CheckRemoteFee(inputs, outputs, spec, feerate, true);
+
+        // Assert: 42 common + 230 shared input + 172 funding output + 124 payout; 2 wu less are charged
+        Assert.Equal(568, weight);
         Assert.Equal(expected, violation?.RequirementId);
     }
 

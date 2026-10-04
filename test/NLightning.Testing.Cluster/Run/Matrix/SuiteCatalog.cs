@@ -41,14 +41,24 @@ public static class SuiteCatalog
             ["-class", $"{Docker}.Gossip.*"],
             ["-class-", $"{Docker}.Gossip.Capture.*"],
             "off", 1, 1, TimeSpan.FromMinutes(60), SuiteRequirement.LndClusterBackend),
-        new("eclair", "the Eclair interop suite without its splice class (Category=Interop.Eclair)", "integration",
-            [], ["-trait", "Category=Interop.Eclair", "-class-", $"{Docker}.Interop.Eclair.EclairSpliceTests"],
+        new("eclair", "the Eclair interop suite without its splice classes (Category=Interop.Eclair)", "integration",
+            [],
+            [
+                "-trait", "Category=Interop.Eclair", "-class-", $"{Docker}.Interop.Eclair.EclairSpliceTests",
+                "-class-", $"{Docker}.Interop.Eclair.EclairTaprootSpliceTests"
+            ],
             "off", 1, 1, TimeSpan.FromMinutes(45)),
         new("ldk", "the LDK interop suite (Category=Interop.Ldk)", "integration",
             [], ["-trait", "Category=Interop.Ldk"], "off", 1, 1, TimeSpan.FromMinutes(30)),
-        // The Eclair suite's longest class, split from eclair (its own Eclair topology) to shorten the matrix
-        new("eclair2", "the Eclair splice tests (EclairSpliceTests, Category=Interop.Eclair)", "integration",
-            ["-class", $"{Docker}.Interop.Eclair.EclairSpliceTests"], ["-trait", "Category=Interop.Eclair"],
+        // The Eclair suite's longest classes, split from eclair (its own Eclair topology) to shorten the matrix; the
+        // taproot splice proofs (taproot wave t03) joined them
+        new("eclair2", "the Eclair splice tests (EclairSpliceTests, EclairTaprootSpliceTests, Category=Interop.Eclair)",
+            "integration",
+            [
+                "-class", $"{Docker}.Interop.Eclair.EclairSpliceTests",
+                "-class", $"{Docker}.Interop.Eclair.EclairTaprootSpliceTests"
+            ],
+            ["-trait", "Category=Interop.Eclair"],
             "off", 1, 1, TimeSpan.FromMinutes(30)),
         // The rest of the gossip-regtest collection, split from gossip (its own network) to shorten the matrix
         new("day0", "the day-0 flows, the LND splice observer and the public channel policy (GossipRegtestCollection)",
