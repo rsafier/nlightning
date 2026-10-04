@@ -177,10 +177,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 74 | 75 |
+| open | 0 | 0 | 1 | 73 | 74 |
 | in-progress | 0 | 0 | 3 | 0 | 3 |
 | fixed | 15 | 68 | 218 | 451 | 752 |
-| wontfix | 0 | 0 | 5 | 13 | 18 |
+| wontfix | 0 | 0 | 5 | 14 | 19 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
 | **Total** | **15** | **68** | **230** | **543** | **856** |
 
@@ -2003,7 +2003,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **t03 lane T4R:** parts (2), (3), (4) and (5) for the peer's commitments done (branch `tap3-t4r`): `CommitmentOutputMapper` records with each HTLC output of a peer commitment the leaf we spend it by (timeout leaf of our offered HTLC, success leaf of the peer's, the timeout leaf of a revoked one for its merkle root); `SweepInputFactory.HtlcTimeoutClaim`/`HtlcPreimageClaim` build the script-path claims (nSequence 1, nLockTime cltv for the timeout), `Penalty` of a taproot `RevokedHtlc` and the new `TaprootSecondLevelPenalty` the revocation key-path spends (`SweepInput.TaprootMerkleRoot`, `Domain/Onchain/Taproot/TapscriptMerkleRoot`), the signer signs the key path with the revocation key tweaked by the root after checking the output key (`LocalLightningSigner.TaprootSweeps`), `SweepScheduler` re-signs both; `RevokedCommitResolver` builds the taproot second-level row (`TaprootHtlcResolutionOutput`) and penalizes it, also in the mempool path; `HtlcWitnessParser` reads the taproot witness shapes, so a preimage revealed on either commitment (claim or HTLC-success, confirmed or in the mempool) fulfills upstream and timeouts fail upstream as on anchors. Every spend is proven by script execution (`Infrastructure.Bitcoin.Tests/Taproot/SimpleTaprootPeerHtlcSpendTests`, the spec vectors' resolution transactions parsed), in process by `Onchain/Resolvers/Remote/RemoteTaprootResolutionTests`, `RevokedResolutionTests`/`RevokedMempoolPenaltyTests`/`SweepSchedulerTests` taproot cases, `MempoolReactorTests` and `LocalCommitResolutionTests.Given_PeerClaimsOurTaprootHtlcByItsSuccessLeaf_*`. Left for lane T4L: part (1) (our HTLC transactions, NL-904 item 4), the second-level outputs of our HTLC transactions and part (6) (anchors); A taproot HTLC row recorded by a t02 build (no leaf) takes the rebuilt commitment's leaf in `RemoteCommitResolver` and is claimed.
 
 ### NL-967 A simple taproot channel whose peer does not negotiate option_simple_close cannot close cooperatively
-- **Status:** open
+- **Status:** wontfix (spec-conformant: `option_simple_taproot` depends on `option_simple_close`, which we implement (NL-020) and advertise by default (D-T1); no known peer keeps a taproot channel without it)
 - **Severity:** low
 - **Kind:** interop
 - **Location:** `Application/Channels/Close/ChannelCloseCoordinator.cs` (`ReceiveTaprootShutdownNonce`, `ReceiveClosingSignedAsync`), `ChannelCloseService.ThrowIfTaprootWithoutSimpleClose`
@@ -2011,6 +2011,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Only if a peer is seen keeping a taproot channel without simple close: the LND legacy flow (shutdown nonce, one `closing_signed` with TLV 6 at the initiator's fee).
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T5
+- **Audit 2026-10-04:** simple close is built and used for every taproot cooperative close (cluster `taproot` and Eclair suites, the first live taproot close on Mutinynet). This entry covers only a peer that later reconnects without bits 60/61; refusing the cooperative close there follows the spec dependency, and the channel can still be force closed. Reopen if such a peer is seen.
 
 ### NL-968 The simple-close fee of a taproot channel is estimated with the P2WSH 2-of-2 witness weight
 - **Status:** open
