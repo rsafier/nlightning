@@ -315,7 +315,7 @@ same gates, same equivalence harness.
 
 ## 6. Measurements
 
-Before (code lines = non-blank, non-comment; measured on the branch point):
+Before (code lines = non-blank, non-comment; measured on the branch point `2df63cb2`):
 
 | area | files | code lines |
 |---|---|---|
@@ -328,18 +328,35 @@ Per-message cost today (code lines in the codec layer): `update_fee` 165 across 
 `channel_reestablish` 219 across 3 main files + 4 TLV classes + 4 converters + registrations;
 `tx_add_input` 397 across 5 files.
 
-After the P0 slice (measured post-implementation in §9 of the PR): 12 definitions replace 24
-serializer classes; extrapolation to the full layer: of the ~12.9k lines, roughly 6.5-7.5k
-are per-message/per-TLV boilerplate that the definitions replace with ~15-25 lines per
-message (~4.7k for 290 messages) — an expected net removal of ~2-3k lines at full migration,
-with the larger wins being the 7→3 touch points per message, the registry-completeness test,
-and one shared strict-TLV implementation.
+After the P0 slice (measured on `wip/codec-redesign`, commit `81e90dd4`):
 
-Performance (micro-benchmark, `PaymentThroughputBenchmark`-style Stopwatch harness,
-`Explicit`, Release, net10.0, Apple M-series): decode of an update_add_htlc-shaped message
-(1366-byte onion) and encode of a commitment_signed with 8 signatures, old vs new codec, in
-`docs/agents/CODEC_REDESIGN_PLAN.md` §6 updates after the P0 run. Acceptance: new codec
-within 1.5x of old on the hot paths; regression beyond that must be justified.
+| P0 slice | files | code lines |
+|---|---|---|
+| deleted hand-written serializers (14 message-type + 13 payload) | 27 | 1,610 |
+| added Wire runtime (reader, writer, MessageWire, registry) | 6 | 718 (one-time) |
+| added definitions (14 messages) | 5 | 384 (~27 per message) |
+| **net for the slice** | | **−508** (excl. tests) |
+
+Remaining unmigrated boilerplate: 38 payload serializers (2,138 lines) + 36 message-type
+serializers (2,157 lines) = ~4,300 lines over ~40 messages; replacing them at ~27 lines per
+message plus removing the per-TLV converters (26 files, ~1,000 lines) puts the projected
+full-layer net at roughly **−3,500 to −4,000 code lines**, with the structural wins larger
+than the count: 7→3 touch points per message, one shared strict-TLV implementation, and the
+registry-completeness test replacing the silent-unknown failure mode.
+
+Performance (Stopwatch micro-benchmark `WirePerfBenchmark`, `Explicit`/`Category=Benchmark`,
+Release net10.0, Apple M-series, 20k iterations after warmup; the same file was run against
+the branch point in a throwaway worktree for the old numbers):
+
+| op | old codec | new codec |
+|---|---|---|
+| `update_add_htlc` decode (1366-byte onion) | 1.5 µs/op | 1.0 µs/op |
+| `update_add_htlc` encode | 0.8 µs/op | 0.7 µs/op |
+| `commitment_signed` decode (8 signatures) | 2.7 µs/op | 1.6 µs/op |
+| `commitment_signed` encode | 1.4 µs/op | 1.1 µs/op |
+
+The new codec is faster on every measured hot path (fewer virtual layers, span-based
+primitives, no per-field factory lookups), comfortably inside the 1.5x acceptance bound.
 
 ## 7. Risks
 

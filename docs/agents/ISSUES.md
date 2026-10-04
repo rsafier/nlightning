@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 0 | 75 | 75 |
+| open | 0 | 0 | 1 | 75 | 76 |
 | in-progress | 0 | 0 | 3 | 0 | 3 |
-| fixed | 15 | 68 | 218 | 451 | 752 |
+| fixed | 15 | 68 | 220 | 451 | 754 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **230** | **546** | **859** |
+| **Total** | **15** | **68** | **232** | **546** | **861** |
 
 ### Epics
 
@@ -9121,3 +9121,25 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Blocks/Blocked-by:** Related NL-966, NL-957
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T6
 
+
+## Wire codec
+
+### NL-1100 [EPIC] Wire codec redesign: one declarative definition per message, both directions
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure.Serialization/Wire/`, plan `docs/agents/CODEC_REDESIGN_PLAN.md`
+- **Evidence:** The wire codec layer costs ~12.9k code lines in 341 files where Eclair's scodec-based layer needs ~2.0k in 12 (6.4x); one message costs 4 classes + 4 factory registrations + a Create* pair, and a missing registration silently turns a message "unknown" (dropped if odd, peer killed if even). The plan compares hand-written combinators, spec-CSV codegen (CLN-style), a Roslyn source generator and the hybrid; the decision (plan §3) is the hybrid: a span-based `WireReader`/`WireWriter` runtime with a strict TLV reader and per-message declarative `MessageWire<T>` definitions. Scope of the epic: wire messages and their TLV streams; later phases P1 (rest of BOLT 2), P2 (interactive-tx, splice, liquidity-ads TLV 1339), P3 (gossip incl. ExtraData-verbatim), P4 (onion 513; hop payloads need an error-detailing reader); BOLT 12 stays on its pure Domain codecs.
+- **Fix sketch:** per-phase checklists in plan §5; each phase keeps every round-trip/vector test green unchanged and adds registry + property coverage.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `docs/agents/CODEC_REDESIGN_PLAN.md`
+
+### NL-1101 The Wire codec runtime (reader/writer, strict TLV stream, MessageWire, WireRegistry) and the P0 vertical slice
+- **Status:** fixed (81e90dd4)
+- **Severity:** medium
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Serialization/Wire/` (+ `Wire/Definitions/`), `Factories/MessageTypeSerializerFactory.cs`
+- **Evidence:** P0 of NL-1100 migrated 14 messages — BOLT 1 (init, error, warning, ping, pong), the BOLT 2 HTLC/commitment set (update_add/fulfill/fail/fail_malformed_htlc, commitment_signed, revoke_and_ack, update_fee), channel_reestablish (TLVs 1/5/22/24) and tx_add_input (TLVs 0/2/1111, the type-2-wins-over-1111 rule kept) — from hand-written payload+message serializers to one declarative definition per message; deleted 27 serializer files (1,610 code lines), added the runtime (718) and definitions (384). The merged `MessageTypeSerializerFactory` prefers the registry and falls back to legacy, so callers, handlers and the `IMessageSerializer` API are unchanged; `init`'s lenient advisory TLVs keep the NL-344/NL-850 undecodable-raw-value behavior; error wrapping matches the hand-written pair (payload errors escape as `PayloadSerializationException`, extension errors as `MessageSerializationException`). All 711 pre-existing Serialization tests (exact-hex round trips, BOLT 1 BigSize vectors, the strictness matrix) pass unchanged against the new path, plus 33 new tests (`Wire/WirePropertyTests` randomized round trips + strict-rejection, `Wire/WireRegistryTests` completeness). AOT analyzer build 0 warnings; hot-path micro-benchmark faster than the old codecs (update_add_htlc decode 1.5 -> 1.0 us, commitment_signed decode 2.7 -> 1.6 us; plan §6).
+- **Fix sketch:** remaining phases in plan §5.
+- **Blocks/Blocked-by:** Part of NL-1100
+- **Plan ref:** `docs/agents/CODEC_REDESIGN_PLAN.md` P0

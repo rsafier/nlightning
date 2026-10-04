@@ -14,7 +14,10 @@ BOLT wire (de)serialization: `IMessage` <-> bytes. Three layers: `MessageSeriali
 - `ValueObjects/` — BigSize, ChainHash, ChannelFlags, ChannelId, ShortChannelId, Witness.
 - `Node/FeatureSetSerializer.cs` — BOLT 9 feature bits (init writes it twice: global + local).
 
-## Adding a wire message (all steps required)
+## Wire codec (NL-1101)
+`Wire/` holds the declarative codec layer: `WireReader`/`WireWriter` (span-based big-endian primitives, canonical BigSize), `MessageWire<T>` (one definition per message: encode lambda, decode lambda returning a constructor continuation, plus the message's TLV table — the strict reader enforces increasing types, canonical BigSize, length bounds and rejects unknown even types from the table's known set; unknown odd records are dropped on re-encode, as the hand-written serializers did via the message ctors) and `WireRegistry` (preferred by `MessageTypeSerializerFactory`, legacy fallback). Definitions: `Wire/Definitions/` — init, error, warning, ping, pong, the BOLT 2 HTLC/commitment set, channel_reestablish, tx_add_input. Tests: `Tests/Wire/WirePropertyTests.cs` (randomized round trips + strict rejection) and `WireRegistryTests` (completeness); `WirePerfBenchmark` is Explicit. Plan: `docs/agents/CODEC_REDESIGN_PLAN.md`.
+
+## Adding a wire message (all steps required; migrated messages need only 1, 2, the Wire definition and the registry line)
 1. Domain: `MessageTypes` enum, `Payloads/XPayload.cs`, `Messages/XMessage.cs` (in `src/NLightning.Domain/Protocol`).
 2. New TLVs: `TlvConstants`, Domain `Tlv/XTlv.cs`, converter in `src/NLightning.Infrastructure/Protocol/Tlv/Converters`, register in `TlvConverterFactory.RegisterConverters`, and add a sample to `CreateSampleTlvs` in `Tlv/TlvStreamSerializerTests.cs`.
 3. `Payloads/XPayloadSerializer.cs` -> register in `PayloadSerializerFactory` in BOTH `RegisterSerializers` and `RegisterTypeDictionary`.
