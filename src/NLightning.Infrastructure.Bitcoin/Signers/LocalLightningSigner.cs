@@ -1531,7 +1531,7 @@ public partial class LocalLightningSigner : ILightningSigner
         // leaf; the sighash byte (0x83 for the counterparty, none for SIGHASH_DEFAULT) is added by the tx builder
         if (context.HtlcTransaction.IsTaproot)
         {
-            var taprootSigHash = ComputeTaprootHtlcSigHash(context, sigHash);
+            var taprootSigHash = ComputeTaprootHtlcSigHash(context, sigHash, allowFeeInputs);
             var taprootSignature = TaprootSignatures.Sign(htlcKey, taprootSigHash);
 
             // BIP 340's fault-attack advice (NL-904 item 7): a faulty signature never leaves the signer
@@ -1568,7 +1568,8 @@ public partial class LocalLightningSigner : ILightningSigner
     /// <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> stays. Simple taproot keeps the anchors rules, so the context must
     /// say so.
     /// </summary>
-    private uint256 ComputeTaprootHtlcSigHash(HtlcSigningContext context, SigHash sigHash)
+    private uint256 ComputeTaprootHtlcSigHash(HtlcSigningContext context, SigHash sigHash,
+                                              bool allowFeeInputs = false)
     {
         if (!context.HasAnchors)
             throw new SignerException("A simple taproot HTLC transaction has the anchors semantics (HasAnchors must "
@@ -1580,7 +1581,9 @@ public partial class LocalLightningSigner : ILightningSigner
             SigHash.Single | SigHash.AnyoneCanPay => TaprootSignatures.CounterpartyHtlcSigHash,
             _ => throw new ArgumentOutOfRangeException(nameof(sigHash), sigHash, "Not an HTLC signature flag")
         };
-        return TaprootSignatures.ComputeHtlcSigHash(context.HtlcTransaction, taprootSigHash, _network);
+        // Only our own SIGHASH_DEFAULT signature may cover wallet fee inputs after the HTLC input (NL-904 item 4)
+        return TaprootSignatures.ComputeHtlcSigHash(context.HtlcTransaction, taprootSigHash, _network,
+                                                    allowFeeInputs && sigHash == SigHash.All);
     }
 
     private static ECDSASignature ParseLowSSignature(ChannelId channelId, CompactSignature signature, int index)
