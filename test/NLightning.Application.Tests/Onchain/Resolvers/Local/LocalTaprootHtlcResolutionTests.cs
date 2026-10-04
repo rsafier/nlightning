@@ -8,7 +8,6 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Enums;
-using Domain.Onchain.Models;
 using static LocalCommitResolutionHarness;
 
 /// <summary>

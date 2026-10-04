@@ -1849,7 +1849,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TAPROOT_CHANNELS_PLAN wave t01 integration
 
 ### NL-904 Simple taproot T3/T4 obligations found by the t01 review (fees by format, the format switch, nonce binding per funding, HTLC fee inputs)
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane T4L)
 - **Severity:** medium
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Domain/Bitcoin/Transactions/Factories/CommitmentFeeCalculator.cs` (the `CommitmentSpec` region: `IsHtlcTrimmed`, `UntrimmedHtlcCount`, `TrimmedHtlcTotalMsat`, `CommitmentBaseFeeSatoshis`, `FunderCostMsat` take only `bool hasAnchors`) and its callers (`UpdateValidator`, `ChannelOpenValidator`, `ChannelFactory`, `DualFundedOpenService`, `HtlcSwitch`, `InvoiceService`, `ChannelCloseCoordinator`, `DustExposurePolicy`, `AnchorCpfpService*`); `ChannelParams.CommitmentFormat` and the ~25 places that branch on `OptionAnchorOutputs`; `Musig2Service.GenerateNonce`; `HtlcTransactionBuilder` (`ThrowIfSimpleTaproot`), `TaprootSignatures`, `LocalLightningSigner` HTLC signing
@@ -1862,6 +1862,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **t02 lane STATE:** items 1 and 2 done (branch `tap2-state`). (1) The `CommitmentSpec` region of `CommitmentFeeCalculator` takes only a `CommitmentFormat` (the `bool` forms are gone there), `CommitmentParams.Format` carries the channel's format into the engine, and every caller passes it (`UpdateValidator`, `ChannelCommitments`, `ChannelOpenValidator`, `ChannelFactory`, `DualFundedOpenService`, `HtlcSwitch`, `InvoiceService`, `ChannelCloseCoordinator`, `DustExposurePolicy`, `AnchorCpfpService*`); proven by an exactly affordable `update_fee` and `update_add_htlc` on a taproot engine that the anchors weight refuses (`SimpleTaprootCommitmentsTests`). (2) `ChannelParams.OptionSimpleTaproot` forces `OptionAnchorOutputs` true (the anchors semantics stay on every anchors branch) and `CommitmentFormat` returns `SimpleTaproot`; anchor CPFP skips taproot channels with a log line (T4). The places that still build P2WSH for a taproot channel are NL-953 (funding) and NL-954 (on chain).
 - **t02 lane CLOSE:** item 4 not done (stays open for T4, NL-966): taproot HTLC transactions still refuse wallet fee inputs. Done instead: the T4 safety floor (taproot commitments mapped with leaves and control blocks, script-path sweeps of our `to_local`, our `to_remote` and the revoked `to_local`, the force close through the stored partial signature proven end to end), the taproot cooperative close over `option_simple_close`, the splice refusal (NL-965) and the backup/peer-storage taproot flag.
 - **t02 lane V2:** item 3 refined for dual-funded opens: commitment 0's verification nonce uses the txid-free context only for a v1-opened channel; a dual-funded channel's (`ChannelSigningInfo.IsDualFunded`, derived from the persisted `Channels.Version`, no migration) is bound to its funding txid like every other number (before registration the key index overload `GetLocalVerificationNonce(keyIndex, txid, n)`, which binds the txid it is given since REVA's NL-972 fix; lane V2's `GetInteractiveVerificationNonce` and its own `IsDualFunded` were folded into REVA's in the V2INT integration), so two RBF attempts never share a nonce (`SimpleTaprootCommitmentSigningTests.Given_TwoAttemptsOfADualFundedOpen_*`). `DualFundedOpenService.GetFundingScript` (NL-953) builds the MuSig2 P2TR output for a taproot dual-funded open (`FundingScriptOf`).
+- **t03 lane T4L:** item 4 done (taproot HTLC transactions with wallet fee inputs, our signature after them over every spent output, the HTLC input at its output's index; proofs in NL-966's t03 note), so every item of this entry is done.
 
 ### NL-953 Funding output and transaction builders build the P2WSH 2-of-2 for a simple taproot channel
 - **Status:** fixed (ce0229bb, 45a36b59, 4ba920d5, bb2fc32c)
@@ -1884,6 +1885,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix:** taproot wave t02 lane CLOSE (ef257130): `CommitmentOutputMapper.CreateSimpleTaprootCandidates` maps taproot commitments with their leaves and control blocks, `OnchainChannelWatcher` classifies taproot spends, and our `to_local`, our `to_remote` and the revoked `to_local` are swept by script path; HTLC outputs, second-level outputs, HTLC penalties and anchor CPFP stay unsupported, alerted once per output and tracked in NL-966.
 - **Blocks/Blocked-by:** Related NL-877, NL-904
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T4
+- **t03 lane T4L:** the last taproot guard named here is gone: `AnchorCpfpService` bumps a taproot commitment (ours and the peer's) through our P2TR anchor and sweeps taproot anchors (NL-966 (6)).
 
 ### NL-955 Static channel backups and peer storage do not carry the simple taproot channel type
 - **Status:** fixed (ea58a0d4)
@@ -1926,6 +1928,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** T4 proper: taproot HTLC transaction fee inputs and signing (NL-904 item 4), tapscript claim spends (timeout/success leaves with their control blocks), key-path revocation spends (tweaked revocation key), a taproot `HtlcWitnessParser`, upstream resolution through the planner as for anchors, anchor CPFP over `TaprootAnchorOutput`; every spend proven by script execution as in `SimpleTaprootOnchainSweepTests`, then the cluster proofs of T6.
 - **Blocks/Blocked-by:** Related NL-877, NL-904, NL-954
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T4
+- **t03 lane T4L:** parts (1), (5) for our own commitment and (6) done on `tap3-t4l`: our taproot HTLC-timeout/success with wallet fee inputs (`HtlcTransactionBuilder.EstimateAnchorBaseWeight`/`AddFeeInputs` no longer refuse taproot; `HtlcTransactionBuildResult.FeeInputSpentOutputs`; our BIP 340 `SIGHASH_DEFAULT` signature over every spent output, the peer's 0x83 one unchanged), RBF-maintained by `LocalCommitResolver` as anchors; the P2TR second-level output (`TaprootHtlcResolutionOutput`, delay leaf + control block) swept by script path and re-signed by `SweepScheduler`; the upstream fail (`OnchainTimeout`)/fulfill of HTLCs on our taproot commitment; anchor CPFP of our commitment and of the peer's through our P2TR anchor (key path, `ILightningSigner.SignTaprootAnchorInput`) and the 16-block anchor sweep by the `OP_16 OP_CSV` leaf (`IsSkippedTaprootChannel` removed). The `[NL-966]` alert is gone from `LocalCommitResolver`. Proofs: `Infrastructure.Bitcoin.Tests/Taproot/SimpleTaprootHtlcFeeInputTests` (1 and 2 P2WPKH/P2TR fee inputs, RBF re-sign, refusals) and `SimpleTaprootAnchorSpendTests`; `Application.Tests/Onchain/Resolvers/Local/LocalTaprootHtlcResolutionTests` (both directions to irrevocable with a restart after the HTLC transactions confirmed, RBF), the taproot cases of `AnchorCpfpServiceTests`/`AnchorPeerCpfpTests` and `SweepSchedulerTests`. Left for lane T4R: (2), (3), (4) and (5) on the peer's commitment; until its taproot `HtlcWitnessParser` lands, the peer's timeout claim of its HTLC on our taproot commitment may raise a false `B5-LCL-RO-04` alert (the P2WSH parser reads the taproot witness).
 
 ### NL-967 A simple taproot channel whose peer does not negotiate option_simple_close cannot close cooperatively
 - **Status:** open
@@ -8911,3 +8914,13 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Done (residue in NL-182, NL-183, NL-184).
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
+
+### NL-1050 The anchor sweep of a revoked or future simple taproot peer commitment leaves the peer's anchor
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Onchain/Anchors/AnchorCpfpService.Taproot.cs` (`FindPeerAnchor`)
+- **Evidence:** A simple taproot anchor's control block needs its internal key, and the peer's anchor on its own commitment is keyed to its `local_delayedpubkey` at that commitment's point. `FindPeerAnchor` derives it for the points the snapshot holds (the peer's current and next commitment); a revoked or future peer commitment (data loss) is swept with our anchor only. P2WSH anchors are keyed to the funding keys and do not have this limit. Sweeping a single anchor is almost never economical (`AnchorCpfpPolicy.DecideAnchorSweep`), so this costs at most the peer's 330 sat staying unspent.
+- **Fix sketch:** for a revoked close derive the point from the shachain secret (`RevokedCommitDataSource`), or find any 330-sat P2TR output of the commitment whose key-path tweak matches a known key.
+- **Blocks/Blocked-by:** Related NL-966, NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T4
