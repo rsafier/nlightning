@@ -53,14 +53,19 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
 
     private static readonly Hash s_blockHash = new(new byte[32]);
 
-    private readonly ServiceProvider _provider;
+    private readonly IAnchorFeeInputProvider? _feeInputProvider;
+    private readonly ILogger<LocalCommitResolver>? _resolverLogger;
+    private readonly Mock<IFeeService> _feeService = new();
+    private readonly Mock<IBitcoinChainService> _chainService = new();
+    private readonly Mock<ISweepDestinationProvider> _destinations = new();
+    private ServiceProvider _provider;
     private readonly Dictionary<uint256, Transaction> _knownTransactions = [];
     private readonly Dictionary<uint, List<Transaction>> _blocks = [];
     private readonly HashSet<OutPoint> _spentOnChain = [];
 
     public RealSigningCommitmentPair Pair { get; }
     public ChannelModel Channel => Pair.Alice.Channel;
-    public LocalCommitResolver Resolver { get; }
+    public LocalCommitResolver Resolver { get; private set; }
     public ChannelCloseModel Close { get; }
     public Transaction CommitmentTransaction { get; }
     public uint Height { get; private set; } = CloseHeight;
@@ -127,12 +132,14 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
         setup?.Invoke(Pair);
         Channel.UpdateCommitments(Pair.Alice.State);
 
-        var feeService = new Mock<IFeeService>();
+        _feeInputProvider = feeInputProvider;
+        _resolverLogger = resolverLogger;
+        var feeService = _feeService;
         feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
                   .ReturnsAsync(() => LightningMoney.Satoshis(FeeEstimatePerKw));
         feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<uint>(), It.IsAny<CancellationToken>()))
                   .ReturnsAsync(() => LightningMoney.Satoshis(FeeEstimatePerKw));
-        var chainService = new Mock<IBitcoinChainService>();
+        var chainService = _chainService;
         chainService.Setup(c => c.GetTransactionAsync(It.IsAny<uint256>()))
                     .ReturnsAsync((uint256 txId) => ChainServiceFindsTransactions
                                                         ? _knownTransactions.GetValueOrDefault(txId)
@@ -150,29 +157,11 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
                                    && outPoint.N < parent.Outputs.Count && !_spentOnChain.Contains(outPoint)
                                           ? (parent.Outputs[(int)outPoint.N], CloseHeight)
                                           : ((TxOut Output, uint Height)?)null);
-        var destinations = new Mock<ISweepDestinationProvider>();
+        var destinations = _destinations;
         destinations.Setup(d => d.GetDestinationScriptAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Destination);
         destinations.Setup(d => d.GetDestinationScriptAsync(It.IsAny<Domain.Channels.ValueObjects.ChannelId>(), It.IsAny<CancellationToken>())).ReturnsAsync(Destination);
 
-        var services = new ServiceCollection();
-        services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
-        services.AddSingleton(Options.Create(new NodeOptions()));
-        services.AddSingleton(new Mock<ISecureKeyManager>().Object);
-        services.AddSingleton(new Mock<IUtxoMemoryRepository>().Object);
-        services.AddBitcoinInfrastructure();
-        services.AddSingleton(chainService.Object);
-        services.AddSingleton(Pair.Alice.Signer);
-        if (feeInputProvider is not null)
-            services.AddSingleton(feeInputProvider);
-        services.AddSingleton<ICommitmentTransactionModelFactory, CommitmentTransactionModelFactory>();
-        services.AddOnchainBitcoinServices();
-        services.AddSingleton(feeService.Object);
-        services.AddSingleton(destinations.Object);
-        services.AddScoped(_ => CreateUnitOfWork().Object);
-        if (resolverLogger is not null)
-            services.AddSingleton(resolverLogger);
-        services.AddLocalCommitResolutionServices();
-        _provider = services.BuildServiceProvider();
+        _provider = BuildProvider();
         Resolver = _provider.GetRequiredService<LocalCommitResolver>();
 
         var model = _provider.GetRequiredService<ICommitmentTransactionModelFactory>()
@@ -190,6 +179,40 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
     }
 
     public TxId CommitmentTxId => Close.CommitmentTransactionId;
+
+    /// <summary>
+    /// A node restart: a new container and a new <see cref="LocalCommitResolver"/> (its process memory gone), over the
+    /// same stored rows, watches and broadcasts.
+    /// </summary>
+    public void Restart()
+    {
+        _provider.Dispose();
+        _provider = BuildProvider();
+        Resolver = _provider.GetRequiredService<LocalCommitResolver>();
+    }
+
+    private ServiceProvider BuildProvider()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+        services.AddSingleton(Options.Create(new NodeOptions()));
+        services.AddSingleton(new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IUtxoMemoryRepository>().Object);
+        services.AddBitcoinInfrastructure();
+        services.AddSingleton(_chainService.Object);
+        services.AddSingleton(Pair.Alice.Signer);
+        if (_feeInputProvider is not null)
+            services.AddSingleton(_feeInputProvider);
+        services.AddSingleton<ICommitmentTransactionModelFactory, CommitmentTransactionModelFactory>();
+        services.AddOnchainBitcoinServices();
+        services.AddSingleton(_feeService.Object);
+        services.AddSingleton(_destinations.Object);
+        services.AddScoped(_ => CreateUnitOfWork().Object);
+        if (_resolverLogger is not null)
+            services.AddSingleton(_resolverLogger);
+        services.AddLocalCommitResolutionServices();
+        return services.BuildServiceProvider();
+    }
 
     /// <summary>Makes <paramref name="transaction"/> known to the chain (e.g. the wallet transaction a fee input
     /// spends), so <see cref="AssertAllInputsVerify"/> finds the outputs it holds.</summary>

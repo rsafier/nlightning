@@ -30,12 +30,27 @@ public static class SweepInputFactory
     /// The output of our confirmed HTLC-timeout/success transaction (always vout 0), after <c>to_self_delay</c>
     /// (B5-LCL-LO-03, B5-LCL-RO-01).
     /// </summary>
+    /// <param name="htlcTxId">Our HTLC transaction on chain.</param>
+    /// <param name="amountSat">Its output 0's value.</param>
+    /// <param name="witnessScript">The P2WSH witness script, or for a simple taproot channel the delay leaf.</param>
+    /// <param name="toSelfDelay">The CSV of the output (the peer's <c>to_self_delay</c>).</param>
+    /// <param name="ourPerCommitmentPoint">Our point of the commitment the HTLC was on.</param>
+    /// <param name="taprootControlBlock">Simple taproot (NL-966): the delay leaf's control block (internal key
+    /// <c>revocation_pubkey</c>); null for a P2WSH output.</param>
+    /// <param name="spentScriptPubKey">Simple taproot: the P2TR scriptPubKey of the output (the BIP 341 sighash
+    /// commits to it).</param>
     public static SweepInput SecondLevelOutput(TxId htlcTxId, ulong amountSat, byte[] witnessScript, ushort toSelfDelay,
-                                               CompactPubKey ourPerCommitmentPoint)
+                                               CompactPubKey ourPerCommitmentPoint, byte[]? taprootControlBlock = null,
+                                               byte[]? spentScriptPubKey = null)
     {
         ArgumentNullException.ThrowIfNull(witnessScript);
+        if (taprootControlBlock is not null && spentScriptPubKey is null)
+            throw new ArgumentException("A taproot script-path spend needs the spent P2TR scriptPubKey",
+                                        nameof(spentScriptPubKey));
+
         return new SweepInput(htlcTxId, 0, amountSat, SweepSpendKind.DelayedOutput, witnessScript, toSelfDelay,
-                              PerCommitmentPoint: ourPerCommitmentPoint);
+                              PerCommitmentPoint: ourPerCommitmentPoint, TaprootControlBlock: taprootControlBlock,
+                              SpentScriptPubKey: spentScriptPubKey);
     }
 
     /// <summary>Our <c>to_remote</c> on a peer commitment, current, next or revoked (D5, B5-RMT-02, B5-REV-02).</summary>

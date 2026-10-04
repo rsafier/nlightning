@@ -16,22 +16,37 @@ using Domain.Onchain.Models;
 /// </summary>
 internal sealed class AnchorTestWallet : IAnchorFeeInputProvider
 {
+    /// <summary>The signed weight of a P2TR key-path input: <c>164 + (1 + 1 + 64)</c>.</summary>
+    public const long P2TrInputWeight = 230;
+
     private static readonly Key s_key = new(Enumerable.Repeat((byte)0x5C, 32).ToArray());
     private static readonly byte[] s_script = s_key.PubKey.WitHash.ScriptPubKey.ToBytes();
+    private static readonly byte[] s_taprootScript = s_key.PubKey.GetTaprootFullPubKey().ScriptPubKey.ToBytes();
     private readonly List<AnchorFeeInput> _available = [];
 
-    public AnchorTestWallet(params ulong[] amounts)
+    public AnchorTestWallet(params ulong[] amounts) : this(false, amounts)
     {
+    }
+
+    /// <param name="taproot">P2TR (BIP 86 key path) outputs instead of P2WPKH ones: their signatures commit to every
+    /// spent output, the HTLC input's included.</param>
+    /// <param name="amounts">One output per amount.</param>
+    public AnchorTestWallet(bool taproot, params ulong[] amounts)
+    {
+        var script = taproot ? s_taprootScript : s_script;
         for (var i = 0; i < amounts.Length; i++)
         {
             var funding = Transaction.Create(Network.Main);
             funding.Inputs.Add(new OutPoint(new uint256((ulong)(i + 1)), 0));
-            funding.Outputs.Add(new TxOut(Money.Satoshis(amounts[i]), new Script(s_script)));
+            funding.Outputs.Add(new TxOut(Money.Satoshis(amounts[i]), new Script(script)));
             FundingTransactions.Add(funding);
-            _available.Add(new AnchorFeeInput(funding.GetHash().ToBytes(), 0, amounts[i], s_script,
-                                              AnchorFeeInput.P2WpkhInputWeight));
+            _available.Add(new AnchorFeeInput(funding.GetHash().ToBytes(), 0, amounts[i], script,
+                                              taproot ? P2TrInputWeight : AnchorFeeInput.P2WpkhInputWeight));
         }
     }
+
+    /// <summary>The HTLC input each <see cref="SignAsync"/> was given (what a P2TR signature commits to).</summary>
+    public List<SpentOutput> SignedHtlcInputs { get; } = [];
 
     /// <summary>The transactions that hold the wallet's outputs (for the chain's script checks).</summary>
     public List<Transaction> FundingTransactions { get; } = [];
@@ -80,11 +95,31 @@ internal sealed class AnchorTestWallet : IAnchorFeeInputProvider
                                              SpentOutput htlcInput, CancellationToken cancellationToken)
     {
         SignCount++;
+        SignedHtlcInputs.Add(htlcInput);
         var tx = Transaction.Load(transaction.RawTxBytes, Network.Main);
+        var allSpent = new List<TxOut>
+        {
+            new(Money.Satoshis(htlcInput.Amount.Satoshi), new Script((byte[])htlcInput.ScriptPubKey))
+        };
+        for (var i = 1; i < tx.Inputs.Count; i++)
+        {
+            var input = feeInputs.Single(f => new OutPoint(new uint256((byte[])f.TxId), f.Vout) == tx.Inputs[i].PrevOut);
+            allSpent.Add(new TxOut(Money.Satoshis(input.AmountSat), new Script(input.ScriptPubKey)));
+        }
+
         for (var i = 1; i < tx.Inputs.Count; i++)
         {
             var input = feeInputs.Single(f => new OutPoint(new uint256((byte[])f.TxId), f.Vout) == tx.Inputs[i].PrevOut);
             var spent = new TxOut(Money.Satoshis(input.AmountSat), new Script(input.ScriptPubKey));
+            if (spent.ScriptPubKey.IsScriptType(ScriptType.Taproot))
+            {
+                var taprootHash = tx.GetSignatureHashTaproot(allSpent.ToArray(), new TaprootExecutionData(i));
+                tx.Inputs[i].WitScript = new WitScript(
+                    Op.GetPushOp(s_key.CreateTaprootKeyPair().SignTaprootKeySpend(taprootHash, TaprootSigHash.Default)
+                                      .ToBytes()));
+                continue;
+            }
+
             var hash = tx.GetSignatureHash(s_key.PubKey.Hash.ScriptPubKey, i, SigHash.All, spent,
                                            HashVersion.WitnessV0);
             tx.Inputs[i].WitScript = PayToWitPubKeyHashTemplate.Instance.GenerateWitScript(
