@@ -295,6 +295,11 @@ public static class AccountingPostingRules
     /// (d &gt; 0) or losses (d &lt; 0). The part of the fee that wallet inputs paid
     /// (<see cref="AccountingDetailKeys.WalletFeeMsat"/>, our anchors HTLC transaction, NL-748) is not the output's:
     /// Dr FeeSweep; Cr Clearing, where the wallet events book those inputs and the change.
+    /// With an off-chain owner, the HTLC's sub-satoshi part (<see cref="AccountingDetailKeys.HtlcRoundingMsat"/> r,
+    /// NL-1007) moves too, since the off-chain events booked the HTLC's msat amount and the output holds only its
+    /// satoshis: the commitment took r, which the close booked (in its fee when we fund, else its loss) for an HTLC we
+    /// offered (Dr Channels r; Cr that account r: the payment or forward already spent it) and nothing booked for an
+    /// HTLC the peer offered (Cr Channels r; Dr that account r).
     /// </summary>
     private static string? PostResolution(AccountingEventModel e, Lines lines)
     {
@@ -330,11 +335,28 @@ public static class AccountingPostingRules
 
         var difference = checked(pendingIn.Value + wallet.Value + fee - pendingOut.Value);
         if (Text(e, AccountingDetailKeys.ValueBookedBy) is not null)
+        {
             lines.Add(AccountRole.Channels, -difference);
+            PostHtlcRounding(e, lines);
+        }
         else
             lines.Add(difference >= 0 ? AccountRole.OnchainGain : AccountRole.LossOnchain, -difference);
 
         return note;
+    }
+
+    /// <summary>The sub-satoshi part of an HTLC an off-chain event owns (see <see cref="PostResolution"/>, NL-1007).
+    /// </summary>
+    private static void PostHtlcRounding(AccountingEventModel e, Lines lines)
+    {
+        var rounding = Msat(e, AccountingDetailKeys.HtlcRoundingMsat) ?? 0;
+        if (rounding is <= 0 or >= 1_000)
+            return;
+
+        var account = IsSet(e, AccountingDetailKeys.Funder) ? AccountRole.FeeCommitment : AccountRole.LossOnchain;
+        var offered = Text(e, AccountingDetailKeys.HtlcDirection) == AccountingDetailKeys.OfferedHtlc;
+        lines.Add(AccountRole.Channels, offered ? rounding : -rounding);
+        lines.Add(account, offered ? -rounding : rounding);
     }
 
     private static string? PostAnchorCpfpFee(AccountingEventModel e, Lines lines)

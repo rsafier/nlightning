@@ -4,11 +4,11 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
-Updated 2026-10-04 by the zc-int integrator (branch `zc-int` from `wip/fafo` at `cd5c2c5d`, `origin/wip/zcleanup1` merged with `--no-ff`; the migration `AddTrampolineRelayBlindedDelta` regenerated after `AddDualFundTaprootAttempts`): NL-1006 (low) new and fixed. Summary recounted from the entries (855), no duplicate IDs.
+Updated 2026-10-04 by the zc-int integrator (branch `zc-int` from `wip/fafo` at `cd5c2c5d`, `origin/wip/zcleanup1` merged with `--no-ff`; the migration `AddTrampolineRelayBlindedDelta` regenerated after `AddDualFundTaprootAttempts`): NL-1006 and NL-1007 (low) new and fixed. Summary recounted from the entries (856), no duplicate IDs.
 
 Updated 2026-10-04 by the NL-923/NL-925/NL-940 lane (branch `wip/zcleanup1`): NL-925 (low) fixed in 7be91cb2 (a stored origin is authoritative for the first-hop check of an unrecorded HTLC); NL-923 (low) fixed in e2e94132 (the blinded relay's kept cltv_expiry_delta persisted on the relay row, migration `AddTrampolineRelayBlindedDelta`); NL-940 (low) fixed in 8625883e (getroute --trampoline quotes the outer route to a trampoline node).
 
-Updated 2026-10-04 by the taproot wave t03 integrator (branch `wip/taproot-t03` from `wip/fafo` at `6b0d9e12`; lanes SMALL, ECL, T4L, RBF, SPL, T4R, RV4, ECL2, FC, RVR and RVS merged with `--no-ff`; lane branches `tap3-*` hold the originals): taproot range NL-1050..NL-1079: fixed NL-904 (item 4), NL-957, NL-960, NL-965, NL-966, NL-969, NL-970, NL-971 (opens; liquidity ads with taproot splices stay refused), NL-978, NL-986, NL-987, and new NL-1051, NL-1055, NL-1058, NL-1060, NL-1065, NL-1078, NL-1079 (high); new open NL-1050, NL-1059, NL-1061, NL-1062 (NL-1052..NL-1054, NL-1056, NL-1057, NL-1063, NL-1064, NL-1066..NL-1077 unused). NL-1006 (low) new and fixed. Summary recounted from the entries (855), no duplicate IDs.
+Updated 2026-10-04 by the taproot wave t03 integrator (branch `wip/taproot-t03` from `wip/fafo` at `6b0d9e12`; lanes SMALL, ECL, T4L, RBF, SPL, T4R, RV4, ECL2, FC, RVR and RVS merged with `--no-ff`; lane branches `tap3-*` hold the originals): taproot range NL-1050..NL-1079: fixed NL-904 (item 4), NL-957, NL-960, NL-965, NL-966, NL-969, NL-970, NL-971 (opens; liquidity ads with taproot splices stay refused), NL-978, NL-986, NL-987, and new NL-1051, NL-1055, NL-1058, NL-1060, NL-1065, NL-1078, NL-1079 (high); new open NL-1050, NL-1059, NL-1061, NL-1062 (NL-1052..NL-1054, NL-1056, NL-1057, NL-1063, NL-1064, NL-1066..NL-1077 unused). NL-1006 and NL-1007 (low) new and fixed. Summary recounted from the entries (856), no duplicate IDs.
 
 Updated 2026-10-04 by the taproot wave t02 integrator (follow-up on wip/fafo 2e455bc2): NL-959 fixed and verified by the full matrix `tap2-mx2`; NL-958 note; the NL-983 fix of wip/nl983 proven on taproot channels against LND (`o983b-taproot` 3/3, `o983b-day0` 3/3) after a test-only fix of the mempool scan (2578448b); Summary recounted (841).
 
@@ -179,10 +179,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 2 | 78 | 80 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
-| fixed | 15 | 68 | 218 | 450 | 751 |
+| fixed | 15 | 68 | 218 | 451 | 752 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 3 | 4 | 7 |
-| **Total** | **15** | **68** | **230** | **542** | **855** |
+| **Total** | **15** | **68** | **230** | **543** | **856** |
 
 ### Epics
 
@@ -8977,6 +8977,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix:** `ChannelHtlcs.ResolvesOnChain` (Failed or OnchainResolving: no update any more, the HTLCs are settled on chain and the expiry monitor and BOLT 5 resolvers take them up after a restart) and `ChannelHtlcs.InFlightOffChain`; `PeerChannelSummary.HtlcsInFlight` (the `shutdown` and `disconnect` refusals) and `NodeBusyState.HtlcsInFlight`/`Channels` (the `--wait` drain) count only HTLCs that can still be settled over the link. The safety reporting stays: `NodeBusyState.HtlcsResolvingOnChain` and the nearest `cltv_expiry`/deadline still cover those HTLCs, every accepted `shutdown` answer carries `HtlcsResolvingOnChain` (IPC `ShutdownIpcResponse` key 7) with the nearest expiry, the daemon logs a warning, and the CLI prints them; `listpeers` keeps counting them. Tests (fail without the fix): `OperatorIpcHandlerTests.Given_HtlcsOnlyOnAChannelResolvingOnChain_When_Shutdown_Then_StoppedAndTheyAreReported` (OnchainResolving and Failed), `Given_HtlcsOnAnOpenAndAnOnchainChannel_When_Shutdown_Then_RefusedNamingOnlyTheOpenOne`, `Given_HtlcsOnlyOnAChannelResolvingOnChain_When_DisconnectWithoutForce_Then_Disconnected`, the listpeers case, `NodeBusyStateMonitorTests.Given_HtlcsOnlyOnAChannelResolvingOnChain_*` and `Given_HtlcsOnAnOpenAndAnOnchainChannel_*`; `ShutdownPrinterTests`.
 - **Blocks/Blocked-by:** Related NL-591, NL-592, NL-595
 - **Plan ref:** —
+
+### NL-1007 The sub-satoshi part of an HTLC resolved on chain was never booked: `accounting reconcile` showed a channels drift of a few msat
+- **Status:** fixed (this commit)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Accounting/Books/AccountingPostingRules.cs` (`PostResolution`), `src/NLightning.Application/Onchain/Accounting/OnchainAccounting.cs` (`Resolution`)
+- **Evidence:** Live on Mutinynet (2026-10-04), a taproot force close: FAFO2 offered an HTLC of 5,001,005 msat (5,000,000 + a 1,005 routing fee) on its own commitment, whose output holds 5,001 sat (BOLT 3 rounds the msat remainder away). FAFO2's events: `ChannelForceClosed` -200,000,000 msat channel -> onchain-pending (fee 644,000, which took the 5 msat), `PaymentSucceeded` -5,001,005 msat, `OutputResolved` LocalOfferedHtlc -5,001,000 msat (claimPath=preimage, claimedBy=peer, valueBookedBy=payment). FAFO (the upstream forwarder, RemoteCommitment): `ForwardSettled` +1,005 msat, `OutputResolved` RemoteOfferedHtlc +4,860,000 msat (fee 141,000, valueBookedBy=forward). `accounting reconcile` then showed `assets:lightning:channels` at -5 msat on FAFO2 and +5 msat on FAFO against the node's gross balances, every on-chain bucket matching: the off-chain events book an HTLC's whole msat amount, the pending bucket and the resolution only the output's satoshis, so the resolution that hands the value to its off-chain owner moved 5 msat too little into (offered) or out of (incoming) the channels.
+- **Fix:** the resolution event of a commitment HTLC output (LocalOffered/LocalReceived/RemoteReceived/RemoteOfferedHtlc; not a second-level or revoked output) carries `htlcRoundingMsat` (the HTLC's msat amount less the output's value, 1-999) and `funder`; with `valueBookedBy` the rules move it: our offered HTLC Dr Channels r; Cr FeeCommitment r when we fund (the close's fee had it) or Cr LossOnchain r (the close's lostMsat had it), so the payment or forward alone spends it; the peer's HTLC Cr Channels r; Dr FeeCommitment or LossOnchain r. Every channel format (legacy, anchors, taproot) rounds HTLC outputs the same way. Without an off-chain owner nothing changes (a timed-out offered HTLC's rounding stays in the close's fee or loss). Reversals negate the entry as before. Events sealed before the fix carry no `htlcRoundingMsat`, so a rebuild keeps their drift (FAFO/FAFO2: 5 msat each). Tests (fail without the fix): `AccountingPostingRulesTests.Given_OurOfferedHtlcWithASubSatoshiPartThePeerClaimed_*` (the FAFO2 sequence: the channels lose exactly B), `Given_OurOfferedHtlcWithASubSatoshiPartOnAChannelWeDidNotFund_*`, `Given_AnIncomingHtlcWithASubSatoshiPartWeClaimed_*` (FAFO), `OnchainAccountingTests.Given_OurOfferedHtlcWithASubSatoshiPartThePeerClaimed_*` and `Given_ThePeersHtlcWithASubSatoshiPartWeClaimedForAForward_*` (the real writer through `BooksSimulator`); `Given_ASubSatoshiPartWithoutAnOffChainOwner_*` and `Given_ASecondLevelOutputOrAWholeSatoshiHtlc_*` pin what does not move.
+- **Blocks/Blocked-by:** Related NL-602, NL-612, NL-886
+- **Plan ref:** ACCOUNTING_PLAN §6.1
 
 ## Docs
 

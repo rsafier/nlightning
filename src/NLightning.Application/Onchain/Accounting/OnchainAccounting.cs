@@ -82,7 +82,10 @@ using Domain.Onchain.Models;
 /// HTLC trimmed on the commitment that confirmed (below dust, no output) is not in B either: when the off-chain side had
 /// booked it (the same conditions as (d)) its loss is staged in the close's save, and the close event lists the trimmed
 /// incoming HTLCs (<see cref="TrimmedIncomingHtlcsKey"/>) so a close replaced by another reverses those losses with it
-/// (NL-760). The books match the HTLC by <see cref="PaymentHashKey"/>/<see cref="HtlcIdKey"/>.</para>
+/// (NL-760). The books match the HTLC by <see cref="PaymentHashKey"/>/<see cref="HtlcIdKey"/>. (f) The off-chain
+/// events book an HTLC's msat amount, its commitment output only the satoshis (BOLT 3 rounds down): the resolution of a
+/// commitment HTLC output carries the sub-satoshi part (<see cref="HtlcRoundingKey"/>, with <see cref="FunderKey"/>),
+/// which the books move with the value when an off-chain event owns it (NL-1007).</para>
 /// <para><b>Reorgs.</b> A resolution whose spend was reorged out, and a close replaced by another transaction, are
 /// negated by <see cref="AccountingEventKind.Reversal"/> events (key
 /// <see cref="AccountingEventKeys.Reversal(string, uint)"/>, amount and fee negated, details
@@ -103,7 +106,7 @@ internal static class OnchainAccounting
     public const string BucketToKey = AccountingDetailKeys.BucketTo;
     public const string CloseKindKey = AccountingDetailKeys.CloseKind;
     public const string CommitmentNumberKey = "commitmentNumber";
-    public const string FunderKey = "funder";
+    public const string FunderKey = AccountingDetailKeys.Funder;
     public const string BalanceSourceKey = "balanceSource";
     public const string PendingKey = AccountingDetailKeys.PendingMsat;
     public const string LostKey = AccountingDetailKeys.LostMsat;
@@ -131,14 +134,15 @@ internal static class OnchainAccounting
     public const string NoteKey = AccountingDetailKeys.Note;
     public const string IncludesFeeBumpKey = AccountingDetailKeys.IncludesFeeBump;
     public const string ValueBookedByKey = AccountingDetailKeys.ValueBookedBy;
+    public const string HtlcRoundingKey = AccountingDetailKeys.HtlcRoundingMsat;
 
     /// <summary>The <see cref="ValueBookedByKey"/> of an HTLC of a trampoline relay (NL-875): an incoming part or an
     /// outgoing HTLC of the relay's payment, whose value <c>TrampolineRelaySettled</c> booked.</summary>
     public const string TrampolineValueOwner = "trampoline";
     public const string ClaimedByKey = AccountingDetailKeys.ClaimedBy;
     public const string BucketKey = AccountingDetailKeys.Bucket;
-    public const string OfferedHtlc = "offered";
-    public const string IncomingHtlc = "incoming";
+    public const string OfferedHtlc = AccountingDetailKeys.OfferedHtlc;
+    public const string IncomingHtlc = AccountingDetailKeys.IncomingHtlc;
     public const string ReversesKey = AccountingConfirmations.ReversesDetail;
     public const string OriginalKindKey = AccountingConfirmations.OriginalKindDetail;
     public const string OpeningBalanceKey = AccountingDetailKeys.OpeningBalance;
@@ -499,6 +503,7 @@ internal static class OnchainAccounting
                                                   IReadOnlyList<(string Key, string? Value)>? extraDetails = null)
     {
         var htlc = data?.Htlc;
+        var rounding = HtlcRoundingMsat(row.Descriptor, data);
         var details = new List<(string Key, string? Value)>
         {
             (BucketFromKey, counted ? PendingBucket : null),
@@ -514,6 +519,8 @@ internal static class OnchainAccounting
             (ValueKey, data is null ? null : Text(checked((long)data.AmountSat * 1_000))),
             (CloseKindKey, close.Kind.ToString()),
             (CloseTxIdKey, close.CommitmentTransactionId.ToString()),
+            (HtlcRoundingKey, rounding > 0 ? Text(rounding) : null),
+            (FunderKey, rounding > 0 ? channel.IsInitiator ? "true" : "false" : null),
             (IncludesFeeBumpKey, includesFeeBump ? "true" : null), (NoteKey, flows.Note)
         };
         if (extraDetails is not null)
@@ -536,6 +543,27 @@ internal static class OnchainAccounting
             Finality = AccountingFinality.Confirmed,
             Details = AccountingDetailsCodec.Create(details.ToArray())
         };
+    }
+
+    /// <summary>
+    /// The sub-satoshi part of the HTLC of a commitment's HTLC output (<see cref="HtlcRoundingKey"/>, NL-1007): its amount
+    /// in msat less the output's value, which BOLT 3 rounds down to the satoshi; 0 for any other output (a second-level
+    /// output, a revoked commitment's, one without its HTLC).
+    /// </summary>
+    /// <remarks>
+    /// The off-chain events book an HTLC's whole msat amount and the close's pending bucket only the output's satoshis,
+    /// so the resolution that hands the value to an off-chain owner (<see cref="ValueBookedByKey"/>) moves this part too:
+    /// the commitment took it (in the close's fee when we fund, else its <c>lostMsat</c>), for every channel format.
+    /// </remarks>
+    public static long HtlcRoundingMsat(OutputDescriptorKind kind, OutputDescriptorData? data)
+    {
+        if (data?.Htlc is not { } htlc
+         || kind is not (OutputDescriptorKind.LocalOfferedHtlc or OutputDescriptorKind.LocalReceivedHtlc
+                             or OutputDescriptorKind.RemoteReceivedHtlc or OutputDescriptorKind.RemoteOfferedHtlc))
+            return 0;
+
+        var rounding = (long)htlc.AmountMsat - checked((long)data.AmountSat * 1_000);
+        return rounding is > 0 and < 1_000 ? rounding : 0;
     }
 
     /// <summary>Whether a descriptor is an output of a revoked commitment (or of the cheater's HTLC transaction).</summary>

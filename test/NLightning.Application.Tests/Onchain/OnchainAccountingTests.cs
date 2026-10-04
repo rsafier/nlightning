@@ -24,6 +24,7 @@ using Domain.Accounting.Financial;
 using Domain.Accounting.Financial.Classification;
 using Domain.Accounting.Financial.Lots;
 using Domain.Accounting.Models;
+using Domain.Accounting.Services;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
@@ -1403,6 +1404,140 @@ public sealed class OnchainAccountingTests : IDisposable
         Assert.Equal(0, books[AccountRole.Clearing]);
         Assert.Equal(268_000, books[AccountRole.FeeSweep]);
     }
+
+    [Fact]
+    public void Given_OurOfferedHtlcWithASubSatoshiPartThePeerClaimed_When_Booked_Then_TheChannelsLoseExactlyTheClosesBalance()
+    {
+        // Arrange - NL-1007 (FAFO2, 2026-10-04, a taproot force close): we offered 5,001,005 msat (5,000,000 + a 1,005
+        // routing fee) on our commitment; its output holds 5,001 sat (BOLT 3 rounds down) and the peer claimed it with
+        // the preimage. The close took the 5 msat (in its fee when we fund, else its loss), the payment booked the whole
+        // 5,001,005: reconcile showed assets:lightning:channels at -5 msat
+        var commitmentTxId = new TxId(Enumerable.Repeat((byte)0xd1, 32).ToArray());
+        var hash = RealSigningCommitmentPair.Hash(RealSigningCommitmentPair.Preimage(1));
+        var data = new OutputDescriptorData(5_001, new byte[34], null, 0, true, null,
+                                            new SpecHtlc(HtlcDirection.Outgoing, 0, 5_001_005, hash, 700));
+        var htlc = HtlcRow(commitmentTxId, OutputDescriptorKind.LocalOfferedHtlc, data);
+        var close = new ChannelCloseModel(_channel.ChannelId, ChannelCloseKind.LocalCommitment, commitmentTxId, 7,
+                                          SpendHeight, OnchainTestStore.BlockHash(1), s_now);
+        var weFund = _channel.IsInitiator;
+        var closed = new AccountingEventModel
+        {
+            EventKey = "close",
+            Kind = AccountingEventKind.ChannelForceClosed,
+            OccurredAt = s_now,
+            AmountMsat = -200_000_000,
+            FeeMsat = weFund ? 644_000 : 0,
+            Finality = AccountingFinality.Confirmed,
+            Details = AccountingDetailsCodec.Create((OnchainAccounting.PendingKey, "199356000"),
+                                                    (OnchainAccounting.LostKey, weFund ? "0" : "644000"))
+        };
+        var paid = new AccountingEventModel
+        {
+            EventKey = "payment",
+            Kind = AccountingEventKind.PaymentSucceeded,
+            OccurredAt = s_now,
+            AmountMsat = -5_001_005,
+            FeeMsat = 1_005,
+            Finality = AccountingFinality.Confirmed,
+            Details = AccountingDetailsCodec.Create()
+        };
+
+        // Act
+        var claimed = OnchainAccounting.Resolution(_channel, close, htlc, data, AccountingEventKind.OutputResolved,
+                                                   AccountingEventKeys.OutputResolved(commitmentTxId, 2),
+                                                   OnchainAccounting.Lost(5_001_000, true,
+                                                                          AccountingDetailKeys.ResolvedByPeer),
+                                                   true, null, SpendHeight + 2, s_now,
+                                                   extraDetails:
+                                                   [
+                                                       (OnchainAccounting.ClaimedByKey,
+                                                        AccountingDetailKeys.ResolvedByPeer),
+                                                       (OnchainAccounting.ValueBookedByKey, "payment")
+                                                   ]);
+
+        // Assert: the claim carries the sub-satoshi part, and the books take exactly B out of the channels
+        Assert.Equal("5", claimed.Details[OnchainAccounting.HtlcRoundingKey]);
+        Assert.Equal(weFund ? "true" : "false", claimed.Details[OnchainAccounting.FunderKey]);
+        var books = BooksSimulator.Of([closed, paid, claimed]);
+        Assert.Equal(-200_000_000, books[AccountRole.Channels]);
+        Assert.Equal(199_356_000 - 5_001_000, books[AccountRole.Pending]);
+        Assert.Equal(644_000 - 5, books[weFund ? AccountRole.FeeCommitment : AccountRole.LossOnchain]);
+    }
+
+    [Fact]
+    public void Given_ThePeersHtlcWithASubSatoshiPartWeClaimedForAForward_When_Booked_Then_ItsWholeAmountLeavesTheChannels()
+    {
+        // Arrange - NL-1007 (FAFO, the forwarder): the peer's 5,001,005 msat HTLC on its commitment (output 5,001 sat),
+        // claimed by our 4,860 sat sweep with the preimage; the forward booked the whole amount into the channels, the
+        // claim gave back only 5,001,000 of it: reconcile showed assets:lightning:channels at +5 msat
+        var commitmentTxId = new TxId(Enumerable.Repeat((byte)0xd3, 32).ToArray());
+        var hash = RealSigningCommitmentPair.Hash(RealSigningCommitmentPair.Preimage(2));
+        var data = new OutputDescriptorData(5_001, new byte[34], null, 0, true, null,
+                                            new SpecHtlc(HtlcDirection.Incoming, 0, 5_001_005, hash, 700));
+        var htlc = HtlcRow(commitmentTxId, OutputDescriptorKind.RemoteOfferedHtlc, data);
+        var rows = new Dictionary<(TxId, uint), OutputResolutionModel> { [(commitmentTxId, 2)] = htlc };
+        var claim = new ChainTx(new TxId(Enumerable.Repeat((byte)0xd4, 32).ToArray()), 2, 0,
+                                [new ChainTxInput(commitmentTxId, 2, 0, [])],
+                                [new ChainTxOutput(4_860, new byte[22])]);
+        var close = new ChannelCloseModel(_channel.ChannelId, ChannelCloseKind.RemoteCommitment, commitmentTxId, 7,
+                                          SpendHeight, OnchainTestStore.BlockHash(1), s_now);
+
+        // Act
+        var flows = OnchainAccounting.Ours(htlc, 5_001_000, false, claim, rows, false);
+        var claimed = OnchainAccounting.Resolution(_channel, close, htlc, data, AccountingEventKind.OutputResolved,
+                                                   AccountingEventKeys.OutputResolved(commitmentTxId, 2), flows,
+                                                   false, claim.TxId, SpendHeight + 2, s_now,
+                                                   extraDetails: [(OnchainAccounting.ValueBookedByKey, "forward")]);
+
+        // Assert
+        Assert.Equal(4_860_000, claimed.AmountMsat);
+        Assert.Equal(141_000, claimed.FeeMsat);
+        Assert.Equal("5", claimed.Details[OnchainAccounting.HtlcRoundingKey]);
+        var books = BooksSimulator.Of([claimed]);
+        Assert.Equal(-5_001_005, books[AccountRole.Channels]);
+        Assert.Equal(4_860_000, books[AccountRole.Clearing]);
+        Assert.Equal(141_000, books[AccountRole.FeeSweep]);
+        Assert.Equal(5, books[_channel.IsInitiator ? AccountRole.FeeCommitment : AccountRole.LossOnchain]);
+    }
+
+    [Fact]
+    public void Given_ASecondLevelOutputOrAWholeSatoshiHtlc_When_Resolved_Then_NoSubSatoshiPartIsWritten()
+    {
+        // Arrange (NL-1007): only a commitment's HTLC output with a sub-satoshi part carries one
+        var commitmentTxId = new TxId(Enumerable.Repeat((byte)0xd5, 32).ToArray());
+        var hash = RealSigningCommitmentPair.Hash(RealSigningCommitmentPair.Preimage(1));
+        var secondLevel = new OutputDescriptorData(4_800, new byte[34], null, 144, true, null,
+                                                   new SpecHtlc(HtlcDirection.Outgoing, 0, 5_001_005, hash, 700));
+        var whole = new OutputDescriptorData(5_001, new byte[34], null, 0, true, null,
+                                             new SpecHtlc(HtlcDirection.Outgoing, 0, 5_001_000, hash, 700));
+        var close = new ChannelCloseModel(_channel.ChannelId, ChannelCloseKind.LocalCommitment, commitmentTxId, 7,
+                                          SpendHeight, OnchainTestStore.BlockHash(1), s_now);
+
+        // Act
+        var secondLevelEvent = OnchainAccounting.Resolution(
+            _channel, close, HtlcRow(commitmentTxId, OutputDescriptorKind.DelayedToLocal, secondLevel), secondLevel,
+            AccountingEventKind.OutputResolved, "a", OnchainAccounting.Lost(4_800_000, true, "us"), true, null,
+            SpendHeight, s_now);
+        var wholeEvent = OnchainAccounting.Resolution(
+            _channel, close, HtlcRow(commitmentTxId, OutputDescriptorKind.LocalOfferedHtlc, whole), whole,
+            AccountingEventKind.OutputResolved, "b", OnchainAccounting.Lost(5_001_000, true, "peer"), true, null,
+            SpendHeight, s_now);
+
+        // Assert
+        Assert.False(secondLevelEvent.Details.ContainsKey(OnchainAccounting.HtlcRoundingKey));
+        Assert.False(wholeEvent.Details.ContainsKey(OnchainAccounting.HtlcRoundingKey));
+        Assert.False(wholeEvent.Details.ContainsKey(OnchainAccounting.FunderKey));
+    }
+
+    private OutputResolutionModel HtlcRow(TxId commitmentTxId, OutputDescriptorKind kind, OutputDescriptorData data) =>
+        new()
+        {
+            TransactionId = commitmentTxId,
+            OutputIndex = 2,
+            ChannelId = _channel.ChannelId,
+            Descriptor = kind,
+            DescriptorData = data.Encode()
+        };
 
     [Fact]
     public void Given_OurLegacyHtlcTransaction_When_ItsStoredFeeIsKnown_Then_NoWalletFee()

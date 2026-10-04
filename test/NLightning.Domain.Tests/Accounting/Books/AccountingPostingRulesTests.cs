@@ -366,6 +366,86 @@ public class AccountingPostingRulesTests
     }
 
     [Fact]
+    public void Given_OurOfferedHtlcWithASubSatoshiPartThePeerClaimed_When_TheCloseThePaymentAndTheClaimArePosted_Then_TheChannelsLoseExactlyB()
+    {
+        // Arrange - NL-1007 (FAFO2, 2026-10-04): we fund the channel and offered an HTLC of 5,001,005 msat; its output
+        // holds 5,001 sat, so the close's fee (644,000) took the 5 msat. The payment then booked 5,001,005 out of the
+        // channels and the peer's preimage claim gave back only the output's 5,001,000: the channels drifted by -5 msat
+        var closed = Event(AccountingEventKind.ChannelForceClosed, -200_000_000, 644_000, "close",
+                           ("pendingMsat", "199356000"), ("lostMsat", "0"), ("funder", "true"));
+        var paid = Event(AccountingEventKind.PaymentSucceeded, -5_001_005, 1_005, "payment");
+        var claimed = Resolution(AccountingEventKind.OutputResolved, amount: -5_001_000, fee: 0,
+                                 pendingOut: 5_001_000, pendingIn: 0, wallet: 0, counted: true, by: "peer",
+                                 ("htlcDirection", "offered"), ("claimedBy", "peer"), ("valueBookedBy", "payment"),
+                                 ("htlcRoundingMsat", "5"), ("funder", "true"));
+
+        // Act
+        var postings = new[] { closed, paid, claimed }.SelectMany(Post).ToList();
+
+        // Assert: the channels lose the close's B and nothing more; the 5 msat stays the payment's, not a fee too
+        Assert.Equal(-200_000_000, Amount(postings, AccountRole.Channels));
+        Assert.Equal(643_995, Amount(postings, AccountRole.FeeCommitment));
+        Assert.Equal(199_356_000 - 5_001_000, Amount(postings, AccountRole.Pending));
+        AssertPostings(Post(claimed), (AccountRole.Pending, -5_001_000), (AccountRole.Channels, 5_001_005),
+                       (AccountRole.FeeCommitment, -5));
+    }
+
+    [Fact]
+    public void Given_OurOfferedHtlcWithASubSatoshiPartOnAChannelWeDidNotFund_When_Posted_Then_TheCloseLossTakesItBack()
+    {
+        // Arrange: the close of a channel we did not fund books the HTLC's rounding in its lostMsat (NL-1007)
+        var claimed = Resolution(AccountingEventKind.OutputResolved, amount: -5_001_000, fee: 0,
+                                 pendingOut: 5_001_000, pendingIn: 0, wallet: 0, counted: true, by: "peer",
+                                 ("htlcDirection", "offered"), ("valueBookedBy", "forward"), ("htlcRoundingMsat", "5"),
+                                 ("funder", "false"));
+
+        // Act
+        var postings = Post(claimed);
+
+        // Assert
+        AssertPostings(postings, (AccountRole.Pending, -5_001_000), (AccountRole.Channels, 5_001_005),
+                       (AccountRole.LossOnchain, -5));
+    }
+
+    [Theory]
+    [InlineData("true", AccountRole.FeeCommitment)]
+    [InlineData("false", AccountRole.LossOnchain)]
+    public void Given_AnIncomingHtlcWithASubSatoshiPartWeClaimed_When_Posted_Then_ItsWholeAmountLeavesTheChannels(
+        string funder, AccountRole roundingAccount)
+    {
+        // Arrange - NL-1007 (FAFO, the forwarder): the forward booked 5,001,005 msat into the channels, our claim of
+        // the 5,001 sat output gave back only 5,001,000 of it: the channels drifted by +5 msat
+        var claimed = Resolution(AccountingEventKind.OutputResolved, amount: 4_860_000, fee: 141_000,
+                                 pendingOut: 0, pendingIn: 0, wallet: 4_860_000, counted: false, by: "us",
+                                 ("htlcDirection", "incoming"), ("valueBookedBy", "forward"),
+                                 ("htlcRoundingMsat", "5"), ("funder", funder));
+
+        // Act
+        var postings = Post(claimed);
+
+        // Assert: the HTLC's whole msat amount leaves the channels, its sub-satoshi part to the commitment
+        AssertPostings(postings, (AccountRole.Clearing, 4_860_000), (AccountRole.FeeSweep, 141_000),
+                       (AccountRole.Channels, -5_001_005), (roundingAccount, 5));
+    }
+
+    [Fact]
+    public void Given_ASubSatoshiPartWithoutAnOffChainOwner_When_Posted_Then_ItIsNotMoved()
+    {
+        // Arrange: our offered HTLC timed out back to us; no off-chain event booked its value, so the close's fee keeps
+        // its rounding (NL-1007)
+        var timedOut = Resolution(AccountingEventKind.OutputResolved, amount: 4_800_000, fee: 201_000,
+                                  pendingOut: 5_001_000, pendingIn: 0, wallet: 4_800_000, counted: true, by: "us",
+                                  ("htlcDirection", "offered"), ("htlcRoundingMsat", "5"), ("funder", "true"));
+
+        // Act
+        var postings = Post(timedOut);
+
+        // Assert
+        AssertPostings(postings, (AccountRole.Pending, -5_001_000), (AccountRole.Clearing, 4_800_000),
+                       (AccountRole.FeeSweep, 201_000));
+    }
+
+    [Fact]
     public void Given_ACountedOutputThePeerTookWithoutABooking_When_Posted_Then_ItIsALoss()
     {
         // Arrange: a breach loss of our HTLC, no origin known
@@ -671,7 +751,7 @@ public class AccountingPostingRulesTests
         [
             "pendingMsat", "lostMsat", "pendingOutMsat", "pendingInMsat", "walletMsat", "valueMsat", "valueBookedBy",
             "source", "selfPayment", "memo", "openingBalance", "bucket", "note", "reverses", "originalKind",
-            "unrecorded"
+            "unrecorded", "htlcRoundingMsat", "htlcDirection", "funder"
         ];
         var books = new BooksSimulator();
         var applied = new List<AccountingEventModel>();
@@ -705,7 +785,10 @@ public class AccountingPostingRulesTests
         {
             "valueBookedBy" => random.Next(2) == 0 ? "invoice" : "payment",
             "source" => new[] { "external", "broadcast", "channel", "wallet" }[random.Next(4)],
-            "selfPayment" or "memo" or "openingBalance" or "unrecorded" => random.Next(2) == 0 ? "true" : "false",
+            "selfPayment" or "memo" or "openingBalance" or "unrecorded" or "funder" =>
+                random.Next(2) == 0 ? "true" : "false",
+            "htlcDirection" => random.Next(2) == 0 ? "offered" : "incoming",
+            "htlcRoundingMsat" => random.Next(-1, 1_001).ToString(),
             "bucket" => new[] { "channel", "wallet", "onchain-pending", "cutover", "nonsense" }[random.Next(5)],
             "note" => random.Next(2) == 0 ? AccountingDetailKeys.MergedNote : "something else",
             "reverses" => applied.Count > 0 ? applied[random.Next(applied.Count)].EventKey : "nothing",

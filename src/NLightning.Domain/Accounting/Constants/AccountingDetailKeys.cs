@@ -205,6 +205,21 @@ public static class AccountingDetailKeys
     /// <summary>The HTLC direction of an output (<c>offered</c>, <c>incoming</c>).</summary>
     public const string HtlcDirection = "htlcDirection";
 
+    /// <summary>The <see cref="HtlcDirection"/> of an HTLC we offered.</summary>
+    public const string OfferedHtlc = "offered";
+
+    /// <summary>The <see cref="HtlcDirection"/> of an HTLC the peer offered.</summary>
+    public const string IncomingHtlc = "incoming";
+
+    /// <summary>
+    /// The sub-satoshi part of an HTLC whose commitment output a resolution spends: its amount in msat less the output's
+    /// value (BOLT 3 rounds an HTLC output down to the satoshi), 1 to 999 (NL-1007).
+    /// </summary>
+    public const string HtlcRoundingMsat = "htlcRoundingMsat";
+
+    /// <summary>"true" when we funded the channel (a force close's and an HTLC resolution's detail).</summary>
+    public const string Funder = "funder";
+
     /// <summary>The commitment transaction of the close a resolution belongs to.</summary>
     public const string CloseTxId = "closeTxId";
 
