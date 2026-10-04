@@ -110,19 +110,15 @@ To verify that everything is set up correctly, you can run the included unit tes
 dotnet test
 ```
 
-#### MacOS Users
+#### macOS users
 
-To run the containerized tests, we need to connect directly to the docker containers, but if you're using macOS, you
-won't be able to, thanks to the way Docker for Mac is implemented.
-
-We're using [Docker Mac Net Connect](https://github.com/chipmk/docker-mac-net-connect) due to its simplicity. Run:
+The containerized tests connect directly to the Docker containers, which Docker Desktop for Mac does not allow. We
+recommend [OrbStack](https://orbstack.dev) instead: it is a drop-in Docker engine for macOS that lets the Mac reach
+containers by their IP addresses out of the box, so no extra network tool is needed.
 
 ```sh
-# Install via Homebrew
-$ brew install chipmk/tap/docker-mac-net-connect
-
-# Run the service and register it to launch at boot
-$ sudo brew services start chipmk/tap/docker-mac-net-connect
+brew install orbstack
+orb start
 ```
 
 ## License
