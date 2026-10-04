@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-04 by the taproot wave t02 integrator (follow-up on wip/fafo 2e455bc2): NL-959 fixed and verified by the full matrix `tap2-mx2`; NL-958 note; the NL-983 fix of wip/nl983 proven on taproot channels against LND (`o983b-taproot` 3/3, `o983b-day0` 3/3) after a test-only fix of the mempool scan (2578448b); Summary recounted (839).
+
 Updated 2026-10-03 by the taproot wave t02 integrator (branch `wip/taproot-t02` from `wip/fafo` at `eb166f13`; lanes SIG, WIRE, STATE, REVA, OPS, CLOSE, V2, V2INT, REVB, REVC and LND merged with `--no-ff`, then `origin/wip/fafo` merged and the migration `AddSimpleTaprootChannels` regenerated after `AddTrampolineRelayAttempts`): taproot range NL-953..NL-961 and NL-965..NL-979 used (NL-950..NL-952 and NL-962..NL-964 unused): fixed NL-953, NL-954 (rest in NL-966), NL-955, NL-956, NL-961, NL-972 (critical), NL-973, NL-974 (high), NL-975, NL-977, NL-979; open NL-957..NL-960, NL-965..NL-971, NL-978; NL-976 duplicate of NL-983; NL-904 items 1-3, 5-7 done (item 4 stays with T4). Summary recounted from the entries (835 after merging the Cashu rounds 2 and 3).
 
 Updated 2026-10-03 by the Cashu integrator, round 3 (branch `wip/cashu-int` after the round-2 landing `d8c6cc6e`): the cloud agent's merge spec applied as a checklist. NL-1000 fixed (request limits), the rolling budget split off as NL-1011; NL-999 and NL-1001 extended to the event pump, BOLT 12 refusals and abandoned on-chain melts. The Cashu tests' stream reads are bounded (20 s), so a missing event fails a test instead of hanging its host. NL-1005 added (a PeerManagerConnectTests hang in a loaded full run, green alone). Summary rows recounted from the entries: 811, no duplicate IDs.
@@ -167,9 +169,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 1 | 6 | 81 | 88 |
+| open | 0 | 1 | 6 | 80 | 87 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
-| fixed | 15 | 66 | 211 | 435 | 727 |
+| fixed | 15 | 66 | 211 | 436 | 728 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 3 | 4 | 7 |
 | **Total** | **15** | **67** | **227** | **530** | **839** |
@@ -6188,17 +6190,19 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Location:** `src/NLightning.Infrastructure.Serialization/Messages/Types/ChannelReadyMessageTypeSerializer.cs`
 - **Evidence:** LND 0.21.4 (`lnwire/channel_ready.go:34-44`) defines channel_ready TLVs 0 and 2 as announcement nonces for public taproot channels; our known set is {1, 4}, so a channel_ready carrying them is refused (warning + close). LND sends them only for announced taproot channels, which both LND and Eclair refuse today, and the simple taproot proposal leaves public taproot channels to the gossip v1.75 work.
 - **Fix sketch:** read and ignore (or model) TLVs 0 and 2 when taproot gossip lands, or as soon as an LND peer is seen sending them on a private channel.
+- **t02 note:** LND 0.21.4 sends channel_ready TLVs 0/2 (announcement nonces) only on public taproot channels, which LND itself refuses to open; the private-channel LND proof (`taproot` suite, `tap2-mx2` and `o983b-taproot` 3/3) passes channel_ready without them. Stays open for T7.
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T2
 
 ### NL-959 funding_created, funding_signed, revoke_and_ack, shutdown and tx_complete now refuse unknown even TLVs
-- **Status:** open
+- **Status:** fixed (1fc14570; verified by the full cluster matrix `tap2-mx2`)
 - **Severity:** low
 - **Kind:** interop
 - **Location:** `src/NLightning.Infrastructure.Serialization/Messages/Types/{FundingCreated,FundingSigned,RevokeAndAck,Shutdown,TxComplete}*Serializer.cs`
 - **Evidence:** before taproot wave t02 these serializers never read the bytes after the payload, so any trailing TLV (even ones included) was silently ignored. Lane WIRE made them read the extension with `DeserializeStrictAsync` (BOLT 1, NL-001) to get the taproot TLVs, so a peer sending an even TLV we do not know in one of them is now answered with a warning and disconnected. Known sets: funding_created/funding_signed {2}, revoke_and_ack {22}, shutdown {8}, tx_complete {4, 6}. No LND 0.21.4, CLN v26.06.8 or Eclair 0.14.3 even TLV is known to be missing (LND staging taproot sends revoke_and_ack 4, but only on staging channels, which we never open), but the interop suites have not run against this change yet.
 - **Fix sketch:** run the cluster interop matrix (cln, eclair, ldk, lnd) on the integration branch; add any even TLV a peer sends to the right known set.
 - **t02 integration:** the matrix `tap2-mx1` (lnd, cln, eclair, day0, onchain, anchors, taproot) found no peer message refused by the stricter readers; LDK was not run, so the entry stays open until the `ldk` suite has run on this code.
+- **Fix (verification):** the full default matrix `tap2-mx2` on wip/fafo 2e455bc2 + 2578448b (2026-10-04, 12 namespaces, 964 s) ran every peer against the strict readers: lnd 58/58, cln 91 + 4 `Explicit`, gossip 30/30, eclair 25 + 2 `Explicit`, eclair2 7/7, ldk 27/27, day0 6/6, onchain 33 + 2 `Explicit`, anchors 18/18, abcd 11/11, taproot 2/2, postgres 29/29, cashu 3/3, faults 4 + 2 rerun-green (`PartitionClusterTests`, CLN partitions, green alone); no peer message was refused, so no known-type set needed another TLV.
 - **Blocks/Blocked-by:** Related NL-001, NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T2
 ### NL-972 Every attempt of a dual-funded taproot open shared the commitment-0 verification nonce
