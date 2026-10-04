@@ -420,9 +420,22 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         if (message is TxAddInputMessage { SharedInputTxIdTlv: null } addInput
          && attempt.Terms.LocalRequiresConfirmedInputs)
         {
-            var inspection = _prevTxInspector.Inspect(addInput.Payload.PrevTx, addInput.Payload.PrevTxVout);
-            if (inspection is { IsValid: true, TxId: { } prevTxId }
-             && !await _prevTxInspector.IsConfirmedAsync(prevTxId, cancellationToken))
+            bool isUnconfirmed;
+            if (addInput.Payload.PrevTx is not { Length: > 0 } && addInput.PrevTxDetailsTlv is { } details)
+            {
+                // A taproot input described by prevtx_details (BOLTs PR #1324, NL-957): only its outpoint is known
+                isUnconfirmed = !await _prevTxInspector.IsOutputConfirmedAsync(details.PrevTxId,
+                                                                               addInput.Payload.PrevTxVout,
+                                                                               cancellationToken);
+            }
+            else
+            {
+                var inspection = _prevTxInspector.Inspect(addInput.Payload.PrevTx, addInput.Payload.PrevTxVout);
+                isUnconfirmed = inspection is { IsValid: true, TxId: { } prevTxId }
+                             && !await _prevTxInspector.IsConfirmedAsync(prevTxId, cancellationToken);
+            }
+
+            if (isUnconfirmed)
                 return await RejectAsync(entry, attempt,
                                          $"input {addInput.Payload.SerialId} is unconfirmed but "
                                        + "require_confirmed_inputs was sent", unitOfWork, cancellationToken);

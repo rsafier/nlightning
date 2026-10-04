@@ -59,6 +59,7 @@ public class TlvConverterFactory : ITlvConverterFactory
         _converters.Add(typeof(NextLocalNonceTlv), new NextLocalNonceTlvConverter());
         _converters.Add(typeof(NextLocalNoncesTlv), new NextLocalNoncesTlvConverter());
         _converters.Add(typeof(PartialSignatureWithNonceTlv), new PartialSignatureWithNonceTlvConverter());
+        _converters.Add(typeof(PrevTxDetailsTlv), new PrevTxDetailsTlvConverter());
         _converters.Add(typeof(SharedInputPartialSignatureTlv), new SharedInputPartialSignatureTlvConverter());
         _converters.Add(typeof(ShutdownNonceTlv), new ShutdownNonceTlvConverter());
 

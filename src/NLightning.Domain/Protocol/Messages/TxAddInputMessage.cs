@@ -26,17 +26,29 @@ public sealed class TxAddInputMessage : BaseChannelMessage
     /// </summary>
     public SharedInputTxIdTlv? SharedInputTxIdTlv { get; }
 
+    /// <summary>
+    /// <c>prevtx_details</c> (BOLTs PR #1324 type 2, read as Eclair 0.14.3's 1111 too): the spent output of a taproot
+    /// input sent without <c>prevtx</c> (NL-957). We never send it: our inputs always carry their <c>prevtx</c>.
+    /// </summary>
+    public PrevTxDetailsTlv? PrevTxDetailsTlv { get; }
+
     /// <param name="payload">The tx_add_input payload.</param>
     /// <param name="sharedInputTxIdTlv">The <c>shared_input_txid</c> TLV, if any.</param>
-    public TxAddInputMessage(TxAddInputPayload payload, SharedInputTxIdTlv? sharedInputTxIdTlv = null)
+    /// <param name="prevTxDetailsTlv">The <c>prevtx_details</c> TLV, if any.</param>
+    public TxAddInputMessage(TxAddInputPayload payload, SharedInputTxIdTlv? sharedInputTxIdTlv = null,
+                             PrevTxDetailsTlv? prevTxDetailsTlv = null)
         : base(MessageTypes.TxAddInput, payload)
     {
         SharedInputTxIdTlv = sharedInputTxIdTlv;
+        PrevTxDetailsTlv = prevTxDetailsTlv;
 
+        if (SharedInputTxIdTlv is null && PrevTxDetailsTlv is null)
+            return;
+
+        Extension = new TlvStream();
         if (SharedInputTxIdTlv is not null)
-        {
-            Extension = new TlvStream();
             Extension.Add(SharedInputTxIdTlv);
-        }
+        if (PrevTxDetailsTlv is not null)
+            Extension.Add(PrevTxDetailsTlv);
     }
 }

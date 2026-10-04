@@ -21,6 +21,19 @@ public static class InteractiveTxTlvConstants
     public static readonly BigSize SharedInputTxId = 0;
 
     /// <summary>
+    /// <c>tx_add_input_tlvs</c> type 2 <c>prevtx_details</c> (BOLTs PR #1324): [<c>sha256</c>:<c>prevtx_txid</c>]
+    /// [<c>u64</c>:<c>amount_satoshis</c>] [<c>...*byte</c>:<c>scriptpubkey</c>], the spent output of a taproot input sent
+    /// without <c>prevtx</c> (NL-957).
+    /// </summary>
+    public static readonly BigSize PrevTxDetails = 2;
+
+    /// <summary>
+    /// <c>tx_add_input_tlvs</c> type 1111: Eclair 0.14.3's prototype number of <see cref="PrevTxDetails"/>
+    /// (<c>TxAddInputTlv.PrevTxOut</c>), same encoding. Read like type 2; never sent (NL-957).
+    /// </summary>
+    public static readonly BigSize PrevTxDetailsEclair = 1111;
+
+    /// <summary>
     /// <c>tx_signatures_tlvs</c> type 0 <c>shared_input_signature</c> [<c>signature</c>:<c>signature</c>] (IT-W-03): the
     /// sender's signature for the shared (2-of-2 funding) input.
     /// </summary>
