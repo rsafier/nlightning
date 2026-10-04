@@ -32,7 +32,7 @@ public static class SuiteCatalog
                 // Classes of the namespace that belong to other suites or are SQL Server only
                 "-class-", $"{Docker}.PostgresTests", "-class-", $"{Docker}.SqlServerTests",
                 "-class-", $"{Docker}.BackupRestoreFlowTests", "-class-", $"{Docker}.ChannelPolicyPublicFlowTests",
-                "-class-", $"{Docker}.SpliceLndObserverTests"
+                "-class-", $"{Docker}.SpliceLndObserverTests", "-class-", $"{Docker}.TaprootPostgresCrashTests"
             ],
             "off", Namespaces: 2, SerialNamespaces: 2, TimeSpan.FromMinutes(90), SuiteRequirement.LndClusterBackend),
         new("cln", "the CLN interop suite (Category=Interop.Cln)", "integration",
@@ -41,14 +41,24 @@ public static class SuiteCatalog
             ["-class", $"{Docker}.Gossip.*"],
             ["-class-", $"{Docker}.Gossip.Capture.*"],
             "off", 1, 1, TimeSpan.FromMinutes(60), SuiteRequirement.LndClusterBackend),
-        new("eclair", "the Eclair interop suite without its splice class (Category=Interop.Eclair)", "integration",
-            [], ["-trait", "Category=Interop.Eclair", "-class-", $"{Docker}.Interop.Eclair.EclairSpliceTests"],
+        new("eclair", "the Eclair interop suite without its splice classes (Category=Interop.Eclair)", "integration",
+            [],
+            [
+                "-trait", "Category=Interop.Eclair", "-class-", $"{Docker}.Interop.Eclair.EclairSpliceTests",
+                "-class-", $"{Docker}.Interop.Eclair.EclairTaprootSpliceTests"
+            ],
             "off", 1, 1, TimeSpan.FromMinutes(45)),
         new("ldk", "the LDK interop suite (Category=Interop.Ldk)", "integration",
             [], ["-trait", "Category=Interop.Ldk"], "off", 1, 1, TimeSpan.FromMinutes(30)),
-        // The Eclair suite's longest class, split from eclair (its own Eclair topology) to shorten the matrix
-        new("eclair2", "the Eclair splice tests (EclairSpliceTests, Category=Interop.Eclair)", "integration",
-            ["-class", $"{Docker}.Interop.Eclair.EclairSpliceTests"], ["-trait", "Category=Interop.Eclair"],
+        // The Eclair suite's longest classes, split from eclair (its own Eclair topology) to shorten the matrix; the
+        // taproot splice proofs (taproot wave t03) joined them
+        new("eclair2", "the Eclair splice tests (EclairSpliceTests, EclairTaprootSpliceTests, Category=Interop.Eclair)",
+            "integration",
+            [
+                "-class", $"{Docker}.Interop.Eclair.EclairSpliceTests",
+                "-class", $"{Docker}.Interop.Eclair.EclairTaprootSpliceTests"
+            ],
+            ["-trait", "Category=Interop.Eclair"],
             "off", 1, 1, TimeSpan.FromMinutes(30)),
         // The rest of the gossip-regtest collection, split from gossip (its own network) to shorten the matrix
         new("day0", "the day-0 flows, the LND splice observer and the public channel policy (GossipRegtestCollection)",
@@ -78,8 +88,13 @@ public static class SuiteCatalog
             "integration",
             ["-namespace", $"{Docker}.Taproot"],
             [], "off", 1, 1, TimeSpan.FromMinutes(30), SuiteRequirement.LndClusterBackend),
-        new("postgres", "PostgresTests and ServerDatabaseClusterTests on Postgres pods", "integration",
-            ["-class", $"{Docker}.PostgresTests", "-class", $"{Cluster}.ServerDatabaseClusterTests"],
+        // TaprootPostgresCrashTests: plan D-T4's taproot crash proof on Postgres (NL-960)
+        new("postgres", "PostgresTests, TaprootPostgresCrashTests and ServerDatabaseClusterTests on Postgres pods",
+            "integration",
+            [
+                "-class", $"{Docker}.PostgresTests", "-class", $"{Docker}.TaprootPostgresCrashTests",
+                "-class", $"{Cluster}.ServerDatabaseClusterTests"
+            ],
             ["-trait", "Database=Postgres"], "on", 3, 2, TimeSpan.FromMinutes(10)),
         // Cashu plan C2 (NL-993): CDK's cdk-mintd on our CDK payment processor, with cdk-cli as the wallet (pods)
         new("cashu", "the Cashu mint proof (Category=Interop.Cashu)", "integration",

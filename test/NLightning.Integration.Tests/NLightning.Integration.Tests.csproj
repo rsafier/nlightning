@@ -55,6 +55,16 @@
     <ProjectReference Include="..\..\src\NLightning.Infrastructure.Persistence\NLightning.Infrastructure.Persistence.csproj"/>
   </ItemGroup>
 
+  <!-- The taproot two-node harness and its D-T4 crash proof, run on Postgres by Docker/TaprootPostgresCrashTests in the
+       cluster's postgres suite (NL-960) -->
+  <ItemGroup>
+    <Compile Include="..\NLightning.Application.Tests\Channels\Taproot\TaprootOpenHarness.cs" Link="Persistence\Taproot\TaprootOpenHarness.cs"/>
+    <Compile Include="..\NLightning.Application.Tests\Channels\Taproot\TaprootCrashProof.cs" Link="Persistence\Taproot\TaprootCrashProof.cs"/>
+    <Compile Include="..\NLightning.Application.Tests\Channels\Harness\RecordingPaymentHandler.cs" Link="Persistence\Taproot\RecordingPaymentHandler.cs"/>
+    <Compile Include="..\NLightning.Application.Tests\Channels\DualFunding\HarnessLinkProbe.cs" Link="Persistence\Taproot\HarnessLinkProbe.cs"/>
+    <Compile Include="..\NLightning.Application.Tests\TestUtils\SqliteTestPools.cs" Link="Persistence\Taproot\SqliteTestPools.cs"/>
+  </ItemGroup>
+
   <ItemGroup>
     <Content Include="BOLT11/Vectors/ValidInvoices.txt" CopyToOutputDirectory="PreserveNewest"/>
     <Content Include="BOLT4/Vectors/*.json" CopyToOutputDirectory="PreserveNewest"/>

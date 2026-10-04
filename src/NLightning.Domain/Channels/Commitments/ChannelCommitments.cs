@@ -791,10 +791,11 @@ public sealed record ChannelCommitments
 
     /// <summary>Signs one remote commitment and checks the HTLC signature count.</summary>
     private CommitmentSignatures SignRemote(ICommitmentSigner signer, ChannelFunding? funding, ulong number,
-                                            CommitmentSpec spec, CompactPubKey point)
+                                            CommitmentSpec spec, CompactPubKey point,
+                                            MusigPublicNonce? remoteNonce = null)
     {
-        MusigPublicNonce? nonce = null;
-        if (IsSimpleTaproot)
+        var nonce = remoteNonce;
+        if (IsSimpleTaproot && nonce is null)
         {
             var fundingTxId = (funding ?? Params.Funding)?.FundingTxId
                            ?? throw new InvalidOperationException("A simple taproot engine needs its funding data");
@@ -1250,20 +1251,30 @@ public sealed record ChannelCommitments
     /// </summary>
     /// <param name="funding">The splice funding (not yet pending, or already pending for a retransmission).</param>
     /// <param name="signer">The signer.</param>
+    /// <param name="remoteNonce">Simple taproot channels (NL-965, BOLTs PR #1324): the peer's verification nonce of its
+    /// current commitment on the new funding, the <c>commit_nonces</c> of its <c>tx_complete</c> (or the
+    /// <c>current_commit_nonce</c> of its <c>channel_reestablish</c> for a retransmission); required for such a
+    /// channel (<see cref="RemoteNextNonces"/> holds the next commitment's nonces, not this one), ignored otherwise.</param>
     /// <returns>A result whose only outbound is the <see cref="OutboundCommitmentSigned"/> with the funding's txid.</returns>
-    /// <exception cref="CommitmentRefusedException">Updates are pending (SP-I8).</exception>
+    /// <exception cref="CommitmentRefusedException">Updates are pending (SP-I8), or a simple taproot channel without
+    /// <paramref name="remoteNonce"/>.</exception>
     /// <exception cref="ArgumentException">The funding breaks the <see cref="FundingSet.AddPending"/> rules.</exception>
     /// <exception cref="InvalidOperationException">No funding data, or a balance would be negative on the funding.</exception>
-    public CommitmentsResult SignSpliceCommitment(ChannelFunding funding, ICommitmentSigner signer)
+    public CommitmentsResult SignSpliceCommitment(ChannelFunding funding, ICommitmentSigner signer,
+                                                  MusigPublicNonce? remoteNonce = null)
     {
         ArgumentNullException.ThrowIfNull(funding);
         ArgumentNullException.ThrowIfNull(signer);
         CheckSpliceFunding(funding);
         if (!IsSettledForSplice)
             throw new CommitmentRefusedException("SP-CS-01", "Updates are pending: a splice commitment needs quiescence");
+        if (IsSimpleTaproot && remoteNonce is null)
+            throw new CommitmentRefusedException("TAPROOT-NONCE",
+                                                 $"No commit nonce of the peer for splice funding {funding.FundingTxId}");
 
         var spec = SpecFor(RemoteCommit.Spec, funding);
-        var signatures = SignRemote(signer, funding, RemoteCommit.Number, spec, RemoteCommit.PerCommitmentPoint);
+        var signatures = SignRemote(signer, funding, RemoteCommit.Number, spec, RemoteCommit.PerCommitmentPoint,
+                                    IsSimpleTaproot ? remoteNonce : null);
         return Result(this, [new OutboundCommitmentSigned(RemoteCommit.Number, signatures, funding.FundingTxId)]);
     }
 
@@ -1279,7 +1290,8 @@ public sealed record ChannelCommitments
     /// <exception cref="ArgumentException">The funding breaks the <see cref="FundingSet.AddPending"/> rules.</exception>
     /// <exception cref="InvalidOperationException">No funding data, too many fundings, or a negative balance.</exception>
     public CommitmentsResult ReceiveSpliceCommitment(ChannelFunding funding, CommitmentSignatures signatures,
-                                                     ICommitmentVerifier verifier)
+                                                     ICommitmentVerifier verifier,
+                                                     MusigPublicNonce? remoteNextNonce = null)
     {
         ArgumentNullException.ThrowIfNull(funding);
         ArgumentNullException.ThrowIfNull(signatures);
@@ -1287,6 +1299,18 @@ public sealed record ChannelCommitments
         var alreadyPending = CheckSpliceFunding(funding);
         if (!IsSettledForSplice)
             throw FailChannel("SP-CS-01", "Splice commitment_signed while updates are pending");
+
+        // NL-965: a simple taproot funding is active only with the peer's verification nonce for its next commitment on
+        // it (its tx_complete commit_nonces, or its channel_reestablish map), which the next batch signs against
+        var nonce = remoteNextNonce ?? (RemoteNextNonces.TryGetValue(funding.FundingTxId, out var known)
+                                            ? known
+                                            : (MusigPublicNonce?)null);
+        if (IsSimpleTaproot && nonce is null)
+            throw FailChannel("TAPROOT-NONCE-R01",
+                              $"No next verification nonce of the peer for splice funding {funding.FundingTxId}");
+        if (IsSimpleTaproot && signatures.PartialSignature is null)
+            throw FailChannel("TAPROOT-CS-R01",
+                              $"Splice commitment_signed without a partial signature on funding {funding.FundingTxId}");
 
         var spec = SpecFor(LocalCommit.Spec, funding);
         var expected =
@@ -1324,6 +1348,8 @@ public sealed record ChannelCommitments
                                SignedOnFundings = [.. RemoteCommit.SignedOnFundings ?? [Params.Funding!], funding]
                            }
                        };
+        if (IsSimpleTaproot)
+            next = next with { RemoteNextNonces = next.RemoteNextNonces.SetItem(funding.FundingTxId, nonce!.Value) };
         return Result(next, []);
     }
 

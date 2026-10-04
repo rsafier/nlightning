@@ -163,8 +163,8 @@ internal class OpenChannelMessageHandler
     /// <summary>
     /// <see cref="ParseArguments(string[], out bool, out bool, out bool, out bool, out LiquidityArguments, out string?)"/>
     /// with <see cref="ChannelTypeOption"/> (NL-877 T5): <paramref name="channelType"/> is its value (null when not
-    /// given); <c>taproot</c> is refused with <see cref="PublicOption"/>, <see cref="DualFundOption"/> and the liquidity
-    /// options, and an unknown type is an error.
+    /// given); <c>taproot</c> is refused with <see cref="PublicOption"/> (a liquidity purchase may go with it, NL-971),
+    /// and an unknown type is an error.
     /// </summary>
     internal static string[] ParseArguments(string[] commandArgs, out bool isPublic, out bool isDualFunded,
                                             out bool forceV1, out bool noWait, out LiquidityArguments liquidity,
@@ -237,11 +237,9 @@ internal class OpenChannelMessageHandler
                   + $"can't be used with {V1Option}.";
         else if (positional.Count > 3)
             error = $"Too many arguments. Usage: openchannel {Usage}";
-        else if (OpenChannelIpcRequest.IsSimpleTaprootChannelType(channelType) == true
-              && (isPublic || liquidity.IsRequested))
-            error = $"{ChannelTypeOption} {OpenChannelIpcRequest.TaprootChannelType} opens a private channel without a "
-                  + $"liquidity purchase; it can't be used with {PublicOption} or "
-                  + $"{LiquidityOptions.RequestInboundOption}.";
+        else if (OpenChannelIpcRequest.IsSimpleTaprootChannelType(channelType) == true && isPublic)
+            error = $"{ChannelTypeOption} {OpenChannelIpcRequest.TaprootChannelType} opens a private channel; it can't "
+                  + $"be used with {PublicOption}.";
 
         return positional.ToArray();
     }

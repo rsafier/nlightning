@@ -2,6 +2,7 @@ namespace NLightning.Application.Channels.Splicing;
 
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Protocol.InteractiveTx;
@@ -22,6 +23,48 @@ public static class SpliceFundingScripts
 
     /// <summary>The weight of the signed shared input a splice initiator pays for (IT-S-03, SP-TX-03).</summary>
     public const int SharedInputWeight = CollaborativeFeeCalculator.InputBaseWeight + SharedInputWitnessWeight;
+
+    /// <summary>
+    /// The witness weight of a simple taproot funding input (BIP 341 key path): item count (1), the 64-byte
+    /// <c>SIGHASH_DEFAULT</c> signature with its length (1 + 64).
+    /// </summary>
+    public const int TaprootSharedInputWitnessWeight = 1 + 1 + 64;
+
+    /// <summary>The weight of a simple taproot channel's signed shared input (NL-965).</summary>
+    public const int TaprootSharedInputWeight =
+        CollaborativeFeeCalculator.InputBaseWeight + TaprootSharedInputWitnessWeight;
+
+    /// <summary>The weight of the shared input of a channel's splice (<see cref="SharedInputWeight"/>, or
+    /// <see cref="TaprootSharedInputWeight"/> for a simple taproot channel).</summary>
+    public static int GetSharedInputWeight(bool simpleTaproot) =>
+        simpleTaproot ? TaprootSharedInputWeight : SharedInputWeight;
+
+    /// <summary>
+    /// The funding output script of two funding keys: the P2WSH 2-of-2, or for a simple taproot channel the MuSig2
+    /// P2TR output (BIP 86 key path of <c>KeyAgg(KeySort(both keys))</c>; bolt-simple-taproot.md §Funding Transactions).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">A simple taproot funding without a MuSig2 service.</exception>
+    public static BitcoinScript CreateScriptPubKey(CompactPubKey localFundingPubKey, CompactPubKey remoteFundingPubKey,
+                                                   bool simpleTaproot, IMusig2Service? musig2) =>
+        simpleTaproot
+            ? new BitcoinScript((musig2 ?? throw new InvalidOperationException("No MuSig2 service is registered"))
+                               .AggregateTaprootKeyPath(localFundingPubKey, remoteFundingPubKey)
+                               .GetTaprootScriptPubKey())
+            : Create(localFundingPubKey, remoteFundingPubKey).ScriptPubKey;
+
+    /// <summary>The serialized key-path witness of a simple taproot funding input: the 64-byte BIP 340 signature
+    /// alone (<c>SIGHASH_DEFAULT</c>).</summary>
+    public static Witness BuildTaprootKeyPathWitness(byte[] signature)
+    {
+        ArgumentNullException.ThrowIfNull(signature);
+        if (signature.Length != 64)
+            throw new ArgumentException("A BIP 340 key-path signature is 64 bytes", nameof(signature));
+
+        using var stream = new MemoryStream();
+        WriteCompactSize(stream, 1);
+        WriteItem(stream, signature);
+        return new Witness(stream.ToArray());
+    }
 
     private const byte SighashAll = 0x01;
 

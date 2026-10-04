@@ -181,6 +181,60 @@ public class DualFundLiquidityAdsTests
     }
 
     [Fact]
+    public async Task Given_ATaprootOpenWithAPurchaseBumped_When_TheFirstAttemptConfirms_Then_ItsFeeAppliesOverP2Tr()
+    {
+        // Arrange: Alice buys 400,000 sat in a simple taproot open (NL-971), then bumps it (the purchase repeated at the
+        // new feerate, NL-970)
+        await using var harness = await CreateTaprootAsync();
+        var first = await OpenAsync(harness, simpleTaproot: true);
+        Assert.True(first.FailureReason is null, $"{first.FailureReason}\n{harness.Describe()}");
+        var channelId = first.ChannelId;
+        var firstTxId = first.FundingTxId!.Value;
+
+        // Assert: Bob's will_fund signs the MuSig2 P2TR funding script (the funding output of the attempt), and the fee
+        // moved from Alice's balance to Bob's
+        Assert.True(harness.Alice.Channel(channelId).ChannelParams.OptionSimpleTaproot);
+        var accept = (AcceptChannel2Message)harness.Transcript.Single(t => t.Message is AcceptChannel2Message).Message;
+        var willFund = accept.ProvideFundingTlv!.WillFund;
+        var session = Assert.Single(await harness.Alice.InScopeAsync(
+                                        u => u.InteractiveTxSessionDbRepository.GetByChannelIdAsync(channelId)));
+        var fundingScript = (byte[])session.ConstructedTx!.Outputs[(int)session.ConstructedTx.SharedOutputIndex!.Value]
+                                                          .ScriptPubKey;
+        Assert.Equal(fundingScript, willFund.FundingScript);
+        Assert.Equal(34, fundingScript.Length);
+        Assert.Equal(0x51, fundingScript[0]);
+        await AssertBalancesAsync(harness, channelId, 600_000, RequestedSat, Fees(2_500).TotalMsat);
+
+        var bump = await harness.RunAsync(harness.Alice.DualFund.BumpAsync(channelId, 5_000,
+                                                                           TestContext.Current.CancellationToken));
+        Assert.True(bump.FailureReason is null, $"{bump.FailureReason}\n{harness.Describe()}");
+        var ackRbf = (TxAckRbfMessage)harness.Transcript.Single(t => t.Message is TxAckRbfMessage).Message;
+        Assert.Equal(34, ackRbf.ProvideFundingTlv!.WillFund.FundingScript.Length);
+        await AssertBalancesAsync(harness, channelId, 600_000, RequestedSat, Fees(5_000).TotalMsat);
+
+        // Act: the first attempt is the one mined
+        await harness.ConfirmFundingAsync(channelId, firstTxId);
+
+        // Assert: both follow it with its own fee, its purchase active and the bump's replaced, and payments both ways
+        var fees = Fees(2_500);
+        Assert.Equal(firstTxId, harness.Alice.Channel(channelId).FundingOutput!.TransactionId);
+        Assert.Equal(ChannelState.Open, harness.Alice.Channel(channelId).State);
+        Assert.Equal(ChannelState.Open, harness.Bob.Channel(channelId).State);
+        await AssertBalancesAsync(harness, channelId, 600_000, RequestedSat, fees.TotalMsat);
+        foreach (var node in harness.Nodes)
+        {
+            var purchases = await PurchasesAsync(node, channelId);
+            Assert.Equal(LiquidityPurchaseStatus.Active, purchases.Single(p => p.FundingTxId == firstTxId).Status);
+            Assert.Equal(LiquidityPurchaseStatus.Replaced,
+                         purchases.Single(p => p.FundingTxId == bump.FundingTxId).Status);
+        }
+
+        await AssertBookedAsync(harness, channelId, firstTxId, 600_000, RequestedSat, fees,
+                                AccountingDetailKeys.LiquidityKindOpen);
+        await PayBothWaysAsync(harness, channelId);
+    }
+
+    [Fact]
     public async Task Given_AnOpenWithAPurchase_When_AliceBumpsItBuyingAnotherAmount_Then_BobsShareFollowsIt()
     {
         // Arrange

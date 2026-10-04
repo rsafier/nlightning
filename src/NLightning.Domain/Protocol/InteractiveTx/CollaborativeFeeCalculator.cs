@@ -42,6 +42,14 @@ public static class CollaborativeFeeCalculator
     /// </summary>
     public const int CommonFieldsWeight = (4 + 1 + 1 + 4) * 4 + 2;
 
+    /// <summary>
+    /// The segwit marker and flag (2 wu) of <see cref="CommonFieldsWeight"/>. A receiver does not charge them to the
+    /// initiator: Eclair 0.14.3 counts its common fields as <c>Transaction(2, Nil, Nil, 0).weight()</c> (40 wu, without
+    /// them), which only its wallet inputs' witness margin covered until a splice without them (a taproot splice-out,
+    /// whose shared input has no margin either) came out 2 wu short (NL-1065).
+    /// </summary>
+    public const int SegwitMarkerAndFlagWeight = 2;
+
     /// <summary>The non-witness weight of an input: outpoint (36), empty scriptSig length (1) and sequence (4), x 4.</summary>
     public const int InputBaseWeight = (32 + 4 + 1 + 4) * 4;
 

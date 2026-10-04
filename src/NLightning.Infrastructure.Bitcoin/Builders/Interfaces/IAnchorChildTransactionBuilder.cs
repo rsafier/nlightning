@@ -22,8 +22,16 @@ public sealed record AnchorWalletInput(TxId TxId, uint OutputIndex, ulong Amount
 /// </summary>
 /// <param name="TxId">The commitment transaction holding it.</param>
 /// <param name="OutputIndex">Its index in the commitment.</param>
-/// <param name="FundingPubKey">The funding pubkey its script is keyed to.</param>
-public sealed record AnchorOutpoint(TxId TxId, uint OutputIndex, CompactPubKey FundingPubKey);
+/// <param name="FundingPubKey">The funding pubkey its script is keyed to; for a simple taproot anchor, its internal key
+/// (the holder's <c>local_delayedpubkey</c> for <c>to_local_anchor</c>, the other side's <c>remotepubkey</c> for
+/// <c>to_remote_anchor</c>; NL-915).</param>
+/// <param name="IsTaproot">A simple taproot anchor (NL-966): P2TR of the internal key with one leaf
+/// <c>OP_16 OP_CHECKSEQUENCEVERIFY</c>; its owner spends it by key path, anyone by that leaf after 16 blocks.</param>
+/// <param name="OurPerCommitmentPoint">A simple taproot <c>to_local_anchor</c> of ours on our commitment: the
+/// per-commitment point the signer tweaks our delayed key with; null for our anchor on the peer's commitment (keyed to
+/// our payment basepoint) and for P2WSH anchors.</param>
+public sealed record AnchorOutpoint(TxId TxId, uint OutputIndex, CompactPubKey FundingPubKey, bool IsTaproot = false,
+                                    CompactPubKey? OurPerCommitmentPoint = null);
 
 /// <summary>
 /// An unsigned anchor child (CPFP): input <see cref="AnchorInputIndex"/> spends our anchor, the others the wallet inputs
@@ -60,11 +68,22 @@ public interface IAnchorChildTransactionBuilder
     /// </summary>
     uint? FindAnchorOutput(byte[] commitmentTransaction, CompactPubKey fundingPubKey);
 
+    /// <summary>The P2WSH (or, for a simple taproot anchor, P2TR) scriptPubKey of <paramref name="anchor"/>.</summary>
+    byte[] GetAnchorScriptPubKey(AnchorOutpoint anchor);
+
+    /// <summary>
+    /// The index of the 330-sat simple taproot anchor whose internal key is <paramref name="internalKey"/> in
+    /// <paramref name="commitmentTransaction"/>, or null when it has none (NL-966).
+    /// </summary>
+    uint? FindTaprootAnchorOutput(byte[] commitmentTransaction, CompactPubKey internalKey);
+
     /// <summary>
     /// The weight of a child with <paramref name="walletInputs"/> and one output of
-    /// <paramref name="changeScriptLength"/> bytes, with a 73-byte anchor signature.
+    /// <paramref name="changeScriptLength"/> bytes, with a 73-byte anchor signature, or with
+    /// <paramref name="taprootAnchor"/> the 64-byte key-path signature of a simple taproot anchor.
     /// </summary>
-    long EstimateChildWeight(IReadOnlyList<AnchorWalletInput> walletInputs, int changeScriptLength);
+    long EstimateChildWeight(IReadOnlyList<AnchorWalletInput> walletInputs, int changeScriptLength,
+                             bool taprootAnchor = false);
 
     /// <summary>
     /// Builds the unsigned child: version 2, <c>nLockTime</c> 0, input 0 the anchor then the wallet inputs, every
@@ -84,12 +103,19 @@ public interface IAnchorChildTransactionBuilder
     SignedTransaction AddAnchorWitness(byte[] transaction, int anchorInputIndex, CompactSignature signature,
                                        CompactPubKey fundingPubKey);
 
+    /// <summary>
+    /// Adds the key-path witness <c>&lt;sig&gt;</c> (a 64-byte BIP 340 <c>SIGHASH_DEFAULT</c> signature) of a simple
+    /// taproot anchor to input <paramref name="anchorInputIndex"/> of <paramref name="transaction"/> (NL-966).
+    /// </summary>
+    SignedTransaction AddTaprootAnchorWitness(byte[] transaction, int anchorInputIndex, CompactSignature signature);
+
     /// <summary>The weight of a sweep of <paramref name="anchorCount"/> anchors (empty signatures) to one output.</summary>
     long EstimateSweepWeight(int anchorCount, int destinationScriptLength);
 
     /// <summary>
     /// Builds the fully "signed" sweep of anchors anyone may spend (BOLT 3: after 16 blocks, witness
-    /// <c>&lt;&gt; &lt;anchor script&gt;</c>): version 2, every <c>nSequence</c> 16, one output of
+    /// <c>&lt;&gt; &lt;anchor script&gt;</c>; a simple taproot anchor by its leaf, <c>&lt;OP_16 OP_CSV&gt;
+    /// &lt;control block&gt;</c>): version 2, every <c>nSequence</c> 16, one output of
     /// <c>330 * count - fee</c> to <paramref name="destinationScript"/>.
     /// </summary>
     /// <exception cref="ArgumentException">No anchor, or the output would be below its dust limit.</exception>

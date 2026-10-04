@@ -278,9 +278,21 @@ internal sealed class RevokedBreachKit : IDisposable
         var built = new HtlcTransactionBuilder(Options.Create(new NodeOptions())).Build(descriptor.SecondLevel!);
         var tx = ChainTxMapper.FromTransaction(Transaction.Load(built.Transaction.RawTxBytes, Network.Main));
 
+        var input = tx.Inputs[0];
+        if (Cheater.Channel.ChannelParams.OptionSimpleTaproot)
+        {
+            // Simple taproot (NL-966): <remotehtlcsig(65)> <localhtlcsig(64)> [<preimage>] <leaf> <control_block>
+            var leaf = Enumerable.Repeat((byte)0x82, 70).ToArray();
+            byte[] controlBlock = [0xc0, .. Enumerable.Repeat((byte)0x33, 64)];
+            List<byte[]> taproot = [new byte[65], new byte[64]];
+            if (preimage is { } secret)
+                taproot.Add(secret);
+            taproot.AddRange([leaf, controlBlock]);
+            return tx with { Inputs = [input with { Witness = taproot }] };
+        }
+
         var signature = Enumerable.Repeat((byte)0x30, 71).ToArray();
         byte[] last = preimage is { } p ? p : [];
-        var input = tx.Inputs[0];
         var witness = new List<byte[]> { Array.Empty<byte>(), signature, signature, last, descriptor.WitnessScript! };
         return tx with { Inputs = [input with { Witness = witness }] };
     }

@@ -120,4 +120,55 @@ public class HtlcWitnessParserTests
         Assert.Equal(s_preimage, (byte[])preimage);
         Assert.False(otherVout);
     }
+
+    #region Simple taproot (NL-966)
+
+    private static readonly byte[] s_schnorr = Enumerable.Repeat((byte)0x30, 64).ToArray();
+    private static readonly byte[] s_schnorrWithSigHash = [.. s_schnorr, 0x83];
+    private static readonly byte[] s_leaf = [0x82, 0x01, 0x20, 0x88, .. Enumerable.Repeat((byte)0x51, 40)];
+    private static readonly byte[] s_controlBlock = [0xc1, .. Enumerable.Repeat((byte)0x22, 64)];
+
+    public static TheoryData<string, byte[][], HtlcSpendPath, bool> TaprootWitnesses => new()
+    {
+        { "HTLC-success", [s_schnorrWithSigHash, s_schnorr, s_preimage, s_leaf, s_controlBlock],
+          HtlcSpendPath.HtlcSuccessTransaction, true },
+        { "HTLC-timeout", [s_schnorrWithSigHash, s_schnorr, s_leaf, s_controlBlock],
+          HtlcSpendPath.HtlcTimeoutTransaction, false },
+        { "preimage claim", [s_schnorr, s_preimage, s_leaf, s_controlBlock], HtlcSpendPath.PreimageClaim, true },
+        { "timeout claim", [s_schnorr, s_leaf, s_controlBlock], HtlcSpendPath.TimeoutClaim, false },
+        { "key path", [s_schnorr], HtlcSpendPath.Revocation, false },
+        { "preimage claim with an annex", [s_schnorr, s_preimage, s_leaf, s_controlBlock, [0x50, 0x01]],
+          HtlcSpendPath.PreimageClaim, true },
+        { "unknown stack", [s_preimage, s_preimage, s_leaf, s_controlBlock], HtlcSpendPath.Unknown, false }
+    };
+
+    [Theory]
+    [MemberData(nameof(TaprootWitnesses))]
+    public void Given_ASimpleTaprootHtlcWitness_When_Parsed_Then_PathAndPreimageRead(string name, byte[][] witness,
+                                                                                    HtlcSpendPath expectedPath,
+                                                                                    bool hasPreimage)
+    {
+        // Act
+        var parsed = HtlcWitnessParser.Parse(witness);
+        var found = HtlcWitnessParser.TryExtractPreimage(witness, s_paymentHash, out var preimage);
+
+        // Assert
+        Assert.True(expectedPath == parsed.Path, name);
+        Assert.Equal(hasPreimage, found);
+        if (hasPreimage)
+            Assert.Equal(s_preimage, (byte[])preimage);
+    }
+
+    [Fact]
+    public void Given_AWitnessWithoutAControlBlock_When_Parsed_Then_ReadAsP2wsh()
+    {
+        // Arrange: a P2WSH preimage claim; and a 65-byte last item without the 0xc0 leaf version is no control block
+        byte[][] witness = [s_signature, s_preimage, s_script];
+
+        // Act / Assert
+        Assert.Equal(HtlcSpendPath.PreimageClaim, HtlcWitnessParser.Parse(witness).Path);
+        Assert.Equal(HtlcSpendPath.Unknown, HtlcWitnessParser.Parse([s_schnorr, s_leaf, [0x76, .. s_schnorr]]).Path);
+    }
+
+    #endregion
 }

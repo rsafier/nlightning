@@ -324,7 +324,8 @@ public class PrinterSnapshotTests
                     CltvExpiryDelta = 40,
                     HtlcMinimumMsat = 1_000,
                     HtlcMaximumMsat = 1_980_000_000,
-                    HasPolicyOverride = true
+                    HasPolicyOverride = true,
+                    ChannelType = "simple_taproot"
                 }
             ]
         };
@@ -341,6 +342,7 @@ public class PrinterSnapshotTests
                          "  State:              Open",
                          "  Reestablished:      Yes",
                          "  Initiator:          Yes",
+                         "  Channel Type:       simple_taproot",
                          "  Short Channel Id:   120x3x1",
                          "  Funding Output:     -",
                          "  Capacity (sat):     2000000",

@@ -196,6 +196,7 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
             PeerId = channel.RemoteNodeId,
             State = channel.State,
             IsInitiator = channel.IsInitiator,
+            ChannelType = channel.ChannelParams.CommitmentFormat,
             IsPeerConnected = _peerManager.GetPeer(channel.RemoteNodeId) is not null,
             // A default ShortChannelId has no bytes; block 0 never holds a funding transaction
             ShortChannelId = channel.ShortChannelId.BlockHeight == 0

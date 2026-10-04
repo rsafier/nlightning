@@ -76,9 +76,44 @@ public interface IInteractiveTxHost
     /// </summary>
     string? AcceptRemoteCommitNonces(ConstructedInteractiveTx transaction, CommitNoncesTlv? remoteNonces) => null;
 
+    /// <summary>
+    /// Splicing a simple taproot channel (BOLTs PR #1324): our <c>funding_nonce</c> for every <c>tx_complete</c> we send
+    /// in this negotiation (our signing nonce of the shared taproot input), or null when the session spends no taproot
+    /// shared input (the default). One nonce per attempt: the same one in each of its <c>tx_complete</c>.
+    /// </summary>
+    FundingNonceTlv? GetLocalFundingNonce() => null;
+
+    /// <summary>
+    /// Splicing a simple taproot channel (BOLTs PR #1324): the transaction is constructed and the peer's last
+    /// <c>tx_complete</c> carried <paramref name="remoteNonce"/> (null for none); called before
+    /// <see cref="CreateCommitmentSignedAsync"/>. Returns the reason of the <c>tx_abort</c> (a taproot shared input
+    /// without the peer's <c>funding_nonce</c>, Eclair's <c>MissingFundingNonce</c>), or null to go on.
+    /// </summary>
+    string? AcceptRemoteFundingNonce(ConstructedInteractiveTx transaction, FundingNonceTlv? remoteNonce) => null;
+
+    /// <summary>
+    /// Splicing a simple taproot channel (BOLTs PR #1324): right after <see cref="CreateCommitmentSignedAsync"/>, our
+    /// MuSig2 <c>shared_input_partial_signature</c> of the constructed transaction, made with our <c>funding_nonce</c>
+    /// (whose secret half is consumed and never stored, D-T4) and stored with the negotiation's row in the save before
+    /// our <c>commitment_signed</c>; null when the session spends no taproot shared input (the default). The driver
+    /// sends it only in <c>tx_signatures</c>, after the peer's <c>commitment_signed</c>. Throwing aborts the
+    /// negotiation with <c>tx_abort</c>.
+    /// </summary>
+    Task<MusigPartialSignatureWithNonce?> SignSharedInputPartialAsync(ConstructedInteractiveTx transaction,
+                                                                      CancellationToken cancellationToken) =>
+        Task.FromResult<MusigPartialSignatureWithNonce?>(null);
+
     /// <summary>The shared input's full witness from both signatures (the 2-of-2 funding script spend).</summary>
     Witness BuildSharedInputWitness(ConstructedInteractiveTx transaction, CompactSignature localSignature,
                                     CompactSignature remoteSignature);
+
+    /// <summary>
+    /// Splicing a simple taproot channel: the shared input's key-path witness from both partial signatures (the peer's
+    /// checked first: an invalid one fails the channel, SP-SIG-01).
+    /// </summary>
+    Witness BuildSharedInputWitness(ConstructedInteractiveTx transaction, MusigPartialSignatureWithNonce localSignature,
+                                    MusigPartialSignatureWithNonce remoteSignature) =>
+        throw new NotSupportedException("This host spends no taproot shared input");
 
     /// <summary>
     /// Both <c>tx_signatures</c> were exchanged: the transaction is fully signed. Stage its broadcast and the protocol's

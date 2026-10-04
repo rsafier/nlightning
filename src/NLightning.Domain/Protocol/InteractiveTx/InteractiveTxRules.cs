@@ -184,6 +184,67 @@ public static class InteractiveTxRules
                    : null;
     }
 
+    /// <summary>
+    /// A received <c>tx_add_input</c> with <c>prevtx_len</c> = 0 and <c>prevtx_details</c> (BOLTs PR #1324, NL-957):
+    /// "if <c>prevtx_details</c> is set: <c>prevtx_details</c> and <c>prevtx_vout</c> are identical to a previously
+    /// added (and not removed) input; the <c>scriptPubKey</c> in <c>prevtx_details</c> is not exactly a 1-byte push
+    /// opcode (for the numeric values <c>1</c> to <c>16</c>) followed by a data push between 2 and 40 bytes". An amount
+    /// above <c>MAX_MONEY</c> is refused too. That every input is taproot is checked at <c>tx_complete</c>
+    /// (<see cref="CheckPrevTxDetailsInputs"/>).
+    /// </summary>
+    /// <param name="prevTxId">The <c>prevtx_txid</c>.</param>
+    /// <param name="amountSatoshis">The <c>amount_satoshis</c>.</param>
+    /// <param name="scriptPubKey">The <c>scriptpubkey</c>.</param>
+    /// <param name="prevTxVout">The <c>prevtx_vout</c>.</param>
+    /// <param name="isOutpointAlreadyAdded">Whether an input currently added spends the same (txid, vout).</param>
+    public static InteractiveTxRuleViolation? CheckPrevTxDetails(TxId prevTxId, ulong amountSatoshis,
+                                                                BitcoinScript scriptPubKey, uint prevTxVout,
+                                                                Func<TxId, uint, bool> isOutpointAlreadyAdded)
+    {
+        ArgumentNullException.ThrowIfNull(isOutpointAlreadyAdded);
+
+        var script = (byte[])scriptPubKey;
+        if (script is null || !IsWitnessProgram(script) || script[0] == 0x00)
+            return new InteractiveTxRuleViolation("IT-R-01",
+                                                  "the scriptPubKey in prevtx_details is not a witness program of version 1 to 16");
+
+        if (amountSatoshis > MaxMoneySatoshis)
+            return new InteractiveTxRuleViolation("IT-R-01",
+                                                  $"the prevtx_details amount {amountSatoshis} is greater than MAX_MONEY");
+
+        return isOutpointAlreadyAdded(prevTxId, prevTxVout)
+                   ? new InteractiveTxRuleViolation("IT-R-01", $"{prevTxId}:{prevTxVout} is already an input")
+                   : null;
+    }
+
+    /// <summary>
+    /// At <c>tx_complete</c> (BOLTs PR #1324, NL-957): "MUST fail the negotiation if: there are inputs that use
+    /// <c>prevtx_details</c> instead of providing the whole <c>prevtx</c> but some inputs are not taproot inputs" (without
+    /// <c>prevtx</c> a segwit v0 input could be malleated; every taproot signature commits to every spent output). An
+    /// input "uses <c>prevtx_details</c>" when it is not the shared input and has no <c>prevtx</c>; a taproot input is a
+    /// P2TR output, the shared input of a taproot channel included.
+    /// </summary>
+    /// <param name="inputs">Every input currently added.</param>
+    public static InteractiveTxRuleViolation? CheckPrevTxDetailsInputs(IReadOnlyList<InteractiveTxInput> inputs)
+    {
+        ArgumentNullException.ThrowIfNull(inputs);
+
+        if (!inputs.Any(UsesPrevTxDetails))
+            return null;
+
+        var nonTaproot = inputs.FirstOrDefault(i => !IsP2Tr((byte[])i.ScriptPubKey));
+        return nonTaproot is null
+                   ? null
+                   : new InteractiveTxRuleViolation("IT-R-04",
+                                                    $"inputs use prevtx_details but input {nonTaproot.SerialId} is not taproot");
+    }
+
+    /// <summary>
+    /// Whether an input was added with <c>prevtx_details</c> instead of a <c>prevtx</c> (NL-957).
+    /// </summary>
+    public static bool UsesPrevTxDetails(InteractiveTxInput input) =>
+        !input.IsShared && (input.PrevTx is null || input.PrevTx.Length == 0);
+
     #endregion
 
     #region tx_add_output (IT-R-02)
@@ -290,6 +351,10 @@ public static class InteractiveTxRules
                 return violation;
         }
 
+        var detailsViolation = CheckPrevTxDetailsInputs(inputs);
+        if (detailsViolation is not null)
+            return detailsViolation;
+
         // The peer's side: its inputs plus its share of the shared input must cover its outputs plus its share of the
         // shared output.
         ulong remoteIn = 0, remoteOut = 0;
@@ -378,6 +443,10 @@ public static class InteractiveTxRules
 
         var weight = CollaborativeFeeCalculator.GetContributionWeight(inputs, outputs, remote, isRemoteInitiator,
                                                                       sharedFunding);
+        // The initiator is not charged the segwit marker and flag, which Eclair leaves out of its common fields (NL-1065)
+        if (isRemoteInitiator)
+            weight -= CollaborativeFeeCalculator.SegwitMarkerAndFlagWeight;
+
         var required = CollaborativeFeeCalculator.MinimumFeeForWeight(weight, feeratePerKw);
         if (paidMsat >= (long)required.MilliSatoshi)
             return null;

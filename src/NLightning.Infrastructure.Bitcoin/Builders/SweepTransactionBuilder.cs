@@ -78,8 +78,8 @@ public class SweepTransactionBuilder : ISweepTransactionBuilder
         var tx = Transaction.Load(transaction.Transaction.RawTxBytes, _network);
         for (var i = 0; i < transaction.Inputs.Count; i++)
         {
-            // Simple taproot script path (NL-877 T4): the 64-byte BIP 340 signature as is (SIGHASH_DEFAULT)
-            if (transaction.Inputs[i].IsTaprootScriptPath)
+            // Simple taproot script or key path (NL-877 T4): the 64-byte BIP 340 signature as is (SIGHASH_DEFAULT)
+            if (transaction.Inputs[i].IsTaproot)
             {
                 tx.Inputs[i].WitScript = new WitScript(CreateWitness(transaction.Inputs[i], signatures[i]));
                 continue;
@@ -113,9 +113,16 @@ public class SweepTransactionBuilder : ISweepTransactionBuilder
     /// </summary>
     internal static byte[][] CreateWitness(SweepInput input, byte[] signature)
     {
-        // BIP 341 script path: <sig> <leaf> <control_block>; every simple taproot leaf we spend takes one signature
+        // BIP 341 script path: <sig> [<preimage>] <leaf> <control_block>; every simple taproot leaf we spend takes one
+        // signature, the offered HTLC's success leaf also the preimage on top (NL-966)
         if (input.TaprootControlBlock is { } controlBlock)
-            return [signature, input.WitnessScript!, controlBlock];
+            return input.SpendKind == SweepSpendKind.HtlcPreimageClaim
+                       ? [signature, input.Preimage!, input.WitnessScript!, controlBlock]
+                       : [signature, input.WitnessScript!, controlBlock];
+
+        // BIP 341 key path (NL-966 revocation penalties): the signature alone
+        if (input.IsTaprootKeyPath)
+            return [signature];
 
         return input.SpendKind switch
         {
@@ -180,6 +187,12 @@ public class SweepTransactionBuilder : ISweepTransactionBuilder
         for (var i = 0; i < inputs.Count; i++)
         {
             var input = inputs[i] ?? throw new ArgumentException($"Input {i} is null", nameof(inputs));
+            if (input.IsTaprootKeyPath)
+            {
+                ValidateTaprootKeyPath(input, i);
+                continue;
+            }
+
             var missing = input.SpendKind switch
             {
                 SweepSpendKind.DelayedOutput when input.WitnessScript is null => "a witness script",
@@ -213,7 +226,8 @@ public class SweepTransactionBuilder : ISweepTransactionBuilder
                     { SpentScriptPubKey: null } => "the spent P2TR scriptPubKey",
                     {
                         SpendKind: not (SweepSpendKind.DelayedOutput or SweepSpendKind.PaymentToRemote
-                                   or SweepSpendKind.RevokedDelayedOutput)
+                                   or SweepSpendKind.RevokedDelayedOutput or SweepSpendKind.HtlcTimeoutClaim
+                                   or SweepSpendKind.HtlcPreimageClaim)
                     } => "a spend form simple taproot supports",
                     _ => null
                 };
@@ -226,7 +240,7 @@ public class SweepTransactionBuilder : ISweepTransactionBuilder
         }
 
         // A BIP 341 signature commits to every spent output, so a transaction with a taproot input knows all of them
-        if (inputs.Any(i => i.IsTaprootScriptPath) && inputs.Any(i => i.SpentScriptPubKey is null))
+        if (inputs.Any(i => i.IsTaproot) && inputs.Any(i => i.SpentScriptPubKey is null))
             throw new ArgumentException("A transaction with a taproot input needs the spent scriptPubKey of every input",
                                         nameof(inputs));
 
@@ -243,6 +257,29 @@ public class SweepTransactionBuilder : ISweepTransactionBuilder
             throw new ArgumentException(
                 "HTLC timeout claims in one transaction must share their cltv_expiry; group them by expiry",
                 nameof(inputs));
+    }
+
+    /// <summary>
+    /// A simple taproot key-path input (NL-966): a revocation penalty of an HTLC output or of the peer's second-level
+    /// output, with the 32-byte merkle root, the peer's secret and the spent P2TR script.
+    /// </summary>
+    private static void ValidateTaprootKeyPath(SweepInput input, int index)
+    {
+        var missing = input switch
+        {
+            { SpendKind: not (SweepSpendKind.RevokedHtlc or SweepSpendKind.RevokedDelayedOutput) } =>
+                "a revocation spend form (only penalties take the key path)",
+            { TaprootMerkleRoot.Length: not 32 } => "a 32-byte tapscript merkle root",
+            { PerCommitmentSecret: null } => "the peer's per-commitment secret",
+            { SpentScriptPubKey: not [0x51, 0x20, ..] or { Length: not 34 } } => "the spent P2TR scriptPubKey",
+            _ => null
+        };
+
+        if (!Enum.IsDefined(input.SpendKind))
+            throw new ArgumentException($"Input {index} has an unknown spend kind {input.SpendKind}", "inputs");
+
+        if (missing is not null)
+            throw new ArgumentException($"Input {index} ({input.SpendKind}) needs {missing}", "inputs");
     }
 
     private static bool ScriptHasHash160(byte[] witnessScript, CompactPubKey pubKey)

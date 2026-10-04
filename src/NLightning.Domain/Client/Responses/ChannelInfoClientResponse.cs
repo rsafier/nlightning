@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Client.Responses;
 
+using Bitcoin.Transactions.Enums;
 using Bitcoin.ValueObjects;
 using Channels.Enums;
 using Channels.ValueObjects;
@@ -15,6 +16,11 @@ public sealed class ChannelInfoClientResponse
     public required CompactPubKey PeerId { get; init; }
     public required ChannelState State { get; init; }
     public bool IsInitiator { get; init; }
+
+    /// <summary>
+    /// The channel type's commitment format: simple taproot, anchors or static_remotekey (NL-987).
+    /// </summary>
+    public CommitmentFormat ChannelType { get; init; }
     public bool IsPeerConnected { get; init; }
 
     /// <summary>

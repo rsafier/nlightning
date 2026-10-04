@@ -53,8 +53,6 @@ public sealed partial class AnchorCpfpService
         ArgumentNullException.ThrowIfNull(commitment);
         if (!_options.Enabled)
             return;
-        if (_channelMemoryRepository.TryGetChannel(channelId, out var channel) && IsSkippedTaprootChannel(channel))
-            return;
 
         _peerCommitments[channelId] = new PeerCommitmentSeen(commitment.TxId,
                                                              (byte[])commitment.RawTxBytes.Clone(), isNextCommitment);
@@ -488,8 +486,8 @@ public sealed partial class AnchorCpfpService
             return null;
         }
 
-        var sweep = await PlanAnchorSweepAsync(channel, close.CommitmentTransactionId, raw, close.SpentAtHeight,
-                                               anyChild, height, cancellationToken);
+        var sweep = await PlanAnchorSweepAsync(channel, close.CommitmentTransactionId, raw, true, null,
+                                               close.SpentAtHeight, anyChild, height, cancellationToken);
         _peerCommitments.TryRemove(channel.ChannelId, out _);
         return sweep;
     }

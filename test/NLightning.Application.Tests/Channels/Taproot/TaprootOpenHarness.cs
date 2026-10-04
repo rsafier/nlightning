@@ -70,9 +70,15 @@ using TestUtils;
 /// <see cref="ChannelManager"/> with the production <c>open_channel</c>/<c>accept_channel</c>/<c>funding_created</c>/
 /// <c>funding_signed</c>/<c>channel_ready</c> handlers, the channel factory and validator, the funding transaction
 /// builder (the MuSig2 P2TR output, signed from a wallet output by the real signer), the normal-operation and
-/// reestablish handlers, the HTLC switch and invoices, on its own SQLite database (production unit of work and
-/// repositories), so a node can be stopped and started again from what it saved. Alice opens and pays.
+/// reestablish handlers, the HTLC switch and invoices, on its own database (production unit of work and
+/// repositories; SQLite files by default, any provider through <see cref="ITaprootHarnessDatabase"/>, NL-960), so a
+/// node can be stopped and started again from what it saved. Alice opens and pays.
 /// </summary>
+/// <remarks>
+/// <c>NLightning.Integration.Tests</c> links this file (with <see cref="RecordingPaymentHandler"/>,
+/// <see cref="HarnessLinkProbe"/>, <see cref="SqliteTestPools"/> and <see cref="TaprootCrashProof"/>) to run the D-T4
+/// crash proof on Postgres in the cluster's <c>postgres</c> suite: keep it free of other Application.Tests types.
+/// </remarks>
 [ExcludeFromCodeCoverage]
 internal sealed class TaprootOpenHarness : IAsyncDisposable
 {
@@ -80,7 +86,7 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
     public const uint FundingHeight = 497;
     public const long WalletSat = 3_000_000;
 
-    private readonly string _directory;
+    private readonly ITaprootHarnessDatabase _database;
     private readonly ConcurrentDictionary<(string From, string To), ConcurrentQueue<IChannelMessage>> _links = new();
 
     public TaprootOpenNode Alice { get; }
@@ -114,20 +120,23 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
         AllowExperimentalFeatures = true
     };
 
-    private TaprootOpenHarness(string directory)
+    private TaprootOpenHarness(ITaprootHarnessDatabase database, string aliceConnectionString,
+                               string bobConnectionString)
     {
-        _directory = directory;
-        Alice = new TaprootOpenNode(this, "Alice", 0xA1, Path.Combine(directory, "alice.db"));
-        Bob = new TaprootOpenNode(this, "Bob", 0xB0, Path.Combine(directory, "bob.db"));
+        _database = database;
+        Alice = new TaprootOpenNode(this, "Alice", 0xA1, database.Provider, aliceConnectionString);
+        Bob = new TaprootOpenNode(this, "Bob", 0xB0, database.Provider, bobConnectionString);
     }
 
-    public static async Task<TaprootOpenHarness> CreateAsync()
+    /// <summary>Two nodes, each on a database of <paramref name="database"/> (SQLite files when null).</summary>
+    /// <param name="database">The provider; the harness disposes it.</param>
+    public static async Task<TaprootOpenHarness> CreateAsync(ITaprootHarnessDatabase? database = null)
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"nltg-taproot-open-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
-        var harness = new TaprootOpenHarness(directory);
+        database ??= new SqliteTaprootHarnessDatabase();
+        var harness = new TaprootOpenHarness(database, await database.CreateAsync("alice"),
+                                             await database.CreateAsync("bob"));
         foreach (var node in harness.Nodes)
-            await node.StartAsync(migrate: true);
+            await node.StartAsync(migrate: !database.CreatesMigrated);
 
         // The peer rows the peer manager saves on connection (channels reference them)
         foreach (var node in harness.Nodes)
@@ -277,16 +286,7 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
         foreach (var node in Nodes)
             await node.StopAsync();
 
-        foreach (var node in Nodes)
-            SqliteTestPools.Clear(node.DatabasePath);
-        try
-        {
-            Directory.Delete(_directory, true);
-        }
-        catch (IOException)
-        {
-            // Best effort
-        }
+        await _database.DisposeAsync();
     }
 
     internal void Route(TaprootOpenNode from, IChannelMessage message)
@@ -338,7 +338,8 @@ internal sealed class TaprootOpenNode
     private ServiceProvider? _provider;
 
     public string Name { get; }
-    public string DatabasePath { get; }
+    public string DatabaseProvider { get; }
+    public string ConnectionString { get; }
     public TaprootKeyManager KeyManager { get; }
     public CompactPubKey NodeId => KeyManager.NodeId;
     public NodeOptions Options { get; }
@@ -366,11 +367,13 @@ internal sealed class TaprootOpenNode
     public IInvoiceService Invoices => Services.GetRequiredService<IInvoiceService>();
     public IChannelMemoryRepository Memory => Services.GetRequiredService<IChannelMemoryRepository>();
 
-    public TaprootOpenNode(TaprootOpenHarness harness, string name, byte seed, string databasePath)
+    public TaprootOpenNode(TaprootOpenHarness harness, string name, byte seed, string databaseProvider,
+                           string connectionString)
     {
         _harness = harness;
         Name = name;
-        DatabasePath = databasePath;
+        DatabaseProvider = databaseProvider;
+        ConnectionString = connectionString;
         KeyManager = new TaprootKeyManager(seed);
         Options = new NodeOptions
         {
@@ -483,8 +486,8 @@ internal sealed class TaprootOpenNode
         var configuration = new ConfigurationBuilder()
                            .AddInMemoryCollection(new Dictionary<string, string?>
                            {
-                               ["Database:Provider"] = "sqlite",
-                               ["Database:ConnectionString"] = $"Data Source={DatabasePath}"
+                               ["Database:Provider"] = DatabaseProvider,
+                               ["Database:ConnectionString"] = ConnectionString
                            })
                            .Build();
 
@@ -584,6 +587,59 @@ internal sealed class TaprootOpenNode
                 verified.Add((number, txId));
             return true;
         }
+    }
+}
+
+/// <summary>The databases of the harness nodes (NL-960): one per node, all released when the harness is disposed.</summary>
+internal interface ITaprootHarnessDatabase : IAsyncDisposable
+{
+    /// <summary>The <c>Database:Provider</c> value (<c>sqlite</c>, <c>postgres</c>).</summary>
+    string Provider { get; }
+
+    /// <summary>True when <see cref="CreateAsync"/> returns a database that already has the schema.</summary>
+    bool CreatesMigrated { get; }
+
+    /// <summary>Creates the database of the node <paramref name="name"/>.</summary>
+    /// <returns>Its <c>Database:ConnectionString</c>.</returns>
+    Task<string> CreateAsync(string name);
+}
+
+/// <summary>One SQLite file per node in a temporary directory, migrated by the node's first start.</summary>
+[ExcludeFromCodeCoverage]
+internal sealed class SqliteTaprootHarnessDatabase : ITaprootHarnessDatabase
+{
+    private readonly string _directory = Path.Combine(Path.GetTempPath(), $"nltg-taproot-open-{Guid.NewGuid():N}");
+    private readonly List<string> _paths = [];
+
+    public SqliteTaprootHarnessDatabase()
+    {
+        Directory.CreateDirectory(_directory);
+    }
+
+    public string Provider => "sqlite";
+    public bool CreatesMigrated => false;
+
+    public Task<string> CreateAsync(string name)
+    {
+        var path = Path.Combine(_directory, $"{name}.db");
+        _paths.Add(path);
+        return Task.FromResult($"Data Source={path}");
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        foreach (var path in _paths)
+            SqliteTestPools.Clear(path);
+        try
+        {
+            Directory.Delete(_directory, true);
+        }
+        catch (IOException)
+        {
+            // Best effort
+        }
+
+        return ValueTask.CompletedTask;
     }
 }
 

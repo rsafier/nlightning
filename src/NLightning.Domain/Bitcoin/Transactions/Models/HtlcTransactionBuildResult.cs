@@ -2,6 +2,7 @@ namespace NLightning.Domain.Bitcoin.Transactions.Models;
 
 using Money;
 using ValueObjects;
+using Wallet.Models;
 
 /// <summary>
 /// The result of building an HTLC-timeout/HTLC-success transaction: the unsigned transaction plus what a signer needs
@@ -30,6 +31,14 @@ public sealed record HtlcTransactionBuildResult(
     /// spent output is a simple taproot HTLC output; null for a P2WSH output.
     /// </summary>
     public byte[]? ControlBlock { get; init; }
+
+    /// <summary>
+    /// The outputs the wallet fee inputs of a combined simple taproot HTLC transaction spend, in input order from index
+    /// 1 (NL-904 item 4): the holder's <c>SIGHASH_DEFAULT</c> signature on input 0 commits to every spent output, so the
+    /// signer needs them. Null for a transaction as built (one input) and for P2WSH HTLC transactions, whose BIP 143
+    /// sighash needs only the HTLC output.
+    /// </summary>
+    public IReadOnlyList<SpentOutput>? FeeInputSpentOutputs { get; init; }
 
     /// <summary>Whether the spent output is a simple taproot (P2TR) HTLC output, spent by a tapscript leaf.</summary>
     public bool IsTaproot => ControlBlock is not null;

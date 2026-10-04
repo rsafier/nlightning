@@ -54,9 +54,14 @@ public static class SweepWeights
 
         var scriptItem = input.WitnessScript is null ? 0 : ItemSize(input.WitnessScript.Length);
 
-        // Simple taproot script path: <64-byte BIP 340 sig> <leaf> <control_block> (NL-877 T4)
+        // Simple taproot script path: <64-byte BIP 340 sig> [<preimage>] <leaf> <control_block> (NL-877 T4)
         if (input.TaprootControlBlock is { } controlBlock)
-            return 1 + ItemSize(64) + scriptItem + ItemSize(controlBlock.Length);
+            return 1 + ItemSize(64) + (input.SpendKind == SweepSpendKind.HtlcPreimageClaim ? ItemSize(32) : 0)
+                 + scriptItem + ItemSize(controlBlock.Length);
+
+        // Simple taproot key path (NL-966 penalties): <64-byte BIP 340 sig>
+        if (input.IsTaprootKeyPath)
+            return 1 + ItemSize(64);
 
         var signature = ItemSize(MaxSignatureLength);
         return input.SpendKind switch

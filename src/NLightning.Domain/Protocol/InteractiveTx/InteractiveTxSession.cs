@@ -7,6 +7,7 @@ using Exceptions;
 using Interfaces;
 using Messages;
 using Models;
+using Money;
 using Payloads;
 using Protocol.Interfaces;
 using Tlv;
@@ -100,6 +101,21 @@ public sealed class InteractiveTxSession
     public CompactSignature? LocalSharedInputSignature { get; private set; }
 
     /// <summary>
+    /// The peer's <c>shared_input_partial_signature</c> (BOLTs PR #1324), when a splice of a simple taproot channel's
+    /// <c>tx_signatures</c> carried one (instead of <see cref="RemoteSharedInputSignature"/>).
+    /// </summary>
+    public MusigPartialSignatureWithNonce? RemoteSharedInputPartialSignature { get; private set; }
+
+    /// <summary>
+    /// Our <c>shared_input_partial_signature</c> as sent in our <c>tx_signatures</c> (a simple taproot splice); null
+    /// before or without a taproot shared input.
+    /// </summary>
+    public MusigPartialSignatureWithNonce? LocalSharedInputPartialSignature { get; private set; }
+
+    /// <summary>Whether the shared input is a simple taproot channel's funding (spent by MuSig2 key path).</summary>
+    public bool HasTaprootSharedInput => Parameters.SharedFunding?.SharedInput is { IsTaproot: true };
+
+    /// <summary>
     /// Whether our <c>tx_signatures</c> was sent: the negotiation can no longer be aborted and must be remembered until
     /// an input of the transaction is spent (IT-ABT-01).
     /// </summary>
@@ -131,6 +147,8 @@ public sealed class InteractiveTxSession
         RemoteSharedInputSignature = other.RemoteSharedInputSignature;
         LocalWitnesses = other.LocalWitnesses;
         LocalSharedInputSignature = other.LocalSharedInputSignature;
+        RemoteSharedInputPartialSignature = other.RemoteSharedInputPartialSignature;
+        LocalSharedInputPartialSignature = other.LocalSharedInputPartialSignature;
         _localItems = other._localItems;
         _nextLocalItem = other._nextLocalItem;
         _started = other._started;
@@ -270,6 +288,8 @@ public sealed class InteractiveTxSession
             ConstructedTx = model.ConstructedTx,
             RemoteWitnesses = model.TheirWitnesses,
             RemoteSharedInputSignature = model.TheirSharedInputSignature,
+            RemoteSharedInputPartialSignature = model.TheirSharedInputPartialSignature,
+            LocalSharedInputPartialSignature = sent ? model.OurSharedInputPartialSignature : null,
             LocalWitnesses = sent ? model.OurWitnesses : null,
             LocalSharedInputSignature = sent ? model.OurSharedInputSignature : null
         };
@@ -429,7 +449,17 @@ public sealed class InteractiveTxSession
     /// <exception cref="ArgumentException">The witnesses do not match our inputs (count, empty witness), or the
     /// shared input signature is missing for a splice or given without one.</exception>
     public InteractiveTxStepResult SendTxSignatures(IReadOnlyList<Witness> localWitnesses,
-                                                    CompactSignature? sharedInputSignature)
+                                                    CompactSignature? sharedInputSignature) =>
+        SendTxSignatures(localWitnesses, sharedInputSignature, null);
+
+    /// <summary>
+    /// <see cref="SendTxSignatures(IReadOnlyList{Witness}, CompactSignature?)"/> with the MuSig2
+    /// <c>shared_input_partial_signature</c> of a simple taproot splice (BOLTs PR #1324): a taproot shared input takes
+    /// <paramref name="sharedInputPartialSignature"/> and no ECDSA signature, any other shared input the ECDSA one only.
+    /// </summary>
+    public InteractiveTxStepResult SendTxSignatures(IReadOnlyList<Witness> localWitnesses,
+                                                    CompactSignature? sharedInputSignature,
+                                                    MusigPartialSignatureWithNonce? sharedInputPartialSignature)
     {
         ArgumentNullException.ThrowIfNull(localWitnesses);
 
@@ -449,25 +479,39 @@ public sealed class InteractiveTxSession
             throw new ArgumentException("An empty witness.", nameof(localWitnesses));
 
         var hasSharedInput = Inputs.Any(i => i.IsShared);
-        if (hasSharedInput && sharedInputSignature is null)
+        var taproot = hasSharedInput && HasTaprootSharedInput;
+        if (hasSharedInput && !taproot && sharedInputSignature is null)
             throw new ArgumentException("A splice's tx_signatures needs shared_input_signature (SP-SIG-01).",
                                         nameof(sharedInputSignature));
 
-        if (!hasSharedInput && sharedInputSignature is not null)
+        if (taproot && (sharedInputPartialSignature is null || sharedInputSignature is not null))
+            throw new ArgumentException("A simple taproot splice's tx_signatures needs shared_input_partial_signature "
+                                      + "and no shared_input_signature (SP-SIG-01, BOLTs PR #1324).",
+                                        nameof(sharedInputPartialSignature));
+
+        if (!hasSharedInput && (sharedInputSignature is not null || sharedInputPartialSignature is not null))
             throw new ArgumentException("shared_input_signature without a shared input.",
                                         nameof(sharedInputSignature));
+
+        if (!taproot && sharedInputPartialSignature is not null)
+            throw new ArgumentException("shared_input_partial_signature for a shared input that is not taproot.",
+                                        nameof(sharedInputPartialSignature));
 
         var payload = new TxSignaturesPayload(Parameters.ChannelId, [.. (byte[])ConstructedTx.TxId],
                                               [.. localWitnesses]);
         var message = new TxSignaturesMessage(payload,
                                               sharedInputSignature is null
                                                   ? null
-                                                  : new SharedInputSignatureTlv(sharedInputSignature));
+                                                  : new SharedInputSignatureTlv(sharedInputSignature),
+                                              sharedInputPartialSignature is { } partial
+                                                  ? new SharedInputPartialSignatureTlv(partial)
+                                                  : null);
 
         var next = new InteractiveTxSession(this)
         {
             LocalWitnesses = [.. localWitnesses],
             LocalSharedInputSignature = sharedInputSignature,
+            LocalSharedInputPartialSignature = sharedInputPartialSignature,
             State = RemoteWitnesses is null
                         ? InteractiveTxSessionState.TxSignaturesSent
                         : InteractiveTxSessionState.Signed
@@ -511,7 +555,29 @@ public sealed class InteractiveTxSession
 
         InteractiveTxInput input;
         var prevTx = payload.PrevTx;
-        if (prevTx is null || prevTx.Length == 0)
+        if ((prevTx is null || prevTx.Length == 0) && message.PrevTxDetailsTlv is { } details)
+        {
+            // BOLTs PR #1324 (NL-957): a taproot input described by prevtx_details instead of its prevtx
+            if (message.SharedInputTxIdTlv is not null)
+                return Fail(new InteractiveTxRuleViolation("IT-R-01", "shared_input_txid with prevtx_details"));
+
+            violation = InteractiveTxRules.CheckPrevTxDetails(details.PrevTxId, details.AmountSatoshis,
+                                                              details.ScriptPubKey, payload.PrevTxVout,
+                                                              IsOutpointAdded);
+            if (violation is not null)
+                return Fail(violation);
+
+            if (Parameters.SharedFunding?.SharedInput is { } fundingInput && details.PrevTxId == fundingInput.TxId
+                                                                          && payload.PrevTxVout == fundingInput.Vout)
+                return Fail(new InteractiveTxRuleViolation("SP-TX-01",
+                                                           "the current funding output added with prevtx_details instead of shared_input_txid"));
+
+            input = new InteractiveTxInput(payload.SerialId, InteractiveTxParty.Remote, details.PrevTxId,
+                                           payload.PrevTxVout, payload.Sequence,
+                                           LightningMoney.Satoshis(details.AmountSatoshis), details.ScriptPubKey, null,
+                                           false);
+        }
+        else if (prevTx is null || prevTx.Length == 0)
         {
             var expected = Parameters.SharedFunding?.SharedInput;
             violation = InteractiveTxRules.CheckSharedInputAdd(message.SharedInputTxIdTlv?.FundingTxId,
@@ -527,6 +593,10 @@ public sealed class InteractiveTxSession
         {
             if (message.SharedInputTxIdTlv is not null)
                 return Fail(new InteractiveTxRuleViolation("IT-R-01", "shared_input_txid with a prevtx"));
+
+            // BOLTs PR #1324: "if prevtx_len is not 0: prevtx_details is also set" fails the negotiation
+            if (message.PrevTxDetailsTlv is not null)
+                return Fail(new InteractiveTxRuleViolation("IT-R-01", "prevtx_details with a prevtx"));
 
             var inspection = prevTxInspector.Inspect(prevTx, payload.PrevTxVout);
             violation = InteractiveTxRules.CheckPrevTx(inspection, payload.PrevTxVout, IsOutpointAdded);
@@ -641,7 +711,8 @@ public sealed class InteractiveTxSession
             return MustBeRemembered ? Unchanged(violation.RequirementId) : Fail(violation);
 
         var hasSharedInput = Inputs.Any(i => i.IsShared);
-        if (hasSharedInput && message.SharedInputSignatureTlv is null)
+        var taproot = hasSharedInput && HasTaprootSharedInput;
+        if (hasSharedInput && !taproot && message.SharedInputSignatureTlv is null)
             throw new ChannelFailedException(Parameters.ChannelId,
                                              "tx_signatures without shared_input_signature for a splice",
                                              "missing shared_input_signature")
@@ -649,10 +720,23 @@ public sealed class InteractiveTxSession
                 RequirementId = "SP-SIG-01"
             };
 
+        // BOLTs PR #1324: "When splicing a taproot channel: if shared_input_partial_signature is not set: MUST send an
+        // error and fail the channel"
+        if (taproot && message.SharedInputPartialSignatureTlv is null)
+            throw new ChannelFailedException(Parameters.ChannelId,
+                                             "tx_signatures without shared_input_partial_signature for a simple "
+                                           + "taproot splice", "missing shared_input_partial_signature")
+            {
+                RequirementId = "SP-SIG-01"
+            };
+
         var next = new InteractiveTxSession(this)
         {
             RemoteWitnesses = [.. message.Payload.Witnesses],
-            RemoteSharedInputSignature = hasSharedInput ? message.SharedInputSignatureTlv!.Signature : null,
+            RemoteSharedInputSignature = hasSharedInput && !taproot ? message.SharedInputSignatureTlv!.Signature : null,
+            RemoteSharedInputPartialSignature = taproot
+                                                    ? message.SharedInputPartialSignatureTlv!.PartialSignatureWithNonce
+                                                    : null,
             State = State == InteractiveTxSessionState.TxSignaturesSent
                         ? InteractiveTxSessionState.Signed
                         : InteractiveTxSessionState.AwaitingTxSignatures

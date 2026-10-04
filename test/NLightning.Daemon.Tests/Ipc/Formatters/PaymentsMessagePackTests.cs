@@ -3,6 +3,7 @@ using MessagePack;
 
 namespace NLightning.Daemon.Tests.Ipc.Formatters;
 
+using Domain.Bitcoin.Transactions.Enums;
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Responses;
@@ -311,6 +312,36 @@ public class PaymentsMessagePackTests
         Assert.IsType<SerializationException>(exception.InnerException);
     }
 
+    [Theory]
+    [InlineData(CommitmentFormat.SimpleTaproot, "simple_taproot")]
+    [InlineData(CommitmentFormat.Anchors, "anchors")]
+    [InlineData(CommitmentFormat.StaticRemoteKey, "static_remotekey")]
+    public void Given_ClientChannelInfoOfAType_When_ConvertedAndRoundTripped_Then_TypeNameIsKept(
+        CommitmentFormat channelType, string expected)
+    {
+        // Arrange (NL-987)
+        var clientResponse = new ChannelInfoClientResponse
+        {
+            ChannelId = s_channelId,
+            PeerId = s_payee,
+            State = ChannelState.Open,
+            ChannelType = channelType,
+            Capacity = LightningMoney.Satoshis(2_000_000),
+            LocalBalance = LightningMoney.Satoshis(1_000_000),
+            RemoteBalance = LightningMoney.Satoshis(1_000_000)
+        };
+        var response = new ListChannelsIpcResponse
+        {
+            Channels = [ChannelInfoIpcResponse.FromClientResponse(clientResponse)]
+        };
+
+        // Act
+        var channel = Assert.Single(RoundTrip(response).Channels);
+
+        // Assert
+        Assert.Equal(expected, channel.ChannelType);
+    }
+
     [Fact]
     public void Given_ChannelInfoWithFeePolicyAndReestablished_When_RoundTripped_Then_NewKeysArePreserved()
     {
@@ -329,7 +360,8 @@ public class PaymentsMessagePackTests
                     RemoteBalance = LightningMoney.Satoshis(1_000_000),
                     IsReestablished = true,
                     FeeBaseMsat = 1_000,
-                    FeePpm = 100
+                    FeePpm = 100,
+                    ChannelType = "simple_taproot"
                 }
             ]
         };
@@ -338,6 +370,7 @@ public class PaymentsMessagePackTests
         var channel = Assert.Single(RoundTrip(response).Channels);
 
         // Assert
+        Assert.Equal("simple_taproot", channel.ChannelType);
         Assert.True(channel.IsReestablished);
         Assert.Equal(1_000U, channel.FeeBaseMsat);
         Assert.Equal(100U, channel.FeePpm);

@@ -5,6 +5,7 @@ using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Integration.Tests.Persistence;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Protocol.InteractiveTx.Enums;
 using Infrastructure.Crypto.Hashes;
 using Infrastructure.Persistence.Contexts;
@@ -244,6 +245,80 @@ public class InteractiveTxSessionPersistenceTests
         Assert.Null(await unitOfWork.InteractiveTxSessionDbRepository.GetByIdAsync(session.ChannelId,
                                                                                     session.SessionId));
     }
+
+    /// <summary>
+    /// NL-965: a simple taproot splice's MuSig2 shared input partial signatures (98 bytes each, more than the 64-byte
+    /// signature columns hold) ride in the witness blobs (format version 2): ours from the commitment step on, without
+    /// witnesses yet, then with them; the peer's with its witnesses. A row without one keeps format version 1.
+    /// </summary>
+    [Fact]
+    public async Task Given_TaprootSplicePartialSignatures_When_SavedAtEachStep_Then_ANewUnitOfWorkReadsThemBack()
+    {
+        // Arrange
+        await using var connection = await OpenConnectionAsync();
+        var options = await MigratedOptionsAsync(connection);
+        var ours = PartialSignature(0x51);
+        var theirs = PartialSignature(0x62);
+        var atCommitment = InteractiveTxSessionSchemaRoundTrip.FullSession(
+            InteractiveTxSessionSchemaRoundTrip.ChannelIdOf(0x44), s_createdAt) with
+        {
+            OurWitnesses = null,
+            TheirWitnesses = null,
+            OurSharedInputSignature = null,
+            TheirSharedInputSignature = null,
+            OurSharedInputPartialSignature = ours,
+            TxSignaturesSent = false,
+            TxSignaturesReceived = false,
+            State = InteractiveTxSessionState.AwaitingCommitmentSigned
+        };
+        var signed = atCommitment with
+        {
+            OurWitnesses = [new Witness([0x01, 0x02])],
+            TheirWitnesses = [],
+            TheirSharedInputPartialSignature = theirs,
+            TxSignaturesSent = true,
+            TxSignaturesReceived = true,
+            State = InteractiveTxSessionState.Signed
+        };
+        var plain = InteractiveTxSessionSchemaRoundTrip.FullSession(
+            InteractiveTxSessionSchemaRoundTrip.ChannelIdOf(0x45), s_createdAt);
+
+        // Act & Assert: the commitment step's row
+        using (var unitOfWork = CreateUnitOfWork(options))
+        {
+            unitOfWork.InteractiveTxSessionDbRepository.Add(atCommitment);
+            unitOfWork.InteractiveTxSessionDbRepository.Add(plain);
+            await unitOfWork.SaveChangesAsync();
+        }
+
+        using (var unitOfWork = CreateUnitOfWork(options))
+        {
+            InteractiveTxSessionSchemaRoundTrip.AssertSessionEqual(
+                atCommitment, await unitOfWork.InteractiveTxSessionDbRepository.GetByIdAsync(atCommitment.ChannelId,
+                                                                                            atCommitment.SessionId));
+            await unitOfWork.InteractiveTxSessionDbRepository.UpdateAsync(signed);
+            await unitOfWork.SaveChangesAsync();
+        }
+
+        // Act & Assert: both signatures exchanged
+        using (var unitOfWork = CreateUnitOfWork(options))
+        {
+            InteractiveTxSessionSchemaRoundTrip.AssertSessionEqual(
+                signed, await unitOfWork.InteractiveTxSessionDbRepository.GetByIdAsync(signed.ChannelId,
+                                                                                       signed.SessionId));
+            InteractiveTxSessionSchemaRoundTrip.AssertSessionEqual(
+                plain, await unitOfWork.InteractiveTxSessionDbRepository.GetByIdAsync(plain.ChannelId,
+                                                                                      plain.SessionId));
+        }
+
+        await using var context = CreateContext(options);
+        var rows = await context.InteractiveTxSessions.AsNoTracking().ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, rows.Single(r => r.ChannelId == signed.ChannelId).OurWitnesses![0]);
+        Assert.Equal(1, rows.Single(r => r.ChannelId == plain.ChannelId).OurWitnesses![0]);
+    }
+
+    private static Domain.Crypto.ValueObjects.MusigPartialSignatureWithNonce PartialSignature(byte fill) =>
+        new(Enumerable.Repeat(fill, Domain.Crypto.Constants.MusigConstants.PartialSignatureWithNonceLen).ToArray());
 
     private static async Task<SqliteConnection> OpenConnectionAsync()
     {

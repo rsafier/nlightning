@@ -562,14 +562,27 @@ public sealed class RemoteCommitResolver : IOutputResolver
         }
 
         var taproot = context.Channel.ChannelParams.OptionSimpleTaproot;
+
+        // NL-966: a taproot HTLC row recorded before its leaf was mapped (a t02 build) takes the leaf and control block
+        // of the rebuilt commitment, saved with this round
+        if (taproot && row.Descriptor != OutputDescriptorKind.PaymentToRemote && data.TaprootControlBlock is null
+         && context.Map?.GetOutput(row.OutputIndex) is { TaprootControlBlock: not null } mapped
+         && mapped.Kind == row.Descriptor && mapped.ScriptPubKey.AsSpan().SequenceEqual(data.ScriptPubKey))
+        {
+            data = OutputDescriptorData.FromDescriptor(mapped, context.Map.PerCommitmentPoint);
+            row = row with { DescriptorData = data.Encode() };
+            ReplaceRow(context, row, actions);
+        }
+
         var descriptor = new CommitmentOutputDescriptor(row.OutputIndex, data.AmountSat, row.Descriptor,
                                                         data.ScriptPubKey, data.WitnessScript, data.Htlc,
                                                         data.CsvDelay, data.HasAnchors, null,
                                                         data.TaprootControlBlock, taproot);
 
-        // NL-966: the HTLC outputs of a simple taproot commitment are not claimed yet; recorded and alerted, never
-        // built (a throw would repeat every block)
-        if (taproot && row.Descriptor != OutputDescriptorKind.PaymentToRemote)
+        // NL-966: the HTLC outputs of a simple taproot commitment are claimed by their leaf (timeout leaf of our offered
+        // HTLC, success leaf with the preimage of the peer's); a row without one (none could be mapped) is only alerted,
+        // never built (a throw would repeat every block)
+        if (taproot && row.Descriptor != OutputDescriptorKind.PaymentToRemote && data.TaprootControlBlock is null)
         {
             _unsupportedTaproot.Report(context.Channel.ChannelId, row.TransactionId, row.OutputIndex, row.Descriptor,
                                        data.AmountSat, actions);

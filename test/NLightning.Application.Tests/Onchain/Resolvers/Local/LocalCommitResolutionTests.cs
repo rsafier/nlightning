@@ -80,7 +80,7 @@ public sealed class LocalCommitResolutionTests
     }
 
     [Fact]
-    public async Task Given_OurTaprootCommitmentWithHtlcs_When_TheCsvPasses_Then_ToLocalSweptByTheDelayLeafAndHtlcsAlerted()
+    public async Task Given_OurTaprootCommitmentWithHtlcsAndNoWallet_When_TheCsvPasses_Then_ToLocalSweptAndHtlcsWaitForFeeInputs()
     {
         // Arrange (NL-877 T4 safety floor): a simple taproot channel with an HTLC each way, our commitment on chain
         using var harness = new LocalCommitResolutionHarness(pair =>
@@ -103,9 +103,10 @@ public sealed class LocalCommitResolutionTests
         Assert.Equal(3, input.WitScript.PushCount);
         harness.AssertAllInputsVerify(sweep);
 
-        // No HTLC transaction is built for the taproot HTLC outputs (NL-966): they are alerted, never thrown on
+        // Without a wallet fee-input provider the zero-fee taproot HTLC transactions cannot be built (NL-966 (1)):
+        // nothing is broadcast for them and the next block tries again; they are no longer alerted as unsupported
         Assert.Empty(harness.Broadcast(BroadcastPurpose.HtlcTransaction));
-        Assert.Contains(harness.Alerts, a => a.RequirementId == "NL-966");
+        Assert.DoesNotContain(harness.Alerts, a => a.RequirementId == "NL-966");
         Assert.All(harness.Rows.Values.Where(r => r.HtlcId is not null), r => Assert.Null(r.ResolvingTransactionId));
     }
 
@@ -326,6 +327,36 @@ public sealed class LocalCommitResolutionTests
         // Assert: no HTLC-timeout for a spent output, and the preimage is not staged again
         Assert.Empty(harness.Broadcast(BroadcastPurpose.HtlcTransaction));
         Assert.Single(harness.Applied);
+    }
+
+    [Fact]
+    public async Task Given_PeerClaimsOurTaprootHtlcByItsSuccessLeaf_When_Spent_Then_PreimagePersistedAndUpstreamFulfilled()
+    {
+        // Arrange (NL-966): our offered HTLC on our simple taproot commitment; Bob spends the offered output's success
+        // leaf with <sig> <preimage> <leaf> <control_block>
+        using var harness = new LocalCommitResolutionHarness(pair =>
+        {
+            pair.Add(pair.Alice, OfferedMsat, s_offeredPreimage, OfferedCltv);
+            pair.Settle(pair.Alice);
+        }, simpleTaproot: true);
+        await harness.ResolveAsync();
+        var vout = harness.VoutOf(OutputDescriptorKind.LocalOfferedHtlc);
+        var claim = Transaction.Create(Network.Main);
+        claim.Inputs.Add(new OutPoint(harness.CommitmentTransaction, vout));
+        claim.Outputs.Add(Money.Satoshis(15_000), new Script(harness.Destination));
+        claim.Inputs[0].WitScript = new WitScript([new byte[64], (byte[])s_offeredPreimage,
+                                                   Enumerable.Repeat((byte)0x82, 70).ToArray(),
+                                                   [0xc1, .. Enumerable.Repeat((byte)0x33, 64)]]);
+
+        // Act
+        await harness.MineAsync(claim);
+
+        // Assert: the preimage is on the record and the fulfill goes upstream, never a fail
+        Assert.Equal(s_offeredPreimage, Assert.Single(harness.Applied).UpsertedHtlcs.Single().KnownPreimage);
+        var fulfilled = harness.Events.Select(e => e.Event).OfType<OutgoingHtlcFulfilled>().First();
+        Assert.Equal(s_offeredPreimage, fulfilled.PaymentPreimage);
+        Assert.DoesNotContain(harness.Events, e => e.Event is OutgoingHtlcFailed);
+        Assert.DoesNotContain(harness.Alerts, a => a.RequirementId == "B5-LCL-LO-03");
     }
 
     [Fact]

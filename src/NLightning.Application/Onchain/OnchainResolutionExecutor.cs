@@ -675,6 +675,20 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                     Upsert(outputs, actions, output with { State = OutputResolutionState.Irrevocable });
             }
 
+            // NL-1055: our anchor of our own or a revoked commitment is spent only by our CPFP child, our anchor sweep
+            // (when economical) or anyone after 16 blocks, and no resolver handles its row (the remote resolver does
+            // this for the peer's commitment). Still unspent once the funding spend is irrevocably deep, it is ignored,
+            // so the channel can close
+            if (Depth(height, close.SpentAtHeight) >= _options.IrrevocableDepth)
+            {
+                foreach (var anchor in outputs.Values.Where(o => o is
+                {
+                    Descriptor: OutputDescriptorKind.OurAnchor,
+                    State: OutputResolutionState.Pending or OutputResolutionState.Waiting
+                }).ToList())
+                    Upsert(outputs, actions, anchor with { State = OutputResolutionState.Ignored, WaitUntilHeight = null });
+            }
+
             if (resolver is not null)
                 Apply(outputs, actions,
                       await resolver.ResolveAsync(close, outputs.Values.ToList(), height, cancellationToken));

@@ -12,6 +12,7 @@ using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Fees;
 using Domain.Onchain.Models;
+using Domain.Onchain.Taproot;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Models;
@@ -248,9 +249,12 @@ public sealed class SweepScheduler : ISweepScheduler
                 if (oldWitness.Length == 0)
                     return null;
 
-                // <64-byte BIP 340 sig> <leaf> <control_block>: only the signature changes
-                if (data.TaprootControlBlock is not null)
+                // <64-byte BIP 340 sig> [<preimage>] <leaf> <control_block>, or the signature alone on the key path
+                // (a revocation penalty, NL-966: the recorded leaf and control block give the merkle root): only the
+                // signature changes
+                if (data.TaprootControlBlock is { } controlBlock)
                 {
+                    var keyPath = kind == SweepKeyKind.Revocation && oldWitness.Length == 1;
                     var taprootContext = new SweepSigningContext(unsignedBytes, i, data.WitnessScript, data.AmountSat,
                                                                  kind,
                                                                  kind == SweepKeyKind.Revocation
@@ -258,7 +262,10 @@ public sealed class SweepScheduler : ISweepScheduler
                                                                      : data.PerCommitmentPoint,
                                                                  kind == SweepKeyKind.Revocation
                                                                      ? revocationSecret
-                                                                     : null, taprootSpentOutputs);
+                                                                     : null, taprootSpentOutputs,
+                                                                 keyPath && data.WitnessScript is { } leaf
+                                                                     ? TapscriptMerkleRoot.Compute(leaf, controlBlock)
+                                                                     : null);
                     oldWitness[0] = _lightningSigner.SignSweepInput(close.ChannelId, taprootContext);
                     replacement.Inputs[i].WitScript = new WitScript(oldWitness);
                     continue;

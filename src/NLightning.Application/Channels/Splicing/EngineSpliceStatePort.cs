@@ -13,6 +13,7 @@ using Domain.Channels.Models;
 using Domain.Channels.Splicing;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Persistence.Interfaces;
@@ -89,7 +90,8 @@ public sealed class EngineSpliceStatePort : ISpliceStatePort
     /// <inheritdoc />
     public async Task<CommitmentSignedMessage> SignSpliceCommitmentAsync(ChannelModel channel, ChannelFunding funding,
                                                                          IUnitOfWork unitOfWork,
-                                                                         CancellationToken cancellationToken)
+                                                                         CancellationToken cancellationToken,
+                                                                         MusigPublicNonce? remoteNonce = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
         ArgumentNullException.ThrowIfNull(funding);
@@ -99,7 +101,7 @@ public sealed class EngineSpliceStatePort : ISpliceStatePort
 
         // The signer signs a funding it knows (SP-OP-01); registering the same funding again is a no-op
         _signer.RegisterFunding(channel.ChannelId, pending);
-        var result = commitments.SignSpliceCommitment(pending, _commitmentSigner);
+        var result = commitments.SignSpliceCommitment(pending, _commitmentSigner, remoteNonce);
         var signed = result.Outbound.OfType<OutboundCommitmentSigned>().Single();
 
         // The funding row and the peer's commitment on it with our signatures, in the driver's save before our
@@ -112,14 +114,21 @@ public sealed class EngineSpliceStatePort : ISpliceStatePort
         };
         await fundings.StageRemoteCommitmentAsync(channel.ChannelId, pending.FundingTxId, remote, signed.Signatures);
 
-        return _messageFactory.CreateCommitmentSignedMessage(channel.ChannelId, signed.Signatures.Signature,
-                                                             signed.Signatures.HtlcSignatures, pending.FundingTxId);
+        // A simple taproot channel's: the zero signature field and the MuSig2 partial signature (NL-965)
+        return signed.Signatures.PartialSignature is { } partial
+                   ? _messageFactory.CreateCommitmentSignedMessage(channel.ChannelId, partial,
+                                                                   signed.Signatures.HtlcSignatures,
+                                                                   pending.FundingTxId)
+                   : _messageFactory.CreateCommitmentSignedMessage(channel.ChannelId, signed.Signatures.Signature,
+                                                                   signed.Signatures.HtlcSignatures,
+                                                                   pending.FundingTxId);
     }
 
     /// <inheritdoc />
     public async Task ReceiveSpliceCommitmentAsync(ChannelModel channel, ChannelFunding funding,
                                                    CommitmentSignedMessage message, IUnitOfWork unitOfWork,
-                                                   CancellationToken cancellationToken)
+                                                   CancellationToken cancellationToken,
+                                                   MusigPublicNonce? remoteNextNonce = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
         ArgumentNullException.ThrowIfNull(funding);
@@ -129,12 +138,19 @@ public sealed class EngineSpliceStatePort : ISpliceStatePort
         var pending = funding with { Status = ChannelFundingStatus.Pending };
         _signer.RegisterFunding(channel.ChannelId, pending);
 
-        var signatures = new CommitmentSignatures(message.Payload.Signature, message.Payload.HtlcSignatures.ToList());
+        CommitmentSignatures signatures;
         CommitmentsResult result;
         try
         {
+            // A simple taproot channel's carries the zero signature and the partial signature (NL-965)
+            signatures = Services.ChannelStateTransitionService.ToReceivedSignatures(channel, message);
+
             // SP-CS-02: our commitment at the current number, moved to the new funding; the funding becomes pending
-            result = commitments.ReceiveSpliceCommitment(pending, signatures, _commitmentVerifier);
+            result = commitments.ReceiveSpliceCommitment(pending, signatures, _commitmentVerifier, remoteNextNonce);
+        }
+        catch (ChannelFailedException e)
+        {
+            throw new SpliceCommitmentException(e.Message, e);
         }
         catch (Exception e) when (e is CommitmentViolationException or ArgumentException)
         {

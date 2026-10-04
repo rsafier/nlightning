@@ -7,6 +7,7 @@ using Channels.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Constants;
+using Domain.Channels.Commitments;
 using Domain.Channels.Models;
 using Domain.Channels.Quiescence;
 using Domain.Channels.Splicing;
@@ -27,6 +28,7 @@ using Domain.Protocol.InteractiveTx.Interfaces;
 using Domain.Protocol.InteractiveTx.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Models;
 using Domain.Protocol.Tlv;
 using InteractiveTx;
 using InteractiveTx.Models;
@@ -76,7 +78,9 @@ public sealed partial class SpliceService
         var driver = GetDriver();
         if (!_channelMemoryRepository.TryGetChannel(channelId, out var unlocked))
             throw new KeyNotFoundException($"Channel {channelId} is not loaded");
-        ThrowIfSimpleTaproot(unlocked);
+        if (unlocked.ChannelParams.OptionSimpleTaproot && request.Liquidity is not null)
+            throw new InvalidOperationException($"Channel {channelId} is a simple taproot channel: "
+                                              + TaprootLiquidityRefusal + " (NL-971)");
 
         // The I/O that needs no lock: a splice-out destination for a new splice-out, the quick-confirmation estimate
         // once more than 10 RBF attempts are pending
@@ -111,7 +115,8 @@ public sealed partial class SpliceService
             var purchase = CreateRbfPurchaseRequest(channel, request.Liquidity, latestPurchase, request.FeeratePerKw);
             var previousSigned = GetContributions(latest, latestPurchase).Local;
             var plan = PlanRbfContribution(previousContribution, previousSigned, true, request.FeeratePerKw,
-                                           request.ContributionSatoshis, newSpliceOutScript);
+                                           request.ContributionSatoshis, newSpliceOutScript,
+                                           channel.ChannelParams.OptionSimpleTaproot);
             InteractiveTxContribution? fresh = null;
             try
             {
@@ -122,7 +127,8 @@ public sealed partial class SpliceService
                     // reservation, released with the losing siblings, NL-492)
                     plan = await PlanFreshInputRbfContributionAsync(channelId, previousSigned, true,
                                                                     request.FeeratePerKw,
-                                                                    request.ContributionSatoshis, cancellationToken);
+                                                                    request.ContributionSatoshis, cancellationToken,
+                                                                    channel.ChannelParams.OptionSimpleTaproot);
                     fresh = plan?.Contribution;
                 }
 
@@ -708,7 +714,18 @@ public sealed partial class SpliceService
             negotiatedFeatures is { ZeroConf: not FeatureSupport.No },
             lastAttemptIsRecent,
             quickFeerate,
-            _options.MaxRbfAttempts);
+            _options.MaxRbfAttempts)
+        {
+            MaxActiveFundings = GetMaxActiveFundings(channel)
+        };
+
+    /// <summary>
+    /// The most active fundings a splice RBF may make on <paramref name="channel"/> (SP-OP-04): 20, or 16 on a simple
+    /// taproot channel, whose <c>next_local_nonces</c> holds one entry per active funding and at most
+    /// <see cref="FundingNonces.MaxEntries"/> (NL-1078).
+    /// </summary>
+    internal static int GetMaxActiveFundings(ChannelModel channel) =>
+        channel.ChannelParams.OptionSimpleTaproot ? FundingNonces.MaxEntries : ChannelCommitments.MaxActiveFundings;
 
     /// <summary>
     /// BOLT 2 "another RBF attempt has been created recently" for a peer's <c>tx_init_rbf</c> (NL-520,
@@ -785,11 +802,12 @@ public sealed partial class SpliceService
     internal static RbfContributionPlan? PlanRbfContribution(InteractiveTxContribution previous,
                                                              long previousSignedSatoshis, bool isInitiator,
                                                              uint feeratePerKw, long? requestedSatoshis,
-                                                             BitcoinScript? newSpliceOutScript)
+                                                             BitcoinScript? newSpliceOutScript,
+                                                             bool simpleTaproot = false)
     {
         ArgumentNullException.ThrowIfNull(previous);
         var nonChange = previous.Outputs.Where(o => !o.IsChange).ToList();
-        var sharedWeight = isInitiator ? GetInitiatorSharedWeight() : 0;
+        var sharedWeight = isInitiator ? GetInitiatorSharedWeight(simpleTaproot) : 0;
 
         if (previous.Inputs.Count > 0)
         {
@@ -880,7 +898,8 @@ public sealed partial class SpliceService
                                                                                 long previousSignedSatoshis,
                                                                                 bool isInitiator, uint feeratePerKw,
                                                                                 long? requestedSatoshis,
-                                                                                CancellationToken cancellationToken)
+                                                                                CancellationToken cancellationToken,
+                                                                                bool simpleTaproot = false)
     {
         var target = requestedSatoshis ?? previousSignedSatoshis;
         if (target <= 0 || _serviceProvider.GetService<IInteractiveTxContributor>() is not { } contributor)
@@ -891,7 +910,8 @@ public sealed partial class SpliceService
             var contribution = await contributor.ContributeAsync(
                 new InteractiveTxContributionRequest(channelId, InteractiveTxPurpose.Splice,
                                                      LightningMoney.Satoshis(target), [], feeratePerKw,
-                                                     isInitiator ? (int)GetInitiatorSharedWeight() : 0, true),
+                                                     isInitiator ? (int)GetInitiatorSharedWeight(simpleTaproot) : 0,
+                                                     true),
                 cancellationToken);
             var inputTotal = contribution.Inputs.Sum(i => i.Amount.Satoshi);
             var change = contribution.Outputs.Where(o => o.IsChange).Sum(o => o.Amount.Satoshi);

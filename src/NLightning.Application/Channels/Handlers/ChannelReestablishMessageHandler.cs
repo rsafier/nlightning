@@ -201,7 +201,11 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
 
         // Simple taproot channels: the peer's next_local_nonces replace its verification nonces before anything is
         // retransmitted (a missing map or entry fails the channel; NL-877 T3)
-        await _taproot.ReceiveNoncesAsync(channel, message);
+        // (a dual-funded open waiting for its funding: one entry per signed RBF attempt, NL-970)
+        await _taproot.ReceiveNoncesAsync(channel, message,
+                                          channel.ChannelParams.OptionSimpleTaproot
+                                              ? await _reestablishService.GetSignedOpenAttemptsAsync(channel)
+                                              : null);
 
         // A dual-funded open waiting for its funding resumes its negotiation first (the driver forgot it on a restart),
         // so the peer's retransmitted tx_signatures and our own rebuilt ones find it
@@ -218,7 +222,12 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
         // restart), so the peer's retransmitted splice commitment_signed and tx_signatures complete it
         if (local.LatestInteractiveTx is { IsSplice: true, TxSignaturesReceived: false }
          && _serviceProvider?.GetService<SpliceService>() is { } splices)
+        {
             await splices.EnsureLoadedAsync(channel, _unitOfWork);
+
+            // A taproot splice takes the peer's nonces for it (BOLTs PR #1324 types 22 and 24, NL-965)
+            splices.ReceiveReestablishNonces(channel, message);
+        }
 
         // SP-RE-04: the peer's my_current_funding_locked processed as its splice_locked, before the retransmissions
         if (plan.PeerSpliceLocked is { } lockedTxId && plan.Outcome == ReestablishOutcome.Resume)
@@ -372,11 +381,16 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
         if (!latest.IsSplice)
         {
             return _dualFundReestablish is not null
-                && await _dualFundReestablish.CreateCommitmentSignedRetransmissionAsync(channel, latest.TxId) is
-                { } openCommitmentSigned
-                       ? [openCommitmentSigned]
+                       ? await _dualFundReestablish.CreateCommitmentSignedRetransmissionAsync(channel, latest.TxId)
                        : [];
         }
+
+        // A MuSig2 signature is never replayed: a taproot splice's is signed again against the peer's
+        // current_commit_nonce (BOLTs PR #1324, NL-965)
+        if (channel.ChannelParams.OptionSimpleTaproot)
+            return _serviceProvider?.GetService<SpliceService>() is { } spliceService
+                       ? await spliceService.ResignSpliceCommitmentAsync(channel, latest.TxId, _unitOfWork)
+                       : [];
 
         (Domain.Channels.Commitments.RemoteCommit Commit, Domain.Channels.Commitments.CommitmentSignatures? Sent)?
             stored = null;

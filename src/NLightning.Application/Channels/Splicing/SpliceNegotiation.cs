@@ -91,6 +91,36 @@ internal sealed class SpliceNegotiation
     /// </summary>
     public SpliceNegotiation? HostPredecessor { get; set; }
 
+    /// <summary>
+    /// A simple taproot channel's splice (NL-965, BOLTs PR #1324): the shared input is spent by MuSig2 key path and the
+    /// new funding is the P2TR output of the rotated keys; the nonces below are exchanged in <c>tx_complete</c>.
+    /// </summary>
+    public bool IsSimpleTaproot { get; init; }
+
+    /// <summary>
+    /// Our <c>funding_nonce</c> of this attempt (a taproot splice): the signing nonce of the shared input, created for
+    /// the first <c>tx_complete</c> we send and repeated in the others (its secret half is the signer's, consumed when
+    /// the shared input is signed at the commitment step).
+    /// </summary>
+    public MusigPublicNonce? LocalFundingNonce { get; set; }
+
+    /// <summary>The <c>funding_nonce</c> of the peer's last <c>tx_complete</c> (a taproot splice).</summary>
+    public MusigPublicNonce? RemoteFundingNonce { get; set; }
+
+    /// <summary>
+    /// The peer's verification nonce of its current commitment on the new funding (a taproot splice): its last
+    /// <c>tx_complete</c> <c>commit_nonces</c>, or the <c>current_commit_nonce</c> of its <c>channel_reestablish</c>
+    /// (BOLTs PR #1324), which our splice <c>commitment_signed</c> is signed against.
+    /// </summary>
+    public MusigPublicNonce? RemoteCurrentCommitNonce { get; set; }
+
+    /// <summary>
+    /// The peer's verification nonce of its next commitment on the new funding (a taproot splice): its last
+    /// <c>tx_complete</c> <c>commit_nonces</c>, or its <c>channel_reestablish</c> <c>next_local_nonces</c> entry for the
+    /// splice; the engine takes it with the peer's splice <c>commitment_signed</c>.
+    /// </summary>
+    public MusigPublicNonce? RemoteNextCommitNonce { get; set; }
+
     /// <summary>The new funding (set when the transaction is constructed, SP-CS-01).</summary>
     public ChannelFunding? NewFunding { get; set; }
 

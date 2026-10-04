@@ -238,12 +238,14 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
     /// <summary>
     /// A node <paramref name="nodeName"/> to which Eclair opens a private anchors channel of
     /// <paramref name="capacity"/> from its own wallet (<c>open_channel2</c> when both offer <c>option_dual_fund</c>,
-    /// our default), followed until both ends are usable. <paramref name="configureNode"/> runs before the node starts.
+    /// our default), followed until both ends are usable. <paramref name="configureNode"/> runs before the node starts;
+    /// <paramref name="channelType"/> is the channel type Eclair's <c>open</c> asks for (<c>simple_taproot_channel</c> for
+    /// a taproot channel, NL-877).
     /// </summary>
     public static async Task<EclairChannelSession> BuildEclairFundedAsync(
         EclairFixture fixture, string nodeName, LightningMoney capacity, CancellationToken cancellationToken,
         Action<NodeOptions>? configureNodeOptions = null, Action<NLightningTestNode>? configureNode = null,
-        bool announce = false)
+        bool announce = false, string channelType = "anchor_outputs_zero_fee_htlc_tx")
     {
         var node = await NLightningTestNode.CreateAsync(fixture.Bitcoin, nodeName,
                                                         configureNodeOptions: configureNodeOptions);
@@ -259,7 +261,7 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
             await session.ConnectAsync(cancellationToken);
 
             var answer = await fixture.Eclair.OpenAsync(node.NodeIdHex, (long)capacity.Satoshi, cancellationToken,
-                                                        announce: announce);
+                                                        channelType: channelType, announce: announce);
             Console.WriteLine($"[eclair] Eclair opened to {nodeName}: {answer}");
             session.ChannelId = ParseOpenedChannelId(answer);
 
@@ -276,12 +278,13 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
     /// <summary>
     /// A node <paramref name="nodeName"/> with <paramref name="walletSat"/> in its wallet, connected to Eclair, and no
     /// channel yet (the caller opens one and sets <see cref="ChannelId"/>). <paramref name="configureNode"/> runs before
-    /// the node starts. The caller disposes the session.
+    /// the node starts; the wallet is funded with one output of <paramref name="addressType"/>. The caller disposes the
+    /// session.
     /// </summary>
     public static async Task<EclairChannelSession> CreateConnectedAsync(
         EclairFixture fixture, string nodeName, LightningMoney walletSat, CancellationToken cancellationToken,
         Action<NodeOptions>? configureNodeOptions = null, Action<NLightningTestNode>? configureNode = null,
-        EclairEndpoint? eclair = null)
+        EclairEndpoint? eclair = null, AddressType addressType = AddressType.P2Wpkh)
     {
         var node = await NLightningTestNode.CreateAsync(fixture.Bitcoin, nodeName,
                                                         configureNodeOptions: configureNodeOptions);
@@ -290,7 +293,7 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
         try
         {
             await session.StartNodeAsync(cancellationToken);
-            await node.FundWalletAsync(walletSat, AddressType.P2Wpkh, cancellationToken);
+            await node.FundWalletAsync(walletSat, addressType, cancellationToken);
             await fixture.WaitAllAtTipAsync([node], cancellationToken);
             await session.ConnectAsync(cancellationToken);
             return session;

@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-04 by the taproot wave t03 integrator (branch `wip/taproot-t03` from `wip/fafo` at `6b0d9e12`; lanes SMALL, ECL, T4L, RBF, SPL, T4R, RV4, ECL2, FC, RVR and RVS merged with `--no-ff`; lane branches `tap3-*` hold the originals): taproot range NL-1050..NL-1079: fixed NL-904 (item 4), NL-957, NL-960, NL-965, NL-966, NL-969, NL-970, NL-971 (opens; liquidity ads with taproot splices stay refused), NL-978, NL-986, NL-987, and new NL-1051, NL-1055, NL-1058, NL-1060, NL-1065, NL-1078, NL-1079 (high); new open NL-1050, NL-1059, NL-1061, NL-1062 (NL-1052..NL-1054, NL-1056, NL-1057, NL-1063, NL-1064, NL-1066..NL-1077 unused). Summary recounted from the entries (854), no duplicate IDs.
+
 Updated 2026-10-04 by the taproot wave t02 integrator (follow-up on wip/fafo 2e455bc2): NL-959 fixed and verified by the full matrix `tap2-mx2`; NL-958 note; the NL-983 fix of wip/nl983 proven on taproot channels against LND (`o983b-taproot` 3/3, `o983b-day0` 3/3) after a test-only fix of the mempool scan (2578448b); Summary recounted (841).
 
 Updated 2026-10-04 by the NL-924 lane (worktree branch `worktree-agent-af41d6157ae6ff1e1`, from `wip/fafo` at `d8c6cc6e`): NL-924 (low) new and fixed in d6324dc3, 449de393, 094d4709 and 2f334449 (payer review follow-ups of NL-898, NL-980, NL-982), review fixes in 71ddf9b2, 0dcd85d2, 11ad3c56, e16c114e and a362a343; NL-925 (low, open) new: a trampoline peer's one-hop outer route fails the first-hop match. Summary rows recounted from the entries after merging wip/fafo at `34c708d4`: 839, no duplicate IDs.
@@ -171,12 +173,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 1 | 6 | 83 | 90 |
+| open | 0 | 0 | 2 | 81 | 83 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
-| fixed | 15 | 66 | 211 | 437 | 729 |
+| fixed | 15 | 68 | 218 | 446 | 747 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 3 | 4 | 7 |
-| **Total** | **15** | **67** | **227** | **534** | **843** |
+| **Total** | **15** | **68** | **230** | **541** | **854** |
 
 ### Epics
 
@@ -1849,7 +1851,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TAPROOT_CHANNELS_PLAN wave t01 integration
 
 ### NL-904 Simple taproot T3/T4 obligations found by the t01 review (fees by format, the format switch, nonce binding per funding, HTLC fee inputs)
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane T4L)
 - **Severity:** medium
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Domain/Bitcoin/Transactions/Factories/CommitmentFeeCalculator.cs` (the `CommitmentSpec` region: `IsHtlcTrimmed`, `UntrimmedHtlcCount`, `TrimmedHtlcTotalMsat`, `CommitmentBaseFeeSatoshis`, `FunderCostMsat` take only `bool hasAnchors`) and its callers (`UpdateValidator`, `ChannelOpenValidator`, `ChannelFactory`, `DualFundedOpenService`, `HtlcSwitch`, `InvoiceService`, `ChannelCloseCoordinator`, `DustExposurePolicy`, `AnchorCpfpService*`); `ChannelParams.CommitmentFormat` and the ~25 places that branch on `OptionAnchorOutputs`; `Musig2Service.GenerateNonce`; `HtlcTransactionBuilder` (`ThrowIfSimpleTaproot`), `TaprootSignatures`, `LocalLightningSigner` HTLC signing
@@ -1862,6 +1864,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **t02 lane STATE:** items 1 and 2 done (branch `tap2-state`). (1) The `CommitmentSpec` region of `CommitmentFeeCalculator` takes only a `CommitmentFormat` (the `bool` forms are gone there), `CommitmentParams.Format` carries the channel's format into the engine, and every caller passes it (`UpdateValidator`, `ChannelCommitments`, `ChannelOpenValidator`, `ChannelFactory`, `DualFundedOpenService`, `HtlcSwitch`, `InvoiceService`, `ChannelCloseCoordinator`, `DustExposurePolicy`, `AnchorCpfpService*`); proven by an exactly affordable `update_fee` and `update_add_htlc` on a taproot engine that the anchors weight refuses (`SimpleTaprootCommitmentsTests`). (2) `ChannelParams.OptionSimpleTaproot` forces `OptionAnchorOutputs` true (the anchors semantics stay on every anchors branch) and `CommitmentFormat` returns `SimpleTaproot`; anchor CPFP skips taproot channels with a log line (T4). The places that still build P2WSH for a taproot channel are NL-953 (funding) and NL-954 (on chain).
 - **t02 lane CLOSE:** item 4 not done (stays open for T4, NL-966): taproot HTLC transactions still refuse wallet fee inputs. Done instead: the T4 safety floor (taproot commitments mapped with leaves and control blocks, script-path sweeps of our `to_local`, our `to_remote` and the revoked `to_local`, the force close through the stored partial signature proven end to end), the taproot cooperative close over `option_simple_close`, the splice refusal (NL-965) and the backup/peer-storage taproot flag.
 - **t02 lane V2:** item 3 refined for dual-funded opens: commitment 0's verification nonce uses the txid-free context only for a v1-opened channel; a dual-funded channel's (`ChannelSigningInfo.IsDualFunded`, derived from the persisted `Channels.Version`, no migration) is bound to its funding txid like every other number (before registration the key index overload `GetLocalVerificationNonce(keyIndex, txid, n)`, which binds the txid it is given since REVA's NL-972 fix; lane V2's `GetInteractiveVerificationNonce` and its own `IsDualFunded` were folded into REVA's in the V2INT integration), so two RBF attempts never share a nonce (`SimpleTaprootCommitmentSigningTests.Given_TwoAttemptsOfADualFundedOpen_*`). `DualFundedOpenService.GetFundingScript` (NL-953) builds the MuSig2 P2TR output for a taproot dual-funded open (`FundingScriptOf`).
+- **t03 lane T4L:** item 4 done (taproot HTLC transactions with wallet fee inputs, our signature after them over every spent output, the HTLC input at its output's index; proofs in NL-966's t03 note), so every item of this entry is done.
 
 ### NL-953 Funding output and transaction builders build the P2WSH 2-of-2 for a simple taproot channel
 - **Status:** fixed (ce0229bb, 45a36b59, 4ba920d5, bb2fc32c)
@@ -1884,6 +1887,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix:** taproot wave t02 lane CLOSE (ef257130): `CommitmentOutputMapper.CreateSimpleTaprootCandidates` maps taproot commitments with their leaves and control blocks, `OnchainChannelWatcher` classifies taproot spends, and our `to_local`, our `to_remote` and the revoked `to_local` are swept by script path; HTLC outputs, second-level outputs, HTLC penalties and anchor CPFP stay unsupported, alerted once per output and tracked in NL-966.
 - **Blocks/Blocked-by:** Related NL-877, NL-904
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T4
+- **t03 lane T4L:** the last taproot guard named here is gone: `AnchorCpfpService` bumps a taproot commitment (ours and the peer's) through our P2TR anchor and sweeps taproot anchors (NL-966 (6)).
 
 ### NL-955 Static channel backups and peer storage do not carry the simple taproot channel type
 - **Status:** fixed (ea58a0d4)
@@ -1908,17 +1912,80 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T3, D-T4
 
 ### NL-965 Splicing a simple taproot channel is refused
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane SPL)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `Application/Channels/Splicing/SpliceService.cs` (`ThrowIfSimpleTaproot`, `TaprootSpliceRefusal`), `SpliceService.Rbf.cs`
 - **Evidence:** Taproot wave t02 lane CLOSE: a splice of a taproot channel needs the MuSig2 signature of the shared funding input, the P2TR splice funding output (NL-953) and the BOLTs PR #1324 nonces (tx_complete 4/6, tx_signatures 2, channel_reestablish 24), none of which the splice service builds. `splicein`/`spliceout`/`bumpsplice` are refused with "splicing a simple taproot channel is not supported yet" before anything is reserved or sent, and a peer's `splice_init` on a taproot channel is answered with `tx_abort` carrying that reason (the quiescence ends, the channel stays usable; `SpliceTaprootRefusalTests`). Eclair 0.14.3 splices taproot channels, so an Eclair peer's splice is refused.
 - **Fix sketch:** Plan T5 "Splicing": MuSig2 shared-input signing in the signer (signing nonce sent in tx_complete 6), the taproot splice funding script, the PR #1324 TLVs through the interactive-tx driver and `ReestablishPlanner`; then drop the refusal.
+- **t03 lane ECL2:** proven against Eclair 0.14.3 on the cluster (`Docker/Interop/Eclair/EclairTaprootSpliceTests`, suite `eclair2`, 5 tests): we splice in then out of Eclair's taproot channel and close it cooperatively; Eclair splices in then out of ours and closes it; our `bumpsplice` and Eclair's `rbfsplice`; our restart and Eclair's restart while our splice is pending (type-22 nonces for both fundings). Wire checks: `tx_signatures` TLV 2 `shared_input_partial_signature` both ways (no TLV 0), the shared input a 64-byte key-path witness, P2TR new funding, batches of `commitment_signed` while pending. Found NL-1065 (Eclair's taproot splice-out refused by 3 sat) and NL-1058 against Eclair (both fixed).
 - **Blocks/Blocked-by:** Related NL-877, NL-953, NL-957
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T5
+- **t03 lane SPL:** splice in, splice out and splice RBF of a simple taproot channel in both roles, as Eclair 0.14.3 speaks BOLTs PR #1324: `tx_complete` `commit_nonces` (our verification nonces of the current and next local commitment on the negotiated txid, with the splice's rotated funding key; always txid-bound) and `funding_nonce` (one JIT signing nonce per attempt), required from the peer (`MissingCommitNonce`/`MissingFundingNonce` → `tx_abort`); the splice `commitment_signed` a MuSig2 partial signature against the peer's current commit nonce, its next nonce taken into the engine with its splice `commitment_signed`; the shared input signed at the commitment step (the nonce cannot be stored, D-T4) and the partial signature stored with the session row (witness blob format 2, no migration), sent in `tx_signatures` type 2 only after the peer's `commitment_signed`; the peer's type 2 required and verified (SP-SIG-01); a taproot splice always rotates the funding key (key 0's v1 commitment 0 nonce has no txid, NL-972); `channel_reestablish` names the splice in negotiation in type 22 and sends type 24 while the peer's splice `commitment_signed` is missing, and our splice `commitment_signed` is re-signed against the peer's type 24, never replayed (an unparsable type 24 is ignored, the retransmission then waits: the splice half of NL-969 (a)); force close on a pending or locked splice funding by key-path aggregate. Liquidity ads with a taproot splice stay refused (NL-971). Proofs: `SpliceTaprootHarnessTests`, the taproot cases of `SpliceConformanceTests` (reestablish flows, a crash at every save of either side), `SimpleTaprootSpliceSigningTests` (shared input script-executed against the previous P2TR output). Follow-ups NL-1058, NL-1059. The shared input needs no `prevtx_details` (NL-957): it already omits prevtx with `shared_input_txid`; Eclair's wallet taproot inputs without prevtx need NL-957 (lane ECL).
+
+### NL-1058 A splice `commitment_signed` that crosses our `tx_abort` is taken as a normal one (warning and close)
+- **Status:** fixed (wip/taproot-t03, lane ECL2)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (`commitment_signed` case), `Channels/Handlers/CommitmentSignedMessageHandler.cs`
+- **Evidence:** taproot wave t03 lane SPL (`SpliceTaprootHarnessTests.Given_ATaprootSplice_When_ThePeersTxCompleteHasNoFundingNonce_*`): we abort a splice at the commitment step (here a missing `funding_nonce`) while the peer, which already constructed the transaction, sends its splice `commitment_signed` (`funding_txid` = the aborted splice). With no splice negotiation left, `ISpliceCommitmentReceiver.IsSpliceCommitmentSigned` is false and the message is handled as a normal `commitment_signed`: its signature does not verify against our next commitment, so the peer gets `warning` + close (B2-CS-R01). Any channel type (the ECDSA path behaves the same); the reconnection recovers, no funds at risk.
+- **t03 lane ECL2:** seen against Eclair 0.14.3 (cluster `EclairTaprootSpliceTests`, Eclair's taproot splice-out that we aborted for NL-1065): Eclair's splice `commitment_signed` crossed our `tx_abort`, failed verification as a normal one (`partial_signature_with_nonce is invalid`) and the connection closed. Fixed: `ChannelManager` ignores (logs) a lone `commitment_signed` whose `funding_txid` names neither the current funding nor a pending one, after the splice and dual-fund receivers declined it (`GetOtherFundingTxId`); `SpliceTaprootHarnessTests.Given_ATaprootSplice_When_ThePeersTxCompleteHasNoFundingNonce_*` now asserts no failure and a payment without reconnecting (it fails without the fix).
+- **Fix sketch:** ignore a `commitment_signed` whose `funding_txid` names neither the current funding nor an active pending one while our `tx_abort` waits for its echo (BOLT 2: after `tx_abort`, ignore everything but `tx_abort`).
+- **Blocks/Blocked-by:** Related NL-965
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
+
+### NL-1059 Restoring a static channel backup does not follow a simple taproot channel's splices
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Backup/SpliceSpendFollower.cs` (`Matches`, `GetCandidateOutputs`, `TryParseFundingWitness`)
+- **Evidence:** taproot wave t03 lane SPL. The follower recognizes a splice's new funding output as the P2WSH 2-of-2 of our rotated key and the peer's known key, and learns a peer's rotated key from the 2-of-2 witness of its spend. A taproot splice creates a MuSig2 P2TR output and spends by key path, whose witness names no key: a restored taproot channel follows only a splice its backup named as pending, and stops at any other (the peer's rotated key is unknown).
+- **Fix sketch:** match P2TR outputs of `KeyAgg(our candidate keys, the peer's known keys)` for a taproot entry; past a splice the backup did not name, ask the peer (peer storage, or the peer's `channel_reestablish` after the restore) rather than the chain.
+- **Blocks/Blocked-by:** Related NL-965, NL-478
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Backups")
+
+### NL-1065 The receiver charged the initiator the segwit marker and flag, refusing Eclair's taproot splice-out by 3 sat
+- **Status:** fixed (wip/taproot-t03, lane ECL2)
+- **Severity:** medium
+- **Kind:** interop
+- **Location:** `src/NLightning.Domain/Protocol/InteractiveTx/InteractiveTxRules.cs` (`CheckRemoteFee`), `CollaborativeFeeCalculator.SegwitMarkerAndFlagWeight`
+- **Evidence:** taproot wave t03 lane ECL2, cluster `EclairTaprootSpliceTests.Given_OurTaprootChannel_When_EclairSplicesInThenOutAndCloses_*` (run ecl2-sp1): Eclair 0.14.3's `spliceout` of a simple taproot channel at 1,250 sat/kw (only the taproot shared input, the new P2TR funding output and a P2WPKH payout) paid 707 sat; we charged the initiator 568 wu (42 common + 230 shared input + 172 + 124) = 710 sat and sent `tx_abort` "the initiator's fees (707 sat) do not cover the common fields (710 sat needed)". Eclair counts its common fields as `Transaction(2, Nil, Nil, 0).weight()` = 40 wu, without the segwit marker and flag: floor(566 x 1.25) = 707. Anchors splices never showed it (the 2-of-2 shared input's minimum witness leaves margin, as do wallet inputs); a taproot key-path shared input has none.
+- **Fix:** the receiver's IT-R-04 check (`CheckRemoteFee`) leaves the 2 wu of segwit marker and flag out of what it charges an initiator peer; what we pay as initiator is unchanged (BOLT 3's 42). Tests: `CollaborativeFeeCalculatorTests.Given_EclairsTaprootSpliceOut_*` (707 accepted, 706 refused; fails without the fix), the Appendix F and LDK (NL-558) boundaries moved by the 2 wu.
+- **Blocks/Blocked-by:** Related NL-558, NL-965, NL-1058
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T6
+
+### NL-1078 A splice RBF could make a simple taproot channel's active fundings exceed the 16-entry nonce map
+- **Status:** fixed (wip/taproot-t03, lane RVS)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Channels/Splicing/SpliceRules.cs` (`WouldExceedBatch`, `SpliceRbfConditions.MaxActiveFundings`), `src/NLightning.Application/Channels/Splicing/SpliceService.Rbf.cs` (`GetRbfConditions`, `GetMaxActiveFundings`)
+- **Evidence:** taproot wave t03 review (lane RVS) of NL-965. SP-OP-04 allowed 20 active fundings (19 pending RBF attempts plus the current funding; past 10 attempts only at the quick-confirmation feerate, which is cheap when the mempool is empty). On a simple taproot channel every active funding needs one entry in the `next_local_nonces` (type 22) of our `revoke_and_ack` and `channel_reestablish`, and `FundingNonces` holds at most 16 (LND's limit; its constructor throws past it). A peer bumping its splice 16 times (one block apart, NL-520) made `TaprootChannelNonces.CreateLocalNonces` throw on our next `revoke_and_ack` and every `channel_reestablish`: the channel could neither sign nor reconnect until the splice locked or the HTLC deadlines failed it.
+- **Fix:** `SpliceRbfConditions.MaxActiveFundings` (20 by default) is 16 on a simple taproot channel (`SpliceService.GetMaxActiveFundings`), for our `tx_init_rbf` (refused) and the peer's (`tx_abort`). The unsigned attempt that our `channel_reestablish` names besides the active fundings is the new attempt the rule already counts, so the map never exceeds 16. Tests: `SpliceRbfRulesTests` (taproot rows of both sides), `SpliceTaprootHarnessTests.Given_AChannel_When_ItsSpliceRbfBatchLimitIsRead_*`.
+- **Blocks/Blocked-by:** Related NL-965, NL-489
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Splicing")
+
+### NL-1060 A simple taproot dual-funded open could be bumped past the 16-entry nonce map of its channel_reestablish
+- **Status:** fixed (wip/taproot-t03, lane RVS)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`GetRbfRefusalAsync`); `src/NLightning.Application/Channels/Taproot/TaprootChannelNonces.cs` (`CreatePendingOpenNonces`)
+- **Evidence:** taproot wave t03 review (lane RVS) of the lane SPL/RBF merge in `ReestablishService.CreateOwnAsync`. While a dual-funded open waits for its funding, our `next_local_nonces` has an entry for every signed attempt and for the attempt being signed (NL-970), and `FundingNonces` holds at most 16 (it throws past it). The RBF of a dual-funded open had no attempt cap at all (no block between attempts either), so a peer could bump the open 16 times in a few seconds: `CreateOwnAsync` then threw on every reconnection and the channel could never reestablish (nor exchange `channel_ready` once an attempt confirmed). Reproduced in-process: with the fix stashed, the 17th attempt was signed and the reconnection never completed.
+- **Fix:** a simple taproot open with 16 signed attempts refuses another (our `bumpopen` gets the reason, the peer's `tx_init_rbf` a `tx_abort`), so the map holds at most 16. Test: `DualFundTaprootRbfTests.Given_ATaprootOpenWithSixteenSignedAttempts_*` (15 bumps, both refusals, both `channel_reestablish` with 16 entries).
+- **Blocks/Blocked-by:** Related NL-970, NL-1078
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Dual-funded RBF")
+
+### NL-1061 Eclair fails a simple taproot channel when we lost an interactive-tx attempt it is signing (crash before our commitment-step save)
+- **Status:** open
+- **Severity:** low
+- **Kind:** interop gap
+- **Location:** `src/NLightning.Application/Channels/Reestablish/ReestablishService.cs` (`CreateOwnAsync`), `src/NLightning.Application/InteractiveTx/InteractiveTxDriver.cs` (`ConstructAsync`)
+- **Evidence:** taproot wave t03 review (lane RVS) of NL-965/NL-970 against Eclair 0.14.3 `Helpers.Syncing.checkCommitNonces`: when Eclair holds a signing session (`SpliceWaitingForSigs`, `RbfWaitingForSigs`) of a taproot channel, our `channel_reestablish` MUST name its txid in `next_local_nonces`, or Eclair fails the channel (`MissingCommitNonce`, a force close). If Eclair sends the last `tx_complete` and we crash before `ConstructAsync`'s save (the session row is written in that handler, before our `commitment_signed`), we come back without the attempt and cannot name it; a non-taproot channel would only get our `tx_abort` for its `next_funding`. The window is one message handler, and the spec does not say what a node without the attempt must send.
+- **Fix sketch:** wait for the peer's `channel_reestablish` before sending ours when an unknown `next_funding` is possible, and add an entry for its txid (the deterministic nonce of the next rotated key bound to that txid) before answering `tx_abort`; or have the spec/Eclair accept a missing entry for an attempt the peer then aborts.
+- **Blocks/Blocked-by:** Related NL-965, NL-970
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-966 Simple taproot on chain: HTLC outputs, revoked HTLC penalties, second-level outputs and anchors are not resolved (T4)
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lanes T4L and T4R)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `Application/Onchain/Resolvers/{Local,Remote,Revoked}CommitResolver.cs` (the `UnsupportedTaprootOutputs` guards), `Domain/Onchain/Factories/SweepInputFactory.cs` (`RequireNotTaproot`), `Infrastructure.Bitcoin/Builders/HtlcTransactionBuilder.cs` (`EstimateAnchorBaseWeight`/`AddFeeInputs` throw for taproot), `Onchain/HtlcWitnessParser`, `Onchain/Anchors/AnchorCpfpService*` (taproot skipped)
@@ -1926,6 +1993,8 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** T4 proper: taproot HTLC transaction fee inputs and signing (NL-904 item 4), tapscript claim spends (timeout/success leaves with their control blocks), key-path revocation spends (tweaked revocation key), a taproot `HtlcWitnessParser`, upstream resolution through the planner as for anchors, anchor CPFP over `TaprootAnchorOutput`; every spend proven by script execution as in `SimpleTaprootOnchainSweepTests`, then the cluster proofs of T6.
 - **Blocks/Blocked-by:** Related NL-877, NL-904, NL-954
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T4
+- **t03 lane T4L:** parts (1), (5) for our own commitment and (6) done on `tap3-t4l`: our taproot HTLC-timeout/success with wallet fee inputs (`HtlcTransactionBuilder.EstimateAnchorBaseWeight`/`AddFeeInputs` no longer refuse taproot; `HtlcTransactionBuildResult.FeeInputSpentOutputs`; our BIP 340 `SIGHASH_DEFAULT` signature over every spent output, the peer's 0x83 one unchanged), RBF-maintained by `LocalCommitResolver` as anchors; the P2TR second-level output (`TaprootHtlcResolutionOutput`, delay leaf + control block) swept by script path and re-signed by `SweepScheduler`; the upstream fail (`OnchainTimeout`)/fulfill of HTLCs on our taproot commitment; anchor CPFP of our commitment and of the peer's through our P2TR anchor (key path, `ILightningSigner.SignTaprootAnchorInput`) and the 16-block anchor sweep by the `OP_16 OP_CSV` leaf (`IsSkippedTaprootChannel` removed). The `[NL-966]` alert is gone from `LocalCommitResolver`. Proofs: `Infrastructure.Bitcoin.Tests/Taproot/SimpleTaprootHtlcFeeInputTests` (1 and 2 P2WPKH/P2TR fee inputs, RBF re-sign, refusals) and `SimpleTaprootAnchorSpendTests`; `Application.Tests/Onchain/Resolvers/Local/LocalTaprootHtlcResolutionTests` (both directions to irrevocable with a restart after the HTLC transactions confirmed, RBF), the taproot cases of `AnchorCpfpServiceTests`/`AnchorPeerCpfpTests` and `SweepSchedulerTests`. Left for lane T4R: (2), (3), (4) and (5) on the peer's commitment; until its taproot `HtlcWitnessParser` lands, the peer's timeout claim of its HTLC on our taproot commitment may raise a false `B5-LCL-RO-04` alert (the P2WSH parser reads the taproot witness).
+- **t03 lane T4R:** parts (2), (3), (4) and (5) for the peer's commitments done (branch `tap3-t4r`): `CommitmentOutputMapper` records with each HTLC output of a peer commitment the leaf we spend it by (timeout leaf of our offered HTLC, success leaf of the peer's, the timeout leaf of a revoked one for its merkle root); `SweepInputFactory.HtlcTimeoutClaim`/`HtlcPreimageClaim` build the script-path claims (nSequence 1, nLockTime cltv for the timeout), `Penalty` of a taproot `RevokedHtlc` and the new `TaprootSecondLevelPenalty` the revocation key-path spends (`SweepInput.TaprootMerkleRoot`, `Domain/Onchain/Taproot/TapscriptMerkleRoot`), the signer signs the key path with the revocation key tweaked by the root after checking the output key (`LocalLightningSigner.TaprootSweeps`), `SweepScheduler` re-signs both; `RevokedCommitResolver` builds the taproot second-level row (`TaprootHtlcResolutionOutput`) and penalizes it, also in the mempool path; `HtlcWitnessParser` reads the taproot witness shapes, so a preimage revealed on either commitment (claim or HTLC-success, confirmed or in the mempool) fulfills upstream and timeouts fail upstream as on anchors. Every spend is proven by script execution (`Infrastructure.Bitcoin.Tests/Taproot/SimpleTaprootPeerHtlcSpendTests`, the spec vectors' resolution transactions parsed), in process by `Onchain/Resolvers/Remote/RemoteTaprootResolutionTests`, `RevokedResolutionTests`/`RevokedMempoolPenaltyTests`/`SweepSchedulerTests` taproot cases, `MempoolReactorTests` and `LocalCommitResolutionTests.Given_PeerClaimsOurTaprootHtlcByItsSuccessLeaf_*`. Left for lane T4L: part (1) (our HTLC transactions, NL-904 item 4), the second-level outputs of our HTLC transactions and part (6) (anchors); A taproot HTLC row recorded by a t02 build (no leaf) takes the rebuilt commitment's leaf in `RemoteCommitResolver` and is claimed.
 
 ### NL-967 A simple taproot channel whose peer does not negotiate option_simple_close cannot close cooperatively
 - **Status:** open
@@ -2058,22 +2127,24 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-986 `openchannel` suggests `bumpopen` after a simple taproot open, whose RBF is refused
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane RBF)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Client` (the open-channel printer's "Bump its fee before it confirms with: bumpopen ..." hint)
 - **Evidence:** first live taproot channel on Mutinynet (2026-10-03, FAFO→FAFO2, build c5ab09cb, channel b934ee4f…): after the dual-funded taproot open the client printed the `bumpopen` hint, but RBF of a dual-funded taproot open is refused (NL-970).
 - **Fix sketch:** leave the hint out for a taproot channel, or print that its RBF is not supported yet.
+- **t03 lane RBF:** fixed by NL-970: RBF of a taproot dual-funded open works, so the hint `bumpopen <channel_id> <feerate_per_kw>` is valid after a taproot open and is kept (`BumpOpenClientHandler`/`BumpOpenIpcHandler` have no taproot refusal; the bump is proven in `DualFundTaprootRbfTests`).
 - **Blocks/Blocked-by:** Related NL-970, NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md`
 
 ### NL-987 `listchannels` does not show the channel type (taproot or anchors)
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane SMALL)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Client/Printers` (listchannels), the channel list IPC response
 - **Evidence:** first live taproot channel on Mutinynet (2026-10-03, build c5ab09cb): nothing in `listchannels` marks channel b934ee4f… as simple taproot; only the funding output on chain (v1_p2tr) tells.
 - **Fix sketch:** add the channel type (anchors, static_remotekey, simple taproot) to the channel info response (a new key) and print it.
+- **t03 lane SMALL:** `ChannelInfoClientResponse.ChannelType` (the channel's `CommitmentFormat`, set by `ListChannelsClientHandler` from `ChannelParams.CommitmentFormat`), `ChannelInfoIpcResponse` key 27 `ChannelType` (string `simple_taproot`/`anchors`/`static_remotekey`, `ChannelInfoIpcResponse.ChannelTypeName`; null from an older daemon), printed as `Channel Type:` after `Initiator:` (`-` when absent). Every channel has at least `option_static_remotekey` (no legacy type exists). The backup commands already printed the type (NL-877 T5); `info` lists no channels.
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** —
 
@@ -6219,7 +6290,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 
 ### NL-957 tx_add_input `prevtx_details` (taproot shared/wallet inputs without prevtx) is not on the wire
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane ECL)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Serialization/Messages/Types/TxAddInputMessageTypeSerializer.cs`
@@ -6227,6 +6298,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** add a `PrevTxDetailsTlv` read as both 2 and 1111 when the interactive-tx lane needs it (dual-funded taproot opens and splices with Eclair).
 - **Blocks/Blocked-by:** Part of NL-877 (T5/T6, dual-funded taproot and splices)
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T2
+- **t03 lane ECL:** `PrevTxDetailsTlv` (Domain, `InteractiveTxTlvConstants.PrevTxDetails` 2 and `PrevTxDetailsEclair` 1111) and `PrevTxDetailsTlvConverter` (both types); `TxAddInputMessage.PrevTxDetailsTlv`; the serializer reads 2 and 1111 (2 wins when both are present) and 2 is in the known even set. Receive rules (PR #1324, `InteractiveTxRules.CheckPrevTxDetails`/`CheckPrevTxDetailsInputs`): with `prevtx_len` = 0 and `prevtx_details`, the script must be a witness program of version 1-16, the amount at most `MAX_MONEY`, the outpoint new and not the funding outpoint (SP-TX-01); `prevtx_details` together with a `prevtx` or with `shared_input_txid` aborts; at `tx_complete` an input added with details (no prevtx, not shared) requires every input, ours and the shared one included, to be P2TR (IT-R-04); the amount and script feed the transaction model as for a prevtx input (they are what the taproot sighash of our inputs commits to); `require_confirmed_inputs` checks such an input by its outpoint. We never send it: Eclair 0.14.3 sends its own inputs with `prevtx` and reads 1111 only in a splice of a taproot channel, and PR #1324 forbids sending both, so our inputs keep their `prevtx`.
 
 ### NL-958 LND's channel_ready announcement nonces (TLVs 0 and 2) are unknown even types to us
 - **Status:** open
@@ -6292,12 +6364,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 
 ### NL-960 The D-T4 crash-injection proof of simple taproot channels has no Postgres (or SQL Server) run
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane SMALL)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Channels/Taproot/TaprootSqliteCrashTests.cs`, `TaprootOpenHarness.cs`
 - **Evidence:** Taproot wave t02 lane OPS proved plan D-T4 in process: the two-node harness (in-memory store, a crash at every save, `TaprootHarnessTests`) and a SQLite v1-open harness on the production repositories (an EF `SaveChangesInterceptor` kills the database at every save of a payment each way, `TaprootSqliteCrashTests`): no signing nonce is ever sent twice, every accepted partial signature verified, one commitment transaction per local commitment number. The plan asks for all three providers; the harness builds its nodes on SQLite files only, and a Postgres server exists only on the cluster (`scripts/run-cluster.sh --matrix postgres`, NL-866). The taproot columns themselves round-trip on Postgres through the existing persistence tests (lane STATE).
 - **Fix sketch:** give `TaprootOpenHarness` a provider switch and run `TaprootSqliteCrashTests` in the cluster's `postgres` suite (the persistence layer has no provider-specific code for the taproot columns, so the expectation is a green run).
+- **t03 lane SMALL:** `TaprootOpenHarness.CreateAsync(ITaprootHarnessDatabase?)` takes the nodes' databases (`SqliteTaprootHarnessDatabase` by default); the proof itself moved to `Channels/Taproot/TaprootCrashProof.RunAsync(crashing, createDatabase)`, which `TaprootSqliteCrashTests` runs on SQLite and `Integration.Tests/Docker/TaprootPostgresCrashTests` (collection `postgres`, trait `Database=Postgres`, each node on a copy of a migrated template database) on the `postgres` suite's server; Integration.Tests links the harness, the proof and the three small helpers they use (`RecordingPaymentHandler`, `HarnessLinkProbe`, `SqliteTestPools`, now files of their own). `SuiteCatalog` selects the class in `postgres` and leaves it out of `lnd`. Cluster run 2026-10-04 (`scripts/run-cluster.sh --suite postgres -n 1`, batch rc-20261004024442): 31/31 green, Alice 21 and Bob 21 crash points (54 s and 57 s), suite wall 173 s. SQL Server stays unported (owner decision).
 - **Blocks/Blocked-by:** Related NL-877, NL-956
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T3, D-T4
 
@@ -6313,7 +6386,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-969 Taproot dual-funded open: the peer's tx_complete next nonce is memory only, and a missing current_commit_nonce only logs
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane RBF)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`GetRemoteNextCommitNonce`, `CreateCommitmentSignedRetransmission`), `Channels/Handlers/ChannelReadyMessageHandler.cs` (`GetRemoteNextNonce`)
@@ -6321,27 +6394,53 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** keep the next nonce with the channel row's `RemoteNextNonces` from the commitment step (STATE's column; the snapshot is created at `channel_ready`), and answer a `next_funding` without type 24 with our `tx_abort` while our `tx_signatures` are not sent.
 - **t02 lane V2INT:** the integration with lane OPS made the peer's `channel_ready` `next_local_nonce` required for every simple taproot channel, dual-funded included (TAPROOT-CR-R01, the spec's MUST), so the `tx_complete` next nonce is no longer kept or used (`GetRemoteNextCommitNonce` removed) and the first half of this entry no longer applies; the missing type 24 half stays open.
 - **t02 lane REVC (review):** (a) a `current_commit_nonce` (type 24) that is not two points is not checked as the type-22 map is (`TaprootChannelNonces.ThrowIfUnparsable`); re-signing against it throws `SignerException` out of the reestablish handler, so the peer gets a warning and a disconnect and the pending open stalls until its timeout (no funds at risk); fix: treat it as missing or fail the open. (b) cosmetic: `InteractiveTxDriver.WithCommitNonces` builds the partial transaction for every `tx_complete`, taproot or not, before the host says it wants nonces.
+- **t03 lane RBF:** the missing type-24 half fixed: a retransmission due (the peer's `next_funding` bit 0) without a usable `current_commit_nonce` is answered with our `tx_abort` "MissingCommitNonce" while our `tx_signatures` are not sent (`DualFundedOpenService.AbortForMissingCommitNonceAsync`; a first attempt then ends Stale, an RBF attempt goes back to the last signed one; after our `tx_signatures` it is logged only), and a type-24 nonce that does not parse as two points is treated as missing (`ReceiveCurrentCommitNonce`, REVC (a)). Tests: `DualFundTaprootTests.Given_ANextFundingWithoutAUsableCurrentCommitNonce_*` (missing, unparsable). REVC (b), the cosmetic partial-transaction build in `InteractiveTxDriver.WithCommitNonces`, moved to NL-1062.
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
+- **t03 lane SPL:** for a simple taproot splice (NL-965) an unparsable `current_commit_nonce` is ignored (logged) and our splice `commitment_signed` is not retransmitted until a valid one comes; the dual-funded open's half of (a) stays with the open.
 
 ### NL-970 RBF of a simple taproot dual-funded open is refused in both directions
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane RBF)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`BumpAsync`, `DecideRbfAsync`, `CreateCommitmentSignedAsync`), `Infrastructure.Persistence/Entities/Channel/InteractiveTxSessionEntity.cs` (`TheirCommitmentSignature`)
 - **Evidence:** taproot wave t02 lane V2. Every signed RBF attempt of a dual-funded open must keep the peer's signature of our commitment 0 on its own funding, so whichever attempt confirms can be force-closed (NL-528). The interactive-tx row stores it in `TheirCommitmentSignature`, an ECDSA `CompactSignature` (`varbinary(73)` on SQL Server); a taproot attempt's is a 98-byte MuSig2 partial signature with nonce, so it needs a new column (a migration on all three providers), and `OnFundingConfirmedAsync`/`TryGetSignedAttempt`/`RestoreLastSignedFundingAsync`/`MoveSignerToFunding` need taproot paths (re-sign the peer's commitment with a fresh nonce on the followed funding). Until then our `bumpopen` of a taproot open throws "RBF of a simple taproot dual-funded open is not supported yet (NL-970)" and the peer's `tx_init_rbf` gets `tx_abort` (BOLT 2: any reason). The signer side is ready: a dual-funded channel's commitment-0 verification nonce is bound to each attempt's funding txid (`ChannelSigningInfo.IsDualFunded`), and each attempt's `tx_complete` carries its own `commit_nonces`.
 - **Fix sketch:** add `InteractiveTxSessions.TheirCommitmentPartialSignature` (nullable bytes) and the taproot branches of the RBF paths above; prove two attempts and the first one confirming on `DualFundHarness`.
+- **t03 lane RBF:** fixed. Migration `AddDualFundTaprootAttempts` (all three providers, compiled models regenerated): `InteractiveTxSessions.TheirCommitmentPartialSignature` (nullable, `varbinary(98)` on SQL Server), handed to `IInteractiveTxDriver.OnCommitmentSignedReceivedAsync` (`theirCommitmentPartialSignature`) for every taproot attempt, the first one included. `DualFundedOpenService`: the refusals in `BumpAsync`/`DecideRbfAsync`/`CreateCommitmentSignedAsync` lifted; an RBF attempt applies its funding, registers it with the signer as a pending funding and signs the peer's commitment 0 with MuSig2 against the peer's `commit_nonces` of that attempt; `TryGetSignedAttempt` takes the ECDSA signature or the partial one; `OnFundingConfirmedAsync`, `RestoreLastSignedFundingAsync` and the restart rebuild in `GetOrLoadAsync` put the attempt's partial signature back on the channel (`LastReceivedPartialSignature`, our `LastSentSignature` the zero signature) after `MoveSignerToFunding`, so the force close aggregates it with a fresh signing of ours on the followed funding (the commitment-0 verification nonce is bound to each attempt's txid, NL-972); an RBF is refused (our `InvalidOperationException`, the peer's `tx_abort`) when a signed attempt's row has no partial signature (signed by an older build). Found and fixed on the way: a pending open's `channel_reestablish` `next_local_nonces` named only the channel's funding output, and the peer's map had to hold that one, so a restart during an RBF attempt that one node had constructed failed the channel (`TAPROOT-RE-R01`), and Eclair 0.14.3 (which requires a nonce for every active commitment, `Helpers.Syncing.checkCommitNonces`) would refuse our reestablish after any RBF: ours now carry every signed attempt plus the funding output (`TaprootChannelNonces.CreatePendingOpenNonces`, `ReestablishService.GetSignedOpenAttemptsAsync`), and the peer's must hold every signed attempt and the pending one only when its `next_funding` names it. Proofs: `DualFundTaprootRbfTests` (two RBF attempts in each role across a restart of each node, the first and the latest confirming, every row with its partial signature and no ECDSA one, distinct signing nonces and per-attempt verification nonces, both nodes following the confirmed attempt, a force close of commitment 0 from the stored partial signature on each node valid by script execution, payments both ways then a force close of the latest commitment; a restart during an RBF attempt the peer forgot; the older-row refusal), `DualFundLiquidityAdsTests.Given_ATaprootOpenWithAPurchaseBumped_*`, `InteractiveTxSessionSchemaRoundTrip` (the column).
+- **t03 lane ECL2:** proven against Eclair 0.14.3 on the cluster (`EclairTaprootTests` (c) our `bumpopen` of our taproot open to Eclair, (d) Eclair's `rbfopen` of its taproot open to us: each followed by the other end, the replacement confirmed as a P2TR funding, payments both ways, cooperative close).
 - **Blocks/Blocked-by:** Related NL-877, NL-528
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-971 Liquidity ads are refused with a simple taproot dual-funded open
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane RBF)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`CheckTaprootOpen`, `AcceptCoreAsync`)
 - **Evidence:** taproot wave t02 lane V2. A taproot open with `--request-inbound` is refused before `open_channel2`, and an `open_channel2` of a taproot type with `request_funding` gets an `error` (as any refused sale). The buyer's checks (`CheckWillFund` over the P2WSH script of both keys, `FunderCost` with the anchors format) and the seller's `will_fund` over the funding script were never exercised with the MuSig2 P2TR script and the taproot commitment weight, and Eclair 0.14.3 sells only in splices, which t02 refuses for taproot channels.
 - **Fix sketch:** pass the channel's format and the P2TR funding script through the liquidity checks, then lift the refusals with a `LiquidityAdsKit` taproot case.
+- **t03 lane RBF:** fixed. The buyer's `CheckWillFund` checks the seller's signature over the MuSig2 P2TR script of both funding keys (`FundingScriptOf(simpleTaproot, ...)`) and the first commitment's fee in the taproot format (`FormatOf`, `ChannelParams.CommitmentFormat` in the RBF), the seller's balance check uses the taproot format and its `will_fund` signs the P2TR script it already used; the refusals in `OpenAsync` (`CheckTaprootOpen`), `AcceptCoreAsync`, the daemon's `CheckSimpleTaprootRequest` and the client's `--channel-type taproot --request-inbound` check are lifted. Proofs: `DualFundLiquidityAdsTests.Given_ATaprootOpenWithAPurchaseBumped_When_TheFirstAttemptConfirms_*` (Alice buys from Bob in a taproot open, `will_fund` over the P2TR funding output, the fee in both first commitments, the purchase repeated in an RBF, the first attempt confirming with its own fee, purchases Active/Replaced, booked, payments both ways), `OpenChannelTaprootClientHandlerTests` (the request reaches `DualFundedOpenRequest` with `Liquidity` and `SimpleTaproot`; the client parses it). Not proven against Eclair: Eclair 0.14.3 sells only in splices (NL-850), and taproot splices are lane SPL's (NL-965).
+- **t03 lane ECL2:** the splice half stays refused (`SpliceService` `TaprootLiquidityRefusal`: buying in `StartAsync`/`BumpAsync`/`CreateRbfPurchaseRequest`, selling in `TryStartSpliceSale`), as lane SPL left it; so Eclair 0.14.3, which sells only in splices and splice RBF, cannot sell on a taproot channel to us yet. Not implemented in this lane (out of its scope); the open half is proven in-process only.
 - **Blocks/Blocked-by:** Related NL-877, NL-850
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
+
+### NL-1062 `InteractiveTxDriver.WithCommitNonces` builds the partial transaction for every `tx_complete`, taproot or not
+- **Status:** open
+- **Severity:** low
+- **Kind:** cleanup
+- **Location:** `src/NLightning.Application/InteractiveTx/InteractiveTxDriver.cs` (`WithCommitNonces`), `IInteractiveTxHost.GetLocalCommitNonces`
+- **Evidence:** taproot wave t02 lane REVC finding (b), split from NL-969 by t03 lane RBF: the driver builds the transaction negotiated so far before asking the host for `commit_nonces`, also for sessions whose host returns null (every non-taproot open and splice). The wire bytes are unchanged (only `ArgumentException`/`InvalidOperationException` of the builder are caught); it is wasted work on every `tx_complete`.
+- **Fix sketch:** let the host say first whether it wants nonces (e.g. a `WantsCommitNonces` member defaulting to false) and skip the build otherwise. Left to the lane that next edits the driver (taproot splicing, NL-965, also needs `commit_nonces`).
+- **Blocks/Blocked-by:** Related NL-969, NL-877
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
+
+### NL-1079 A bumped taproot dual-funded open failed the channel on a reconnection after one side saw an attempt confirm
+- **Status:** fixed (wip/taproot-t03, lane RVR)
+- **Severity:** high
+- **Kind:** bug (interop, channel failure)
+- **Location:** `src/NLightning.Application/Channels/Taproot/TaprootReestablish.cs` (`ReceiveNoncesAsync`, the pending-open branch added by t03 lane RBF for NL-970)
+- **Evidence:** t03 lane RVR review. While our channel is still `V1FundingSigned`, the peer's `next_local_nonces` had to hold an entry for every signed RBF attempt. A peer whose chain monitor already saw one attempt reach its depth keeps only that attempt active: Eclair 0.14.3 deactivates the other RBF candidates on its local lock (`Commitments.deactivateCommitments`, "Special case for the initial funding tx, we only require a local lock") and sends nonces for `commitments.active` only, and an NLightning node in `ReadyForUs` sends only its current funding (`CreateLocalNonces`). So any reconnection between the two sides' confirmations (different `minimum_depth`, or one block-processing lag) failed the channel with TAPROOT-RE-R01 on the side that had not confirmed yet. Reproduced by `DualFundTaprootRbfTests.Given_ABumpedTaprootOpenConfirmedOnOneSideOnly_When_TheyReconnect_Then_TheChannelIsNotFailed` (both cases failed with "no next_local_nonces entry for funding ...").
+- **Fix:** the map must hold every signed attempt, or at least one of them (the peer locked it and dropped the others; logged); a map without any signed attempt still fails the channel, and the pending attempt the peer's `next_funding` names is still required. Nothing is signed against these nonces before `channel_ready`, which carries the peer's nonce of the confirmed attempt, so accepting the subset is safe.
+- **Blocks/Blocked-by:** Related NL-970, NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-976 A late `closing_sig` replaced a confirmed taproot simple close against LND (the NL-983 race)
@@ -6365,7 +6464,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T6
 
 ### NL-978 The LND taproot interop proof covers no force close, no on-chain HTLC and no LND restart with an HTLC in flight
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane FC)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `test/NLightning.Integration.Tests/Docker/Taproot/LndTaprootFlowTests.cs` (suite `taproot`)
@@ -6381,6 +6480,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
   - an LND restart with an HTLC in flight;
   - a crash between our `commitment_signed` and LND's `revoke_and_ack`, the taproot analogue of `ReestablishFlowTests` (c).
 - **Fix sketch:** add these cases to `LndTaprootFlowTests` as T4 lands: our force close and LND's, with sweeps and `ClosedChannels` checks, and the crash-after-`commitment_signed` case with `CrashableTcpService`.
+- **t03 lane FC:** done against LND 0.21.4 (`--protocol.simple-taproot-chans`) on the cluster suite `taproot` (runs `fc-r2` 3/3, `fc-r3` and `fc-r4` 6/6 with the whole suite; `fc-r1` found NL-1055; onchain suite `fc-oc1` 33/33 with the NL-1055 fix). New class `Docker/Taproot/LndTaprootForceCloseTests`, one node per test, all three with an HTLC each way on the commitment (the HTLC LND offers us is fulfilled and its fulfill cut off with `CrashableTcpService`, as anchors O4 (c)):
+  - (1) our `forceclosechannel`: our commitment by the MuSig2 key path (one 64-byte witness), all outputs P2TR; HTLC-success (preimage, LND's 65-byte `SIGHASH_SINGLE|ANYONECANPAY` signature, ours 64-byte `SIGHASH_DEFAULT`, a wallet fee input, nSequence 1, P2TR second-level output) before the expiry, LND's payment succeeds from it; HTLC-timeout at `cltv_expiry` (not a block before), our payment fails with `permanent_channel_failure` once 6 deep; both second-level outputs and `to_local` swept by the delay leaf at nSequence = CSV (144); `pendingsweeps` empty, the channel Closed with every row Irrevocable (anchors Ignored); LND lists `RemoteForceClose` (its resolutions: OutgoingHtlc Claimed by our HTLC-success, IncomingHtlc Abandoned, Commit Claimed).
+  - (2) LND's force close: our `to_remote` by its 1-CSV leaf (`<sig> <leaf> <control block>`, nSequence 1), the preimage claim of LND's HTLC (`<sig> <preimage> <leaf> <control block>`, nSequence 1, locktime 0) before its expiry with LND's payment succeeding, the timeout claim of ours at `cltv_expiry` (`<sig> <leaf> <control block>`); payment failed, Closed, LND lists `LocalForceClose`.
+  - (3) penalty: tara's `channel.db` copied (`LndChannelDbRollback`) while our HTLC is held (so tara restarts with an HTLC in flight and settles it after), more payments, our node down, tara restored and force-closing the revoked commitment that holds the HTLC: the HTLC output taken by the revocation key path (one signature), tara's `to_local` by the revocation leaf, our `to_remote` by its leaf; taken = capacity - commitment fee - 2 anchors, our wallet gains it less 3,070 sat of fees; Closed.
+  - (4) in `LndTaprootFlowTests`: a crash right after our `commitment_signed` is saved, restart, the dance completes and LND's payment succeeds; then an LND restart with our HTLC held, settled after LND's `channel_reestablish`, payments both ways after.
 - **Blocks/Blocked-by:** Blocked by NL-966; related NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T4, T6
 
@@ -8911,3 +9015,33 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Done (residue in NL-182, NL-183, NL-184).
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
+
+### NL-1055 Our unspent anchor on our own or a revoked commitment kept the channel OnchainResolving forever
+- **Status:** fixed (wip/taproot-t03, lane FC)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs` (round, after the irrevocable aging); `LocalCommitResolver.IsResolvedHere`, `RevokedCommitResolver` (neither touches `OurAnchor` rows)
+- **Evidence:** cluster run `fc-r1` (NL-978 proofs against LND, taproot): after our force close and after the penalty of LND's revoked commitment every output was Irrevocable but `…:0 OurAnchor Pending` stayed, so the channel never reached Closed (`pendingsweeps` listed it 50+ blocks after the irrevocable depth). The watcher records a row for our anchor (`CommitmentOutputDescriptor.IsOurs`), only a spend resolves it, and nothing spends it when the commitment needed no CPFP child and the anchor sweep is uneconomical (`AnchorCpfpPolicy.DecideAnchorSweep`: one or two 330-sat anchors at 10 sat/vB). `RemoteCommitResolver` already settles its `OurAnchor` row `Ignored` at the irrevocable depth (NL-601); the local and revoked paths had no such rule. Format-independent: the same for anchors (P2WSH) channels, whose proofs never asserted Closed after our force close. Funds were never at risk (330 sat).
+- **Fix sketch:** Done: the executor settles every `OurAnchor` row still Pending/Waiting as `Ignored` once the funding spend is irrevocably deep (whoever spent it earlier is recorded `Resolved` by the watch, as before). Test `OnchainResolutionExecutorTests.Given_OurUnspentAnchorOnOurCommitment_When_TheFundingSpendIsIrrevocable_Then_IgnoredAndChannelClosed` (fails without the fix); cluster `LndTaprootForceCloseTests` (1) and (3) reach Closed.
+- **Blocks/Blocked-by:** Related NL-978, NL-601, NL-1050
+- **Plan ref:** BOLT5_ONCHAIN_PLAN O6-T2, O7
+
+### NL-1050 The anchor sweep of a revoked or future simple taproot peer commitment leaves the peer's anchor
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Onchain/Anchors/AnchorCpfpService.Taproot.cs` (`FindPeerAnchor`)
+- **Evidence:** A simple taproot anchor's control block needs its internal key, and the peer's anchor on its own commitment is keyed to its `local_delayedpubkey` at that commitment's point. `FindPeerAnchor` derives it for the points the snapshot holds (the peer's current and next commitment); a revoked or future peer commitment (data loss) is swept with our anchor only. P2WSH anchors are keyed to the funding keys and do not have this limit. Sweeping a single anchor is almost never economical (`AnchorCpfpPolicy.DecideAnchorSweep`), so this costs at most the peer's 330 sat staying unspent.
+- **Fix sketch:** for a revoked close derive the point from the shachain secret (`RevokedCommitDataSource`), or find any 330-sat P2TR output of the commitment whose key-path tweak matches a known key.
+- **Blocks/Blocked-by:** Related NL-966, NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T4
+
+### NL-1051 A key-path penalty of a simple taproot HTLC output recorded by a t02 build cannot be fee-bumped
+- **Status:** fixed (wip/taproot-t03, lane RV4)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Onchain/Resolvers/RevokedCommitResolver.cs` (`PlanOutputAsync`), `Onchain/Fees/SweepScheduler.cs`
+- **Evidence:** The watcher writes a row for every output of a revoked commitment at classification. A t02 build mapped the taproot HTLC outputs without a leaf and control block, so their rows carry neither. After an upgrade to t03 the resolver builds the key-path penalty from the fresh map, but `GetOrCreateRow` keeps the old row, and `SweepScheduler` re-derives the merkle root from the row (`TapscriptMerkleRoot.Compute(leaf, control block)`): without them it takes the P2WSH path, the signer refuses the null witness script, and the whole penalty (its `to_local` and other HTLC inputs too) is never RBF-bumped. Review lane RV4, reproduced by `SweepSchedulerTests.Given_TaprootRevokedHtlcRowsRecordedWithoutALeaf_*`. Only a breach in progress across the t02 to t03 upgrade is affected; the original penalty still goes out.
+- **Fix sketch:** Done: a taproot row whose data has no control block takes the mapped descriptor's data (same scriptPubKey) in the round, staged as an upsert, as `RemoteCommitResolver` does for the peer's commitments.
+- **Blocks/Blocked-by:** Related NL-966, NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T4

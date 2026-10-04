@@ -118,6 +118,40 @@ public class ListChannelsPrinterFundingsTests
         // Assert
         Assert.DoesNotContain("Fundings:", output);
         Assert.DoesNotContain("Retired SCIDs:", output);
+        // NL-987: nor a channel type
+        Assert.Contains("  Channel Type:       -\n", output);
+    }
+
+    [Theory]
+    [InlineData("simple_taproot")]
+    [InlineData("anchors")]
+    [InlineData("static_remotekey")]
+    public void Given_ChannelType_When_Printed_Then_TypeLineShowsIt(string channelType)
+    {
+        // Arrange (NL-987)
+        var channel = CreateChannel(null, null);
+        var response = new ListChannelsIpcResponse
+        {
+            Channels =
+            [
+                new ChannelInfoIpcResponse
+                {
+                    ChannelId = channel.ChannelId,
+                    PeerId = channel.PeerId,
+                    State = channel.State,
+                    Capacity = channel.Capacity,
+                    LocalBalance = channel.LocalBalance,
+                    RemoteBalance = channel.RemoteBalance,
+                    ChannelType = channelType
+                }
+            ]
+        };
+
+        // Act
+        var output = Print(response);
+
+        // Assert
+        Assert.Contains($"  Channel Type:       {channelType}\n", output);
     }
 
     private static ChannelInfoIpcResponse CreateChannel(List<ChannelFundingInfoIpcResponse>? fundings,

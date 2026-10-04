@@ -755,8 +755,13 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
             channel, CommitmentTxSpec.FromCommitmentSpec(spec), CommitmentSide.Local, number);
         model = CommitmentSigningService.WithFunding(model, funding, CommitmentSide.Local);
         var built = _commitmentTransactionBuilder.BuildWithOutputMap(model);
-        var signed = _lightningSigner.SignLocalCommitmentForBroadcast(channel.ChannelId, funding.FundingTxId, number,
-                                                                      built.Transaction, signatures.Signature);
+        // A simple taproot channel's: our MuSig2 half aggregated with the peer's partial signature (NL-965)
+        var signed = signatures.PartialSignature is { } partial
+                         ? _lightningSigner.SignLocalCommitmentForBroadcast(channel.ChannelId, funding.FundingTxId,
+                                                                            number, built.Transaction, partial)
+                         : _lightningSigner.SignLocalCommitmentForBroadcast(channel.ChannelId, funding.FundingTxId,
+                                                                            number, built.Transaction,
+                                                                            signatures.Signature);
         return new SignedLocalCommitment(number, signed, built.HtlcOutputsInTxOrder.Count);
     }
 

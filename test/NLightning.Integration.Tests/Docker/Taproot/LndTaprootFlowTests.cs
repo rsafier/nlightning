@@ -192,6 +192,110 @@ public class LndTaprootFlowTests : IAsyncLifetime
         await AssertCooperativelyClosedAsync(tara, channelId, channelPoint, shares, walletBefore, ct);
     }
 
+    /// <summary>
+    /// NL-978: the taproot analogue of <c>ReestablishFlowTests</c> (c), then an LND restart with an HTLC in flight.
+    /// LND pays our invoice; we persist our <c>commitment_signed</c> (MuSig2 partial signature with a JIT nonce) and the
+    /// connection dies before LND's <c>revoke_and_ack</c>; after our restart the <c>channel_reestablish</c> exchange
+    /// (type-22 nonces) completes the dance with a re-signed retransmission and LND's payment succeeds. Then our HTLC is
+    /// held by LND across an LND restart and settled after LND's <c>channel_reestablish</c>.
+    /// </summary>
+    [Fact]
+    public async Task Given_CrashAfterOurCommitmentSignedAndAnLndRestartWithAnHtlc_When_Reestablished_Then_PaymentsComplete()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var tara = Tara;
+        await Node.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
+        await ChainSync.WaitAllAtTipAsync(_fixture, [tara], [Node], ct);
+        var taraAddress = await Node.ConnectToAsync(tara, ct);
+        var opened = await Node.OpenChannelAsync(new OpenChannelClientRequest(taraAddress,
+                                                                              LightningMoney.Satoshis(CapacitySat))
+        {
+            PushAmount = LightningMoney.Satoshis(OurPushSat),
+            FeeRatePerKw = LightningMoney.Satoshis(2_500),
+            IsSimpleTaproot = true
+        }, ct);
+        var channelId = opened.ChannelId;
+        var channelPoint = opened.ChannelPoint();
+        await MineUntilUsableAsync(tara, channelId, channelPoint, ct);
+        var lndChannel = await AssertTaprootChannelAsync(tara, channelId, channelPoint, lndIsInitiator: false, ct);
+
+        var tcpService = Assert.IsType<CrashableTcpService>(
+            Node.Services.GetRequiredService<Infrastructure.Transport.Interfaces.ITcpService>());
+        var crashed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Node.ChannelManager.OnResponseMessageReady += (_, args) =>
+        {
+            // Raised under the channel lock right after the save; cut every connection before anything else
+            if (args.ResponseMessage is not Domain.Protocol.Messages.CommitmentSignedMessage
+             || crashed.Task.IsCompleted)
+                return;
+
+            tcpService.CrashAsync().GetAwaiter().GetResult();
+            crashed.TrySetResult();
+        };
+        var invoice = await Node.CreateInvoiceAsync(LightningMoney.Satoshis(25_000), "taproot crash after cs", ct);
+
+        // Act 1: LND's payment stays in flight across our crash and restart
+        Task<Payment> payment;
+        using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct))
+        {
+            deadline.CancelAfter(s_timeout);
+            while (true)
+            {
+                await LndTestHelpers.ResetMissionControlAsync(tara, ct);
+                payment = LndTestHelpers.SendPaymentV2Async(
+                    tara, LndTestHelpers.PinnedPayment(invoice.Bolt11!, [lndChannel.ChanId], timeoutSeconds: 300), ct,
+                    TimeSpan.FromMinutes(6));
+                if (await Task.WhenAny(crashed.Task, payment).WaitAsync(deadline.Token) == crashed.Task)
+                    break;
+
+                var failed = await payment;
+                Assert.True(failed.FailureReason is PaymentFailureReason.FailureReasonInsufficientBalance
+                                                 or PaymentFailureReason.FailureReasonNoRoute,
+                            $"LND's payment ended before it reached us: {failed.Status} {failed.FailureReason}");
+                await Task.Delay(TimeSpan.FromMilliseconds(500), deadline.Token);
+            }
+        }
+
+        Console.WriteLine("Crashed after persisting our commitment_signed");
+        await Node.StopAsync();
+        await Node.StartAsync(ct);
+        await WaitUntilReestablishedAsync(tara, channelId, channelPoint, ct);
+        var result = await payment.WaitAsync(s_timeout, ct);
+
+        // Assert 1: the dance completed and the payment settled on both sides, nothing force-closed
+        Console.WriteLine($"LND's payment after our restart: {result.Status} {result.FailureReason}");
+        Assert.Equal(Payment.Types.PaymentStatus.Succeeded, result.Status);
+        Assert.Equal((byte[])invoice.PaymentHash, SHA256.HashData(Convert.FromHexString(result.PaymentPreimage)));
+        await AssertBalancesAgreeAsync(tara, channelId, channelPoint, weAreFunder: true, ct);
+        await AssertNoForceCloseAsync(tara, channelPoint, ct);
+
+        // Act 2: our HTLC held by LND across an LND restart; LND settles after its channel_reestablish
+        var preimage = RandomNumberGenerator.GetBytes(32);
+        var hash = SHA256.HashData(preimage);
+        var hold = await LndTestHelpers.AddHoldInvoiceAsync(tara, hash, 12_000_000, [], ct, "taproot held lnd restart");
+        var inFlight = await Node.PayInvoiceAsync(hold.PaymentRequest, ct, timeoutSeconds: 5);
+        Assert.Equal(PaymentStatus.InFlight, inFlight.Status);
+        await LndTestHelpers.WaitForInvoiceStateAsync(tara, hash, Invoice.Types.InvoiceState.Accepted, s_timeout, ct);
+        await _fixture.RestartLndAsync(LndTaprootNetworkFixture.Alias).WaitAsync(s_timeout, ct);
+        tara = Tara;
+        await WaitUntilReestablishedAsync(tara, channelId, channelPoint, ct);
+        Assert.Equal(1, (await Node.GetChannelAsync(channelId, ct)).OfferedHtlcCount);
+        await LndTestHelpers.SettleInvoiceAsync(tara, preimage, ct);
+
+        // Assert 2
+        var settled = await Poll.ForAsync(async () =>
+        {
+            var paid = await Node.GetPaymentAsync(new Hash(hash), ct);
+            return paid?.Status == PaymentStatus.Succeeded ? paid : null;
+        }, s_timeout, "our held payment succeeded after LND's restart", ct);
+        Assert.Equal(preimage, (byte[])settled.Preimage!.Value);
+        await AssertBalancesAgreeAsync(tara, channelId, channelPoint, weAreFunder: true, ct);
+        await WePayLndAsync(tara, LightningMoney.Satoshis(4_000), ct);
+        await LndPaysUsAsync(tara, channelId, lndChannel.ChanId, LightningMoney.Satoshis(2_000), ct);
+        await AssertNoForceCloseAsync(tara, channelPoint, ct);
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (TestDiagnostics.CurrentTestFailed)

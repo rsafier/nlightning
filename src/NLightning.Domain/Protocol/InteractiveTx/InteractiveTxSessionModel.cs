@@ -61,6 +61,18 @@ public sealed record InteractiveTxSessionModel
     public CompactSignature? TheirSharedInputSignature { get; init; }
 
     /// <summary>
+    /// Our MuSig2 <c>shared_input_partial_signature</c> of a simple taproot splice (BOLTs PR #1324): signed at the
+    /// commitment step with the signing nonce our <c>tx_complete</c> sent as <c>funding_nonce</c> (its secret half is
+    /// consumed then and never stored, D-T4), and stored with the row in the save that precedes our
+    /// <c>commitment_signed</c>, so a restart still has it for our <c>tx_signatures</c>; null otherwise. Sent only in
+    /// <c>tx_signatures</c>, after the peer's <c>commitment_signed</c> (IT-SIG-03, SP-I1).
+    /// </summary>
+    public MusigPartialSignatureWithNonce? OurSharedInputPartialSignature { get; init; }
+
+    /// <summary>The peer's <c>shared_input_partial_signature</c> (a simple taproot splice), once received.</summary>
+    public MusigPartialSignatureWithNonce? TheirSharedInputPartialSignature { get; init; }
+
+    /// <summary>
     /// Our share of the (new) funding output in satoshis, from the host's <see cref="SharedFundingSpec"/> when the
     /// negotiation was constructed; null when the host gave none (or for a row stored before migration
     /// <c>AddDualFundAttempts</c>). A dual-funded open rebuilds an attempt's balances from it (the peer's share is the
@@ -74,6 +86,13 @@ public sealed record InteractiveTxSessionModel
     /// Every signed attempt of an RBF keeps its own, so whichever attempt confirms can still be force-closed (BOLT 2).
     /// </summary>
     public CompactSignature? TheirCommitmentSignature { get; init; }
+
+    /// <summary>
+    /// The peer's MuSig2 partial signature (with its nonce) of our first commitment for the new funding, from the
+    /// <c>commitment_signed</c> of a simple taproot dual-funded open (whose ECDSA field is zero); null otherwise. As
+    /// <see cref="TheirCommitmentSignature"/>, every signed attempt keeps its own (NL-970).
+    /// </summary>
+    public MusigPartialSignatureWithNonce? TheirCommitmentPartialSignature { get; init; }
 
     /// <summary>Whether our <c>commitment_signed</c> for the new funding was sent.</summary>
     public bool CommitmentSignedSent { get; init; }

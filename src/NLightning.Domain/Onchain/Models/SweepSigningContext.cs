@@ -23,6 +23,9 @@ using Enums;
 /// <param name="TaprootSpentOutputs">Simple taproot channels (NL-877 T4): every output the transaction spends, in input
 /// order. When set, the input is a BIP 341 script-path spend of the tapscript leaf <paramref name="WitnessScript"/>,
 /// signed with BIP 340 and <c>SIGHASH_DEFAULT</c> (a 64-byte signature, no sighash byte).</param>
+/// <param name="TaprootMerkleRoot">With <paramref name="TaprootSpentOutputs"/>: a BIP 341 <b>key-path</b> spend instead,
+/// signed by the key tweaked with this tapscript merkle root (NL-966: revocation penalties of HTLC and second-level
+/// outputs, whose internal key is the revocation key); <paramref name="WitnessScript"/> is then ignored.</param>
 public sealed record SweepSigningContext(
     byte[] UnsignedTransaction,
     int InputIndex,
@@ -31,4 +34,5 @@ public sealed record SweepSigningContext(
     SweepKeyKind KeyKind,
     CompactPubKey? PerCommitmentPoint = null,
     Secret? PerCommitmentSecret = null,
-    IReadOnlyList<Bitcoin.Wallet.Models.SpentOutput>? TaprootSpentOutputs = null);
+    IReadOnlyList<Bitcoin.Wallet.Models.SpentOutput>? TaprootSpentOutputs = null,
+    byte[]? TaprootMerkleRoot = null);

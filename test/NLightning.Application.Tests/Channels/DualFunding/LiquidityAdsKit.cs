@@ -7,6 +7,7 @@ using Application.LiquidityAds;
 using Domain.Accounting.Models;
 using Domain.Channels.DualFunding.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Enums;
 using Domain.LiquidityAds;
 using Domain.LiquidityAds.Models;
 using Domain.Money;
@@ -51,17 +52,36 @@ internal static class LiquidityAdsKit
         return harness;
     }
 
+    /// <summary>
+    /// <see cref="CreateAsync"/> with <c>option_simple_taproot</c> negotiated and advertised by both nodes (NL-971):
+    /// <see cref="StartOpen"/> with <c>simpleTaproot</c> opens a simple taproot channel.
+    /// </summary>
+    public static async Task<DualFundHarness> CreateTaprootAsync()
+    {
+        var harness = await CreateAsync();
+        harness.NegotiatedFeatures = new FeatureOptions
+        {
+            DualFund = FeatureSupport.Optional,
+            OptionSimpleTaproot = FeatureSupport.Optional,
+            AllowExperimentalFeatures = true
+        };
+        foreach (var node in harness.Nodes)
+            node.Options.Features.OptionSimpleTaproot = FeatureSupport.Optional;
+        return harness;
+    }
+
     /// <summary>Alice opens with her 600,000 sat and buys <paramref name="liquidity"/> (400,000 sat by default).</summary>
     public static Task<DualFundedOpenResult> OpenAsync(DualFundHarness harness, LiquidityRequest? liquidity = null,
-                                                       uint feeratePerKw = 2_500) =>
-        harness.RunAsync(StartOpen(harness, liquidity, feeratePerKw));
+                                                       uint feeratePerKw = 2_500, bool simpleTaproot = false) =>
+        harness.RunAsync(StartOpen(harness, liquidity, feeratePerKw, simpleTaproot));
 
     /// <summary>Alice's open, started and not pumped.</summary>
     public static Task<DualFundedOpenResult> StartOpen(DualFundHarness harness, LiquidityRequest? liquidity = null,
-                                                       uint feeratePerKw = 2_500) =>
+                                                       uint feeratePerKw = 2_500, bool simpleTaproot = false) =>
         harness.Alice.DualFund.OpenAsync(new DualFundedOpenRequest(harness.Bob.NodeId, AliceShare, feeratePerKw)
         {
-            Liquidity = liquidity ?? new LiquidityRequest(RequestedSat)
+            Liquidity = liquidity ?? new LiquidityRequest(RequestedSat),
+            SimpleTaproot = simpleTaproot
         }, TestContext.Current.CancellationToken);
 
     /// <summary>

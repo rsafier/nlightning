@@ -47,8 +47,8 @@ public sealed class AnchorPeerCpfpTests : IDisposable
 {
     private const uint HtlcExpiry = 600;
 
-    private readonly RealSigningCommitmentPair _pair = new(hasAnchors: true);
-    private readonly ChannelModel _channel;
+    private RealSigningCommitmentPair _pair = new(hasAnchors: true);
+    private ChannelModel _channel;
     private readonly InMemoryBroadcasts _store = new();
     private readonly FakeAnchorWallet _wallet = new();
     private readonly FakeAnchorChain _chain = new();
@@ -60,8 +60,8 @@ public sealed class AnchorPeerCpfpTests : IDisposable
     private readonly List<ServiceProvider> _providers = [];
     private readonly byte[] _walletScript = new Key(Enumerable.Repeat((byte)0x34, 32).ToArray())
                                             .PubKey.WitHash.ScriptPubKey.ToBytes();
-    private readonly ILightningSigner _signer;
-    private readonly ServiceProvider _provider;
+    private ILightningSigner _signer;
+    private ServiceProvider _provider;
     private ChannelCloseModel? _close;
     private uint _estimate = 10_000;
 
@@ -103,6 +103,72 @@ public sealed class AnchorPeerCpfpTests : IDisposable
     }
 
     private AnchorCpfpService Service => _provider.GetRequiredService<AnchorCpfpService>();
+
+    /// <summary>The same node over a simple taproot channel (NL-966): a new pair, signer and service graph.</summary>
+    private void UseSimpleTaproot()
+    {
+        foreach (var provider in _providers)
+            provider.Dispose();
+        _providers.Clear();
+        _pair.Dispose();
+        _pair = new RealSigningCommitmentPair(hasAnchors: true, simpleTaproot: true);
+        _channel = _pair.Alice.Channel;
+        _signer = WalletSigningProxy.Create(_pair.Alice.Signer, _wallet.SignWalletInputs);
+        _provider = BuildProvider();
+    }
+
+    [Fact]
+    public async Task Given_PeersTaprootCommitmentInTheMempool_When_Round_Then_ChildSpendsOurAnchorOnItByKeyPath()
+    {
+        // Arrange (NL-966): Bob force-closed a simple taproot channel; our anchor on his commitment is P2TR, keyed to
+        // our payment basepoint (his remotepubkey)
+        UseSimpleTaproot();
+        var peer = PeerCommitmentInMempool();
+
+        // Act
+        Service.OnPeerCommitmentInMempool(_channel.ChannelId, ToSigned(peer), false);
+        await Service.WhenIdleAsync();
+
+        // Assert: one child spending our taproot anchor by key path, every input valid over all spent outputs
+        var row = Assert.Single(_store.Children);
+        Assert.Equal(row, Assert.Single(_published));
+        var child = Load(row);
+        var ourAnchor = new AnchorChildTransactionBuilder().FindTaprootAnchorOutput(
+                            peer.ToBytes(), _channel.LocalKeySet.PaymentCompactBasepoint)
+                     ?? throw new InvalidOperationException("No taproot anchor of ours");
+        Assert.Equal(new OutPoint(peer.GetHash(), ourAnchor), child.Inputs[0].PrevOut);
+        Assert.Equal(64, Assert.Single(child.Inputs[0].WitScript.Pushes).Length);
+        AnchorTx.AssertAllScriptsValid(child, peer, _wallet);
+        Assert.InRange(PackageFeerate(peer, child), _estimate, _estimate + 50);
+    }
+
+    [Fact]
+    public async Task Given_PeersTaprootCommitmentConfirmed16BlocksAgo_When_FeesAreLow_Then_BothAnchorsSweptByTheLeaf()
+    {
+        // Arrange (NL-966): Bob's taproot commitment confirmed at 510; its anchors are ours (payment basepoint) and his
+        // (his local_delayedpubkey of that commitment)
+        UseSimpleTaproot();
+        var peer = PeerCommitmentInMempool();
+        Confirm(peer, 510);
+        var block = Network.Main.Consensus.ConsensusFactory.CreateBlock();
+        block.Transactions.Add(peer);
+        _chain.Blocks[510] = block;
+        _estimate = 253;
+
+        // Act
+        await Service.RunOnceAsync(525, TestContext.Current.CancellationToken);
+
+        // Assert: both P2TR anchors swept by <OP_16 OP_CSV> <control block>, nSequence 16, valid
+        var sweep = Transaction.Load(Assert.Single(_sweeps).RawTxBytes, Network.Main);
+        Assert.Equal(2, sweep.Inputs.Count);
+        Assert.All(sweep.Inputs, i =>
+        {
+            Assert.Equal(peer.GetHash(), i.PrevOut.Hash);
+            Assert.Equal(16u, i.Sequence.Value);
+            Assert.Equal(2, i.WitScript.PushCount);
+        });
+        AnchorTx.AssertAllScriptsValid(sweep, peer, _wallet);
+    }
 
     [Fact]
     public async Task Given_PeerCommitmentHandedOverFromTheMempool_When_Round_Then_ChildSpendsOurAnchorOnItScriptValid()

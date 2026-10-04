@@ -92,6 +92,49 @@ public sealed class SweepSchedulerTests
     }
 
     [Fact]
+    public async Task Given_OurTaprootSecondLevelSweepUnconfirmed_When_Bumped_Then_ReSignedByItsDelayLeafAndValid()
+    {
+        // Arrange (NL-966): a simple taproot HTLC-success confirms, its P2TR output is swept by the delay leaf after the
+        // CSV, then the sweep stays out of every block
+        var wallet = new AnchorTestWallet(true, 60_000);
+        var preimage = RealSigningCommitmentPair.Preimage(2);
+        using var harness = new LocalCommitResolutionHarness(pair =>
+        {
+            var id = pair.Add(pair.Bob, 30_000_000, preimage, 1_020);
+            pair.Settle(pair.Bob);
+            pair.Alice.Apply("fulfill", pair.Alice.State.SendFulfill(id, preimage,
+                                                                     new Infrastructure.Crypto.Hashes.Sha256()));
+        }, feeInputProvider: wallet, simpleTaproot: true);
+        foreach (var funding in wallet.FundingTransactions)
+            harness.AddKnownTransaction(funding);
+        var scheduler = CreateScheduler(harness);
+        await harness.ResolveAsync();
+        var success = Assert.Single(harness.Broadcast(BroadcastPurpose.HtlcTransaction));
+        await harness.MineAsync();
+        await harness.MineToAsync(harness.Height + Csv - 1);
+        var original = Assert.Single(harness.Broadcast(BroadcastPurpose.Sweep),
+                                     t => t.Inputs[0].PrevOut == new OutPoint(success, 0));
+        harness.HoldMempool = true;
+
+        // Act: the round at the sweep target
+        await harness.MineToAsync(harness.Height + SweepTarget);
+        var actions = await PlanAsync(harness, scheduler);
+        await harness.ApplyActionsAsync(actions);
+
+        // Assert: the second-level sweep replaced over the same input, the BIP 340 signature made again, valid
+        var replacementRow = Assert.Single(actions.OfType<BroadcastAction>(),
+                                           a => a.Transaction.ReplacesTransactionId
+                                             == new TxId(original.GetHash().ToBytes())).Transaction;
+        var replacement = Transaction.Load(replacementRow.RawTransaction, Network.Main);
+        Assert.Equal(original.Inputs[0].PrevOut, Assert.Single(replacement.Inputs).PrevOut);
+        Assert.Equal((uint)Csv, replacement.Inputs[0].Sequence.Value);
+        Assert.Equal(3, replacement.Inputs[0].WitScript.PushCount);
+        Assert.NotEqual(original.Inputs[0].WitScript[0], replacement.Inputs[0].WitScript[0]);
+        Assert.True(replacement.Outputs[0].Value < original.Outputs[0].Value);
+        harness.AssertAllInputsVerify(replacement);
+    }
+
+    [Fact]
     public async Task Given_HigherEstimateForTheTarget_When_Bumping_Then_TheEstimateIsPaid()
     {
         // Arrange: the fee market moved up while the sweep waited
@@ -166,11 +209,15 @@ public sealed class SweepSchedulerTests
         Assert.All(harness.Broadcasts.Values, b => Assert.Equal(BroadcastState.Pending, b.State));
     }
 
-    [Fact]
-    public async Task Given_UnconfirmedPenaltyBeforeItsDeadline_When_IntervalPassed_Then_ReplacedWithTheRevocationKey()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_UnconfirmedPenaltyBeforeItsDeadline_When_IntervalPassed_Then_ReplacedWithTheRevocationKey(
+        bool simpleTaproot)
     {
-        // Arrange (O6-T1 for penalties): a breach with an HTLC each way; the penalties go out and stay unconfirmed
-        using var kit = new RevokedBreachKit();
+        // Arrange (O6-T1 for penalties): a breach with an HTLC each way; the penalties go out and stay unconfirmed (a
+        // simple taproot channel re-signs its HTLC inputs by the revocation key path and to_local by its leaf, NL-966)
+        using var kit = new RevokedBreachKit(simpleTaproot: simpleTaproot);
         var pair = kit.Pair;
         pair.Add(pair.Bob, 50_000_000, RealSigningCommitmentPair.Preimage(0xB1), 600);
         pair.Add(pair.Alice, 40_000_000, RealSigningCommitmentPair.Preimage(0xA1), 650);
@@ -201,12 +248,20 @@ public sealed class SweepSchedulerTests
         await kit.ApplyAsync(actions);
 
         // Assert: the same revoked outputs, re-signed with the revocation key (script-valid), at a BIP 125 higher fee
-        var replacement = Assert.Single(actions.OfType<BroadcastAction>()).Transaction;
+        // (on the taproot channel the isolated penalty of our offered HTLC, O7-T3, is due for its bump too)
+        var replacements = actions.OfType<BroadcastAction>().Select(a => a.Transaction).ToList();
+        Assert.Equal(simpleTaproot ? 2 : 1, replacements.Count);
+        foreach (var other in replacements)
+            kit.AssertVerifies(other.TransactionId);
+        var replacement = Assert.Single(replacements, r => r.ReplacesTransactionId == penalty.TransactionId);
         Assert.Equal(BroadcastPurpose.Penalty, replacement.Purpose);
         Assert.Equal(penalty.TransactionId, replacement.ReplacesTransactionId);
         var oldTx = kit.LoadBroadcast(penalty.TransactionId);
         var newTx = kit.LoadBroadcast(replacement.TransactionId);
         Assert.Equal(oldTx.Inputs.Select(i => i.PrevOut), newTx.Inputs.Select(i => i.PrevOut));
+        Assert.Equal(oldTx.Inputs.Select(i => i.WitScript.PushCount), newTx.Inputs.Select(i => i.WitScript.PushCount));
+        if (simpleTaproot)
+            Assert.Contains(newTx.Inputs, i => i.WitScript.PushCount == 1);
         kit.AssertVerifies(replacement.TransactionId);
         var inputValue = kit.Rows.Where(r => newTx.Inputs.Any(i => i.PrevOut.Hash == new uint256((byte[])r.TransactionId)
                                                                && i.PrevOut.N == r.OutputIndex))
@@ -217,6 +272,61 @@ public sealed class SweepSchedulerTests
                     $"penalty fee {oldFee} -> {newFee}");
         Assert.All(kit.Rows.Where(r => r.ResolvingTransactionId == penalty.TransactionId), _ => Assert.Fail("moved"));
         Assert.Contains(actions, a => a is StageWriteAction { Description: var d } && d.StartsWith("replaced"));
+    }
+
+    [Fact]
+    public async Task Given_TaprootRevokedHtlcRowsRecordedWithoutALeaf_When_AResolverRoundRuns_Then_ThePenaltyIsBumped()
+    {
+        // Arrange (NL-1051): the watcher of a t02 build wrote the revoked commitment's HTLC rows without a leaf and
+        // control block; a t03 build penalizes those outputs by key path from the fresh map, so its fee bump needs them
+        using var kit = new RevokedBreachKit(simpleTaproot: true);
+        var pair = kit.Pair;
+        pair.Add(pair.Bob, 50_000_000, RealSigningCommitmentPair.Preimage(0xB1), 600);
+        pair.Add(pair.Alice, 40_000_000, RealSigningCommitmentPair.Preimage(0xA1), 650);
+        pair.Settle(pair.Bob);
+        kit.CaptureRevokedState();
+        pair.UpdateFee(3_000);
+        pair.Settle(pair.Alice);
+        kit.Breach();
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
+        for (var i = 0; i < kit.Rows.Count; i++)
+        {
+            if (kit.Rows[i].Descriptor != OutputDescriptorKind.RevokedHtlc)
+                continue;
+
+            var data = OutputDescriptorData.TryDecode(kit.Rows[i])!;
+            kit.Rows[i] = kit.Rows[i] with
+            {
+                DescriptorData = (data with { WitnessScript = null, TaprootControlBlock = null }).Encode()
+            };
+        }
+
+        var height = RevokedBreachKit.SpentAtHeight + 1 + s_policy.RbfIntervalBlocks;
+        var htlcPenalties = kit.Broadcasts.Values
+                               .Where(b => b.Purpose == BroadcastPurpose.Penalty
+                                        && kit.Rows.Any(r => r.ResolvingTransactionId == b.TransactionId
+                                                          && r.Descriptor == OutputDescriptorKind.RevokedHtlc))
+                               .Select(b => b.TransactionId)
+                               .ToList();
+        Assert.NotEmpty(htlcPenalties);
+        var secret = kit.DataSource.Context!.PerCommitmentSecret;
+        var scheduler = new SweepScheduler(CreateFeeService(RevokedBreachKit.FeeratePerKw).Object, kit.Victim.Signer,
+                                           NullLogger<SweepScheduler>.Instance, new SweepFeePolicy(s_policy),
+                                           CreateShachain(secret).Object);
+
+        // Act: a resolver round of the upgraded build, then the scheduler
+        await kit.RunAsync(height);
+        var actions = await scheduler.PlanAsync(kit.Close, kit.Rows.ToList(), height, CreateUnitOfWork(kit),
+                                                TestContext.Current.CancellationToken);
+
+        // Assert: every penalty of an HTLC output is replaced, re-signed by the revocation key path (script-valid)
+        var replacements = actions.OfType<BroadcastAction>().Select(a => a.Transaction).ToList();
+        await kit.ApplyAsync(actions);
+        foreach (var penalty in htlcPenalties)
+        {
+            var replacement = Assert.Single(replacements, r => r.ReplacesTransactionId == penalty);
+            kit.AssertVerifies(replacement.TransactionId);
+        }
     }
 
     private static readonly SweepFeePolicyOptions s_policy = new();

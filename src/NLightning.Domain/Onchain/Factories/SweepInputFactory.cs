@@ -5,6 +5,7 @@ using Crypto.Constants;
 using Crypto.ValueObjects;
 using Enums;
 using Models;
+using Taproot;
 
 /// <summary>
 /// Turns output descriptors into <see cref="SweepInput"/>s (BOLT 5 plan §3.3 "Resolution" column). Each method checks
@@ -30,12 +31,27 @@ public static class SweepInputFactory
     /// The output of our confirmed HTLC-timeout/success transaction (always vout 0), after <c>to_self_delay</c>
     /// (B5-LCL-LO-03, B5-LCL-RO-01).
     /// </summary>
+    /// <param name="htlcTxId">Our HTLC transaction on chain.</param>
+    /// <param name="amountSat">Its output 0's value.</param>
+    /// <param name="witnessScript">The P2WSH witness script, or for a simple taproot channel the delay leaf.</param>
+    /// <param name="toSelfDelay">The CSV of the output (the peer's <c>to_self_delay</c>).</param>
+    /// <param name="ourPerCommitmentPoint">Our point of the commitment the HTLC was on.</param>
+    /// <param name="taprootControlBlock">Simple taproot (NL-966): the delay leaf's control block (internal key
+    /// <c>revocation_pubkey</c>); null for a P2WSH output.</param>
+    /// <param name="spentScriptPubKey">Simple taproot: the P2TR scriptPubKey of the output (the BIP 341 sighash
+    /// commits to it).</param>
     public static SweepInput SecondLevelOutput(TxId htlcTxId, ulong amountSat, byte[] witnessScript, ushort toSelfDelay,
-                                               CompactPubKey ourPerCommitmentPoint)
+                                               CompactPubKey ourPerCommitmentPoint, byte[]? taprootControlBlock = null,
+                                               byte[]? spentScriptPubKey = null)
     {
         ArgumentNullException.ThrowIfNull(witnessScript);
+        if (taprootControlBlock is not null && spentScriptPubKey is null)
+            throw new ArgumentException("A taproot script-path spend needs the spent P2TR scriptPubKey",
+                                        nameof(spentScriptPubKey));
+
         return new SweepInput(htlcTxId, 0, amountSat, SweepSpendKind.DelayedOutput, witnessScript, toSelfDelay,
-                              PerCommitmentPoint: ourPerCommitmentPoint);
+                              PerCommitmentPoint: ourPerCommitmentPoint, TaprootControlBlock: taprootControlBlock,
+                              SpentScriptPubKey: spentScriptPubKey);
     }
 
     /// <summary>Our <c>to_remote</c> on a peer commitment, current, next or revoked (D5, B5-RMT-02, B5-REV-02).</summary>
@@ -60,10 +76,15 @@ public static class SweepInputFactory
                                               CompactPubKey remotePerCommitmentPoint)
     {
         RequireKind(output, OutputDescriptorKind.RemoteReceivedHtlc);
-        RequireNotTaproot(output);
+        RequireTaprootScriptPath(output);
         var htlc = output.Htlc ?? throw new ArgumentException("An HTLC descriptor has its HTLC", nameof(output));
+
+        // Simple taproot: the accepted HTLC's timeout leaf <remote_htlcpubkey> OP_CHECKSIGVERIFY 1 OP_CSV OP_VERIFY
+        // <cltv_expiry> OP_CLTV, spent with <sig> <leaf> <control_block>, nSequence 1 (NL-966)
         return new SweepInput(commitmentTxId, output.Vout, output.AmountSat, SweepSpendKind.HtlcTimeoutClaim,
-                              RequireScript(output), output.CsvDelay, htlc.CltvExpiry, remotePerCommitmentPoint);
+                              RequireScript(output), output.CsvDelay, htlc.CltvExpiry, remotePerCommitmentPoint,
+                              TaprootControlBlock: output.TaprootControlBlock,
+                              SpentScriptPubKey: output.IsSimpleTaproot ? output.ScriptPubKey : null);
     }
 
     /// <summary>An HTLC the peer offered, on its commitment, with the preimage (B5-RMT-RO-01).</summary>
@@ -75,13 +96,17 @@ public static class SweepInputFactory
                                                CompactPubKey remotePerCommitmentPoint, byte[] preimage)
     {
         RequireKind(output, OutputDescriptorKind.RemoteOfferedHtlc);
-        RequireNotTaproot(output);
+        RequireTaprootScriptPath(output);
         if (preimage is not { Length: CryptoConstants.Sha256HashLen })
             throw new ArgumentException("A preimage claim needs the 32-byte preimage", nameof(preimage));
 
+        // Simple taproot: the offered HTLC's success leaf (preimage check, <remote_htlcpubkey> OP_CHECKSIGVERIFY 1
+        // OP_CSV), spent with <sig> <preimage> <leaf> <control_block>, nSequence 1 (NL-966)
         return new SweepInput(commitmentTxId, output.Vout, output.AmountSat, SweepSpendKind.HtlcPreimageClaim,
                               RequireScript(output), output.CsvDelay, output.Htlc?.CltvExpiry ?? 0,
-                              remotePerCommitmentPoint, Preimage: preimage);
+                              remotePerCommitmentPoint, Preimage: preimage,
+                              TaprootControlBlock: output.TaprootControlBlock,
+                              SpentScriptPubKey: output.IsSimpleTaproot ? output.ScriptPubKey : null);
     }
 
     /// <summary>
@@ -99,8 +124,10 @@ public static class SweepInputFactory
         ArgumentNullException.ThrowIfNull(output);
         if (output.Kind == OutputDescriptorKind.RevokedToLocal)
             RequireTaprootScriptPath(output);
-        else
-            RequireNotTaproot(output);
+        else if (output is { Kind: OutputDescriptorKind.RevokedHtlc, IsSimpleTaproot: true })
+            return TaprootKeyPathPenalty(output.Vout, output.AmountSat, commitmentTxId, SweepSpendKind.RevokedHtlc,
+                                         output.ScriptPubKey, output.WitnessScript, output.TaprootControlBlock,
+                                         perCommitmentSecret);
 
         return output.Kind switch
         {
@@ -133,22 +160,50 @@ public static class SweepInputFactory
     }
 
     /// <summary>
-    /// A simple taproot output is spent here only by script path, with its leaf and control block (NL-877 T4): anything
-    /// else (an HTLC output, a key-path penalty) is not built by this factory yet.
+    /// Simple taproot (NL-966): the output of the peer's HTLC-timeout/success transaction that spent a revoked
+    /// commitment's HTLC output, taken by <b>key path</b>: its internal key is the revocation key, tweaked with the merkle
+    /// root of its single delay leaf (B5-REV-06).
+    /// </summary>
+    /// <param name="theirHtlcTxId">The peer's second-level transaction.</param>
+    /// <param name="vout">Its output.</param>
+    /// <param name="amountSat">The output amount.</param>
+    /// <param name="scriptPubKey">The P2TR output script.</param>
+    /// <param name="delayLeaf">The output's delay leaf <c>&lt;local_delayedpubkey&gt; OP_CHECKSIGVERIFY
+    /// &lt;to_self_delay&gt; OP_CSV</c>.</param>
+    /// <param name="controlBlock">The leaf's control block (33 bytes: no other leaf).</param>
+    /// <param name="perCommitmentSecret">The peer's secret of the revoked commitment.</param>
+    public static SweepInput TaprootSecondLevelPenalty(TxId theirHtlcTxId, uint vout, ulong amountSat,
+                                                       byte[] scriptPubKey, byte[] delayLeaf, byte[] controlBlock,
+                                                       Secret perCommitmentSecret) =>
+        TaprootKeyPathPenalty(vout, amountSat, theirHtlcTxId, SweepSpendKind.RevokedDelayedOutput, scriptPubKey,
+                              delayLeaf, controlBlock, perCommitmentSecret);
+
+    /// <summary>
+    /// A revocation key-path spend of a simple taproot output (internal key = revocation key): the leaf and control
+    /// block recorded for the output only give the merkle root the key is tweaked with; the witness is the signature.
+    /// </summary>
+    private static SweepInput TaprootKeyPathPenalty(uint vout, ulong amountSat, TxId txId, SweepSpendKind kind,
+                                                    byte[] scriptPubKey, byte[]? leaf, byte[]? controlBlock,
+                                                    Secret perCommitmentSecret)
+    {
+        ArgumentNullException.ThrowIfNull(scriptPubKey);
+        if (leaf is null || controlBlock is null)
+            throw new ArgumentException($"The simple taproot output {vout} has no leaf and control block to derive its "
+                                      + "merkle root from", nameof(leaf));
+
+        return new SweepInput(txId, vout, amountSat, kind, null, PerCommitmentSecret: perCommitmentSecret,
+                              SpentScriptPubKey: scriptPubKey,
+                              TaprootMerkleRoot: TapscriptMerkleRoot.Compute(leaf, controlBlock));
+    }
+
+    /// <summary>
+    /// A simple taproot output spent by script path needs its leaf and control block (NL-877 T4).
     /// </summary>
     private static void RequireTaprootScriptPath(CommitmentOutputDescriptor output)
     {
         if (output.IsSimpleTaproot && (output.TaprootControlBlock is null || output.WitnessScript is null))
             throw new ArgumentException($"The simple taproot {output.Kind} output {output.Vout} has no leaf and control "
                                       + "block to spend it with", nameof(output));
-    }
-
-    /// <summary>The spends of simple taproot HTLC outputs are not built yet (NL-966).</summary>
-    private static void RequireNotTaproot(CommitmentOutputDescriptor output)
-    {
-        if (output.IsSimpleTaproot)
-            throw new ArgumentException($"Spending the simple taproot {output.Kind} output {output.Vout} is not "
-                                      + "supported yet (NL-966)", nameof(output));
     }
 
     private static void RequireKind(CommitmentOutputDescriptor output, OutputDescriptorKind kind)

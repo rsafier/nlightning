@@ -9,6 +9,7 @@ using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.InteractiveTx.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Tlv;
 using InteractiveTx.Interfaces;
 using InteractiveTx.Models;
 
@@ -74,6 +75,32 @@ public sealed class SpliceNegotiationHost : IInteractiveTxHost
     public Task<CompactSignature?> SignSharedInputAsync(ConstructedInteractiveTx transaction,
                                                         CancellationToken cancellationToken) =>
         Task.FromResult<CompactSignature?>(_service.SignSharedInput(_negotiation, transaction));
+
+    /// <inheritdoc />
+    public CommitNoncesTlv? GetLocalCommitNonces(TxId fundingTxId) =>
+        _service.GetLocalCommitNonces(_negotiation, fundingTxId);
+
+    /// <inheritdoc />
+    public string? AcceptRemoteCommitNonces(ConstructedInteractiveTx transaction, CommitNoncesTlv? remoteNonces) =>
+        _service.AcceptRemoteCommitNonces(_negotiation, transaction, remoteNonces);
+
+    /// <inheritdoc />
+    public FundingNonceTlv? GetLocalFundingNonce() => _service.GetLocalFundingNonce(_negotiation);
+
+    /// <inheritdoc />
+    public string? AcceptRemoteFundingNonce(ConstructedInteractiveTx transaction, FundingNonceTlv? remoteNonce) =>
+        _service.AcceptRemoteFundingNonce(_negotiation, transaction, remoteNonce);
+
+    /// <inheritdoc />
+    public Task<MusigPartialSignatureWithNonce?> SignSharedInputPartialAsync(ConstructedInteractiveTx transaction,
+                                                                             CancellationToken cancellationToken) =>
+        Task.FromResult(_service.SignSharedInputPartial(_negotiation, transaction));
+
+    /// <inheritdoc />
+    public Witness BuildSharedInputWitness(ConstructedInteractiveTx transaction,
+                                           MusigPartialSignatureWithNonce localSignature,
+                                           MusigPartialSignatureWithNonce remoteSignature) =>
+        _service.BuildSharedInputWitness(_negotiation, transaction, localSignature, remoteSignature);
 
     /// <inheritdoc />
     public Task<string?> GetTxSignaturesRefusalAsync(ConstructedInteractiveTx transaction,

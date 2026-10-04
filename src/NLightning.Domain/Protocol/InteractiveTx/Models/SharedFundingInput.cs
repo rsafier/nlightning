@@ -10,12 +10,17 @@ using Money;
 /// <param name="TxId">The current funding txid.</param>
 /// <param name="Vout">The current funding output index.</param>
 /// <param name="Amount">The current channel capacity.</param>
-/// <param name="ScriptPubKey">The P2WSH 2-of-2 funding script.</param>
-/// <param name="InputWeight">The weight of the input once signed (both signatures and the witness script), charged to
-/// the initiator (IT-S-03).</param>
+/// <param name="ScriptPubKey">The funding script: the P2WSH 2-of-2, or the MuSig2 P2TR output of a simple taproot
+/// channel.</param>
+/// <param name="InputWeight">The weight of the input once signed (both signatures and the witness script, or the
+/// key-path signature of a taproot funding), charged to the initiator (IT-S-03).</param>
+/// <param name="IsTaproot">A simple taproot channel's funding (NL-965, BOLTs PR #1324): the input is spent by MuSig2
+/// key path, so <c>tx_signatures</c> carries <c>shared_input_partial_signature</c> (type 2) instead of the ECDSA
+/// <c>shared_input_signature</c> (type 0).</param>
 public sealed record SharedFundingInput(
     TxId TxId,
     uint Vout,
     LightningMoney Amount,
     BitcoinScript ScriptPubKey,
-    int InputWeight);
+    int InputWeight,
+    bool IsTaproot = false);

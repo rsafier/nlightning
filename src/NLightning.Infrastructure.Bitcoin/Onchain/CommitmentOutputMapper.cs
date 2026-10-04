@@ -319,8 +319,9 @@ public sealed class CommitmentOutputMapper : ICommitmentOutputMapper
     /// The P2TR outputs of a simple taproot commitment (NL-877 T4), converted exactly as the builder converts them
     /// (<see cref="Builders.CommitmentTransactionBuilder.CreateSimpleTaprootOutputs"/>). The outputs we spend by script
     /// path carry their leaf (as the witness script) and control block: our <c>to_local</c> on our commitment (delay
-    /// leaf), the revoked <c>to_local</c> (revocation leaf) and our <c>to_remote</c> on the peer's (its single leaf).
-    /// HTLC outputs and anchors are mapped without one: their spends are not built yet (NL-966).
+    /// leaf), the revoked <c>to_local</c> (revocation leaf), our <c>to_remote</c> on the peer's (its single leaf) and the
+    /// HTLC outputs of the peer's commitments (<see cref="PeerCommitmentHtlcLeaf"/>, NL-966). Our own HTLC outputs and
+    /// anchors are mapped without one.
     /// </summary>
     private static List<Candidate> CreateSimpleTaprootCandidates(CommitmentTransactionModel model,
                                                                  CommitmentCase commitmentCase)
@@ -374,7 +375,8 @@ public sealed class CommitmentOutputMapper : ICommitmentOutputMapper
                         (CommitmentCase.Remote, false) => OutputDescriptorKind.RemoteReceivedHtlc,
                         _ => OutputDescriptorKind.RevokedHtlc
                     };
-                    candidates.Add(new Candidate(htlcOutput, htlcKind, htlc, 1, null));
+                    candidates.Add(new Candidate(htlcOutput, htlcKind, htlc, 1, PeerCommitmentHtlcLeaf(htlcKind,
+                                                     htlcOutput)));
                     break;
 
                 default:
@@ -385,6 +387,19 @@ public sealed class CommitmentOutputMapper : ICommitmentOutputMapper
 
         return candidates;
     }
+
+    /// <summary>
+    /// The leaf recorded with an HTLC output of a peer commitment (NL-966): on its current or next commitment the leaf
+    /// we claim by (our offered HTLC: the accepted output's timeout leaf; the peer's: the offered output's success leaf
+    /// with the preimage); on a revoked one the timeout leaf, whose control block gives the merkle root of the
+    /// revocation key-path penalty. Our own commitment's HTLC outputs are spent by our HTLC transactions instead.
+    /// </summary>
+    private static TapScript? PeerCommitmentHtlcLeaf(OutputDescriptorKind kind, TaprootHtlcOutput output) => kind switch
+    {
+        OutputDescriptorKind.RemoteReceivedHtlc or OutputDescriptorKind.RevokedHtlc => output.TimeoutLeaf,
+        OutputDescriptorKind.RemoteOfferedHtlc => output.SuccessLeaf,
+        _ => null
+    };
 
     private static SpecHtlc ToSpecHtlc(Htlc htlc) =>
         new(htlc.Direction, htlc.Id, htlc.Amount.MilliSatoshi, htlc.PaymentHash, htlc.CltvExpiry);

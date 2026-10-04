@@ -10,6 +10,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Fees;
 using Interfaces;
 using Outputs;
+using Taproot;
 
 /// <summary>
 /// Builds the transactions that spend anchor outputs (BOLT 3 §to_local_anchor and to_remote_anchor Output, BOLT 5 plan
@@ -23,6 +24,9 @@ using Outputs;
 /// <para>Anchor sweep: after the commitment has 16 confirmations anyone may spend an anchor with an empty signature
 /// (<c>OP_CHECKSIG</c> fails, <c>OP_16 OP_CHECKSEQUENCEVERIFY</c> passes with <c>nSequence</c> 16), so a sweep needs no
 /// key.</para>
+/// <para>Simple taproot anchors (NL-966) are P2TR outputs of their owner's key with one leaf <c>OP_16 OP_CSV</c>: the
+/// child spends ours by key path (a 64-byte witness, which the P2WSH weights bound from above) and the sweep spends any
+/// by that leaf and its control block.</para>
 /// </remarks>
 public sealed class AnchorChildTransactionBuilder : IAnchorChildTransactionBuilder
 {
@@ -36,6 +40,9 @@ public sealed class AnchorChildTransactionBuilder : IAnchorChildTransactionBuild
 
     // 1 (item count) + 1 + 73 (signature) + 1 + 40 (anchor script)
     private const int AnchorSignedWitnessWeight = 1 + 1 + SweepWeights.MaxSignatureLength + 1 + AnchorScriptLength;
+
+    // 1 (item count) + 1 + 64 (BIP 340 key-path signature, SIGHASH_DEFAULT)
+    private const int TaprootAnchorSignedWitnessWeight = 1 + 1 + 64;
 
     // 1 (item count) + 1 (empty signature) + 1 + 40 (anchor script)
     private const int AnchorSweepWitnessWeight = 1 + 1 + 1 + AnchorScriptLength;
@@ -70,12 +77,40 @@ public sealed class AnchorChildTransactionBuilder : IAnchorChildTransactionBuild
     }
 
     /// <inheritdoc />
-    public long EstimateChildWeight(IReadOnlyList<AnchorWalletInput> walletInputs, int changeScriptLength)
+    public byte[] GetAnchorScriptPubKey(AnchorOutpoint anchor)
+    {
+        ArgumentNullException.ThrowIfNull(anchor);
+        return anchor.IsTaproot
+                   ? CreateTaprootAnchorOutput(anchor.FundingPubKey).ScriptPubKey.ToBytes()
+                   : GetAnchorScriptPubKey(anchor.FundingPubKey);
+    }
+
+    /// <inheritdoc />
+    public uint? FindTaprootAnchorOutput(byte[] commitmentTransaction, CompactPubKey internalKey)
+    {
+        ArgumentNullException.ThrowIfNull(commitmentTransaction);
+
+        var tx = Transaction.Load(commitmentTransaction, Network.Main);
+        var scriptPubKey = CreateTaprootAnchorOutput(internalKey).ScriptPubKey;
+        for (var i = 0; i < tx.Outputs.Count; i++)
+        {
+            var output = tx.Outputs[i];
+            if (output.ScriptPubKey == scriptPubKey && (ulong)output.Value.Satoshi == s_anchorSat)
+                return (uint)i;
+        }
+
+        return null;
+    }
+
+    /// <inheritdoc />
+    public long EstimateChildWeight(IReadOnlyList<AnchorWalletInput> walletInputs, int changeScriptLength,
+                                    bool taprootAnchor = false)
     {
         ArgumentNullException.ThrowIfNull(walletInputs);
 
         return OverheadWeight
-             + SweepWeights.InputNonWitnessWeight + AnchorSignedWitnessWeight
+             + SweepWeights.InputNonWitnessWeight
+             + (taprootAnchor ? TaprootAnchorSignedWitnessWeight : AnchorSignedWitnessWeight)
              + walletInputs.Sum(i => (long)i.InputWeight)
              + OutputWeight(changeScriptLength);
     }
@@ -122,7 +157,7 @@ public sealed class AnchorChildTransactionBuilder : IAnchorChildTransactionBuild
             });
         tx.Outputs.Add(new TxOut(Money.Satoshis(change), new Script(changeScript)));
 
-        var weight = EstimateChildWeight(walletInputs, changeScript.Length);
+        var weight = EstimateChildWeight(walletInputs, changeScript.Length, anchor.IsTaproot);
         return new UnsignedAnchorChild(new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes()), 0, anchor,
                                        walletInputs.ToList(), feeSat, weight, change);
     }
@@ -143,6 +178,23 @@ public sealed class AnchorChildTransactionBuilder : IAnchorChildTransactionBuild
         tx.Inputs[anchorInputIndex].WitScript =
             new WitScript(Op.GetPushOp(new TransactionSignature(ecdsa, SigHash.All).ToBytes()),
                           Op.GetPushOp(witnessScript.ToBytes()));
+        return new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes(), [signature]);
+    }
+
+    /// <inheritdoc />
+    public SignedTransaction AddTaprootAnchorWitness(byte[] transaction, int anchorInputIndex,
+                                                     CompactSignature signature)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+
+        var tx = Transaction.Load(transaction, Network.Main);
+        if (anchorInputIndex < 0 || anchorInputIndex >= tx.Inputs.Count)
+            throw new ArgumentOutOfRangeException(nameof(anchorInputIndex), "The transaction has no such input");
+
+        // Key path, SIGHASH_DEFAULT: the 64-byte BIP 340 signature alone
+        tx.Inputs[anchorInputIndex].WitScript =
+            new WitScript(Op.GetPushOp(TaprootSignatures.ToWitnessSignature((byte[])signature,
+                                                                            TaprootSigHash.Default)));
         return new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes(), [signature]);
     }
 
@@ -175,11 +227,24 @@ public sealed class AnchorChildTransactionBuilder : IAnchorChildTransactionBuild
         tx.LockTime = LockTime.Zero;
         foreach (var anchor in anchors)
         {
-            var witnessScript = CreateAnchorOutput(anchor.FundingPubKey).RedeemScript;
+            WitScript witness;
+            if (anchor.IsTaproot)
+            {
+                // Simple taproot (NL-966): the OP_16 OP_CSV leaf with its control block, no signature
+                var taprootAnchor = CreateTaprootAnchorOutput(anchor.FundingPubKey);
+                witness = new WitScript(Op.GetPushOp(taprootAnchor.SweepLeaf.Script.ToBytes()),
+                                        Op.GetPushOp(taprootAnchor.GetControlBlock(taprootAnchor.SweepLeaf)));
+            }
+            else
+            {
+                var witnessScript = CreateAnchorOutput(anchor.FundingPubKey).RedeemScript;
+                witness = new WitScript(Op.GetPushOp([]), Op.GetPushOp(witnessScript.ToBytes()));
+            }
+
             tx.Inputs.Add(new TxIn(new OutPoint(new uint256(anchor.TxId), anchor.OutputIndex))
             {
                 Sequence = new Sequence(AnchorCsvSequence),
-                WitScript = new WitScript(Op.GetPushOp([]), Op.GetPushOp(witnessScript.ToBytes()))
+                WitScript = witness
             });
         }
 
@@ -189,6 +254,9 @@ public sealed class AnchorChildTransactionBuilder : IAnchorChildTransactionBuild
 
     private static ToAnchorOutput CreateAnchorOutput(CompactPubKey fundingPubKey) =>
         new(TransactionConstants.AnchorOutputAmount, new PubKey(fundingPubKey));
+
+    private static TaprootAnchorOutput CreateTaprootAnchorOutput(CompactPubKey internalKey) =>
+        new(TransactionConstants.AnchorOutputAmount, new PubKey(internalKey));
 
     private static long OutputWeight(int scriptLength) =>
         4L * (8 + VarIntSize(scriptLength) + scriptLength);

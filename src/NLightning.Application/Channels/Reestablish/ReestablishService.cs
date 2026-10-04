@@ -22,7 +22,6 @@ using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
-using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Gossip.Announcements.Interfaces;
 using Services;
@@ -137,10 +136,29 @@ public sealed class ReestablishService
         // Simple taproot channels (NL-877 T3): next_local_nonces, per active funding our verification nonce for the
         // commitment the peer signs next (our next_commitment_number), counter-derived (LND reads only this map), and,
         // while the peer's commitment_signed of a dual-funded open is missing, current_commit_nonce (type 24, lane V2)
-        var nonces = channel.ChannelParams.OptionSimpleTaproot
-                         ? TaprootChannelNonces.CreateLocalNonces(_lightningSigner, channel, own.NextCommitmentNumber)
-                         : null;
-        var currentCommitNonce = GetCurrentCommitNonce(channel, localState);
+        // (a dual-funded open waiting for its funding: every signed RBF attempt's too, NL-970)
+        var nonces = !channel.ChannelParams.OptionSimpleTaproot
+                         ? null
+                         : await GetSignedOpenAttemptsAsync(channel) is { } signedAttempts
+                             ? TaprootChannelNonces.CreatePendingOpenNonces(_lightningSigner, channel, signedAttempts,
+                                                                            own.NextCommitmentNumber)
+                             : TaprootChannelNonces.CreateLocalNonces(_lightningSigner, channel,
+                                                                      own.NextCommitmentNumber);
+
+        // A taproot splice not active yet (the peer's commitment_signed for it is missing): its entry too, our nonce for
+        // the next commitment on it (Eclair 0.14.3 sends "the pending RBF or splice txid with that session's next
+        // nonce" and fails the channel without it), and its current_commit_nonce (BOLTs PR #1324 type 24)
+        var pendingSplice = channel.ChannelParams.OptionSimpleTaproot
+                                ? await GetUnsignedTaprootSpliceAsync(channel, localState)
+                                : null;
+        if (nonces is not null && pendingSplice is { } splice
+                               && nonces.Entries.All(e => e.FundingTxId != splice.FundingTxId))
+            nonces = new FundingNonces(nonces.Entries.Append(
+                                           (splice.FundingTxId,
+                                            _lightningSigner.GetLocalVerificationNonce(
+                                                channel.ChannelId, splice.LocalFundingKeyIndex, splice.FundingTxId,
+                                                own.NextCommitmentNumber))));
+        var currentCommitNonce = GetCurrentCommitNonce(channel, localState, pendingSplice);
         if (own.NextFunding is null && own.MyCurrentFundingLocked is null && nonces is null
          && currentCommitNonce is null)
             return reestablish;
@@ -159,18 +177,27 @@ public sealed class ReestablishService
 
     /// <summary>
     /// BOLTs PR #1324 <c>current_commit_nonce</c> (Eclair <c>InteractiveTxBuilder</c> 1243-1247): sent only while the
-    /// peer's <c>commitment_signed</c> of an unsigned interactive transaction is missing, here a simple taproot
-    /// dual-funded open (splices of taproot channels are refused in wave t02): our verification nonce of the commitment
-    /// the peer must sign again, on that funding. Null otherwise, or when the signer cannot derive it (logged).
+    /// peer's <c>commitment_signed</c> of an unsigned interactive transaction is missing, a simple taproot dual-funded
+    /// open or splice (NL-965): our verification nonce of the commitment the peer must sign again, on that funding
+    /// (commitment 0 of an open, our current local commitment for a splice, with the splice's rotated funding key).
+    /// Null otherwise, or when the signer cannot derive it (logged).
     /// </summary>
-    private MusigPublicNonce? GetCurrentCommitNonce(ChannelModel channel, ReestablishLocalState localState)
+    private MusigPublicNonce? GetCurrentCommitNonce(ChannelModel channel, ReestablishLocalState localState,
+                                                    ChannelFunding? pendingSplice)
     {
         if (!channel.ChannelParams.OptionSimpleTaproot
-         || localState.LatestInteractiveTx is not { IsSplice: false, CommitmentSignedReceived: false } pending)
+         || localState.LatestInteractiveTx is not { CommitmentSignedReceived: false } pending)
             return null;
 
         try
         {
+            if (pending.IsSplice)
+                return pendingSplice is { } splice && splice.FundingTxId == pending.TxId
+                           ? _lightningSigner.GetLocalVerificationNonce(channel.ChannelId, splice.LocalFundingKeyIndex,
+                                                                        splice.FundingTxId,
+                                                                        localState.LocalCommitmentNumber)
+                           : null;
+
             return _lightningSigner.GetLocalVerificationNonce(channel.ChannelId, pending.TxId,
                                                               channel.LocalCommitmentNumber);
         }
@@ -178,6 +205,31 @@ public sealed class ReestablishService
         {
             _logger.LogWarning(e, "No current_commit_nonce for funding {TxId} of channel {ChannelId}", pending.TxId,
                                channel.ChannelId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The pending funding of the channel's latest splice negotiation that is not fully signed (its stored
+    /// <c>ChannelFundings</c> row, written in the save before our splice <c>commitment_signed</c>), or null.
+    /// </summary>
+    private async Task<ChannelFunding?> GetUnsignedTaprootSpliceAsync(ChannelModel channel,
+                                                                      ReestablishLocalState localState)
+    {
+        if (localState.LatestInteractiveTx is not { IsSplice: true } latest
+         || (latest.TxSignaturesSent && latest.TxSignaturesReceived))
+            return null;
+
+        try
+        {
+            if (_serviceProvider?.GetService<IUnitOfWork>()?.ChannelFundingDbRepository is not { } fundings)
+                return null;
+
+            return (await fundings.GetByChannelIdAsync(channel.ChannelId))
+               .FirstOrDefault(f => f.FundingTxId == latest.TxId && f.Status == ChannelFundingStatus.Pending);
+        }
+        catch (Exception e) when (e is NotSupportedException or NotImplementedException or InvalidOperationException)
+        {
             return null;
         }
     }
@@ -222,6 +274,35 @@ public sealed class ReestablishService
         }
 
         return features is { OptionSplice: not FeatureSupport.No };
+    }
+
+    /// <summary>
+    /// The fully signed funding attempts of a dual-funded open still waiting for its funding (a
+    /// <see cref="ChannelVersion.V2"/> channel in <see cref="ChannelState.V1FundingSigned"/> without a commitment state),
+    /// oldest first; null for any other channel, or when the interactive-tx rows cannot be read. Any of them may confirm
+    /// (NL-528), so a simple taproot channel's <c>next_local_nonces</c> covers each one (NL-970).
+    /// </summary>
+    public async Task<IReadOnlyList<TxId>?> GetSignedOpenAttemptsAsync(ChannelModel channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        if (channel is not { Version: ChannelVersion.V2, State: ChannelState.V1FundingSigned, Commitments: null })
+            return null;
+
+        try
+        {
+            if (_serviceProvider?.GetService<IUnitOfWork>()?.InteractiveTxSessionDbRepository is not { } sessions)
+                return null;
+
+            var rows = await sessions.GetByChannelIdAsync(channel.ChannelId) ?? [];
+            return rows.Where(s => s is { State: InteractiveTxSessionState.Signed, ConstructedTx: not null })
+                       .OrderBy(s => s.CreatedAt)
+                       .Select(s => s.ConstructedTx!.TxId)
+                       .ToList();
+        }
+        catch (Exception e) when (e is NotSupportedException or NotImplementedException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -371,9 +452,7 @@ public sealed class ReestablishService
         if (row is not { TxSignaturesSent: true, ConstructedTx: { } transaction })
             return null;
 
-        return new TxSignaturesMessage(
-            new TxSignaturesPayload(channel.ChannelId, transaction.TxId, (row.OurWitnesses ?? []).ToList()),
-            row.OurSharedInputSignature is { } signature ? new SharedInputSignatureTlv(signature) : null);
+        return InteractiveTx.InteractiveTxDriver.CreateTxSignatures(channel.ChannelId, transaction, row);
     }
 
     /// <summary>The stored <c>ChannelFundings</c> row's <c>AnnouncementSignaturesReceived</c> of a funding.</summary>
