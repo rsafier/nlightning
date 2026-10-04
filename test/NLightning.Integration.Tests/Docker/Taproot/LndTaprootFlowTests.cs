@@ -453,8 +453,9 @@ public class LndTaprootFlowTests : IAsyncLifetime
         {
             foreach (var txid in await _fixture.Bitcoin.GetRawMempoolAsync(ct))
             {
-                var mempoolTx = await _fixture.Bitcoin.GetRawTransactionAsync(txid, true, ct);
-                if (mempoolTx.Inputs.Any(i => i.PrevOut == fundingOutPoint))
+                // The two closing transactions conflict: the one listed may be replaced before it is read
+                var mempoolTx = await _fixture.Bitcoin.GetRawTransactionAsync(txid, null, false, ct);
+                if (mempoolTx is not null && mempoolTx.Inputs.Any(i => i.PrevOut == fundingOutPoint))
                     return mempoolTx;
             }
 
