@@ -63,12 +63,12 @@ public sealed class TaprootReestablish
         if (channel.Commitments is not { } commitments)
         {
             var active = TaprootChannelNonces.GetActiveFundingTxIds(channel);
-            IReadOnlyList<TxId> required = active;
+            var required = active;
             if (signedOpenAttempts is not null)
             {
-                TxId? namedByPeer = message.NextFundingTlv is { } nextFunding
-                                        ? new TxId(nextFunding.NextFundingTxId)
-                                        : (TxId?)null;
+                var namedByPeer = message.NextFundingTlv is { } nextFunding
+                                      ? new TxId(nextFunding.NextFundingTxId)
+                                      : (TxId?)null;
                 required = signedOpenAttempts.Concat(active.Where(txId => txId == namedByPeer)).Distinct().ToList();
             }
 

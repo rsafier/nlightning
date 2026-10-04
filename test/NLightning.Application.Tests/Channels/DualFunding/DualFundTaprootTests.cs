@@ -17,7 +17,6 @@ using Domain.Node;
 using Domain.Node.Options;
 using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.Messages;
-using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using InteractiveTx.TestDoubles;

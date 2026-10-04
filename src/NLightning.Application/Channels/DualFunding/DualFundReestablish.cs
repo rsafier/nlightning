@@ -8,7 +8,6 @@ using Domain.Channels.Models;
 using Domain.Crypto.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
-using Domain.Protocol.Messages;
 
 /// <summary>
 /// The dual-funded open's part of <c>channel_reestablish</c> (BOLT 2 "Message Retransmission"; splicing plan wave DF,
