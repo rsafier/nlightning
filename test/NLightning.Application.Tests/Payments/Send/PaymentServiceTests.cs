@@ -372,6 +372,32 @@ public class PaymentServiceTests : IDisposable
     }
 
     [Theory]
+    [InlineData(PaymentPartState.InFlight, 0UL)]
+    [InlineData(PaymentPartState.Failed, 3_001UL)]
+    public async Task Given_ASplitTrampolineOuterLeg_When_APartAboveTheAmountIsFulfilledLate_Then_NoFeeUnlessItWasAlone(
+        PaymentPartState otherPartState, ulong expectedFeeMsat)
+    {
+        // Arrange (NL-924): a trampoline payment's outer parts add up to the amount plus the trampoline fee, so one part
+        // may deliver more than the amount (here amount + 2,001 msat, its first hop 1,000 msat more) while another part
+        // of 5,000 msat is in flight, or failed (then the fulfilled part paid alone)
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(FailedRowThroughCarol(hash, htlcId: null));
+        await _parts.AddAsync(new PaymentPartModel(hash, 0, s_channelId, 7, PaymentPartState.InFlight,
+                                                   RouteThroughCarol(s_amount.MilliSatoshi + 2_001)));
+        await _parts.AddAsync(new PaymentPartModel(hash, 1, s_channelId, 8, otherPartState, RouteThroughCarol(5_000)));
+
+        // Act
+        await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 7, hash, preimage),
+                                                       TestContext.Current.CancellationToken);
+
+        // Assert: a part of a live split says nothing of the payment's fee
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.Equal(expectedFeeMsat, stored.Fee.MilliSatoshi);
+    }
+
+    [Theory]
     [InlineData(true, true)]
     [InlineData(false, false)]
     public void Given_ATrampolinePeerAndItsInitFeatures_When_AskedWhetherItTakesASplitOuterLeg_Then_BasicMppDecides(

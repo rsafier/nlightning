@@ -674,7 +674,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                                  payment.PaymentHash, payment.Status, payment.OutgoingHtlcId,
                                  payment.OutgoingChannelId);
                 payment = WithPreimage(payment, fulfilled, now,
-                                       await GetFulfilledPartAsync(scope, payment, fulfilled));
+                                       await GetStoredPartsOfFailedAsync(scope, payment));
             }
 
             await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().UpdateAsync(payment);
@@ -1643,25 +1643,24 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     }
 
     /// <summary>
-    /// The stored part of a fulfilled HTLC of a failed row (for its fee, NL-924); null for any other row, when none is
-    /// stored or it cannot be read (logged).
+    /// The stored parts (<c>PaymentParts</c>) of a failed row, for the fee of a late fulfill (NL-924); empty for any
+    /// other row, when none is stored or they cannot be read (logged).
     /// </summary>
-    private async Task<PaymentPartModel?> GetFulfilledPartAsync(IServiceScope scope, PaymentModel payment,
-                                                                OutgoingHtlcFulfilled fulfilled)
+    private async Task<IReadOnlyList<PaymentPartModel>> GetStoredPartsOfFailedAsync(IServiceScope scope,
+                                                                                     PaymentModel payment)
     {
         if (payment.Status != PaymentStatus.Failed)
-            return null;
+            return [];
 
         try
         {
             return await scope.ServiceProvider.GetRequiredService<IPaymentPartDbRepository>()
-                              .GetByHtlcAsync(payment.PaymentHash, fulfilled.ChannelId, fulfilled.HtlcId);
+                              .GetForPaymentAsync(payment.PaymentHash);
         }
         catch (Exception e)
         {
-            _logger.LogError(e, "Could not read the stored part of payment {PaymentHash} for HTLC {HtlcId} on channel "
-                              + "{ChannelId}", payment.PaymentHash, fulfilled.HtlcId, fulfilled.ChannelId);
-            return null;
+            _logger.LogError(e, "Could not read the stored parts of payment {PaymentHash}", payment.PaymentHash);
+            return [];
         }
     }
 
@@ -1981,7 +1980,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             }
             else
             {
-                payment = WithPreimage(payment, fulfilled, now, await GetFulfilledPartAsync(scope, payment, fulfilled));
+                payment = WithPreimage(payment, fulfilled, now, await GetStoredPartsOfFailedAsync(scope, payment));
             }
 
             await repository.UpdateAsync(payment);
@@ -2584,15 +2583,17 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     /// <param name="payment">The stored row.</param>
     /// <param name="fulfilled">The fulfill.</param>
     /// <param name="completedAt">When.</param>
-    /// <param name="fulfilledPart">The stored part of the fulfilled HTLC (<c>PaymentParts</c>), when there is one.
-    /// </param>
+    /// <param name="storedParts">The row's stored parts (<c>PaymentParts</c>), when it is a failed row.</param>
     private static PaymentModel WithPreimage(PaymentModel payment, OutgoingHtlcFulfilled fulfilled,
-                                             DateTimeOffset completedAt, PaymentPartModel? fulfilledPart = null)
+                                             DateTimeOffset completedAt,
+                                             IReadOnlyList<PaymentPartModel>? storedParts = null)
     {
         var (channelId, htlcId) = payment.OutgoingHtlcId is { } recordedId
                                       ? (payment.OutgoingChannelId!.Value, recordedId)
                                       : (fulfilled.ChannelId, fulfilled.HtlcId);
-        var fee = payment.Status == PaymentStatus.Failed ? LateFulfillFee(payment, fulfilled, fulfilledPart) : payment.Fee;
+        var fee = payment.Status == PaymentStatus.Failed
+                      ? LateFulfillFee(payment, fulfilled, storedParts ?? [])
+                      : payment.Fee;
         return PaymentModel.Restore(payment.PaymentHash, payment.Bolt11, payment.PayeeNodeId, payment.Amount,
                                     fee, payment.CreatedAt, PaymentStatus.Succeeded, channelId, htlcId,
                                     fulfilled.PaymentPreimage, null, null, null, completedAt, payment.Route,
@@ -2601,24 +2602,34 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
 
     /// <summary>
     /// The fee of a failed row fulfilled late (a failed row records none, NL-982): what the fulfilled HTLC carried above
-    /// the amount when it carried the whole amount alone and is known to be that HTLC: the row's own recorded HTLC
-    /// (<see cref="PaymentModel.OutgoingHtlcId"/>, its stored route) or a stored part of the payment (its hops);
-    /// otherwise unknown, zero (NL-924: a row without a recorded HTLC took any fulfilled HTLC as its own).
+    /// the amount, only when it is known to be the attempt's only paying part (NL-924): a stored part whose siblings
+    /// all failed (its first hop above the amount: routing fees, and the trampoline fee for a trampoline payment), or,
+    /// when no part is stored, the row's recorded HTLC (<see cref="PaymentModel.OutgoingHtlcId"/>) whose route
+    /// delivered exactly the amount (one part; a trampoline route delivers the trampoline fee too, so it stays unknown).
+    /// Otherwise unknown: zero. A row without a recorded HTLC once took any fulfilled HTLC as its own, and a part of a
+    /// split as the whole.
     /// </summary>
     private static LightningMoney LateFulfillFee(PaymentModel payment, OutgoingHtlcFulfilled fulfilled,
-                                                 PaymentPartModel? fulfilledPart)
+                                                 IReadOnlyList<PaymentPartModel> storedParts)
     {
-        if (payment.OutgoingHtlcId is { } recordedId && payment.OutgoingChannelId == fulfilled.ChannelId
-                                                     && recordedId == fulfilled.HtlcId
-                                                     && payment.Route.Count > 0
-                                                     && payment.Route[0].Amount > payment.Amount)
-            return payment.Route[0].Amount - payment.Amount;
+        var fulfilledPart = storedParts.FirstOrDefault(p => p.ChannelId == fulfilled.ChannelId
+                                                         && p.HtlcId == fulfilled.HtlcId);
+        if (fulfilledPart is not null)
+        {
+            if (storedParts.Any(p => !ReferenceEquals(p, fulfilledPart) && p.State != PaymentPartState.Failed)
+             || fulfilledPart.Hops.Count == 0 || fulfilledPart.Hops[0].Amount <= payment.Amount)
+                return LightningMoney.Zero;
 
-        if (fulfilledPart is { Hops.Count: > 0 } part && part.ChannelId == fulfilled.ChannelId
-                                                      && part.HtlcId == fulfilled.HtlcId
-                                                      && part.Hops[^1].Amount >= payment.Amount
-                                                      && part.Hops[0].Amount > payment.Amount)
-            return part.Hops[0].Amount - payment.Amount;
+            return fulfilledPart.Hops[0].Amount - payment.Amount;
+        }
+
+        if (storedParts.Count == 0 && payment.OutgoingHtlcId is { } recordedId
+                                   && payment.OutgoingChannelId == fulfilled.ChannelId
+                                   && recordedId == fulfilled.HtlcId
+                                   && payment.Route.Count > 0
+                                   && payment.Route[^1].Amount == payment.Amount
+                                   && payment.Route[0].Amount > payment.Amount)
+            return payment.Route[0].Amount - payment.Amount;
 
         return LightningMoney.Zero;
     }
