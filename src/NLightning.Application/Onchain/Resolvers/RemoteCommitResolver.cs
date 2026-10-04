@@ -567,9 +567,10 @@ public sealed class RemoteCommitResolver : IOutputResolver
                                                         data.CsvDelay, data.HasAnchors, null,
                                                         data.TaprootControlBlock, taproot);
 
-        // NL-966: the HTLC outputs of a simple taproot commitment are not claimed yet; recorded and alerted, never
-        // built (a throw would repeat every block)
-        if (taproot && row.Descriptor != OutputDescriptorKind.PaymentToRemote)
+        // NL-966: the HTLC outputs of a simple taproot commitment are claimed by their leaf (timeout leaf of our offered
+        // HTLC, success leaf with the preimage of the peer's); a row recorded before the leaves were mapped has none, so
+        // it is only alerted, never built (a throw would repeat every block)
+        if (taproot && row.Descriptor != OutputDescriptorKind.PaymentToRemote && data.TaprootControlBlock is null)
         {
             _unsupportedTaproot.Report(context.Channel.ChannelId, row.TransactionId, row.OutputIndex, row.Descriptor,
                                        data.AmountSat, actions);

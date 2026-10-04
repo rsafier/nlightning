@@ -31,7 +31,7 @@ public sealed record UnsignedSweepTransaction(
         var input = Inputs[inputIndex];
         return new SweepSigningContext(Transaction.RawTxBytes, inputIndex, input.WitnessScript, input.AmountSat,
                                        input.KeyKind, input.PerCommitmentPoint, input.PerCommitmentSecret,
-                                       input.IsTaprootScriptPath ? GetSpentOutputs() : null);
+                                       input.IsTaproot ? GetSpentOutputs() : null, input.TaprootMerkleRoot);
     }
 
     /// <summary>
