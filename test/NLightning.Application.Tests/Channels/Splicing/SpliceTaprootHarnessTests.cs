@@ -380,12 +380,10 @@ public class SpliceTaprootHarnessTests
             Assert.Empty(node.Node.State.PendingFundings);
         }
 
-        // Bob's splice commitment_signed crossed Alice's tx_abort and was taken as a normal one (a warning that closes
-        // the connection, NL-1058, any channel type); after the reconnection the channel is used
-        Assert.All(harness.Failures, f => Assert.Equal("Alice", f.Node));
-        await harness.Harness.DisconnectAsync();
-        await harness.Harness.ReconnectAsync();
-        await harness.PumpAsync();
+        // Bob's splice commitment_signed crossed Alice's tx_abort: it names the aborted splice, so Alice ignores it
+        // (NL-1058: it was taken as a normal one, a warning that closed the connection) and the channel is used at once
+        Assert.Empty(harness.Failures);
+        Assert.Contains(harness.Transcript, t => t.From == "Bob" && t.Message is CommitmentSignedMessage);
         var failures = harness.Failures.Count;
         var bobBefore = harness.Bob.Node.State.LocalBalanceMsat;
         var (id, preimage) = await OfferAsync(harness, harness.Alice, 10_000_000, 1);

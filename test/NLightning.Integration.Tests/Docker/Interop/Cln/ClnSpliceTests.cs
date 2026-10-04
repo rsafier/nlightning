@@ -874,6 +874,24 @@ public sealed class ClnSpliceTests : IAsyncLifetime
             }
         }
 
+        /// <summary>
+        /// <c>tx_signatures</c> of a simple taproot channel's splice carries TLV 2
+        /// <c>shared_input_partial_signature</c> (a 32-byte MuSig2 partial signature and a 66-byte nonce) and no TLV 0.
+        /// </summary>
+        public bool HasSharedInputPartialSignature
+        {
+            get
+            {
+                var offset = BodyOffset + 32;
+                var count = BinaryPrimitives.ReadUInt16BigEndian(Wire.AsSpan(offset, 2));
+                offset += 2;
+                for (var i = 0; i < count; i++)
+                    offset += 2 + BinaryPrimitives.ReadUInt16BigEndian(Wire.AsSpan(offset, 2));
+
+                return FindTlv(offset, 2) is { Length: 98 } && FindTlv(offset, 0) is null;
+            }
+        }
+
         /// <summary><c>start_batch</c>: <c>batch_size</c>.</summary>
         public ushort StartBatchSize => BinaryPrimitives.ReadUInt16BigEndian(Wire.AsSpan(BodyOffset, 2));
 

@@ -1674,6 +1674,19 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 // The first commitment_signed of a dual-funded open (wave DF) belongs to its negotiation
                 if (await TryHandleDualFundCommitmentSignedAsync(scope, message, peerPubKey) is { } dualFundReplies)
                     return dualFundReplies;
+
+                // A commitment_signed for a funding that is neither the current one nor a pending splice: a splice's,
+                // sent by a peer that constructed the transaction while our tx_abort was on its way (NL-1058). It can
+                // never verify against our next commitment; it is ignored, as BOLT 2 ignores the obsolete ones of a batch
+                if (GetOtherFundingTxId(channelId, Cast<CommitmentSignedMessage>(message)) is { } otherFunding)
+                {
+                    _logger.LogInformation(
+                        "Ignored a commitment_signed of channel {ChannelId} for funding {FundingTxId}, which is neither "
+                      + "its current funding nor a pending one (a splice's that crossed our tx_abort)", channelId,
+                        otherFunding);
+                    return [];
+                }
+
                 return await GetChannelMessageHandler<CommitmentSignedMessage>(scope)
                           .HandleAsync(Cast<CommitmentSignedMessage>(message), currentState, negotiatedFeatures,
                                        peerPubKey);
@@ -1910,6 +1923,26 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         var messageName = Enum.GetName(messageType) ?? ((ushort)messageType).ToString();
         return new ChannelWarningException($"Ignoring {messageName}: not supported yet", channelId,
                                            $"{messageName} is not supported yet, message ignored");
+    }
+
+    /// <summary>
+    /// The <c>funding_txid</c> of a lone <paramref name="message"/> when it names neither the channel's current funding
+    /// nor one of its pending fundings (NL-1058); null when it has none, when it names one of them, or when the channel
+    /// has no funding yet.
+    /// </summary>
+    private TxId? GetOtherFundingTxId(ChannelId channelId, CommitmentSignedMessage message)
+    {
+        if (message.FundingTxIdTlv is not { } tlv
+         || !_channelMemoryRepository.TryGetChannel(channelId, out var channel)
+         || channel.FundingOutput?.TransactionId is not { } current)
+            return null;
+
+        var fundingTxId = tlv.FundingTxId;
+        if (fundingTxId == current
+         || channel.Commitments?.PendingFundings.Any(f => f.FundingTxId == fundingTxId) == true)
+            return null;
+
+        return fundingTxId;
     }
 
     private static T Cast<T>(IChannelMessage message) where T : class, IChannelMessage =>

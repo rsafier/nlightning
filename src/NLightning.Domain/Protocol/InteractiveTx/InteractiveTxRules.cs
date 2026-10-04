@@ -443,6 +443,10 @@ public static class InteractiveTxRules
 
         var weight = CollaborativeFeeCalculator.GetContributionWeight(inputs, outputs, remote, isRemoteInitiator,
                                                                       sharedFunding);
+        // The initiator is not charged the segwit marker and flag, which Eclair leaves out of its common fields (NL-1065)
+        if (isRemoteInitiator)
+            weight -= CollaborativeFeeCalculator.SegwitMarkerAndFlagWeight;
+
         var required = CollaborativeFeeCalculator.MinimumFeeForWeight(weight, feeratePerKw);
         if (paidMsat >= (long)required.MilliSatoshi)
             return null;

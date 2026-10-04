@@ -52,7 +52,8 @@
 #       --suite S         one suite of the matrix on the cluster backend (NLTG_TEST_BACKEND=cluster), N times; its
 #                         project, tests, explicit mode and hang timeout come from `nltg-cluster matrix list`: cln = the
 #                         CLN interop suite (--explicit off: its 4 Explicit capture tests stay out unless --explicit on
-#                         is given; eclair and ldk likewise; eclair2 = EclairSpliceTests, split from eclair),
+#                         is given; eclair and ldk likewise; eclair2 = EclairSpliceTests and
+#                         EclairTaprootSpliceTests, split from eclair),
 #                         postgres = Docker/PostgresTests and the Explicit Cluster/Live/ServerDatabaseClusterTests on
 #                         Postgres pods, faults = the partition and ZMQ-loss tests, lnd/gossip/day0/onchain/anchors/abcd
 #                         = the LND suites on LightningRegtestNetworkFixture's cluster backend (lnd = its regtest

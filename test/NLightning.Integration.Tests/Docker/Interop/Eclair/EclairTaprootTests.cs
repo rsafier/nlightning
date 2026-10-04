@@ -3,9 +3,9 @@ using NBitcoin;
 
 namespace NLightning.Integration.Tests.Docker.Interop.Eclair;
 
-using Abcd;
 using Daemon.Interfaces;
 using Domain.Bitcoin.Enums;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Client.Requests;
@@ -28,8 +28,10 @@ using Utils;
 /// Eclair's cooperative close (<c>closing_complete</c>/<c>closing_sig</c>, MuSig2). (b) We open one to Eclair
 /// (<c>openchannel --channel-type taproot</c>) from a wallet holding only P2TR outputs, so our taproot wallet input is in
 /// the funding transaction (sent with its <c>prevtx</c>: Eclair 0.14.3 reads <c>prevtx_details</c>, 1111, but only for
-/// a splice of a taproot channel, and never sends it; NL-957); payments both ways, then our cooperative close. (c) A
-/// splice in and a splice out of a taproot channel, skipped until splicing a taproot channel lands (NL-965).
+/// a splice of a taproot channel, and never sends it; NL-957); payments both ways, then our cooperative close. (c) Our
+/// <c>bumpopen</c> of our taproot open and (d) Eclair's <c>rbfopen</c> of its taproot open (NL-970), each followed by
+/// the other end, confirmed, used and closed. Splicing a taproot channel with Eclair is
+/// <see cref="EclairTaprootSpliceTests"/> (suite <c>eclair2</c>).
 /// </summary>
 /// <remarks>Run with <c>scripts/run-cluster.sh -n 1 --suite eclair --class
 /// NLightning.Integration.Tests.Docker.Interop.Eclair.EclairTaprootTests</c>.</remarks>
@@ -40,7 +42,18 @@ public sealed class EclairTaprootTests : IAsyncLifetime
     private const int TestTimeoutMs = 15 * 60 * 1_000;
 
     /// <summary>Eclair's name of the taproot channel type in its <c>open</c> API.</summary>
-    private const string EclairTaprootChannelType = "simple_taproot_channel";
+    internal const string EclairTaprootChannelType = "simple_taproot_channel";
+
+    /// <summary>Eclair's <c>remote-rbf-limits.attempt-delta-blocks</c>.</summary>
+    private const int EclairRbfDeltaBlocks = 3;
+
+    /// <summary>Our bump of an open: twice the test node's 10 sat/vB estimate, below Eclair's 10x tolerance.</summary>
+    private const uint OurBumpFeeRatePerKw = 5_000;
+
+    /// <summary>Eclair's first funding feerate in (d), and its bump.</summary>
+    private const long EclairOpenSatByte = 5;
+
+    private const long EclairBumpSatByte = 10;
 
     private static readonly LightningMoney s_capacity = LightningMoney.Satoshis(1_000_000);
     private static readonly TimeSpan s_stepTimeout = TimeSpan.FromSeconds(120);
@@ -93,7 +106,7 @@ public sealed class EclairTaprootTests : IAsyncLifetime
                                      channelType: EclairTaprootChannelType);
 
         // Assert 1
-        await AssertTaprootChannelAsync(session, weAreInitiator: false, ct);
+        await AssertTaprootChannelAsync(_fixture, session, weAreInitiator: false, s_capacity, ct);
 
         // Act 2: payments both ways (Eclair funded the channel, so it pays first)
         await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(200_000), ct);
@@ -130,7 +143,7 @@ public sealed class EclairTaprootTests : IAsyncLifetime
         await Poll.UntilAsync(() => Task.FromResult(
                                   session.Node.CountLogLines("Signed the peer's taproot closing transaction") >= 1),
                               s_stepTimeout, "we signed Eclair's closing_complete", ct);
-        await AssertClosedAsync(session, ours.LocalBalance, walletBefore, ct);
+        await AssertClosedAsync(_fixture, session, ours.LocalBalance, walletBefore, ct);
     }
 
     /// <summary>
@@ -166,7 +179,7 @@ public sealed class EclairTaprootTests : IAsyncLifetime
         await session.MineUntilUsableAsync(ct);
 
         // Assert 1: a taproot channel funded by our P2TR wallet output
-        var fundingTx = await AssertTaprootChannelAsync(session, weAreInitiator: true, ct);
+        var fundingTx = await AssertTaprootChannelAsync(_fixture, session, weAreInitiator: true, s_capacity, ct);
         var keyPathInputs = fundingTx.Inputs.Count(i => i.WitScript.PushCount == 1
                                                      && i.WitScript[0].Length is 64 or 65);
         Console.WriteLine($"[proof] funding {fundingTx.GetHash()}: {fundingTx.Inputs.Count} input(s), "
@@ -199,85 +212,140 @@ public sealed class EclairTaprootTests : IAsyncLifetime
                                   session.Node.CountLogLines("The peer signed our taproot closing transaction") >= 1
                                && session.Node.CountLogLines("Signed the peer's taproot closing transaction") >= 1),
                               s_stepTimeout, "closing_complete signed both ways", ct);
-        await AssertClosedAsync(session, ours.LocalBalance, walletBefore, ct);
+        await AssertClosedAsync(_fixture, session, ours.LocalBalance, walletBefore, ct);
     }
 
     /// <summary>
-    /// (c) A splice in (100,000 sat from our wallet) and then a splice out (50,000 sat to an address of bitcoind's
-    /// wallet) of the taproot channel Eclair opened to us: each splice locks on both ends (the shared taproot input
-    /// signed with MuSig2, <c>tx_complete</c> <c>funding_nonce</c>), the capacity follows, and payments flow both ways.
+    /// (c) RBF of our taproot dual-funded open (NL-970): our <c>openchannel --channel-type taproot</c> of 1M sat to
+    /// Eclair is published unconfirmed; after Eclair's three-block delta our <c>bumpopen</c> at 5,000 sat/kw replaces it
+    /// (a new MuSig2 commitment 0 per attempt, the <c>tx_complete</c> nonces bound to the new txid); Eclair follows, the
+    /// first attempt leaves the mempool, the replacement confirms as a P2TR funding, payments flow both ways and our
+    /// cooperative close confirms.
     /// </summary>
-    [Fact(Timeout = TestTimeoutMs, Skip = "until lane SPL lands (NL-965)")]
-    public async Task Given_ATaprootChannel_When_WeSpliceInAndOut_Then_BothLockAndPaymentsFlow()
+    [Fact(Timeout = TestTimeoutMs)]
+    public async Task Given_OurUnconfirmedTaprootOpen_When_WeBumpIt_Then_EclairFollowsTheReplacementAndItCloses()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
-        var session = _session = await EclairChannelSession.BuildEclairFundedAsync(
-                                     _fixture, "nltg-tap-splice", s_capacity, ct, EnableTaproot,
-                                     channelType: EclairTaprootChannelType);
-        await AssertTaprootChannelAsync(session, weAreInitiator: false, ct);
-        await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(200_000), ct);
+        var session = _session = await EclairChannelSession.CreateConnectedAsync(
+                                     _fixture, "nltg-tap-rbf-a", LightningMoney.Satoshis(2_500_000), ct, EnableTaproot);
+        var opened = await HandleAsync<OpenChannelClientRequest, OpenChannelClientResponse>(
+                         session, new OpenChannelClientRequest(session.EclairAddress, s_capacity)
+                         {
+                             IsSimpleTaproot = true
+                         }, ct);
+        session.ChannelId = opened.ChannelId;
+        Assert.NotNull(opened.FundingTxId);
+        var first = Display(opened.FundingTxId.Value);
+        Assert.True(Model(session).ChannelParams.OptionSimpleTaproot);
+        await WaitInMempoolAsync(first, ct);
+        await WaitEclairFundingAsync(session, first, ct);
+        await MineEmptyBlocksAsync(session, EclairRbfDeltaBlocks, ct);
 
-        // Act 1: splice in
-        var spliceIn = await HandleAsync<SpliceInClientRequest, SpliceClientResponse>(
-                           session, new SpliceInClientRequest(session.ChannelId, 100_000), ct);
-        Console.WriteLine($"[nltg] splicein: {spliceIn.State}, txid {spliceIn.SpliceTxId}, capacity "
-                        + $"{spliceIn.NewCapacitySat}, reason {spliceIn.FailureReason}");
+        // Act
+        var bumped = await HandleAsync<BumpOpenClientRequest, BumpOpenClientResponse>(
+                         session, new BumpOpenClientRequest(session.ChannelId, OurBumpFeeRatePerKw), ct);
 
-        // Assert 1
-        Assert.NotNull(spliceIn.SpliceTxId);
-        Assert.Equal(1_100_000UL, spliceIn.NewCapacitySat);
-        await MineUntilSplicedAsync(session, new uint256((byte[])spliceIn.SpliceTxId.Value), 1_100_000, ct);
-        await session.AssertWePayEclairAsync(LightningMoney.Satoshis(20_000), ct);
-        await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(10_000), ct);
-
-        // Act 2: splice out to bitcoind's wallet
-        var address = await _fixture.Bitcoin.Rpc.GetNewAddressAsync(ct);
-        var spliceOut = await HandleAsync<SpliceOutClientRequest, SpliceClientResponse>(
-                            session, new SpliceOutClientRequest(session.ChannelId, 50_000)
-                            {
-                                Address = address.ToString()
-                            }, ct);
-        Console.WriteLine($"[nltg] spliceout: {spliceOut.State}, txid {spliceOut.SpliceTxId}, capacity "
-                        + $"{spliceOut.NewCapacitySat}, reason {spliceOut.FailureReason}");
-
-        // Assert 2
-        Assert.NotNull(spliceOut.SpliceTxId);
-        Assert.NotNull(spliceOut.NewCapacitySat);
-        var spliceOutTxId = new uint256((byte[])spliceOut.SpliceTxId.Value);
-        await MineUntilSplicedAsync(session, spliceOutTxId, (long)spliceOut.NewCapacitySat.Value, ct);
-        var spliceOutTx = await _fixture.Bitcoin.Rpc.GetRawTransactionAsync(spliceOutTxId, true, ct);
-        Assert.Contains(spliceOutTx.Outputs, o => o.ScriptPubKey == address.ScriptPubKey
-                                               && o.Value == Money.Satoshis(50_000));
-        await session.AssertWePayEclairAsync(LightningMoney.Satoshis(21_000), ct);
-        await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(11_000), ct);
+        // Assert: Eclair follows the replacement, which replaced the first attempt and confirms
+        var replacement = Display(bumped.FundingTxId);
+        Console.WriteLine($"[proof] our taproot bumpopen replaced {first} with {replacement}");
+        Assert.NotEqual(first, replacement);
+        await AssertReplacedAsync(first, replacement, ct);
+        await WaitEclairFundingAsync(session, replacement, ct);
+        await session.MineUntilUsableAsync(ct);
+        var fundingTx = await AssertTaprootChannelAsync(_fixture, session, weAreInitiator: true, s_capacity, ct);
+        Assert.Equal(replacement, fundingTx.GetHash().ToString());
+        Assert.Equal(replacement, EclairJson.FundingTxId(await session.GetEclairChannelAsync(ct)));
+        await session.AssertWePayEclairAsync(LightningMoney.Satoshis(40_000), ct);
+        await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(15_000), ct);
+        await WeCloseAsync(_fixture, session, ct);
     }
 
-    private static void EnableTaproot(Domain.Node.Options.NodeOptions options)
+    /// <summary>
+    /// (d) Eclair's RBF of its taproot dual-funded open to us (NL-970): Eclair opens 1M sat
+    /// (<c>simple_taproot_channel</c> at 5 sat/vB, we contribute nothing); after one empty block its <c>rbfopen</c> at
+    /// 10 sat/vB replaces the funding; we follow (our partial signature of its new commitment 0 stored with the attempt),
+    /// the first attempt leaves the mempool, the replacement confirms, payments flow both ways and Eclair's cooperative
+    /// close confirms.
+    /// </summary>
+    [Fact(Timeout = TestTimeoutMs)]
+    public async Task Given_EclairsUnconfirmedTaprootOpen_When_EclairBumpsIt_Then_WeFollowTheReplacementAndItCloses()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var session = _session = await EclairChannelSession.CreateConnectedAsync(
+                                     _fixture, "nltg-tap-rbf-b", LightningMoney.Satoshis(500_000), ct, EnableTaproot);
+        await _fixture.FundEclairWalletAsync(LightningMoney.Satoshis(s_capacity.Satoshi * 2), [session.Node], ct);
+        var answer = await session.Eclair.OpenAsync(session.Node.NodeIdHex, (long)s_capacity.Satoshi, ct,
+                                                    channelType: EclairTaprootChannelType,
+                                                    fundingFeerateSatByte: EclairOpenSatByte);
+        Console.WriteLine($"[eclair] Eclair opened to {session.Node.Name}: {answer}");
+        session.ChannelId = EclairChannelSession.ParseOpenedChannelId(answer);
+        var first = EclairChannelSession.ParseOpenedFundingTxId(answer);
+        await WaitInMempoolAsync(first, ct);
+        await Poll.UntilAsync(() => Task.FromResult(TryModel(session)?.FundingOutput?.TransactionId is { } txId
+                                                 && Display(txId) == first),
+                              s_stepTimeout, "our channel on Eclair's first funding", ct);
+        Assert.True(Model(session).ChannelParams.OptionSimpleTaproot);
+        await MineEmptyBlocksAsync(session, 1, ct);
+
+        // Act
+        var rbf = await session.Eclair.RbfOpenAsync(session.ChannelIdHex, EclairBumpSatByte, 20_000, ct);
+        Console.WriteLine($"[eclair] rbfopen at {EclairBumpSatByte} sat/vB: {rbf?.ToJsonString()}");
+
+        // Assert
+        var replacement = await Poll.ForAsync(async () =>
+        {
+            var txId = EclairJson.FundingTxId(await session.GetEclairChannelAsync(ct));
+            return txId != first ? txId : null;
+        }, s_stepTimeout, "Eclair on its replacement funding", ct);
+        Console.WriteLine($"[proof] Eclair's taproot rbfopen replaced {first} with {replacement}");
+        await Poll.UntilAsync(() => Task.FromResult(TryModel(session)?.FundingOutput?.TransactionId is { } txId
+                                                 && Display(txId) == replacement),
+                              s_stepTimeout, "our channel on Eclair's replacement", ct);
+        await AssertReplacedAsync(first, replacement, ct);
+        await session.MineUntilUsableAsync(ct);
+        var fundingTx = await AssertTaprootChannelAsync(_fixture, session, weAreInitiator: false, s_capacity, ct);
+        Assert.Equal(replacement, fundingTx.GetHash().ToString());
+        Assert.Equal(LightningMoney.Zero, Model(session).LocalBalance);
+        await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(30_000), ct);
+        await session.AssertWePayEclairAsync(LightningMoney.Satoshis(10_000), ct);
+        await EclairClosesAsync(_fixture, session, ct);
+    }
+
+    /// <summary>Our node on the experimental gate with <c>option_simple_taproot</c> Optional.</summary>
+    internal static void EnableTaproot(Domain.Node.Options.NodeOptions options)
     {
         options.Features.AllowExperimentalFeatures = true;
         options.Features.OptionSimpleTaproot = FeatureSupport.Optional;
     }
 
-    private static ChannelModel Model(EclairChannelSession session) =>
-        session.Node.ChannelMemoryRepository.TryGetChannel(session.ChannelId, out var channel)
-            ? channel
-            : throw new InvalidOperationException($"{session.Node.Name} has no channel {session.ChannelId}");
+    internal static ChannelModel? TryModel(EclairChannelSession session) =>
+        session.Node.ChannelMemoryRepository.TryGetChannel(session.ChannelId, out var channel) ? channel : null;
 
-    private static async Task<TResponse> HandleAsync<TRequest, TResponse>(EclairChannelSession session,
-                                                                         TRequest request, CancellationToken ct)
+    internal static ChannelModel Model(EclairChannelSession session) =>
+        TryModel(session)
+     ?? throw new InvalidOperationException($"{session.Node.Name} has no channel {session.ChannelId}");
+
+    internal static async Task<TResponse> HandleAsync<TRequest, TResponse>(EclairChannelSession session,
+                                                                          TRequest request, CancellationToken ct)
     {
         using var scope = session.Node.Services.CreateScope();
         var handler = scope.ServiceProvider.GetRequiredService<IClientCommandHandler<TRequest, TResponse>>();
         return await handler.HandleAsync(request, ct);
     }
 
+    /// <summary>The txid as bitcoind and Eclair print it.</summary>
+    internal static string Display(TxId txId) => new uint256((byte[])txId).ToString();
+
     /// <summary>
     /// A private, dual-funded simple taproot channel at our end, a taproot commitment format at Eclair's and a P2TR
-    /// funding output of the capacity on chain; returns the funding transaction.
+    /// funding output of <paramref name="capacity"/> on chain; returns the funding transaction.
     /// </summary>
-    private async Task<Transaction> AssertTaprootChannelAsync(EclairChannelSession session, bool weAreInitiator,
-                                                              CancellationToken ct)
+    internal static async Task<Transaction> AssertTaprootChannelAsync(EclairFixture fixture,
+                                                                      EclairChannelSession session,
+                                                                      bool weAreInitiator, LightningMoney capacity,
+                                                                      CancellationToken ct)
     {
         var model = Model(session);
         var theirs = await session.GetEclairChannelAsync(ct);
@@ -292,17 +360,17 @@ public sealed class EclairTaprootTests : IAsyncLifetime
         Assert.Contains("taproot", commitments?.ToJsonString() ?? string.Empty, StringComparison.OrdinalIgnoreCase);
 
         var funding = model.FundingOutput!;
-        var fundingTx = await _fixture.Bitcoin.Rpc.GetRawTransactionAsync(
+        var fundingTx = await fixture.Bitcoin.Rpc.GetRawTransactionAsync(
                             new uint256((byte[])funding.TransactionId!.Value), true, ct);
         var fundingOutput = fundingTx.Outputs[(int)funding.Index!.Value];
-        Assert.Equal((long)s_capacity.Satoshi, fundingOutput.Value.Satoshi);
+        Assert.Equal((long)capacity.Satoshi, fundingOutput.Value.Satoshi);
         Assert.True(fundingOutput.ScriptPubKey.IsScriptType(ScriptType.Taproot),
                     $"funding output {fundingOutput.ScriptPubKey} is not P2TR");
         return fundingTx;
     }
 
     /// <summary>The times our log says the channel was reestablished (the node keeps its log across a restart).</summary>
-    private static int CountReestablished(EclairChannelSession session) =>
+    internal static int CountReestablished(EclairChannelSession session) =>
         session.Node.CountLogLines($"Channel {session.ChannelId} reestablished with peer");
 
     /// <summary>
@@ -310,8 +378,8 @@ public sealed class EclairTaprootTests : IAsyncLifetime
     /// and Eclair fails a taproot channel whose reestablish lacks the type-22 nonces), the channel is usable on both
     /// ends, our balance is unchanged and no data loss was seen.
     /// </summary>
-    private static async Task AssertReestablishedAsync(EclairChannelSession session, int reestablishedBefore,
-                                                       LightningMoney balanceBefore, CancellationToken ct)
+    internal static async Task AssertReestablishedAsync(EclairChannelSession session, int reestablishedBefore,
+                                                        LightningMoney balanceBefore, CancellationToken ct)
     {
         await Poll.UntilAsync(() => Task.FromResult(CountReestablished(session) > reestablishedBefore),
                               EclairChannelSession.UsableTimeout, "the channel reestablished on a new connection",
@@ -324,23 +392,69 @@ public sealed class EclairTaprootTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Our <c>closechannel</c> runs <c>option_simple_close</c> both ways and the key-path closing transaction
+    /// confirms (<see cref="AssertClosedAsync"/>).
+    /// </summary>
+    internal static async Task WeCloseAsync(EclairFixture fixture, EclairChannelSession session, CancellationToken ct)
+    {
+        var ours = await session.GetOurChannelAsync(ct);
+        var walletBefore = AnchorsHarness.WalletBalance(session.Node);
+        var signedBefore = session.Node.CountLogLines("The peer signed our taproot closing transaction");
+        var theirsBefore = session.Node.CountLogLines("Signed the peer's taproot closing transaction");
+        var closed = await HandleAsync<CloseChannelClientRequest, CloseChannelClientResponse>(
+                         session, new CloseChannelClientRequest(session.ChannelId)
+                         {
+                             WaitSeconds = (uint)s_stepTimeout.TotalSeconds
+                         }, ct);
+        Console.WriteLine($"[nltg] closechannel: {closed.State}, closing tx {closed.ClosingTxId}");
+        Assert.Equal(ChannelState.Closing, closed.State);
+        await Poll.UntilAsync(() => Task.FromResult(
+                                  session.Node.CountLogLines("The peer signed our taproot closing transaction")
+                                > signedBefore
+                               && session.Node.CountLogLines("Signed the peer's taproot closing transaction")
+                                > theirsBefore),
+                              s_stepTimeout, "closing_complete signed both ways", ct);
+        await AssertClosedAsync(fixture, session, ours.LocalBalance, walletBefore, ct);
+    }
+
+    /// <summary>
+    /// Eclair's <c>close</c> runs <c>option_simple_close</c> (we sign its <c>closing_complete</c>) and the key-path
+    /// closing transaction confirms (<see cref="AssertClosedAsync"/>).
+    /// </summary>
+    internal static async Task EclairClosesAsync(EclairFixture fixture, EclairChannelSession session,
+                                                 CancellationToken ct)
+    {
+        var ours = await session.GetOurChannelAsync(ct);
+        var walletBefore = AnchorsHarness.WalletBalance(session.Node);
+        var signedBefore = session.Node.CountLogLines("Signed the peer's taproot closing transaction");
+        var answer = await session.Eclair.CloseAsync(session.ChannelIdHex, ct);
+        Console.WriteLine($"[eclair] close: {answer?.ToJsonString()}");
+        await Poll.UntilAsync(() => Task.FromResult(
+                                  session.Node.CountLogLines("Signed the peer's taproot closing transaction")
+                                > signedBefore),
+                              s_stepTimeout, "we signed Eclair's closing_complete", ct);
+        await AssertClosedAsync(fixture, session, ours.LocalBalance, walletBefore, ct);
+    }
+
+    /// <summary>
     /// A BOLT 3 simple-close transaction of the funding output in the mempool (version 2, sequence 0xFFFFFFFD) whose only
     /// input is a MuSig2 key-path spend (one 64-byte witness element); after 6 blocks both ends list the channel closed
     /// and our wallet holds our balance, less the fee when we paid it.
     /// </summary>
-    private async Task AssertClosedAsync(EclairChannelSession session, LightningMoney ourBalance,
-                                         LightningMoney walletBefore, CancellationToken ct)
+    internal static async Task AssertClosedAsync(EclairFixture fixture, EclairChannelSession session,
+                                                 LightningMoney ourBalance, LightningMoney walletBefore,
+                                                 CancellationToken ct)
     {
         var funding = Model(session).FundingOutput!;
         var fundingOutPoint = new OutPoint(new uint256((byte[])funding.TransactionId!.Value), funding.Index!.Value);
         var closingTx = await Poll.ForAsync(async () =>
         {
-            foreach (var txid in await _fixture.Bitcoin.Rpc.GetRawMempoolAsync(ct))
+            foreach (var txid in await fixture.Bitcoin.Rpc.GetRawMempoolAsync(ct))
             {
                 // Both closing transactions spend the funding output: the one listed may be replaced before it is read
                 try
                 {
-                    var mempoolTx = await _fixture.Bitcoin.Rpc.GetRawTransactionAsync(txid, true, ct);
+                    var mempoolTx = await fixture.Bitcoin.Rpc.GetRawTransactionAsync(txid, true, ct);
                     if (mempoolTx.Inputs.Any(i => i.PrevOut == fundingOutPoint))
                         return mempoolTx;
                 }
@@ -362,7 +476,7 @@ public sealed class EclairTaprootTests : IAsyncLifetime
         Assert.Equal(64, input.WitScript[0].Length);
         Assert.Equal(0, session.Node.CountLogLines("closing_signed for channel"));
 
-        await _fixture.MineAndWaitAsync(6, [session.Node], ct);
+        await fixture.MineAndWaitAsync(6, [session.Node], ct);
         await Poll.UntilAsync(async () =>
         {
             var ours = (await session.Node.ListChannelsAsync(ct)).Channels
@@ -392,26 +506,37 @@ public sealed class EclairTaprootTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Mines one block at a time until our channel's funding is <paramref name="spliceTxId"/> with
-    /// <paramref name="capacitySat"/> and the channel is usable on both ends again.
+    /// <paramref name="count"/> empty blocks (<c>generateblock</c> without transactions): the unconfirmed funding or
+    /// splice stays unconfirmed while the RBF rules' block counts move.
     /// </summary>
-    private async Task MineUntilSplicedAsync(EclairChannelSession session, uint256 spliceTxId, long capacitySat,
-                                             CancellationToken ct)
+    internal static async Task MineEmptyBlocksAsync(EclairFixture fixture, EclairChannelSession session, int count,
+                                                    CancellationToken ct)
     {
-        var deadline = DateTime.UtcNow + s_stepTimeout;
-        while (true)
+        for (var i = 0; i < count; i++)
         {
-            await _fixture.MineAndWaitAsync(1, [session.Node], ct);
-            var ours = await session.GetOurChannelAsync(ct);
-            if (ours.FundingTxId is { } funding && new uint256((byte[])funding) == spliceTxId
-                                                && ours.Capacity.Satoshi == capacitySat)
-                break;
-
-            Assert.True(DateTime.UtcNow < deadline, $"the splice {spliceTxId} did not lock: {ours.Describe()}");
-            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+            var address = await fixture.Bitcoin.Rpc.GetNewAddressAsync(ct);
+            await fixture.Bitcoin.Rpc.SendCommandAsync("generateblock", ct, address.ToString(), Array.Empty<string>());
         }
 
-        await session.WaitUsableAsync(ct, requireNoHtlcs: true);
-        Console.WriteLine($"[proof] spliced: {await session.DescribeAsync(ct)}");
+        await fixture.WaitAllAtTipAsync([session.Node], ct);
     }
+
+    private Task MineEmptyBlocksAsync(EclairChannelSession session, int count, CancellationToken ct) =>
+        MineEmptyBlocksAsync(_fixture, session, count, ct);
+
+    private async Task WaitEclairFundingAsync(EclairChannelSession session, string txId, CancellationToken ct) =>
+        await Poll.UntilAsync(async () => EclairJson.FundingTxId(await session.GetEclairChannelAsync(ct)) == txId,
+                              s_stepTimeout, $"Eclair's channel on funding {txId}", ct);
+
+    private async Task WaitInMempoolAsync(string txId, CancellationToken ct) =>
+        await Poll.UntilAsync(async () => (await _fixture.Bitcoin.Rpc.GetRawMempoolAsync(ct))
+                                 .Contains(uint256.Parse(txId)),
+                              s_stepTimeout, $"{txId} in bitcoind's mempool", ct);
+
+    private async Task AssertReplacedAsync(string replaced, string replacement, CancellationToken ct) =>
+        await Poll.UntilAsync(async () =>
+        {
+            var mempool = await _fixture.Bitcoin.Rpc.GetRawMempoolAsync(ct);
+            return mempool.Contains(uint256.Parse(replacement)) && !mempool.Contains(uint256.Parse(replaced));
+        }, s_stepTimeout, $"{replacement} replaced {replaced} in bitcoind's mempool", ct);
 }
