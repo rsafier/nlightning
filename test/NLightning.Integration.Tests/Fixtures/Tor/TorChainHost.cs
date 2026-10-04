@@ -35,6 +35,12 @@ public sealed class TorChainHost(DockerClient client, string networkName, string
     /// </summary>
     public const string HostAddressFromContainers = "host.docker.internal";
 
+    /// <summary>
+    /// The Docker client a <see cref="TorChainHost"/> is driven with. Lives here so tests outside this folder can
+    /// use the host without naming the Docker types (<c>DockerAbsenceTests</c>).
+    /// </summary>
+    public static DockerClient CreateClient() => new DockerClientConfiguration().CreateClient();
+
     private static readonly TimeSpan s_readyTimeout = TimeSpan.FromMinutes(2);
 
     private RegtestBitcoinEndpoint? _bitcoin;
