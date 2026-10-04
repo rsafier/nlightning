@@ -147,6 +147,29 @@ if run_case held 1 FAKE_SLEEP=1 FAKE_HELD=1 "FAKE_WEIGHTS=faults=2" FAKE_BUDGET=
   expect held "admission never exceeded the budget" no_violations
 fi
 
+# 4f. --coverage (scripts/tests/fake-coverlet.sh for coverlet): every run, reruns included, runs on its own copy of the
+#     test output and writes its coverage file; the test process's own exit code (3 for a crash, not coverlet's 1)
+#     reaches the summary; the copies are deleted.
+coverlet_fake="NLTG_COVERLET=bash $repo_root/scripts/tests/fake-coverlet.sh"
+if run_case coverage 1 "$coverlet_fake" FAKE_SLEEP=1 FAKE_BEHAVIOR_cln=flaky:B FAKE_BEHAVIOR_ldk=crash \
+     -- --coverage --matrix cln,ldk; then
+  expect coverage "cln is rerun-green under coverage" grep -Eq "^cln +rerun-green" "$results/summary.txt"
+  expect coverage "every run wrote a coverage file" bash -c \
+    "test -s '$results/cln/coverage.cobertura.xml' && test -s '$results/cln/rerun-1/coverage.cobertura.xml' \
+       && test -s '$results/ldk/coverage.cobertura.xml'"
+  expect coverage "coverlet got each run's own copy" bash -c \
+    "grep -q '/cln/coverage/bin/' '$fake_dir/coverlet.log' && grep -q '/cln/rerun-1/coverage/bin/' '$fake_dir/coverlet.log'"
+  expect coverage "the crash's own exit code is kept" grep -q "^3 " "$results/ldk/exit"
+  expect coverage "the copies are deleted" bash -c "! find '$results' -path '*/coverage/bin' | grep -q ."
+  expect coverage "the runner names the coverage files" has "3 coverage file\(s\)"
+fi
+if run_case coverage-hang 1 "$coverlet_fake" FAKE_SLEEP=1 FAKE_BEHAVIOR_postgres=hang \
+     -- --coverage --matrix postgres --timeout 4s; then
+  expect coverage-hang "postgres TIMEOUT" grep -Eq "^postgres +TIMEOUT" "$results/summary.txt"
+  expect coverage-hang "the hung test process is gone" bash -c "! pgrep -f '[s]leep 600' > /dev/null"
+  expect coverage-hang "coverlet still wrote what it had" test -s "$results/postgres/coverage.cobertura.xml"
+fi
+
 # 5. The single-suite mode: N runs of a catalog suite on the cluster backend; tor and unknown suites are refused.
 if run_case single 0 FAKE_SLEEP=1 -- -n 2 --suite cln; then
   expect single "2 runs green" has "2/2 run\(s\) green"
