@@ -2563,11 +2563,14 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             return (payment, OutcomeMatch.Unmatched);
         }
 
-        // No id recorded (a crash or a failed save around the offer). Origins are not stored before NL-250, so the
-        // HTLC's record, while channel memory still has it, must match the attempt's first hop
-        if (payment.Route.Count > 0 && _channelMemoryRepository.TryGetChannel(channelId, out var channel)
-                                    && channel.Commitments?.GetHtlc(HtlcDirection.Outgoing, htlcId) is { } htlc
-                                    && !MatchesFirstHop(payment.Route[0], channel, htlc))
+        // No id recorded (a crash or a failed save around the offer). Origins are not stored before NL-250, so an HTLC
+        // without one must match the attempt's first hop, while channel memory still has its record; a stored origin
+        // already proves the HTLC ours, and the first hop is no guide for a route whose only hop names the payee (a
+        // trampoline payment through our peer, NL-925)
+        if (origin is null && payment.Route.Count > 0
+                           && _channelMemoryRepository.TryGetChannel(channelId, out var channel)
+                           && channel.Commitments?.GetHtlc(HtlcDirection.Outgoing, htlcId) is { } htlc
+                           && !MatchesFirstHop(payment.Route[0], channel, htlc))
             return (payment, OutcomeMatch.Unmatched);
 
         if (otherLive)
