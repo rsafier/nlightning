@@ -2068,12 +2068,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md`
 
 ### NL-987 `listchannels` does not show the channel type (taproot or anchors)
-- **Status:** open
+- **Status:** fixed (wip/taproot-t03, lane SMALL)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Client/Printers` (listchannels), the channel list IPC response
 - **Evidence:** first live taproot channel on Mutinynet (2026-10-03, build c5ab09cb): nothing in `listchannels` marks channel b934ee4f… as simple taproot; only the funding output on chain (v1_p2tr) tells.
 - **Fix sketch:** add the channel type (anchors, static_remotekey, simple taproot) to the channel info response (a new key) and print it.
+- **t03 lane SMALL:** `ChannelInfoClientResponse.ChannelType` (the channel's `CommitmentFormat`, set by `ListChannelsClientHandler` from `ChannelParams.CommitmentFormat`), `ChannelInfoIpcResponse` key 27 `ChannelType` (string `simple_taproot`/`anchors`/`static_remotekey`, `ChannelInfoIpcResponse.ChannelTypeName`; null from an older daemon), printed as `Channel Type:` after `Initiator:` (`-` when absent). Every channel has at least `option_static_remotekey` (no legacy type exists). The backup commands already printed the type (NL-877 T5); `info` lists no channels.
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** —
 

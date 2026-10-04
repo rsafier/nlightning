@@ -32,6 +32,8 @@ public sealed class ListChannelsPrinter : IPrinter<ListChannelsIpcResponse>
             _output.WriteLine("  State:              {0}", channel.State);
             _output.WriteLine("  Reestablished:      {0}", channel.IsReestablished ? "Yes" : "No");
             _output.WriteLine("  Initiator:          {0}", channel.IsInitiator ? "Yes" : "No");
+            // NL-987: an older daemon sends no channel type
+            _output.WriteLine("  Channel Type:       {0}", channel.ChannelType ?? "-");
             _output.WriteLine("  Short Channel Id:   {0}", FormatShortChannelId(channel.ShortChannelId));
             // The funding txid in the display (bitcoind, block explorer) byte order, as TxId.ToString() prints it since NL-519.
             _output.WriteLine("  Funding Output:     {0}",

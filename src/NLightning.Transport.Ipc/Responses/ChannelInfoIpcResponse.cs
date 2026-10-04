@@ -2,6 +2,7 @@ using MessagePack;
 
 namespace NLightning.Transport.Ipc.Responses;
 
+using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
@@ -95,6 +96,22 @@ public sealed class ChannelInfoIpcResponse
     /// </summary>
     [Key(26)] public List<string>? Tags { get; init; }
 
+    /// <summary>
+    /// The channel type as the client prints it (<see cref="ChannelTypeName"/>: <c>simple_taproot</c>,
+    /// <c>anchors</c> or <c>static_remotekey</c>; NL-987), or null from a daemon that predates it.
+    /// </summary>
+    [Key(27)] public string? ChannelType { get; init; }
+
+    /// <summary>
+    /// The name of a channel type's commitment format, as <c>listchannels</c> and the backup commands print it.
+    /// </summary>
+    public static string ChannelTypeName(CommitmentFormat format) => format switch
+    {
+        CommitmentFormat.SimpleTaproot => "simple_taproot",
+        CommitmentFormat.Anchors => "anchors",
+        _ => "static_remotekey"
+    };
+
     public static ChannelInfoIpcResponse FromClientResponse(ChannelInfoClientResponse channel)
     {
         return new ChannelInfoIpcResponse
@@ -129,7 +146,8 @@ public sealed class ChannelInfoIpcResponse
             RetiredShortChannelIds = channel.RetiredShortChannelIds
                                             .Select(RetiredScidInfoIpcResponse.FromClientResponse).ToList(),
             Label = channel.Label,
-            Tags = channel.Tags.Count == 0 ? null : [.. channel.Tags]
+            Tags = channel.Tags.Count == 0 ? null : [.. channel.Tags],
+            ChannelType = ChannelTypeName(channel.ChannelType)
         };
     }
 }
