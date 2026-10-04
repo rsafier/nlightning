@@ -89,30 +89,81 @@ public class RevokedResolutionTests
     }
 
     [Fact]
-    public async Task Given_RevokedTaprootCommitment_When_Resolved_Then_ToLocalPenalizedByTheRevocationLeafAndHtlcsAlerted()
+    public async Task Given_RevokedTaprootCommitment_When_Resolved_Then_EveryOutputPenalizedHtlcsByKeyPath()
     {
-        // Arrange (NL-877 T4 safety floor): the cheater broadcasts a revoked simple taproot commitment
+        // Arrange (NL-966): the cheater broadcasts a revoked simple taproot commitment with an HTLC each way
         using var kit = CreateBreach(simpleTaproot: true);
 
         // Act: a block after the commitment (our to_remote's CSV of 1 is then satisfied)
         var actions = await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
 
-        // Assert: the to_local penalty (revocation leaf) and our to_remote, every input valid by script execution
+        // Assert: to_local (revocation leaf), both HTLC outputs (revocation key path) and our to_remote, every input
+        // valid by script execution against every output it spends
         var broadcasts = actions.OfType<BroadcastAction>().Select(b => b.Transaction).ToList();
         Assert.NotEmpty(broadcasts);
         foreach (var broadcast in broadcasts)
             kit.AssertVerifies(broadcast.TransactionId);
-        var toLocal = kit.Rows.Single(r => r.Descriptor == OutputDescriptorKind.RevokedToLocal);
-        Assert.Equal(OutputResolutionState.Broadcast, toLocal.State);
-        Assert.Contains(broadcasts, b => b.TransactionId == toLocal.ResolvingTransactionId);
-
-        // The revoked HTLC outputs' key-path penalties are not built (NL-966): alerted, not thrown, not spent
-        Assert.Equal(2, kit.Alerts.Count(a => a.RequirementId == "NL-966"));
-        Assert.DoesNotContain(kit.Rows, r => r is
+        var inputs = broadcasts.SelectMany(b => kit.LoadBroadcast(b.TransactionId).Inputs).ToList();
+        var htlcRows = kit.Rows.Where(r => r.Descriptor == OutputDescriptorKind.RevokedHtlc).ToList();
+        Assert.Equal(2, htlcRows.Count);
+        foreach (var row in htlcRows)
         {
-            Descriptor: OutputDescriptorKind.RevokedHtlc,
-            ResolvingTransactionId: not null
-        });
+            Assert.Equal(OutputResolutionState.Broadcast, row.State);
+            var input = Assert.Single(inputs, i => i.PrevOut.N == row.OutputIndex);
+            Assert.Equal(1, input.WitScript.PushCount);
+            Assert.Equal(64, input.WitScript[0].Length);
+        }
+
+        Assert.All(kit.Rows.Where(r => r.Descriptor is OutputDescriptorKind.RevokedToLocal
+                                           or OutputDescriptorKind.PaymentToRemote),
+                   r => Assert.Equal(OutputResolutionState.Broadcast, r.State));
+        Assert.DoesNotContain(kit.Alerts, a => a.RequirementId == "NL-966");
+    }
+
+    [Fact]
+    public async Task Given_TheirTaprootHtlcTimeoutConfirmsFirst_When_Resolved_Then_SecondLevelPenalizedByKeyPath()
+    {
+        // Arrange (NL-966, B5-REV-06): the cheater's HTLC-timeout for a1 confirms before our penalty
+        using var kit = CreateBreach(simpleTaproot: true);
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
+        var htlcTimeout = kit.CheaterSecondLevel(HtlcDirection.Incoming, 0);
+        var height = RevokedBreachKit.SpentAtHeight + 2;
+
+        // Act
+        await kit.ConfirmAsync(htlcTimeout, height);
+        var round = await kit.RunAsync(height);
+
+        // Assert: its P2TR output is a row (with its delay leaf and control block), penalized by the revocation key path
+        var secondLevel = Assert.Single(kit.Rows, r => r.Descriptor == OutputDescriptorKind.RevokedSecondLevel);
+        Assert.Equal(htlcTimeout.TxId, secondLevel.TransactionId);
+        Assert.NotNull(OutputDescriptorData.Decode(secondLevel.DescriptorData).TaprootControlBlock);
+        Assert.Equal(OutputResolutionState.Broadcast, secondLevel.State);
+        var penaltyTxId = secondLevel.ResolvingTransactionId!.Value;
+        Assert.Contains(round.OfType<BroadcastAction>(), b => b.Transaction.TransactionId == penaltyTxId);
+        kit.AssertVerifies(penaltyTxId, htlcTimeout);
+        var penalty = kit.LoadBroadcast(penaltyTxId);
+        var input = Assert.Single(penalty.Inputs, i => i.PrevOut.Hash == new uint256((byte[])htlcTimeout.TxId));
+        Assert.Equal(1, input.WitScript.PushCount);
+        Assert.Empty(kit.Events);
+    }
+
+    [Fact]
+    public async Task Given_TheirTaprootHtlcSuccessRevealsPreimage_When_Spent_Then_UpstreamFulfilledAndSecondLevelPenalized()
+    {
+        // Arrange (NL-966, B5-REV-07): the cheater claims b1 (our offered HTLC) with its taproot HTLC-success
+        using var kit = CreateBreach(simpleTaproot: true);
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
+        var htlcSuccess = kit.CheaterSecondLevel(HtlcDirection.Outgoing, 0, s_b1Preimage);
+
+        // Act
+        var onSpent = await kit.ConfirmAsync(htlcSuccess, RevokedBreachKit.SpentAtHeight + 2);
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 2);
+
+        // Assert
+        AssertFulfilled(Assert.Single(onSpent.OfType<RaiseChannelEventAction>()).Event, 0, s_b1Preimage);
+        Assert.Equal(s_b1Preimage, kit.Victim.Channel.Commitments!.GetHtlc(HtlcDirection.Outgoing, 0)!.KnownPreimage);
+        var secondLevel = Assert.Single(kit.Rows, r => r.Descriptor == OutputDescriptorKind.RevokedSecondLevel);
+        kit.AssertVerifies(secondLevel.ResolvingTransactionId!.Value, htlcSuccess);
     }
 
     [Fact]

@@ -13,7 +13,8 @@ using Enums;
 /// <param name="Vout">The output index.</param>
 /// <param name="AmountSat">The output amount in satoshis.</param>
 /// <param name="SpendKind">How the output is spent (witness, sequence, locktime and key).</param>
-/// <param name="WitnessScript">The P2WSH witness script; null only for a P2WPKH <c>to_remote</c>.</param>
+/// <param name="WitnessScript">The P2WSH witness script (simple taproot: the tapscript leaf); null only for a P2WPKH
+/// <c>to_remote</c> and a simple taproot key-path penalty.</param>
 /// <param name="CsvDelay">The relative delay the witness script enforces (<c>to_self_delay</c> on a delayed output, 1
 /// on anchor HTLC and <c>to_remote</c> outputs, 0 when there is none); it becomes the input's <c>nSequence</c>.</param>
 /// <param name="CltvExpiry">The HTLC's <c>cltv_expiry</c>. For <see cref="SweepSpendKind.HtlcTimeoutClaim"/> the

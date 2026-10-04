@@ -75,6 +75,36 @@ public class RevokedMempoolPenaltyTests
     }
 
     [Fact]
+    public async Task Given_RevokedTaprootCommitmentInTheMempool_When_Prepared_Then_HtlcOutputsPenalizedByKeyPath()
+    {
+        // Arrange (NL-966): the same breach on a simple taproot channel
+        using var kit = new RevokedBreachKit(simpleTaproot: true);
+        var pair = kit.Pair;
+        pair.Add(pair.Bob, 40_000_000, RealSigningCommitmentPair.Preimage(0xB1), 700);
+        pair.Add(pair.Alice, 30_000_000, RealSigningCommitmentPair.Preimage(0xA1), 710);
+        pair.Settle(pair.Bob);
+        kit.CaptureRevokedState();
+        pair.UpdateFee(3_000);
+        pair.Settle(pair.Alice);
+        kit.Breach();
+
+        // Act
+        var actions = await kit.Resolver.PrepareUnconfirmedPenaltiesAsync(
+                          RealSigningCommitmentPair.ChannelId, kit.RevokedChainTx, kit.RevokedNumber,
+                          RevokedBreachKit.SpentAtHeight - 1, TestContext.Current.CancellationToken);
+        await kit.ApplyAsync(actions);
+
+        // Assert: to_local and both HTLC outputs (two 1-item key-path witnesses), script-valid; no anchor, no to_remote
+        var broadcasts = actions.OfType<BroadcastAction>().Select(a => a.Transaction).ToList();
+        var inputs = broadcasts.SelectMany(b => kit.LoadBroadcast(b.TransactionId).Inputs).ToList();
+        Assert.Equal(3, inputs.Count);
+        Assert.Equal(2, inputs.Count(i => i.WitScript.PushCount == 1));
+        foreach (var broadcast in broadcasts)
+            kit.AssertVerifies(broadcast.TransactionId);
+        Assert.DoesNotContain(actions, a => a is AlertAction { RequirementId: "NL-966" });
+    }
+
+    [Fact]
     public async Task Given_NoContextForTheCommitment_When_Prepared_Then_OnlyAnAlert()
     {
         // Arrange: the victim's data cannot serve the breach (e.g. the secret is not in the shachain)

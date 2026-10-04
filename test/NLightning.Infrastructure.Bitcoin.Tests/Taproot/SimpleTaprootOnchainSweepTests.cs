@@ -37,14 +37,14 @@ using Infrastructure.Crypto.Hashes;
 /// </summary>
 public class SimpleTaprootOnchainSweepTests
 {
-    private const ulong Number = 9;
+    internal const ulong Number = 9;
     private const ulong FeeRatePerKw = 2_500;
-    private const ushort AliceToSelfDelay = 144;
+    internal const ushort AliceToSelfDelay = 144;
     private const ushort BobToSelfDelay = 120;
 
-    private static readonly KeyDerivationService s_keyDerivation = new(new Secp256K1Math());
-    private static readonly IOptions<NodeOptions> s_options = Microsoft.Extensions.Options.Options.Create(new NodeOptions());
-    private static readonly byte[] s_destination = new Key(Enumerable.Repeat((byte)0x44, 32).ToArray())
+    internal static readonly KeyDerivationService s_keyDerivation = new(new Secp256K1Math());
+    internal static readonly IOptions<NodeOptions> s_options = Microsoft.Extensions.Options.Options.Create(new NodeOptions());
+    internal static readonly byte[] s_destination = new Key(Enumerable.Repeat((byte)0x44, 32).ToArray())
                                                   .PubKey.WitHash.ScriptPubKey.ToBytes();
 
     [Fact]
@@ -62,7 +62,7 @@ public class SimpleTaprootOnchainSweepTests
         var input = SweepInputFactory.ToLocal(toLocal, commitment.TxId, bobPoint);
         var signed = Sweep(kit.Bob, input);
 
-        // Assert: every output mapped on the rebuilt txid, HTLCs without a spend path (NL-966)
+        // Assert: every output mapped on the rebuilt txid, our own HTLCs without a spend path (our HTLC transactions)
         Assert.Equal(commitment.TxId, map.ExpectedTxId);
         Assert.Empty(map.UnmappedVouts);
         Assert.All(map.Outputs, o => Assert.True(o.IsSimpleTaproot));
@@ -139,10 +139,9 @@ public class SimpleTaprootOnchainSweepTests
         Assert.Equal(revoked.WitnessScript, tx.Inputs[0].WitScript[1]);
         AssertSpends(tx, commitment, revoked.Vout);
 
-        // The revoked HTLC outputs are mapped but not penalized yet (NL-966): the factory refuses them
+        // The revoked HTLC outputs are penalized by key path (NL-966): no leaf in the witness
         var htlc = map.Outputs.First(o => o.Kind == OutputDescriptorKind.RevokedHtlc);
-        Assert.Throws<ArgumentException>(
-            () => SweepInputFactory.Penalty(htlc, commitment.TxId, secret, revocationPubKey));
+        Assert.True(SweepInputFactory.Penalty(htlc, commitment.TxId, secret, revocationPubKey).IsTaprootKeyPath);
     }
 
     [Fact]
@@ -191,20 +190,20 @@ public class SimpleTaprootOnchainSweepTests
 
     #region Helpers
 
-    private static SignedTransaction Sweep(LocalLightningSigner signer, SweepInput input)
+    internal static SignedTransaction Sweep(LocalLightningSigner signer, SweepInput input)
     {
         var builder = new SweepTransactionBuilder(s_options);
         var unsigned = builder.Build([input], s_destination, 2_500);
         return builder.Sign(unsigned, signer, TaprootSignerKit.ChannelId);
     }
 
-    private static void AssertSpends(Transaction tx, ChainTx commitment, uint vout)
+    internal static void AssertSpends(Transaction tx, ChainTx commitment, uint vout)
     {
         var error = tx.CreateValidator([Output(commitment, vout)]).ValidateInput(0).Error;
         Assert.True(error is null, error?.ToString());
     }
 
-    private static TxOut Output(ChainTx commitment, uint vout)
+    internal static TxOut Output(ChainTx commitment, uint vout)
     {
         var output = commitment.Outputs[(int)vout];
         return new TxOut(Money.Satoshis((long)output.AmountSat), new Script(output.ScriptPubKey));
@@ -214,7 +213,7 @@ public class SimpleTaprootOnchainSweepTests
     private static byte[] TaprootNumsControlBlockKey() =>
         Convert.FromHexString("dca094751109d0bd055d03565874e8276dd53e926b44e3bd1bb6bf4bc130a279");
 
-    private static ChainTx Build(LocalLightningSigner signer, ChannelModel channel, CommitmentSide side,
+    internal static ChainTx Build(LocalLightningSigner signer, ChannelModel channel, CommitmentSide side,
                                  CompactPubKey? remotePoint)
     {
         var factory = Factory(signer);
@@ -227,14 +226,14 @@ public class SimpleTaprootOnchainSweepTests
         return ChainTxMapper.FromTransaction(Transaction.Load(built.Transaction.RawTxBytes, Network.Main));
     }
 
-    private static CommitmentOutputMapper Mapper(LocalLightningSigner signer) =>
+    internal static CommitmentOutputMapper Mapper(LocalLightningSigner signer) =>
         new(Factory(signer), new CommitmentTransactionBuilder(s_options));
 
-    private static readonly byte[][] s_preimages =
+    internal static readonly byte[][] s_preimages =
         Enumerable.Range(1, 4).Select(i => Enumerable.Repeat((byte)i, 32).ToArray()).ToArray();
 
     /// <summary>Alice's view: 600,000 sat local, 380,000 sat remote, two HTLCs each way.</summary>
-    private static CommitmentTxSpec Spec(bool alice)
+    internal static CommitmentTxSpec Spec(bool alice)
     {
         var htlcs = new List<Htlc>
         {
@@ -257,11 +256,11 @@ public class SimpleTaprootOnchainSweepTests
                         HtlcState.Offered);
     }
 
-    private static CommitmentTransactionModelFactory Factory(LocalLightningSigner signer) =>
+    internal static CommitmentTransactionModelFactory Factory(LocalLightningSigner signer) =>
         new(new CommitmentKeyDerivationService(s_keyDerivation, signer), signer);
 
     /// <summary>A simple taproot channel of the kit; each side announces its own to_self_delay.</summary>
-    private static ChannelModel CreateChannel(TaprootSignerKit kit, bool alice)
+    internal static ChannelModel CreateChannel(TaprootSignerKit kit, bool alice)
     {
         var dust = LightningMoney.Satoshis(354);
         var aliceParty = new ChannelParty(dust, LightningMoney.Zero, LightningMoney.Zero, 30,

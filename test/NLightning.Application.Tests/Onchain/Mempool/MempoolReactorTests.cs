@@ -161,6 +161,38 @@ public sealed class MempoolReactorTests : IDisposable
         Assert.Equal(ChannelState.Open, _channel.State);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_PreimageOfOurHtlcInAnUnconfirmedTaprootSpend_When_Seen_Then_FulfilledUpstream(
+        bool htlcSuccessTransaction)
+    {
+        // Arrange (NL-966): a simple taproot script-path spend carrying the preimage right before the leaf: the peer's
+        // HTLC-success transaction <sig65> <sig64> <preimage> <leaf> <cb>, or its claim <sig64> <preimage> <leaf> <cb>
+        var preimage = (byte[])RealSigningCommitmentPair.Preimage(1);
+        var leaf = Enumerable.Repeat((byte)0x82, 70).ToArray();
+        byte[] controlBlock = [0xc0, .. Enumerable.Repeat((byte)0x33, 64)];
+        var transaction = Network.RegTest.CreateTransaction();
+        var parent = new uint256(Enumerable.Repeat((byte)0x31, 32).ToArray());
+        transaction.Inputs.Add(new OutPoint(parent, 0));
+        transaction.Inputs[0].WitScript = new WitScript(htlcSuccessTransaction
+                                                            ? [new byte[65], new byte[64], preimage, leaf, controlBlock]
+                                                            : [new byte[64], preimage, leaf, controlBlock]);
+        transaction.Outputs.Add(Money.Satoshis(10_000), new Key().PubKey.WitHash.ScriptPubKey);
+        var signed = new SignedTransaction(new TxId(transaction.GetHash().ToBytes()), transaction.ToBytes());
+        var spend = new MempoolSpendEventArgs(_channel.ChannelId, signed, new TxId(parent.ToBytes()), 0, false);
+
+        // Act
+        var reaction = await Reactor.HandleSpendAsync(spend, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal([_ourHtlcId], reaction.FulfilledHtlcIds);
+        Assert.Equal(RealSigningCommitmentPair.Preimage(1),
+                     _channel.Commitments!.GetHtlc(HtlcDirection.Outgoing, _ourHtlcId)!.KnownPreimage);
+        _switch.Verify(s => s.HandleAsync(It.Is<OutgoingHtlcFulfilled>(f => f.HtlcId == _ourHtlcId),
+                                          It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     [Fact]
     public async Task Given_WitnessWithoutAPreimageOfOurs_When_Seen_Then_NothingIsWrittenOrRaised()
     {

@@ -9,8 +9,9 @@ using Domain.Onchain.Models;
 
 /// <summary>
 /// The outputs of a simple taproot commitment the on-chain resolution does not spend yet (NL-877 T4 safety floor,
-/// NL-966): HTLC outputs (claims, HTLC transactions with their wallet fee inputs, second-level outputs), the key-path
-/// penalties of revoked HTLC outputs, and our anchor. Their rows stay recorded (the watcher wrote them) and unresolved,
+/// NL-966): the HTLC outputs of our own commitment (HTLC transactions with their wallet fee inputs, second-level
+/// outputs) and our anchor (taproot wave t03 lane T4R claims and penalizes the HTLC outputs of the peer's commitments;
+/// one of those is reported here only when no leaf could be mapped for it). Their rows stay recorded (the watcher wrote them) and unresolved,
 /// so the channel stays <c>OnchainResolving</c> while funds may be at stake, and each is reported once per process at
 /// critical level through an <see cref="AlertAction"/>; nothing is built, so nothing throws every block and the other
 /// outputs and channels resolve as usual.

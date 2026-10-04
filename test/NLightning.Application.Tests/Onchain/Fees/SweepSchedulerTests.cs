@@ -166,11 +166,15 @@ public sealed class SweepSchedulerTests
         Assert.All(harness.Broadcasts.Values, b => Assert.Equal(BroadcastState.Pending, b.State));
     }
 
-    [Fact]
-    public async Task Given_UnconfirmedPenaltyBeforeItsDeadline_When_IntervalPassed_Then_ReplacedWithTheRevocationKey()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_UnconfirmedPenaltyBeforeItsDeadline_When_IntervalPassed_Then_ReplacedWithTheRevocationKey(
+        bool simpleTaproot)
     {
-        // Arrange (O6-T1 for penalties): a breach with an HTLC each way; the penalties go out and stay unconfirmed
-        using var kit = new RevokedBreachKit();
+        // Arrange (O6-T1 for penalties): a breach with an HTLC each way; the penalties go out and stay unconfirmed (a
+        // simple taproot channel re-signs its HTLC inputs by the revocation key path and to_local by its leaf, NL-966)
+        using var kit = new RevokedBreachKit(simpleTaproot: simpleTaproot);
         var pair = kit.Pair;
         pair.Add(pair.Bob, 50_000_000, RealSigningCommitmentPair.Preimage(0xB1), 600);
         pair.Add(pair.Alice, 40_000_000, RealSigningCommitmentPair.Preimage(0xA1), 650);
@@ -201,12 +205,20 @@ public sealed class SweepSchedulerTests
         await kit.ApplyAsync(actions);
 
         // Assert: the same revoked outputs, re-signed with the revocation key (script-valid), at a BIP 125 higher fee
-        var replacement = Assert.Single(actions.OfType<BroadcastAction>()).Transaction;
+        // (on the taproot channel the isolated penalty of our offered HTLC, O7-T3, is due for its bump too)
+        var replacements = actions.OfType<BroadcastAction>().Select(a => a.Transaction).ToList();
+        Assert.Equal(simpleTaproot ? 2 : 1, replacements.Count);
+        foreach (var other in replacements)
+            kit.AssertVerifies(other.TransactionId);
+        var replacement = Assert.Single(replacements, r => r.ReplacesTransactionId == penalty.TransactionId);
         Assert.Equal(BroadcastPurpose.Penalty, replacement.Purpose);
         Assert.Equal(penalty.TransactionId, replacement.ReplacesTransactionId);
         var oldTx = kit.LoadBroadcast(penalty.TransactionId);
         var newTx = kit.LoadBroadcast(replacement.TransactionId);
         Assert.Equal(oldTx.Inputs.Select(i => i.PrevOut), newTx.Inputs.Select(i => i.PrevOut));
+        Assert.Equal(oldTx.Inputs.Select(i => i.WitScript.PushCount), newTx.Inputs.Select(i => i.WitScript.PushCount));
+        if (simpleTaproot)
+            Assert.Contains(newTx.Inputs, i => i.WitScript.PushCount == 1);
         kit.AssertVerifies(replacement.TransactionId);
         var inputValue = kit.Rows.Where(r => newTx.Inputs.Any(i => i.PrevOut.Hash == new uint256((byte[])r.TransactionId)
                                                                && i.PrevOut.N == r.OutputIndex))
