@@ -43,7 +43,8 @@ public sealed class TaprootReestablish
     /// <param name="channel">The channel (under its lock).</param>
     /// <param name="message">The peer's <c>channel_reestablish</c>.</param>
     /// <param name="signedOpenAttempts">For a dual-funded open waiting for its funding, its fully signed attempts
-    /// (<c>ReestablishService.GetSignedOpenAttemptsAsync</c>): the map must hold each of them, and the channel's funding
+    /// (<c>ReestablishService.GetSignedOpenAttemptsAsync</c>): the map must hold each of them (or, once the peer saw one
+    /// of them confirm and dropped the others, at least one, NL-1079), and the channel's funding
     /// output (an RBF attempt still being signed) only when the peer's <c>next_funding</c> names it, as Eclair 0.14.3
     /// checks (<c>Helpers.Syncing.checkCommitNonces</c>; a peer that forgot the attempt has no nonce for it, and the
     /// attempt is then aborted; NL-970). Null for any other channel: every active funding needs its entry.</param>
@@ -69,7 +70,24 @@ public sealed class TaprootReestablish
                 var namedByPeer = message.NextFundingTlv is { } nextFunding
                                       ? new TxId(nextFunding.NextFundingTxId)
                                       : (TxId?)null;
-                required = signedOpenAttempts.Concat(active.Where(txId => txId == namedByPeer)).Distinct().ToList();
+
+                // A peer whose chain saw one signed attempt reach its depth keeps only that one active (Eclair 0.14.3
+                // deactivates the other RBF candidates on its local lock, and so do we once the channel left
+                // V1FundingSigned): one signed attempt's entry is then enough. Nothing is signed against these
+                // nonces before channel_ready, which carries the peer's nonce of the confirmed attempt (NL-1079)
+                IEnumerable<TxId> signed = signedOpenAttempts;
+                if (signedOpenAttempts.Any(nonces.ContainsKey) && !signedOpenAttempts.All(nonces.ContainsKey))
+                {
+                    _logger.LogInformation("channel_reestablish of the simple taproot open {ChannelId} has nonces for "
+                                         + "some of its signed attempts only: the peer saw one confirm",
+                                           channel.ChannelId);
+                    signed = [];
+                }
+
+                required = signed.Concat(active.Where(txId => txId == namedByPeer)).Distinct().ToList();
+                if (signedOpenAttempts.Count > 0 && !signedOpenAttempts.Any(nonces.ContainsKey))
+                    throw Fail(channel, "channel_reestablish has no next_local_nonces entry for any signed funding "
+                                      + "attempt");
             }
 
             foreach (var txId in required)
