@@ -119,26 +119,41 @@ and interests can help drive NLightning forward.
 
 ### Testing
 
-To verify that everything is set up correctly, you can run the included unit tests:
+To verify that everything is set up correctly, run the unit tests (no containers needed):
 
 ```sh
-dotnet test
+dotnet test -f net10.0 --filter 'FullyQualifiedName!~Docker&FullyQualifiedName!~SqlServer'
 ```
 
-#### MacOS Users
-
-To run the containerized tests, we need to connect directly to the docker containers, but if you're using macOS, you
-won't be able to, thanks to the way Docker for Mac is implemented.
-
-We're using [Docker Mac Net Connect](https://github.com/chipmk/docker-mac-net-connect) due to its simplicity. Run:
+The integration suites (interop with LND, CLN, Eclair and LDK, on-chain, gossip, Postgres and more) run on a local
+Kubernetes cluster through `scripts/run-cluster.sh`, one namespace per run so several suites run at once:
 
 ```sh
-# Install via Homebrew
-$ brew install chipmk/tap/docker-mac-net-connect
-
-# Run the service and register it to launch at boot
-$ sudo brew services start chipmk/tap/docker-mac-net-connect
+scripts/run-cluster.sh --matrix              # every suite (about 25 min)
+scripts/run-cluster.sh --matrix lnd,taproot  # selected suites
+scripts/run-cluster.sh -n 1 --suite cln      # one suite
 ```
+
+Details are in [`test/CLAUDE.md`](test/CLAUDE.md) ("Cluster test harness"). The Tor suite is the only one still on
+plain Docker (`scripts/run-interop.sh tor`).
+
+#### macOS users
+
+We recommend [OrbStack](https://orbstack.dev): it provides both the Docker engine and the Kubernetes cluster the
+harness uses, shares one image store between them, and lets the Mac reach containers directly.
+
+```sh
+brew install orbstack
+orb config set k8s.enable true   # or enable Kubernetes in OrbStack's settings
+orb start
+
+# Build the local images once (the harness never pulls them)
+docker build -t custom_lnd:0.21.4-beta test/Docker/custom_lnd
+docker build -t nltg-eclair:0.14.3 test/Docker/eclair
+docker build -t nltg-ldk-server:dc02b76c test/Docker/ldk_server
+```
+
+`run-cluster.sh` uses the `orbstack` Kubernetes context by default.
 
 ## License
 
