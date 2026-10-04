@@ -380,7 +380,7 @@ public sealed class EclairTaprootTests : IAsyncLifetime
             return closed.Any(c => c?["channelId"]?.GetValue<string>() == session.ChannelIdHex);
         }, s_stepTimeout, "Eclair lists the channel closed", ct);
 
-        LightningMoney received = LightningMoney.Zero;
+        var received = LightningMoney.Zero;
         await Poll.UntilAsync(() =>
         {
             received = AnchorsHarness.WalletBalance(session.Node) - walletBefore;
