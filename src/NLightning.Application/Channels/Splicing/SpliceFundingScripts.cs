@@ -2,10 +2,10 @@ namespace NLightning.Application.Channels.Splicing;
 
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Protocol.InteractiveTx;
-using Domain.Crypto.Interfaces;
 using Infrastructure.Bitcoin.Builders;
 
 /// <summary>

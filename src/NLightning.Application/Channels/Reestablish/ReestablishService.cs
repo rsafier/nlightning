@@ -22,7 +22,6 @@ using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
-using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Gossip.Announcements.Interfaces;
 using Services;

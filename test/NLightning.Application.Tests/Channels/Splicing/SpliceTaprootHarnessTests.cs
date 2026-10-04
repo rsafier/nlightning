@@ -8,23 +8,19 @@ using Application.Channels.Safety;
 using Application.Channels.Safety.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
-using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Splicing.Models;
-using Domain.Channels.ValueObjects;
 using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Payments.ValueObjects;
-using Domain.Protocol.Constants;
-using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
-using Domain.Protocol.Tlv;
 using Domain.Protocol.Onion.ValueObjects;
+using Domain.Protocol.Tlv;
 using Harness;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 
@@ -383,7 +379,6 @@ public class SpliceTaprootHarnessTests
             Assert.Equal(ChannelState.Open, node.Node.Channel.State);
             Assert.Empty(node.Node.State.PendingFundings);
         }
-
 
         // Bob's splice commitment_signed crossed Alice's tx_abort and was taken as a normal one (a warning that closes
         // the connection, NL-1058, any channel type); after the reconnection the channel is used

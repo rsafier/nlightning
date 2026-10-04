@@ -902,7 +902,6 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
 
     #endregion
 
-
     internal Witness BuildSharedInputWitness(SpliceNegotiation negotiation, ConstructedInteractiveTx transaction,
                                              CompactSignature localSignature, CompactSignature remoteSignature)
     {

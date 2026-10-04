@@ -180,8 +180,9 @@ public class InteractiveTxSessionDbRepository : BaseDbRepository<InteractiveTxSe
             throw new InvalidOperationException(
                 $"Interactive-tx session {entity.SessionId} has an unknown state {entity.State}");
 
-        var ours = InteractiveTxSessionEncoding.DecodeSignatures(entity.OurWitnesses);
-        var theirs = InteractiveTxSessionEncoding.DecodeSignatures(entity.TheirWitnesses);
+        var (ourWitnesses, ourPartialSignature) = InteractiveTxSessionEncoding.DecodeSignatures(entity.OurWitnesses);
+        var (theirWitnesses, theirPartialSignature) =
+            InteractiveTxSessionEncoding.DecodeSignatures(entity.TheirWitnesses);
         return new InteractiveTxSessionModel
         {
             ChannelId = entity.ChannelId,
@@ -197,10 +198,10 @@ public class InteractiveTxSessionDbRepository : BaseDbRepository<InteractiveTxSe
             ConstructedTx = entity.ConstructedTx is null
                                 ? null
                                 : InteractiveTxSessionEncoding.DecodeConstructedTx(entity.ConstructedTx),
-            OurWitnesses = ours.Witnesses,
-            OurSharedInputPartialSignature = ours.PartialSignature,
-            TheirWitnesses = theirs.Witnesses,
-            TheirSharedInputPartialSignature = theirs.PartialSignature,
+            OurWitnesses = ourWitnesses,
+            OurSharedInputPartialSignature = ourPartialSignature,
+            TheirWitnesses = theirWitnesses,
+            TheirSharedInputPartialSignature = theirPartialSignature,
             OurSharedInputSignature = entity.OurSharedInputSignature is null
                                           ? null
                                           : new CompactSignature(entity.OurSharedInputSignature),
