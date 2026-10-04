@@ -822,6 +822,74 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         }
     }
 
+    /// <summary>
+    /// Under the channel's lock, on the peer's <c>channel_reestablish</c> of a simple taproot channel (after
+    /// <see cref="EnsureLoadedAsync"/>): the peer's nonces of a splice in negotiation, which a restart forgot and a
+    /// reconnection may have renewed (BOLTs PR #1324): its <c>current_commit_nonce</c> (type 24, sent while it misses our
+    /// splice <c>commitment_signed</c>), which our retransmission is signed against, and its <c>next_local_nonces</c>
+    /// entry for the splice, which the engine takes with the peer's splice <c>commitment_signed</c>. A nonce that does
+    /// not parse is ignored (logged): the retransmission then waits for a valid one (NL-969).
+    /// </summary>
+    public void ReceiveReestablishNonces(ChannelModel channel, ChannelReestablishMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(message);
+        if (!channel.ChannelParams.OptionSimpleTaproot
+         || Get(channel.ChannelId) is not { State: SpliceNegotiationState.CommitmentSigned, NewFunding: { } funding }
+                negotiation)
+            return;
+
+        if (message.CurrentCommitNonceTlv?.Nonce is { } current)
+        {
+            if (IsValidNonce(current))
+                negotiation.RemoteCurrentCommitNonce = current;
+            else
+                _logger.LogWarning("current_commit_nonce of channel {ChannelId} does not parse; ignored",
+                                   channel.ChannelId);
+        }
+
+        if (message.NextLocalNoncesTlv?.Nonces.Entries.FirstOrDefault(e => e.FundingTxId == funding.FundingTxId) is
+            { Nonce: var next } && IsValidNonce(next))
+            negotiation.RemoteNextCommitNonce = next;
+    }
+
+    /// <summary>
+    /// Our splice <c>commitment_signed</c> again for a simple taproot channel (the peer's <c>next_funding</c> asked for
+    /// it): never replayed, signed again with a fresh signing nonce against the peer's <c>current_commit_nonce</c>
+    /// (BOLTs PR #1324: "MUST use the current_commit_nonce provided"), the new signatures saved before it is returned.
+    /// Empty (logged) when no splice of <paramref name="spliceTxId"/> is in negotiation or the peer gave no nonce.
+    /// </summary>
+    public async Task<IReadOnlyList<IChannelMessage>> ResignSpliceCommitmentAsync(ChannelModel channel,
+                                                                                  TxId spliceTxId,
+                                                                                  IUnitOfWork unitOfWork,
+                                                                                  CancellationToken cancellationToken =
+                                                                                      default)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(unitOfWork);
+        if (Get(channel.ChannelId) is not { NewFunding: { } funding } negotiation
+         || funding.FundingTxId != spliceTxId)
+        {
+            _logger.LogWarning("Our commitment_signed for splice {TxId} of channel {ChannelId} is due again but the "
+                             + "splice is not in negotiation", spliceTxId, channel.ChannelId);
+            return [];
+        }
+
+        if (negotiation.RemoteCurrentCommitNonce is not { } nonce)
+        {
+            _logger.LogWarning("Our commitment_signed for splice {TxId} of channel {ChannelId} is due again but the "
+                             + "peer sent no current_commit_nonce", spliceTxId, channel.ChannelId);
+            return [];
+        }
+
+        var commitmentSigned = await _statePort.SignSpliceCommitmentAsync(channel, funding, unitOfWork,
+                                                                          cancellationToken, nonce);
+        await unitOfWork.SaveChangesAsync();
+        _logger.LogInformation("Signed our commitment on splice {TxId} of simple taproot channel {ChannelId} again for "
+                             + "its retransmission", spliceTxId, channel.ChannelId);
+        return [commitmentSigned];
+    }
+
     /// <summary>Every output the splice transaction spends, from its inputs (the shared input's is the current
     /// funding output).</summary>
     private static IReadOnlyList<SpentOutput> GetSpentOutputs(ConstructedInteractiveTx transaction) =>

@@ -2,6 +2,7 @@ namespace NLightning.Domain.Tests.Protocol.InteractiveTx;
 
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Protocol.InteractiveTx;
@@ -10,6 +11,7 @@ using Domain.Protocol.InteractiveTx.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Protocol.Tlv;
 using static InteractiveTxTestData;
 
 /// <summary>
@@ -1386,6 +1388,57 @@ public class InteractiveTxSessionTests
     }
 
     [Fact]
+    public void Given_TaprootSpliceSignatures_When_Exchanged_Then_ThePartialSignatureReplacesTheEcdsaOne()
+    {
+        // Arrange (BOLTs PR #1324: a taproot shared input carries shared_input_partial_signature, type 2, and no
+        // shared_input_signature; "If shared_input_partial_signature is not set: MUST send an error and fail the
+        // channel")
+        var (a, b) = SplicePair(taproot: true);
+        var (first, second) = a.SendsTxSignaturesFirst() ? (a, b) : (b, a);
+        var witnesses = Enumerable.Repeat(P2WpkhWitness(),
+                                          first.Inputs.Count(i => i.AddedBy == InteractiveTxParty.Local && !i.IsShared))
+                                  .ToList();
+        var partial = new MusigPartialSignatureWithNonce(Enumerable.Repeat((byte)0x02, 98).ToArray());
+
+        // Act
+        var ecdsa = Assert.Throws<ArgumentException>(() => first.SendTxSignatures(witnesses, SharedSignature()));
+        var both = Assert.Throws<ArgumentException>(() => first.SendTxSignatures(witnesses, SharedSignature(),
+                                                                                 partial));
+        var sent = first.SendTxSignatures(witnesses, null, partial);
+        var message = Assert.IsType<TxSignaturesMessage>(Assert.Single(sent.Outbound));
+        var missing = Assert.Throws<ChannelFailedException>(
+            () => second.Receive(new TxSignaturesMessage(message.Payload, new SharedInputSignatureTlv(SharedSignature())), _inspector));
+        var received = second.Receive(message, _inspector);
+
+        // Assert
+        Assert.Contains("shared_input_partial_signature", ecdsa.Message);
+        Assert.NotNull(both);
+        Assert.Null(message.SharedInputSignatureTlv);
+        Assert.Equal(partial, message.SharedInputPartialSignatureTlv!.PartialSignatureWithNonce);
+        Assert.Equal(partial, sent.Next.LocalSharedInputPartialSignature);
+        Assert.Equal("SP-SIG-01", missing.RequirementId);
+        Assert.Equal(partial, received.Next.RemoteSharedInputPartialSignature);
+        Assert.Null(received.Next.RemoteSharedInputSignature);
+    }
+
+    [Fact]
+    public void Given_AnEcdsaSplice_When_APartialSignatureIsGiven_Then_Throws()
+    {
+        // Arrange
+        var (a, b) = SplicePair();
+        var first = a.SendsTxSignaturesFirst() ? a : b;
+        var witnesses = Enumerable.Repeat(P2WpkhWitness(),
+                                          first.Inputs.Count(i => i.AddedBy == InteractiveTxParty.Local && !i.IsShared))
+                                  .ToList();
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => first.SendTxSignatures(
+                                             witnesses, SharedSignature(),
+                                             new MusigPartialSignatureWithNonce(Enumerable.Repeat((byte)0x02, 98)
+                                                                                          .ToArray())));
+    }
+
+    [Fact]
     public void Given_SpliceWithBigNonInitiatorSpliceIn_When_Ordering_Then_SharedInputCountsForTheInitiator()
     {
         // Arrange: previous capacity 1,000,000 (balances 600,000 initiator / 400,000); the non-initiator splices in
@@ -1402,16 +1455,17 @@ public class InteractiveTxSessionTests
     }
 
     private (InteractiveTxSession Initiator, InteractiveTxSession NonInitiator) SplicePair(
-        long nonInitiatorSpliceIn = 50_000)
+        long nonInitiatorSpliceIn = 50_000, bool taproot = false)
     {
         // Each side leaves 1,000 sat of its balance for its fees (IT-R-04): the initiator pays the common fields and
         // the shared input and output (598 wu, 151 sat at 253 sat/kw), the non-initiator its input (271 wu, 68 sat).
         var capacity = 1_000_000 + nonInitiatorSpliceIn - 2_000;
         var a = InteractiveTxSession.Create(Parameters(true, shared: Splice(true, capacity, 599_000,
-                                                                              399_000 + nonInitiatorSpliceIn)));
+                                                                              399_000 + nonInitiatorSpliceIn,
+                                                                              taproot)));
         var b = InteractiveTxSession.Create(Parameters(false, Contribution([Input(5, nonInitiatorSpliceIn)]),
                                                        Splice(false, capacity, 399_000 + nonInitiatorSpliceIn,
-                                                              599_000), HighNodeId, LowNodeId));
+                                                              599_000, taproot), HighNodeId, LowNodeId));
         var inspector = new FakePrevTxInspector
         {
             Override = (bytes, _) => new PrevTxInspection(true, PrevTxId(bytes), 1,

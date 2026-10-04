@@ -63,9 +63,10 @@ internal static class InteractiveTxTestData
 
     /// <summary>A splice spec: 1,000,000 sat funding, balances 600,000 (initiator) / 400,000.</summary>
     public static SharedFundingSpec Splice(bool localIsInitiator, long newCapacity = 1_000_000,
-                                           long localOut = 600_000, long remoteOut = 400_000)
+                                           long localOut = 600_000, long remoteOut = 400_000, bool taproot = false)
     {
-        var input = new SharedFundingInput(FundingTxId, 1, LightningMoney.Satoshis(1_000_000), FundingScript, 384);
+        var input = new SharedFundingInput(FundingTxId, 1, LightningMoney.Satoshis(1_000_000), FundingScript, 384,
+                                           taproot);
         return new SharedFundingSpec(input, FundingScript, LightningMoney.Satoshis(newCapacity),
                                      LightningMoney.Satoshis(localIsInitiator ? 600_000 : 400_000),
                                      LightningMoney.Satoshis(localIsInitiator ? 400_000 : 600_000),

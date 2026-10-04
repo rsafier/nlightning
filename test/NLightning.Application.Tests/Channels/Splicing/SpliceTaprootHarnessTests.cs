@@ -16,12 +16,14 @@ using Domain.Channels.Splicing.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
+using Domain.Exceptions;
 using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Payments.ValueObjects;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Tlv;
 using Domain.Protocol.Onion.ValueObjects;
 using Harness;
 using Infrastructure.Bitcoin.Builders.Interfaces;
@@ -246,6 +248,69 @@ public class SpliceTaprootHarnessTests
     }
 
     [Fact]
+    public async Task Given_APendingTaprootSplice_When_TheAccepterBumpsIt_Then_ItIsTheInteractiveTxInitiatorAndItLocks()
+    {
+        // Arrange: Alice splices in, Bob (who contributed nothing) bumps it (BOLT 2: any quiescence initiator may RBF)
+        using var harness = new SpliceHarness(realEngine: true, simpleTaproot: true,
+                                              configureSplice: (_, o) => o.MinRbfInterval = TimeSpan.Zero);
+        harness.Alice.Fund(500_000);
+        var first = await harness.SpliceAsync(harness.Alice, 100_000);
+        Assert.True(first.State == SpliceNegotiationState.Signed, first.FailureReason);
+
+        // Act
+        var bump = harness.Bob.Service.BumpAsync(new SpliceBumpRequest(TwoNodeHarness.ChannelId,
+                                                                       SpliceHarness.FeeratePerKw * 2),
+                                                 TestContext.Current.CancellationToken);
+        await harness.PumpAsync(bump);
+        var bumped = await bump;
+
+        // Assert
+        Assert.True(bumped.State == SpliceNegotiationState.Signed, $"{bumped.State}: {bumped.FailureReason}");
+        Assert.Empty(harness.Failures);
+        var rbfTxId = bumped.SpliceTxId!.Value;
+        await harness.ConfirmAsync(rbfTxId, TwoNodeHarness.BlockHeight + 3, harness.Bob, harness.Alice);
+        var (id, preimage) = await OfferAsync(harness, harness.Alice, 10_000_000, 1);
+        await FulfillAsync(harness, harness.Bob, id, preimage);
+        Assert.Empty(harness.Failures);
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+            Assert.Equal(rbfTxId, node.Node.State.Params.Funding!.FundingTxId);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_ATaprootSplice_When_ThePeersSharedInputPartialSignatureIsBadOrMissing_Then_TheChannelFails(
+        bool missing)
+    {
+        // Arrange (BOLTs PR #1324: "If shared_input_partial_signature is not set / not a valid partial signature ...:
+        // MUST send an error and fail the channel"); Bob signs first, his tx_signatures is altered on the way
+        using var harness = new SpliceHarness(realEngine: true, simpleTaproot: true);
+        harness.Alice.Fund(500_000);
+        harness.Bob.Node.Rewrite = m => m is TxSignaturesMessage { SharedInputPartialSignatureTlv: { } tlv } signatures
+                                            ? new TxSignaturesMessage(signatures.Payload, null,
+                                                                      missing ? null : Corrupt(tlv))
+                                            : m;
+        var start = harness.Alice.Service.StartAsync(
+            new SpliceRequest(TwoNodeHarness.ChannelId, 100_000, SpliceHarness.FeeratePerKw),
+            TestContext.Current.CancellationToken);
+
+        // Act
+        for (var round = 0; round < 1_000 && !harness.Failures.Any(f => f.Exception is ChannelFailedException); round++)
+        {
+            await harness.PumpAsync();
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+
+        // Assert: Alice's tx_signatures never goes out, so the splice can never be broadcast
+        var failure = Assert.IsType<ChannelFailedException>(
+            Assert.Single(harness.Failures, f => f.Exception is ChannelFailedException).Exception);
+        Assert.Equal("SP-SIG-01", failure.RequirementId);
+        Assert.DoesNotContain(harness.Transcript, t => t is { From: "Alice", Message: TxSignaturesMessage });
+        Assert.Empty(harness.Alice.Broadcasts);
+        Assert.False(start.IsCompletedSuccessfully && (await start).State == SpliceNegotiationState.Signed);
+    }
+
+    [Fact]
     public async Task Given_AFailedTaprootChannelWithAPendingSplice_When_TheSpliceConfirmed_Then_OurCommitmentOnItIsValid()
     {
         // Arrange (SP2-C-T2 on a taproot channel): the splice is signed and pending, then the channel fails
@@ -332,6 +397,14 @@ public class SpliceTaprootHarnessTests
         await FulfillAsync(harness, harness.Bob, id, preimage);
         Assert.Equal(failures, harness.Failures.Count);
         Assert.Equal(bobBefore + 10_000_000, harness.Bob.Node.State.LocalBalanceMsat);
+    }
+
+    /// <summary>The partial signature with its first byte changed (a signature that does not verify).</summary>
+    private static SharedInputPartialSignatureTlv Corrupt(SharedInputPartialSignatureTlv tlv)
+    {
+        var bytes = tlv.PartialSignatureWithNonce.ToBytes();
+        bytes[31] ^= 0x01;
+        return new SharedInputPartialSignatureTlv(new MusigPartialSignatureWithNonce(bytes));
     }
 
     /// <summary>
