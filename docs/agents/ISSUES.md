@@ -6387,6 +6387,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-969, NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
+### NL-1079 A bumped taproot dual-funded open failed the channel on a reconnection after one side saw an attempt confirm
+- **Status:** fixed (wip/taproot-t03, lane RVR)
+- **Severity:** high
+- **Kind:** bug (interop, channel failure)
+- **Location:** `src/NLightning.Application/Channels/Taproot/TaprootReestablish.cs` (`ReceiveNoncesAsync`, the pending-open branch added by t03 lane RBF for NL-970)
+- **Evidence:** t03 lane RVR review. While our channel is still `V1FundingSigned`, the peer's `next_local_nonces` had to hold an entry for every signed RBF attempt. A peer whose chain monitor already saw one attempt reach its depth keeps only that attempt active: Eclair 0.14.3 deactivates the other RBF candidates on its local lock (`Commitments.deactivateCommitments`, "Special case for the initial funding tx, we only require a local lock") and sends nonces for `commitments.active` only, and an NLightning node in `ReadyForUs` sends only its current funding (`CreateLocalNonces`). So any reconnection between the two sides' confirmations (different `minimum_depth`, or one block-processing lag) failed the channel with TAPROOT-RE-R01 on the side that had not confirmed yet. Reproduced by `DualFundTaprootRbfTests.Given_ABumpedTaprootOpenConfirmedOnOneSideOnly_When_TheyReconnect_Then_TheChannelIsNotFailed` (both cases failed with "no next_local_nonces entry for funding ...").
+- **Fix:** the map must hold every signed attempt, or at least one of them (the peer locked it and dropped the others; logged); a map without any signed attempt still fails the channel, and the pending attempt the peer's `next_funding` names is still required. Nothing is signed against these nonces before `channel_ready`, which carries the peer's nonce of the confirmed attempt, so accepting the subset is safe.
+- **Blocks/Blocked-by:** Related NL-970, NL-877
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
+
 ### NL-976 A late `closing_sig` replaced a confirmed taproot simple close against LND (the NL-983 race)
 - **Status:** duplicate of NL-983
 - **Severity:** medium

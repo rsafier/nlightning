@@ -277,10 +277,6 @@ public sealed class ReestablishService
     }
 
     /// <summary>
-    /// The latest constructed, not aborted interactive-tx row of the channel (rows exist from our
-    /// <c>commitment_signed</c> on), or null when there is none or the rows cannot be read.
-    /// </summary>
-    /// <summary>
     /// The fully signed funding attempts of a dual-funded open still waiting for its funding (a
     /// <see cref="ChannelVersion.V2"/> channel in <see cref="ChannelState.V1FundingSigned"/> without a commitment state),
     /// oldest first; null for any other channel, or when the interactive-tx rows cannot be read. Any of them may confirm
@@ -309,6 +305,10 @@ public sealed class ReestablishService
         }
     }
 
+    /// <summary>
+    /// The latest constructed, not aborted interactive-tx row of the channel (rows exist from our
+    /// <c>commitment_signed</c> on), or null when there is none or the rows cannot be read.
+    /// </summary>
     private async Task<ReestablishInteractiveTxState?> GetLatestInteractiveTxAsync(ChannelModel channel)
     {
         IReadOnlyList<InteractiveTxSessionModel>? rows;

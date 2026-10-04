@@ -197,6 +197,47 @@ public class DualFundTaprootRbfTests
         await AssertForceCloseValidAsync(harness.Bob, channelId, signed[0], 0);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_ABumpedTaprootOpenConfirmedOnOneSideOnly_When_TheyReconnect_Then_TheChannelIsNotFailed(
+        bool firstConfirms)
+    {
+        // Arrange: two signed attempts; Bob's chain monitor sees one reach its depth (Bob sends channel_ready and keeps
+        // only that funding active, as Eclair 0.14.3 deactivates the other RBF candidates on its local lock), Alice's
+        // has not yet
+        await using var harness = await CreateTaprootHarnessAsync();
+        var open = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(Request(harness),
+                                                                           TestContext.Current.CancellationToken));
+        Assert.True(open.FailureReason is null, $"{open.FailureReason}\n{harness.Describe()}");
+        var channelId = open.ChannelId;
+        var second = await harness.RunAsync(harness.Alice.DualFund.BumpAsync(channelId, 5_000,
+                                                                             TestContext.Current.CancellationToken));
+        Assert.True(second.FailureReason is null, $"{second.FailureReason}\n{harness.Describe()}");
+        var confirmed = firstConfirms ? open.FundingTxId!.Value : second.FundingTxId!.Value;
+        await harness.Bob.ConfirmAsync(channelId, confirmed);
+        await harness.PumpAsync();
+
+        // Act: the link drops and comes back before Alice sees the confirmation; Bob's next_local_nonces then carry
+        // the confirmed attempt only
+        await harness.DisconnectAsync();
+        await harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Assert: Alice does not fail the channel over the attempt Bob no longer considers active, and both open on
+        // the confirmed attempt once she sees it
+        Assert.Empty(harness.Alice.Errors);
+        Assert.Empty(harness.Bob.Errors);
+        Assert.Equal(ChannelState.V1FundingSigned, harness.Alice.Channel(channelId).State);
+        await harness.Alice.ConfirmAsync(channelId, confirmed);
+        await harness.PumpAsync();
+        foreach (var node in harness.Nodes)
+        {
+            Assert.True(node.Channel(channelId).State == ChannelState.Open, harness.Describe());
+            Assert.Equal(confirmed, node.Channel(channelId).FundingOutput!.TransactionId);
+        }
+    }
+
     [Fact]
     public async Task Given_ARowSignedWithoutAPartialSignature_When_EitherSideBumps_Then_TheRbfIsRefused()
     {
