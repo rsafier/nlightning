@@ -1068,32 +1068,74 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         _pair.Dispose();
     }
 
-    /// <summary>
-    /// Alice offers an HTLC (expiry 600; 20,000 sat unless given, below her 546 sat dust limit it is trimmed), the
-    /// dance settles, and she fails the channel: our commitment row.
-    /// </summary>
     [Fact]
-    public async Task Given_SimpleTaprootChannel_When_CommitmentBroadcastOrPeerCommitmentSeen_Then_NoChild()
+    public async Task Given_SimpleTaprootCommitmentBelowTheEstimate_When_Round_Then_ChildSpendsOurAnchorByKeyPath()
     {
-        // Arrange: a failed taproot channel whose (MuSig2-signed) commitment is broadcast; its anchors are P2TR
-        // outputs keyed to the delayed/remote keys, which this service cannot spend yet (taproot plan T4)
+        // Arrange (NL-966): a failed taproot channel whose MuSig2-signed commitment is broadcast; our anchor on it is
+        // P2TR, keyed to our local_delayedpubkey of that commitment with the OP_16 OP_CSV leaf
         Dispose();
         Init(hasAnchors: true, simpleTaproot: true);
         var commitment = BroadcastCommitment();
 
         // Act
-        await Service.OnCommitmentBroadcastAsync(_channel.ChannelId, TestContext.Current.CancellationToken);
         await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
-        Service.OnPeerCommitmentInMempool(_channel.ChannelId, commitment.ToSignedTransaction(), false);
-        await Service.WhenIdleAsync();
 
-        // Assert: skipped cleanly, before any estimate, reservation, child or publication
-        Assert.Empty(_estimateTargets);
-        Assert.Empty(_store.Children);
-        Assert.Empty(_wallet.Reserved(_channel.ChannelId));
-        Assert.Equal(0, _wallet.ReleaseCount);
-        Assert.Empty(_published);
-        Assert.DoesNotContain(_store.Rows, r => r.Purpose == BroadcastPurpose.PeerCommitment);
+        // Assert: one child spending our taproot anchor first, by key path (one 64-byte item), every input valid over
+        // all the outputs it spends; the package pays the estimate
+        var row = Assert.Single(_store.Children);
+        Assert.Equal(row, Assert.Single(_published));
+        var commitmentTx = Load(commitment);
+        var child = Load(row);
+        Assert.Equal(new OutPoint(commitmentTx.GetHash(), FindOurTaprootAnchor(commitmentTx)), child.Inputs[0].PrevOut);
+        Assert.Equal(64, Assert.Single(child.Inputs[0].WitScript.Pushes).Length);
+        AnchorTx.AssertAllScriptsValid(child, commitmentTx, _wallet);
+        Assert.InRange(PackageFeerate(commitmentTx, child), _estimate, _estimate + 50);
+
+        // Act: the estimate rises and the bump is due (RbfIntervalBlocks 2)
+        _estimate = 20_000;
+        await Service.RunOnceAsync(502, TestContext.Current.CancellationToken);
+
+        // Assert: the replacement spends the same anchor, signed again over its new spent outputs, valid
+        var replacement = _store.Children.Single(c => c.TransactionId != row.TransactionId);
+        Assert.Equal(row.TransactionId, replacement.ReplacesTransactionId);
+        Assert.Equal(BroadcastState.Replaced, row.State);
+        var newChild = Load(replacement);
+        Assert.Equal(child.Inputs[0].PrevOut, newChild.Inputs[0].PrevOut);
+        AnchorTx.AssertAllScriptsValid(newChild, commitmentTx, _wallet);
+        Assert.True(AnchorTx.ChildFee(newChild, _wallet) > AnchorTx.ChildFee(child, _wallet));
+    }
+
+    [Fact]
+    public async Task Given_SimpleTaprootCommitmentConfirmed16BlocksAgo_When_FeesAreLow_Then_BothAnchorsSweptByTheLeaf()
+    {
+        // Arrange (NL-966): a taproot commitment that paid its way, confirmed at 500
+        Dispose();
+        Init(hasAnchors: true, simpleTaproot: true);
+        _estimate = 2_000;
+        var commitment = BroadcastCommitment();
+        commitment.MarkConfirmed(500, OnchainTestStore.BlockHash(1));
+        _estimate = 253;
+
+        // Act
+        await Service.RunOnceAsync(514, TestContext.Current.CancellationToken);
+        var before = _sweeps.Count;
+        await Service.RunOnceAsync(515, TestContext.Current.CancellationToken);
+
+        // Assert: both P2TR anchors (ours and the peer's) swept by <OP_16 OP_CSV> <control block>, nSequence 16, valid
+        Assert.Equal(0, before);
+        var sweep = Transaction.Load(Assert.Single(_sweeps).RawTxBytes, Network.Main);
+        var commitmentTx = Load(commitment);
+        Assert.Equal(2, sweep.Inputs.Count);
+        Assert.Contains(sweep.Inputs, i => i.PrevOut.N == FindOurTaprootAnchor(commitmentTx));
+        Assert.All(sweep.Inputs, i =>
+        {
+            Assert.Equal(commitmentTx.GetHash(), i.PrevOut.Hash);
+            Assert.Equal(16u, i.Sequence.Value);
+            Assert.Equal(2, i.WitScript.PushCount);
+            Assert.Equal(330, commitmentTx.Outputs[i.PrevOut.N].Value.Satoshi);
+        });
+        AnchorTx.AssertAllScriptsValid(sweep, commitmentTx, _wallet);
+        Assert.Equal(_walletScript, sweep.Outputs.Single().ScriptPubKey.ToBytes());
     }
 
     private BroadcastTransactionModel BroadcastCommitment(ulong htlcMsat = 20_000_000)
@@ -1119,6 +1161,17 @@ public sealed class AnchorCpfpServiceTests : IDisposable
                                                                                == BroadcastPurpose.AnchorCpfp)))
                 .Callback<BroadcastTransactionModel>(_published.Add)
                 .ReturnsAsync(false);
+
+    /// <summary>Our taproot anchor on our commitment: keyed to our local_delayedpubkey of its number.</summary>
+    private uint FindOurTaprootAnchor(Transaction commitment)
+    {
+        var keys = _provider.GetRequiredService<ICommitmentKeyDerivationService>().DeriveLocalCommitmentKeys(
+            _channel.LocalKeySet.KeyIndex, _pair.Alice.Signer.GetChannelBasepoints(_channel.LocalKeySet.KeyIndex),
+            _pair.Bob.Basepoints, _pair.Alice.State.LocalCommit.Number);
+        return new AnchorChildTransactionBuilder().FindTaprootAnchorOutput(commitment.ToBytes(),
+                                                                           keys.LocalDelayedPubKey)
+            ?? throw new InvalidOperationException("No taproot anchor");
+    }
 
     private uint FindOurAnchor(Transaction commitment) =>
         new AnchorChildTransactionBuilder().FindAnchorOutput(commitment.ToBytes(),

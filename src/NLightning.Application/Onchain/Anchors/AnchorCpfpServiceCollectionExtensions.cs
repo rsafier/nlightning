@@ -8,6 +8,7 @@ namespace NLightning.Application.Onchain.Anchors;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
 using Domain.Onchain.Fees;
+using Domain.Protocol.Interfaces;
 using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Onchain.Interfaces;
@@ -53,7 +54,8 @@ public static class AnchorCpfpServiceCollectionExtensions
                                                              sp.GetService<IAnchorFeeInputSource>(),
                                                              sp.GetService<IOptions<AnchorCpfpOptions>>()?.Value,
                                                              sp.GetService<IBitcoinChainService>(),
-                                                             sp.GetService<ICommitmentOutputMapper>()));
+                                                             sp.GetService<ICommitmentOutputMapper>(),
+                                                             sp.GetService<ICommitmentKeyDerivationService>()));
         services.TryAddSingleton<IAnchorCpfpService>(sp => sp.GetRequiredService<AnchorCpfpService>());
         return services;
     }

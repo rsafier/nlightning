@@ -23,6 +23,7 @@ using Domain.Onchain.Enums;
 using Domain.Onchain.Events;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.Interfaces;
 using Fees;
 using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Builders.Interfaces;
@@ -120,6 +121,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     private readonly AnchorCpfpPolicy _policy;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ISweepDestinationProvider _sweepDestinationProvider;
+    private readonly ICommitmentKeyDerivationService? _keyDerivation;
 
     private readonly SemaphoreSlim _roundLock = new(1, 1);
     private readonly HashSet<string> _loggedOnce = [];
@@ -128,7 +130,6 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     private readonly HashSet<TxId> _feeRefusedChildren = [];
     private readonly Dictionary<TxId, uint> _anchorSpentSeenAtTip = [];
     private readonly ConcurrentDictionary<ChannelId, PeerCommitmentSeen> _peerCommitments = new();
-    private readonly ConcurrentDictionary<ChannelId, byte> _taprootSkipLogged = new();
     private readonly Dictionary<TxId, (uint Height, int Count)> _peerCommitmentMissing = [];
     private readonly ConcurrentDictionary<ChannelId, byte> _peerChildChannels = new();
 
@@ -150,8 +151,10 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
                              ISweepDestinationProvider sweepDestinationProvider,
                              IAnchorFeeInputSource? feeInputSource = null, AnchorCpfpOptions? options = null,
                              IBitcoinChainService? chainService = null,
-                             ICommitmentOutputMapper? commitmentOutputMapper = null)
+                             ICommitmentOutputMapper? commitmentOutputMapper = null,
+                             ICommitmentKeyDerivationService? keyDerivation = null)
     {
+        _keyDerivation = keyDerivation;
         _blockchainMonitor = blockchainMonitor;
         _chainService = chainService;
         _commitmentOutputMapper = commitmentOutputMapper;
@@ -388,27 +391,11 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     }
 
     /// <summary>
-    /// A simple taproot channel (NL-877): its anchors are P2TR outputs keyed to <c>local_delayedpubkey</c>/
-    /// <c>remotepubkey</c>, not the P2WSH funding-key anchors this service spends and signs, so no CPFP child is built
-    /// for it until BOLT 5 support for taproot lands (plan T4). Logged once per channel.
-    /// </summary>
-    private bool IsSkippedTaprootChannel(ChannelModel channel)
-    {
-        if (!channel.ChannelParams.CommitmentFormat.IsTaproot())
-            return false;
-
-        if (_taprootSkipLogged.TryAdd(channel.ChannelId, 0))
-            _logger.LogWarning("Channel {ChannelId} is a simple taproot channel: anchor CPFP is not supported for it "
-                             + "yet (taproot plan T4); its commitments get no child", channel.ChannelId);
-        return true;
-    }
-
-    /// <summary>
     /// An anchor channel that is failed or resolving on chain, or whose peer commitment was seen in the mempool or has
     /// a pending child of ours (the channel may still be <c>Open</c> then: the peer force-closed).
     /// </summary>
     private bool IsRoundChannel(ChannelModel channel) =>
-        channel.ChannelParams.OptionAnchorOutputs && !IsSkippedTaprootChannel(channel)
+        channel.ChannelParams.OptionAnchorOutputs
      && (channel.State is ChannelState.Failed or ChannelState.OnchainResolving
       || ((_peerCommitments.ContainsKey(channel.ChannelId) || _peerChildChannels.ContainsKey(channel.ChannelId))
        && channel.State is not (ChannelState.Closed or ChannelState.Stale)));
@@ -599,7 +586,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
             {
                 var settlement = await ChildrenSettlementAsync(
                     channel.ChannelId, commitment.TransactionId,
-                    _builder.FindAnchorOutput(commitment.RawTransaction, channel.LocalFundingPubKey),
+                    FindOurAnchor(channel, commitment.TransactionId, commitment.RawTransaction, false,
+                                  commitment.CommitmentNumber)?.OutputIndex,
                     commitment.ConfirmedHeight, height);
                 if (settlement == ChildrenSettlement.NotYet)
                     return PathState.Active;
@@ -617,7 +605,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
 
             if (commitment is { State: BroadcastState.Confirmed, ConfirmedHeight: { } confirmedHeight })
                 result.Sweep = await PlanAnchorSweepAsync(channel, commitment.TransactionId,
-                                                          commitment.RawTransaction, confirmedHeight,
+                                                          commitment.RawTransaction, false,
+                                                          commitment.CommitmentNumber, confirmedHeight,
                                                           children.Count > 0, height, cancellationToken);
 
             return PathState.Done;
@@ -638,7 +627,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
 
         var (deadline, stakeSat) = GetDeadlineAndStake(channel);
         var parent = new ParentCommitment(commitment.TransactionId, commitment.RawTransaction, deadline, stakeSat,
-                                          false);
+                                          false, commitment.CommitmentNumber);
         var pending = await PlanChildAsync(channel, parent, pendingChildren, !otherPending, height,
                                            cancellationToken);
         if (pending is null)
@@ -951,9 +940,9 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
             return null;
         }
 
-        var fundingPubKey = channel.LocalFundingPubKey;
         var commitmentTx = Transaction.Load(parent.RawTransaction, Network.Main);
-        if (_builder.FindAnchorOutput(parent.RawTransaction, fundingPubKey) is not { } anchorVout)
+        if (FindOurAnchor(channel, parent.TxId, parent.RawTransaction, parent.IsPeers, parent.OurCommitmentNumber)
+            is not { } anchor)
         {
             LogOnce($"{channelId}:{parent.TxId}:anchor",
                     "Commitment {TxId} of channel {ChannelId} has no anchor of ours; it cannot be fee-bumped",
@@ -983,7 +972,6 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         var estimate = await FeeEstimates.GetForTargetAsync(_feeService, target, _logger, cancellationToken);
         estimate = await FloorAtMempoolMinimumAsync(estimate);
         var cap = _policy.GetFeeCap(stakeSat, deadline is not null);
-        var anchor = new AnchorOutpoint(parent.TxId, anchorVout, fundingPubKey);
 
         var latest = LatestChild(pendingChildren);
         if (latest is null)
@@ -1013,7 +1001,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         var oldFeeUpper = ((ulong)latest.FeeratePerKw + 1) * (ulong)oldWeight / 1000 + 1;
         var changeScript = oldTx.Outputs[0].ScriptPubKey.ToBytes();
         var held = (await _feeInputSource.GetReservedAsync(channelId, cancellationToken)).ToList();
-        var inputs = await EnsureFundsAsync(channelId, held, changeScript,
+        var inputs = await EnsureFundsAsync(channelId, held, changeScript, anchor.IsTaproot,
                                             w => _policy.DecideReplacement(commitmentFee, commitmentWeight, w,
                                                                            estimate, oldFeeUpper, cap),
                                             cancellationToken);
@@ -1073,7 +1061,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
                                                           CancellationToken cancellationToken)
     {
         var channelId = channel.ChannelId;
-        var emptyWeight = _builder.EstimateChildWeight([], 22);
+        var emptyWeight = _builder.EstimateChildWeight([], 22, anchor.IsTaproot);
         if (_policy.DecideChild(commitmentFee, commitmentWeight, emptyWeight, estimate, cap) is null)
             return null;
 
@@ -1091,7 +1079,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         }
 
         var held = (await _feeInputSource!.GetReservedAsync(channelId, cancellationToken)).ToList();
-        var inputs = await EnsureFundsAsync(channelId, held, changeScript,
+        var inputs = await EnsureFundsAsync(channelId, held, changeScript, anchor.IsTaproot,
                                             w => _policy.DecideChild(commitmentFee, commitmentWeight, w, estimate,
                                                                      cap),
                                             cancellationToken);
@@ -1146,13 +1134,13 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     /// the fee for the weight of the inputs held. Null when no fee can be decided or the wallet runs short.
     /// </summary>
     private async Task<(IReadOnlyList<AnchorWalletInput> Inputs, AnchorChildFeeDecision Decision)?> EnsureFundsAsync(
-        ChannelId channelId, List<AnchorWalletInput> held, byte[] changeScript,
+        ChannelId channelId, List<AnchorWalletInput> held, byte[] changeScript, bool taprootAnchor,
         Func<long, AnchorChildFeeDecision?> decide, CancellationToken cancellationToken)
     {
         var dust = ShutdownScriptValidator.GetDustThresholdSat(changeScript);
         for (var round = 0; round < MaxSelectionRounds; round++)
         {
-            var weight = _builder.EstimateChildWeight(held, changeScript.Length);
+            var weight = _builder.EstimateChildWeight(held, changeScript.Length, taprootAnchor);
             if (decide(weight) is not { } decision)
                 return null;
 
@@ -1181,21 +1169,34 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         try
         {
             var unsigned = _builder.BuildChild(anchor, walletInputs, changeScript, feeSat);
-            var anchorSignature = _lightningSigner.SignAnchorInput(channelId, unsigned.Transaction,
-                                                                   unsigned.AnchorInputIndex,
-                                                                   TransactionConstants.AnchorOutputAmount);
+            var anchorSpent = new SpentOutput(anchor.TxId, anchor.OutputIndex, TransactionConstants.AnchorOutputAmount,
+                                              _builder.GetAnchorScriptPubKey(anchor));
+
+            // A simple taproot anchor (NL-966): key path, BIP 340 SIGHASH_DEFAULT over every spent output
+            var anchorSignature = anchor.IsTaproot
+                                      ? _lightningSigner.SignTaprootAnchorInput(
+                                          channelId, unsigned.Transaction, unsigned.AnchorInputIndex,
+                                          anchor.OurPerCommitmentPoint,
+                                          [
+                                              anchorSpent,
+                                              .. walletInputs.Select(i => new SpentOutput(
+                                                                         i.TxId, i.OutputIndex,
+                                                                         LightningMoney.Satoshis(i.AmountSat),
+                                                                         i.ScriptPubKey))
+                                          ])
+                                      : _lightningSigner.SignAnchorInput(channelId, unsigned.Transaction,
+                                                                         unsigned.AnchorInputIndex,
+                                                                         TransactionConstants.AnchorOutputAmount);
 
             var walletSigned = new SignedTransaction(unsigned.Transaction.TxId,
                                                      (byte[])unsigned.Transaction.RawTxBytes.Clone());
             // The anchor's prevout, which a P2TR wallet input's BIP 341 signature commits to
-            _lightningSigner.SignWalletTransaction(
-                walletSigned,
-                [
-                    new SpentOutput(anchor.TxId, anchor.OutputIndex, TransactionConstants.AnchorOutputAmount,
-                                    _builder.GetAnchorScriptPubKey(anchor.FundingPubKey))
-                ]);
-            var signed = _builder.AddAnchorWitness(walletSigned.RawTxBytes, unsigned.AnchorInputIndex,
-                                                   anchorSignature, anchor.FundingPubKey);
+            _lightningSigner.SignWalletTransaction(walletSigned, [anchorSpent]);
+            var signed = anchor.IsTaproot
+                             ? _builder.AddTaprootAnchorWitness(walletSigned.RawTxBytes, unsigned.AnchorInputIndex,
+                                                                anchorSignature)
+                             : _builder.AddAnchorWitness(walletSigned.RawTxBytes, unsigned.AnchorInputIndex,
+                                                         anchorSignature, anchor.FundingPubKey);
 
             var tx = Transaction.Load(signed.RawTxBytes, Network.Main);
             if (new TxId(tx.GetHash().ToBytes()) != unsigned.Transaction.TxId)
@@ -1203,8 +1204,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
 
             var spentOutputs = new TxOut[tx.Inputs.Count];
             spentOutputs[unsigned.AnchorInputIndex] =
-                new TxOut(Money.Satoshis(AnchorCpfpPolicy.AnchorSat),
-                          new Script(_builder.GetAnchorScriptPubKey(anchor.FundingPubKey)));
+                new TxOut(Money.Satoshis(AnchorCpfpPolicy.AnchorSat), new Script(_builder.GetAnchorScriptPubKey(anchor)));
             for (var i = 0; i < walletInputs.Count; i++)
                 spentOutputs[i + 1] = new TxOut(Money.Satoshis(walletInputs[i].AmountSat),
                                                 new Script(walletInputs[i].ScriptPubKey));
@@ -1234,7 +1234,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     /// process). <paramref name="anyChild"/>: a child of ours ever spent our anchor on it.
     /// </summary>
     private async Task<BroadcastTransactionModel?> PlanAnchorSweepAsync(ChannelModel channel, TxId commitmentTxId,
-                                                                byte[] commitmentTransaction, uint confirmedHeight,
+                                                                byte[] commitmentTransaction, bool isPeers,
+                                                                ulong? ourCommitmentNumber, uint confirmedHeight,
                                                                 bool anyChild, uint height,
                                                                 CancellationToken cancellationToken)
     {
@@ -1248,19 +1249,18 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         }
 
         var anchors = new List<AnchorOutpoint>();
-        var ours = channel.LocalFundingPubKey;
-        if (_builder.FindAnchorOutput(commitmentTransaction, ours) is { } ourVout)
-            anchors.Add(new AnchorOutpoint(commitmentTxId, ourVout, ours));
-        if (channel.RemoteFundingPubKey is { } theirs
-         && _builder.FindAnchorOutput(commitmentTransaction, theirs) is { } theirVout)
-            anchors.Add(new AnchorOutpoint(commitmentTxId, theirVout, theirs));
+        var ours = FindOurAnchor(channel, commitmentTxId, commitmentTransaction, isPeers, ourCommitmentNumber);
+        if (ours is not null)
+            anchors.Add(ours);
+        if (FindPeerAnchor(channel, commitmentTxId, commitmentTransaction, isPeers) is { } theirs)
+            anchors.Add(theirs);
 
         // One spent input invalidates the whole sweep: keep only the anchors nobody spent (a child of ours, also a
         // replaced one the monitor stopped tracking, or the peer's own CPFP)
         if (_chainService is null)
         {
             if (anyChild)
-                anchors.RemoveAll(a => a.FundingPubKey == ours);
+                anchors.RemoveAll(a => a == ours);
         }
         else
         {
@@ -1661,8 +1661,10 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     }
 
     /// <summary>The commitment a child pays for: its raw bytes, the deadline and our stake on it.</summary>
+    /// <param name="OurCommitmentNumber">For our commitment, its number (a simple taproot anchor of ours is keyed to our
+    /// delayed key at that commitment's point); null for the peer's.</param>
     private sealed record ParentCommitment(TxId TxId, byte[] RawTransaction, uint? Deadline, ulong StakeSat,
-                                           bool IsPeers);
+                                           bool IsPeers, ulong? OurCommitmentNumber = null);
 
     private sealed record PlannedChild(BroadcastTransactionModel Row, TxId? Replaces, bool ReleaseOnFailure);
 }

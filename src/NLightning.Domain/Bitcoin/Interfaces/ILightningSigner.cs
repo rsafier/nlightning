@@ -351,6 +351,32 @@ public interface ILightningSigner
     CompactSignature SignAnchorInput(ChannelId channelId, SignedTransaction unsignedTransaction, int inputIndex,
                                      LightningMoney amount);
 
+    /// <summary>
+    /// Simple taproot channels (NL-966): the key-path signature of the input of <paramref name="unsignedTransaction"/>
+    /// that spends one of our taproot anchors (BIP 340, <c>SIGHASH_DEFAULT</c>, BIP 341 sighash over every spent
+    /// output): our <c>to_local_anchor</c> on our commitment (internal key our <c>local_delayedpubkey</c> at
+    /// <paramref name="ourPerCommitmentPoint"/>) or, with a null point, our <c>to_remote_anchor</c> on the peer's
+    /// commitment (internal key our payment basepoint). The key is tweaked with the anchor's tapscript root
+    /// (<c>OP_16 OP_CHECKSEQUENCEVERIFY</c>).
+    /// </summary>
+    /// <remarks>
+    /// The signer builds the anchor output from the derived key and refuses unless the spent output of
+    /// <paramref name="inputIndex"/> is exactly that 330-sat output, so the key never signs anything else. Not blocked
+    /// by data loss or by a broadcast mark (S1), as <see cref="SignAnchorInput"/>.
+    /// </remarks>
+    /// <param name="channelId">The registered simple taproot channel.</param>
+    /// <param name="unsignedTransaction">The child transaction (witnesses are ignored).</param>
+    /// <param name="inputIndex">The index of the anchor input.</param>
+    /// <param name="ourPerCommitmentPoint">Our per-commitment point of our commitment, or null for the peer's.</param>
+    /// <param name="spentOutputs">Every output the transaction spends, in input order.</param>
+    /// <returns>The 64-byte BIP 340 signature (no sighash byte).</returns>
+    /// <exception cref="Exceptions.SignerException">The channel is not a registered taproot channel, the transaction
+    /// does not parse or the spent output is not our anchor.</exception>
+    CompactSignature SignTaprootAnchorInput(ChannelId channelId, SignedTransaction unsignedTransaction, int inputIndex,
+                                            CompactPubKey? ourPerCommitmentPoint,
+                                            IReadOnlyList<Wallet.Models.SpentOutput> spentOutputs) =>
+        throw new NotImplementedException("Simple taproot anchors (NL-966)");
+
     #region Splicing (splicing plan SP1-0; implemented by lane SP1-C in LocalLightningSigner.Splicing.cs)
 
     /// <summary>
