@@ -171,12 +171,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 1 | 6 | 81 | 88 |
+| open | 0 | 1 | 6 | 83 | 90 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
 | fixed | 15 | 66 | 211 | 437 | 729 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 3 | 4 | 7 |
-| **Total** | **15** | **67** | **227** | **532** | **841** |
+| **Total** | **15** | **67** | **227** | **534** | **843** |
 
 ### Epics
 
@@ -2076,6 +2076,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** add the channel type (anchors, static_remotekey, simple taproot) to the channel info response (a new key) and print it.
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** —
+
+### NL-988 `TrampolineRelayServiceTests.Given_AnIncompleteSet_When_TheMppTimeoutPasses_*` failed once under a loaded run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Payments/Trampoline/TrampolineRelayServiceTests.cs`
+- **Evidence:** taproot t02 NL-983 follow-up unit run (2026-10-03, branch tap2-a55 on 49d3b18d): one failure in a loaded full Application.Tests run; 3/3 alone. The MPP timeout is likely waited on with a wall-clock bound that a loaded host overruns.
+- **Fix sketch:** drive the MPP timeout from the stepped clock (as the de-timing pass did for the switch tests) or widen the wait to an event.
+- **Blocks/Blocked-by:** Related NL-875
+- **Plan ref:** —
+
+### NL-989 `PartitionClusterTests` reestablish-deadline case rerun-green in two matrices
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Cluster/Live/PartitionClusterTests.cs` (`Given_AClnThatNeverAnswersOurReestablish_When_TheDeadlinePasses_Then_WeDropAndRedialAndTheChannelS*`)
+- **Evidence:** the `faults` suite needed a class rerun in tap2-mx2 (two PartitionClusterTests cases) and in combo-mx1 (49d3b18d, 2026-10-03; diag `TestResults/cluster/combo-mx1/faults/diag/` in /Users/ms/nlightning-combo). Green alone both times. The case freezes CLN and waits for our `Node:ReestablishTimeout` drop and redial (NL-796); under a full 12-namespace matrix the timing bounds look tight.
+- **Fix sketch:** read the diag for which bound was missed; widen it relative to the configured deadline, or have the test wait for the drop event instead of a fixed window.
+- **Blocks/Blocked-by:** Related NL-796, NL-891, NL-806
+- **Plan ref:** `TEST_HARNESS_PLAN.md`
 ### NL-056 HTLC-success / HTLC-timeout second-stage transactions not implemented
 - **Status:** fixed (dfe8866, b222896)
 - **Severity:** high
