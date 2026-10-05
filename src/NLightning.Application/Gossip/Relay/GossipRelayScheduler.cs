@@ -125,6 +125,30 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
     }
 
     /// <inheritdoc />
+    public void EnqueueOwnChannelAnnouncement2(ChannelAnnouncement2Payload announcement)
+    {
+        ArgumentNullException.ThrowIfNull(announcement);
+        Enqueue($"267:{announcement.ShortChannelId}", ChannelAnnouncementRank, 0, announcement.ShortChannelId,
+                new ChannelAnnouncement2Message(announcement), announcement.GetBytes(), 2);
+    }
+
+    /// <inheritdoc />
+    public void EnqueueOwnChannelUpdate2(ChannelUpdate2Payload update)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        Enqueue($"271:{update.ShortChannelId}:{update.Direction}", ChannelUpdateRank, update.BlockHeight,
+                update.ShortChannelId, new ChannelUpdate2Message(update), update.GetBytes(), 2);
+    }
+
+    /// <inheritdoc />
+    public void EnqueueOwnNodeAnnouncement2(NodeAnnouncement2Payload announcement)
+    {
+        ArgumentNullException.ThrowIfNull(announcement);
+        Enqueue($"269:{announcement.NodeId}", NodeAnnouncementRank, announcement.BlockHeight, null,
+                new NodeAnnouncement2Message(announcement), announcement.GetBytes(), 2);
+    }
+
+    /// <inheritdoc />
     public async Task FlushAsync(CancellationToken cancellationToken = default)
     {
         await _flushGate.WaitAsync(cancellationToken);
@@ -135,11 +159,13 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
                 entries = _own.Values.ToList();
 
             // BOLT 7: a channel_announcement never goes out without an update for its channel, and our
-            // node_announcement never before one of our channel_announcements; 256, then 258, then 257
-            var updated = entries.Where(e => e.Rank == ChannelUpdateRank).Select(e => e.ShortChannelId!.Value)
+            // node_announcement never before one of our channel_announcements; 256, then 258, then 257. The same for
+            // taproot gossip (267, 271, 269; NL-878), each protocol on its own
+            var updated = entries.Where(e => e.Rank == ChannelUpdateRank)
+                                 .Select(e => (e.ShortChannelId!.Value, e.Version))
                                  .ToHashSet();
             var ordered = entries.Where(e => e.Rank != ChannelAnnouncementRank
-                                          || updated.Contains(e.ShortChannelId!.Value))
+                                          || updated.Contains((e.ShortChannelId!.Value, e.Version)))
                                  .OrderBy(e => e.Rank).ThenBy(e => e.Sequence)
                                  .ToList();
             if (ordered.Count == 0)
@@ -154,7 +180,10 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
 
                 var sent = _sentPerConnection.GetValue(peer.Service, _ => []);
                 sent.IntersectWith(current);
-                await SendToPeerAsync(peer, ordered, sent);
+
+                // NL-878: our taproot gossip only to the peers that negotiated option_gossip_v2
+                await SendToPeerAsync(peer, SupportsGossipV2(peer) ? ordered : ordered.Where(e => e.Version == 1)
+                                                                                    .ToList(), sent);
             }
         }
         finally
@@ -179,7 +208,7 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
     }
 
     private void Enqueue(string key, int rank, uint timestamp, ShortChannelId? shortChannelId, IMessage message,
-                         byte[] bytes)
+                         byte[] bytes, byte version = 1)
     {
         var digest = Convert.ToHexString(SHA256.HashData(bytes));
         lock (_lock)
@@ -189,7 +218,7 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
                 return;
 
             _own[key] = new OwnEntry(rank, message, digest, timestamp, shortChannelId, ++_sequence,
-                                     bytes.Length + sizeof(ushort));
+                                     bytes.Length + sizeof(ushort), version);
             if (_timer is null && !_disposed)
             {
                 var interval = _gossipOptions.OwnGossipFlushInterval > TimeSpan.Zero
@@ -212,7 +241,8 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
             // BOLT 7: a node_announcement for a node with no known channel is ignored, so it waits until one of our
             // channel_announcements went out on this connection (earlier, or above in this flush: 256 ranks first)
             if (entry.Rank == NodeAnnouncementRank
-             && !ordered.Any(e => e.Rank == ChannelAnnouncementRank && sent.Contains(e.Digest)))
+             && !ordered.Any(e => e.Rank == ChannelAnnouncementRank && e.Version == entry.Version
+                               && sent.Contains(e.Digest)))
                 continue;
 
             try
@@ -257,6 +287,7 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
     private bool IsOurs(CompactPubKey nodeId) => _ourNodeId is { } ours && ours == nodeId;
 
     /// <summary>One queued message of ours.</summary>
+    /// <param name="Version">The gossip protocol: 1 BOLT 7, 2 taproot gossip (NL-878).</param>
     private sealed record OwnEntry(int Rank, IMessage Message, string Digest, uint Timestamp,
-                                   ShortChannelId? ShortChannelId, long Sequence, int Size);
+                                   ShortChannelId? ShortChannelId, long Sequence, int Size, byte Version = 1);
 }

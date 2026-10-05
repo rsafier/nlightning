@@ -17,6 +17,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Direction>k__BackingField")]
         public static extern ref byte Direction(GraphChannelPolicyEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Version>k__BackingField")]
+        public static extern ref byte Version(GraphChannelPolicyEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<ChannelFlags>k__BackingField")]
         public static extern ref byte ChannelFlags(GraphChannelPolicyEntity @this);
 
@@ -34,6 +37,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<HtlcMinimumMsat>k__BackingField")]
         public static extern ref ulong HtlcMinimumMsat(GraphChannelPolicyEntity @this);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<InboundFeeBaseMsat>k__BackingField")]
+        public static extern ref uint InboundFeeBaseMsat(GraphChannelPolicyEntity @this);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<InboundFeePpm>k__BackingField")]
+        public static extern ref uint InboundFeePpm(GraphChannelPolicyEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<MessageFlags>k__BackingField")]
         public static extern ref byte MessageFlags(GraphChannelPolicyEntity @this);

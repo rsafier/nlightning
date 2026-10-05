@@ -197,6 +197,18 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresGraphRowsFromBeforeAddGossipV2_When_Migrated_Then_TheyAreV1AndV2RowsRoundTrip()
+    {
+        // Arrange (NL-878: the graph rows of migration AddGossipV2 on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_graph_gossip_v2");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await GossipV2SchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                          DatabaseType.PostgreSql, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresRowsFromBeforeAddOnionReplaySet_When_Migrated_Then_TheyMoveForwardAndTheReplaySetWorks()
     {
         // Arrange (NL-078: rows written before the migration move forward; replay entries round-trip, are pruned by

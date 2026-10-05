@@ -2075,12 +2075,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnName("short_channel_id");
 
                     b.Property<byte[]>("BitcoinKey1")
-                        .IsRequired()
                         .HasColumnType("bytea")
                         .HasColumnName("bitcoin_key1");
 
                     b.Property<byte[]>("BitcoinKey2")
-                        .IsRequired()
                         .HasColumnType("bytea")
                         .HasColumnName("bitcoin_key2");
 
@@ -2097,6 +2095,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("bytea")
                         .HasColumnName("funding_tx_id");
 
+                    b.Property<byte>("GossipVersions")
+                        .HasColumnType("smallint")
+                        .HasColumnName("gossip_versions");
+
                     b.Property<byte[]>("NodeId1")
                         .IsRequired()
                         .HasColumnType("bytea")
@@ -2111,6 +2113,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .IsRequired()
                         .HasColumnType("bytea")
                         .HasColumnName("raw_announcement");
+
+                    b.Property<byte[]>("RawAnnouncement2")
+                        .HasColumnType("bytea")
+                        .HasColumnName("raw_announcement2");
 
                     b.Property<long>("ReceivedAt")
                         .HasColumnType("bigint")
@@ -2149,6 +2155,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("smallint")
                         .HasColumnName("direction");
 
+                    b.Property<byte>("Version")
+                        .HasColumnType("smallint")
+                        .HasColumnName("version");
+
                     b.Property<byte>("ChannelFlags")
                         .HasColumnType("smallint")
                         .HasColumnName("channel_flags");
@@ -2173,6 +2183,14 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("numeric(20,0)")
                         .HasColumnName("htlc_minimum_msat");
 
+                    b.Property<long>("InboundFeeBaseMsat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("inbound_fee_base_msat");
+
+                    b.Property<long>("InboundFeePpm")
+                        .HasColumnType("bigint")
+                        .HasColumnName("inbound_fee_ppm");
+
                     b.Property<byte>("MessageFlags")
                         .HasColumnType("smallint")
                         .HasColumnName("message_flags");
@@ -2186,7 +2204,7 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("bigint")
                         .HasColumnName("timestamp");
 
-                    b.HasKey("ShortChannelId", "Direction")
+                    b.HasKey("ShortChannelId", "Direction", "Version")
                         .HasName("pk_graph_channel_policies");
 
                     b.ToTable("graph_channel_policies", (string)null);
@@ -2208,6 +2226,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("bytea")
                         .HasColumnName("alias");
 
+                    b.Property<long?>("BlockHeight")
+                        .HasColumnType("bigint")
+                        .HasColumnName("block_height");
+
                     b.Property<byte[]>("Color")
                         .IsRequired()
                         .HasColumnType("bytea")
@@ -2218,10 +2240,18 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("bytea")
                         .HasColumnName("features");
 
+                    b.Property<byte>("GossipVersions")
+                        .HasColumnType("smallint")
+                        .HasColumnName("gossip_versions");
+
                     b.Property<byte[]>("RawAnnouncement")
                         .IsRequired()
                         .HasColumnType("bytea")
                         .HasColumnName("raw_announcement");
+
+                    b.Property<byte[]>("RawAnnouncement2")
+                        .HasColumnType("bytea")
+                        .HasColumnName("raw_announcement2");
 
                     b.Property<long>("ReceivedAt")
                         .HasColumnType("bigint")

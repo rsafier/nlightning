@@ -29,10 +29,10 @@ public static class GraphChannelEntityConfiguration
                   .IsRequired();
             entity.Property(e => e.BitcoinKey1)
                   .HasConversion<CompactPubKeyConverter>()
-                  .IsRequired();
+                  .IsRequired(false);
             entity.Property(e => e.BitcoinKey2)
                   .HasConversion<CompactPubKeyConverter>()
-                  .IsRequired();
+                  .IsRequired(false);
             entity.Property(e => e.CapacitySat).IsRequired();
             entity.Property(e => e.Features).IsRequired();
             entity.Property(e => e.RawAnnouncement).IsRequired();
@@ -44,6 +44,8 @@ public static class GraphChannelEntityConfiguration
             entity.Property(e => e.ReceivedAt)
                   .HasConversion<UtcTicksConverter>()
                   .IsRequired();
+            entity.Property(e => e.GossipVersions).IsRequired();
+            entity.Property(e => e.RawAnnouncement2).IsRequired(false);
 
             // A node's channels (pathfinding load, pruning of nodes without channels) and the spent-channel pruner
             entity.HasIndex(e => e.NodeId1);
@@ -64,6 +66,7 @@ public static class GraphChannelEntityConfiguration
         entity.Property(e => e.BitcoinKey2).HasColumnType($"varbinary({CryptoConstants.CompactPubkeyLen})");
         entity.Property(e => e.Features).HasColumnType("varbinary(max)");
         entity.Property(e => e.RawAnnouncement).HasColumnType("varbinary(max)");
+        entity.Property(e => e.RawAnnouncement2).HasColumnType("varbinary(max)");
         entity.Property(e => e.FundingTxId).HasColumnType($"varbinary({TransactionConstants.TxIdLength})");
     }
 }

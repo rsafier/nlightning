@@ -729,6 +729,7 @@ public sealed class PaymentRoutePlanner
             Liquidity = graph.Liquidity,
             NowUnixSeconds = graph.NowUnixSeconds,
             StaleAfter = graph.StaleAfter,
+            CurrentBlockHeight = graph.CurrentBlockHeight,
             CostModel = graph.CostModel
         };
 
@@ -863,6 +864,7 @@ public sealed class PaymentRoutePlanner
                 Liquidity = graph.Liquidity,
                 NowUnixSeconds = graph.NowUnixSeconds,
                 StaleAfter = graph.StaleAfter,
+                CurrentBlockHeight = graph.CurrentBlockHeight,
                 CostModel = graph.CostModel
             };
 

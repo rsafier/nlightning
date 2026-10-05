@@ -7,10 +7,12 @@ namespace NLightning.Infrastructure.Repositories.Database.Gossip;
 
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Gossip.Graph;
 using Domain.Gossip.Interfaces;
 using Domain.Gossip.Persistence;
 using Persistence.Contexts;
 using Persistence.Entities.Gossip;
+using GraphChannelVerification = Domain.Gossip.Persistence.GraphChannelVerification;
 
 /// <summary>
 /// The persisted BOLT 7 graph (migration <c>AddGossipGraph</c>, BOLT 7 plan G2-T3): nodes, channels, per-direction
@@ -165,7 +167,7 @@ public class GraphDbRepository : IGraphDbRepository
         var entities = await _context.GraphChannelPolicies.AsNoTracking()
                                      .Where(p => p.ShortChannelId == shortChannelId)
                                      .ToListAsync();
-        return entities.OrderBy(p => p.Direction).Select(MapPolicy).ToList();
+        return entities.OrderBy(p => p.Version).ThenBy(p => p.Direction).Select(MapPolicy).ToList();
     }
 
     /// <inheritdoc />
@@ -180,7 +182,8 @@ public class GraphDbRepository : IGraphDbRepository
     public async Task UpsertPolicyAsync(GraphPolicyRecord policy)
     {
         ThrowIfBadDirection(policy);
-        var entity = await FindForUpsertAsync(_context.GraphChannelPolicies, policy.ShortChannelId, policy.Direction);
+        var entity = await FindForUpsertAsync(_context.GraphChannelPolicies, policy.ShortChannelId, policy.Direction,
+                                              policy.Version);
         if (entity is null)
             _context.GraphChannelPolicies.Add(NewPolicy(policy));
         else
@@ -303,12 +306,12 @@ public class GraphDbRepository : IGraphDbRepository
         {
             // Tracked rows first (staged, or deleted by this unit of work: revived), then one read for the batch; a
             // tracking query returns the tracked instance of a row it reads, so a staged value is never lost
-            var stored = new Dictionary<(ShortChannelId, byte), GraphChannelPolicyEntity>();
+            var stored = new Dictionary<(ShortChannelId, byte, byte), GraphChannelPolicyEntity>();
             foreach (var entry in _context.ChangeTracker.Entries<GraphChannelPolicyEntity>())
-                stored[(entry.Entity.ShortChannelId, entry.Entity.Direction)] = entry.Entity;
+                stored[(entry.Entity.ShortChannelId, entry.Entity.Direction, entry.Entity.Version)] = entry.Entity;
 
-            var shortChannelIds = chunk.Select(p => p.ShortChannelId)
-                                       .Where(s => !stored.ContainsKey((s, 0)) || !stored.ContainsKey((s, 1)))
+            var shortChannelIds = chunk.Where(p => !stored.ContainsKey((p.ShortChannelId, p.Direction, p.Version)))
+                                       .Select(p => p.ShortChannelId)
                                        .Distinct()
                                        .ToList();
             if (shortChannelIds.Count > 0)
@@ -317,12 +320,12 @@ public class GraphDbRepository : IGraphDbRepository
                                          .Where(p => shortChannelIds.Contains(p.ShortChannelId))
                                          .ToListAsync(cancellationToken);
                 foreach (var entity in read)
-                    stored.TryAdd((entity.ShortChannelId, entity.Direction), entity);
+                    stored.TryAdd((entity.ShortChannelId, entity.Direction, entity.Version), entity);
             }
 
             foreach (var policy in chunk)
             {
-                if (stored.TryGetValue((policy.ShortChannelId, policy.Direction), out var entity))
+                if (stored.TryGetValue((policy.ShortChannelId, policy.Direction, policy.Version), out var entity))
                 {
                     Revive(entity);
                     Apply(entity, policy);
@@ -331,7 +334,7 @@ public class GraphDbRepository : IGraphDbRepository
 
                 var added = NewPolicy(policy);
                 _context.GraphChannelPolicies.Add(added);
-                stored[(policy.ShortChannelId, policy.Direction)] = added;
+                stored[(policy.ShortChannelId, policy.Direction, policy.Version)] = added;
             }
         }
     }
@@ -505,6 +508,8 @@ public class GraphDbRepository : IGraphDbRepository
         ArgumentNullException.ThrowIfNull(policy);
         if (policy.Direction > 1)
             throw new ArgumentOutOfRangeException(nameof(policy), policy.Direction, "The direction is 0 or 1");
+        if (policy.Version is not (1 or 2))
+            throw new ArgumentOutOfRangeException(nameof(policy), policy.Version, "The gossip version is 1 or 2");
     }
 
     private static GraphNodeEntity NewNode(GraphNodeRecord node) =>
@@ -517,7 +522,10 @@ public class GraphDbRepository : IGraphDbRepository
             Color = node.Color.ToArray(),
             Addresses = node.Addresses.ToArray(),
             RawAnnouncement = node.RawAnnouncement.ToArray(),
-            ReceivedAt = node.ReceivedAt
+            ReceivedAt = node.ReceivedAt,
+            GossipVersions = (byte)node.Versions,
+            BlockHeight = node.BlockHeight,
+            RawAnnouncement2 = node.RawAnnouncement2?.ToArray()
         };
 
     private static void Apply(GraphNodeEntity entity, GraphNodeRecord node)
@@ -529,6 +537,9 @@ public class GraphDbRepository : IGraphDbRepository
         entity.Addresses = node.Addresses.ToArray();
         entity.RawAnnouncement = node.RawAnnouncement.ToArray();
         entity.ReceivedAt = node.ReceivedAt;
+        entity.GossipVersions = (byte)node.Versions;
+        entity.BlockHeight = node.BlockHeight;
+        entity.RawAnnouncement2 = node.RawAnnouncement2?.ToArray();
     }
 
     private static GraphChannelEntity NewChannel(GraphChannelRecord channel) =>
@@ -545,7 +556,9 @@ public class GraphDbRepository : IGraphDbRepository
             Verification = (byte)channel.Verification,
             SpentAtHeight = channel.SpentAtHeight,
             FundingTxId = channel.FundingTxId,
-            ReceivedAt = channel.ReceivedAt
+            ReceivedAt = channel.ReceivedAt,
+            GossipVersions = (byte)channel.Versions,
+            RawAnnouncement2 = channel.RawAnnouncement2?.ToArray()
         };
 
     private static void Apply(GraphChannelEntity entity, GraphChannelRecord channel)
@@ -561,6 +574,8 @@ public class GraphDbRepository : IGraphDbRepository
         entity.SpentAtHeight = channel.SpentAtHeight;
         entity.FundingTxId = channel.FundingTxId;
         entity.ReceivedAt = channel.ReceivedAt;
+        entity.GossipVersions = (byte)channel.Versions;
+        entity.RawAnnouncement2 = channel.RawAnnouncement2?.ToArray();
     }
 
     private static GraphChannelPolicyEntity NewPolicy(GraphPolicyRecord policy) =>
@@ -576,7 +591,10 @@ public class GraphDbRepository : IGraphDbRepository
             HtlcMaximumMsat = policy.HtlcMaximumMsat,
             FeeBaseMsat = policy.FeeBaseMsat,
             FeePpm = policy.FeeProportionalMillionths,
-            RawUpdate = policy.RawUpdate.ToArray()
+            RawUpdate = policy.RawUpdate.ToArray(),
+            Version = policy.Version,
+            InboundFeeBaseMsat = policy.InboundFeeBaseMsat,
+            InboundFeePpm = policy.InboundFeeProportionalMillionths
         };
 
     private static void Apply(GraphChannelPolicyEntity entity, GraphPolicyRecord policy)
@@ -590,22 +608,29 @@ public class GraphDbRepository : IGraphDbRepository
         entity.FeeBaseMsat = policy.FeeBaseMsat;
         entity.FeePpm = policy.FeeProportionalMillionths;
         entity.RawUpdate = policy.RawUpdate.ToArray();
+        entity.InboundFeeBaseMsat = policy.InboundFeeBaseMsat;
+        entity.InboundFeePpm = policy.InboundFeeProportionalMillionths;
     }
 
     private static GraphNodeRecord MapNode(GraphNodeEntity entity) =>
         new(entity.NodeId, entity.Timestamp, entity.Features, entity.Alias, entity.Color, entity.Addresses,
-            entity.RawAnnouncement, entity.ReceivedAt);
+            entity.RawAnnouncement, entity.ReceivedAt)
+        {
+            Versions = (GraphGossipVersions)entity.GossipVersions,
+            BlockHeight = entity.BlockHeight,
+            RawAnnouncement2 = entity.RawAnnouncement2
+        };
 
     private static GraphChannelRecord MapChannel(GraphChannelEntity entity) =>
         new(entity.ShortChannelId, entity.NodeId1, entity.NodeId2, entity.BitcoinKey1, entity.BitcoinKey2,
             checked((ulong)entity.CapacitySat), entity.Features, entity.RawAnnouncement,
             (GraphChannelVerification)entity.Verification, entity.SpentAtHeight, entity.ReceivedAt,
-            entity.FundingTxId);
+            entity.FundingTxId, (GraphGossipVersions)entity.GossipVersions, entity.RawAnnouncement2);
 
     private static GraphPolicyRecord MapPolicy(GraphChannelPolicyEntity entity) =>
         new(entity.ShortChannelId, entity.Direction, entity.Timestamp, entity.MessageFlags, entity.ChannelFlags,
             entity.CltvExpiryDelta, entity.HtlcMinimumMsat, entity.HtlcMaximumMsat, entity.FeeBaseMsat, entity.FeePpm,
-            entity.RawUpdate);
+            entity.RawUpdate, entity.Version, entity.InboundFeeBaseMsat, entity.InboundFeePpm);
 
     private static GraphBannedNodeRecord MapBan(GraphBannedNodeEntity entity) =>
         new(entity.NodeId, entity.Reason, entity.Until);

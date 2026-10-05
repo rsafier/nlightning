@@ -81,6 +81,15 @@ public sealed class GossipOriginTracker
                                                                       update.Payload.Timestamp),
         NodeAnnouncementMessage announcement => GossipMessageKey.NodeAnnouncement(announcement.Payload.NodeId,
                                                                                   announcement.Payload.Timestamp),
+        // NL-878: the taproot gossip versions, dated by block height (a 267 by nothing, like a 256)
+        ChannelAnnouncement2Message announcement => new GossipMessageKey(
+            MessageTypes.ChannelAnnouncement2, Sync.QueryResponder.ToUInt64(announcement.Payload.ShortChannelId), 0,
+            null, 0),
+        ChannelUpdate2Message update => new GossipMessageKey(
+            MessageTypes.ChannelUpdate2, Sync.QueryResponder.ToUInt64(update.Payload.ShortChannelId),
+            update.Payload.Direction, null, update.Payload.BlockHeight),
+        NodeAnnouncement2Message announcement => new GossipMessageKey(
+            MessageTypes.NodeAnnouncement2, 0, 0, announcement.Payload.NodeId, announcement.Payload.BlockHeight),
         _ => null
     };
 }

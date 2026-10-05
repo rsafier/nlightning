@@ -32,7 +32,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 "NLightning.Infrastructure.Persistence.Entities.Gossip.GraphNodeEntity",
                 typeof(GraphNodeEntity),
                 baseEntityType,
-                propertyCount: 8,
+                propertyCount: 11,
                 keyCount: 1);
 
             var nodeId = runtimeEntityType.AddProperty(
@@ -188,6 +188,64 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             alias.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
             alias.AddAnnotation("Relational:ColumnName", "alias");
 
+            var blockHeight = runtimeEntityType.AddProperty(
+                "BlockHeight",
+                typeof(uint?),
+                propertyInfo: typeof(GraphNodeEntity).GetProperty("BlockHeight", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(GraphNodeEntity).GetField("<BlockHeight>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            blockHeight.SetGetter(
+                uint? (GraphNodeEntity instance) => GraphNodeEntityUnsafeAccessors.BlockHeight(instance),
+                bool (GraphNodeEntity instance) => !(GraphNodeEntityUnsafeAccessors.BlockHeight(instance).HasValue));
+            blockHeight.SetSetter(
+                GraphNodeEntity (GraphNodeEntity instance, uint? value) =>
+                {
+                    GraphNodeEntityUnsafeAccessors.BlockHeight(instance) = value;
+                    return instance;
+                });
+            blockHeight.SetMaterializationSetter(
+                GraphNodeEntity (GraphNodeEntity instance, uint? value) =>
+                {
+                    GraphNodeEntityUnsafeAccessors.BlockHeight(instance) = value;
+                    return instance;
+                });
+            blockHeight.SetAccessors(
+                uint? (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.BlockHeight(((GraphNodeEntity)(entry.Entity))),
+                uint? (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.BlockHeight(((GraphNodeEntity)(entry.Entity))),
+                uint? (IInternalEntry entry) => entry.ReadOriginalValue<uint?>(blockHeight, 3),
+                uint? (IInternalEntry entry) => entry.GetCurrentValue<uint?>(blockHeight));
+            blockHeight.SetPropertyIndexes(
+                index: 3,
+                originalValueIndex: 3,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            blockHeight.TypeMapping = LongTypeMapping.Default.Clone(
+                comparer: new ValueComparer<uint>(
+                    bool (uint v1, uint v2) => v1 == v2,
+                    int (uint v) => ((int)v),
+                    uint (uint v) => v),
+                keyComparer: new ValueComparer<uint>(
+                    bool (uint v1, uint v2) => v1 == v2,
+                    int (uint v) => ((int)v),
+                    uint (uint v) => v),
+                providerValueComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                converter: new ValueConverter<uint, long>(
+                    long (uint v) => ((long)v),
+                    uint (long v) => ((uint)v)),
+                jsonValueReaderWriter: new JsonConvertedValueReaderWriter<uint, long>(
+                    JsonInt64ReaderWriter.Instance,
+                    new ValueConverter<uint, long>(
+                        long (uint v) => ((long)v),
+                        uint (long v) => ((uint)v))));
+            blockHeight.SetComparer(new NullableValueComparer<uint>(blockHeight.TypeMapping.Comparer));
+            blockHeight.SetKeyComparer(new NullableValueComparer<uint>(blockHeight.TypeMapping.KeyComparer));
+            blockHeight.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
+            blockHeight.AddAnnotation("Relational:ColumnName", "block_height");
+
             var color = runtimeEntityType.AddProperty(
                 "Color",
                 typeof(byte[]),
@@ -211,11 +269,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             color.SetAccessors(
                 byte[] (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.Color(((GraphNodeEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.Color(((GraphNodeEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(color, 3),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(color, 4),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(color));
             color.SetPropertyIndexes(
-                index: 3,
-                originalValueIndex: 3,
+                index: 4,
+                originalValueIndex: 4,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -258,11 +316,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             features.SetAccessors(
                 byte[] (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.Features(((GraphNodeEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.Features(((GraphNodeEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(features, 4),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(features, 5),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(features));
             features.SetPropertyIndexes(
-                index: 4,
-                originalValueIndex: 4,
+                index: 5,
+                originalValueIndex: 5,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -281,6 +339,56 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                     byte[] (byte[] source) => source.ToArray()));
             features.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
             features.AddAnnotation("Relational:ColumnName", "features");
+
+            var gossipVersions = runtimeEntityType.AddProperty(
+                "GossipVersions",
+                typeof(byte),
+                propertyInfo: typeof(GraphNodeEntity).GetProperty("GossipVersions", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(GraphNodeEntity).GetField("<GossipVersions>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                sentinel: (byte)0);
+            gossipVersions.SetGetter(
+                byte (GraphNodeEntity instance) => GraphNodeEntityUnsafeAccessors.GossipVersions(instance),
+                bool (GraphNodeEntity instance) => GraphNodeEntityUnsafeAccessors.GossipVersions(instance) == 0);
+            gossipVersions.SetSetter(
+                GraphNodeEntity (GraphNodeEntity instance, byte value) =>
+                {
+                    GraphNodeEntityUnsafeAccessors.GossipVersions(instance) = value;
+                    return instance;
+                });
+            gossipVersions.SetMaterializationSetter(
+                GraphNodeEntity (GraphNodeEntity instance, byte value) =>
+                {
+                    GraphNodeEntityUnsafeAccessors.GossipVersions(instance) = value;
+                    return instance;
+                });
+            gossipVersions.SetAccessors(
+                byte (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.GossipVersions(((GraphNodeEntity)(entry.Entity))),
+                byte (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.GossipVersions(((GraphNodeEntity)(entry.Entity))),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(gossipVersions, 6),
+                byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(gossipVersions));
+            gossipVersions.SetPropertyIndexes(
+                index: 6,
+                originalValueIndex: 6,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            gossipVersions.TypeMapping = ByteTypeMapping.Default.Clone(
+                comparer: new ValueComparer<byte>(
+                    bool (byte v1, byte v2) => v1 == v2,
+                    int (byte v) => ((int)v),
+                    byte (byte v) => v),
+                keyComparer: new ValueComparer<byte>(
+                    bool (byte v1, byte v2) => v1 == v2,
+                    int (byte v) => ((int)v),
+                    byte (byte v) => v),
+                providerValueComparer: new ValueComparer<byte>(
+                    bool (byte v1, byte v2) => v1 == v2,
+                    int (byte v) => ((int)v),
+                    byte (byte v) => v),
+                mappingInfo: new RelationalTypeMappingInfo(
+                    storeTypeName: "smallint"));
+            gossipVersions.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
+            gossipVersions.AddAnnotation("Relational:ColumnName", "gossip_versions");
 
             var rawAnnouncement = runtimeEntityType.AddProperty(
                 "RawAnnouncement",
@@ -305,11 +413,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             rawAnnouncement.SetAccessors(
                 byte[] (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.RawAnnouncement(((GraphNodeEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.RawAnnouncement(((GraphNodeEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(rawAnnouncement, 5),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(rawAnnouncement, 7),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(rawAnnouncement));
             rawAnnouncement.SetPropertyIndexes(
-                index: 5,
-                originalValueIndex: 5,
+                index: 7,
+                originalValueIndex: 7,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -328,6 +436,54 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                     byte[] (byte[] source) => source.ToArray()));
             rawAnnouncement.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
             rawAnnouncement.AddAnnotation("Relational:ColumnName", "raw_announcement");
+
+            var rawAnnouncement2 = runtimeEntityType.AddProperty(
+                "RawAnnouncement2",
+                typeof(byte[]),
+                propertyInfo: typeof(GraphNodeEntity).GetProperty("RawAnnouncement2", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(GraphNodeEntity).GetField("<RawAnnouncement2>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            rawAnnouncement2.SetGetter(
+                byte[] (GraphNodeEntity instance) => GraphNodeEntityUnsafeAccessors.RawAnnouncement2(instance),
+                bool (GraphNodeEntity instance) => GraphNodeEntityUnsafeAccessors.RawAnnouncement2(instance) == null);
+            rawAnnouncement2.SetSetter(
+                GraphNodeEntity (GraphNodeEntity instance, byte[] value) =>
+                {
+                    GraphNodeEntityUnsafeAccessors.RawAnnouncement2(instance) = value;
+                    return instance;
+                });
+            rawAnnouncement2.SetMaterializationSetter(
+                GraphNodeEntity (GraphNodeEntity instance, byte[] value) =>
+                {
+                    GraphNodeEntityUnsafeAccessors.RawAnnouncement2(instance) = value;
+                    return instance;
+                });
+            rawAnnouncement2.SetAccessors(
+                byte[] (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.RawAnnouncement2(((GraphNodeEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.RawAnnouncement2(((GraphNodeEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(rawAnnouncement2, 8),
+                byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(rawAnnouncement2));
+            rawAnnouncement2.SetPropertyIndexes(
+                index: 8,
+                originalValueIndex: 8,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            rawAnnouncement2.TypeMapping = NpgsqlByteArrayTypeMapping.Default.Clone(
+                comparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => ((object)v).GetHashCode(),
+                    byte[] (byte[] v) => v),
+                keyComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()),
+                providerValueComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()));
+            rawAnnouncement2.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
+            rawAnnouncement2.AddAnnotation("Relational:ColumnName", "raw_announcement2");
 
             var receivedAt = runtimeEntityType.AddProperty(
                 "ReceivedAt",
@@ -353,11 +509,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             receivedAt.SetAccessors(
                 DateTimeOffset (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.ReceivedAt(((GraphNodeEntity)(entry.Entity))),
                 DateTimeOffset (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.ReceivedAt(((GraphNodeEntity)(entry.Entity))),
-                DateTimeOffset (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset>(receivedAt, 6),
+                DateTimeOffset (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset>(receivedAt, 9),
                 DateTimeOffset (IInternalEntry entry) => entry.GetCurrentValue<DateTimeOffset>(receivedAt));
             receivedAt.SetPropertyIndexes(
-                index: 6,
-                originalValueIndex: 6,
+                index: 9,
+                originalValueIndex: 9,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -409,11 +565,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             timestamp.SetAccessors(
                 uint (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.Timestamp(((GraphNodeEntity)(entry.Entity))),
                 uint (IInternalEntry entry) => GraphNodeEntityUnsafeAccessors.Timestamp(((GraphNodeEntity)(entry.Entity))),
-                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(timestamp, 7),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(timestamp, 10),
                 uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(timestamp));
             timestamp.SetPropertyIndexes(
-                index: 7,
-                originalValueIndex: 7,
+                index: 10,
+                originalValueIndex: 10,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -455,9 +611,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var nodeId = runtimeEntityType.FindProperty("NodeId");
             var addresses = runtimeEntityType.FindProperty("Addresses");
             var alias = runtimeEntityType.FindProperty("Alias");
+            var blockHeight = runtimeEntityType.FindProperty("BlockHeight");
             var color = runtimeEntityType.FindProperty("Color");
             var features = runtimeEntityType.FindProperty("Features");
+            var gossipVersions = runtimeEntityType.FindProperty("GossipVersions");
             var rawAnnouncement = runtimeEntityType.FindProperty("RawAnnouncement");
+            var rawAnnouncement2 = runtimeEntityType.FindProperty("RawAnnouncement2");
             var receivedAt = runtimeEntityType.FindProperty("ReceivedAt");
             var timestamp = runtimeEntityType.FindProperty("Timestamp");
             var key = runtimeEntityType.FindKey(new[] { nodeId });
@@ -467,7 +626,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType1 = ((GraphNodeEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<CompactPubKey, byte[], byte[], byte[], byte[], byte[], DateTimeOffset, uint>(((ValueComparer<CompactPubKey>)(((IProperty)nodeId).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(nodeId)), (source.GetCurrentValue<byte[]>(addresses) == null ? null : ((ValueComparer<byte[]>)(((IProperty)addresses).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(addresses))), (source.GetCurrentValue<byte[]>(alias) == null ? null : ((ValueComparer<byte[]>)(((IProperty)alias).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(alias))), (source.GetCurrentValue<byte[]>(color) == null ? null : ((ValueComparer<byte[]>)(((IProperty)color).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(color))), (source.GetCurrentValue<byte[]>(features) == null ? null : ((ValueComparer<byte[]>)(((IProperty)features).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(features))), (source.GetCurrentValue<byte[]>(rawAnnouncement) == null ? null : ((ValueComparer<byte[]>)(((IProperty)rawAnnouncement).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(rawAnnouncement))), ((ValueComparer<DateTimeOffset>)(((IProperty)receivedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(receivedAt)), ((ValueComparer<uint>)(((IProperty)timestamp).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(timestamp)))));
+                    return ((ISnapshot)(new Snapshot<CompactPubKey, byte[], byte[], uint?, byte[], byte[], byte, byte[], byte[], DateTimeOffset, uint>(((ValueComparer<CompactPubKey>)(((IProperty)nodeId).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(nodeId)), (source.GetCurrentValue<byte[]>(addresses) == null ? null : ((ValueComparer<byte[]>)(((IProperty)addresses).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(addresses))), (source.GetCurrentValue<byte[]>(alias) == null ? null : ((ValueComparer<byte[]>)(((IProperty)alias).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(alias))), (source.GetCurrentValue<uint?>(blockHeight) == null ? null : ((ValueComparer<uint?>)(((IProperty)blockHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(blockHeight))), (source.GetCurrentValue<byte[]>(color) == null ? null : ((ValueComparer<byte[]>)(((IProperty)color).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(color))), (source.GetCurrentValue<byte[]>(features) == null ? null : ((ValueComparer<byte[]>)(((IProperty)features).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(features))), ((ValueComparer<byte>)(((IProperty)gossipVersions).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(gossipVersions)), (source.GetCurrentValue<byte[]>(rawAnnouncement) == null ? null : ((ValueComparer<byte[]>)(((IProperty)rawAnnouncement).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(rawAnnouncement))), (source.GetCurrentValue<byte[]>(rawAnnouncement2) == null ? null : ((ValueComparer<byte[]>)(((IProperty)rawAnnouncement2).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(rawAnnouncement2))), ((ValueComparer<DateTimeOffset>)(((IProperty)receivedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(receivedAt)), ((ValueComparer<uint>)(((IProperty)timestamp).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(timestamp)))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => Snapshot.Empty);
@@ -484,11 +643,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                     return ((ISnapshot)(new Snapshot<CompactPubKey>(((ValueComparer<CompactPubKey>)(((IProperty)nodeId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(nodeId)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 8,
+                propertyCount: 11,
                 navigationCount: 0,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 8,
+                originalValueCount: 11,
                 shadowCount: 0,
                 relationshipCount: 1,
                 storeGeneratedCount: 0));

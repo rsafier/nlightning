@@ -81,8 +81,9 @@ public static class GossipValidator
         {
             var sameNodes = knownChannel.NodeId1 == nodeId1 && knownChannel.NodeId2 == nodeId2;
             var same = sameNodes
-                    && ((ReadOnlySpan<byte>)knownChannel.BitcoinKey1).SequenceEqual(fields.BitcoinKey1.Span)
-                    && ((ReadOnlySpan<byte>)knownChannel.BitcoinKey2).SequenceEqual(fields.BitcoinKey2.Span);
+                    && knownChannel.BitcoinKey1 is { } knownKey1 && knownChannel.BitcoinKey2 is { } knownKey2
+                    && ((ReadOnlySpan<byte>)knownKey1).SequenceEqual(fields.BitcoinKey1.Span)
+                    && ((ReadOnlySpan<byte>)knownKey2).SequenceEqual(fields.BitcoinKey2.Span);
             return same
                        ? GossipValidationResult.Ignore(GossipRejectReason.AlreadyKnown, "B7-CA-05")
                        : GossipValidationResult.Ignore(GossipRejectReason.ConflictingAnnouncement, "B7-CA-04",

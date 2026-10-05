@@ -30,6 +30,17 @@ public interface IGossipSyncManager : IGossipSyncService
     bool TryGetPeerFilter(IPeerService peer, out GossipTimestampFilter filter);
 
     /// <summary>
+    /// The <c>block_height_range</c> of the latest <c>gossip_timestamp_filter</c> of the connection
+    /// <paramref name="peer"/> (taproot gossip, NL-878); false while it sent none or did not negotiate
+    /// <c>option_gossip_v2</c>: no relayed v2 gossip goes to it then.
+    /// </summary>
+    bool TryGetPeerBlockHeightRange(IPeerService peer, out GossipBlockHeightRange range)
+    {
+        range = default;
+        return false;
+    }
+
+    /// <summary>
     /// Asks a connected <c>gossip_queries</c> peer for the announcement and updates of one channel
     /// (<c>query_short_channel_ids</c>, one outstanding query per peer; e.g. after a payment failure named a channel
     /// whose update we lack, plan D9/G3-T5). What comes back goes through the ingress like any gossip.

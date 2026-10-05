@@ -13,8 +13,11 @@ public class GraphChannelEntity
     public required ShortChannelId ShortChannelId { get; set; }
     public required CompactPubKey NodeId1 { get; set; }
     public required CompactPubKey NodeId2 { get; set; }
-    public required CompactPubKey BitcoinKey1 { get; set; }
-    public required CompactPubKey BitcoinKey2 { get; set; }
+    /// <summary>Null for a <c>channel_announcement_2</c> without bitcoin keys (migration <c>AddGossipV2</c>).</summary>
+    public CompactPubKey? BitcoinKey1 { get; set; }
+
+    /// <summary>Null like <see cref="BitcoinKey1"/>.</summary>
+    public CompactPubKey? BitcoinKey2 { get; set; }
 
     /// <summary>The funding output's amount.</summary>
     public required long CapacitySat { get; set; }
@@ -38,6 +41,16 @@ public class GraphChannelEntity
 
     /// <summary>When it was received; UTC ticks (<c>UtcTicksConverter</c>).</summary>
     public required DateTimeOffset ReceivedAt { get; set; }
+
+    /// <summary>
+    /// <c>Domain.Gossip.Graph.GraphGossipVersions</c>: 1 = <c>channel_announcement</c> (<see cref="RawAnnouncement"/>),
+    /// 2 = <c>channel_announcement_2</c> (<see cref="RawAnnouncement2"/>), 3 = both (migration <c>AddGossipV2</c>,
+    /// NL-878; existing rows are 1).
+    /// </summary>
+    public byte GossipVersions { get; set; } = 1;
+
+    /// <summary>The <c>channel_announcement_2</c> payload, or null without one.</summary>
+    public byte[]? RawAnnouncement2 { get; set; }
 
     internal GraphChannelEntity()
     {

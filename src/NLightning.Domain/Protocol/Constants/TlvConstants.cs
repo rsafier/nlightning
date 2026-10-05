@@ -169,6 +169,15 @@ public static class TlvConstants
     public static readonly BigSize ReplyChannelRangeChecksums = 3;
 
     /// <summary>
+    /// Block Height Range TLV Type
+    /// </summary>
+    /// <remarks>
+    /// <c>gossip_timestamp_filter</c> type 2 (<c>block_height_range</c>, taproot gossip BOLTs PR #1059, NL-878):
+    /// <c>u32 first_block_height || tu32 num_blocks</c>, the window of the v2 gossip the sender wants.
+    /// </remarks>
+    public static readonly BigSize GossipTimestampFilterBlockHeightRange = 2;
+
+    /// <summary>
     /// Liquidity ads (BOLT PR #1153, NL-850): <c>request_funding</c> in <c>open_channel2</c>, <c>tx_init_rbf</c> and
     /// <c>splice_init</c>; <c>provide_funding</c> in <c>accept_channel2</c>, <c>tx_ack_rbf</c> and <c>splice_ack</c>;
     /// <c>option_will_fund</c> in <c>init</c>. Eclair 0.14.3's temporary odd type

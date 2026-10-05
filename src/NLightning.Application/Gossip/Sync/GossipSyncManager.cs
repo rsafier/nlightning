@@ -10,6 +10,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Gossip.Enums;
+using Domain.Gossip.Graph;
 using Domain.Gossip.Interfaces;
 using Domain.Gossip.Queries;
 using Domain.Node.Interfaces;
@@ -274,6 +275,20 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             _logger.LogWarning(e, "Error handling {MessageType} from peer {Peer}", Enum.GetName(message.Type),
                                peer.PeerPubKey);
         }
+    }
+
+    /// <inheritdoc />
+    public bool TryGetPeerBlockHeightRange(IPeerService peer, out GossipBlockHeightRange range)
+    {
+        ArgumentNullException.ThrowIfNull(peer);
+        if (_sessions.TryGetValue(peer, out var session) && session.BlockHeightRange is { } current)
+        {
+            range = current;
+            return true;
+        }
+
+        range = default;
+        return false;
     }
 
     /// <inheritdoc />
@@ -546,6 +561,9 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         }
 
         var filter = new GossipTimestampFilter(payload.FirstTimestamp, payload.TimestampRange);
+
+        // NL-878: a v2 peer's block_height_range asks for taproot gossip (a filter without one asks for none)
+        session.BlockHeightRange = session.SupportsGossipV2 ? message.BlockHeightRange : null;
         session.Filter = filter;
         _logger.LogDebug("Peer {Peer} set its gossip filter to [{First}, +{Range})", session.Peer.PeerPubKey,
                          filter.FirstTimestamp, filter.TimestampRange);
@@ -571,9 +589,10 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                 {
                     var replies = query switch
                     {
-                        QueryChannelRangeMessage range => _responder.CreateRangeReplies(range, OurChain),
+                        QueryChannelRangeMessage range => _responder.CreateRangeReplies(
+                            range, OurChain, session.SupportsGossipV2),
                         QueryShortChannelIdsMessage ids => _responder.CreateShortChannelIdsReplies(
-                            ids, OurChain, _hasCompletedInitialSync),
+                            ids, OurChain, _hasCompletedInitialSync, session.SupportsGossipV2),
                         _ => []
                     };
 
@@ -1008,11 +1027,30 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             return null;
 
         ulong flag = 0;
-        if (remote.Node1 > (channel.Policy1?.Timestamp ?? 0))
+        if (IsNewer(remote.Node1, channel, 0))
             flag |= GossipQueryCodec.QueryFlagChannelUpdate1;
-        if (remote.Node2 > (channel.Policy2?.Timestamp ?? 0))
+        if (IsNewer(remote.Node2, channel, 1))
             flag |= GossipQueryCodec.QueryFlagChannelUpdate2;
         return flag != 0 ? (shortChannelId, flag) : null;
+    }
+
+    /// <summary>
+    /// The value below which a <c>timestamps_tlv</c> entry is a block height (NL-878: a v2 requester gets the
+    /// block heights of <c>channel_update_2</c>s): the BIP 113 threshold, far below any UNIX timestamp of gossip.
+    /// </summary>
+    internal const uint BlockHeightThreshold = 500_000_000;
+
+    /// <summary>
+    /// True when the peer's entry for one direction is newer than ours: a block height (NL-878) against our
+    /// <c>channel_update_2</c>, a UNIX timestamp against our <c>channel_update</c>.
+    /// </summary>
+    private static bool IsNewer(uint remote, GraphChannel channel, byte direction)
+    {
+        if (remote == 0)
+            return false;
+
+        var version = remote < BlockHeightThreshold ? (byte)2 : (byte)1;
+        return remote > (channel.GetPolicy(direction, version)?.Timestamp ?? 0);
     }
 
     /// <summary>
@@ -1042,7 +1080,8 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     /// </summary>
     private bool IsCompleteInGraph(ShortChannelId shortChannelId) =>
         _graphStore.TryGetChannel(shortChannelId, out var channel)
-     && (channel.SpentAtHeight is not null || (channel.Policy1 is not null && channel.Policy2 is not null));
+     && (channel.SpentAtHeight is not null
+      || (channel.GetRoutingPolicy(0) is not null && channel.GetRoutingPolicy(1) is not null));
 
     /// <summary>
     /// True when both update timestamps of a <c>reply_channel_range</c> entry are older than
@@ -1054,6 +1093,11 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             return false;
 
         var newest = Math.Max(timestamps.Node1, timestamps.Node2);
+
+        // NL-878: a v2 channel's entries are block heights, stale below tip - max_backdate_blocks
+        if (newest is > 0 and < BlockHeightThreshold)
+            return GraphChannel.IsBlockHeightStale(newest, _getTipHeight?.Invoke() is { } tip and > 0 ? tip : null);
+
         return (ulong)newest + (ulong)_options.SkipChannelsStaleFor.TotalSeconds < NowSeconds();
     }
 
@@ -1276,14 +1320,34 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     {
         _logger.LogDebug("Sending gossip_timestamp_filter [{First}, +{Range}) to peer {Peer}", filter.FirstTimestamp,
                          filter.TimestampRange, session.Peer.PeerPubKey);
-        if (!await SendToPeerAsync(session, new GossipTimestampFilterMessage(
-                                       new GossipTimestampFilterPayload(
-                                           OurChain, filter.FirstTimestamp, filter.TimestampRange)),
-                                   cancellationToken))
+        var payload = new GossipTimestampFilterPayload(OurChain, filter.FirstTimestamp, filter.TimestampRange);
+
+        // NL-878: a v2 peer gets the matching block_height_range, so it relays taproot gossip to us too
+        var message = session.SupportsGossipV2
+                          ? new GossipTimestampFilterMessage(payload, ToBlockHeightRange(filter))
+                          : new GossipTimestampFilterMessage(payload);
+        if (!await SendToPeerAsync(session, message, cancellationToken))
             return false;
 
         session.SentFilter = filter;
         return true;
+    }
+
+    /// <summary>
+    /// The <c>block_height_range</c> matching a <c>gossip_timestamp_filter</c> (NL-878): nothing for the filter that
+    /// lets nothing through, else from the block that many ten-minute blocks below our tip as its start is in the past
+    /// (block 0 without a tip), to the end of the chain.
+    /// </summary>
+    internal GossipBlockHeightRange ToBlockHeightRange(GossipTimestampFilter filter)
+    {
+        if (filter.TimestampRange == 0 || filter.FirstTimestamp == uint.MaxValue)
+            return GossipBlockHeightRange.None;
+
+        var tip = _getTipHeight?.Invoke() ?? 0;
+        var now = NowSeconds();
+        var ageBlocks = filter.FirstTimestamp >= now ? 0UL : (now - filter.FirstTimestamp) / 600;
+        var first = tip > ageBlocks ? tip - ageBlocks : 0UL;
+        return new GossipBlockHeightRange((uint)first, uint.MaxValue);
     }
 
     private async Task SendWarningAsync(PeerSession session, WarningException warning)
@@ -1474,7 +1538,26 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         public bool IsIdle => PendingWork == 0 && Volatile.Read(ref _queuedQueries) == 0;
 
         private GossipTimestampFilter? _filter;
+        private GossipBlockHeightRange? _blockHeightRange;
         private readonly Lock _filterLock = new();
+
+        /// <summary>The peer negotiated <c>option_gossip_v2</c> (NL-878; set at init).</summary>
+        public bool SupportsGossipV2 { get; private set; }
+
+        /// <summary>The <c>block_height_range</c> of the peer's latest filter (NL-878), or null without one.</summary>
+        public GossipBlockHeightRange? BlockHeightRange
+        {
+            get
+            {
+                lock (_filterLock)
+                    return _blockHeightRange;
+            }
+            set
+            {
+                lock (_filterLock)
+                    _blockHeightRange = value;
+            }
+        }
 
         public GossipTimestampFilter? Filter
         {
@@ -1496,6 +1579,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             // The negotiated features: gossip_queries(_ex) is not No only when both sides offer it
             SupportsQueries = Peer.Features.GossipQueries != FeatureSupport.No;
             SupportsQueriesEx = Peer.Features.ExpandedGossipQueries != FeatureSupport.No;
+            SupportsGossipV2 = Peer.Features.OptionGossipV2 != FeatureSupport.No;
             return !_cts.IsCancellationRequested && _ready.TrySetResult();
         }
 

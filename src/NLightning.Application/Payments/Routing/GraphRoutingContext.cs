@@ -22,6 +22,11 @@ public sealed record GraphRoutingContext(
     /// <summary>Channels whose older policy is older than this are not used (B7-PR-02); null does not check.</summary>
     public TimeSpan? StaleAfter { get; init; }
 
+    /// <summary>
+    /// Our chain tip, for the stale check of <c>channel_update_2</c> policies (block heights, NL-878); null skips it.
+    /// </summary>
+    public uint? CurrentBlockHeight { get; init; }
+
     /// <summary>The diverse paths to ask the pathfinder for per amount tried (at least 1).</summary>
     public int PathsPerAmount { get; init; } = 3;
 

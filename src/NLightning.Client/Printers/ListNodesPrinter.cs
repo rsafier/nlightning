@@ -30,10 +30,24 @@ public sealed class ListNodesPrinter : IPrinter<ListNodesIpcResponse>
                               node.Addresses.Count == 0 ? "-" : string.Join(", ", node.Addresses));
             _output.WriteLine("  Features:           {0}", node.Features.Length == 0 ? "-" : node.Features);
             _output.WriteLine("  Timestamp:          {0}", FormatTimestamp(node.Timestamp));
+            if (node.BlockHeight is { } blockHeight)
+                _output.WriteLine("  Announced at block: {0} (node_announcement_2)",
+                                  blockHeight.ToString(CultureInfo.InvariantCulture));
+            if (node.GossipVersions > 1)
+                _output.WriteLine("  Gossip:             {0}", FormatGossipVersions(node.GossipVersions));
             _output.WriteLine("  Channels:           {0}", node.ChannelCount.ToString(CultureInfo.InvariantCulture));
             _output.WriteLine(PaymentsPrintFormat.Separator);
         }
     }
+
+    /// <summary>The gossip protocols of a channel or node (NL-878): <c>v1</c>, <c>v2</c> or <c>v1+v2</c>.</summary>
+    internal static string FormatGossipVersions(byte versions) => versions switch
+    {
+        1 => "v1",
+        2 => "v2",
+        3 => "v1+v2",
+        _ => versions.ToString(CultureInfo.InvariantCulture)
+    };
 
     internal static string FormatTimestamp(uint timestamp) =>
         string.Create(CultureInfo.InvariantCulture,

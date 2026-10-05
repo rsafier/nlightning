@@ -8,6 +8,7 @@ using Domain.Node.Options;
 using Domain.Routing.Pathfinding;
 using Gossip.Graph;
 using Gossip.Graph.Interfaces;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Send;
 
 /// <summary>
@@ -29,11 +30,14 @@ public sealed class GraphPathSource
     private readonly TimeProvider _timeProvider;
     private readonly IGraphStore? _graphStore;
     private readonly IOptions<GossipGraphOptions>? _graphOptions;
+    private readonly IBlockchainMonitor? _blockchainMonitor;
 
     public GraphPathSource(MissionControl missionControl, IOptions<PaymentSendOptions> sendOptions,
                            IOptions<NodeOptions> nodeOptions, TimeProvider timeProvider,
-                           IGraphStore? graphStore = null, IOptions<GossipGraphOptions>? graphOptions = null)
+                           IGraphStore? graphStore = null, IOptions<GossipGraphOptions>? graphOptions = null,
+                           IBlockchainMonitor? blockchainMonitor = null)
     {
+        _blockchainMonitor = blockchainMonitor;
         _missionControl = missionControl;
         _sendOptions = sendOptions;
         _nodeOptions = nodeOptions;
@@ -68,6 +72,7 @@ public sealed class GraphPathSource
                                        NowUnixSeconds())
         {
             StaleAfter = _graphOptions?.Value.StaleAfter,
+            CurrentBlockHeight = _blockchainMonitor?.LastProcessedBlockHeight is { } tip and > 0 ? tip : null,
             PathsPerAmount = Math.Max(1, options.GraphPathsPerRound),
             ShadowCltvOffset = shadowCltvOffset
         };

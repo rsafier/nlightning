@@ -17,10 +17,10 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
         public static extern ref ShortChannelId ShortChannelId(GraphChannelEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<BitcoinKey1>k__BackingField")]
-        public static extern ref CompactPubKey BitcoinKey1(GraphChannelEntity @this);
+        public static extern ref CompactPubKey? BitcoinKey1(GraphChannelEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<BitcoinKey2>k__BackingField")]
-        public static extern ref CompactPubKey BitcoinKey2(GraphChannelEntity @this);
+        public static extern ref CompactPubKey? BitcoinKey2(GraphChannelEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<CapacitySat>k__BackingField")]
         public static extern ref long CapacitySat(GraphChannelEntity @this);
@@ -31,6 +31,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<FundingTxId>k__BackingField")]
         public static extern ref TxId? FundingTxId(GraphChannelEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<GossipVersions>k__BackingField")]
+        public static extern ref byte GossipVersions(GraphChannelEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<NodeId1>k__BackingField")]
         public static extern ref CompactPubKey NodeId1(GraphChannelEntity @this);
 
@@ -39,6 +42,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<RawAnnouncement>k__BackingField")]
         public static extern ref byte[] RawAnnouncement(GraphChannelEntity @this);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<RawAnnouncement2>k__BackingField")]
+        public static extern ref byte[] RawAnnouncement2(GraphChannelEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<ReceivedAt>k__BackingField")]
         public static extern ref DateTimeOffset ReceivedAt(GraphChannelEntity @this);

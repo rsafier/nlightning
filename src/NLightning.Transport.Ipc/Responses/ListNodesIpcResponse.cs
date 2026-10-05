@@ -47,6 +47,15 @@ public sealed class GraphNodeIpcInfo
     /// <summary>The graph channels the node is an end of.</summary>
     [Key(6)] public int ChannelCount { get; init; }
 
+    /// <summary>
+    /// The gossip protocols the node announced itself with (NL-878): 1 <c>node_announcement</c>, 2
+    /// <c>node_announcement_2</c>, 3 both; 0 from an older node.
+    /// </summary>
+    [Key(7)] public byte GossipVersions { get; init; }
+
+    /// <summary>The <c>node_announcement_2</c>'s block height, when it has one.</summary>
+    [Key(8)] public uint? BlockHeight { get; init; }
+
     /// <summary>The IPC form of a graph node (also used by <c>describegraph</c>'s page).</summary>
     public static GraphNodeIpcInfo From(GraphNodeInfo node)
     {
@@ -59,7 +68,9 @@ public sealed class GraphNodeIpcInfo
             Addresses = node.Node.Addresses.Select(a => a.ToString()).ToList(),
             Features = Convert.ToHexStringLower(node.Node.Features.Span),
             Timestamp = node.Node.Timestamp,
-            ChannelCount = node.ChannelCount
+            ChannelCount = node.ChannelCount,
+            GossipVersions = (byte)node.Node.Versions,
+            BlockHeight = node.Node.BlockHeight
         };
     }
 }

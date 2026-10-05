@@ -39,6 +39,16 @@ using Graph.Interfaces;
 /// reply, then <c>reply_short_channel_ids_end</c> (B7-Q-02). Encoding 1 (zlib) and malformed fields are a
 /// <see cref="WarningException"/> (plan D5).
 /// </para>
+/// <para>
+/// Taproot gossip (BOLTs PR #1059's BOLT 7 query changes, NL-878), only for a requester that negotiated
+/// <c>option_gossip_v2</c> (<c>includeV2</c>): a channel announced with <c>channel_announcement_2</c> is listed too
+/// (the draft: "If the sender of <c>query_channel_range</c> has not advertised [it] then the response MUST only
+/// include short channel IDs for channels announced with the <c>channel_announcement</c> message"), with the block
+/// heights of its <c>channel_update_2</c>s in <c>timestamps_tlv</c> and their checksums (CRC32C of the update without
+/// its signature and block height) in <c>checksums_tlv</c>; a scid query about it is answered with the v2 messages
+/// (267, 271, 269, or the node's <c>node_announcement</c> when it has no v2 one). A channel announced both ways is
+/// described by its v2 side to such a requester.
+/// </para>
 /// </remarks>
 public sealed class QueryResponder
 {
@@ -54,6 +64,8 @@ public sealed class QueryResponder
     private readonly Lock _sortedLock = new();
     private IGraphView? _sortedSnapshot;
     private GraphChannel[] _sortedChannels = [];
+    private IGraphView? _sortedSnapshotV2;
+    private GraphChannel[] _sortedChannelsV2 = [];
 
     public QueryResponder(IGraphStore graphStore, IOptions<GossipSyncOptions>? options = null)
     {
@@ -66,8 +78,11 @@ public sealed class QueryResponder
     /// last has <c>sync_complete</c> set).
     /// </summary>
     /// <exception cref="WarningException">The <c>query_option</c> TLV is malformed.</exception>
+    /// <param name="query">The query.</param>
+    /// <param name="ourChain">Our chain.</param>
+    /// <param name="includeV2">The requester negotiated <c>option_gossip_v2</c> (NL-878).</param>
     public IReadOnlyList<ReplyChannelRangeMessage> CreateRangeReplies(QueryChannelRangeMessage query,
-                                                                      ChainHash ourChain)
+                                                                      ChainHash ourChain, bool includeV2 = false)
     {
         ArgumentNullException.ThrowIfNull(query);
         var payload = query.Payload;
@@ -81,7 +96,7 @@ public sealed class QueryResponder
         if (end <= first)
             end = (ulong)first + 1;
 
-        var channels = payload.ChainHash == ourChain ? GetServedChannels(first, end) : [];
+        var channels = payload.ChainHash == ourChain ? GetServedChannels(first, end, includeV2) : [];
         var perScid = ShortChannelId.Length + (withTimestamps ? GossipQueryCodec.PerChannelPairLength : 0)
                                             + (withChecksums ? GossipQueryCodec.PerChannelPairLength : 0);
         var maxPerReply = Math.Max(1, Math.Min(_options.MaxScidsPerReply,
@@ -98,13 +113,13 @@ public sealed class QueryResponder
             if (index >= channels.Count)
             {
                 replies.Add(CreateReply(payload.ChainHash, (uint)start, (uint)(end - start), true, chunk,
-                                        withTimestamps, withChecksums));
+                                        withTimestamps, withChecksums, includeV2));
                 return replies;
             }
 
             var lastHeight = chunk[^1].ShortChannelId.BlockHeight;
             replies.Add(CreateReply(payload.ChainHash, (uint)start, (uint)(lastHeight - start + 1), false, chunk,
-                                    withTimestamps, withChecksums));
+                                    withTimestamps, withChecksums, includeV2));
 
             // A block whose channels do not fit one reply continues in the next one (BOLT 7: MAY split block
             // contents; first_blocknum stays non-decreasing)
@@ -123,8 +138,10 @@ public sealed class QueryResponder
     /// completed).</param>
     /// <exception cref="WarningException">The query is malformed (unknown or zlib encoding, a partial short channel
     /// id, bad <c>query_flags</c>).</exception>
+    /// <param name="includeV2">The requester negotiated <c>option_gossip_v2</c> (NL-878): channels announced with
+    /// <c>channel_announcement_2</c> are answered with their v2 messages.</param>
     public IReadOnlyList<IMessage> CreateShortChannelIdsReplies(QueryShortChannelIdsMessage query, ChainHash ourChain,
-                                                                bool fullInformation)
+                                                                bool fullInformation, bool includeV2 = false)
     {
         ArgumentNullException.ThrowIfNull(query);
         var shortChannelIds = GossipQueryCodec.DecodeShortChannelIds(query.Payload.EncodedShortIds.Span,
@@ -143,7 +160,16 @@ public sealed class QueryResponder
         var sentNodes = new HashSet<CompactPubKey>();
         for (var i = 0; i < shortChannelIds.Length; i++)
         {
-            if (!_graphStore.TryGetChannel(shortChannelIds[i], out var channel) || !IsServed(channel))
+            if (!_graphStore.TryGetChannel(shortChannelIds[i], out var channel))
+                continue;
+
+            if (includeV2 && (IsListedAsV2(channel) || (IsServedV2(channel) && !IsServed(channel))))
+            {
+                AddV2Replies(channel, flags?[i] ?? GossipQueryCodec.QueryFlagAll, replies, sentNodes);
+                continue;
+            }
+
+            if (!IsServed(channel))
                 continue;
 
             var flag = flags?[i] ?? GossipQueryCodec.QueryFlagAll;
@@ -167,9 +193,9 @@ public sealed class QueryResponder
     /// <summary>
     /// The served channels with <c>first &lt;= block &lt; end</c>, in ascending short channel id order.
     /// </summary>
-    internal IReadOnlyList<GraphChannel> GetServedChannels(ulong first, ulong end)
+    internal IReadOnlyList<GraphChannel> GetServedChannels(ulong first, ulong end, bool includeV2 = false)
     {
-        var sorted = GetSortedServedChannels();
+        var sorted = includeV2 ? GetSortedServedChannelsV2() : GetSortedServedChannels();
         var low = LowerBound(sorted, first);
         var high = LowerBound(sorted, end);
         return new ArraySegment<GraphChannel>(sorted, low, high - low);
@@ -203,6 +229,66 @@ public sealed class QueryResponder
         }
     }
 
+    /// <summary>
+    /// True when the channel's <c>channel_announcement_2</c> is one we relay (NL-878): kept, unspent, checked against
+    /// the chain (or ours).
+    /// </summary>
+    internal static bool IsServedV2(GraphChannel channel) =>
+        channel.HasV2 && !channel.RawAnnouncement2.IsEmpty && channel.SpentAtHeight is null && channel.IsChainChecked;
+
+    /// <summary>True when the channel is listed to a v2 requester with its v2 side.</summary>
+    private static bool IsListedAsV2(GraphChannel channel) => IsServedV2(channel) && HasRawUpdateV2(channel);
+
+    /// <summary>
+    /// The channels a requester that negotiated <c>option_gossip_v2</c> is told about (NL-878): those served by
+    /// either protocol with an update of that protocol, in ascending short channel id order.
+    /// </summary>
+    private GraphChannel[] GetSortedServedChannelsV2()
+    {
+        var snapshot = _graphStore.GetSnapshot();
+        lock (_sortedLock)
+        {
+            if (!ReferenceEquals(snapshot, _sortedSnapshotV2))
+            {
+                _sortedChannelsV2 = snapshot.Channels
+                                            .Where(c => IsListedAsV2(c) || (IsServed(c) && HasRawUpdate(c)))
+                                            .OrderBy(c => ToUInt64(c.ShortChannelId))
+                                            .ToArray();
+                _sortedSnapshotV2 = snapshot;
+            }
+
+            return _sortedChannelsV2;
+        }
+    }
+
+    private static bool HasRawUpdateV2(GraphChannel channel) =>
+        channel.Policy1V2 is { RawUpdate.IsEmpty: false } || channel.Policy2V2 is { RawUpdate.IsEmpty: false };
+
+    /// <summary>
+    /// The v2 answer about one channel (NL-878): its <c>channel_announcement_2</c>, its <c>channel_update_2</c>s and
+    /// its nodes' announcements (the <c>node_announcement_2</c>, else the <c>node_announcement</c>), as
+    /// <paramref name="flag"/> asks (the BOLT 7 bits name the <c>_2</c> messages too).
+    /// </summary>
+    private void AddV2Replies(GraphChannel channel, ulong flag, List<IMessage> replies,
+                              HashSet<CompactPubKey> sentNodes)
+    {
+        if ((flag & GossipQueryCodec.QueryFlagChannelAnnouncement) != 0)
+            replies.Add(new ChannelAnnouncement2Message(ChannelAnnouncement2Payload.Parse(channel.RawAnnouncement2.Span)));
+        if ((flag & GossipQueryCodec.QueryFlagChannelUpdate1) != 0 && ToMessage2(channel.Policy1V2) is { } update1)
+            replies.Add(update1);
+        if ((flag & GossipQueryCodec.QueryFlagChannelUpdate2) != 0 && ToMessage2(channel.Policy2V2) is { } update2)
+            replies.Add(update2);
+        if ((flag & GossipQueryCodec.QueryFlagNodeAnnouncement1) != 0)
+            AddNode(channel.NodeId1, replies, sentNodes, preferV2: true);
+        if ((flag & GossipQueryCodec.QueryFlagNodeAnnouncement2) != 0)
+            AddNode(channel.NodeId2, replies, sentNodes, preferV2: true);
+    }
+
+    private static ChannelUpdate2Message? ToMessage2(GraphPolicy? policy) =>
+        policy is null || policy.RawUpdate.IsEmpty
+            ? null
+            : new ChannelUpdate2Message(ChannelUpdate2Payload.Parse(policy.RawUpdate.Span));
+
     private static int LowerBound(GraphChannel[] sorted, ulong blockHeight)
     {
         int low = 0, high = sorted.Length;
@@ -223,22 +309,33 @@ public sealed class QueryResponder
 
     private static ReplyChannelRangeMessage CreateReply(ChainHash chainHash, uint first, uint number,
                                                         bool syncComplete, IReadOnlyList<GraphChannel> channels,
-                                                        bool withTimestamps, bool withChecksums)
+                                                        bool withTimestamps, bool withChecksums,
+                                                        bool includeV2 = false)
     {
         var encoded = GossipQueryCodec.EncodeShortChannelIds(channels.Select(c => c.ShortChannelId).ToList());
         BaseTlv? timestamps = null;
         BaseTlv? checksums = null;
+
+        // NL-878: to a v2 requester, a channel listed by its v2 side carries block heights and v2 checksums
         if (withTimestamps && channels.Count > 0)
             timestamps = new BaseTlv(TlvConstants.ReplyChannelRangeTimestamps,
                                      GossipQueryCodec.EncodeTimestamps(
-                                         channels.Select(c => new ChannelUpdatePair(c.Policy1?.Timestamp ?? 0,
-                                                                                    c.Policy2?.Timestamp ?? 0))
+                                         channels.Select(c => includeV2 && IsListedAsV2(c)
+                                                                  ? new ChannelUpdatePair(
+                                                                      c.Policy1V2?.Timestamp ?? 0,
+                                                                      c.Policy2V2?.Timestamp ?? 0)
+                                                                  : new ChannelUpdatePair(
+                                                                      c.Policy1?.Timestamp ?? 0,
+                                                                      c.Policy2?.Timestamp ?? 0))
                                                  .ToList()));
         if (withChecksums && channels.Count > 0)
             checksums = new BaseTlv(TlvConstants.ReplyChannelRangeChecksums,
                                     GossipQueryCodec.EncodeChecksums(
-                                        channels.Select(c => new ChannelUpdatePair(Checksum(c.Policy1),
-                                                                                   Checksum(c.Policy2)))
+                                        channels.Select(c => includeV2 && IsListedAsV2(c)
+                                                                 ? new ChannelUpdatePair(Checksum2(c.Policy1V2),
+                                                                                         Checksum2(c.Policy2V2))
+                                                                 : new ChannelUpdatePair(Checksum(c.Policy1),
+                                                                                         Checksum(c.Policy2)))
                                                 .ToList()));
 
         return new ReplyChannelRangeMessage(
@@ -249,16 +346,35 @@ public sealed class QueryResponder
     private static uint Checksum(GraphPolicy? policy) =>
         policy is null || policy.RawUpdate.IsEmpty ? 0 : ChannelUpdateChecksum.Compute(policy.RawUpdate.Span);
 
+    /// <summary>
+    /// The checksum of a <c>channel_update_2</c> (NL-878): CRC32C of its records without the signature and the block
+    /// height (<see cref="ChannelUpdate2Payload.GetChecksumData"/>); 0 without one.
+    /// </summary>
+    internal static uint Checksum2(GraphPolicy? policy) =>
+        policy is null || policy.RawUpdate.IsEmpty
+            ? 0
+            : ChannelUpdateChecksum.Crc32C(ChannelUpdate2Payload.Parse(policy.RawUpdate.Span).GetChecksumData());
+
     private static ChannelUpdateMessage? ToMessage(GraphPolicy? policy) =>
         policy is null || policy.RawUpdate.IsEmpty
             ? null
             : new ChannelUpdateMessage(ChannelUpdatePayload.Parse(policy.RawUpdate.Span));
 
-    private void AddNode(CompactPubKey nodeId, List<IMessage> replies, HashSet<CompactPubKey> sentNodes)
+    private void AddNode(CompactPubKey nodeId, List<IMessage> replies, HashSet<CompactPubKey> sentNodes,
+                         bool preferV2 = false)
     {
-        if (sentNodes.Contains(nodeId)
-         || !_graphStore.TryGetNode(nodeId, out var node)
-         || node.RawAnnouncement.IsEmpty)
+        if (sentNodes.Contains(nodeId) || !_graphStore.TryGetNode(nodeId, out var node))
+            return;
+
+        // NL-878: to a v2 requester the node_announcement_2 when the node has one
+        if (preferV2 && node.HasV2 && !node.RawAnnouncement2.IsEmpty)
+        {
+            sentNodes.Add(nodeId);
+            replies.Add(new NodeAnnouncement2Message(NodeAnnouncement2Payload.Parse(node.RawAnnouncement2.Span)));
+            return;
+        }
+
+        if (node.RawAnnouncement.IsEmpty)
             return;
 
         sentNodes.Add(nodeId);

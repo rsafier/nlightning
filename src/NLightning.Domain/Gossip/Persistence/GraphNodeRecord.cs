@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Gossip.Persistence;
 
 using Crypto.ValueObjects;
+using Graph;
 
 /// <summary>
 /// A stored <c>node_announcement</c> (BOLT 7, table <c>GraphNodes</c>, primary key the node id): its parsed fields and
@@ -39,6 +40,18 @@ public sealed record GraphNodeRecord
 
     /// <summary>When we received (or created) this announcement.</summary>
     public DateTimeOffset ReceivedAt { get; }
+
+    /// <summary>
+    /// The protocols the node announced itself with (migration <c>AddGossipV2</c>, NL-878); <see cref="Timestamp"/>
+    /// and <see cref="RawAnnouncement"/> are 0 and empty without a v1 announcement.
+    /// </summary>
+    public GraphGossipVersions Versions { get; init; } = GraphGossipVersions.V1;
+
+    /// <summary>The <c>node_announcement_2</c>'s block height, or null without one.</summary>
+    public uint? BlockHeight { get; init; }
+
+    /// <summary>The <c>node_announcement_2</c> payload, or null without one.</summary>
+    public byte[]? RawAnnouncement2 { get; init; }
 
     /// <exception cref="ArgumentException">The alias is not 32 bytes or the color not 3 bytes.</exception>
     public GraphNodeRecord(CompactPubKey nodeId, uint timestamp, byte[] features, byte[] alias, byte[] color,

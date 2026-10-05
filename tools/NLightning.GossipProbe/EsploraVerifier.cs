@@ -146,7 +146,11 @@ public static class EsploraVerifier
     /// <summary>P2WSH(2 &lt;key1&gt; &lt;key2&gt; 2 OP_CHECKMULTISIG) with the keys in BOLT 3 order (lexicographic).</summary>
     private static string ExpectedScriptPubKey(GraphChannel channel)
     {
-        var keys = new[] { new PubKey(channel.BitcoinKey1), new PubKey(channel.BitcoinKey2) }
+        // A BOLT 7 channel always has both keys (only a channel_announcement_2 may leave them out, NL-878)
+        var keys = new[]
+                   {
+                       new PubKey((byte[])channel.BitcoinKey1!.Value), new PubKey((byte[])channel.BitcoinKey2!.Value)
+                   }
                   .OrderBy(k => k.ToHex(), StringComparer.Ordinal)
                   .ToArray();
         var redeem = PayToMultiSigTemplate.Instance.GenerateScriptPubKey(2, keys);

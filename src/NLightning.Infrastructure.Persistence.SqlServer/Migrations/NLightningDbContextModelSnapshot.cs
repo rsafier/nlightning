@@ -1613,11 +1613,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .HasColumnType("varbinary(8)");
 
                     b.Property<byte[]>("BitcoinKey1")
-                        .IsRequired()
                         .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("BitcoinKey2")
-                        .IsRequired()
                         .HasColumnType("varbinary(33)");
 
                     b.Property<long>("CapacitySat")
@@ -1630,6 +1628,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("FundingTxId")
                         .HasColumnType("varbinary(32)");
 
+                    b.Property<byte>("GossipVersions")
+                        .HasColumnType("tinyint");
+
                     b.Property<byte[]>("NodeId1")
                         .IsRequired()
                         .HasColumnType("varbinary(33)");
@@ -1640,6 +1641,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.Property<byte[]>("RawAnnouncement")
                         .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("RawAnnouncement2")
                         .HasColumnType("varbinary(max)");
 
                     b.Property<long>("ReceivedAt")
@@ -1670,6 +1674,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte>("Direction")
                         .HasColumnType("tinyint");
 
+                    b.Property<byte>("Version")
+                        .HasColumnType("tinyint");
+
                     b.Property<byte>("ChannelFlags")
                         .HasColumnType("tinyint");
 
@@ -1688,6 +1695,12 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<decimal>("HtlcMinimumMsat")
                         .HasColumnType("decimal(20,0)");
 
+                    b.Property<long>("InboundFeeBaseMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("InboundFeePpm")
+                        .HasColumnType("bigint");
+
                     b.Property<byte>("MessageFlags")
                         .HasColumnType("tinyint");
 
@@ -1698,7 +1711,7 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<long>("Timestamp")
                         .HasColumnType("bigint");
 
-                    b.HasKey("ShortChannelId", "Direction");
+                    b.HasKey("ShortChannelId", "Direction", "Version");
 
                     b.ToTable("GraphChannelPolicies");
                 });
@@ -1716,6 +1729,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .IsRequired()
                         .HasColumnType("varbinary(32)");
 
+                    b.Property<long?>("BlockHeight")
+                        .HasColumnType("bigint");
+
                     b.Property<byte[]>("Color")
                         .IsRequired()
                         .HasColumnType("varbinary(3)");
@@ -1724,8 +1740,14 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .IsRequired()
                         .HasColumnType("varbinary(max)");
 
+                    b.Property<byte>("GossipVersions")
+                        .HasColumnType("tinyint");
+
                     b.Property<byte[]>("RawAnnouncement")
                         .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("RawAnnouncement2")
                         .HasColumnType("varbinary(max)");
 
                     b.Property<long>("ReceivedAt")

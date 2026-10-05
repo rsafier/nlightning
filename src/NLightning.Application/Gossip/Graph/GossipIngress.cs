@@ -24,6 +24,7 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 using Metrics;
 
@@ -99,7 +100,7 @@ using Metrics;
 /// <see cref="StopAsync"/> stops them and writes what is pending.
 /// </para>
 /// </remarks>
-public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendingChannels,
+public sealed partial class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendingChannels,
                                      IGossipAcceptedFeed, IAsyncDisposable, IDisposable
 {
     private readonly IGraphStore _store;
@@ -154,9 +155,13 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
                          TimeProvider? timeProvider = null,
                          IChannelMemoryRepository? channelMemoryRepository = null,
                          ISecureKeyManager? secureKeyManager = null, GossipMetrics? metrics = null,
-                         GossipMemoryBudget? memoryBudget = null)
+                         GossipMemoryBudget? memoryBudget = null,
+                         IGossipV2SignatureVerifier? v2SignatureVerifier = null,
+                         IBlockchainMonitor? blockchainMonitor = null)
     {
         _memoryBudget = memoryBudget;
+        _v2SignatureVerifier = v2SignatureVerifier;
+        _blockchainMonitor = blockchainMonitor;
         _ourNodeId = secureKeyManager?.GetNodePubKey();
         _store = store;
         _signatureVerifier = signatureVerifier;
@@ -317,7 +322,13 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
         ArgumentNullException.ThrowIfNull(message);
         if (!IsEnabled || message is not (ChannelAnnouncementMessage or NodeAnnouncementMessage
                                                                   or ChannelUpdateMessage))
-            return false;
+        {
+            // NL-878: taproot gossip only while we advertise option_gossip_v2 (experimental), else dropped silently
+            if (!IsEnabled || !IsGossipV2Enabled
+                           || message is not (ChannelAnnouncement2Message or NodeAnnouncement2Message
+                                                                          or ChannelUpdate2Message))
+                return false;
+        }
 
         _ = StartAsync();
         _metrics?.RecordReceived(message.Type);
@@ -528,6 +539,9 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
                     _store.TryApplyPolicy(update.ShortChannelId, policy);
                     break;
                 }
+            case ChannelAnnouncement2Message or ChannelUpdate2Message or NodeAnnouncement2Message:
+                await ApplyOwnV2Async(message, capacity, cancellationToken);
+                break;
             case NodeAnnouncementMessage { Payload: var announcement }:
                 {
                     var addresses = AddressDescriptorCodec.DecodeList(announcement.Addresses.Span);
@@ -628,10 +642,8 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
             _logger.LogWarning("{Count} graph gossip messages dropped so far (full queues or chain lookups given up); "
                              + "their channels wait for the next sync", dropped);
 
-        if (message is ChannelAnnouncementMessage announcement)
-            MarkMissed(announcement.Payload.ShortChannelId);
-        else if (message is ChannelUpdateMessage update)
-            MarkMissed(update.Payload.ShortChannelId);
+        if (ChannelOf(message) is { } shortChannelId)
+            MarkMissed(shortChannelId);
     }
 
     /// <summary>Hands <paramref name="shortChannelId"/> to the sync to be asked for again (bounded).</summary>
@@ -692,6 +704,11 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
                                                         origin, announcement, attempt, cancellationToken),
             ChannelUpdateMessage update => await ProcessChannelUpdateAsync(origin, update, attempt,
                                                                            cancellationToken),
+            ChannelAnnouncement2Message announcement => await ProcessChannelAnnouncement2Async(
+                                                            origin, announcement, attempt, cancellationToken),
+            ChannelUpdate2Message update => await ProcessChannelUpdate2Async(origin, update, attempt),
+            NodeAnnouncement2Message announcement => await ProcessNodeAnnouncement2Async(
+                                                         origin, announcement, attempt, cancellationToken),
             _ => GossipIngressResult.Ignored($"{message.GetType().Name} is not graph gossip")
         };
 
@@ -720,7 +737,10 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
                                                    (byte[])announcement.BitcoinKey2, announcement.Features);
         _store.TryGetChannel(announcement.ShortChannelId, out var known);
         var context = CreateContext();
-        var validation = GossipValidator.ValidateChannelAnnouncement(fields, context, known);
+
+        // NL-878: a channel known only from its channel_announcement_2 takes the BOLT 7 one of the same nodes too
+        var v2Only = known is { HasV1: false };
+        var validation = GossipValidator.ValidateChannelAnnouncement(fields, context, v2Only ? null : known);
         switch (validation.Outcome)
         {
             case GossipValidationOutcome.Warn:
@@ -735,6 +755,9 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
                     Remember(MessageTypes.ChannelAnnouncement, raw);
                 return GossipIngressResult.Ignored(validation.Reason.ToString(), validation.Reason);
         }
+
+        if (v2Only)
+            return await AddV1AnnouncementToV2ChannelAsync(origin, announcement, raw, known!, cancellationToken);
 
         // NL-406: the same announcement already waits for its first update (not remembered as a duplicate, so it can
         // come back once it has left the pending index)
@@ -1115,6 +1138,19 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
                 return await PromoteAsync(origin, message, candidates, attempt, context, cancellationToken);
         }
 
+        // NL-878: a channel_update belongs to a channel_announcement; a channel known only from its
+        // channel_announcement_2 keeps it as an orphan until the BOLT 7 announcement arrives
+        if (!channel.HasV1)
+        {
+            lock (_orphanGate)
+            {
+                if (!_orphans.AddUpdate(message, origin, out var full) && full)
+                    _metrics?.RecordDropped(GossipMetricReasons.OrphanCacheFull);
+            }
+
+            return GossipIngressResult.Orphaned("the channel has no channel_announcement yet");
+        }
+
         var validation = GossipValidator.ValidateChannelUpdate(update, context, channel);
         if (validation.Outcome == GossipValidationOutcome.Ignore)
         {
@@ -1179,7 +1215,9 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
                                                       CancellationToken cancellationToken)
     {
         IReadOnlyList<OrphanEntry<ChannelUpdateMessage>> updates;
+        IReadOnlyList<OrphanEntry<ChannelUpdate2Message>> updates2;
         var nodes = new List<OrphanEntry<NodeAnnouncementMessage>>(2);
+        var nodes2 = new List<OrphanEntry<NodeAnnouncement2Message>>(2);
         lock (_orphanGate)
         {
             if (!_store.TryAddChannel(channel, fundingTxId))
@@ -1190,16 +1228,23 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
             _budgetRefused.TryRemove(channel.ShortChannelId, out _);
 
             updates = _orphans.TakeUpdates(channel.ShortChannelId);
+            updates2 = _orphans.TakeUpdates2(channel.ShortChannelId);
             foreach (var nodeId in (ReadOnlySpan<CompactPubKey>)[channel.NodeId1, channel.NodeId2])
             {
                 if (_orphans.TakeNodeAnnouncement(nodeId) is { } entry)
                     nodes.Add(entry);
+                if (_orphans.TakeNodeAnnouncement2(nodeId) is { } entry2)
+                    nodes2.Add(entry2);
             }
         }
 
         foreach (var entry in updates)
             await ReplayAsync(entry.Origin, entry.Message, cancellationToken);
+        foreach (var entry in updates2)
+            await ReplayAsync(entry.Origin, entry.Message, cancellationToken);
         foreach (var entry in nodes)
+            await ReplayAsync(entry.Origin, entry.Message, cancellationToken);
+        foreach (var entry in nodes2)
             await ReplayAsync(entry.Origin, entry.Message, cancellationToken);
 
         return true;
@@ -1541,6 +1586,8 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
     {
         ChannelUpdateMessage update => update.Payload.Timestamp,
         NodeAnnouncementMessage announcement => announcement.Payload.Timestamp,
+        ChannelUpdate2Message update => update.Payload.BlockHeight,
+        NodeAnnouncement2Message announcement => announcement.Payload.BlockHeight,
         _ => 0
     };
 
@@ -1805,6 +1852,10 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
             return announcement.Payload.ShortChannelId;
         if (message is ChannelUpdateMessage update)
             return update.Payload.ShortChannelId;
+        if (message is ChannelAnnouncement2Message announcement2)
+            return announcement2.Payload.ShortChannelId;
+        if (message is ChannelUpdate2Message update2)
+            return update2.Payload.ShortChannelId;
         return null;
     }
 
@@ -1838,6 +1889,10 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
             ChannelAnnouncementMessage announcement => ScidKey(announcement.Payload.ShortChannelId),
             ChannelUpdateMessage update => ScidKey(update.Payload.ShortChannelId),
             NodeAnnouncementMessage announcement => BinaryPrimitives.ReadUInt64BigEndian(
+                ((ReadOnlySpan<byte>)(byte[])announcement.Payload.NodeId)[1..9]),
+            ChannelAnnouncement2Message announcement => ScidKey(announcement.Payload.ShortChannelId),
+            ChannelUpdate2Message update => ScidKey(update.Payload.ShortChannelId),
+            NodeAnnouncement2Message announcement => BinaryPrimitives.ReadUInt64BigEndian(
                 ((ReadOnlySpan<byte>)(byte[])announcement.Payload.NodeId)[1..9]),
             _ => 0UL
         };
