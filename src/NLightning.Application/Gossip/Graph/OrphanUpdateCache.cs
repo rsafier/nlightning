@@ -87,6 +87,21 @@ public sealed class OrphanUpdateCache
         return taken;
     }
 
+    /// <summary>True when a live <c>channel_update_2</c> is kept for <paramref name="shortChannelId"/>.</summary>
+    public bool HasUpdates2(ShortChannelId shortChannelId)
+    {
+        lock (_lock)
+        {
+            for (byte direction = 0; direction <= 1; direction++)
+            {
+                if (_updates2.TryGetValue((shortChannelId, direction), out var entry) && !IsExpired(entry))
+                    return true;
+            }
+
+            return false;
+        }
+    }
+
     /// <summary>Removes and returns the live <c>node_announcement_2</c> kept for <paramref name="nodeId"/>.</summary>
     public OrphanEntry<NodeAnnouncement2Message>? TakeNodeAnnouncement2(CompactPubKey nodeId)
     {

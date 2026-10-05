@@ -182,6 +182,8 @@ public sealed partial class GossipIngress : IGossipIngress, IOwnGossipSink, IGos
         _orphans = new OrphanUpdateCache(_options.MaxOrphans, _options.OrphanTtl, _timeProvider);
         _pending = new PendingAnnouncementIndex(_options.MaxPendingAnnouncements, _options.PendingAnnouncementTtl,
                                                 _timeProvider);
+        _pendingV2 = new PendingAnnouncementIndex(_options.MaxPendingAnnouncements, _options.PendingAnnouncementTtl,
+                                                  _timeProvider);
         _rateLimiter = new GossipRateLimiter(_options.ChannelUpdateRateInterval, _options.ChannelUpdateBurst,
                                              _options.NodeAnnouncementRateInterval, _timeProvider);
         _misbehaviour = new GossipMisbehaviourTracker(_options.MisbehaviourThreshold, _options.MisbehaviourWindow,
@@ -192,6 +194,7 @@ public sealed partial class GossipIngress : IGossipIngress, IOwnGossipSink, IGos
             metrics.RegisterQueue("ingress", () => Volatile.Read(ref _queuedTotal));
             metrics.RegisterQueue("orphans", () => _orphans.Count);
             metrics.RegisterQueue("pending_announcements", () => _pending.Count);
+            metrics.RegisterQueue("pending_announcements_v2", () => _pendingV2.Count);
             metrics.RegisterQueue("retries", () => Volatile.Read(ref _pendingRetries));
             metrics.RegisterQueue("rate_limited", () => _limitedUpdates.Count + _limitedNodes.Count);
             metrics.RegisterQueue("relay_feed", () => AcceptedCount);
@@ -223,7 +226,8 @@ public sealed partial class GossipIngress : IGossipIngress, IOwnGossipSink, IGos
     /// duplicate download.
     /// </summary>
     public bool IsPending(ShortChannelId shortChannelId) =>
-        _channelsInFlight.ContainsKey(shortChannelId) || _pending.Contains(shortChannelId);
+        _channelsInFlight.ContainsKey(shortChannelId) || _pending.Contains(shortChannelId)
+                                                      || _pendingV2.Contains(shortChannelId);
 
     /// <summary>The channels with a message queued in or being processed by a worker (for tests).</summary>
     internal int ChannelsInFlightCount => _channelsInFlight.Count;
@@ -626,6 +630,7 @@ public sealed partial class GossipIngress : IGossipIngress, IOwnGossipSink, IGos
                      && channel.Verification == GraphChannelVerification.Own
                      && _store.RemoveChannel(shortChannelId);
             _pending.Remove(shortChannelId);
+            _pendingV2.Remove(shortChannelId);
         }
 
         _missed.TryRemove(shortChannelId, out _);
@@ -706,7 +711,8 @@ public sealed partial class GossipIngress : IGossipIngress, IOwnGossipSink, IGos
                                                                            cancellationToken),
             ChannelAnnouncement2Message announcement => await ProcessChannelAnnouncement2Async(
                                                             origin, announcement, attempt, cancellationToken),
-            ChannelUpdate2Message update => await ProcessChannelUpdate2Async(origin, update, attempt),
+            ChannelUpdate2Message update => await ProcessChannelUpdate2Async(origin, update, attempt,
+                                                                             cancellationToken),
             NodeAnnouncement2Message announcement => await ProcessNodeAnnouncement2Async(
                                                          origin, announcement, attempt, cancellationToken),
             _ => GossipIngressResult.Ignored($"{message.GetType().Name} is not graph gossip")
@@ -716,9 +722,11 @@ public sealed partial class GossipIngress : IGossipIngress, IOwnGossipSink, IGos
             _logger.LogTrace("{MessageType} from peer {Peer}: {Outcome} ({Detail})", Enum.GetName(message.Type),
                              origin?.PeerPubKey.ToString() ?? "us", result.Outcome, result.Detail);
 
-        // An announcement counts as accepted where it is promoted into the graph (PromoteAsync), also when a waiting
-        // update promotes it during its own processing
-        if (message is not ChannelAnnouncementMessage || result.Outcome != GossipIngressOutcome.Accepted)
+        // An announcement counts as accepted where it is promoted into the graph (PromoteAsync, PromoteV2Async, or
+        // where a channel_announcement_2 is stored at once), also when a waiting update promotes it during its own
+        // processing
+        if (message is not (ChannelAnnouncementMessage or ChannelAnnouncement2Message)
+         || result.Outcome != GossipIngressOutcome.Accepted)
             RecordOutcome(message.Type, result);
         return result;
     }
@@ -1224,6 +1232,7 @@ public sealed partial class GossipIngress : IGossipIngress, IOwnGossipSink, IGos
                 return false;
 
             _pending.Remove(channel.ShortChannelId);
+            _pendingV2.Remove(channel.ShortChannelId);
             _missed.TryRemove(channel.ShortChannelId, out _);
             _budgetRefused.TryRemove(channel.ShortChannelId, out _);
 
@@ -1479,7 +1488,7 @@ public sealed partial class GossipIngress : IGossipIngress, IOwnGossipSink, IGos
     /// </summary>
     internal int PrunePendingAnnouncements()
     {
-        var expired = _pending.PruneExpired();
+        var expired = _pending.PruneExpired() + _pendingV2.PruneExpired();
         if (expired > 0)
             _metrics?.RecordDropped(GossipMetricReasons.PendingExpired, expired);
         return expired;

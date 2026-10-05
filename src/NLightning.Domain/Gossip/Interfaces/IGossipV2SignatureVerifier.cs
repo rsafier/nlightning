@@ -23,4 +23,18 @@ public interface IGossipV2SignatureVerifier
     /// </summary>
     GossipV2ProofResult CheckChannelProof(ChannelAnnouncement2Payload announcement,
                                           ReadOnlySpan<byte> fundingScriptPubKey);
+
+    /// <summary>
+    /// The MuSig2 signature of a <c>channel_announcement_2</c> with both bitcoin keys, checked without the funding
+    /// output (NL-1140): the aggregate <c>KeyAgg(KeySort(node_id_1, node_id_2, bitcoin_key_1, bitcoin_key_2))</c> does
+    /// not depend on it, so the ingress drops a forged announcement before it costs a chain lookup.
+    /// <see cref="CheckChannelProof"/> still matches the output against the keys afterwards.
+    /// </summary>
+    /// <returns>
+    /// <see cref="GossipV2ProofResult.Valid"/>, <see cref="GossipV2ProofResult.BadSignature"/>,
+    /// <see cref="GossipV2ProofResult.KeyMismatch"/> when a key is not on the curve, or
+    /// <see cref="GossipV2ProofResult.MalformedProof"/> when the announcement lacks a bitcoin key (the 3-key form needs
+    /// the output key).
+    /// </returns>
+    GossipV2ProofResult CheckChannelSignature(ChannelAnnouncement2Payload announcement);
 }

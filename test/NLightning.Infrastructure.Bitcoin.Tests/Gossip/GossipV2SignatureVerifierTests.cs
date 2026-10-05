@@ -130,6 +130,22 @@ public class GossipV2SignatureVerifierTests
         Assert.Equal(GossipV2ProofResult.MalformedProof, _verifier.CheckChannelProof(withoutKey2, p2tr));
     }
 
+    [Fact]
+    public void Given_AFourKeyAnnouncement_When_ItsSignatureIsCheckedWithoutTheOutput_Then_OnlyTheFourKeyAggregateIsValid()
+    {
+        // Arrange (NL-1140): the aggregate of the four keys needs no funding output
+        var signed = Sign(Unsigned(withKeys: true), _node1, _node2, _bitcoin1, _bitcoin2);
+        var otherSigners = Sign(Unsigned(withKeys: true), _node1, _node2, _bitcoin1, new Key());
+        var outputKey = new Key();
+        var even = outputKey.PubKey.ToBytes()[0] == 0x02 ? outputKey : NegatedKey(outputKey);
+        var keyless = Sign(Unsigned(withKeys: false), _node1, _node2, even);
+
+        // Act / Assert
+        Assert.Equal(GossipV2ProofResult.Valid, _verifier.CheckChannelSignature(signed));
+        Assert.Equal(GossipV2ProofResult.BadSignature, _verifier.CheckChannelSignature(otherSigners));
+        Assert.Equal(GossipV2ProofResult.MalformedProof, _verifier.CheckChannelSignature(keyless));
+    }
+
     private ChannelAnnouncement2Payload Unsigned(bool withKeys, byte[]? merkleRoot = null) =>
         ChannelAnnouncement2Payload.Create(ChainConstants.Regtest, [], s_scid, 1_000_000, Pub(_node1), Pub(_node2),
                                            withKeys ? Pub(_bitcoin1) : null, withKeys ? Pub(_bitcoin2) : null,

@@ -101,11 +101,7 @@ public sealed class GossipV2SignatureVerifier : IGossipV2SignatureVerifier
                 keys.Add(new CompactPubKey([0x02, .. witnessProgram]));
             }
 
-            var aggregate = _musig2.AggregatePubKeys(_musig2.SortPubKeys(keys));
-            return _musig2.VerifySignature(announcement.Signature.Value, aggregate.XOnlyOutputKey,
-                                           (byte[])announcement.GetSignatureHash())
-                       ? GossipV2ProofResult.Valid
-                       : GossipV2ProofResult.BadSignature;
+            return VerifyAggregateSignature(announcement, keys);
         }
         catch (Exception e) when (e is ArgumentException or InvalidOperationException
                                        or Domain.Exceptions.MusigException)
@@ -113,6 +109,36 @@ public sealed class GossipV2SignatureVerifier : IGossipV2SignatureVerifier
             // A key that is not on the curve, or an aggregate at infinity
             return GossipV2ProofResult.KeyMismatch;
         }
+    }
+
+    /// <inheritdoc />
+    public GossipV2ProofResult CheckChannelSignature(ChannelAnnouncement2Payload announcement)
+    {
+        ArgumentNullException.ThrowIfNull(announcement);
+        if (announcement.BitcoinKey1 is not { } key1 || announcement.BitcoinKey2 is not { } key2)
+            return GossipV2ProofResult.MalformedProof;
+
+        try
+        {
+            return VerifyAggregateSignature(announcement, [announcement.NodeId1, announcement.NodeId2, key1, key2]);
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException
+                                       or Domain.Exceptions.MusigException)
+        {
+            // A key that is not on the curve, or an aggregate at infinity
+            return GossipV2ProofResult.KeyMismatch;
+        }
+    }
+
+    /// <summary>The announcement's signature against the MuSig2 aggregate of the sorted <paramref name="keys"/>.</summary>
+    private GossipV2ProofResult VerifyAggregateSignature(ChannelAnnouncement2Payload announcement,
+                                                         List<CompactPubKey> keys)
+    {
+        var aggregate = _musig2.AggregatePubKeys(_musig2.SortPubKeys(keys));
+        return _musig2.VerifySignature(announcement.Signature.Value, aggregate.XOnlyOutputKey,
+                                       (byte[])announcement.GetSignatureHash())
+                   ? GossipV2ProofResult.Valid
+                   : GossipV2ProofResult.BadSignature;
     }
 
     private bool MatchesTaprootOutput(CompactPubKey key1, CompactPubKey key2, ReadOnlyMemory<byte>? merkleRoot,

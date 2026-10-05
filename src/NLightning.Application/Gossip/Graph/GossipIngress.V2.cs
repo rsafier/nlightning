@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace NLightning.Application.Gossip.Graph;
 
 using Domain.Bitcoin.ValueObjects;
@@ -26,15 +28,20 @@ using Metrics;
 /// otherwise <see cref="TryEnqueue"/> drops the v2 messages silently.
 /// </para>
 /// <para>
-/// <c>channel_announcement_2</c>: the pure checks (<see cref="GossipV2Validator"/>), then the funding output the
-/// short channel id names (<see cref="IFundingOutputLookup.LookupAsync"/>: P2WSH and P2TR are both accepted, at
+/// <c>channel_announcement_2</c>: the pure checks (<see cref="GossipV2Validator"/>). With both bitcoin keys (the 4-key
+/// form) the MuSig2 signature is checked next, without the output (<see cref="IGossipV2SignatureVerifier.CheckChannelSignature"/>:
+/// the aggregate of the four keys does not depend on it), so a forged announcement warns and closes before it costs
+/// a chain lookup (NL-1140). Then the funding output the short channel id names
+/// (<see cref="IFundingOutputLookup.LookupAsync"/>: P2WSH and P2TR are both accepted, at
 /// <see cref="GossipGraphOptions.GetAnnouncementDepth"/> confirmations), which must be the announced outpoint and hold
-/// at least the announced capacity, then the channel proof and the MuSig2 signature
-/// (<see cref="IGossipV2SignatureVerifier.CheckChannelProof"/>). A v2 announcement is stored at once (no pending index:
-/// its signature can only be checked against the funding output, so the lookup comes first; the lookups' own rate and
-/// concurrency limits bound what a flood costs, NL-1140) with the announced capacity; a channel known from a BOLT 7
-/// <c>channel_announcement</c> of the same nodes gets the v2 announcement added. A contradicting output never scores
-/// the peer (as for v1, NL-371); a bad signature warns and closes.
+/// at least the announced capacity, then the channel proof (<see cref="IGossipV2SignatureVerifier.CheckChannelProof"/>:
+/// the output against the keys). A 4-key announcement is stored at once with the announced capacity; a channel known
+/// from a BOLT 7 <c>channel_announcement</c> of the same nodes gets the v2 announcement added. A keyless announcement
+/// (the 3-key form, whose signature needs the output key) of a new channel waits, without a lookup, in a
+/// <see cref="PendingAnnouncementIndex"/> of its own (the BOLT 7 index's bounds, <see cref="GossipGraphOptions.MaxPendingAnnouncements"/>
+/// and <see cref="GossipGraphOptions.PendingAnnouncementTtl"/>) until its first valid <c>channel_update_2</c>, which
+/// promotes it (<see cref="PromoteV2Async"/>: then the lookup and the proof), as NL-406 does for BOLT 7. A
+/// contradicting output never scores the peer (as for v1, NL-371); a bad signature warns and closes.
 /// </para>
 /// <para>
 /// <c>channel_update_2</c>: the update of a channel announced with either protocol (else an orphan until its
@@ -45,14 +52,17 @@ using Metrics;
 /// the strictly increasing block heights (the draft's natural rate limit).
 /// </para>
 /// <para>
-/// Not done for v2 (NL-1140): the B7-CA-04 blacklist of a conflicting announcement, the
+/// Not done for v2 (NL-1140): the B7-CA-04 blacklist of a conflicting announcement, and the
 /// <see cref="GossipGraphOptions.AssumeChannelValid"/> and <c>SkipUnavailable</c> shortcuts (a v2 proof needs the
-/// output), and the pending-announcement index.
+/// output). The NL-425 refresh of a pending node's orphaned announcement covers BOLT 7 only.
 /// </para>
 /// </remarks>
 public sealed partial class GossipIngress
 {
     private readonly IGossipV2SignatureVerifier? _v2SignatureVerifier;
+
+    /// <summary>The keyless <c>channel_announcement_2</c>s waiting for their first <c>channel_update_2</c> (NL-1140).</summary>
+    private readonly PendingAnnouncementIndex _pendingV2;
     private readonly Infrastructure.Bitcoin.Wallet.Interfaces.IBlockchainMonitor? _blockchainMonitor;
 
     /// <summary>
@@ -67,6 +77,15 @@ public sealed partial class GossipIngress
     /// </summary>
     public bool IsGossipV2Enabled =>
         IsEnabled && _v2SignatureVerifier is not null && _nodeOptions.Features.IsGossipV2Advertised;
+
+    /// <summary>
+    /// The keyless <c>channel_announcement_2</c>s kept outside the graph until their first valid
+    /// <c>channel_update_2</c> (NL-1140; expired ones included until the next write-behind round).
+    /// </summary>
+    public int PendingAnnouncement2Count => _pendingV2.Count;
+
+    /// <summary>The keyless v2 announcements without update (for tests).</summary>
+    internal PendingAnnouncementIndex PendingAnnouncementsV2 => _pendingV2;
 
     /// <summary>Our chain tip from the chain monitor, or null before it has one.</summary>
     private uint? TipHeight => _blockchainMonitor?.LastProcessedBlockHeight is { } height and > 0 ? height : null;
@@ -198,30 +217,41 @@ public sealed partial class GossipIngress
             }
         }
 
-        // The draft: the short channel id's output, which must be the announced outpoint, unspent, holding at least
-        // the announced capacity; then the proof against its script (P2WSH or P2TR)
-        var lookup = await _fundingOutputLookup.LookupAsync(announcement.ShortChannelId, cancellationToken);
-        _metrics?.RecordChainLookup(GossipMetrics.TagValue(lookup.Status), lookup.FromKeptAnswer);
-        if (lookup.Status != FundingOutputStatus.Found)
-            return lookup.IsTransient
-                       ? GossipIngressResult.Deferred($"the chain lookup returned {lookup.Status}")
-                       : RejectV2Announcement(raw, FundingCheckFailed(origin?.PeerPubKey,
-                                                                        announcement.ShortChannelId, lookup.Status));
+        if (announcement.BitcoinKey1 is null || announcement.BitcoinKey2 is null)
+        {
+            // NL-1140: the 3-key form's signature needs the output key, so a new channel's announcement waits for its
+            // first channel_update_2 before it costs a lookup (as NL-406 for BOLT 7)
+            if (known is null)
+                return await KeepPendingV2Async(origin, announcement, raw, cancellationToken);
+        }
+        else
+        {
+            // NL-1140: the aggregate of the four keys does not depend on the output: a forgery is dropped before the
+            // lookup
+            switch (_v2SignatureVerifier!.CheckChannelSignature(announcement))
+            {
+                case GossipV2ProofResult.Valid:
+                    break;
+                case GossipV2ProofResult.MalformedProof:
+                    Remember(MessageTypes.ChannelAnnouncement2, raw);
+                    return await WarnAsync(origin, GossipRejectReason.None,
+                                           $"Malformed channel proof in channel_announcement_2 for "
+                                         + $"{announcement.ShortChannelId}", closeConnection: false);
+                default:
+                    // A bad signature, or keys that aggregate to nothing (no valid signature exists for them)
+                    Remember(MessageTypes.ChannelAnnouncement2, raw);
+                    return await WarnAsync(origin, GossipRejectReason.None,
+                                           $"Invalid signature in channel_announcement_2 for "
+                                         + $"{announcement.ShortChannelId}", closeConnection: true,
+                                           GossipMetricReasons.InvalidSignature);
+            }
+        }
 
-        if (lookup.Confirmations < AnnouncementDepth)
-            return GossipIngressResult.Deferred(
-                $"the funding output has {lookup.Confirmations} confirmations, {AnnouncementDepth} needed");
+        var check = await LookupV2FundingAsync(announcement, origin?.PeerPubKey, cancellationToken);
+        if (check.Failure is { } failure)
+            return failure.Outcome == GossipIngressOutcome.Deferred ? failure : RejectV2Announcement(raw, failure);
 
-        if (lookup.TransactionId != announcement.FundingTxId
-         || announcement.FundingOutputIndex != announcement.ShortChannelId.OutputIndex)
-            return RejectV2Announcement(raw, FundingCheckFailed(origin?.PeerPubKey, announcement.ShortChannelId,
-                                                                FundingOutputStatus.ScriptMismatch));
-
-        if ((ulong)lookup.Amount!.Satoshi < announcement.CapacitySatoshis)
-            return RejectV2Announcement(raw, FundingCheckFailed(origin?.PeerPubKey, announcement.ShortChannelId,
-                                                                FundingOutputStatus.AmountMismatch));
-
-        var proof = _v2SignatureVerifier!.CheckChannelProof(announcement, lookup.ScriptPubKey);
+        var proof = _v2SignatureVerifier!.CheckChannelProof(announcement, check.ScriptPubKey);
         switch (proof)
         {
             case GossipV2ProofResult.Valid:
@@ -252,6 +282,7 @@ public sealed partial class GossipIngress
                 return GossipIngressResult.Ignored("already known", GossipRejectReason.AlreadyKnown);
 
             RecordAccepted(GossipAcceptedKey.ChannelAnnouncement2(announcement.ShortChannelId));
+            _metrics?.RecordAccepted(MessageTypes.ChannelAnnouncement2);
             await ReplayV2OrphansAsync(known, cancellationToken);
             return GossipIngressResult.Accepted("added to the channel_announcement of the same channel");
         }
@@ -264,11 +295,243 @@ public sealed partial class GossipIngress
             Versions = GraphGossipVersions.V2,
             RawAnnouncement2 = raw
         };
-        if (!await AddChannelAndReplayAsync(channel, lookup.TransactionId, cancellationToken))
+        if (!await AddChannelAndReplayAsync(channel, check.TransactionId, cancellationToken))
             return GossipIngressResult.Ignored("already known", GossipRejectReason.AlreadyKnown);
 
         RecordAccepted(GossipAcceptedKey.ChannelAnnouncement2(announcement.ShortChannelId));
+        _metrics?.RecordAccepted(MessageTypes.ChannelAnnouncement2);
         return GossipIngressResult.Accepted(validation.Routable ? "routable" : "not routable");
+    }
+
+    /// <summary>
+    /// The draft's chain checks of a <c>channel_announcement_2</c>: the short channel id's output, which must be the
+    /// announced outpoint, unspent, at the announcement depth, holding at least the announced capacity. The failure is
+    /// a <see cref="GossipIngressOutcome.Deferred"/> result for a transient answer or too few confirmations, else a
+    /// permanent refusal that blames nobody (NL-371); on success the output's script, for the channel proof.
+    /// </summary>
+    private async Task<V2FundingCheck> LookupV2FundingAsync(ChannelAnnouncement2Payload announcement,
+                                                            CompactPubKey? originNodeId,
+                                                            CancellationToken cancellationToken)
+    {
+        var lookup = await _fundingOutputLookup.LookupAsync(announcement.ShortChannelId, cancellationToken);
+        _metrics?.RecordChainLookup(GossipMetrics.TagValue(lookup.Status), lookup.FromKeptAnswer);
+        if (lookup.Status != FundingOutputStatus.Found)
+            return V2FundingCheck.Failed(lookup.IsTransient
+                                             ? GossipIngressResult.Deferred($"the chain lookup returned {lookup.Status}")
+                                             : FundingCheckFailed(originNodeId, announcement.ShortChannelId,
+                                                                  lookup.Status));
+
+        if (lookup.Confirmations < AnnouncementDepth)
+            return V2FundingCheck.Failed(GossipIngressResult.Deferred(
+                $"the funding output has {lookup.Confirmations} confirmations, {AnnouncementDepth} needed"));
+
+        if (lookup.TransactionId != announcement.FundingTxId
+         || announcement.FundingOutputIndex != announcement.ShortChannelId.OutputIndex)
+            return V2FundingCheck.Failed(FundingCheckFailed(originNodeId, announcement.ShortChannelId,
+                                                            FundingOutputStatus.ScriptMismatch));
+
+        if ((ulong)lookup.Amount!.Satoshi < announcement.CapacitySatoshis)
+            return V2FundingCheck.Failed(FundingCheckFailed(originNodeId, announcement.ShortChannelId,
+                                                            FundingOutputStatus.AmountMismatch));
+
+        return new V2FundingCheck(null, lookup.ScriptPubKey ?? [], lookup.TransactionId);
+    }
+
+    /// <summary>
+    /// NL-1140: a keyless <c>channel_announcement_2</c> of a new channel waits in <see cref="_pendingV2"/>, without a
+    /// chain lookup, until its first valid <c>channel_update_2</c>; updates that arrived before it are replayed at once
+    /// (the first valid one promotes it). Mirrors <c>KeepPendingAsync</c> (NL-406, NL-418).
+    /// </summary>
+    private async Task<GossipIngressResult> KeepPendingV2Async(IPeerService? origin,
+                                                              ChannelAnnouncement2Payload announcement, byte[] raw,
+                                                              CancellationToken cancellationToken)
+    {
+        if (_pendingV2.ContainsRaw(announcement.ShortChannelId, raw))
+            return GossipIngressResult.Ignored("already waiting for its first channel_update_2",
+                                               GossipRejectReason.AlreadyKnown);
+
+        var entry = new PendingAnnouncement(announcement.ShortChannelId, raw, origin?.PeerPubKey,
+                                            _timeProvider.GetUtcNow())
+        {
+            IsV2 = true
+        };
+        IReadOnlyList<OrphanEntry<ChannelUpdate2Message>> waiting;
+        PendingAddOutcome added;
+        lock (_orphanGate)
+        {
+            if (_store.TryGetChannel(announcement.ShortChannelId, out _))
+                return GossipIngressResult.Ignored("already known", GossipRejectReason.AlreadyKnown);
+
+            added = _pendingV2.Add(entry);
+            if (added == PendingAddOutcome.Refused && _orphans.HasUpdates2(announcement.ShortChannelId))
+            {
+                // NL-418: a kept channel_update_2 matched none of the candidates, so they are all forgeries
+                if (_pendingV2.Remove(announcement.ShortChannelId))
+                {
+                    _metrics?.RecordDropped(GossipMetricReasons.PendingCandidatesEvicted);
+                    added = _pendingV2.Add(entry);
+                }
+            }
+
+            waiting = added == PendingAddOutcome.Refused
+                          ? []
+                          : _orphans.TakeUpdates2(announcement.ShortChannelId);
+        }
+
+        if (added == PendingAddOutcome.Refused)
+        {
+            _metrics?.RecordDropped(GossipMetricReasons.PendingCandidatesFull);
+            return GossipIngressResult.Limited(
+                $"{PendingAnnouncementIndex.MaxCandidatesPerChannel} other announcements wait for the same short "
+              + "channel id", GossipMetricReasons.PendingCandidatesFull);
+        }
+
+        if (added == PendingAddOutcome.AddedWithEviction)
+        {
+            _metrics?.RecordDropped(GossipMetricReasons.PendingFull);
+            var count = Interlocked.Increment(ref _pendingEvictedCount);
+            if (count == 1 || count % 1_000 == 0)
+                _logger.LogWarning("{Max} channel_announcement_2s without a channel_update_2 are kept; the oldest of "
+                                 + "the peer holding the most made room ({Count} so far)",
+                                   _options.MaxPendingAnnouncements, count);
+        }
+
+        foreach (var orphan in waiting)
+            await ReplayAsync(orphan.Origin, orphan.Message, cancellationToken);
+
+        return _store.TryGetChannel(announcement.ShortChannelId, out _)
+                   ? GossipIngressResult.Accepted("promoted by a waiting channel_update_2")
+                   : GossipIngressResult.Pending("waiting for its first channel_update_2");
+    }
+
+    /// <summary>
+    /// NL-1140: the first <c>channel_update_2</c> of a pending keyless <c>channel_announcement_2</c>. The update is
+    /// checked against the candidates (its fields, then the BIP 340 signature of the node its direction names) before
+    /// the chosen announcement's funding output is looked up and its proof checked; then the channel enters the graph
+    /// (and what waited for it is replayed) and the update is applied as for any stored channel. An update whose
+    /// signature matches no candidate waits as an orphan and its short channel id goes to the sync; a proof that fails
+    /// against the output drops the candidate without blaming the update's sender (the announcement came from another
+    /// peer, maybe long gone).
+    /// </summary>
+    private async Task<GossipIngressResult> PromoteV2Async(IPeerService? origin, ChannelUpdate2Message message,
+                                                           IReadOnlyList<PendingAnnouncement> candidates, int attempt,
+                                                           GossipValidationContext context,
+                                                           CancellationToken cancellationToken)
+    {
+        var update = message.Payload;
+        var first = candidates[0];
+        var validation = GossipV2Validator.ValidateChannelUpdate2(
+            update, context, first.ToUncheckedChannel2(first.ParseAnnouncement2()));
+        if (validation.Outcome == GossipValidationOutcome.Ignore)
+            return GossipIngressResult.Ignored(validation.Reason.ToString(), validation.Reason);
+
+        if (validation.Outcome == GossipValidationOutcome.Warn)
+            return await WarnAsync(origin, validation.Reason,
+                                   $"Invalid channel_update_2 for {update.ShortChannelId}: {validation.Reason}",
+                                   validation.CloseConnection);
+
+        PendingAnnouncement? pending = null;
+        ChannelAnnouncement2Payload? announcement = null;
+        CompactPubKey signer = default;
+        var signatureHash = update.GetSignatureHash();
+        var tried = new HashSet<CompactPubKey>();
+        foreach (var candidate in candidates)
+        {
+            var parsed = candidate.ParseAnnouncement2();
+            var candidateSigner = update.Direction == 0 ? parsed.NodeId1 : parsed.NodeId2;
+            if (!tried.Add(candidateSigner)
+             || !_v2SignatureVerifier!.VerifyBip340(signatureHash, update.Signature, candidateSigner))
+                continue;
+
+            pending = candidate;
+            announcement = parsed;
+            signer = candidateSigner;
+            break;
+        }
+
+        if (pending is null || announcement is null)
+        {
+            lock (_orphanGate)
+            {
+                if (!_orphans.AddUpdate2(message, origin, out var full) && full)
+                    _metrics?.RecordDropped(GossipMetricReasons.OrphanCacheFull);
+            }
+
+            MarkMissed(update.ShortChannelId);
+            return GossipIngressResult.Orphaned("not signed by the node of any pending channel_announcement_2");
+        }
+
+        if (_store.IsBanned(signer))
+            return GossipIngressResult.Ignored("the node is banned", GossipRejectReason.BlacklistedNode);
+
+        if (_store.ChannelCount >= _options.MaxChannels)
+            return GraphFull($"the graph holds {_options.MaxChannels} channels", update.ShortChannelId.ToString());
+
+        if (_memoryBudget?.RefuseNew("channels") is { } overBudget)
+        {
+            MarkBudgetRefused(update.ShortChannelId);
+            return overBudget;
+        }
+
+        var check = await LookupV2FundingAsync(announcement, pending.OriginNodeId, cancellationToken);
+        var failure = check.Failure;
+        if (failure is null)
+        {
+            switch (_v2SignatureVerifier!.CheckChannelProof(announcement, check.ScriptPubKey))
+            {
+                case GossipV2ProofResult.Valid:
+                    break;
+                case GossipV2ProofResult.BadSignature or GossipV2ProofResult.MalformedProof:
+                    // The announcement's own sender answers for its signature, not the update's sender
+                    _logger.LogDebug("The pending channel_announcement_2 {ShortChannelId} from peer {Peer} has an "
+                                   + "invalid channel proof", update.ShortChannelId,
+                                     pending.OriginNodeId?.ToString() ?? "us");
+                    failure = GossipIngressResult.Limited("invalid channel proof",
+                                                          GossipMetricReasons.InvalidSignature);
+                    break;
+                default:
+                    failure = FundingCheckFailed(pending.OriginNodeId, update.ShortChannelId,
+                                                 FundingOutputStatus.ScriptMismatch);
+                    break;
+            }
+        }
+
+        if (failure is not null)
+        {
+            if (failure.Outcome != GossipIngressOutcome.Deferred)
+            {
+                // Permanent: this candidate is false; the others (if any) stay
+                _pendingV2.Remove(pending);
+                Remember(MessageTypes.ChannelAnnouncement2, pending.Raw);
+                _metrics?.RecordRejected(MessageTypes.ChannelAnnouncement2, failure.MetricReason);
+            }
+
+            return failure;
+        }
+
+        Remember(MessageTypes.ChannelAnnouncement2, pending.Raw);
+        var channel = new GraphChannel(announcement.ShortChannelId, announcement.NodeId1, announcement.NodeId2,
+                                       announcement.BitcoinKey1, announcement.BitcoinKey2,
+                                       announcement.CapacitySatoshis,
+                                       announcement.Features ?? ReadOnlyMemory<byte>.Empty)
+        {
+            Versions = GraphGossipVersions.V2,
+            RawAnnouncement2 = pending.Raw
+        };
+        if (await AddChannelAndReplayAsync(channel, check.TransactionId, cancellationToken))
+        {
+            RecordAccepted(GossipAcceptedKey.ChannelAnnouncement2(update.ShortChannelId));
+            _metrics?.RecordAccepted(MessageTypes.ChannelAnnouncement2);
+        }
+
+        // The channel is in the graph now: apply the update as for any channel
+        return await ProcessChannelUpdate2Async(origin, message, attempt, cancellationToken);
+    }
+
+    /// <summary>The chain checks of a <c>channel_announcement_2</c>: a failure, or the output's script and txid.</summary>
+    private sealed record V2FundingCheck(GossipIngressResult? Failure, byte[] ScriptPubKey, TxId? TransactionId)
+    {
+        public static V2FundingCheck Failed(GossipIngressResult failure) => new(failure, [], null);
     }
 
     private GossipIngressResult RejectV2Announcement(byte[] raw, GossipIngressResult result)
@@ -278,7 +541,8 @@ public sealed partial class GossipIngress
     }
 
     private async Task<GossipIngressResult> ProcessChannelUpdate2Async(IPeerService? origin,
-                                                                      ChannelUpdate2Message message, int attempt)
+                                                                      ChannelUpdate2Message message, int attempt,
+                                                                      CancellationToken cancellationToken)
     {
         var update = message.Payload;
         var raw = update.GetBytes();
@@ -291,15 +555,21 @@ public sealed partial class GossipIngress
             if (update.ChainHash != context.ChainHash)
                 return GossipIngressResult.Ignored("another chain", GossipRejectReason.UnknownChain);
 
+            IReadOnlyList<PendingAnnouncement> candidates = [];
             lock (_orphanGate)
             {
-                if (!_store.TryGetChannel(update.ShortChannelId, out channel))
+                if (!_store.TryGetChannel(update.ShortChannelId, out channel)
+                 && (candidates = _pendingV2.GetCandidates(update.ShortChannelId)).Count == 0)
                 {
                     if (!_orphans.AddUpdate2(message, origin, out var full) && full)
                         _metrics?.RecordDropped(GossipMetricReasons.OrphanCacheFull);
                     return GossipIngressResult.Orphaned("the channel is not in the graph yet");
                 }
             }
+
+            // NL-1140: the first update of a keyless channel_announcement_2 that waits for one
+            if (channel is null)
+                return await PromoteV2Async(origin, message, candidates, attempt, context, cancellationToken);
         }
 
         var validation = GossipV2Validator.ValidateChannelUpdate2(update, context, channel);
