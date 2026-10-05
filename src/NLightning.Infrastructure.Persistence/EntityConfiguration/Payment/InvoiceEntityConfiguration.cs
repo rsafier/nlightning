@@ -20,7 +20,8 @@ public static class InvoiceEntityConfiguration
             entity.Property(e => e.PaymentHash)
                   .HasConversion<HashConverter>()
                   .IsRequired();
-            entity.Property(e => e.Preimage).IsRequired();
+            // Null for a hold invoice (NL-995)
+            entity.Property(e => e.Preimage).IsRequired(false);
             entity.Property(e => e.PaymentSecret).IsRequired();
             entity.Property(e => e.AmountMsat).IsRequired(false);
             entity.Property(e => e.Description).IsRequired(false);

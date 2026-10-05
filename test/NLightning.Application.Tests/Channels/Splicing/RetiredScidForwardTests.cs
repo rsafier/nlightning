@@ -59,7 +59,7 @@ public class RetiredScidForwardTests
         // Assert: forwarded over the spliced channel, Carol paid, the circuit names that channel
         Assert.True(map.TryResolve(ThreeNodeHarness.BobCarolScid, out _));
         var fulfilled = Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
-        Assert.Equal(invoice.Preimage, fulfilled.PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, fulfilled.PaymentPreimage);
         Assert.Empty(harness.Alice.PaymentHandler.Failed);
         var circuit = await harness.Bob.InScopeAsync(u => u.ForwardCircuitDbRepository.GetByIncomingAsync(
                                                          ThreeNodeHarness.AliceBobChannelId, 0));
@@ -101,7 +101,7 @@ public class RetiredScidForwardTests
         var entry = Assert.Single(map.GetByChannel(ThreeNodeHarness.BobCarolChannelId));
         Assert.Equal(ThreeNodeHarness.BlockHeight + RetiredShortChannelId.RetentionBlocks, entry.ExpiresAtHeight);
         var fulfilled = Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
-        Assert.Equal(invoice.Preimage, fulfilled.PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, fulfilled.PaymentPreimage);
         Assert.Empty(harness.Alice.PaymentHandler.Failed);
     }
 

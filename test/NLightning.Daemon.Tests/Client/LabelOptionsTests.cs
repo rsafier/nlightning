@@ -16,6 +16,7 @@ public class LabelOptionsTests
 {
     private const string Address = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
     private const string NodeId = "0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c";
+    private const string PaymentHash = "abababababababababababababababababababababababababababababababab";
 
     [Fact]
     public void Given_LabelAndTagsInBothForms_When_Extracted_Then_TheRestKeepsItsOrderAndTheTagsAreSorted()
@@ -82,6 +83,8 @@ public class LabelOptionsTests
     [Theory]
     [InlineData("createinvoice", "1000 coffee 60 --label shop --tag till=2")]
     [InlineData("addinvoice", "--label shop any")]
+    [InlineData("createholdinvoice", PaymentHash + " 1000 coffee --label mint --tag nut=14")]
+    [InlineData("create-hold-invoice", "--label mint " + PaymentHash + " any")]
     [InlineData("payinvoice", "lnbcrt1 --tag category=supplies --max-parts 2")]
     [InlineData("pay", "lnbcrt1 any 30 --label supplier")]
     [InlineData("keysend", NodeId + " 21 --label tip --tlv 65537=00")]

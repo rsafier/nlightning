@@ -74,7 +74,7 @@ public class MppReceiveTests
         Assert.Equal(2, harness.Sent.Count(s => s is { From: "Carol", To: "Bob" }
                                             && s.Message is UpdateFulfillHtlcMessage));
         Assert.Equal(2, harness.Alice.PaymentHandler.Fulfilled.Count);
-        Assert.All(harness.Alice.PaymentHandler.Fulfilled, f => Assert.Equal(invoice.Preimage, f.PaymentPreimage));
+        Assert.All(harness.Alice.PaymentHandler.Fulfilled, f => Assert.Equal(invoice.Preimage!.Value, f.PaymentPreimage));
         Assert.Empty(harness.Alice.PaymentHandler.Failed);
         var stored = await GetInvoiceAsync(harness, invoice);
         Assert.Equal(InvoiceStatus.Settled, stored.Status);
@@ -580,7 +580,7 @@ public class MppReceiveTests
         // NL-322/NL-323: every part left without its fulfill was committed first (the preimage on its record)
         Assert.All(harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId).Commitments!.Htlcs.Values
                           .Where(h => h is { Direction: HtlcDirection.Incoming, Removal: null }),
-                   h => Assert.Equal(invoice.Preimage, h.KnownPreimage));
+                   h => Assert.Equal(invoice.Preimage!.Value, h.KnownPreimage));
     }
 
     private static Task<InvoiceModel> GetInvoiceAsync(ThreeNodeHarness harness, InvoiceModel invoice) =>

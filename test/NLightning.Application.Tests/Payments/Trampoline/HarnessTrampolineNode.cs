@@ -180,7 +180,7 @@ internal sealed class HarnessTrampolineNode : ITrampolineLegObserver
         invoice!.Accept(LightningMoney.MilliSatoshis(parts.Aggregate(0UL, (sum, p) => sum + p.AmountMsat)));
         await _node.Invoices.UpdateAsync(invoice);
         foreach (var part in parts)
-            await _operations.FulfillHtlcAsync(part.ChannelId, part.HtlcId, invoice.Preimage, cancellationToken);
+            await _operations.FulfillHtlcAsync(part.ChannelId, part.HtlcId, invoice.Preimage!.Value, cancellationToken);
     }
 
     private async Task RelayAsync(Hash paymentHash, List<IncomingPart> parts, CancellationToken cancellationToken)

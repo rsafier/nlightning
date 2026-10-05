@@ -250,6 +250,79 @@ public sealed class InvoiceService : IInvoiceService
         return model;
     }
 
+    /// <inheritdoc />
+    /// <exception cref="ArgumentOutOfRangeException">If the amount or the expiry is zero.</exception>
+    /// <exception cref="ArgumentException">If a BOLT 11 invoice already exists for the hash or the description is too
+    /// long. Nothing is persisted.</exception>
+    public async Task<InvoiceModel> CreateHoldInvoiceAsync(Hash paymentHash, LightningMoney? amount, string description,
+                                                           uint? expirySeconds, SourceLabels labels,
+                                                           CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(description);
+        ArgumentNullException.ThrowIfNull(labels);
+        if (amount is { IsZero: true })
+            throw new ArgumentOutOfRangeException(nameof(amount), "An invoice amount must be positive; use null for "
+                                                                + "any amount.");
+
+        var nodeOptions = _nodeOptions.Value;
+        var routing = nodeOptions.Routing;
+        var expiry = expirySeconds ?? routing.InvoiceExpirySeconds;
+        if (expiry == 0)
+            throw new ArgumentOutOfRangeException(nameof(expirySeconds), "The expiry must be positive.");
+
+        // The preimage arrives from outside with the operator's settle (NL-995); only the payment secret is ours. A
+        // hold invoice has no blinded-path form (the blinded path_id is derived from the preimage)
+        var paymentSecret = RandomNumberGenerator.GetBytes(CryptoConstants.SecretLen);
+        var invoice = new Invoice(amount ?? LightningMoney.Zero, description,
+                                  PaymentTarget.FromWireBytes(paymentHash),
+                                  PaymentTarget.FromWireBytes(paymentSecret), nodeOptions.BitcoinNetwork,
+                                  _secureKeyManager)
+        {
+            MinFinalCltvExpiry = routing.InvoiceMinFinalCltvExpiry
+        };
+        var basicMpp = nodeOptions.Features.BasicMpp != FeatureSupport.No;
+        var trampoline = TrampolineRoutingSupport.IsAdvertised(nodeOptions.Features);
+        if (basicMpp || trampoline)
+        {
+            var features = FeatureSet.DeserializeFromBytes([0x41, 0x00]);
+            if (basicMpp)
+                features.SetFeature(Feature.BasicMpp, false);
+            if (trampoline)
+                features.SetFeature(Feature.OptionTrampolineRouting, false);
+            invoice.Features = features;
+        }
+
+        invoice.ExpiryDate = DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp + expiry);
+        foreach (var routeHint in await BuildRouteHintsAsync(amount, cancellationToken))
+            invoice.AddRouteHint(routeHint);
+        var bolt11 = invoice.Encode();
+
+        var model = new InvoiceModel(paymentHash, null, new Secret(paymentSecret), amount, description, bolt11,
+                                     DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp), expiry,
+                                     routing.InvoiceMinFinalCltvExpiry)
+        {
+            Label = labels.Label,
+            Tags = labels.CanonicalTags
+        };
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        using (var scope = _serviceScopeFactory.CreateScope())
+        {
+            var invoiceDbRepository = scope.ServiceProvider.GetRequiredService<IInvoiceDbRepository>();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            await invoiceDbRepository.AddAsync(model);
+            await unitOfWork.SaveChangesAsync();
+        }
+
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Created hold invoice {PaymentHash} for {Amount}", model.PaymentHash,
+                                   amount is null ? "any amount" : $"{amount.MilliSatoshi} msat");
+
+        return model;
+    }
+
     /// <summary>
     /// bLIP 39: adds our blinded paths to <paramref name="invoice"/>, drops its payment secret and signs it with a fresh
     /// ephemeral key (see the class remarks).

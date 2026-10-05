@@ -130,7 +130,7 @@ using Trampoline;
 /// (<see cref="LinkUpEventReplayer"/>). Before BOLT2 N7 a link is marked only when a channel opens, so an HTLC refused
 /// because its peer disconnected waits for N7's <c>MarkLinkUp</c> after the reestablish (NL-252).</para>
 /// </remarks>
-public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
+public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 {
     private readonly IAttributionDataService? _attributionDataService;
     private readonly IBlockchainMonitor? _blockchainMonitor;
@@ -302,6 +302,10 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                 case IncomingHtlcSettled incomingSettled:
                     await PruneAsync(incomingSettled.ChannelId,
                                      new HtlcKey(HtlcDirection.Incoming, incomingSettled.HtlcId), cancellationToken);
+                    // NL-995: losing any part of a held set (the deadline monitor's fail-back is the guard) cancels
+                    // the hold
+                    if (incomingSettled.Kind != HtlcRemovalKind.Fulfill)
+                        await HandleIncomingSettledForHoldAsync(incomingSettled, cancellationToken);
                     break;
             }
         }
@@ -664,6 +668,13 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                  + "{PartsMsat} of {TotalMsat} msat of {PaymentHash} received", htlc.Id,
                                    htlc.AmountMsat, channelId, set.Parts.Count, set.PartsSum.MilliSatoshi,
                                    set.TotalMsat.MilliSatoshi, htlc.PaymentHash);
+            return;
+        }
+
+        if (decision.Invoice!.Preimage is null)
+        {
+            // NL-995: a hold invoice holds its completed set until the operator settles or cancels
+            await HoldSetAsync(set, decision.Invoice);
             return;
         }
 

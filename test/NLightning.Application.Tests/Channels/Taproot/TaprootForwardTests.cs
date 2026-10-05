@@ -30,7 +30,7 @@ public class TaprootForwardTests
 
         // Assert - Alice learnt the preimage; every commitment_signed was a MuSig2 one
         var fulfilled = Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
-        Assert.Equal(invoice.Preimage, fulfilled.PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, fulfilled.PaymentPreimage);
         Assert.Equal(aliceBefore - (s_amount + fee).MilliSatoshi,
                      harness.Alice.Channel(ThreeNodeHarness.AliceBobChannelId).Commitments!.LocalBalanceMsat);
         var signed = harness.Sent.Select(s => s.Message).OfType<CommitmentSignedMessage>().ToList();

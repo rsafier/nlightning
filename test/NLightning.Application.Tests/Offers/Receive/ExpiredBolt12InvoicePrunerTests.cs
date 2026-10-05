@@ -202,7 +202,7 @@ public class ExpiredBolt12InvoicePrunerTests
         var amount = LightningMoney.MilliSatoshis(1_000);
         var payload = new HopPayload(new AmtToForwardTlv(amount), new OutgoingCltvValueTlv(900),
                                      new EncryptedRecipientDataTlv(new byte[20]), new TotalAmountMsatTlv(amount));
-        var recipientData = new BlindedRecipientData { PathId = BlindedPathId.Compute(invoice.Preimage) };
+        var recipientData = new BlindedRecipientData { PathId = BlindedPathId.Compute(invoice.Preimage!.Value) };
         var beforePrune = processor.Evaluate(await store.Invoices.GetByPaymentHashAsync(invoice.PaymentHash),
                                              invoice.PaymentHash, amount, 900, payload, 800,
                                              blindedRecipientData: recipientData);
@@ -236,7 +236,7 @@ public class ExpiredBolt12InvoicePrunerTests
         var amount = LightningMoney.MilliSatoshis(1_000);
         var payload = new HopPayload(new AmtToForwardTlv(amount), new OutgoingCltvValueTlv(900),
                                      new EncryptedRecipientDataTlv(new byte[20]), new TotalAmountMsatTlv(amount));
-        var recipientData = new BlindedRecipientData { PathId = BlindedPathId.Compute(invoice.Preimage) };
+        var recipientData = new BlindedRecipientData { PathId = BlindedPathId.Compute(invoice.Preimage!.Value) };
         var atArrival = processor.Evaluate(await store.Invoices.GetByPaymentHashAsync(invoice.PaymentHash),
                                            invoice.PaymentHash, amount, 900, payload, 800,
                                            blindedRecipientData: recipientData);

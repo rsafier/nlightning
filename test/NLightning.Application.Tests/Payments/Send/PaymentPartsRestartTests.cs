@@ -149,7 +149,7 @@ public class PaymentPartsRestartTests
         var unknown = await harness.Bob.PaymentService.GetPaymentAsync(invoice.PaymentHash, ct);
         var part = (await harness.Bob.Parts.GetForPaymentAsync(invoice.PaymentHash))[0];
         await restarted.HandleOutgoingHtlcFulfilledAsync(
-            new OutgoingHtlcFulfilled(part.ChannelId, part.HtlcId, invoice.PaymentHash, invoice.Preimage), ct);
+            new OutgoingHtlcFulfilled(part.ChannelId, part.HtlcId, invoice.PaymentHash, invoice.Preimage!.Value), ct);
 
         // Assert: the failure was an unknown outcome and published nothing; the replayed fulfill is the first event
         Assert.True(unknown!.IsOutcomeUnknown);

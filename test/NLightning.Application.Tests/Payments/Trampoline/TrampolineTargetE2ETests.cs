@@ -39,7 +39,7 @@ public class TrampolineTargetE2ETests
         // Assert: C's invoice advertised bit 57 and is settled for the total; A has the preimage
         Assert.True(TrampolineHarness.Decode(invoice).Features!.IsFeatureSet(Feature.OptionTrampolineRouting, false));
         var fulfilled = Assert.Single(harness.A.PaymentHandler.Fulfilled);
-        Assert.Equal(invoice.Preimage, fulfilled.PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, fulfilled.PaymentPreimage);
         Assert.Empty(harness.A.PaymentHandler.Failed);
         var stored = await TrampolineHarness.GetInvoiceAsync(harness.C, invoice.PaymentHash);
         Assert.NotNull(stored);
@@ -89,7 +89,7 @@ public class TrampolineTargetE2ETests
 
         // Assert: both parts fulfilled with the preimage, the invoice settled once for the total
         Assert.Equal(2, harness.A.PaymentHandler.Fulfilled.Count);
-        Assert.All(harness.A.PaymentHandler.Fulfilled, f => Assert.Equal(invoice.Preimage, f.PaymentPreimage));
+        Assert.All(harness.A.PaymentHandler.Fulfilled, f => Assert.Equal(invoice.Preimage!.Value, f.PaymentPreimage));
         Assert.Contains(harness.A.PaymentHandler.Fulfilled,
                         f => f.ChannelId == TrampolineHarness.AliceTrampolineChannelId);
         Assert.Contains(harness.A.PaymentHandler.Fulfilled,
@@ -209,7 +209,7 @@ public class TrampolineTargetE2ETests
 
         // Assert
         Assert.Equal(2, harness.A.PaymentHandler.Fulfilled.Count);
-        Assert.All(harness.A.PaymentHandler.Fulfilled, f => Assert.Equal(invoice.Preimage, f.PaymentPreimage));
+        Assert.All(harness.A.PaymentHandler.Fulfilled, f => Assert.Equal(invoice.Preimage!.Value, f.PaymentPreimage));
         Assert.Empty(harness.A.PaymentHandler.Failed);
         var stored = await TrampolineHarness.GetInvoiceAsync(harness.C, invoice.PaymentHash);
         Assert.NotNull(stored);

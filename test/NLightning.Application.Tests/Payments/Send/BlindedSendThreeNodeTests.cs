@@ -39,7 +39,7 @@ public class BlindedSendThreeNodeTests
         var ct = TestContext.Current.CancellationToken;
         await using var harness = await CreateAsync();
         var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "blinded receive", null, ct);
-        var paths = await BuildPathsAsync(harness, invoice.Preimage, invoice.MinFinalCltvExpiry, dummyHops);
+        var paths = await BuildPathsAsync(harness, invoice.Preimage!.Value, invoice.MinFinalCltvExpiry, dummyHops);
         var path = Assert.Single(paths);
         Assert.Equal(harness.Bob.NodeId, path.Path.FirstNodeId);
         Assert.Equal(2 + dummyHops, path.Path.Hops.Count);
@@ -54,7 +54,7 @@ public class BlindedSendThreeNodeTests
 
         // Assert: succeeded with the path's fee; Bob forwarded with the next path_key; Carol settled
         Assert.True(result.Payment.Status == PaymentStatus.Succeeded, result.Payment.FailureReason);
-        Assert.Equal(invoice.Preimage, result.Payment.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, result.Payment.Preimage);
         Assert.Equal(path.PayInfo.ComputeFeeMsat(s_amount.MilliSatoshi), result.Payment.Fee.MilliSatoshi);
         var forwarded = Assert.IsType<UpdateAddHtlcMessage>(
             Assert.Single(harness.Carol.Received, m => m is UpdateAddHtlcMessage));
@@ -77,7 +77,7 @@ public class BlindedSendThreeNodeTests
         var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "layout", null, ct);
 
         // Act
-        var path = Assert.Single(await BuildPathsAsync(harness, invoice.Preimage, invoice.MinFinalCltvExpiry, 2));
+        var path = Assert.Single(await BuildPathsAsync(harness, invoice.Preimage!.Value, invoice.MinFinalCltvExpiry, 2));
 
         // Assert: Bob's hop names the channel; Carol's two relays name Carol with Bob's relay policy and a chained
         // max_cltv_expiry; the last hop carries the path_id; the pay info aggregates three relays
@@ -101,7 +101,7 @@ public class BlindedSendThreeNodeTests
         }
 
         var final = carolBlinding.UnblindAsLocalNode(pathKey, path.Path.Hops[3].EncryptedRecipientData);
-        Assert.True(BlindedPathId.Matches(final.RecipientData.PathId!.Value.Span, invoice.Preimage));
+        Assert.True(BlindedPathId.Matches(final.RecipientData.PathId!.Value.Span, invoice.Preimage!.Value));
         Assert.Null(final.RecipientData.NextNodeId);
         Assert.Equal(maxCltv - relay.CltvExpiryDelta, final.RecipientData.PaymentConstraints!.MaxCltvExpiry);
         Assert.Single(path.Path.Hops.Select(h => h.EncryptedRecipientData.Length).Distinct());
@@ -158,7 +158,7 @@ public class BlindedSendThreeNodeTests
         var ct = TestContext.Current.CancellationToken;
         await using var harness = await CreateAsync();
         var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "too big", null, ct);
-        var path = Assert.Single(await BuildPathsAsync(harness, invoice.Preimage, invoice.MinFinalCltvExpiry));
+        var path = Assert.Single(await BuildPathsAsync(harness, invoice.Preimage!.Value, invoice.MinFinalCltvExpiry));
         var tooSmall = path with { PayInfo = path.PayInfo with { HtlcMaximumMsat = 1 } };
         var payments = harness.Alice.Services.GetRequiredService<IPaymentService>();
 

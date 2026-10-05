@@ -56,7 +56,7 @@ public class Bolt11BlindedInvoiceTests
 
         // Assert
         Assert.True(result.Payment.Status == PaymentStatus.Succeeded, result.Payment.FailureReason);
-        Assert.Equal(invoice.Preimage, result.Payment.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, result.Payment.Preimage);
         Assert.Equal(path.PayInfo.ComputeFeeMsat(s_amount.MilliSatoshi), result.Payment.Fee.MilliSatoshi);
         var add = Assert.IsType<UpdateAddHtlcMessage>(Assert.Single(harness.Carol.Received,
                                                                     m => m is UpdateAddHtlcMessage));
@@ -85,7 +85,7 @@ public class Bolt11BlindedInvoiceTests
         await using var harness = await CreateAsync();
         HandBobsUpdateToCarol(harness);
         var record = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "split", null, ct);
-        var paths = (await BuildPathsAsync(harness, record.Preimage, record.MinFinalCltvExpiry, 2))
+        var paths = (await BuildPathsAsync(harness, record.Preimage!.Value, record.MinFinalCltvExpiry, 2))
                    .Select(p => p with { PayInfo = p.PayInfo with { HtlcMaximumMsat = s_amount.MilliSatoshi * 6 / 10 } })
                    .ToList();
         var bolt11 = EncodeBlindedInvoice(harness, record.PaymentHash, paths, basicMpp: true);
@@ -112,7 +112,7 @@ public class Bolt11BlindedInvoiceTests
         await using var harness = await CreateAsync();
         HandBobsUpdateToCarol(harness);
         var record = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "no split", null, ct);
-        var paths = (await BuildPathsAsync(harness, record.Preimage, record.MinFinalCltvExpiry, 2))
+        var paths = (await BuildPathsAsync(harness, record.Preimage!.Value, record.MinFinalCltvExpiry, 2))
                    .Select(p => p with { PayInfo = p.PayInfo with { HtlcMaximumMsat = s_amount.MilliSatoshi * 6 / 10 } })
                    .ToList();
         var bolt11 = EncodeBlindedInvoice(harness, record.PaymentHash, paths, basicMpp: false);

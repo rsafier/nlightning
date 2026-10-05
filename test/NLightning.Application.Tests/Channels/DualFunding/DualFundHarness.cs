@@ -526,7 +526,7 @@ internal sealed class DualFundNode
         var onion = await Services.GetRequiredService<PaymentOnionFactory>().CreateAsync(route);
         await Operations.OfferHtlcAsync(channelId, route.FirstHopAmount, route.PaymentHash, route.FirstHopCltvExpiry,
                                         onion.Packet, null, HtlcOrigin.Local(route.PaymentHash));
-        return (invoice.PaymentHash, invoice.Preimage);
+        return (invoice.PaymentHash, invoice.Preimage!.Value);
     }
 
     private ServiceProvider BuildProvider()

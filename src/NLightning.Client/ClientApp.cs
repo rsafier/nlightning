@@ -340,6 +340,14 @@ internal static class ClientApp
                     if (!await WaitInvoiceCommands.RunAsync(commandArgs, client, cancellationToken))
                         return Failure;
                     break;
+                case "createholdinvoice":
+                case "create-hold-invoice":
+                case "settleholdinvoice":
+                case "settle-hold-invoice":
+                case "cancelholdinvoice":
+                case "cancel-hold-invoice":
+                    await HoldInvoiceCommands.RunAsync(cmd, commandArgs, client, cancellationToken, labels);
+                    break;
                 case "listinvoices":
                 case "list-invoices":
                     var (invoiceTake, invoiceSkip) = ParsePage(commandArgs);
@@ -587,6 +595,13 @@ internal static class ClientApp
             case "waitinvoice":
             case "wait-invoice":
                 return WaitInvoiceCommands.Validate(cmd, commandArgs);
+            case "createholdinvoice":
+            case "create-hold-invoice":
+            case "settleholdinvoice":
+            case "settle-hold-invoice":
+            case "cancelholdinvoice":
+            case "cancel-hold-invoice":
+                return HoldInvoiceCommands.Validate(cmd, commandArgs);
             case "setchannelpolicy":
             case "set-channel-policy":
             case "getchannelpolicy":

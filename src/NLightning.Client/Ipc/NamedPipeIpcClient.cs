@@ -284,6 +284,63 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Creates a hold invoice (ClientCommand.CreateHoldInvoice, NL-995, Cashu plan C4): the node locks the paying
+    /// HTLCs in and holds them until the operator settles with the preimage or cancels. The node does not generate
+    /// the preimage: the caller must be able to produce one whose SHA-256 is <paramref name="paymentHash"/> (the
+    /// NUT-14/ASP flow).
+    /// </summary>
+    /// <param name="paymentHash">SHA-256 of the preimage the operator keeps.</param>
+    /// <param name="amount">The requested amount in msat, or null for an invoice that accepts any amount.</param>
+    /// <param name="description">The description; may be empty.</param>
+    /// <param name="expirySeconds">The expiry in seconds, or null for the node default.</param>
+    /// <param name="ct">Cancels the call.</param>
+    /// <param name="labels">The operator's label and tags (NL-602 A3-T1), or null for none.</param>
+    public Task<HoldInvoiceIpcResponse> CreateHoldInvoiceAsync(Hash paymentHash, LightningMoney? amount,
+                                                               string description, uint? expirySeconds,
+                                                               CancellationToken ct = default,
+                                                               LabelArguments? labels = null)
+    {
+        var req = new CreateHoldInvoiceIpcRequest
+        {
+            PaymentHash = paymentHash,
+            Amount = amount,
+            Description = description,
+            ExpirySeconds = expirySeconds,
+            Label = labels?.Label,
+            Tags = labels?.TagsOrNull
+        };
+        return SendRequestAsync<CreateHoldInvoiceIpcRequest, HoldInvoiceIpcResponse>(ClientCommand.CreateHoldInvoice,
+                                                                                     req, ct);
+    }
+
+    /// <summary>
+    /// Settles a held hold invoice by revealing the preimage (ClientCommand.SettleHoldInvoice, NL-995): the paying
+    /// HTLCs are fulfilled with it; the daemon refuses a preimage that does not hash to the payment hash.
+    /// </summary>
+    /// <param name="paymentHash">The hold invoice's payment hash.</param>
+    /// <param name="preimage">The preimage of <paramref name="paymentHash"/>.</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<HoldInvoiceIpcResponse> SettleHoldInvoiceAsync(Hash paymentHash, Secret preimage,
+                                                               CancellationToken ct = default)
+    {
+        var req = new SettleHoldInvoiceIpcRequest { PaymentHash = paymentHash, Preimage = preimage };
+        return SendRequestAsync<SettleHoldInvoiceIpcRequest, HoldInvoiceIpcResponse>(ClientCommand.SettleHoldInvoice,
+                                                                                     req, ct);
+    }
+
+    /// <summary>
+    /// Cancels a hold invoice (ClientCommand.CancelHoldInvoice, NL-995): its held HTLCs are failed back.
+    /// </summary>
+    /// <param name="paymentHash">The hold invoice's payment hash.</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<HoldInvoiceIpcResponse> CancelHoldInvoiceAsync(Hash paymentHash, CancellationToken ct = default)
+    {
+        var req = new CancelHoldInvoiceIpcRequest { PaymentHash = paymentHash };
+        return SendRequestAsync<CancelHoldInvoiceIpcRequest, HoldInvoiceIpcResponse>(ClientCommand.CancelHoldInvoice,
+                                                                                     req, ct);
+    }
+
+    /// <summary>
     /// Pays a BOLT 11 invoice and waits for the outcome (ClientCommand 10).
     /// </summary>
     /// <param name="bolt11">The invoice.</param>

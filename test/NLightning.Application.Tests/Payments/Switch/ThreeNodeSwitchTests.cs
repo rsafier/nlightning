@@ -54,7 +54,7 @@ public class ThreeNodeSwitchTests
 
         // Assert: Alice learnt Carol's preimage
         var fulfilled = Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
-        Assert.Equal(invoice.Preimage, fulfilled.PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, fulfilled.PaymentPreimage);
         Assert.Empty(harness.Alice.PaymentHandler.Failed);
 
         // Bob fulfilled upstream as soon as Carol revealed the preimage, before the downstream removal was committed
@@ -200,7 +200,7 @@ public class ThreeNodeSwitchTests
 
         // Assert
         var fulfilled = Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
-        Assert.Equal(invoice.Preimage, fulfilled.PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, fulfilled.PaymentPreimage);
         Assert.Empty(harness.Alice.PaymentHandler.Failed);
         Assert.Equal(ForwardCircuitStatus.Fulfilled, (await GetCircuitAsync(harness, 0))!.Status);
         AssertNoHtlcs(harness);
@@ -401,7 +401,7 @@ public class ThreeNodeSwitchTests
 
         // Assert
         Assert.Empty(harness.Alice.PaymentHandler.Failed);
-        Assert.Equal(invoice.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
         Assert.Equal(ForwardCircuitStatus.Fulfilled, (await GetCircuitAsync(harness, 0))!.Status);
         AssertNoHtlcs(harness);
     }
@@ -438,7 +438,7 @@ public class ThreeNodeSwitchTests
 
         // Assert: no lost fulfill
         var fulfilled = Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
-        Assert.Equal(invoice.Preimage, fulfilled.PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, fulfilled.PaymentPreimage);
         AssertNoHtlcs(harness);
         Assert.Equal(ForwardCircuitStatus.Fulfilled, (await GetCircuitAsync(harness, 0))!.Status);
         Assert.Empty(await SettledRowsAsync(harness.Bob, ThreeNodeHarness.BobCarolChannelId));
@@ -480,7 +480,7 @@ public class ThreeNodeSwitchTests
         await harness.PumpAsync();
 
         // Assert
-        Assert.Equal(invoice.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
         Assert.Single(harness.Carol.Received, m => m is UpdateAddHtlcMessage);
         Assert.Equal(ForwardCircuitStatus.Fulfilled, (await GetCircuitAsync(harness, 0))!.Status);
         AssertNoHtlcs(harness);
@@ -528,7 +528,7 @@ public class ThreeNodeSwitchTests
 
         // Assert: not a replay of itself; forwarded once and paid
         Assert.Empty(harness.Alice.PaymentHandler.Failed);
-        Assert.Equal(invoice.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
         Assert.Single(harness.Carol.Received, m => m is UpdateAddHtlcMessage);
         Assert.Equal(ForwardCircuitStatus.Fulfilled, (await GetCircuitAsync(harness, 0))!.Status);
         AssertNoHtlcs(harness);
@@ -658,7 +658,7 @@ public class ThreeNodeSwitchTests
 
         // One fulfilled, the other failed from Carol with incorrect_or_unknown_payment_details
         var fulfilled = Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
-        Assert.Equal(invoice.Preimage, fulfilled.PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, fulfilled.PaymentPreimage);
         var failed = Assert.Single(harness.Alice.PaymentHandler.Failed);
         var onion = failed.HtlcId == firstId ? firstOnion : secondOnion;
         var decrypted = Decrypt(harness, onion, failed);
@@ -693,7 +693,7 @@ public class ThreeNodeSwitchTests
 
         // Assert
         Assert.Equal(InvoiceStatus.Settled, statusWhenSent);
-        Assert.Equal(invoice.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
     }
 
     [Fact]
@@ -729,12 +729,12 @@ public class ThreeNodeSwitchTests
 
         // Assert: committed while away (nothing sent), then one fulfill
         Assert.Equal(InvoiceStatus.Settled, whileAway!.Status);
-        Assert.Equal(invoice.Preimage, committed.KnownPreimage);
-        Assert.Equal(invoice.Preimage, stored!.KnownPreimage);
+        Assert.Equal(invoice.Preimage!.Value, committed.KnownPreimage);
+        Assert.Equal(invoice.Preimage!.Value, stored!.KnownPreimage);
         Assert.Null(committed.Removal);
         Assert.DoesNotContain(harness.Carol.Dropped, m => m is UpdateFulfillHtlcMessage);
         Assert.Single(harness.Sent, m => m is { From: "Carol", To: "Bob" } && m.Message is UpdateFulfillHtlcMessage);
-        Assert.Equal(invoice.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
         var settled = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
                                                             .GetByPaymentHashAsync(invoice.PaymentHash));
         Assert.Equal(InvoiceStatus.Settled, settled!.Status);
@@ -775,7 +775,7 @@ public class ThreeNodeSwitchTests
 
         // Assert: Bob claimed from Alice exactly once
         Assert.Single(harness.Sent, m => m is { From: "Bob", To: "Alice" } && m.Message is UpdateFulfillHtlcMessage);
-        Assert.Equal(invoice.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
         AssertNoHtlcs(harness);
         await AssertNoSettledRowsAsync(harness);
         AssertNeverTwoLocks(harness);

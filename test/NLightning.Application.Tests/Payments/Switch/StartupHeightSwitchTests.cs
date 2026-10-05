@@ -51,7 +51,7 @@ public class StartupHeightSwitchTests
 
         // Assert: the checks ran with the stored tip, so the payment went through
         Assert.Empty(harness.Alice.PaymentHandler.Failed);
-        Assert.Equal(invoice.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
         Assert.Equal(ForwardCircuitStatus.Fulfilled, (await GetCircuitAsync(harness))!.Status);
         AssertNoHtlcs(harness);
     }

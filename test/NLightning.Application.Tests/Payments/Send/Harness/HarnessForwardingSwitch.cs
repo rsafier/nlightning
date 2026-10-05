@@ -303,7 +303,7 @@ internal sealed class HarnessForwardingSwitch(
         invoice.Accept(LightningMoney.MilliSatoshis(complete.Aggregate(0UL, (sum, p) => sum + p.AmountMsat)));
         await invoices.UpdateAsync(invoice);
         foreach (var (partChannelId, partHtlcId, _, _) in complete)
-            await channelOperations.FulfillHtlcAsync(partChannelId, partHtlcId, invoice.Preimage, cancellationToken);
+            await channelOperations.FulfillHtlcAsync(partChannelId, partHtlcId, invoice.Preimage!.Value, cancellationToken);
     }
 
     /// <summary>

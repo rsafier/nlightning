@@ -25,7 +25,11 @@ public sealed class InvoiceModel
     /// <summary>
     /// The preimage of <see cref="PaymentHash"/>; revealed only in <c>update_fulfill_htlc</c>.
     /// </summary>
-    public Secret Preimage { get; }
+    /// <summary>
+    /// The preimage of the payment hash; revealed only in <c>update_fulfill_htlc</c>. Null only for a hold invoice
+    /// (NL-995), whose preimage arrives from outside with the operator's settle (<see cref="SettleHeld"/>).
+    /// </summary>
+    public Secret? Preimage { get; private set; }
 
     /// <summary>
     /// BOLT 11 <c>s</c>: the final hop fails an HTLC whose onion <c>payment_data</c> does not carry it.
@@ -98,7 +102,7 @@ public sealed class InvoiceModel
     /// </summary>
     public string? Tags { get; set; }
 
-    public InvoiceModel(Hash paymentHash, Secret preimage, Secret paymentSecret, LightningMoney? amount,
+    public InvoiceModel(Hash paymentHash, Secret? preimage, Secret paymentSecret, LightningMoney? amount,
                         string? description, string? bolt11, DateTimeOffset createdAt, uint expirySeconds,
                         ushort minFinalCltvExpiry, InvoiceStatus status = InvoiceStatus.Open,
                         LightningMoney? amountReceived = null, DateTimeOffset? settledAt = null,
@@ -106,6 +110,9 @@ public sealed class InvoiceModel
     {
         if (bolt12 is not null && keysend is not null)
             throw new ArgumentException("A keysend record is not a BOLT 12 invoice.", nameof(keysend));
+        if (preimage is null && (bolt12 is not null || keysend is not null))
+            throw new ArgumentException("Only a BOLT 11 invoice can be a hold invoice (no preimage).",
+                                        nameof(preimage));
         if (bolt12 is null && keysend is null)
             ArgumentException.ThrowIfNullOrWhiteSpace(bolt11);
         else if (bolt11 is not null)
@@ -118,9 +125,12 @@ public sealed class InvoiceModel
             throw new ArgumentOutOfRangeException(nameof(expirySeconds), "The expiry must be positive.");
         if (!Enum.IsDefined(status))
             throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown invoice status.");
-        if (status is InvoiceStatus.Accepted or InvoiceStatus.Settled && amountReceived is null)
-            throw new ArgumentException("An accepted or settled invoice needs the amount received.",
+        if (status is InvoiceStatus.Accepted or InvoiceStatus.Settled or InvoiceStatus.Held
+             && amountReceived is null)
+            throw new ArgumentException("An accepted, settled or held invoice needs the amount received.",
                                         nameof(amountReceived));
+        if (preimage is null && status is InvoiceStatus.Accepted)
+            throw new ArgumentException("An accepted invoice needs its preimage.", nameof(preimage));
         if (status == InvoiceStatus.Settled && settledAt is null)
             throw new ArgumentException("A settled invoice needs its settlement time.", nameof(settledAt));
 
@@ -176,9 +186,39 @@ public sealed class InvoiceModel
     /// </summary>
     public void Cancel()
     {
-        if (Status != InvoiceStatus.Open)
+        if (Status is not (InvoiceStatus.Open or InvoiceStatus.Held))
             throw new InvalidOperationException($"Cannot cancel an invoice that is {Status}.");
 
         Status = InvoiceStatus.Canceled;
+    }
+
+    /// <summary>
+    /// A hold invoice's paying HTLC set completed (NL-995): <c>Open -> Held</c>, the amount received recorded. The
+    /// parts stay locked in, nothing fulfilled or failed, until <see cref="SettleHeld"/> or <see cref="Cancel"/>.
+    /// </summary>
+    public void Hold(LightningMoney amountReceived)
+    {
+        ArgumentNullException.ThrowIfNull(amountReceived);
+        if (Status != InvoiceStatus.Open)
+            throw new InvalidOperationException($"Cannot hold an invoice that is {Status}.");
+        if (Preimage is not null)
+            throw new InvalidOperationException("Only a hold invoice (no preimage) can be held.");
+
+        Status = InvoiceStatus.Held;
+        AmountReceived = amountReceived;
+    }
+
+    /// <summary>
+    /// The operator's settle of a held invoice (NL-995): the outside preimage (verified against the payment hash by
+    /// the caller) is stored and the invoice settles, <c>Held -> Settled</c>.
+    /// </summary>
+    public void SettleHeld(Secret preimage, DateTimeOffset settledAt)
+    {
+        if (Status != InvoiceStatus.Held)
+            throw new InvalidOperationException($"Cannot settle a held invoice that is {Status}.");
+
+        Preimage = preimage;
+        Status = InvoiceStatus.Settled;
+        SettledAt = settledAt;
     }
 }

@@ -177,9 +177,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 81 | 82 |
+| open | 0 | 0 | 1 | 80 | 81 |
 | in-progress | 0 | 0 | 4 | 1 | 5 |
-| fixed | 15 | 68 | 221 | 458 | 762 |
+| fixed | 15 | 68 | 221 | 459 | 763 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
 | **Total** | **15** | **68** | **235** | **560** | **878** |
@@ -8942,12 +8942,11 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `CASHU_PLAN.md` C3
 
 ### NL-995 No hold invoices (needed for NUT-14 LN/ecash atomic swaps)
-- **Status:** open
+- **Status:** fixed (aa07ad78)
 - **Severity:** low
 - **Kind:** feature
-- **Location:** `src/NLightning.Application/Payments/Switch/`
-- **Evidence:** The final hop settles as soon as the HTLC set is complete; there is no way to hold an HTLC until an external condition (a NUT-14 token redeemed) is met.
-- **Fix sketch:** An `IHtlcSwitch` decorator (the `DustExposureHtlcSwitch` pattern) holding sets of hold invoices until settle/cancel, failed back before the deadline monitor's CLTV limit.
+- **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.Hold.cs` (+ the `ReceiveAsync` hold branch), `Invoices/InvoiceService.CreateHoldInvoiceAsync`, `Domain/Payments/{Enums/InvoiceStatus.Held,Models/InvoiceModel (nullable preimage, Hold/SettleHeld),Events/InvoiceHeldEvent,Interfaces/IHoldInvoiceService}`, migration `AddHoldInvoices` (all three providers), IPC 49-51 (`createholdinvoice`/`settleholdinvoice`/`cancelholdinvoice`; 48 reserved for payroute on `wip/payroute`), tests `Application.Tests/Payments/Switch/HoldInvoiceTests.cs` (9) + `Docker/HoldInvoiceFlowTests.cs` (cluster)
+- **Evidence:** A hold invoice (a caller-supplied payment hash, no preimage — the BOLT 11 has a fresh payment secret and route hints, never blinded paths) holds its completed HTLC set: `InvoiceStatus.Held`, the mpp timer killed, an `InvoiceHeldEvent` published, nothing fulfilled or failed. The operator settles with the outside preimage (verified by hash, stored — the column is nullable since `AddHoldInvoices`), the invoice settles in one save with its `InvoiceSettled` accounting event, and every part is marked (`KnownPreimage`) and fulfilled; cancel fails the parts back `incorrect_or_unknown_payment_details`. The CLTV guard needed no new timer: a held part has no `KnownPreimage` and its invoice is not `Settled`, so the deadline monitor classifies it `UnresolvedFinalHop` and fails it back 18 blocks before expiry (LND's own holdexpirydelta), and any non-Fulfill removal of a held part cascades: the invoice is canceled and the remaining parts failed back. A restart's replayed lock-ins rebuild the set and re-hold it idempotently; an incomplete hold set still times out with `mpp_timeout` (invoice stays Open). Built as a partial of `HtlcSwitch` (which owns the sets) rather than the plan's `IHtlcSwitch` decorator: the seam is inside `ReceiveAsync` (the decision already carries the invoice), and a decorator would have had to re-run the whole final-hop evaluation. This is also the seam an Ark ASP's LN receive swaps (captaind's hold-invoice flow) would drive. In-process 9/9 (single, MPP shard set, wrong preimage, cancel, mpp timeout, restart replay, cascade, settle-after-cascade); full Application.Tests green; cluster `HoldInvoiceFlowTests` against LND (hold -> settle completes LND's payment with the preimage; hold -> cancel fails it `IncorrectOrUnknownPaymentDetails`).
 - **Blocks/Blocked-by:** —
 - **Plan ref:** `CASHU_PLAN.md` C4
 

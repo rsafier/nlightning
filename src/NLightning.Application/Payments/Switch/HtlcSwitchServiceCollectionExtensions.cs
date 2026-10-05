@@ -6,6 +6,7 @@ namespace NLightning.Application.Payments.Switch;
 using Channels.Interfaces;
 using Channels.Reestablish;
 using Domain.Channels.Interfaces;
+using Domain.Payments.Interfaces;
 
 /// <summary>
 /// Registers the forwarding and receiving HTLC switch (ABCD W2-B).
@@ -38,6 +39,9 @@ public static class HtlcSwitchServiceCollectionExtensions
         // a decorator (DustExposureHtlcSwitch) wraps the IHtlcSwitch registration
         services.TryAddSingleton<HtlcSwitch>();
         services.Replace(ServiceDescriptor.Singleton<IHtlcSwitch>(sp => sp.GetRequiredService<HtlcSwitch>()));
+        // NL-995: the switch owns the held sets; the operator settles/cancels through it directly (not through the
+        // decorator chain, which only guards inbound events)
+        services.TryAddSingleton<IHoldInvoiceService>(sp => sp.GetRequiredService<HtlcSwitch>());
 
         if (services.Any(d => d.ServiceType == typeof(LinkUpEventReplayer)))
             return services;

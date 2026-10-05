@@ -162,6 +162,54 @@ public static class NodeClientCalls
         return $"{Convert.ToHexString(displayOrder).ToLowerInvariant()}:{channel.Index}";
     }
 
+    /// <summary>
+    /// <c>createholdinvoice</c> (NL-995): a persisted hold invoice for a caller-chosen
+    /// <paramref name="paymentHash"/> whose preimage we do not know; its paying HTLC set is held once complete.
+    /// </summary>
+    public static async Task<InvoiceInfoClientResponse> CreateHoldInvoiceAsync(this NLightningTestNode node,
+                                                                               Hash paymentHash,
+                                                                               LightningMoney amount,
+                                                                               string description,
+                                                                               CancellationToken cancellationToken)
+    {
+        var response = await HandleAsync<CreateHoldInvoiceClientRequest, HoldInvoiceClientResponse>(
+                           node, new CreateHoldInvoiceClientRequest
+                           {
+                               PaymentHash = paymentHash,
+                               Amount = amount,
+                               Description = description
+                           },
+                           cancellationToken);
+        return response.Invoice;
+    }
+
+    /// <summary>
+    /// <c>settleholdinvoice</c> (NL-995): settles a held invoice with the outside <paramref name="preimage"/> and
+    /// fulfills every held part with it.
+    /// </summary>
+    public static async Task<InvoiceInfoClientResponse> SettleHoldInvoiceAsync(this NLightningTestNode node,
+                                                                               Hash paymentHash, Secret preimage,
+                                                                               CancellationToken cancellationToken)
+    {
+        var response = await HandleAsync<SettleHoldInvoiceClientRequest, HoldInvoiceClientResponse>(
+                           node, new SettleHoldInvoiceClientRequest { PaymentHash = paymentHash, Preimage = preimage },
+                           cancellationToken);
+        return response.Invoice;
+    }
+
+    /// <summary>
+    /// <c>cancelholdinvoice</c> (NL-995): cancels an open or held hold invoice; a held set's parts are failed back.
+    /// </summary>
+    public static async Task<InvoiceInfoClientResponse> CancelHoldInvoiceAsync(this NLightningTestNode node,
+                                                                               Hash paymentHash,
+                                                                               CancellationToken cancellationToken)
+    {
+        var response = await HandleAsync<CancelHoldInvoiceClientRequest, HoldInvoiceClientResponse>(
+                           node, new CancelHoldInvoiceClientRequest { PaymentHash = paymentHash },
+                           cancellationToken);
+        return response.Invoice;
+    }
+
     private static async Task<TResponse> HandleAsync<TRequest, TResponse>(NLightningTestNode node, TRequest request,
                                                                           CancellationToken cancellationToken)
     {

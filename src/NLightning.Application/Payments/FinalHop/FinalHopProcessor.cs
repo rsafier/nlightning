@@ -194,7 +194,8 @@ public sealed class FinalHopProcessor
         // pays it, in one part, outside a blinded route (keysend has no blinded form)
         var isKeysend = invoice.Kind == InvoiceKind.Keysend;
         if (isKeysend && (payload.IsBlinded || payload.KeysendPreimage is not { } keysendPreimage
-                       || !keysendPreimage.Span.SequenceEqual((ReadOnlySpan<byte>)invoice.Preimage)))
+                       || invoice.Preimage is not { } invoicePreimage
+                       || !keysendPreimage.Span.SequenceEqual((ReadOnlySpan<byte>)invoicePreimage)))
             return Unknown("A keysend record is paid only by an HTLC carrying its keysend_preimage.");
 
         // Only a Settled invoice commits to its set (the settle is the commit point): for any other status a mark
@@ -216,6 +217,10 @@ public sealed class FinalHopProcessor
                 return Unknown("The invoice is already Settled and this HTLC is not a part of its set.");
             case InvoiceStatus.Accepted:
                 return Unknown($"The invoice is already {invoice.Status}.");
+            // NL-995: a held invoice accepts the parts of its set (the replays after a restart rebuild it; the
+            // switch holds a completed set instead of fulfilling it)
+            case InvoiceStatus.Held:
+                break;
         }
 
         // A committed part is fulfilled whatever the time of its replay; the on-chain decision judges the expiry at the
@@ -226,7 +231,9 @@ public sealed class FinalHopProcessor
         if (payload.IsBlinded)
         {
             // BOLT 4: the recipient MUST ignore a blinded payment whose path_id is not the one it created
-            if (blindedRecipientData!.PathId is not { } pathId || !BlindedPathId.Matches(pathId.Span, invoice.Preimage))
+            if (blindedRecipientData!.PathId is not { } pathId
+             || invoice.Preimage is not { } preimage
+             || !BlindedPathId.Matches(pathId.Span, preimage))
                 return Unknown("The blinded route's path_id is not the invoice's.");
         }
         else if (!isKeysend && !payload.PaymentData!.PaymentSecret.Equals(invoice.PaymentSecret))

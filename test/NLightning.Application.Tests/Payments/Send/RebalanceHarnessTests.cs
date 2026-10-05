@@ -51,7 +51,7 @@ public class RebalanceHarnessTests
         // Assert: the payment succeeded with the invoice's preimage, out over Bob-Carol, back in over Alice-Bob
         var payment = result.Payment;
         Assert.True(payment.Status == PaymentStatus.Succeeded, payment.FailureReason);
-        Assert.Equal(invoice.Preimage, payment.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, payment.Preimage);
         Assert.Equal(fee, payment.Fee);
         Assert.Equal(ThreeNodeHarness.BobCarolChannelId, payment.OutgoingChannelId);
         Assert.Equal([harness.Carol.NodeId, harness.Alice.NodeId, harness.Bob.NodeId],
