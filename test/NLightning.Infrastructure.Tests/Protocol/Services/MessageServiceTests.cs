@@ -129,6 +129,9 @@ public class MessageServiceTests
     [InlineData(MessageTypes.ChannelAnnouncement)]
     [InlineData(MessageTypes.NodeAnnouncement)]
     [InlineData(MessageTypes.ChannelUpdate)]
+    [InlineData(MessageTypes.ChannelAnnouncement2)]
+    [InlineData(MessageTypes.NodeAnnouncement2)]
+    [InlineData(MessageTypes.ChannelUpdate2)]
     public async Task Given_MalformedGossipBroadcast_When_Received_Then_IgnoredWithOneWarningAndConnectionKept(
         MessageTypes type)
     {

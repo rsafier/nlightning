@@ -134,6 +134,12 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
     /// <summary>Every message delivered, in delivery order.</summary>
     public List<SentMessage> Sent { get; } = [];
 
+    /// <summary>
+    /// The features every link negotiated, handed to the channel managers with each message (none by default; the
+    /// taproot gossip proof sets <c>option_gossip_v2</c>).
+    /// </summary>
+    public FeatureOptions NegotiatedFeatures { get; set; } = new();
+
     private ThreeNodeHarness(string directory)
     {
         _directory = directory;
@@ -150,9 +156,12 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
     /// <param name="carolAlice">Also open <see cref="CarolAliceChannelId"/> (Carol funds and pushes, as the others),
     /// so the three nodes form a triangle (NL-609).</param>
     /// <param name="simpleTaproot">Every channel is a simple taproot channel (NL-877 T5: MuSig2 commitments).</param>
+    /// <param name="announceAliceBob">The Alice-Bob channel is public (<c>announce_channel</c>; taproot gossip proofs,
+    /// NL-878).</param>
     public static async Task<ThreeNodeHarness> CreateAsync(Action<ThreeNodeHarness>? beforeStart = null,
                                                            FeatureSupport bobCarolScidAlias = FeatureSupport.No,
-                                                           bool carolAlice = false, bool simpleTaproot = false)
+                                                           bool carolAlice = false, bool simpleTaproot = false,
+                                                           bool announceAliceBob = false)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"nltg-three-node-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
@@ -161,7 +170,8 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
         foreach (var node in harness.Nodes)
             await node.StartAsync(migrate: true);
 
-        await harness.OpenChannelAsync(harness.Alice, 1, harness.Bob, 1, AliceBobChannelId, AliceBobScid, 0x71);
+        await harness.OpenChannelAsync(harness.Alice, 1, harness.Bob, 1, AliceBobChannelId, AliceBobScid, 0x71,
+                                       announce: announceAliceBob);
         await harness.OpenChannelAsync(harness.Bob, 2, harness.Carol, 1, BobCarolChannelId, BobCarolScid, 0x72,
                                        bobCarolScidAlias, BobCarolBobAlias, BobCarolCarolAlias);
         if (carolAlice)
@@ -363,7 +373,7 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
 
         // One flow per delivery: the lock audit follows it into the switch and the channel operations it calls
         LockAudit.BeginFlow();
-        await to.ChannelManager.HandleChannelMessageAsync(message, new FeatureOptions(), from.NodeId);
+        await to.ChannelManager.HandleChannelMessageAsync(message, NegotiatedFeatures, from.NodeId);
         return true;
     }
 
@@ -382,7 +392,8 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
     private async Task OpenChannelAsync(SwitchNode funder, uint funderKeyIndex, SwitchNode fundee, uint fundeeKeyIndex,
                                         ChannelId channelId, ShortChannelId scid, byte fundingTag,
                                         FeatureSupport scidAlias = FeatureSupport.No,
-                                        ShortChannelId? funderAlias = null, ShortChannelId? fundeeAlias = null)
+                                        ShortChannelId? funderAlias = null, ShortChannelId? fundeeAlias = null,
+                                        bool announce = false)
     {
         var funderParty = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(20_000),
                                            LightningMoney.MilliSatoshis(1_000), 30,
@@ -397,9 +408,11 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
                                              new Sha256());
 
         var funderChannel = CreateChannel(funder, funderKeyIndex, fundee, fundeeKeyIndex, funderParty, fundeeParty,
-                                          true, channelId, scid, fundingTxId, obscuring, scidAlias, _simpleTaproot);
+                                          true, channelId, scid, fundingTxId, obscuring, scidAlias, _simpleTaproot,
+                                          announce);
         var fundeeChannel = CreateChannel(fundee, fundeeKeyIndex, funder, funderKeyIndex, fundeeParty, funderParty,
-                                          false, channelId, scid, fundingTxId, obscuring, scidAlias, _simpleTaproot);
+                                          false, channelId, scid, fundingTxId, obscuring, scidAlias, _simpleTaproot,
+                                          announce);
         if (scidAlias != FeatureSupport.No && funderAlias is { } a && fundeeAlias is { } b)
         {
             funderChannel.LocalAliases = [a];
@@ -423,14 +436,16 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
                                               ChannelParty local, ChannelParty remote, bool isInitiator,
                                               ChannelId channelId, ShortChannelId scid, TxId fundingTxId,
                                               CommitmentNumber obscuring,
-                                              FeatureSupport scidAlias = FeatureSupport.No, bool simpleTaproot = false)
+                                              FeatureSupport scidAlias = FeatureSupport.No, bool simpleTaproot = false,
+                                              bool announce = false)
     {
         var selfBasepoints = self.Basepoints(selfKeyIndex);
         var peerBasepoints = peer.Basepoints(peerKeyIndex);
         var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(InitialFeeratePerKw), 3, false,
                                               scidAlias)
         {
-            OptionSimpleTaproot = simpleTaproot
+            OptionSimpleTaproot = simpleTaproot,
+            AnnounceChannel = announce
         };
         // Our key first, as the channel layer builds it: the model's funding output keys are the signer's local and
         // remote funding keys (ChannelModel.GetSigningInfo, NL-495); the script sorts them itself

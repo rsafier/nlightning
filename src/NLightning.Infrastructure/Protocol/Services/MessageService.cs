@@ -272,7 +272,10 @@ internal sealed class MessageService : IMessageService
     /// </summary>
     private static bool IsGossipBroadcast(ushort type) =>
         type is (ushort)MessageTypes.ChannelAnnouncement or (ushort)MessageTypes.NodeAnnouncement
-                or (ushort)MessageTypes.ChannelUpdate;
+                or (ushort)MessageTypes.ChannelUpdate
+                // Taproot gossip (NL-1143): relayed on behalf of other nodes too
+                or (ushort)MessageTypes.ChannelAnnouncement2 or (ushort)MessageTypes.NodeAnnouncement2
+                or (ushort)MessageTypes.ChannelUpdate2;
 
     /// <summary>The message type (the first two bytes, big-endian) without moving the stream; null when too short.</summary>
     private static ushort? PeekMessageType(MemoryStream stream)

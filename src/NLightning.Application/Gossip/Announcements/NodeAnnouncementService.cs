@@ -8,6 +8,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
 using Domain.Enums;
 using Domain.Gossip.Addresses;
+using Domain.Gossip.Graph;
 using Domain.Gossip.Persistence;
 using Domain.LiquidityAds;
 using Domain.Node.Interfaces;
@@ -153,6 +154,17 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
             var alias = TrimAlias(fields.Alias);
             var now = _timeProvider.GetUtcNow();
             var tip = _blockchainMonitor.LastProcessedBlockHeight;
+
+            // After a restart the stored row says which block height our last node_announcement_2 took (NL-1142)
+            using var scope = _serviceProvider.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var stored = await unitOfWork.GraphDbRepository.GetNodeAsync(_lightningSigner.GetNodePublicKey());
+            if (_currentV2 is null && stored?.BlockHeight is { } storedHeight && storedHeight >= tip)
+            {
+                _logger.LogDebug("Our node_announcement_2 of block {Stored} is not older than the tip {Tip}; waiting "
+                               + "for a new block", storedHeight, tip);
+                return;
+            }
             if (_currentV2 is { } current
              && ((current.Features.Span.SequenceEqual(fields.Features)
                && (current.Alias ?? ReadOnlyMemory<byte>.Empty).Span.SequenceEqual(alias)
@@ -169,6 +181,19 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
                                                            fields.Color, alias, descriptors);
             var announcement =
                 unsigned.WithSignature(_lightningSigner.SignNodeMessageBip340(unsigned.GetSignatureHash()));
+
+            // Saved before it is published, as the v1 one is (G1-T6); the row's v1 columns are kept
+            cancellationToken.ThrowIfCancellationRequested();
+            await unitOfWork.GraphDbRepository.UpsertNodeAsync(
+                (stored ?? new GraphNodeRecord(announcement.NodeId, 0, fields.Features, fields.Alias, fields.Color,
+                                               fields.Addresses, [], now)) with
+                {
+                    Versions = GraphGossipVersions.V2 | (stored?.Versions ?? GraphGossipVersions.None)
+                                                      & GraphGossipVersions.V1,
+                    BlockHeight = announcement.BlockHeight,
+                    RawAnnouncement2 = announcement.GetBytes()
+                });
+            await unitOfWork.SaveChangesAsync();
             _currentV2 = announcement;
             _currentV2MadeAt = now;
             _publisher.PublishNodeAnnouncement2(announcement);
@@ -210,9 +235,16 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
         var announcement = unsigned.WithSignature(_lightningSigner.SignNodeMessage(unsigned.GetSignatureHash()));
 
         cancellationToken.ThrowIfCancellationRequested();
+        // Our row has one writer per protocol here; the v2 columns of the stored row are kept (NL-1142)
         await unitOfWork.GraphDbRepository.UpsertNodeAsync(
             new GraphNodeRecord(nodeId, timestamp, fields.Features, fields.Alias, fields.Color, fields.Addresses,
-                                announcement.GetBytes(), now));
+                                announcement.GetBytes(), now)
+            {
+                Versions = GraphGossipVersions.V1 | (stored?.Versions ?? GraphGossipVersions.None)
+                                                  & GraphGossipVersions.V2,
+                BlockHeight = stored?.BlockHeight,
+                RawAnnouncement2 = stored?.RawAnnouncement2
+            });
         await unitOfWork.SaveChangesAsync();
         return announcement;
     }
