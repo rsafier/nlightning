@@ -203,7 +203,7 @@ Not registered anywhere: `DustService`, `RevocationWatchDbRepository` (`PluginLo
 
 ### 3.3 NLightning.Infrastructure.Bitcoin (`src/NLightning.Infrastructure.Bitcoin`)
 
-**Purpose:** everything that needs NBitcoin (9.0.5) or NBitcoin.Secp256k1 (3.2.0).
+**Purpose:** everything that needs NBitcoin (10.0.14) or NBitcoin.Secp256k1 (4.0.3; NL-1091).
 
 | Area | Key files |
 |---|---|

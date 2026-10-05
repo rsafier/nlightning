@@ -6,6 +6,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Updated `NBitcoin` to `v10.0.14` and `NBitcoin.Secp256k1` to `v4.0.3` (net10.0 assets; NL-1091). NBitcoin 10 fixes
+  the .NET 10 ARM64 taproot tweak miscompilation and rejects non-canonical CompactSize, uncompressed segwit keys and
+  off-curve raw public keys;
 - `SecureKeyManager` writes version 2 key files (random per-file salt and nonce, Argon2id 64 MiB). Version 1 files
   are still read and are upgraded on first load; the original is kept as `<key file>.v1.bak`. **Builds older than
   this one cannot read a version 2 key file**, so to roll back restore the `.v1.bak` copy;

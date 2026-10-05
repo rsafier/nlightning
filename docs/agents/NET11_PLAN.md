@@ -90,7 +90,7 @@ User decision: **drop .NET 9 entirely**; multi-target `net10.0;net11.0`, with ne
 | dotnet-ef 10.0.5 | Stay on 10.x while EF is 10. |
 | Microsoft.Extensions.* 10.0.5 | 10.0.12 (done in W4-C). Nine of these packages are in the net11 shared framework. No NU1510 while multi-targeting; drop `Options` and `Logging.Abstractions` if going net11-only. |
 | SQLitePCLRaw 2.1.12 | Keep while on EF 10. |
-| NBitcoin 9.0.5, NBitcoin.Secp256k1 3.2.0 | Work on net11; the major bumps (10.x / 4.x) are optional and separate. |
+| NBitcoin 9.0.5, NBitcoin.Secp256k1 3.2.0 | Work on net11. Bumped to NBitcoin 10.0.14 and NBitcoin.Secp256k1 4.0.3 (net10.0 assets) in NL-1091. |
 | libsodium, BouncyCastle, NetMQ, MessagePack, Serilog, xunit v3, Moq, coverlet, Docker.DotNet, LNUnit (removed in NL-820) | Work unchanged on net11; bumps optional. |
 
 ## .NET 11 breaking changes that touch this codebase
