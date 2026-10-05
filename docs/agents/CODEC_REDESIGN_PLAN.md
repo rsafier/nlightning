@@ -301,10 +301,16 @@ registration fails `WireRegistryTests` at build time instead of killing peers at
 ## 5. Migration phases
 
 Phase 0 (this branch) is the vertical slice below; each later phase is one reviewable PR,
-same gates, same equivalence harness. **Status: P0, P1 and P2 are implemented on
-`wip/codec-redesign` (NL-1101, NL-1102) — 41 of ~50 peer messages migrated; announcement_signatures
-259 moved from P1 to P3 with its gossip family (it is a `GossipCodecPayloadSerializer` framing a
-Domain codec, structurally like 256/258).**
+same gates, same equivalence harness. **Status: the migration is COMPLETE on `wip/codec-redesign` (NL-1101, NL-1102) — all 50
+`MessageTypes` messages the node speaks are on the Wire codec. P3 moved the gossip family over
+(256/257/258 frame the Domain codecs with `ExtraData` verbatim; 259 uses the strict-empty + keep-raw
+extension options; the five queries carry `TlvDef.RawKnown` records); `announcement_signatures` 259
+moved from P1 to P3 with its family as planned. P4 resolved: `onion_message` 513 migrated in P2;
+`HopPayloadSerializer` and `FailureMessageSerializer` stay dedicated — `invalid_onion_payload` needs
+the offending record's type+offset (wire-visible error data the strict reader deliberately does not
+carry), the failure serializer is synchronous inside the crypto loop with its own lenient framing, and
+neither is a `MessageTypes`-keyed peer message. Revisit hop payloads only if the runtime grows an
+error-detailing TLV reader.**
 
 - **P0 (this PR): infrastructure + slice.** Wire runtime (reader/writer, primitives, strict
   TLV stream, `MessageWire<T>`, `WireRegistry`, factory merge), then migrate:
@@ -323,7 +329,8 @@ Domain codec, structurally like 256/258).**
 - **P2: interactive-tx (66-74) + splice TLVs**, liquidity-ads TLV 1339.
 - **P3: gossip** (256/257/258 with `ExtraData`-verbatim + signature-hash coupling, 261-265).
 - **P4: onion** (513; hop payloads only with the error-detailing reader variant).
-- **Not planned**: BOLT 12 codecs (already pure Domain, different consumers).
+- **Not planned**: BOLT 12 codecs (already pure Domain, different consumers); the onion hop payloads and
+  the failure-message serializer (see the P4 resolution above).
 
 ## 6. Measurements
 
