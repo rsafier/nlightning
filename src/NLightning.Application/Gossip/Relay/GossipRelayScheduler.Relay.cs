@@ -228,6 +228,10 @@ public sealed partial class GossipRelayScheduler
             {
                 sent += await FlushPeerAsync(peer, state, filter, now);
 
+                // NL-878: the taproot gossip inside the peer's block_height_range, after the BOLT 7 messages
+                if (!state.IsPaused)
+                    sent += await FlushV2PeerAsync(peer);
+
                 // A flush the full outbox interrupted goes on as soon as the connection resumes
                 if (!state.IsPaused)
                     while (state.NextFlushAt <= now)
@@ -264,11 +268,16 @@ public sealed partial class GossipRelayScheduler
         else
             CollectAccepted(accepted.Slots, changed);
 
+        // NL-878: the taproot gossip slots, relayed only to the connections that asked for v2 gossip
+        var changedV2 = CollectV2(accepted.Slots.Where(s => IsV2Type(s.Type)).ToList(), accepted.Overflowed);
+
         if (!_baselined)
         {
             _baselined = true;
             return 0;
         }
+
+        QueueV2(peers, changedV2);
 
         if (changed.Count == 0)
             return 0;
@@ -823,6 +832,7 @@ public sealed partial class GossipRelayScheduler
             var peer = _peerDirectory.GetConnectedPeers().FirstOrDefault(p => ReferenceEquals(p.Service, args.Peer))
                     ?? new GossipPeer(args.Peer.PeerPubKey, args.Peer);
             GetRelayState(peer, _timeProvider.GetUtcNow()).RequestBacklog();
+            RequestV2Backlog(peer);
             StartRelayTimer();
         }
         catch (Exception e)
