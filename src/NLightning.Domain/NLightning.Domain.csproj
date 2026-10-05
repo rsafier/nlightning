@@ -3,6 +3,8 @@
   <PropertyGroup>
     <Version>2.0.0</Version>
     <Configurations>Debug;Release;Debug.Native;Debug.Wasm;Release.Native;Release.Wasm</Configurations>
+    <!-- C# 15 unions (NL-1086): the net10.0 build compiles src/Shared/Polyfills/UnionPolyfills.cs. -->
+    <NltgUnionPolyfill>true</NltgUnionPolyfill>
   </PropertyGroup>
 
   <PropertyGroup>

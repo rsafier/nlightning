@@ -14,8 +14,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # net10.0 (LTS) and net11.0: the net11.0 target is built only by SDK 11 (src/Directory.Build.props), which
-      # global.json (rollForward latestMajor) picks when installed. Drop dotnet-quality once .NET 11 is GA.
+      # net10.0 (LTS) and net11.0, compiled as C# 15: global.json requires SDK 11 (NL-1086); SDK 10 adds the net10.0
+      # runtime the tests run on. Drop dotnet-quality once .NET 11 is GA.
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
         with:

@@ -14,14 +14,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # SDK 10 only: the Blazor projects target net10.0 alone, and without SDK 11 the src projects build net10.0 only.
+      # The Blazor projects target net10.0 alone, so the src projects build net10.0 only (NltgTargetNet11=false).
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
 
+      # global.json requires SDK 11 since the C# 15 pilot (NL-1086). Drop dotnet-quality once .NET 11 is GA.
+      - name: Setup .NET 11
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+          dotnet-quality: preview
+
       - name: Build
-        run: dotnet build --configuration Release.Wasm
+        run: dotnet build --configuration Release.Wasm -p:NltgTargetNet11=false
         working-directory: test/BlazorTests/NLightning.Blazor.Tests
 
       - name: Check Code Formatting

@@ -1,19 +1,26 @@
 <Project>
     <!--
-      Target frameworks (docs/agents/NET11_PLAN.md; test/Directory.Build.props mirrors this, keep them in sync).
-      net10.0 (LTS) is the primary target. net11.0 is added only when the SDK building is 11 or newer, so SDK 10 keeps
-      working; -p:NltgTargetNet11=false (or -f net10.0) builds net10.0 only with SDK 11. NETCoreSdkVersion is not set
-      yet when Directory.Build.props is imported, so the SDK version comes from the directory MSBuild runs from
-      (<dotnet>/sdk/<version>); anything that does not look like a version (e.g. Visual Studio's MSBuild) builds
-      net10.0 only. Only one of TargetFramework/TargetFrameworks may be set: the SDK multi-targets only when
-      TargetFramework is empty. LangVersion is pinned because with "latest" SDK 11 compiles net10.0 as C# 15.
+      Target frameworks (docs/agents/NET11_PLAN.md, docs/agents/CSHARP15_PILOT.md; test/Directory.Build.props mirrors
+      this, keep them in sync). Since the C# 15 pilot (NL-1086) the build requires SDK 11 (global.json) and compiles
+      every project as C# 15 for both net10.0 (LTS, the primary runtime target) and net11.0. -p:NltgTargetNet11=false
+      (or -f net10.0) builds net10.0 only. Only one of TargetFramework/TargetFrameworks may be set: the SDK
+      multi-targets only when TargetFramework is empty.
     -->
     <PropertyGroup>
-        <NltgSdkVersion>$([System.IO.Path]::GetFileName($([System.IO.Path]::GetDirectoryName($([MSBuild]::EnsureTrailingSlash('$(MSBuildBinPath)'))))))</NltgSdkVersion>
-        <NltgTargetNet11 Condition="'$(NltgTargetNet11)' == '' and $([System.Text.RegularExpressions.Regex]::IsMatch('$(NltgSdkVersion)', '^\d+\.\d+\.\d+'))">$([MSBuild]::VersionGreaterThanOrEquals('$(NltgSdkVersion)', '11.0'))</NltgTargetNet11>
-        <TargetFrameworks Condition="'$(NltgTargetNet11)' == 'true'">net10.0;net11.0</TargetFrameworks>
-        <TargetFramework Condition="'$(NltgTargetNet11)' != 'true'">net10.0</TargetFramework>
+        <TargetFrameworks Condition="'$(NltgTargetNet11)' != 'false'">net10.0;net11.0</TargetFrameworks>
+        <TargetFramework Condition="'$(NltgTargetNet11)' == 'false'">net10.0</TargetFramework>
     </PropertyGroup>
+
+    <!--
+      C# 15 unions on net10.0 (NL-1086): the compiler needs System.Runtime.CompilerServices.UnionAttribute and IUnion,
+      which only the net11.0 runtime has. A project that declares a union sets NltgUnionPolyfill=true and gets the
+      internal copies in src/Shared/Polyfills/ for net10.0 only (net11.0 uses the runtime's). Consumers of a union from
+      another assembly need nothing. Two assemblies with the polyfill must not see each other's internals
+      (InternalsVisibleTo), or CS0436 reports the duplicate.
+    -->
+    <ItemGroup Condition="'$(NltgUnionPolyfill)' == 'true' and '$(TargetFramework)' == 'net10.0'">
+        <Compile Include="$(MSBuildThisFileDirectory)Shared/Polyfills/UnionPolyfills.cs" Link="Polyfills/UnionPolyfills.cs"/>
+    </ItemGroup>
 
     <!--
       NativeAOT (NL-338, CLAUDE.md "NativeAOT"): the configuration binding source generator is on in every build, not
@@ -25,7 +32,9 @@
     </PropertyGroup>
 
     <PropertyGroup>
-        <LangVersion>14</LangVersion>
+        <LangVersion>15</LangVersion>
+        <!-- A switch expression that misses a union case (or enum value) fails the build (NL-1086). -->
+        <WarningsAsErrors>$(WarningsAsErrors);CS8509</WarningsAsErrors>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <Platforms>AnyCPU</Platforms>

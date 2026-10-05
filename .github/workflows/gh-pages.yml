@@ -34,6 +34,13 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      # global.json requires SDK 11 since the C# 15 pilot (NL-1086). Drop dotnet-quality once .NET 11 is GA.
+      - name: Setup .NET 11
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+          dotnet-quality: preview
+
       - name: Download Coverage Reports
         uses: dawidd6/action-download-artifact@v3
         continue-on-error: true # Allow the docs to build even if there are no coverage reports
