@@ -320,11 +320,11 @@ public sealed class TaprootPublicChannelFlowTests : IAsyncLifetime
 
         // Act 2: inside the 72-block window, carol pays alice over the OLD scid (alice's invoice re-signed with a
         // route hint naming it; carol's graph has no usable route to alice before the splice is announced)
-        var oldScidPayment = await PayOverHintAsync(carol, alice, bob, openScid, ct);
+        var (oldScidPayment, oldScidHash) = await PayOverHintAsync(carol, alice, bob, openScid, ct);
 
         // Assert 2: bob forwarded it through the retired map onto the channel
-        Assert.Equal(PaymentStatus.Succeeded, oldScidPayment.Payment.Status);
-        var retiredForward = await WaitForwardFulfilledAsync(bob, oldScidPayment.PaymentHash, ct);
+        Assert.Equal(PaymentStatus.Succeeded, oldScidPayment.Status);
+        var retiredForward = await WaitForwardFulfilledAsync(bob, oldScidHash, ct);
         Assert.Equal(channelId, retiredForward.OutgoingChannelId);
 
         // Act 3: mined until every graph holds the splice's scid as a v2 channel
