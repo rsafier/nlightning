@@ -92,6 +92,43 @@ public class SimpleTaprootCommitmentsTests
     }
 
     [Fact]
+    public void Given_ANonce_When_AnHtlcRecordIsAnnotated_Then_TheNonceStaysAndTheChannelCanStillSign()
+    {
+        // Arrange: NL-1090 — the switch's preimage mark rebuilt the snapshot and lost the nonce
+        var c = CreateTaproot(nonce: Nonce(1)).Add(50_000 * Sat).Next;
+        var htlc = Assert.Single(c.Htlcs.Values);
+        var preimage = Preimage(0x42);
+
+        // Act
+        var annotated = c.WithHtlcRecords([htlc with { KnownPreimage = preimage }]);
+
+        // Assert
+        Assert.Equal(preimage, annotated.GetHtlc(htlc.Direction, htlc.Id)!.KnownPreimage);
+        Assert.Equal(c.RemoteNextNonces, annotated.RemoteNextNonces);
+        Assert.True(annotated.CanSendCommit);
+        Assert.Equal([Nonce(1)], SignedNonces(annotated));
+    }
+
+    [Fact]
+    public void Given_ARecordThatChangesItsStateOrIsUnknown_When_WithHtlcRecords_Then_Refused()
+    {
+        // Arrange
+        var c = CreateTaproot(nonce: Nonce(1)).Add(50_000 * Sat).Next;
+        var htlc = Assert.Single(c.Htlcs.Values);
+
+        // Act / Assert: only annotations; the state machine moves HTLCs
+        Assert.Throws<ArgumentException>(() => c.WithHtlcRecords([htlc with { State = HtlcState.SentAddCommit }]));
+        Assert.Throws<ArgumentException>(() => c.WithHtlcRecords([htlc with { Id = htlc.Id + 1 }]));
+    }
+
+    private static List<MusigPublicNonce> SignedNonces(ChannelCommitments c)
+    {
+        var signer = new TaprootSigner();
+        c.SendCommit(signer);
+        return signer.Nonces;
+    }
+
+    [Fact]
     public void Given_SignedCommit_When_RevokeAndAckWithNonces_Then_NoncesReplaced()
     {
         // Arrange

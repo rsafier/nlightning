@@ -106,6 +106,26 @@ public class MppReceiveTests
     }
 
     [Fact]
+    public async Task Given_TwoPartsOnASimpleTaprootChannel_When_TheSetCompletes_Then_BothFulfillsAreCommitted()
+    {
+        // Arrange: NL-1090 — the first part's preimage mark lost the peer's taproot nonces, so Carol's fulfills were
+        // never signed until a reconnection
+        await using var harness = await CreateHarnessAsync(simpleTaproot: true);
+        var invoice = await CreateInvoiceAsync(harness);
+        await PayPartAsync(harness, invoice, s_firstPart, s_amount);
+        await harness.PumpAsync();
+
+        // Act
+        await PayPartAsync(harness, invoice, s_secondPart, s_amount);
+        await harness.PumpAsync();
+
+        // Assert
+        Assert.Equal(2, harness.Alice.PaymentHandler.Fulfilled.Count);
+        Assert.Equal(InvoiceStatus.Settled, (await GetInvoiceAsync(harness, invoice)).Status);
+        AssertNoHtlcs(harness);
+    }
+
+    [Fact]
     public async Task Given_IncompleteSet_When_60SecondsPass_Then_EveryPartFailedWithMppTimeout()
     {
         // Arrange: one part of two
@@ -501,12 +521,12 @@ public class MppReceiveTests
         Assert.Equal(0, _clock.PendingTimers);
     }
 
-    private Task<ThreeNodeHarness> CreateHarnessAsync() =>
+    private Task<ThreeNodeHarness> CreateHarnessAsync(bool simpleTaproot = false) =>
         ThreeNodeHarness.CreateAsync(h => h.Carol.ConfigureServices = services =>
         {
             services.Replace(ServiceDescriptor.Singleton<TimeProvider>(_clock));
             services.Replace(ServiceDescriptor.Singleton(_carolMonitor.Object));
-        });
+        }, simpleTaproot: simpleTaproot);
 
     private static Task<InvoiceModel> CreateInvoiceAsync(ThreeNodeHarness harness) =>
         harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "mpp", null, TestContext.Current.CancellationToken);

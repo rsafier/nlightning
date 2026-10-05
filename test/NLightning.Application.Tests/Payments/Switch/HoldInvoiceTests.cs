@@ -419,12 +419,119 @@ public class HoldInvoiceTests
         Assert.Equal(InvoiceStatus.Canceled, (await GetInvoiceAsync(harness, invoice)).Status);
     }
 
-    private Task<ThreeNodeHarness> CreateHarnessAsync() =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_AHeldSetOnAnAnchorsOrTaprootChannel_When_Settled_Then_TheFulfillIsCommittedAndTheNextPaymentLocksIn(
+        bool simpleTaproot)
+    {
+        // Arrange: NL-1090 — the settle marked the part through a rebuilt snapshot that lost the peer's taproot
+        // nonces, so Carol could not sign the fulfill (nor anything after it) until a reconnection
+        await using var harness = await CreateHarnessAsync(simpleTaproot);
+        var preimage = NewPreimage();
+        var invoice = await CreateHoldInvoiceAsync(harness, preimage);
+        await PayPartAsync(harness, invoice, s_amount, s_amount);
+        await harness.PumpAsync();
+        Assert.Equal(InvoiceStatus.Held, (await GetInvoiceAsync(harness, invoice)).Status);
+
+        // Act
+        await HoldService(harness).SettleHoldInvoiceAsync(invoice.PaymentHash, preimage,
+                                                          TestContext.Current.CancellationToken);
+        await harness.PumpAsync();
+
+        // Assert: Carol signed after her fulfill and the HTLC left both commitments of every channel, no reconnection
+        var sinceFulfill = harness.Sent.SkipWhile(s => s.Message is not UpdateFulfillHtlcMessage).ToList();
+        Assert.Contains(sinceFulfill, s => s is { From: "Carol", To: "Bob" } && s.Message is CommitmentSignedMessage);
+        Assert.Equal(preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        AssertNoHtlcs(harness);
+
+        // Act: a following payment over the same channels locks in at Carol (held) and settles
+        var nextPreimage = NewPreimage();
+        var next = await CreateHoldInvoiceAsync(harness, nextPreimage);
+        await PayPartAsync(harness, next, s_amount, s_amount);
+        await harness.PumpAsync();
+        Assert.Equal(InvoiceStatus.Held, (await GetInvoiceAsync(harness, next)).Status);
+        await HoldService(harness).SettleHoldInvoiceAsync(next.PaymentHash, nextPreimage,
+                                                          TestContext.Current.CancellationToken);
+        await harness.PumpAsync();
+
+        // Assert
+        Assert.Equal(InvoiceStatus.Settled, (await GetInvoiceAsync(harness, next)).Status);
+        Assert.Equal(2, harness.Alice.PaymentHandler.Fulfilled.Count);
+        Assert.Empty(harness.Alice.PaymentHandler.Failed);
+        AssertNoHtlcs(harness);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_AHeldSetOnAnAnchorsOrTaprootChannel_When_Canceled_Then_TheFailIsCommittedAndTheNextPaymentLocksIn(
+        bool simpleTaproot)
+    {
+        // Arrange
+        await using var harness = await CreateHarnessAsync(simpleTaproot);
+        var invoice = await CreateHoldInvoiceAsync(harness, NewPreimage());
+        await PayPartAsync(harness, invoice, s_amount, s_amount);
+        await harness.PumpAsync();
+        Assert.Equal(InvoiceStatus.Held, (await GetInvoiceAsync(harness, invoice)).Status);
+
+        // Act
+        await HoldService(harness).CancelHoldInvoiceAsync(invoice.PaymentHash, TestContext.Current.CancellationToken);
+        await harness.PumpAsync();
+
+        // Assert: the failure is committed on both sides without a reconnection
+        Assert.Single(harness.Alice.PaymentHandler.Failed);
+        AssertNoHtlcs(harness);
+
+        // Act: a following payment locks in and its hold settles
+        var nextPreimage = NewPreimage();
+        var next = await CreateHoldInvoiceAsync(harness, nextPreimage);
+        await PayPartAsync(harness, next, s_amount, s_amount);
+        await harness.PumpAsync();
+        Assert.Equal(InvoiceStatus.Held, (await GetInvoiceAsync(harness, next)).Status);
+        await HoldService(harness).SettleHoldInvoiceAsync(next.PaymentHash, nextPreimage,
+                                                          TestContext.Current.CancellationToken);
+        await harness.PumpAsync();
+
+        // Assert
+        Assert.Equal(nextPreimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        AssertNoHtlcs(harness);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_ATwoPartHeldSetOnAnAnchorsOrTaprootChannel_When_Settled_Then_BothFulfillsAreCommitted(
+        bool simpleTaproot)
+    {
+        // Arrange: both parts are marked before their fulfills (NL-1090: each mark dropped the taproot nonces)
+        await using var harness = await CreateHarnessAsync(simpleTaproot);
+        var preimage = NewPreimage();
+        var invoice = await CreateHoldInvoiceAsync(harness, preimage);
+        await PayPartAsync(harness, invoice, s_firstPart, s_amount);
+        await harness.PumpAsync();
+        await PayPartAsync(harness, invoice, s_secondPart, s_amount);
+        await harness.PumpAsync();
+        Assert.Equal(InvoiceStatus.Held, (await GetInvoiceAsync(harness, invoice)).Status);
+
+        // Act
+        await HoldService(harness).SettleHoldInvoiceAsync(invoice.PaymentHash, preimage,
+                                                          TestContext.Current.CancellationToken);
+        await harness.PumpAsync();
+
+        // Assert
+        Assert.Equal(2, harness.Alice.PaymentHandler.Fulfilled.Count);
+        AssertNoHtlcs(harness);
+    }
+
+    /// <param name="anchorsOrTaproot">Null for the harness's default (<c>option_static_remotekey</c>) channels; false
+    /// for <c>option_anchors</c> channels, true for simple taproot channels.</param>
+    private Task<ThreeNodeHarness> CreateHarnessAsync(bool? anchorsOrTaproot = null) =>
         ThreeNodeHarness.CreateAsync(h => h.Carol.ConfigureServices = services =>
         {
             services.Replace(ServiceDescriptor.Singleton<TimeProvider>(_clock));
             services.Replace(ServiceDescriptor.Singleton(_carolMonitor.Object));
-        });
+        }, simpleTaproot: anchorsOrTaproot == true, anchors: anchorsOrTaproot is not null);
 
     /// <summary>The outside preimage the operator will settle with; the invoice's hash is SHA256 of it.</summary>
     private static Secret NewPreimage() => new(RandomNumberGenerator.GetBytes(32));
