@@ -96,8 +96,12 @@ response.
 - IPC (`Daemon.Tests`): `PayRouteIpcHandlerTests` (mapping, both forms, errors, the
   `ClientCommand.PayRoute == 48` pin, draining), `PayRouteMessagePackTests` (round trips +
   defaults-null), CLI (`PayRouteCommandTests` 32 cases + usage rows).
-- Cluster (`Docker/PayRouteFlowTests.cs`, lnd suite): pay alice's invoice over a `getroute`
-  quote verbatim; a hand-built two-shard set over two channels (each too small alone).
+- Cluster (`Docker/PayRouteFlowTests.cs`, lnd suite, 60/60 green 2026-10-05): pay alice's
+  invoice over a `getroute` quote verbatim (`FinalCltvDelta` must match the invoice's); a
+  hand-built two-shard set over two channels (each too small alone) settles together. The
+  first runs found two real direct-route edge cases (both fixed, 5772c2af): a one-hop route's
+  only hop IS the payee (no first-hop CLTV lowering), and getroute's final hop names its
+  incoming channel while payroute's final hop omits the scid.
 
 ## 6. Phase C — deferred (design only)
 

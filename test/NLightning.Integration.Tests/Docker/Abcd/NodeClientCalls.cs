@@ -93,11 +93,12 @@ public static class NodeClientCalls
     /// </summary>
     public static async Task<GetRouteClientResponse> GetRouteAsync(this NLightningTestNode node,
                                                                     CompactPubKey destination, LightningMoney amount,
-                                                                    CancellationToken cancellationToken)
+                                                                    CancellationToken cancellationToken,
+                                                                    ushort? finalCltvDelta = null)
     {
-        var response = await HandleAsync<GetRouteClientRequest, GetRouteClientResponse>(
-                           node, new GetRouteClientRequest(destination, amount), cancellationToken);
-        return response;
+        return await HandleAsync<GetRouteClientRequest, GetRouteClientResponse>(
+                   node, new GetRouteClientRequest(destination, amount) { FinalCltvDelta = finalCltvDelta },
+                   cancellationToken);
     }
 
     /// <summary>

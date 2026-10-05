@@ -69,7 +69,9 @@ public class PayRouteFlowTests : IAsyncLifetime
                                                            cltvExpiry: 40);
 
         // Act: quote the route (getroute, IPC 19) and pay exactly it (payroute, IPC 48) through the daemon handlers
-        var quote = await Node.GetRouteAsync(new CompactPubKey(alice.LocalNodePubKeyBytes), amount, ct);
+        // The quote must price the invoice's min_final_cltv_expiry_delta (40, below); the daemon's payroute
+        // validation enforces the same floor on what we hand it
+        var quote = await Node.GetRouteAsync(new CompactPubKey(alice.LocalNodePubKeyBytes), amount, ct, 40);
         var payment = await Node.PayRouteAsync(invoice.PaymentRequest, [FromQuote(quote, channel.ChannelId)], ct);
 
         // Assert: succeeded with the preimage, alice's invoice settled, our channel drained of the HTLC
@@ -99,7 +101,7 @@ public class PayRouteFlowTests : IAsyncLifetime
         // Act: hand-build the two single-hop shards (250k + 200k = the 450k total). The final cltv of a quoted
         // route (height + the invoice's 40) does not depend on the amount, so a small quote fixes it for both
         var quote = await Node.GetRouteAsync(new CompactPubKey(alice.LocalNodePubKeyBytes),
-                                              LightningMoney.Satoshis(50_000), ct);
+                                              LightningMoney.Satoshis(50_000), ct, 40);
         var finalCltv = quote.Hops[^1].CltvExpiry;
         var aliceNodeId = quote.Hops[^1].NodeId;
         var shards = new List<PayRouteRouteClientInfo>
@@ -113,7 +115,8 @@ public class PayRouteFlowTests : IAsyncLifetime
         Assert.Equal(PaymentStatus.Succeeded, payment.Payment.Status);
         Assert.Equal(PaymentPartState.Succeeded, payment.RouteOutcomes[0].Status);
         Assert.Equal(PaymentPartState.Succeeded, payment.RouteOutcomes[1].Status);
-        Assert.Equal(2, payment.RouteOutcomes.Select(o => o.HtlcId).Distinct().Count());
+        // HTLC ids are per channel, so both shards may be id 0 on their own channel
+        Assert.All(payment.RouteOutcomes, o => Assert.NotNull(o.HtlcId));
         await AssertInvoiceSettledAndChannelsIdleAsync(alice, invoice.RHash.ToByteArray(),
                                                           [first.ChannelId, second.ChannelId], ct);
     }
