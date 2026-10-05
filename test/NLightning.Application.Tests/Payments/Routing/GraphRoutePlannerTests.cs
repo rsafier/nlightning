@@ -132,6 +132,37 @@ public class GraphRoutePlannerTests
     }
 
     [Fact]
+    public void Given_AnInboundFeeOnTheChannelIntoDavid_When_Planned_Then_TheRouteCarriesIt()
+    {
+        // Arrange: David's channel_update_2 on Carol → David charges 300 msat + 1000 ppm on HTLCs arriving over it
+        // (taproot gossip, NL-878), on the amount he forwards
+        var graph = Graph().Build();
+        Assert.True(graph.TryGetChannel(s_scidCd, out var carolDavid));
+        var inbound = new GraphPolicy(Height, 0, carolDavid.GetDirectionFrom(s_david), 30, 1, 5_000_000, 1_000, 100)
+        {
+            GossipVersion = 2,
+            InboundFeeBaseMsat = 300,
+            InboundFeeProportionalMillionths = 1_000
+        };
+        graph = new GraphSnapshot(graph.Channels.Select(c => c.ShortChannelId == s_scidCd ? c.WithPolicy(inbound) : c),
+                                  graph.Nodes);
+        const ulong davidInbound = 300 + Amount * 1_000 / 1_000_000;
+        const ulong toDavid = Amount + DavidFee + davidInbound;
+        const ulong carolFee = 2_000 + toDavid * 500 / 1_000_000;
+
+        // Act
+        var planned = Planner().TryPlan(Request(Target(), Context(graph)), out var parts, out var reason);
+
+        // Assert: Carol forwards what David must receive, his outbound and inbound fees included
+        Assert.True(planned, reason);
+        var route = Assert.Single(parts!).Route;
+        Assert.Equal(s_david, route.Hops[1].NodeId);
+        Assert.Equal(toDavid, route.Hops[0].AmountToForward.MilliSatoshi);
+        Assert.Equal(Amount, route.Hops[1].AmountToForward.MilliSatoshi);
+        Assert.Equal(toDavid + carolFee, route.FirstHopAmount.MilliSatoshi);
+    }
+
+    [Fact]
     public void Given_AGraphRouteAboveTheFeeLimit_When_Planned_Then_Refused()
     {
         // Act: the cheapest route costs 3,600 msat

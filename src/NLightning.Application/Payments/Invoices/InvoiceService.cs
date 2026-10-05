@@ -377,12 +377,13 @@ public sealed class InvoiceService : IInvoiceService
         if (_graphStore is null || scid == default)
             return false;
 
+        // The routing policies: a channel announced with taproot gossip counts by its channel_update_2s (NL-878)
         if (!_graphStore.TryGetChannel(scid, out var graphChannel)
-         || graphChannel.GetPolicy(0) is null || graphChannel.GetPolicy(1) is null)
+         || graphChannel.GetRoutingPolicy(0) is null || graphChannel.GetRoutingPolicy(1) is null)
             return false;
 
         var peerDirection = graphChannel.NodeId1 == channel.RemoteNodeId ? (byte)0 : (byte)1;
-        if (graphChannel.GetPolicy(peerDirection)!.IsDisabled)
+        if (graphChannel.GetRoutingPolicy(peerDirection)!.IsDisabled)
             return false;
 
         return _graphStore.TryGetChannelReceivedAt(scid, out var receivedAt)

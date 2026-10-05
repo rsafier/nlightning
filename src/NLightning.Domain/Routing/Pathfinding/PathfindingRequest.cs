@@ -72,6 +72,12 @@ public sealed record PathfindingRequest(CompactPubKey Source, CompactPubKey Targ
     public TimeSpan? StaleAfter { get; init; }
 
     /// <summary>
+    /// Our chain tip, for the stale check of a <c>channel_update_2</c> (its timestamp is a block height: stale below
+    /// <c>tip − max_backdate_blocks</c>, NL-878); null skips that check.
+    /// </summary>
+    public uint? CurrentBlockHeight { get; init; }
+
+    /// <summary>
     /// Pay a payee whose <c>node_announcement</c> sets unknown even features (BOLT 7 allows it only when the invoice
     /// does not set those bits; the caller decides). Default false.
     /// </summary>

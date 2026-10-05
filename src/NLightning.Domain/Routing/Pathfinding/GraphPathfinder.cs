@@ -25,6 +25,11 @@ using Payments.Policies;
 /// pruned something, it is run again with that dimension ordering the labels first (fewest hops, lowest CLTV or
 /// lowest amount, then cost): that search is exact for the one limit, so a path within a single limit is always
 /// found; with several limits at once it stays best effort.</para>
+/// <para>Inbound fees (taproot gossip, NL-878): a forwarding node's <c>channel_update_2</c> on the channel an HTLC
+/// arrives over may add a positive surcharge, charged on the amount it forwards (the draft's <c>total_fee =
+/// out.fee_base + in.inbound_base + amount × (out.prop + in.inbound_prop) / 10⁶</c>). Relaxing <c>u → v</c> with
+/// <c>v</c> forwarding, <c>u</c> must deliver <c>amount(v)</c> plus <c>v</c>'s inbound fee on that channel over the
+/// edge, and that amount is what the edge's limits and <c>u</c>'s own fee apply to.</para>
 /// <para>Our own channels: when <see cref="PathfindingRequest.LocalChannels"/> lists a first-hop channel, its live
 /// state replaces the gossip checks that describe liveness (the <c>disable</c> bit, the stale check and the
 /// unverified factor).</para>
@@ -83,8 +88,10 @@ public sealed class GraphPathfinder
     /// <summary>
     /// One incoming edge <c>From → To</c> as the search relaxes it.
     /// </summary>
+    /// <param name="InboundPolicy">The routing policy of <c>To</c> on this channel (its inbound fee, NL-878), or null.
+    /// </param>
     private readonly record struct Edge(int From, ShortChannelId ShortChannelId, byte Direction, GraphPolicy? Policy,
-                                        ulong? CapacityMsat, GraphChannel? Channel);
+                                        ulong? CapacityMsat, GraphChannel? Channel, GraphPolicy? InboundPolicy = null);
 
     /// <summary>
     /// What orders the labels of a search before the cost: nothing (the normal search), or the dimension of a limit
@@ -200,6 +207,7 @@ public sealed class GraphPathfinder
             var label = new Label[total];
             Array.Fill(label, new Label(double.PositiveInfinity, double.PositiveInfinity));
             var amount = new ulong[total];
+            var carried = new ulong[total];
             var cltv = new uint[total];
             var hops = new int[total];
             var next = new int[total];
@@ -210,6 +218,7 @@ public sealed class GraphPathfinder
             cost[_targetIndex] = 0;
             label[_targetIndex] = new Label(0, 0);
             amount[_targetIndex] = _request.AmountMsat;
+            carried[_targetIndex] = _request.AmountMsat;
             cltv[_targetIndex] = _request.FinalCltvDelta;
             next[_targetIndex] = -1;
             probability[_targetIndex] = 1;
@@ -243,13 +252,16 @@ public sealed class GraphPathfinder
                     if (settled[u] || u == _targetIndex)
                         continue;
 
-                    if (!TryRelax(edge, amount[v], cltv[v], out var newAmount, out var newCltv, out var feeMsat,
-                                  out var edgeProbability, out var cltvDelta))
+                    // What v forwards (its outgoing HTLC), on which its inbound fee for this edge is charged
+                    var forwardedByV = v == _targetIndex ? 0 : carried[v];
+                    if (!TryRelax(edge, amount[v], forwardedByV, v != _targetIndex, cltv[v], out var newAmount,
+                                  out var carriedOverEdge, out var newCltv, out var feeMsat, out var edgeProbability,
+                                  out var cltvDelta))
                         continue;
 
                     var directed = new DirectedChannel(edge.ShortChannelId, edge.Direction);
-                    var edgeCost = _model.EdgeCost(feeMsat, amount[v], cltvDelta, edgeProbability)
-                                 + _model.DiversityPenalty(usage.GetValueOrDefault(directed), amount[v]);
+                    var edgeCost = _model.EdgeCost(feeMsat, carriedOverEdge, cltvDelta, edgeProbability)
+                                 + _model.DiversityPenalty(usage.GetValueOrDefault(directed), carriedOverEdge);
                     var newCost = cost[v] + edgeCost;
                     var newLabel = new Label(mode switch
                     {
@@ -264,6 +276,7 @@ public sealed class GraphPathfinder
                     label[u] = newLabel;
                     cost[u] = newCost;
                     amount[u] = newAmount;
+                    carried[u] = carriedOverEdge;
                     cltv[u] = newCltv;
                     hops[u] = hops[v] + 1;
                     next[u] = v;
@@ -276,10 +289,11 @@ public sealed class GraphPathfinder
             if (!settled[_sourceIndex])
                 return null;
 
-            return BuildPath(cost, amount, cltv, next, nextEdge, probability);
+            return BuildPath(cost, carried, cltv, next, nextEdge, probability);
         }
 
-        private FoundPath BuildPath(double[] cost, ulong[] amount, uint[] cltv, int[] next, Edge[] nextEdge,
+        /// <param name="carried">Per node, the amount its HTLC carries over its edge toward the payee.</param>
+        private FoundPath BuildPath(double[] cost, ulong[] carried, uint[] cltv, int[] next, Edge[] nextEdge,
                                     double[] probability)
         {
             var shadow = Math.Min(_request.ShadowCltvOffset, _request.MaxTotalCltvDelta - cltv[_sourceIndex]);
@@ -290,9 +304,14 @@ public sealed class GraphPathfinder
             {
                 var edge = nextEdge[node];
                 var to = next[node];
-                var fee = to == _targetIndex ? 0 : amount[to] - amount[next[to]];
-                pathHops.Add(new PathHop(GetNodeId(to), edge.ShortChannelId, amount[to], cltv[to] + shadow, fee,
-                                         EffectivePolicy(edge)!, probability[node]));
+                var fee = to == _targetIndex ? 0 : carried[node] - carried[to];
+                var inbound = to == _targetIndex ? null : edge.InboundPolicy;
+                pathHops.Add(new PathHop(GetNodeId(to), edge.ShortChannelId, carried[node], cltv[to] + shadow, fee,
+                                         EffectivePolicy(edge)!, probability[node])
+                {
+                    InboundFeeBaseMsat = inbound?.InboundFeeBaseMsat ?? 0,
+                    InboundFeeProportionalMillionths = inbound?.InboundFeeProportionalMillionths ?? 0
+                });
                 edges.Add(new DirectedChannel(edge.ShortChannelId, edge.Direction));
                 node = to;
             }
@@ -300,10 +319,24 @@ public sealed class GraphPathfinder
             return new FoundPath(new GraphPath(pathHops, cost[_sourceIndex], shadow), edges);
         }
 
-        private bool TryRelax(Edge edge, ulong amountAtV, uint cltvAtV, out ulong newAmount, out uint newCltv,
-                              out ulong feeMsat, out double edgeProbability, out uint cltvDelta)
+        /// <param name="edge">The edge <c>u → v</c>.</param>
+        /// <param name="needAtV">What <c>v</c> must receive before its inbound fee on this edge.</param>
+        /// <param name="forwardedByV">What <c>v</c> forwards (the base of its inbound fee).</param>
+        /// <param name="vForwards"><c>v</c> is not the payee.</param>
+        /// <param name="cltvAtV"><c>v</c>'s CLTV.</param>
+        /// <param name="newAmount">What <c>u</c> must receive.</param>
+        /// <param name="carriedOverEdge">What the HTLC over the edge carries (<c>needAtV</c> plus the inbound fee).
+        /// </param>
+        /// <param name="newCltv"><c>u</c>'s CLTV.</param>
+        /// <param name="feeMsat">The fees this edge adds (<c>u</c>'s fee and <c>v</c>'s inbound fee).</param>
+        /// <param name="edgeProbability">The edge's success probability.</param>
+        /// <param name="cltvDelta">The CLTV this edge adds.</param>
+        private bool TryRelax(Edge edge, ulong needAtV, ulong forwardedByV, bool vForwards, uint cltvAtV,
+                              out ulong newAmount, out ulong carriedOverEdge, out uint newCltv, out ulong feeMsat,
+                              out double edgeProbability, out uint cltvDelta)
         {
             newAmount = 0;
+            carriedOverEdge = 0;
             newCltv = 0;
             feeMsat = 0;
             edgeProbability = 0;
@@ -314,6 +347,32 @@ public sealed class GraphPathfinder
              || _request.ExcludedEdges?.Contains(directed) == true)
                 return false;
 
+            // NL-878: v's inbound fee on this channel (a channel_update_2 surcharge) rides on the edge's HTLC
+            ulong inboundFee = 0;
+            if (vForwards && edge.InboundPolicy is { HasInboundFee: true } inbound)
+            {
+                try
+                {
+                    inboundFee = ForwardingFee.CalculateMsat(inbound.InboundFeeBaseMsat,
+                                                             inbound.InboundFeeProportionalMillionths, forwardedByV);
+                }
+                catch (OverflowException)
+                {
+                    return false;
+                }
+            }
+
+            ulong amountAtV;
+            try
+            {
+                amountAtV = checked(needAtV + inboundFee);
+            }
+            catch (OverflowException)
+            {
+                return false;
+            }
+
+            carriedOverEdge = amountAtV;
             var fromSource = edge.From == _sourceIndex;
             LocalChannelState? local = null;
             if (fromSource && _request.LocalChannels is { } localChannels)
@@ -332,7 +391,8 @@ public sealed class GraphPathfinder
 
                 // Our own channel's live state is authoritative (nothing refreshes its gossip timestamp yet)
                 if (local is null && _request.StaleAfter is { } staleAfter
-                                  && channel.IsStale(_request.NowUnixSeconds, staleAfter))
+                                  && channel.IsStale(_request.NowUnixSeconds, staleAfter,
+                                                     _request.CurrentBlockHeight))
                     return false;
             }
 
@@ -349,6 +409,7 @@ public sealed class GraphPathfinder
             if (edge.CapacityMsat is { } capacity && (policy.HtlcMaximumMsat > capacity || amountAtV > capacity))
                 return false;
 
+            feeMsat = inboundFee;
             if (fromSource)
             {
                 newAmount = amountAtV;
@@ -361,9 +422,10 @@ public sealed class GraphPathfinder
 
                 try
                 {
-                    feeMsat = ForwardingFee.CalculateMsat(policy.FeeBaseMsat, policy.FeeProportionalMillionths,
-                                                          amountAtV);
-                    newAmount = checked(amountAtV + feeMsat);
+                    var forwardingFee = ForwardingFee.CalculateMsat(policy.FeeBaseMsat,
+                                                                    policy.FeeProportionalMillionths, amountAtV);
+                    newAmount = checked(amountAtV + forwardingFee);
+                    feeMsat = checked(feeMsat + forwardingFee);
                 }
                 catch (OverflowException)
                 {
@@ -421,7 +483,7 @@ public sealed class GraphPathfinder
                     var neighborDirection = (byte)(1 - adjacency.LocalDirection);
                     yield return new Edge(adjacency.NeighborIndex, adjacency.Channel.ShortChannelId, neighborDirection,
                                           adjacency.IncomingPolicy, adjacency.Channel.EstimatedCapacityMsat,
-                                          adjacency.Channel);
+                                          adjacency.Channel, adjacency.OutgoingPolicy);
                 }
             }
 
