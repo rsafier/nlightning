@@ -113,7 +113,8 @@ public sealed partial class PaymentService
                 throw new ArgumentException(
                     $"{routeName}'s first-hop cltv_expiry {supplied.FirstHopCltvExpiry} is outside the height "
                   + $"{height}..{maxCltv}.", nameof(request));
-            if (supplied.Hops[0].OutgoingCltvValue >= supplied.FirstHopCltvExpiry)
+            // A route over one hop is direct: that hop is the payee and its cltv is the first HTLC's
+            if (supplied.Hops.Count > 1 && supplied.Hops[0].OutgoingCltvValue >= supplied.FirstHopCltvExpiry)
                 throw new ArgumentException(
                     $"{routeName}'s first hop does not lower the cltv_expiry.", nameof(request));
             // The payee's expiry is the last forwarding hop's outgoing expiry (the same HTLC), so the strict

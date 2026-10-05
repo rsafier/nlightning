@@ -121,8 +121,10 @@ public class PayRouteFlowTests : IAsyncLifetime
     /// <summary>A <c>payroute</c> route echoing a <c>getroute</c> quote for a single-hop (direct) channel.</summary>
     private static PayRouteRouteClientInfo FromQuote(GetRouteClientResponse quote, ChannelId firstHopChannel) =>
         new(Convert.ToHexStringLower((byte[])firstHopChannel), quote.Amount.MilliSatoshi, quote.CltvExpiry,
-            quote.Hops.Select(h => new PayRouteHopClientInfo(h.NodeId, h.ShortChannelId.ToUInt64(), h.Amount.MilliSatoshi,
-                                                             h.CltvExpiry))
+            quote.Hops.Select((h, i) => new PayRouteHopClientInfo(
+                                  h.NodeId,
+                                  i == quote.Hops.Count - 1 ? null : h.ShortChannelId.ToUInt64(),
+                                  h.Amount.MilliSatoshi, h.CltvExpiry))
                       .ToList());
 
     private static PayRouteRouteClientInfo Shard(ChannelId firstHopChannel,
