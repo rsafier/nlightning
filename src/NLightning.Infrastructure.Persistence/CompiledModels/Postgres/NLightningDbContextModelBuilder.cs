@@ -17,7 +17,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
     public partial class NLightningDbContextModel
     {
         private NLightningDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("5322b22d-2c41-42e8-b84c-2dcc1e324dcb"), entityTypeCount: 56)
+            : base(skipDetectChanges: false, modelId: new Guid("4e79a88c-41d3-49a0-a443-e280f346ce5a"), entityTypeCount: 56)
         {
         }
 
@@ -5065,9 +5065,15 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var defaultTableMappings34 = new List<TableMappingBase<ColumnMappingBase>>();
             graphChannelEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings34);
             var nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelEntity", null, relationalModel);
-            var bitcoin_key1ColumnBase = new ColumnBase<ColumnMappingBase>("bitcoin_key1", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
+            var bitcoin_key1ColumnBase = new ColumnBase<ColumnMappingBase>("bitcoin_key1", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase)
+            {
+                IsNullable = true
+            };
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("bitcoin_key1", bitcoin_key1ColumnBase);
-            var bitcoin_key2ColumnBase = new ColumnBase<ColumnMappingBase>("bitcoin_key2", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
+            var bitcoin_key2ColumnBase = new ColumnBase<ColumnMappingBase>("bitcoin_key2", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase)
+            {
+                IsNullable = true
+            };
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("bitcoin_key2", bitcoin_key2ColumnBase);
             var capacity_satColumnBase = new ColumnBase<ColumnMappingBase>("capacity_sat", "bigint", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("capacity_sat", capacity_satColumnBase);
@@ -5078,12 +5084,19 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 IsNullable = true
             };
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("funding_tx_id", funding_tx_idColumnBase3);
+            var gossip_versionsColumnBase = new ColumnBase<ColumnMappingBase>("gossip_versions", "smallint", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("gossip_versions", gossip_versionsColumnBase);
             var node_id1ColumnBase = new ColumnBase<ColumnMappingBase>("node_id1", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("node_id1", node_id1ColumnBase);
             var node_id2ColumnBase = new ColumnBase<ColumnMappingBase>("node_id2", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("node_id2", node_id2ColumnBase);
             var raw_announcementColumnBase = new ColumnBase<ColumnMappingBase>("raw_announcement", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("raw_announcement", raw_announcementColumnBase);
+            var raw_announcement2ColumnBase = new ColumnBase<ColumnMappingBase>("raw_announcement2", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("raw_announcement2", raw_announcement2ColumnBase);
             var received_atColumnBase = new ColumnBase<ColumnMappingBase>("received_at", "bigint", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("received_at", received_atColumnBase);
             var short_channel_idColumnBase2 = new ColumnBase<ColumnMappingBase>("short_channel_id", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
@@ -5105,9 +5118,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)capacity_satColumnBase, graphChannelEntity.FindProperty("CapacitySat")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)featuresColumnBase, graphChannelEntity.FindProperty("Features")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)funding_tx_idColumnBase3, graphChannelEntity.FindProperty("FundingTxId")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)gossip_versionsColumnBase, graphChannelEntity.FindProperty("GossipVersions")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)node_id1ColumnBase, graphChannelEntity.FindProperty("NodeId1")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)node_id2ColumnBase, graphChannelEntity.FindProperty("NodeId2")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)raw_announcementColumnBase, graphChannelEntity.FindProperty("RawAnnouncement")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)raw_announcement2ColumnBase, graphChannelEntity.FindProperty("RawAnnouncement2")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)received_atColumnBase, graphChannelEntity.FindProperty("ReceivedAt")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)spent_at_heightColumnBase0, graphChannelEntity.FindProperty("SpentAtHeight")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)verificationColumnBase, graphChannelEntity.FindProperty("Verification")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
@@ -5118,10 +5133,16 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var short_channel_idColumn2 = new Column("short_channel_id", "bytea", graph_channelsTable);
             graph_channelsTable.Columns.Add("short_channel_id", short_channel_idColumn2);
             short_channel_idColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(short_channel_idColumn2);
-            var bitcoin_key1Column = new Column("bitcoin_key1", "bytea", graph_channelsTable);
+            var bitcoin_key1Column = new Column("bitcoin_key1", "bytea", graph_channelsTable)
+            {
+                IsNullable = true
+            };
             graph_channelsTable.Columns.Add("bitcoin_key1", bitcoin_key1Column);
             bitcoin_key1Column.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(bitcoin_key1Column);
-            var bitcoin_key2Column = new Column("bitcoin_key2", "bytea", graph_channelsTable);
+            var bitcoin_key2Column = new Column("bitcoin_key2", "bytea", graph_channelsTable)
+            {
+                IsNullable = true
+            };
             graph_channelsTable.Columns.Add("bitcoin_key2", bitcoin_key2Column);
             bitcoin_key2Column.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(bitcoin_key2Column);
             var capacity_satColumn = new Column("capacity_sat", "bigint", graph_channelsTable);
@@ -5136,6 +5157,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             };
             graph_channelsTable.Columns.Add("funding_tx_id", funding_tx_idColumn3);
             funding_tx_idColumn3.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(funding_tx_idColumn3);
+            var gossip_versionsColumn = new Column("gossip_versions", "smallint", graph_channelsTable);
+            graph_channelsTable.Columns.Add("gossip_versions", gossip_versionsColumn);
+            gossip_versionsColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(gossip_versionsColumn);
             var node_id1Column = new Column("node_id1", "bytea", graph_channelsTable);
             graph_channelsTable.Columns.Add("node_id1", node_id1Column);
             node_id1Column.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(node_id1Column);
@@ -5145,6 +5169,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var raw_announcementColumn = new Column("raw_announcement", "bytea", graph_channelsTable);
             graph_channelsTable.Columns.Add("raw_announcement", raw_announcementColumn);
             raw_announcementColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(raw_announcementColumn);
+            var raw_announcement2Column = new Column("raw_announcement2", "bytea", graph_channelsTable)
+            {
+                IsNullable = true
+            };
+            graph_channelsTable.Columns.Add("raw_announcement2", raw_announcement2Column);
+            raw_announcement2Column.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(raw_announcement2Column);
             var received_atColumn = new Column("received_at", "bigint", graph_channelsTable);
             graph_channelsTable.Columns.Add("received_at", received_atColumn);
             received_atColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(received_atColumn);
@@ -5167,9 +5197,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping(capacity_satColumn, graphChannelEntity.FindProperty("CapacitySat")!, graph_channelsTableMapping);
             RelationalModel.CreateColumnMapping(featuresColumn, graphChannelEntity.FindProperty("Features")!, graph_channelsTableMapping);
             RelationalModel.CreateColumnMapping(funding_tx_idColumn3, graphChannelEntity.FindProperty("FundingTxId")!, graph_channelsTableMapping);
+            RelationalModel.CreateColumnMapping(gossip_versionsColumn, graphChannelEntity.FindProperty("GossipVersions")!, graph_channelsTableMapping);
             RelationalModel.CreateColumnMapping(node_id1Column, graphChannelEntity.FindProperty("NodeId1")!, graph_channelsTableMapping);
             RelationalModel.CreateColumnMapping(node_id2Column, graphChannelEntity.FindProperty("NodeId2")!, graph_channelsTableMapping);
             RelationalModel.CreateColumnMapping(raw_announcementColumn, graphChannelEntity.FindProperty("RawAnnouncement")!, graph_channelsTableMapping);
+            RelationalModel.CreateColumnMapping(raw_announcement2Column, graphChannelEntity.FindProperty("RawAnnouncement2")!, graph_channelsTableMapping);
             RelationalModel.CreateColumnMapping(received_atColumn, graphChannelEntity.FindProperty("ReceivedAt")!, graph_channelsTableMapping);
             RelationalModel.CreateColumnMapping(spent_at_heightColumn0, graphChannelEntity.FindProperty("SpentAtHeight")!, graph_channelsTableMapping);
             RelationalModel.CreateColumnMapping(verificationColumn, graphChannelEntity.FindProperty("Verification")!, graph_channelsTableMapping);
@@ -5229,6 +5261,10 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("htlc_maximum_msat", htlc_maximum_msatColumnBase0);
             var htlc_minimum_msatColumnBase0 = new ColumnBase<ColumnMappingBase>("htlc_minimum_msat", "numeric(20,0)", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("htlc_minimum_msat", htlc_minimum_msatColumnBase0);
+            var inbound_fee_base_msatColumnBase = new ColumnBase<ColumnMappingBase>("inbound_fee_base_msat", "bigint", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("inbound_fee_base_msat", inbound_fee_base_msatColumnBase);
+            var inbound_fee_ppmColumnBase = new ColumnBase<ColumnMappingBase>("inbound_fee_ppm", "bigint", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("inbound_fee_ppm", inbound_fee_ppmColumnBase);
             var message_flagsColumnBase = new ColumnBase<ColumnMappingBase>("message_flags", "smallint", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("message_flags", message_flagsColumnBase);
             var raw_updateColumnBase = new ColumnBase<ColumnMappingBase>("raw_update", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
@@ -5237,18 +5273,23 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("short_channel_id", short_channel_idColumnBase3);
             var timestampColumnBase = new ColumnBase<ColumnMappingBase>("timestamp", "bigint", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("timestamp", timestampColumnBase);
+            var versionColumnBase0 = new ColumnBase<ColumnMappingBase>("version", "smallint", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("version", versionColumnBase0);
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelPolicyEntity", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase = new TableMappingBase<ColumnMappingBase>(graphChannelPolicyEntity, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase, false);
             defaultTableMappings35.Add(nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)directionColumnBase1, graphChannelPolicyEntity.FindProperty("Direction")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)short_channel_idColumnBase3, graphChannelPolicyEntity.FindProperty("ShortChannelId")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)versionColumnBase0, graphChannelPolicyEntity.FindProperty("Version")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channel_flagsColumnBase, graphChannelPolicyEntity.FindProperty("ChannelFlags")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)cltv_expiry_deltaColumnBase0, graphChannelPolicyEntity.FindProperty("CltvExpiryDelta")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)fee_base_msatColumnBase0, graphChannelPolicyEntity.FindProperty("FeeBaseMsat")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)fee_ppmColumnBase, graphChannelPolicyEntity.FindProperty("FeePpm")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)htlc_maximum_msatColumnBase0, graphChannelPolicyEntity.FindProperty("HtlcMaximumMsat")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)htlc_minimum_msatColumnBase0, graphChannelPolicyEntity.FindProperty("HtlcMinimumMsat")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)inbound_fee_base_msatColumnBase, graphChannelPolicyEntity.FindProperty("InboundFeeBaseMsat")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)inbound_fee_ppmColumnBase, graphChannelPolicyEntity.FindProperty("InboundFeePpm")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)message_flagsColumnBase, graphChannelPolicyEntity.FindProperty("MessageFlags")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)raw_updateColumnBase, graphChannelPolicyEntity.FindProperty("RawUpdate")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)timestampColumnBase, graphChannelPolicyEntity.FindProperty("Timestamp")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
@@ -5262,6 +5303,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var directionColumn1 = new Column("direction", "smallint", graph_channel_policiesTable);
             graph_channel_policiesTable.Columns.Add("direction", directionColumn1);
             directionColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(directionColumn1);
+            var versionColumn0 = new Column("version", "smallint", graph_channel_policiesTable);
+            graph_channel_policiesTable.Columns.Add("version", versionColumn0);
+            versionColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(versionColumn0);
             var channel_flagsColumn = new Column("channel_flags", "smallint", graph_channel_policiesTable);
             graph_channel_policiesTable.Columns.Add("channel_flags", channel_flagsColumn);
             channel_flagsColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(channel_flagsColumn);
@@ -5280,6 +5324,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var htlc_minimum_msatColumn0 = new Column("htlc_minimum_msat", "numeric(20,0)", graph_channel_policiesTable);
             graph_channel_policiesTable.Columns.Add("htlc_minimum_msat", htlc_minimum_msatColumn0);
             htlc_minimum_msatColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<decimal>(htlc_minimum_msatColumn0);
+            var inbound_fee_base_msatColumn = new Column("inbound_fee_base_msat", "bigint", graph_channel_policiesTable);
+            graph_channel_policiesTable.Columns.Add("inbound_fee_base_msat", inbound_fee_base_msatColumn);
+            inbound_fee_base_msatColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(inbound_fee_base_msatColumn);
+            var inbound_fee_ppmColumn = new Column("inbound_fee_ppm", "bigint", graph_channel_policiesTable);
+            graph_channel_policiesTable.Columns.Add("inbound_fee_ppm", inbound_fee_ppmColumn);
+            inbound_fee_ppmColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(inbound_fee_ppmColumn);
             var message_flagsColumn = new Column("message_flags", "smallint", graph_channel_policiesTable);
             graph_channel_policiesTable.Columns.Add("message_flags", message_flagsColumn);
             message_flagsColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(message_flagsColumn);
@@ -5295,21 +5345,24 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             tableMappings35.Add(graph_channel_policiesTableMapping);
             RelationalModel.CreateColumnMapping(directionColumn1, graphChannelPolicyEntity.FindProperty("Direction")!, graph_channel_policiesTableMapping);
             RelationalModel.CreateColumnMapping(short_channel_idColumn3, graphChannelPolicyEntity.FindProperty("ShortChannelId")!, graph_channel_policiesTableMapping);
+            RelationalModel.CreateColumnMapping(versionColumn0, graphChannelPolicyEntity.FindProperty("Version")!, graph_channel_policiesTableMapping);
             RelationalModel.CreateColumnMapping(channel_flagsColumn, graphChannelPolicyEntity.FindProperty("ChannelFlags")!, graph_channel_policiesTableMapping);
             RelationalModel.CreateColumnMapping(cltv_expiry_deltaColumn0, graphChannelPolicyEntity.FindProperty("CltvExpiryDelta")!, graph_channel_policiesTableMapping);
             RelationalModel.CreateColumnMapping(fee_base_msatColumn0, graphChannelPolicyEntity.FindProperty("FeeBaseMsat")!, graph_channel_policiesTableMapping);
             RelationalModel.CreateColumnMapping(fee_ppmColumn, graphChannelPolicyEntity.FindProperty("FeePpm")!, graph_channel_policiesTableMapping);
             RelationalModel.CreateColumnMapping(htlc_maximum_msatColumn0, graphChannelPolicyEntity.FindProperty("HtlcMaximumMsat")!, graph_channel_policiesTableMapping);
             RelationalModel.CreateColumnMapping(htlc_minimum_msatColumn0, graphChannelPolicyEntity.FindProperty("HtlcMinimumMsat")!, graph_channel_policiesTableMapping);
+            RelationalModel.CreateColumnMapping(inbound_fee_base_msatColumn, graphChannelPolicyEntity.FindProperty("InboundFeeBaseMsat")!, graph_channel_policiesTableMapping);
+            RelationalModel.CreateColumnMapping(inbound_fee_ppmColumn, graphChannelPolicyEntity.FindProperty("InboundFeePpm")!, graph_channel_policiesTableMapping);
             RelationalModel.CreateColumnMapping(message_flagsColumn, graphChannelPolicyEntity.FindProperty("MessageFlags")!, graph_channel_policiesTableMapping);
             RelationalModel.CreateColumnMapping(raw_updateColumn, graphChannelPolicyEntity.FindProperty("RawUpdate")!, graph_channel_policiesTableMapping);
             RelationalModel.CreateColumnMapping(timestampColumn, graphChannelPolicyEntity.FindProperty("Timestamp")!, graph_channel_policiesTableMapping);
-            var pk_graph_channel_policies = new UniqueConstraint("pk_graph_channel_policies", graph_channel_policiesTable, new[] { short_channel_idColumn3, directionColumn1 });
+            var pk_graph_channel_policies = new UniqueConstraint("pk_graph_channel_policies", graph_channel_policiesTable, new[] { short_channel_idColumn3, directionColumn1, versionColumn0 });
             graph_channel_policiesTable.PrimaryKey = pk_graph_channel_policies;
             pk_graph_channel_policies.SetRowKeyValueFactory(new CompositeRowKeyValueFactory(pk_graph_channel_policies));
             var pk_graph_channel_policiesKey = RelationalModel.GetKey(this,
                 "NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelPolicyEntity",
-                new[] { "ShortChannelId", "Direction" });
+                new[] { "ShortChannelId", "Direction", "Version" });
             pk_graph_channel_policies.MappedKeys.Add(pk_graph_channel_policiesKey);
             RelationalModel.GetOrCreateUniqueConstraints(pk_graph_channel_policiesKey).Add(pk_graph_channel_policies);
             graph_channel_policiesTable.UniqueConstraints.Add("pk_graph_channel_policies", pk_graph_channel_policies);
@@ -5323,14 +5376,26 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("addresses", addressesColumnBase);
             var aliasColumnBase0 = new ColumnBase<ColumnMappingBase>("alias", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("alias", aliasColumnBase0);
+            var block_heightColumnBase2 = new ColumnBase<ColumnMappingBase>("block_height", "bigint", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("block_height", block_heightColumnBase2);
             var colorColumnBase = new ColumnBase<ColumnMappingBase>("color", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("color", colorColumnBase);
             var featuresColumnBase0 = new ColumnBase<ColumnMappingBase>("features", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("features", featuresColumnBase0);
+            var gossip_versionsColumnBase0 = new ColumnBase<ColumnMappingBase>("gossip_versions", "smallint", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("gossip_versions", gossip_versionsColumnBase0);
             var node_idColumnBase0 = new ColumnBase<ColumnMappingBase>("node_id", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("node_id", node_idColumnBase0);
             var raw_announcementColumnBase0 = new ColumnBase<ColumnMappingBase>("raw_announcement", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("raw_announcement", raw_announcementColumnBase0);
+            var raw_announcement2ColumnBase0 = new ColumnBase<ColumnMappingBase>("raw_announcement2", "bytea", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("raw_announcement2", raw_announcement2ColumnBase0);
             var received_atColumnBase0 = new ColumnBase<ColumnMappingBase>("received_at", "bigint", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("received_at", received_atColumnBase0);
             var timestampColumnBase0 = new ColumnBase<ColumnMappingBase>("timestamp", "bigint", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
@@ -5342,9 +5407,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)node_idColumnBase0, graphNodeEntity.FindProperty("NodeId")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)addressesColumnBase, graphNodeEntity.FindProperty("Addresses")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)aliasColumnBase0, graphNodeEntity.FindProperty("Alias")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)block_heightColumnBase2, graphNodeEntity.FindProperty("BlockHeight")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)colorColumnBase, graphNodeEntity.FindProperty("Color")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)featuresColumnBase0, graphNodeEntity.FindProperty("Features")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)gossip_versionsColumnBase0, graphNodeEntity.FindProperty("GossipVersions")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)raw_announcementColumnBase0, graphNodeEntity.FindProperty("RawAnnouncement")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)raw_announcement2ColumnBase0, graphNodeEntity.FindProperty("RawAnnouncement2")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)received_atColumnBase0, graphNodeEntity.FindProperty("ReceivedAt")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)timestampColumnBase0, graphNodeEntity.FindProperty("Timestamp")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
 
@@ -5360,15 +5428,30 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var aliasColumn0 = new Column("alias", "bytea", graph_nodesTable);
             graph_nodesTable.Columns.Add("alias", aliasColumn0);
             aliasColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(aliasColumn0);
+            var block_heightColumn2 = new Column("block_height", "bigint", graph_nodesTable)
+            {
+                IsNullable = true
+            };
+            graph_nodesTable.Columns.Add("block_height", block_heightColumn2);
+            block_heightColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(block_heightColumn2);
             var colorColumn = new Column("color", "bytea", graph_nodesTable);
             graph_nodesTable.Columns.Add("color", colorColumn);
             colorColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(colorColumn);
             var featuresColumn0 = new Column("features", "bytea", graph_nodesTable);
             graph_nodesTable.Columns.Add("features", featuresColumn0);
             featuresColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(featuresColumn0);
+            var gossip_versionsColumn0 = new Column("gossip_versions", "smallint", graph_nodesTable);
+            graph_nodesTable.Columns.Add("gossip_versions", gossip_versionsColumn0);
+            gossip_versionsColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(gossip_versionsColumn0);
             var raw_announcementColumn0 = new Column("raw_announcement", "bytea", graph_nodesTable);
             graph_nodesTable.Columns.Add("raw_announcement", raw_announcementColumn0);
             raw_announcementColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(raw_announcementColumn0);
+            var raw_announcement2Column0 = new Column("raw_announcement2", "bytea", graph_nodesTable)
+            {
+                IsNullable = true
+            };
+            graph_nodesTable.Columns.Add("raw_announcement2", raw_announcement2Column0);
+            raw_announcement2Column0.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(raw_announcement2Column0);
             var received_atColumn0 = new Column("received_at", "bigint", graph_nodesTable);
             graph_nodesTable.Columns.Add("received_at", received_atColumn0);
             received_atColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(received_atColumn0);
@@ -5382,9 +5465,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping(node_idColumn0, graphNodeEntity.FindProperty("NodeId")!, graph_nodesTableMapping);
             RelationalModel.CreateColumnMapping(addressesColumn, graphNodeEntity.FindProperty("Addresses")!, graph_nodesTableMapping);
             RelationalModel.CreateColumnMapping(aliasColumn0, graphNodeEntity.FindProperty("Alias")!, graph_nodesTableMapping);
+            RelationalModel.CreateColumnMapping(block_heightColumn2, graphNodeEntity.FindProperty("BlockHeight")!, graph_nodesTableMapping);
             RelationalModel.CreateColumnMapping(colorColumn, graphNodeEntity.FindProperty("Color")!, graph_nodesTableMapping);
             RelationalModel.CreateColumnMapping(featuresColumn0, graphNodeEntity.FindProperty("Features")!, graph_nodesTableMapping);
+            RelationalModel.CreateColumnMapping(gossip_versionsColumn0, graphNodeEntity.FindProperty("GossipVersions")!, graph_nodesTableMapping);
             RelationalModel.CreateColumnMapping(raw_announcementColumn0, graphNodeEntity.FindProperty("RawAnnouncement")!, graph_nodesTableMapping);
+            RelationalModel.CreateColumnMapping(raw_announcement2Column0, graphNodeEntity.FindProperty("RawAnnouncement2")!, graph_nodesTableMapping);
             RelationalModel.CreateColumnMapping(received_atColumn0, graphNodeEntity.FindProperty("ReceivedAt")!, graph_nodesTableMapping);
             RelationalModel.CreateColumnMapping(timestampColumn0, graphNodeEntity.FindProperty("Timestamp")!, graph_nodesTableMapping);
             var pk_graph_nodes = new UniqueConstraint("pk_graph_nodes", graph_nodesTable, new[] { node_idColumn0 });

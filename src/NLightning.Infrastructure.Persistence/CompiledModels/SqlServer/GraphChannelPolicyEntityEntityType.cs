@@ -32,7 +32,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 "NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelPolicyEntity",
                 typeof(GraphChannelPolicyEntity),
                 baseEntityType,
-                propertyCount: 11,
+                propertyCount: 14,
                 foreignKeyCount: 1,
                 keyCount: 1);
 
@@ -147,6 +147,55 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             direction.SetCurrentValueComparer(new EntryCurrentValueComparer<byte>(direction));
             direction.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
+            var version = runtimeEntityType.AddProperty(
+                "Version",
+                typeof(byte),
+                propertyInfo: typeof(GraphChannelPolicyEntity).GetProperty("Version", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(GraphChannelPolicyEntity).GetField("<Version>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                afterSaveBehavior: PropertySaveBehavior.Throw,
+                sentinel: (byte)0);
+            version.SetGetter(
+                byte (GraphChannelPolicyEntity instance) => GraphChannelPolicyEntityUnsafeAccessors.Version(instance),
+                bool (GraphChannelPolicyEntity instance) => GraphChannelPolicyEntityUnsafeAccessors.Version(instance) == 0);
+            version.SetSetter(
+                GraphChannelPolicyEntity (GraphChannelPolicyEntity instance, byte value) =>
+                {
+                    GraphChannelPolicyEntityUnsafeAccessors.Version(instance) = value;
+                    return instance;
+                });
+            version.SetMaterializationSetter(
+                GraphChannelPolicyEntity (GraphChannelPolicyEntity instance, byte value) =>
+                {
+                    GraphChannelPolicyEntityUnsafeAccessors.Version(instance) = value;
+                    return instance;
+                });
+            version.SetAccessors(
+                byte (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.Version(((GraphChannelPolicyEntity)(entry.Entity))),
+                byte (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.Version(((GraphChannelPolicyEntity)(entry.Entity))),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(version, 2),
+                byte (IInternalEntry entry) => ((InternalEntityEntry)entry).ReadRelationshipSnapshotValue<byte>(version, 2));
+            version.SetPropertyIndexes(
+                index: 2,
+                originalValueIndex: 2,
+                shadowIndex: -1,
+                relationshipIndex: 2,
+                storeGenerationIndex: -1);
+            version.TypeMapping = SqlServerByteTypeMapping.Default.Clone(
+                comparer: new ValueComparer<byte>(
+                    bool (byte v1, byte v2) => v1 == v2,
+                    int (byte v) => ((int)v),
+                    byte (byte v) => v),
+                keyComparer: new ValueComparer<byte>(
+                    bool (byte v1, byte v2) => v1 == v2,
+                    int (byte v) => ((int)v),
+                    byte (byte v) => v),
+                providerValueComparer: new ValueComparer<byte>(
+                    bool (byte v1, byte v2) => v1 == v2,
+                    int (byte v) => ((int)v),
+                    byte (byte v) => v));
+            version.SetCurrentValueComparer(new EntryCurrentValueComparer<byte>(version));
+            version.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
+
             var channelFlags = runtimeEntityType.AddProperty(
                 "ChannelFlags",
                 typeof(byte),
@@ -171,11 +220,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             channelFlags.SetAccessors(
                 byte (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.ChannelFlags(((GraphChannelPolicyEntity)(entry.Entity))),
                 byte (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.ChannelFlags(((GraphChannelPolicyEntity)(entry.Entity))),
-                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(channelFlags, 2),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(channelFlags, 3),
                 byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(channelFlags));
             channelFlags.SetPropertyIndexes(
-                index: 2,
-                originalValueIndex: 2,
+                index: 3,
+                originalValueIndex: 3,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -217,11 +266,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             cltvExpiryDelta.SetAccessors(
                 ushort (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.CltvExpiryDelta(((GraphChannelPolicyEntity)(entry.Entity))),
                 ushort (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.CltvExpiryDelta(((GraphChannelPolicyEntity)(entry.Entity))),
-                ushort (IInternalEntry entry) => entry.ReadOriginalValue<ushort>(cltvExpiryDelta, 3),
+                ushort (IInternalEntry entry) => entry.ReadOriginalValue<ushort>(cltvExpiryDelta, 4),
                 ushort (IInternalEntry entry) => entry.GetCurrentValue<ushort>(cltvExpiryDelta));
             cltvExpiryDelta.SetPropertyIndexes(
-                index: 3,
-                originalValueIndex: 3,
+                index: 4,
+                originalValueIndex: 4,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -272,11 +321,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             feeBaseMsat.SetAccessors(
                 uint (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.FeeBaseMsat(((GraphChannelPolicyEntity)(entry.Entity))),
                 uint (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.FeeBaseMsat(((GraphChannelPolicyEntity)(entry.Entity))),
-                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(feeBaseMsat, 4),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(feeBaseMsat, 5),
                 uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(feeBaseMsat));
             feeBaseMsat.SetPropertyIndexes(
-                index: 4,
-                originalValueIndex: 4,
+                index: 5,
+                originalValueIndex: 5,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -327,11 +376,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             feePpm.SetAccessors(
                 uint (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.FeePpm(((GraphChannelPolicyEntity)(entry.Entity))),
                 uint (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.FeePpm(((GraphChannelPolicyEntity)(entry.Entity))),
-                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(feePpm, 5),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(feePpm, 6),
                 uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(feePpm));
             feePpm.SetPropertyIndexes(
-                index: 5,
-                originalValueIndex: 5,
+                index: 6,
+                originalValueIndex: 6,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -382,11 +431,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             htlcMaximumMsat.SetAccessors(
                 ulong (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.HtlcMaximumMsat(((GraphChannelPolicyEntity)(entry.Entity))),
                 ulong (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.HtlcMaximumMsat(((GraphChannelPolicyEntity)(entry.Entity))),
-                ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(htlcMaximumMsat, 6),
+                ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(htlcMaximumMsat, 7),
                 ulong (IInternalEntry entry) => entry.GetCurrentValue<ulong>(htlcMaximumMsat));
             htlcMaximumMsat.SetPropertyIndexes(
-                index: 6,
-                originalValueIndex: 6,
+                index: 7,
+                originalValueIndex: 7,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -441,11 +490,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             htlcMinimumMsat.SetAccessors(
                 ulong (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.HtlcMinimumMsat(((GraphChannelPolicyEntity)(entry.Entity))),
                 ulong (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.HtlcMinimumMsat(((GraphChannelPolicyEntity)(entry.Entity))),
-                ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(htlcMinimumMsat, 7),
+                ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(htlcMinimumMsat, 8),
                 ulong (IInternalEntry entry) => entry.GetCurrentValue<ulong>(htlcMinimumMsat));
             htlcMinimumMsat.SetPropertyIndexes(
-                index: 7,
-                originalValueIndex: 7,
+                index: 8,
+                originalValueIndex: 8,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -477,6 +526,116 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             htlcMinimumMsat.SetSentinelFromProviderValue(0m);
             htlcMinimumMsat.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
+            var inboundFeeBaseMsat = runtimeEntityType.AddProperty(
+                "InboundFeeBaseMsat",
+                typeof(uint),
+                propertyInfo: typeof(GraphChannelPolicyEntity).GetProperty("InboundFeeBaseMsat", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(GraphChannelPolicyEntity).GetField("<InboundFeeBaseMsat>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly));
+            inboundFeeBaseMsat.SetGetter(
+                uint (GraphChannelPolicyEntity instance) => GraphChannelPolicyEntityUnsafeAccessors.InboundFeeBaseMsat(instance),
+                bool (GraphChannelPolicyEntity instance) => GraphChannelPolicyEntityUnsafeAccessors.InboundFeeBaseMsat(instance) == 0U);
+            inboundFeeBaseMsat.SetSetter(
+                GraphChannelPolicyEntity (GraphChannelPolicyEntity instance, uint value) =>
+                {
+                    GraphChannelPolicyEntityUnsafeAccessors.InboundFeeBaseMsat(instance) = value;
+                    return instance;
+                });
+            inboundFeeBaseMsat.SetMaterializationSetter(
+                GraphChannelPolicyEntity (GraphChannelPolicyEntity instance, uint value) =>
+                {
+                    GraphChannelPolicyEntityUnsafeAccessors.InboundFeeBaseMsat(instance) = value;
+                    return instance;
+                });
+            inboundFeeBaseMsat.SetAccessors(
+                uint (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.InboundFeeBaseMsat(((GraphChannelPolicyEntity)(entry.Entity))),
+                uint (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.InboundFeeBaseMsat(((GraphChannelPolicyEntity)(entry.Entity))),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(inboundFeeBaseMsat, 9),
+                uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(inboundFeeBaseMsat));
+            inboundFeeBaseMsat.SetPropertyIndexes(
+                index: 9,
+                originalValueIndex: 9,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            inboundFeeBaseMsat.TypeMapping = SqlServerLongTypeMapping.Default.Clone(
+                comparer: new ValueComparer<uint>(
+                    bool (uint v1, uint v2) => v1 == v2,
+                    int (uint v) => ((int)v),
+                    uint (uint v) => v),
+                keyComparer: new ValueComparer<uint>(
+                    bool (uint v1, uint v2) => v1 == v2,
+                    int (uint v) => ((int)v),
+                    uint (uint v) => v),
+                providerValueComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                converter: new ValueConverter<uint, long>(
+                    long (uint v) => ((long)v),
+                    uint (long v) => ((uint)v)),
+                jsonValueReaderWriter: new JsonConvertedValueReaderWriter<uint, long>(
+                    JsonInt64ReaderWriter.Instance,
+                    new ValueConverter<uint, long>(
+                        long (uint v) => ((long)v),
+                        uint (long v) => ((uint)v))));
+            inboundFeeBaseMsat.SetSentinelFromProviderValue(0L);
+            inboundFeeBaseMsat.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
+
+            var inboundFeePpm = runtimeEntityType.AddProperty(
+                "InboundFeePpm",
+                typeof(uint),
+                propertyInfo: typeof(GraphChannelPolicyEntity).GetProperty("InboundFeePpm", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(GraphChannelPolicyEntity).GetField("<InboundFeePpm>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly));
+            inboundFeePpm.SetGetter(
+                uint (GraphChannelPolicyEntity instance) => GraphChannelPolicyEntityUnsafeAccessors.InboundFeePpm(instance),
+                bool (GraphChannelPolicyEntity instance) => GraphChannelPolicyEntityUnsafeAccessors.InboundFeePpm(instance) == 0U);
+            inboundFeePpm.SetSetter(
+                GraphChannelPolicyEntity (GraphChannelPolicyEntity instance, uint value) =>
+                {
+                    GraphChannelPolicyEntityUnsafeAccessors.InboundFeePpm(instance) = value;
+                    return instance;
+                });
+            inboundFeePpm.SetMaterializationSetter(
+                GraphChannelPolicyEntity (GraphChannelPolicyEntity instance, uint value) =>
+                {
+                    GraphChannelPolicyEntityUnsafeAccessors.InboundFeePpm(instance) = value;
+                    return instance;
+                });
+            inboundFeePpm.SetAccessors(
+                uint (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.InboundFeePpm(((GraphChannelPolicyEntity)(entry.Entity))),
+                uint (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.InboundFeePpm(((GraphChannelPolicyEntity)(entry.Entity))),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(inboundFeePpm, 10),
+                uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(inboundFeePpm));
+            inboundFeePpm.SetPropertyIndexes(
+                index: 10,
+                originalValueIndex: 10,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            inboundFeePpm.TypeMapping = SqlServerLongTypeMapping.Default.Clone(
+                comparer: new ValueComparer<uint>(
+                    bool (uint v1, uint v2) => v1 == v2,
+                    int (uint v) => ((int)v),
+                    uint (uint v) => v),
+                keyComparer: new ValueComparer<uint>(
+                    bool (uint v1, uint v2) => v1 == v2,
+                    int (uint v) => ((int)v),
+                    uint (uint v) => v),
+                providerValueComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                converter: new ValueConverter<uint, long>(
+                    long (uint v) => ((long)v),
+                    uint (long v) => ((uint)v)),
+                jsonValueReaderWriter: new JsonConvertedValueReaderWriter<uint, long>(
+                    JsonInt64ReaderWriter.Instance,
+                    new ValueConverter<uint, long>(
+                        long (uint v) => ((long)v),
+                        uint (long v) => ((uint)v))));
+            inboundFeePpm.SetSentinelFromProviderValue(0L);
+            inboundFeePpm.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
+
             var messageFlags = runtimeEntityType.AddProperty(
                 "MessageFlags",
                 typeof(byte),
@@ -501,11 +660,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             messageFlags.SetAccessors(
                 byte (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.MessageFlags(((GraphChannelPolicyEntity)(entry.Entity))),
                 byte (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.MessageFlags(((GraphChannelPolicyEntity)(entry.Entity))),
-                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(messageFlags, 8),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(messageFlags, 11),
                 byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(messageFlags));
             messageFlags.SetPropertyIndexes(
-                index: 8,
-                originalValueIndex: 8,
+                index: 11,
+                originalValueIndex: 11,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -547,11 +706,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             rawUpdate.SetAccessors(
                 byte[] (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.RawUpdate(((GraphChannelPolicyEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.RawUpdate(((GraphChannelPolicyEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(rawUpdate, 9),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(rawUpdate, 12),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(rawUpdate));
             rawUpdate.SetPropertyIndexes(
-                index: 9,
-                originalValueIndex: 9,
+                index: 12,
+                originalValueIndex: 12,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -598,11 +757,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             timestamp.SetAccessors(
                 uint (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.Timestamp(((GraphChannelPolicyEntity)(entry.Entity))),
                 uint (IInternalEntry entry) => GraphChannelPolicyEntityUnsafeAccessors.Timestamp(((GraphChannelPolicyEntity)(entry.Entity))),
-                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(timestamp, 10),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(timestamp, 13),
                 uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(timestamp));
             timestamp.SetPropertyIndexes(
-                index: 10,
-                originalValueIndex: 10,
+                index: 13,
+                originalValueIndex: 13,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -631,7 +790,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             timestamp.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
             var key = runtimeEntityType.AddKey(
-                new[] { shortChannelId, direction });
+                new[] { shortChannelId, direction, version });
             runtimeEntityType.SetPrimaryKey(key);
 
             return runtimeEntityType;
@@ -652,23 +811,26 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
         {
             var shortChannelId = runtimeEntityType.FindProperty("ShortChannelId");
             var direction = runtimeEntityType.FindProperty("Direction");
+            var version = runtimeEntityType.FindProperty("Version");
             var channelFlags = runtimeEntityType.FindProperty("ChannelFlags");
             var cltvExpiryDelta = runtimeEntityType.FindProperty("CltvExpiryDelta");
             var feeBaseMsat = runtimeEntityType.FindProperty("FeeBaseMsat");
             var feePpm = runtimeEntityType.FindProperty("FeePpm");
             var htlcMaximumMsat = runtimeEntityType.FindProperty("HtlcMaximumMsat");
             var htlcMinimumMsat = runtimeEntityType.FindProperty("HtlcMinimumMsat");
+            var inboundFeeBaseMsat = runtimeEntityType.FindProperty("InboundFeeBaseMsat");
+            var inboundFeePpm = runtimeEntityType.FindProperty("InboundFeePpm");
             var messageFlags = runtimeEntityType.FindProperty("MessageFlags");
             var rawUpdate = runtimeEntityType.FindProperty("RawUpdate");
             var timestamp = runtimeEntityType.FindProperty("Timestamp");
-            var key = runtimeEntityType.FindKey(new[] { shortChannelId, direction });
+            var key = runtimeEntityType.FindKey(new[] { shortChannelId, direction, version });
             key.SetPrincipalKeyValueFactory(KeyValueFactoryFactory.CreateCompositeFactory(key));
             key.SetIdentityMapFactory(IdentityMapFactoryFactory.CreateFactory<IReadOnlyList<object>>(key));
             runtimeEntityType.SetOriginalValuesFactory(
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType1 = ((GraphChannelPolicyEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<ShortChannelId, byte, byte, ushort, uint, uint, ulong, ulong, byte, byte[], uint>(((ValueComparer<ShortChannelId>)(((IProperty)shortChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId>(shortChannelId)), ((ValueComparer<byte>)(((IProperty)direction).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(direction)), ((ValueComparer<byte>)(((IProperty)channelFlags).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(channelFlags)), ((ValueComparer<ushort>)(((IProperty)cltvExpiryDelta).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(cltvExpiryDelta)), ((ValueComparer<uint>)(((IProperty)feeBaseMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(feeBaseMsat)), ((ValueComparer<uint>)(((IProperty)feePpm).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(feePpm)), ((ValueComparer<ulong>)(((IProperty)htlcMaximumMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(htlcMaximumMsat)), ((ValueComparer<ulong>)(((IProperty)htlcMinimumMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(htlcMinimumMsat)), ((ValueComparer<byte>)(((IProperty)messageFlags).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(messageFlags)), (source.GetCurrentValue<byte[]>(rawUpdate) == null ? null : ((ValueComparer<byte[]>)(((IProperty)rawUpdate).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(rawUpdate))), ((ValueComparer<uint>)(((IProperty)timestamp).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(timestamp)))));
+                    return ((ISnapshot)(new Snapshot<ShortChannelId, byte, byte, byte, ushort, uint, uint, ulong, ulong, uint, uint, byte, byte[], uint>(((ValueComparer<ShortChannelId>)(((IProperty)shortChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId>(shortChannelId)), ((ValueComparer<byte>)(((IProperty)direction).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(direction)), ((ValueComparer<byte>)(((IProperty)version).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(version)), ((ValueComparer<byte>)(((IProperty)channelFlags).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(channelFlags)), ((ValueComparer<ushort>)(((IProperty)cltvExpiryDelta).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(cltvExpiryDelta)), ((ValueComparer<uint>)(((IProperty)feeBaseMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(feeBaseMsat)), ((ValueComparer<uint>)(((IProperty)feePpm).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(feePpm)), ((ValueComparer<ulong>)(((IProperty)htlcMaximumMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(htlcMaximumMsat)), ((ValueComparer<ulong>)(((IProperty)htlcMinimumMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(htlcMinimumMsat)), ((ValueComparer<uint>)(((IProperty)inboundFeeBaseMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(inboundFeeBaseMsat)), ((ValueComparer<uint>)(((IProperty)inboundFeePpm).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(inboundFeePpm)), ((ValueComparer<byte>)(((IProperty)messageFlags).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(messageFlags)), (source.GetCurrentValue<byte[]>(rawUpdate) == null ? null : ((ValueComparer<byte[]>)(((IProperty)rawUpdate).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(rawUpdate))), ((ValueComparer<uint>)(((IProperty)timestamp).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(timestamp)))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => ((ISnapshot)(new Snapshot<ShortChannelId>(((ValueComparer<ShortChannelId>)(((IProperty)shortChannelId).GetValueComparer())).Snapshot(default(ShortChannelId))))));
@@ -682,16 +844,16 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType1 = ((GraphChannelPolicyEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<ShortChannelId, byte>(((ValueComparer<ShortChannelId>)(((IProperty)shortChannelId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId>(shortChannelId)), ((ValueComparer<byte>)(((IProperty)direction).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<byte>(direction)))));
+                    return ((ISnapshot)(new Snapshot<ShortChannelId, byte, byte>(((ValueComparer<ShortChannelId>)(((IProperty)shortChannelId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId>(shortChannelId)), ((ValueComparer<byte>)(((IProperty)direction).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<byte>(direction)), ((ValueComparer<byte>)(((IProperty)version).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<byte>(version)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 11,
+                propertyCount: 14,
                 navigationCount: 0,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 11,
+                originalValueCount: 14,
                 shadowCount: 0,
-                relationshipCount: 2,
+                relationshipCount: 3,
                 storeGeneratedCount: 1));
             runtimeEntityType.AddAnnotation("Relational:FunctionName", null);
             runtimeEntityType.AddAnnotation("Relational:Schema", null);

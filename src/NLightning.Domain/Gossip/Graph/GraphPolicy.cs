@@ -10,7 +10,8 @@ using Protocol.Payloads;
 /// Amounts are raw msat (<c>ulong</c>), like <see cref="ChannelUpdatePayload"/> and the commitment engine: the graph
 /// is read on every pathfinding step, and <c>LightningMoney</c> is a mutable reference type.
 /// </remarks>
-/// <param name="Timestamp">The update's timestamp (UNIX seconds by convention).</param>
+/// <param name="Timestamp">The update's timestamp: UNIX seconds by convention for a <c>channel_update</c>, the block
+/// height for a <c>channel_update_2</c> (<see cref="GossipVersion"/> 2).</param>
 /// <param name="MessageFlags">The raw <c>message_flags</c>.</param>
 /// <param name="ChannelFlags">The raw <c>channel_flags</c> (bit 0 direction, bit 1 disable).</param>
 /// <param name="CltvExpiryDelta">The blocks the origin subtracts from an incoming HTLC's <c>cltv_expiry</c>.</param>
@@ -47,6 +48,33 @@ public sealed record GraphPolicy(
     public ReadOnlyMemory<byte> ExtraData { get; init; }
 
     /// <summary>
+    /// The gossip protocol of the update: 1 for a BOLT 7 <c>channel_update</c> (258), 2 for a taproot gossip
+    /// <c>channel_update_2</c> (271, NL-878), whose <see cref="Timestamp"/> is a block height.
+    /// </summary>
+    public byte GossipVersion { get; init; } = 1;
+
+    /// <summary>
+    /// The raw <c>disable_flags</c> of a <c>channel_update_2</c> (0 for a v1 update, whose disable bit lives in
+    /// <see cref="ChannelFlags"/>; any v2 flag sets that bit too).
+    /// </summary>
+    public byte DisableFlags { get; init; }
+
+    /// <summary>
+    /// The positive-only inbound base fee of a <c>channel_update_2</c>: the origin's surcharge on an HTLC that arrives
+    /// over this channel (0 for a v1 update).
+    /// </summary>
+    public uint InboundFeeBaseMsat { get; init; }
+
+    /// <summary>The positive-only inbound proportional fee of a <c>channel_update_2</c> (0 for a v1 update).</summary>
+    public uint InboundFeeProportionalMillionths { get; init; }
+
+    /// <summary>True when the update charges an inbound fee.</summary>
+    public bool HasInboundFee => InboundFeeBaseMsat != 0 || InboundFeeProportionalMillionths != 0;
+
+    /// <summary>True for a <c>channel_update_2</c> (its <see cref="Timestamp"/> is a block height).</summary>
+    public bool IsV2 => GossipVersion == 2;
+
+    /// <summary>
     /// The <c>direction</c> bit: 0 when the origin is <c>node_id_1</c>, 1 when it is <c>node_id_2</c>.
     /// </summary>
     public byte Direction => (byte)(ChannelFlags & ChannelUpdatePayload.ChannelFlagDirection);
@@ -77,6 +105,27 @@ public sealed record GraphPolicy(
     }
 
     /// <summary>
+    /// Builds the policy from a parsed <c>channel_update_2</c> (taproot gossip, NL-878): the block height is the
+    /// timestamp, any <c>disable_flags</c> bit sets the disable bit, and an absent <c>htlc_maximum_msat</c> is the
+    /// draft's default, half the channel capacity (<paramref name="capacityMsat"/>; 0 when unknown, which makes the
+    /// direction unusable). <see cref="RawUpdate"/> is left to the caller.
+    /// </summary>
+    public static GraphPolicy FromChannelUpdate2(ChannelUpdate2Payload update, ulong? capacityMsat)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        var channelFlags = (byte)(update.Direction | (update.IsDisabled ? ChannelUpdatePayload.ChannelFlagDisable : 0));
+        var htlcMaximum = update.HtlcMaximumMsat ?? (capacityMsat ?? 0) / 2;
+        return new GraphPolicy(update.BlockHeight, 0, channelFlags, update.CltvExpiryDelta, update.HtlcMinimumMsat,
+                               htlcMaximum, update.FeeBaseMsat, update.FeeProportionalMillionths)
+        {
+            GossipVersion = 2,
+            DisableFlags = update.DisableFlags,
+            InboundFeeBaseMsat = update.InboundFeeBaseMsat,
+            InboundFeeProportionalMillionths = update.InboundFeeProportionalMillionths
+        };
+    }
+
+    /// <summary>
     /// True when every field of <paramref name="update"/> after its <c>timestamp</c> equals this policy's (BOLT 7
     /// compares them for a same-timestamp update), including the unknown trailing fields (<see cref="ExtraData"/>).
     /// </summary>
@@ -103,6 +152,10 @@ public sealed record GraphPolicy(
      && HtlcMaximumMsat == other.HtlcMaximumMsat
      && FeeBaseMsat == other.FeeBaseMsat
      && FeeProportionalMillionths == other.FeeProportionalMillionths
+     && GossipVersion == other.GossipVersion
+     && DisableFlags == other.DisableFlags
+     && InboundFeeBaseMsat == other.InboundFeeBaseMsat
+     && InboundFeeProportionalMillionths == other.InboundFeeProportionalMillionths
      && ExtraData.Span.SequenceEqual(other.ExtraData.Span);
 
     public override int GetHashCode() =>

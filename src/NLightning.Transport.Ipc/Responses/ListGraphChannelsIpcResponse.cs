@@ -42,7 +42,10 @@ public sealed class ListGraphChannelsIpcResponse
                 HtlcMinimumMsat = policy.HtlcMinimumMsat,
                 HtlcMaximumMsat = policy.HtlcMaximumMsat,
                 FeeBaseMsat = policy.FeeBaseMsat,
-                FeeProportionalMillionths = policy.FeeProportionalMillionths
+                FeeProportionalMillionths = policy.FeeProportionalMillionths,
+                GossipVersion = policy.GossipVersion,
+                InboundFeeBaseMsat = policy.InboundFeeBaseMsat,
+                InboundFeeProportionalMillionths = policy.InboundFeeProportionalMillionths
             };
 }
 
@@ -68,11 +71,20 @@ public sealed class GraphChannelIpcInfo
     /// <summary>The announced feature bits, hex in wire order.</summary>
     [Key(6)] public required string Features { get; init; }
 
-    /// <summary>The policy of direction 0 (node 1 forwarding towards node 2), when known.</summary>
+    /// <summary>
+    /// The routing policy of direction 0 (node 1 forwarding towards node 2), when known: its <c>channel_update_2</c>
+    /// when there is one (NL-878, <see cref="GraphPolicyIpcInfo.GossipVersion"/>), else its <c>channel_update</c>.
+    /// </summary>
     [Key(7)] public GraphPolicyIpcInfo? Policy1 { get; init; }
 
-    /// <summary>The policy of direction 1 (node 2 forwarding towards node 1), when known.</summary>
+    /// <summary>The routing policy of direction 1 (node 2 forwarding towards node 1), when known.</summary>
     [Key(8)] public GraphPolicyIpcInfo? Policy2 { get; init; }
+
+    /// <summary>
+    /// The gossip protocols the channel was announced with (NL-878): 1 <c>channel_announcement</c>, 2
+    /// <c>channel_announcement_2</c>, 3 both; 0 from an older node.
+    /// </summary>
+    [Key(9)] public byte GossipVersions { get; init; }
 
     /// <summary>The IPC form of a graph channel (also used by <c>describegraph</c>'s page).</summary>
     public static GraphChannelIpcInfo From(GraphChannel channel)
@@ -87,8 +99,9 @@ public sealed class GraphChannelIpcInfo
             Verification = channel.Verification.ToString(),
             SpentAtHeight = channel.SpentAtHeight,
             Features = Convert.ToHexStringLower(channel.Features.Span),
-            Policy1 = ListGraphChannelsIpcResponse.ToInfo(channel.Policy1),
-            Policy2 = ListGraphChannelsIpcResponse.ToInfo(channel.Policy2)
+            Policy1 = ListGraphChannelsIpcResponse.ToInfo(channel.GetRoutingPolicy(0)),
+            Policy2 = ListGraphChannelsIpcResponse.ToInfo(channel.GetRoutingPolicy(1)),
+            GossipVersions = (byte)channel.Versions
         };
     }
 }
@@ -105,6 +118,18 @@ public sealed class GraphPolicyIpcInfo
     [Key(5)] public ulong HtlcMaximumMsat { get; init; }
     [Key(6)] public uint FeeBaseMsat { get; init; }
     [Key(7)] public uint FeeProportionalMillionths { get; init; }
+
+    /// <summary>
+    /// 1 for a <c>channel_update</c>, 2 for a <c>channel_update_2</c> (whose <see cref="Timestamp"/> is a block
+    /// height, NL-878); 0 from an older node.
+    /// </summary>
+    [Key(8)] public byte GossipVersion { get; init; }
+
+    /// <summary>The <c>channel_update_2</c> inbound base fee (0 otherwise).</summary>
+    [Key(9)] public uint InboundFeeBaseMsat { get; init; }
+
+    /// <summary>The <c>channel_update_2</c> inbound proportional fee (0 otherwise).</summary>
+    [Key(10)] public uint InboundFeeProportionalMillionths { get; init; }
 
     /// <summary>The <c>disable</c> bit of <see cref="ChannelFlags"/>.</summary>
     [IgnoreMember] public bool IsDisabled => (ChannelFlags & ChannelUpdatePayload.ChannelFlagDisable) != 0;

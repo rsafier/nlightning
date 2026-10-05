@@ -3,8 +3,9 @@ namespace NLightning.Infrastructure.Persistence.Entities.Gossip;
 using Domain.Channels.ValueObjects;
 
 /// <summary>
-/// The latest BOLT 7 <c>channel_update</c> of one direction of a graph channel (migration <c>AddGossipGraph</c>, BOLT 7
-/// plan G2-T3). Keyed by (short channel id, direction); cascades from <see cref="GraphChannelEntity"/> without a
+/// The latest BOLT 7 <c>channel_update</c> (or taproot gossip <c>channel_update_2</c>) of one direction of a graph
+/// channel (migration <c>AddGossipGraph</c>, BOLT 7 plan G2-T3). Keyed by (short channel id, direction, version);
+/// cascades from <see cref="GraphChannelEntity"/> without a
 /// navigation.
 /// </summary>
 public class GraphChannelPolicyEntity
@@ -25,6 +26,18 @@ public class GraphChannelPolicyEntity
 
     /// <summary>The whole payload (signature included, message type excluded).</summary>
     public required byte[] RawUpdate { get; set; }
+
+    /// <summary>
+    /// 1 = <c>channel_update</c>, 2 = <c>channel_update_2</c> (its <see cref="Timestamp"/> a block height, its
+    /// <see cref="HtlcMaximumMsat"/> the resolved value); part of the key (migration <c>AddGossipV2</c>, NL-878).
+    /// </summary>
+    public byte Version { get; set; } = 1;
+
+    /// <summary>The <c>channel_update_2</c> inbound base fee (0 for v1).</summary>
+    public uint InboundFeeBaseMsat { get; set; }
+
+    /// <summary>The <c>channel_update_2</c> inbound proportional fee (0 for v1).</summary>
+    public uint InboundFeePpm { get; set; }
 
     internal GraphChannelPolicyEntity()
     {

@@ -33,7 +33,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 "NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelEntity",
                 typeof(GraphChannelEntity),
                 baseEntityType,
-                propertyCount: 12,
+                propertyCount: 14,
                 unnamedIndexCount: 3,
                 keyCount: 1);
 
@@ -101,30 +101,31 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
 
             var bitcoinKey1 = runtimeEntityType.AddProperty(
                 "BitcoinKey1",
-                typeof(CompactPubKey),
+                typeof(CompactPubKey?),
                 propertyInfo: typeof(GraphChannelEntity).GetProperty("BitcoinKey1", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(GraphChannelEntity).GetField("<BitcoinKey1>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true,
                 valueConverter: new CompactPubKeyConverter());
             bitcoinKey1.SetGetter(
-                CompactPubKey (GraphChannelEntity instance) => GraphChannelEntityUnsafeAccessors.BitcoinKey1(instance),
-                bool (GraphChannelEntity instance) => GraphChannelEntityUnsafeAccessors.BitcoinKey1(instance).Equals(default(CompactPubKey)));
+                CompactPubKey? (GraphChannelEntity instance) => GraphChannelEntityUnsafeAccessors.BitcoinKey1(instance),
+                bool (GraphChannelEntity instance) => !(GraphChannelEntityUnsafeAccessors.BitcoinKey1(instance).HasValue));
             bitcoinKey1.SetSetter(
-                GraphChannelEntity (GraphChannelEntity instance, CompactPubKey value) =>
+                GraphChannelEntity (GraphChannelEntity instance, CompactPubKey? value) =>
                 {
                     GraphChannelEntityUnsafeAccessors.BitcoinKey1(instance) = value;
                     return instance;
                 });
             bitcoinKey1.SetMaterializationSetter(
-                GraphChannelEntity (GraphChannelEntity instance, CompactPubKey value) =>
+                GraphChannelEntity (GraphChannelEntity instance, CompactPubKey? value) =>
                 {
                     GraphChannelEntityUnsafeAccessors.BitcoinKey1(instance) = value;
                     return instance;
                 });
             bitcoinKey1.SetAccessors(
-                CompactPubKey (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.BitcoinKey1(((GraphChannelEntity)(entry.Entity))),
-                CompactPubKey (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.BitcoinKey1(((GraphChannelEntity)(entry.Entity))),
-                CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(bitcoinKey1, 1),
-                CompactPubKey (IInternalEntry entry) => entry.GetCurrentValue<CompactPubKey>(bitcoinKey1));
+                CompactPubKey? (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.BitcoinKey1(((GraphChannelEntity)(entry.Entity))),
+                CompactPubKey? (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.BitcoinKey1(((GraphChannelEntity)(entry.Entity))),
+                CompactPubKey? (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey?>(bitcoinKey1, 1),
+                CompactPubKey? (IInternalEntry entry) => entry.GetCurrentValue<CompactPubKey?>(bitcoinKey1));
             bitcoinKey1.SetPropertyIndexes(
                 index: 1,
                 originalValueIndex: 1,
@@ -155,36 +156,38 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     new ValueConverter<CompactPubKey, byte[]>(
                         byte[] (CompactPubKey compactPubKey) => ((byte[])compactPubKey),
                         CompactPubKey (byte[] bytes) => new CompactPubKey(bytes))));
-            bitcoinKey1.SetSentinelFromProviderValue(null);
+            bitcoinKey1.SetComparer(new NullableValueComparer<CompactPubKey>(bitcoinKey1.TypeMapping.Comparer));
+            bitcoinKey1.SetKeyComparer(new NullableValueComparer<CompactPubKey>(bitcoinKey1.TypeMapping.KeyComparer));
             bitcoinKey1.AddAnnotation("Relational:ColumnType", "varbinary(33)");
             bitcoinKey1.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
             var bitcoinKey2 = runtimeEntityType.AddProperty(
                 "BitcoinKey2",
-                typeof(CompactPubKey),
+                typeof(CompactPubKey?),
                 propertyInfo: typeof(GraphChannelEntity).GetProperty("BitcoinKey2", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(GraphChannelEntity).GetField("<BitcoinKey2>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true,
                 valueConverter: new CompactPubKeyConverter());
             bitcoinKey2.SetGetter(
-                CompactPubKey (GraphChannelEntity instance) => GraphChannelEntityUnsafeAccessors.BitcoinKey2(instance),
-                bool (GraphChannelEntity instance) => GraphChannelEntityUnsafeAccessors.BitcoinKey2(instance).Equals(default(CompactPubKey)));
+                CompactPubKey? (GraphChannelEntity instance) => GraphChannelEntityUnsafeAccessors.BitcoinKey2(instance),
+                bool (GraphChannelEntity instance) => !(GraphChannelEntityUnsafeAccessors.BitcoinKey2(instance).HasValue));
             bitcoinKey2.SetSetter(
-                GraphChannelEntity (GraphChannelEntity instance, CompactPubKey value) =>
+                GraphChannelEntity (GraphChannelEntity instance, CompactPubKey? value) =>
                 {
                     GraphChannelEntityUnsafeAccessors.BitcoinKey2(instance) = value;
                     return instance;
                 });
             bitcoinKey2.SetMaterializationSetter(
-                GraphChannelEntity (GraphChannelEntity instance, CompactPubKey value) =>
+                GraphChannelEntity (GraphChannelEntity instance, CompactPubKey? value) =>
                 {
                     GraphChannelEntityUnsafeAccessors.BitcoinKey2(instance) = value;
                     return instance;
                 });
             bitcoinKey2.SetAccessors(
-                CompactPubKey (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.BitcoinKey2(((GraphChannelEntity)(entry.Entity))),
-                CompactPubKey (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.BitcoinKey2(((GraphChannelEntity)(entry.Entity))),
-                CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(bitcoinKey2, 2),
-                CompactPubKey (IInternalEntry entry) => entry.GetCurrentValue<CompactPubKey>(bitcoinKey2));
+                CompactPubKey? (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.BitcoinKey2(((GraphChannelEntity)(entry.Entity))),
+                CompactPubKey? (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.BitcoinKey2(((GraphChannelEntity)(entry.Entity))),
+                CompactPubKey? (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey?>(bitcoinKey2, 2),
+                CompactPubKey? (IInternalEntry entry) => entry.GetCurrentValue<CompactPubKey?>(bitcoinKey2));
             bitcoinKey2.SetPropertyIndexes(
                 index: 2,
                 originalValueIndex: 2,
@@ -215,7 +218,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     new ValueConverter<CompactPubKey, byte[]>(
                         byte[] (CompactPubKey compactPubKey) => ((byte[])compactPubKey),
                         CompactPubKey (byte[] bytes) => new CompactPubKey(bytes))));
-            bitcoinKey2.SetSentinelFromProviderValue(null);
+            bitcoinKey2.SetComparer(new NullableValueComparer<CompactPubKey>(bitcoinKey2.TypeMapping.Comparer));
+            bitcoinKey2.SetKeyComparer(new NullableValueComparer<CompactPubKey>(bitcoinKey2.TypeMapping.KeyComparer));
             bitcoinKey2.AddAnnotation("Relational:ColumnType", "varbinary(33)");
             bitcoinKey2.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
@@ -379,6 +383,53 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             fundingTxId.AddAnnotation("Relational:ColumnType", "varbinary(32)");
             fundingTxId.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
+            var gossipVersions = runtimeEntityType.AddProperty(
+                "GossipVersions",
+                typeof(byte),
+                propertyInfo: typeof(GraphChannelEntity).GetProperty("GossipVersions", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(GraphChannelEntity).GetField("<GossipVersions>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                sentinel: (byte)0);
+            gossipVersions.SetGetter(
+                byte (GraphChannelEntity instance) => GraphChannelEntityUnsafeAccessors.GossipVersions(instance),
+                bool (GraphChannelEntity instance) => GraphChannelEntityUnsafeAccessors.GossipVersions(instance) == 0);
+            gossipVersions.SetSetter(
+                GraphChannelEntity (GraphChannelEntity instance, byte value) =>
+                {
+                    GraphChannelEntityUnsafeAccessors.GossipVersions(instance) = value;
+                    return instance;
+                });
+            gossipVersions.SetMaterializationSetter(
+                GraphChannelEntity (GraphChannelEntity instance, byte value) =>
+                {
+                    GraphChannelEntityUnsafeAccessors.GossipVersions(instance) = value;
+                    return instance;
+                });
+            gossipVersions.SetAccessors(
+                byte (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.GossipVersions(((GraphChannelEntity)(entry.Entity))),
+                byte (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.GossipVersions(((GraphChannelEntity)(entry.Entity))),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(gossipVersions, 6),
+                byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(gossipVersions));
+            gossipVersions.SetPropertyIndexes(
+                index: 6,
+                originalValueIndex: 6,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            gossipVersions.TypeMapping = SqlServerByteTypeMapping.Default.Clone(
+                comparer: new ValueComparer<byte>(
+                    bool (byte v1, byte v2) => v1 == v2,
+                    int (byte v) => ((int)v),
+                    byte (byte v) => v),
+                keyComparer: new ValueComparer<byte>(
+                    bool (byte v1, byte v2) => v1 == v2,
+                    int (byte v) => ((int)v),
+                    byte (byte v) => v),
+                providerValueComparer: new ValueComparer<byte>(
+                    bool (byte v1, byte v2) => v1 == v2,
+                    int (byte v) => ((int)v),
+                    byte (byte v) => v));
+            gossipVersions.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
+
             var nodeId1 = runtimeEntityType.AddProperty(
                 "NodeId1",
                 typeof(CompactPubKey),
@@ -403,11 +454,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             nodeId1.SetAccessors(
                 CompactPubKey (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.NodeId1(((GraphChannelEntity)(entry.Entity))),
                 CompactPubKey (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.NodeId1(((GraphChannelEntity)(entry.Entity))),
-                CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(nodeId1, 6),
+                CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(nodeId1, 7),
                 CompactPubKey (IInternalEntry entry) => entry.GetCurrentValue<CompactPubKey>(nodeId1));
             nodeId1.SetPropertyIndexes(
-                index: 6,
-                originalValueIndex: 6,
+                index: 7,
+                originalValueIndex: 7,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -463,11 +514,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             nodeId2.SetAccessors(
                 CompactPubKey (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.NodeId2(((GraphChannelEntity)(entry.Entity))),
                 CompactPubKey (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.NodeId2(((GraphChannelEntity)(entry.Entity))),
-                CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(nodeId2, 7),
+                CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(nodeId2, 8),
                 CompactPubKey (IInternalEntry entry) => entry.GetCurrentValue<CompactPubKey>(nodeId2));
             nodeId2.SetPropertyIndexes(
-                index: 7,
-                originalValueIndex: 7,
+                index: 8,
+                originalValueIndex: 8,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -522,11 +573,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             rawAnnouncement.SetAccessors(
                 byte[] (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.RawAnnouncement(((GraphChannelEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.RawAnnouncement(((GraphChannelEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(rawAnnouncement, 8),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(rawAnnouncement, 9),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(rawAnnouncement));
             rawAnnouncement.SetPropertyIndexes(
-                index: 8,
-                originalValueIndex: 8,
+                index: 9,
+                originalValueIndex: 9,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -549,6 +600,58 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 storeTypePostfix: StoreTypePostfix.None);
             rawAnnouncement.AddAnnotation("Relational:ColumnType", "varbinary(max)");
             rawAnnouncement.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
+
+            var rawAnnouncement2 = runtimeEntityType.AddProperty(
+                "RawAnnouncement2",
+                typeof(byte[]),
+                propertyInfo: typeof(GraphChannelEntity).GetProperty("RawAnnouncement2", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(GraphChannelEntity).GetField("<RawAnnouncement2>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            rawAnnouncement2.SetGetter(
+                byte[] (GraphChannelEntity instance) => GraphChannelEntityUnsafeAccessors.RawAnnouncement2(instance),
+                bool (GraphChannelEntity instance) => GraphChannelEntityUnsafeAccessors.RawAnnouncement2(instance) == null);
+            rawAnnouncement2.SetSetter(
+                GraphChannelEntity (GraphChannelEntity instance, byte[] value) =>
+                {
+                    GraphChannelEntityUnsafeAccessors.RawAnnouncement2(instance) = value;
+                    return instance;
+                });
+            rawAnnouncement2.SetMaterializationSetter(
+                GraphChannelEntity (GraphChannelEntity instance, byte[] value) =>
+                {
+                    GraphChannelEntityUnsafeAccessors.RawAnnouncement2(instance) = value;
+                    return instance;
+                });
+            rawAnnouncement2.SetAccessors(
+                byte[] (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.RawAnnouncement2(((GraphChannelEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.RawAnnouncement2(((GraphChannelEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(rawAnnouncement2, 10),
+                byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(rawAnnouncement2));
+            rawAnnouncement2.SetPropertyIndexes(
+                index: 10,
+                originalValueIndex: 10,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            rawAnnouncement2.TypeMapping = SqlServerByteArrayTypeMapping.Default.Clone(
+                comparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => ((object)v).GetHashCode(),
+                    byte[] (byte[] v) => v),
+                keyComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()),
+                providerValueComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()),
+                mappingInfo: new RelationalTypeMappingInfo(
+                    storeTypeName: "varbinary(max)",
+                    size: -1),
+                storeTypePostfix: StoreTypePostfix.None);
+            rawAnnouncement2.AddAnnotation("Relational:ColumnType", "varbinary(max)");
+            rawAnnouncement2.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
             var receivedAt = runtimeEntityType.AddProperty(
                 "ReceivedAt",
@@ -574,11 +677,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             receivedAt.SetAccessors(
                 DateTimeOffset (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.ReceivedAt(((GraphChannelEntity)(entry.Entity))),
                 DateTimeOffset (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.ReceivedAt(((GraphChannelEntity)(entry.Entity))),
-                DateTimeOffset (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset>(receivedAt, 9),
+                DateTimeOffset (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset>(receivedAt, 11),
                 DateTimeOffset (IInternalEntry entry) => entry.GetCurrentValue<DateTimeOffset>(receivedAt));
             receivedAt.SetPropertyIndexes(
-                index: 9,
-                originalValueIndex: 9,
+                index: 11,
+                originalValueIndex: 11,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -630,11 +733,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             spentAtHeight.SetAccessors(
                 uint? (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.SpentAtHeight(((GraphChannelEntity)(entry.Entity))),
                 uint? (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.SpentAtHeight(((GraphChannelEntity)(entry.Entity))),
-                uint? (IInternalEntry entry) => entry.ReadOriginalValue<uint?>(spentAtHeight, 10),
+                uint? (IInternalEntry entry) => entry.ReadOriginalValue<uint?>(spentAtHeight, 12),
                 uint? (IInternalEntry entry) => entry.GetCurrentValue<uint?>(spentAtHeight));
             spentAtHeight.SetPropertyIndexes(
-                index: 10,
-                originalValueIndex: 10,
+                index: 12,
+                originalValueIndex: 12,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -687,11 +790,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             verification.SetAccessors(
                 byte (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.Verification(((GraphChannelEntity)(entry.Entity))),
                 byte (IInternalEntry entry) => GraphChannelEntityUnsafeAccessors.Verification(((GraphChannelEntity)(entry.Entity))),
-                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(verification, 11),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(verification, 13),
                 byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(verification));
             verification.SetPropertyIndexes(
-                index: 11,
-                originalValueIndex: 11,
+                index: 13,
+                originalValueIndex: 13,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -734,9 +837,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             var capacitySat = runtimeEntityType.FindProperty("CapacitySat");
             var features = runtimeEntityType.FindProperty("Features");
             var fundingTxId = runtimeEntityType.FindProperty("FundingTxId");
+            var gossipVersions = runtimeEntityType.FindProperty("GossipVersions");
             var nodeId1 = runtimeEntityType.FindProperty("NodeId1");
             var nodeId2 = runtimeEntityType.FindProperty("NodeId2");
             var rawAnnouncement = runtimeEntityType.FindProperty("RawAnnouncement");
+            var rawAnnouncement2 = runtimeEntityType.FindProperty("RawAnnouncement2");
             var receivedAt = runtimeEntityType.FindProperty("ReceivedAt");
             var spentAtHeight = runtimeEntityType.FindProperty("SpentAtHeight");
             var verification = runtimeEntityType.FindProperty("Verification");
@@ -747,7 +852,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType1 = ((GraphChannelEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<ShortChannelId, CompactPubKey, CompactPubKey, long, byte[], TxId?, CompactPubKey, CompactPubKey, byte[], DateTimeOffset, uint?, byte>(((ValueComparer<ShortChannelId>)(((IProperty)shortChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId>(shortChannelId)), ((ValueComparer<CompactPubKey>)(((IProperty)bitcoinKey1).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(bitcoinKey1)), ((ValueComparer<CompactPubKey>)(((IProperty)bitcoinKey2).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(bitcoinKey2)), ((ValueComparer<long>)(((IProperty)capacitySat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(capacitySat)), (source.GetCurrentValue<byte[]>(features) == null ? null : ((ValueComparer<byte[]>)(((IProperty)features).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(features))), (source.GetCurrentValue<TxId?>(fundingTxId) == null ? null : ((ValueComparer<TxId?>)(((IProperty)fundingTxId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId?>(fundingTxId))), ((ValueComparer<CompactPubKey>)(((IProperty)nodeId1).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(nodeId1)), ((ValueComparer<CompactPubKey>)(((IProperty)nodeId2).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(nodeId2)), (source.GetCurrentValue<byte[]>(rawAnnouncement) == null ? null : ((ValueComparer<byte[]>)(((IProperty)rawAnnouncement).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(rawAnnouncement))), ((ValueComparer<DateTimeOffset>)(((IProperty)receivedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(receivedAt)), (source.GetCurrentValue<uint?>(spentAtHeight) == null ? null : ((ValueComparer<uint?>)(((IProperty)spentAtHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(spentAtHeight))), ((ValueComparer<byte>)(((IProperty)verification).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(verification)))));
+                    return ((ISnapshot)(new Snapshot<ShortChannelId, CompactPubKey?, CompactPubKey?, long, byte[], TxId?, byte, CompactPubKey, CompactPubKey, byte[], byte[], DateTimeOffset, uint?, byte>(((ValueComparer<ShortChannelId>)(((IProperty)shortChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId>(shortChannelId)), (source.GetCurrentValue<CompactPubKey?>(bitcoinKey1) == null ? null : ((ValueComparer<CompactPubKey?>)(((IProperty)bitcoinKey1).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey?>(bitcoinKey1))), (source.GetCurrentValue<CompactPubKey?>(bitcoinKey2) == null ? null : ((ValueComparer<CompactPubKey?>)(((IProperty)bitcoinKey2).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey?>(bitcoinKey2))), ((ValueComparer<long>)(((IProperty)capacitySat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(capacitySat)), (source.GetCurrentValue<byte[]>(features) == null ? null : ((ValueComparer<byte[]>)(((IProperty)features).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(features))), (source.GetCurrentValue<TxId?>(fundingTxId) == null ? null : ((ValueComparer<TxId?>)(((IProperty)fundingTxId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId?>(fundingTxId))), ((ValueComparer<byte>)(((IProperty)gossipVersions).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(gossipVersions)), ((ValueComparer<CompactPubKey>)(((IProperty)nodeId1).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(nodeId1)), ((ValueComparer<CompactPubKey>)(((IProperty)nodeId2).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(nodeId2)), (source.GetCurrentValue<byte[]>(rawAnnouncement) == null ? null : ((ValueComparer<byte[]>)(((IProperty)rawAnnouncement).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(rawAnnouncement))), (source.GetCurrentValue<byte[]>(rawAnnouncement2) == null ? null : ((ValueComparer<byte[]>)(((IProperty)rawAnnouncement2).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(rawAnnouncement2))), ((ValueComparer<DateTimeOffset>)(((IProperty)receivedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(receivedAt)), (source.GetCurrentValue<uint?>(spentAtHeight) == null ? null : ((ValueComparer<uint?>)(((IProperty)spentAtHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(spentAtHeight))), ((ValueComparer<byte>)(((IProperty)verification).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(verification)))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => Snapshot.Empty);
@@ -764,11 +869,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     return ((ISnapshot)(new Snapshot<ShortChannelId>(((ValueComparer<ShortChannelId>)(((IProperty)shortChannelId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId>(shortChannelId)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 12,
+                propertyCount: 14,
                 navigationCount: 0,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 12,
+                originalValueCount: 14,
                 shadowCount: 0,
                 relationshipCount: 1,
                 storeGeneratedCount: 0));

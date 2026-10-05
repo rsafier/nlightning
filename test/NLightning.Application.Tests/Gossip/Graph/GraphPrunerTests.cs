@@ -191,6 +191,31 @@ public class GraphPrunerTests
     }
 
     [Fact]
+    public async Task Given_StaleV1UpdatesAndARecentChannelUpdate2_When_Pruned_Then_TheChannelIsKeptUntilItsBlockHeightIsStale()
+    {
+        // Arrange (NL-878): alice-bob also has a channel_update_2 at block 280; its BOLT 7 updates are stale
+        var kit = await GraphStoreTests.CreateGraphAsync();
+        var pruner = CreatePruner(kit);
+        kit.Clock.Now = GraphTestKit.DefaultNow + kit.Options.DeleteStaleAfter + TimeSpan.FromHours(1);
+        Assert.True(kit.Store.TryAddAnnouncementVersion(s_ab, GraphGossipVersions.V2, new byte[] { 1 }, null, null));
+        Assert.True(kit.Store.TryApplyPolicy(s_ab, new GraphPolicy(280, 0, GraphTestKit.DirectionOf(s_alice, s_bob),
+                                                                   40, 1, 500_000_000, 1_000, 100)
+        {
+            GossipVersion = 2
+        }));
+        var staleBlocks = (uint)(kit.Options.DeleteStaleAfter.TotalMinutes / 10);
+
+        // Act
+        pruner.ApplyBlock(300, []);
+        var keptWhileRecent = kit.Store.TryGetChannel(s_ab, out _);
+        pruner.ApplyBlock(280 + staleBlocks + 1, []);
+
+        // Assert
+        Assert.True(keptWhileRecent);
+        Assert.False(kit.Store.TryGetChannel(s_ab, out _));
+    }
+
+    [Fact]
     public async Task Given_OurOwnStaleChannel_When_Pruned_Then_ItAndOurNodeStay()
     {
         // Arrange: we are alice

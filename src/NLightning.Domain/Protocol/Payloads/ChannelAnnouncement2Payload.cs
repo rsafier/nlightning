@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
 
 namespace NLightning.Domain.Protocol.Payloads;
 
@@ -186,4 +187,21 @@ public sealed class ChannelAnnouncement2Payload : IMessagePayload
     /// <exception cref="FormatException">The stream or a known record is malformed, or a required record is missing.</exception>
     public static ChannelAnnouncement2Payload Parse(ReadOnlySpan<byte> payload) =>
         new(PureTlvStream.Parse(payload, KnownTypes));
+
+    /// <summary>
+    /// Parses the payload, or returns false when it is malformed (stored bytes read back by the graph, NL-878).
+    /// </summary>
+    public static bool TryParse(ReadOnlySpan<byte> payload, [NotNullWhen(true)] out ChannelAnnouncement2Payload? result)
+    {
+        try
+        {
+            result = Parse(payload);
+            return true;
+        }
+        catch (FormatException)
+        {
+            result = null;
+            return false;
+        }
+    }
 }

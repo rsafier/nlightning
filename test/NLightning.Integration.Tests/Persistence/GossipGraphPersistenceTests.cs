@@ -45,4 +45,20 @@ public class GossipGraphPersistenceTests
             () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)), DatabaseType.Sqlite,
             TestContext.Current.CancellationToken);
     }
+
+    [Fact]
+    public async Task Given_GraphRowsFromBeforeAddGossipV2_When_Migrated_Then_TheyAreV1AndV2RowsRoundTrip()
+    {
+        // Arrange
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        var options = new DbContextOptionsBuilder<NLightningDbContext>()
+                     .UseSqlite(connection, x => x.MigrationsAssembly("NLightning.Infrastructure.Persistence.Sqlite"))
+                     .Options;
+
+        // Act & Assert
+        await GossipV2SchemaRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)), DatabaseType.Sqlite,
+            TestContext.Current.CancellationToken);
+    }
 }

@@ -386,7 +386,7 @@ public sealed class GraphPruner : IAsyncDisposable, IDisposable
             if (channel.SpentAtHeight is { } spentAt
              && height >= (ulong)spentAt + _options.SpentChannelRetentionBlocks)
                 reason = $"spent at block {spentAt}";
-            else if (!IsOurs(channel) && LastActivity(channel) is { } last && last + staleSeconds < nowSeconds)
+            else if (!IsOurs(channel) && IsStale(channel, height, nowSeconds, staleSeconds))
                 reason = "stale";
 
             if (reason is null || !_store.RemoveChannel(channel.ShortChannelId))
@@ -421,6 +421,35 @@ public sealed class GraphPruner : IAsyncDisposable, IDisposable
     private bool IsOurs(GraphChannel channel) =>
         channel.Verification == GraphChannelVerification.Own
      || (_ourNodeId is { } ours && (channel.NodeId1 == ours || channel.NodeId2 == ours));
+
+    /// <summary>
+    /// True when every protocol the channel was announced with is stale (NL-878): its BOLT 7 side by the newest
+    /// <c>channel_update</c> (else the announcement's arrival) against <see cref="GossipGraphOptions.DeleteStaleAfter"/>,
+    /// its taproot gossip side by the newest <c>channel_update_2</c>'s block height against as many blocks (one per ten
+    /// minutes; the arrival when it has none), so a channel kept alive by either protocol stays.
+    /// </summary>
+    private bool IsStale(GraphChannel channel, uint height, ulong nowSeconds, ulong staleSeconds)
+    {
+        var v1Stale = !channel.HasV1 || (LastActivity(channel) is { } last && last + staleSeconds < nowSeconds);
+        if (!v1Stale || !channel.HasV2)
+            return v1Stale;
+
+        uint? newest = (channel.Policy1V2, channel.Policy2V2) switch
+        {
+            (null, null) => null,
+            ({ } p1, null) => p1.Timestamp,
+            (null, { } p2) => p2.Timestamp,
+            ({ } p1, { } p2) => Math.Max(p1.Timestamp, p2.Timestamp)
+        };
+        if (newest is { } newestHeight)
+        {
+            var staleBlocks = Math.Max(1UL, (ulong)(_options.DeleteStaleAfter.TotalMinutes / 10));
+            return newestHeight + staleBlocks < height;
+        }
+
+        return _store.TryGetChannelReceivedAt(channel.ShortChannelId, out var receivedAt)
+            && (ulong)Math.Max(0, receivedAt.ToUnixTimeSeconds()) + staleSeconds < nowSeconds;
+    }
 
     /// <summary>The newest update of either direction, else when the announcement arrived (unix seconds).</summary>
     private ulong? LastActivity(GraphChannel channel)

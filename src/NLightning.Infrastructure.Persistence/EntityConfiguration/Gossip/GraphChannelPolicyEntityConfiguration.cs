@@ -14,7 +14,7 @@ public static class GraphChannelPolicyEntityConfiguration
     {
         modelBuilder.Entity<GraphChannelPolicyEntity>(entity =>
         {
-            entity.HasKey(e => new { e.ShortChannelId, e.Direction });
+            entity.HasKey(e => new { e.ShortChannelId, e.Direction, e.Version });
 
             entity.Property(e => e.ShortChannelId)
                   .HasConversion<ShortChannelIdConverter>()
@@ -29,6 +29,9 @@ public static class GraphChannelPolicyEntityConfiguration
             entity.Property(e => e.FeeBaseMsat).IsRequired();
             entity.Property(e => e.FeePpm).IsRequired();
             entity.Property(e => e.RawUpdate).IsRequired();
+            entity.Property(e => e.Version).IsRequired();
+            entity.Property(e => e.InboundFeeBaseMsat).IsRequired();
+            entity.Property(e => e.InboundFeePpm).IsRequired();
 
             // A policy never outlives its channel
             entity.HasOne<GraphChannelEntity>()

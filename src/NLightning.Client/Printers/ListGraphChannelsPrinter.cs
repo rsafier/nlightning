@@ -31,6 +31,8 @@ public sealed class ListGraphChannelsPrinter : IPrinter<ListGraphChannelsIpcResp
                                   ? capacity.ToString(CultureInfo.InvariantCulture)
                                   : "unknown");
             _output.WriteLine("  Verification:       {0}", channel.Verification);
+            if (channel.GossipVersions > 1)
+                _output.WriteLine("  Gossip:             {0}", ListNodesPrinter.FormatGossipVersions(channel.GossipVersions));
             if (channel.SpentAtHeight is { } spentAt)
                 _output.WriteLine("  Spent at block:     {0} (closed)", spentAt.ToString(CultureInfo.InvariantCulture));
             PrintPolicy("Policy 1 -> 2", channel.Policy1);
@@ -48,6 +50,14 @@ public sealed class ListGraphChannelsPrinter : IPrinter<ListGraphChannelsIpcResp
         if (policy is null)
         {
             _output.WriteLine("  {0}:      -", label);
+            return;
+        }
+
+        if (policy.GossipVersion == 2)
+        {
+            // A channel_update_2 (NL-878): its timestamp is a block height, and it may charge an inbound fee
+            _output.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                                            $"  {label}:      fee {policy.FeeBaseMsat} msat + {policy.FeeProportionalMillionths} ppm, inbound fee {policy.InboundFeeBaseMsat} msat + {policy.InboundFeeProportionalMillionths} ppm, cltv delta {policy.CltvExpiryDelta}, htlc {policy.HtlcMinimumMsat}-{policy.HtlcMaximumMsat} msat{(policy.IsDisabled ? ", DISABLED" : "")}, updated at block {policy.Timestamp} (v2)"));
             return;
         }
 

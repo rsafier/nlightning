@@ -24,6 +24,9 @@ internal sealed class InMemoryGraphDbRepository : IGraphDbRepository
     public Dictionary<CompactPubKey, GraphNodeRecord> Nodes { get; } = new();
     public Dictionary<ShortChannelId, GraphChannelRecord> Channels { get; } = new();
     public Dictionary<(ShortChannelId, byte), GraphPolicyRecord> Policies { get; } = new();
+
+    /// <summary>The <c>channel_update_2</c> rows (version 2, NL-878), keyed like <see cref="Policies"/>.</summary>
+    public Dictionary<(ShortChannelId, byte), GraphPolicyRecord> PoliciesV2 { get; } = new();
     public Dictionary<CompactPubKey, GraphBannedNodeRecord> Bans { get; } = new();
 
     public int Saves { get; private set; }
@@ -49,7 +52,7 @@ internal sealed class InMemoryGraphDbRepository : IGraphDbRepository
     public IAsyncEnumerable<GraphPolicyRecord> StreamPoliciesAsync(CancellationToken cancellationToken = default)
     {
         lock (_lock)
-            return StreamAsync("policies", Policies.Values.ToList(), cancellationToken);
+            return StreamAsync("policies", Policies.Values.Concat(PoliciesV2.Values).ToList(), cancellationToken);
     }
 
     public IAsyncEnumerable<GraphNodeRecord> StreamNodesAsync(CancellationToken cancellationToken = default)
@@ -161,6 +164,8 @@ internal sealed class InMemoryGraphDbRepository : IGraphDbRepository
                 Channels.Remove(shortChannelId);
                 Policies.Remove((shortChannelId, 0));
                 Policies.Remove((shortChannelId, 1));
+                PoliciesV2.Remove((shortChannelId, 0));
+                PoliciesV2.Remove((shortChannelId, 1));
             });
             return Task.FromResult(exists);
         }
@@ -170,13 +175,13 @@ internal sealed class InMemoryGraphDbRepository : IGraphDbRepository
     {
         lock (_lock)
             return Task.FromResult<IReadOnlyList<GraphPolicyRecord>>(
-                Policies.Values.Where(p => p.ShortChannelId == shortChannelId).ToList());
+                Policies.Values.Concat(PoliciesV2.Values).Where(p => p.ShortChannelId == shortChannelId).ToList());
     }
 
     public Task<IReadOnlyList<GraphPolicyRecord>> GetAllPoliciesAsync(CancellationToken cancellationToken = default)
     {
         lock (_lock)
-            return Task.FromResult<IReadOnlyList<GraphPolicyRecord>>(Policies.Values.ToList());
+            return Task.FromResult<IReadOnlyList<GraphPolicyRecord>>(Policies.Values.Concat(PoliciesV2.Values).ToList());
     }
 
     public Task UpsertPolicyAsync(GraphPolicyRecord policy) =>
@@ -185,7 +190,7 @@ internal sealed class InMemoryGraphDbRepository : IGraphDbRepository
             if (!Channels.ContainsKey(policy.ShortChannelId))
                 throw new InvalidOperationException("Foreign key: the policy's channel is not stored");
 
-            Policies[(policy.ShortChannelId, policy.Direction)] = policy;
+            (policy.Version == 2 ? PoliciesV2 : Policies)[(policy.ShortChannelId, policy.Direction)] = policy;
         });
 
     public Task<GraphBannedNodeRecord?> GetBanAsync(CompactPubKey nodeId)

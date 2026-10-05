@@ -30,6 +30,19 @@ public class GraphNodeEntity
     /// <summary>When it was received; UTC ticks (<c>UtcTicksConverter</c>).</summary>
     public required DateTimeOffset ReceivedAt { get; set; }
 
+    /// <summary>
+    /// 1 = <c>node_announcement</c>, 2 = <c>node_announcement_2</c>, 3 = both (migration <c>AddGossipV2</c>, NL-878).
+    /// Without a v1 announcement <see cref="Timestamp"/> is 0 and <see cref="RawAnnouncement"/> empty; the fields are the
+    /// v2 announcement's when there is one.
+    /// </summary>
+    public byte GossipVersions { get; set; } = 1;
+
+    /// <summary>The <c>node_announcement_2</c>'s block height, or null without one.</summary>
+    public uint? BlockHeight { get; set; }
+
+    /// <summary>The <c>node_announcement_2</c> payload, or null without one.</summary>
+    public byte[]? RawAnnouncement2 { get; set; }
+
     internal GraphNodeEntity()
     {
     }

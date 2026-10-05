@@ -9,9 +9,12 @@ namespace NLightning.Domain.Gossip.Graph;
 /// the other end's direction is <c>1 - LocalDirection</c>.</param>
 public readonly record struct GraphAdjacency(GraphChannel Channel, int NeighborIndex, byte LocalDirection)
 {
-    /// <summary>The policy of the edge from this end to the neighbor.</summary>
-    public GraphPolicy? OutgoingPolicy => Channel.GetPolicy(LocalDirection);
+    /// <summary>
+    /// The routing policy of the edge from this end to the neighbor (the <c>channel_update_2</c> when there is one,
+    /// NL-878: <see cref="GraphChannel.GetRoutingPolicy"/>).
+    /// </summary>
+    public GraphPolicy? OutgoingPolicy => Channel.GetRoutingPolicy(LocalDirection);
 
-    /// <summary>The policy of the edge from the neighbor to this end.</summary>
-    public GraphPolicy? IncomingPolicy => Channel.GetPolicy((byte)(1 - LocalDirection));
+    /// <summary>The routing policy of the edge from the neighbor to this end.</summary>
+    public GraphPolicy? IncomingPolicy => Channel.GetRoutingPolicy((byte)(1 - LocalDirection));
 }

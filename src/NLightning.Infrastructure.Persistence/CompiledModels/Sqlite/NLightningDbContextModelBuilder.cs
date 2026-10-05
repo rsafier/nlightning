@@ -16,7 +16,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
     public partial class NLightningDbContextModel
     {
         private NLightningDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("662d54ab-afd1-44b3-8e59-c02f6ca6272c"), entityTypeCount: 56)
+            : base(skipDetectChanges: false, modelId: new Guid("d8698aec-3aab-436c-a1ae-4ba455a062c5"), entityTypeCount: 56)
         {
         }
 
@@ -5057,9 +5057,15 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var defaultTableMappings34 = new List<TableMappingBase<ColumnMappingBase>>();
             graphChannelEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings34);
             var nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelEntity", null, relationalModel);
-            var bitcoinKey1ColumnBase = new ColumnBase<ColumnMappingBase>("BitcoinKey1", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
+            var bitcoinKey1ColumnBase = new ColumnBase<ColumnMappingBase>("BitcoinKey1", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase)
+            {
+                IsNullable = true
+            };
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("BitcoinKey1", bitcoinKey1ColumnBase);
-            var bitcoinKey2ColumnBase = new ColumnBase<ColumnMappingBase>("BitcoinKey2", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
+            var bitcoinKey2ColumnBase = new ColumnBase<ColumnMappingBase>("BitcoinKey2", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase)
+            {
+                IsNullable = true
+            };
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("BitcoinKey2", bitcoinKey2ColumnBase);
             var capacitySatColumnBase = new ColumnBase<ColumnMappingBase>("CapacitySat", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("CapacitySat", capacitySatColumnBase);
@@ -5070,12 +5076,19 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                 IsNullable = true
             };
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("FundingTxId", fundingTxIdColumnBase3);
+            var gossipVersionsColumnBase = new ColumnBase<ColumnMappingBase>("GossipVersions", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("GossipVersions", gossipVersionsColumnBase);
             var nodeId1ColumnBase = new ColumnBase<ColumnMappingBase>("NodeId1", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("NodeId1", nodeId1ColumnBase);
             var nodeId2ColumnBase = new ColumnBase<ColumnMappingBase>("NodeId2", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("NodeId2", nodeId2ColumnBase);
             var rawAnnouncementColumnBase = new ColumnBase<ColumnMappingBase>("RawAnnouncement", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("RawAnnouncement", rawAnnouncementColumnBase);
+            var rawAnnouncement2ColumnBase = new ColumnBase<ColumnMappingBase>("RawAnnouncement2", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("RawAnnouncement2", rawAnnouncement2ColumnBase);
             var receivedAtColumnBase = new ColumnBase<ColumnMappingBase>("ReceivedAt", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("ReceivedAt", receivedAtColumnBase);
             var shortChannelIdColumnBase2 = new ColumnBase<ColumnMappingBase>("ShortChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
@@ -5097,9 +5110,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)capacitySatColumnBase, graphChannelEntity.FindProperty("CapacitySat")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)featuresColumnBase, graphChannelEntity.FindProperty("Features")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)fundingTxIdColumnBase3, graphChannelEntity.FindProperty("FundingTxId")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)gossipVersionsColumnBase, graphChannelEntity.FindProperty("GossipVersions")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nodeId1ColumnBase, graphChannelEntity.FindProperty("NodeId1")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nodeId2ColumnBase, graphChannelEntity.FindProperty("NodeId2")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)rawAnnouncementColumnBase, graphChannelEntity.FindProperty("RawAnnouncement")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)rawAnnouncement2ColumnBase, graphChannelEntity.FindProperty("RawAnnouncement2")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)receivedAtColumnBase, graphChannelEntity.FindProperty("ReceivedAt")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)spentAtHeightColumnBase0, graphChannelEntity.FindProperty("SpentAtHeight")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)verificationColumnBase, graphChannelEntity.FindProperty("Verification")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
@@ -5110,10 +5125,16 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var shortChannelIdColumn2 = new Column("ShortChannelId", "BLOB", graphChannelsTable);
             graphChannelsTable.Columns.Add("ShortChannelId", shortChannelIdColumn2);
             shortChannelIdColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(shortChannelIdColumn2);
-            var bitcoinKey1Column = new Column("BitcoinKey1", "BLOB", graphChannelsTable);
+            var bitcoinKey1Column = new Column("BitcoinKey1", "BLOB", graphChannelsTable)
+            {
+                IsNullable = true
+            };
             graphChannelsTable.Columns.Add("BitcoinKey1", bitcoinKey1Column);
             bitcoinKey1Column.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(bitcoinKey1Column);
-            var bitcoinKey2Column = new Column("BitcoinKey2", "BLOB", graphChannelsTable);
+            var bitcoinKey2Column = new Column("BitcoinKey2", "BLOB", graphChannelsTable)
+            {
+                IsNullable = true
+            };
             graphChannelsTable.Columns.Add("BitcoinKey2", bitcoinKey2Column);
             bitcoinKey2Column.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(bitcoinKey2Column);
             var capacitySatColumn = new Column("CapacitySat", "INTEGER", graphChannelsTable);
@@ -5128,6 +5149,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             };
             graphChannelsTable.Columns.Add("FundingTxId", fundingTxIdColumn3);
             fundingTxIdColumn3.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(fundingTxIdColumn3);
+            var gossipVersionsColumn = new Column("GossipVersions", "INTEGER", graphChannelsTable);
+            graphChannelsTable.Columns.Add("GossipVersions", gossipVersionsColumn);
+            gossipVersionsColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(gossipVersionsColumn);
             var nodeId1Column = new Column("NodeId1", "BLOB", graphChannelsTable);
             graphChannelsTable.Columns.Add("NodeId1", nodeId1Column);
             nodeId1Column.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(nodeId1Column);
@@ -5137,6 +5161,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var rawAnnouncementColumn = new Column("RawAnnouncement", "BLOB", graphChannelsTable);
             graphChannelsTable.Columns.Add("RawAnnouncement", rawAnnouncementColumn);
             rawAnnouncementColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(rawAnnouncementColumn);
+            var rawAnnouncement2Column = new Column("RawAnnouncement2", "BLOB", graphChannelsTable)
+            {
+                IsNullable = true
+            };
+            graphChannelsTable.Columns.Add("RawAnnouncement2", rawAnnouncement2Column);
+            rawAnnouncement2Column.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(rawAnnouncement2Column);
             var receivedAtColumn = new Column("ReceivedAt", "INTEGER", graphChannelsTable);
             graphChannelsTable.Columns.Add("ReceivedAt", receivedAtColumn);
             receivedAtColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(receivedAtColumn);
@@ -5159,9 +5189,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping(capacitySatColumn, graphChannelEntity.FindProperty("CapacitySat")!, graphChannelsTableMapping);
             RelationalModel.CreateColumnMapping(featuresColumn, graphChannelEntity.FindProperty("Features")!, graphChannelsTableMapping);
             RelationalModel.CreateColumnMapping(fundingTxIdColumn3, graphChannelEntity.FindProperty("FundingTxId")!, graphChannelsTableMapping);
+            RelationalModel.CreateColumnMapping(gossipVersionsColumn, graphChannelEntity.FindProperty("GossipVersions")!, graphChannelsTableMapping);
             RelationalModel.CreateColumnMapping(nodeId1Column, graphChannelEntity.FindProperty("NodeId1")!, graphChannelsTableMapping);
             RelationalModel.CreateColumnMapping(nodeId2Column, graphChannelEntity.FindProperty("NodeId2")!, graphChannelsTableMapping);
             RelationalModel.CreateColumnMapping(rawAnnouncementColumn, graphChannelEntity.FindProperty("RawAnnouncement")!, graphChannelsTableMapping);
+            RelationalModel.CreateColumnMapping(rawAnnouncement2Column, graphChannelEntity.FindProperty("RawAnnouncement2")!, graphChannelsTableMapping);
             RelationalModel.CreateColumnMapping(receivedAtColumn, graphChannelEntity.FindProperty("ReceivedAt")!, graphChannelsTableMapping);
             RelationalModel.CreateColumnMapping(spentAtHeightColumn0, graphChannelEntity.FindProperty("SpentAtHeight")!, graphChannelsTableMapping);
             RelationalModel.CreateColumnMapping(verificationColumn, graphChannelEntity.FindProperty("Verification")!, graphChannelsTableMapping);
@@ -5221,6 +5253,10 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("HtlcMaximumMsat", htlcMaximumMsatColumnBase0);
             var htlcMinimumMsatColumnBase0 = new ColumnBase<ColumnMappingBase>("HtlcMinimumMsat", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("HtlcMinimumMsat", htlcMinimumMsatColumnBase0);
+            var inboundFeeBaseMsatColumnBase = new ColumnBase<ColumnMappingBase>("InboundFeeBaseMsat", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("InboundFeeBaseMsat", inboundFeeBaseMsatColumnBase);
+            var inboundFeePpmColumnBase = new ColumnBase<ColumnMappingBase>("InboundFeePpm", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("InboundFeePpm", inboundFeePpmColumnBase);
             var messageFlagsColumnBase = new ColumnBase<ColumnMappingBase>("MessageFlags", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("MessageFlags", messageFlagsColumnBase);
             var rawUpdateColumnBase = new ColumnBase<ColumnMappingBase>("RawUpdate", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
@@ -5229,18 +5265,23 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("ShortChannelId", shortChannelIdColumnBase3);
             var timestampColumnBase = new ColumnBase<ColumnMappingBase>("Timestamp", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("Timestamp", timestampColumnBase);
+            var versionColumnBase0 = new ColumnBase<ColumnMappingBase>("Version", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("Version", versionColumnBase0);
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelPolicyEntity", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase = new TableMappingBase<ColumnMappingBase>(graphChannelPolicyEntity, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase, false);
             defaultTableMappings35.Add(nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)directionColumnBase1, graphChannelPolicyEntity.FindProperty("Direction")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)shortChannelIdColumnBase3, graphChannelPolicyEntity.FindProperty("ShortChannelId")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)versionColumnBase0, graphChannelPolicyEntity.FindProperty("Version")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelFlagsColumnBase, graphChannelPolicyEntity.FindProperty("ChannelFlags")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)cltvExpiryDeltaColumnBase0, graphChannelPolicyEntity.FindProperty("CltvExpiryDelta")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)feeBaseMsatColumnBase0, graphChannelPolicyEntity.FindProperty("FeeBaseMsat")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)feePpmColumnBase, graphChannelPolicyEntity.FindProperty("FeePpm")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)htlcMaximumMsatColumnBase0, graphChannelPolicyEntity.FindProperty("HtlcMaximumMsat")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)htlcMinimumMsatColumnBase0, graphChannelPolicyEntity.FindProperty("HtlcMinimumMsat")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)inboundFeeBaseMsatColumnBase, graphChannelPolicyEntity.FindProperty("InboundFeeBaseMsat")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)inboundFeePpmColumnBase, graphChannelPolicyEntity.FindProperty("InboundFeePpm")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)messageFlagsColumnBase, graphChannelPolicyEntity.FindProperty("MessageFlags")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)rawUpdateColumnBase, graphChannelPolicyEntity.FindProperty("RawUpdate")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)timestampColumnBase, graphChannelPolicyEntity.FindProperty("Timestamp")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
@@ -5254,6 +5295,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var directionColumn1 = new Column("Direction", "INTEGER", graphChannelPoliciesTable);
             graphChannelPoliciesTable.Columns.Add("Direction", directionColumn1);
             directionColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(directionColumn1);
+            var versionColumn0 = new Column("Version", "INTEGER", graphChannelPoliciesTable);
+            graphChannelPoliciesTable.Columns.Add("Version", versionColumn0);
+            versionColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(versionColumn0);
             var channelFlagsColumn = new Column("ChannelFlags", "INTEGER", graphChannelPoliciesTable);
             graphChannelPoliciesTable.Columns.Add("ChannelFlags", channelFlagsColumn);
             channelFlagsColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(channelFlagsColumn);
@@ -5272,6 +5316,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var htlcMinimumMsatColumn0 = new Column("HtlcMinimumMsat", "INTEGER", graphChannelPoliciesTable);
             graphChannelPoliciesTable.Columns.Add("HtlcMinimumMsat", htlcMinimumMsatColumn0);
             htlcMinimumMsatColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<ulong>(htlcMinimumMsatColumn0);
+            var inboundFeeBaseMsatColumn = new Column("InboundFeeBaseMsat", "INTEGER", graphChannelPoliciesTable);
+            graphChannelPoliciesTable.Columns.Add("InboundFeeBaseMsat", inboundFeeBaseMsatColumn);
+            inboundFeeBaseMsatColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(inboundFeeBaseMsatColumn);
+            var inboundFeePpmColumn = new Column("InboundFeePpm", "INTEGER", graphChannelPoliciesTable);
+            graphChannelPoliciesTable.Columns.Add("InboundFeePpm", inboundFeePpmColumn);
+            inboundFeePpmColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(inboundFeePpmColumn);
             var messageFlagsColumn = new Column("MessageFlags", "INTEGER", graphChannelPoliciesTable);
             graphChannelPoliciesTable.Columns.Add("MessageFlags", messageFlagsColumn);
             messageFlagsColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(messageFlagsColumn);
@@ -5287,21 +5337,24 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             tableMappings35.Add(graphChannelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(directionColumn1, graphChannelPolicyEntity.FindProperty("Direction")!, graphChannelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(shortChannelIdColumn3, graphChannelPolicyEntity.FindProperty("ShortChannelId")!, graphChannelPoliciesTableMapping);
+            RelationalModel.CreateColumnMapping(versionColumn0, graphChannelPolicyEntity.FindProperty("Version")!, graphChannelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(channelFlagsColumn, graphChannelPolicyEntity.FindProperty("ChannelFlags")!, graphChannelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(cltvExpiryDeltaColumn0, graphChannelPolicyEntity.FindProperty("CltvExpiryDelta")!, graphChannelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(feeBaseMsatColumn0, graphChannelPolicyEntity.FindProperty("FeeBaseMsat")!, graphChannelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(feePpmColumn, graphChannelPolicyEntity.FindProperty("FeePpm")!, graphChannelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(htlcMaximumMsatColumn0, graphChannelPolicyEntity.FindProperty("HtlcMaximumMsat")!, graphChannelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(htlcMinimumMsatColumn0, graphChannelPolicyEntity.FindProperty("HtlcMinimumMsat")!, graphChannelPoliciesTableMapping);
+            RelationalModel.CreateColumnMapping(inboundFeeBaseMsatColumn, graphChannelPolicyEntity.FindProperty("InboundFeeBaseMsat")!, graphChannelPoliciesTableMapping);
+            RelationalModel.CreateColumnMapping(inboundFeePpmColumn, graphChannelPolicyEntity.FindProperty("InboundFeePpm")!, graphChannelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(messageFlagsColumn, graphChannelPolicyEntity.FindProperty("MessageFlags")!, graphChannelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(rawUpdateColumn, graphChannelPolicyEntity.FindProperty("RawUpdate")!, graphChannelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(timestampColumn, graphChannelPolicyEntity.FindProperty("Timestamp")!, graphChannelPoliciesTableMapping);
-            var pK_GraphChannelPolicies = new UniqueConstraint("PK_GraphChannelPolicies", graphChannelPoliciesTable, new[] { shortChannelIdColumn3, directionColumn1 });
+            var pK_GraphChannelPolicies = new UniqueConstraint("PK_GraphChannelPolicies", graphChannelPoliciesTable, new[] { shortChannelIdColumn3, directionColumn1, versionColumn0 });
             graphChannelPoliciesTable.PrimaryKey = pK_GraphChannelPolicies;
             pK_GraphChannelPolicies.SetRowKeyValueFactory(new CompositeRowKeyValueFactory(pK_GraphChannelPolicies));
             var pK_GraphChannelPoliciesKey = RelationalModel.GetKey(this,
                 "NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelPolicyEntity",
-                new[] { "ShortChannelId", "Direction" });
+                new[] { "ShortChannelId", "Direction", "Version" });
             pK_GraphChannelPolicies.MappedKeys.Add(pK_GraphChannelPoliciesKey);
             RelationalModel.GetOrCreateUniqueConstraints(pK_GraphChannelPoliciesKey).Add(pK_GraphChannelPolicies);
             graphChannelPoliciesTable.UniqueConstraints.Add("PK_GraphChannelPolicies", pK_GraphChannelPolicies);
@@ -5315,14 +5368,26 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("Addresses", addressesColumnBase);
             var aliasColumnBase0 = new ColumnBase<ColumnMappingBase>("Alias", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("Alias", aliasColumnBase0);
+            var blockHeightColumnBase2 = new ColumnBase<ColumnMappingBase>("BlockHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("BlockHeight", blockHeightColumnBase2);
             var colorColumnBase = new ColumnBase<ColumnMappingBase>("Color", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("Color", colorColumnBase);
             var featuresColumnBase0 = new ColumnBase<ColumnMappingBase>("Features", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("Features", featuresColumnBase0);
+            var gossipVersionsColumnBase0 = new ColumnBase<ColumnMappingBase>("GossipVersions", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("GossipVersions", gossipVersionsColumnBase0);
             var nodeIdColumnBase0 = new ColumnBase<ColumnMappingBase>("NodeId", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("NodeId", nodeIdColumnBase0);
             var rawAnnouncementColumnBase0 = new ColumnBase<ColumnMappingBase>("RawAnnouncement", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("RawAnnouncement", rawAnnouncementColumnBase0);
+            var rawAnnouncement2ColumnBase0 = new ColumnBase<ColumnMappingBase>("RawAnnouncement2", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("RawAnnouncement2", rawAnnouncement2ColumnBase0);
             var receivedAtColumnBase0 = new ColumnBase<ColumnMappingBase>("ReceivedAt", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("ReceivedAt", receivedAtColumnBase0);
             var timestampColumnBase0 = new ColumnBase<ColumnMappingBase>("Timestamp", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
@@ -5334,9 +5399,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nodeIdColumnBase0, graphNodeEntity.FindProperty("NodeId")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)addressesColumnBase, graphNodeEntity.FindProperty("Addresses")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)aliasColumnBase0, graphNodeEntity.FindProperty("Alias")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blockHeightColumnBase2, graphNodeEntity.FindProperty("BlockHeight")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)colorColumnBase, graphNodeEntity.FindProperty("Color")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)featuresColumnBase0, graphNodeEntity.FindProperty("Features")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)gossipVersionsColumnBase0, graphNodeEntity.FindProperty("GossipVersions")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)rawAnnouncementColumnBase0, graphNodeEntity.FindProperty("RawAnnouncement")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)rawAnnouncement2ColumnBase0, graphNodeEntity.FindProperty("RawAnnouncement2")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)receivedAtColumnBase0, graphNodeEntity.FindProperty("ReceivedAt")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)timestampColumnBase0, graphNodeEntity.FindProperty("Timestamp")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
 
@@ -5352,15 +5420,30 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var aliasColumn0 = new Column("Alias", "BLOB", graphNodesTable);
             graphNodesTable.Columns.Add("Alias", aliasColumn0);
             aliasColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(aliasColumn0);
+            var blockHeightColumn2 = new Column("BlockHeight", "INTEGER", graphNodesTable)
+            {
+                IsNullable = true
+            };
+            graphNodesTable.Columns.Add("BlockHeight", blockHeightColumn2);
+            blockHeightColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(blockHeightColumn2);
             var colorColumn = new Column("Color", "BLOB", graphNodesTable);
             graphNodesTable.Columns.Add("Color", colorColumn);
             colorColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(colorColumn);
             var featuresColumn0 = new Column("Features", "BLOB", graphNodesTable);
             graphNodesTable.Columns.Add("Features", featuresColumn0);
             featuresColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(featuresColumn0);
+            var gossipVersionsColumn0 = new Column("GossipVersions", "INTEGER", graphNodesTable);
+            graphNodesTable.Columns.Add("GossipVersions", gossipVersionsColumn0);
+            gossipVersionsColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(gossipVersionsColumn0);
             var rawAnnouncementColumn0 = new Column("RawAnnouncement", "BLOB", graphNodesTable);
             graphNodesTable.Columns.Add("RawAnnouncement", rawAnnouncementColumn0);
             rawAnnouncementColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(rawAnnouncementColumn0);
+            var rawAnnouncement2Column0 = new Column("RawAnnouncement2", "BLOB", graphNodesTable)
+            {
+                IsNullable = true
+            };
+            graphNodesTable.Columns.Add("RawAnnouncement2", rawAnnouncement2Column0);
+            rawAnnouncement2Column0.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(rawAnnouncement2Column0);
             var receivedAtColumn0 = new Column("ReceivedAt", "INTEGER", graphNodesTable);
             graphNodesTable.Columns.Add("ReceivedAt", receivedAtColumn0);
             receivedAtColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(receivedAtColumn0);
@@ -5374,9 +5457,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping(nodeIdColumn0, graphNodeEntity.FindProperty("NodeId")!, graphNodesTableMapping);
             RelationalModel.CreateColumnMapping(addressesColumn, graphNodeEntity.FindProperty("Addresses")!, graphNodesTableMapping);
             RelationalModel.CreateColumnMapping(aliasColumn0, graphNodeEntity.FindProperty("Alias")!, graphNodesTableMapping);
+            RelationalModel.CreateColumnMapping(blockHeightColumn2, graphNodeEntity.FindProperty("BlockHeight")!, graphNodesTableMapping);
             RelationalModel.CreateColumnMapping(colorColumn, graphNodeEntity.FindProperty("Color")!, graphNodesTableMapping);
             RelationalModel.CreateColumnMapping(featuresColumn0, graphNodeEntity.FindProperty("Features")!, graphNodesTableMapping);
+            RelationalModel.CreateColumnMapping(gossipVersionsColumn0, graphNodeEntity.FindProperty("GossipVersions")!, graphNodesTableMapping);
             RelationalModel.CreateColumnMapping(rawAnnouncementColumn0, graphNodeEntity.FindProperty("RawAnnouncement")!, graphNodesTableMapping);
+            RelationalModel.CreateColumnMapping(rawAnnouncement2Column0, graphNodeEntity.FindProperty("RawAnnouncement2")!, graphNodesTableMapping);
             RelationalModel.CreateColumnMapping(receivedAtColumn0, graphNodeEntity.FindProperty("ReceivedAt")!, graphNodesTableMapping);
             RelationalModel.CreateColumnMapping(timestampColumn0, graphNodeEntity.FindProperty("Timestamp")!, graphNodesTableMapping);
             var pK_GraphNodes = new UniqueConstraint("PK_GraphNodes", graphNodesTable, new[] { nodeIdColumn0 });

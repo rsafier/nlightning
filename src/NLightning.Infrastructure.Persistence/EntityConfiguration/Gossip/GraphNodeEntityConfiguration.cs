@@ -28,6 +28,9 @@ public static class GraphNodeEntityConfiguration
             entity.Property(e => e.ReceivedAt)
                   .HasConversion<UtcTicksConverter>()
                   .IsRequired();
+            entity.Property(e => e.GossipVersions).IsRequired();
+            entity.Property(e => e.BlockHeight).IsRequired(false);
+            entity.Property(e => e.RawAnnouncement2).IsRequired(false);
 
             if (databaseType == DatabaseType.MicrosoftSql)
                 OptimizeConfigurationForSqlServer(entity);
@@ -42,5 +45,6 @@ public static class GraphNodeEntityConfiguration
         entity.Property(e => e.Color).HasColumnType("varbinary(3)");
         entity.Property(e => e.Addresses).HasColumnType("varbinary(max)");
         entity.Property(e => e.RawAnnouncement).HasColumnType("varbinary(max)");
+        entity.Property(e => e.RawAnnouncement2).HasColumnType("varbinary(max)");
     }
 }

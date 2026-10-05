@@ -20,14 +20,23 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Alias>k__BackingField")]
         public static extern ref byte[] Alias(GraphNodeEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<BlockHeight>k__BackingField")]
+        public static extern ref uint? BlockHeight(GraphNodeEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Color>k__BackingField")]
         public static extern ref byte[] Color(GraphNodeEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Features>k__BackingField")]
         public static extern ref byte[] Features(GraphNodeEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<GossipVersions>k__BackingField")]
+        public static extern ref byte GossipVersions(GraphNodeEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<RawAnnouncement>k__BackingField")]
         public static extern ref byte[] RawAnnouncement(GraphNodeEntity @this);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<RawAnnouncement2>k__BackingField")]
+        public static extern ref byte[] RawAnnouncement2(GraphNodeEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<ReceivedAt>k__BackingField")]
         public static extern ref DateTimeOffset ReceivedAt(GraphNodeEntity @this);

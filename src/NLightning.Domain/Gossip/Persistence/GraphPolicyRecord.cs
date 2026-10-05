@@ -21,6 +21,12 @@ using Channels.ValueObjects;
 /// <param name="FeeBaseMsat">The <c>fee_base_msat</c>.</param>
 /// <param name="FeeProportionalMillionths">The <c>fee_proportional_millionths</c>.</param>
 /// <param name="RawUpdate">The whole <c>channel_update</c> payload (signature included, the message type excluded).</param>
+/// <param name="Version">The gossip protocol: 1 for a <c>channel_update</c>, 2 for a <c>channel_update_2</c> (whose
+/// <paramref name="Timestamp"/> is a block height and <paramref name="HtlcMaximumMsat"/> the resolved value, the default
+/// applied; migration <c>AddGossipV2</c>, NL-878). Part of the primary key.</param>
+/// <param name="InboundFeeBaseMsat">The <c>channel_update_2</c> inbound base fee (0 for v1).</param>
+/// <param name="InboundFeeProportionalMillionths">The <c>channel_update_2</c> inbound proportional fee (0 for v1).
+/// </param>
 public sealed record GraphPolicyRecord(
     ShortChannelId ShortChannelId,
     byte Direction,
@@ -32,4 +38,7 @@ public sealed record GraphPolicyRecord(
     ulong HtlcMaximumMsat,
     uint FeeBaseMsat,
     uint FeeProportionalMillionths,
-    byte[] RawUpdate);
+    byte[] RawUpdate,
+    byte Version = 1,
+    uint InboundFeeBaseMsat = 0,
+    uint InboundFeeProportionalMillionths = 0);

@@ -134,6 +134,60 @@ public class GraphIpcHandlerTests
     }
 
     [Fact]
+    public async Task Given_ATaprootGossipChannelAndNode_When_Listed_Then_TheirVersionsAndTheV2PolicyCrossTheWire()
+    {
+        // Arrange (NL-878): a v2-only channel with a channel_update_2 (block height, inbound fee), carol with both
+        // node announcements
+        var store = CreateGraph();
+        var v2Scid = new ShortChannelId(120, 1, 0);
+        Assert.True(store.TryAddChannel(new GraphChannel(v2Scid, s_alice, s_carol, null, null, 2_000_000)
+        {
+            Versions = GraphGossipVersions.V2,
+            RawAnnouncement2 = new byte[] { 1 }
+        }));
+        Assert.True(store.TryApplyPolicy(v2Scid, new GraphPolicy(900, 0, 0, 80, 1, 1_000_000_000, 1_000, 1)
+        {
+            GossipVersion = 2,
+            InboundFeeBaseMsat = 5,
+            InboundFeeProportionalMillionths = 6
+        }));
+        Assert.True(store.TryApplyNode2(new GraphNode(s_carol, 0, default, Alias("carol2"), [1, 2, 3])
+        {
+            Versions = GraphGossipVersions.V2,
+            BlockHeight = 901,
+            RawAnnouncement2 = new byte[] { 2 }
+        }));
+        using var provider = BuildProvider(store);
+        var channels = new ListGraphChannelsIpcHandler(NullLogger<ListGraphChannelsIpcHandler>.Instance, provider);
+        var nodes = new ListNodesIpcHandler(NullLogger<ListNodesIpcHandler>.Instance, provider);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var channelsResponse = await channels.HandleAsync(Envelope(ClientCommand.ListGraphChannels,
+                                                                   new ListGraphChannelsIpcRequest
+                                                                   {
+                                                                       ShortChannelId = ToNumber(v2Scid)
+                                                                   }), ct);
+        var nodesResponse = await nodes.HandleAsync(Envelope(ClientCommand.ListNodes,
+                                                             new ListNodesIpcRequest { NodeId = s_carol }), ct);
+
+        // Assert
+        var channel = Assert.Single(MessagePackSerializer.Deserialize<ListGraphChannelsIpcResponse>(
+                                        channelsResponse.Payload, s_options, ct).Channels);
+        Assert.Equal((byte)GraphGossipVersions.V2, channel.GossipVersions);
+        Assert.NotNull(channel.Policy1);
+        Assert.Equal((byte)2, channel.Policy1.GossipVersion);
+        Assert.Equal(900u, channel.Policy1.Timestamp);
+        Assert.Equal((5u, 6u), (channel.Policy1.InboundFeeBaseMsat, channel.Policy1.InboundFeeProportionalMillionths));
+        var node = Assert.Single(MessagePackSerializer.Deserialize<ListNodesIpcResponse>(nodesResponse.Payload,
+                                                                                          s_options, ct).Nodes);
+        Assert.Equal((byte)(GraphGossipVersions.V1 | GraphGossipVersions.V2), node.GossipVersions);
+        Assert.Equal(901u, node.BlockHeight);
+        Assert.Equal("carol2", node.Alias);
+        Assert.Equal(1_700_000_000u, node.Timestamp);
+    }
+
+    [Fact]
     public async Task Given_ScidAndNodeFilters_When_ListGraphChannels_Then_OnlyTheMatchingChannels()
     {
         // Arrange

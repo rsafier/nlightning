@@ -44,22 +44,27 @@ public static class GraphMemoryAccounting
     public static long VariableBytesOf(GraphChannel channel)
     {
         ArgumentNullException.ThrowIfNull(channel);
-        return channel.RawAnnouncement.Length + channel.Features.Length + VariableBytesOf(channel.Policy1)
-             + VariableBytesOf(channel.Policy2);
+        return channel.RawAnnouncement.Length + channel.RawAnnouncement2.Length + channel.Features.Length
+             + VariableBytesOf(channel.Policy1) + VariableBytesOf(channel.Policy2)
+             + VariableBytesOf(channel.Policy1V2) + VariableBytesOf(channel.Policy2V2);
     }
 
     /// <summary>The node's raw announcement, features and addresses.</summary>
     public static long VariableBytesOf(GraphNode node)
     {
         ArgumentNullException.ThrowIfNull(node);
-        return node.RawAnnouncement.Length + node.Features.Length + node.Addresses.Count * AddressBytes;
+        return node.RawAnnouncement.Length + node.RawAnnouncement2.Length + node.Features.Length
+             + node.Addresses.Count * AddressBytes;
     }
 
-    /// <summary>The number of stored directions of <paramref name="channel"/> (0, 1 or 2).</summary>
+    /// <summary>
+    /// The number of stored policies of <paramref name="channel"/> (0 to 4: each direction of each gossip version).
+    /// </summary>
     public static int PolicyCountOf(GraphChannel channel)
     {
         ArgumentNullException.ThrowIfNull(channel);
-        return (channel.Policy1 is null ? 0 : 1) + (channel.Policy2 is null ? 0 : 1);
+        return (channel.Policy1 is null ? 0 : 1) + (channel.Policy2 is null ? 0 : 1)
+             + (channel.Policy1V2 is null ? 0 : 1) + (channel.Policy2V2 is null ? 0 : 1);
     }
 
     /// <summary>The estimate for a graph of these counts.</summary>

@@ -66,7 +66,7 @@ public sealed class GraphStore : IGraphStore
     private readonly Dictionary<CompactPubKey, GraphBannedNodeRecord> _bans = new();
 
     private readonly HashSet<ShortChannelId> _dirtyChannels = [];
-    private readonly HashSet<(ShortChannelId, byte)> _dirtyPolicies = [];
+    private readonly HashSet<(ShortChannelId, byte, byte)> _dirtyPolicies = [];
     private readonly HashSet<ShortChannelId> _deletedChannels = [];
     private readonly HashSet<CompactPubKey> _dirtyNodes = [];
     private readonly HashSet<CompactPubKey> _deletedNodes = [];
@@ -456,15 +456,54 @@ public sealed class GraphStore : IGraphStore
             CountChannelEnds(channel, +1);
             _deletedChannels.Remove(channel.ShortChannelId);
             _dirtyChannels.Add(channel.ShortChannelId);
-            if (channel.Policy1 is not null)
-                _dirtyPolicies.Add((channel.ShortChannelId, 0));
-            if (channel.Policy2 is not null)
-                _dirtyPolicies.Add((channel.ShortChannelId, 1));
+            for (byte version = 1; version <= 2; version++)
+                for (byte direction = 0; direction < 2; direction++)
+                    if (channel.GetPolicy(direction, version) is not null)
+                        _dirtyPolicies.Add((channel.ShortChannelId, direction, version));
             _version++;
         }
 
         ChannelAdded?.Invoke(this, channel);
         return true;
+    }
+
+    /// <inheritdoc />
+    public bool TryAddAnnouncementVersion(ShortChannelId shortChannelId, GraphGossipVersions version,
+                                          ReadOnlyMemory<byte> rawAnnouncement, CompactPubKey? bitcoinKey1,
+                                          CompactPubKey? bitcoinKey2)
+    {
+        if (version is not (GraphGossipVersions.V1 or GraphGossipVersions.V2))
+            throw new ArgumentOutOfRangeException(nameof(version), version, "One gossip version at a time");
+
+        lock (_lock)
+        {
+            if (!_channels.TryGetValue(shortChannelId, out var channel) || (channel.Versions & version) != 0)
+                return false;
+
+            // The v1 announcement's keys are the funding keys a v2 one may leave out (3-key proof)
+            var key1 = channel.BitcoinKey1 ?? bitcoinKey1;
+            var key2 = channel.BitcoinKey2 ?? bitcoinKey2;
+            var merged = new GraphChannel(channel.ShortChannelId, channel.NodeId1, channel.NodeId2, key1, key2,
+                                          channel.CapacitySat, channel.Features, channel.Verification)
+            {
+                Versions = channel.Versions | version,
+                SpentAtHeight = channel.SpentAtHeight,
+                Policy1 = channel.Policy1,
+                Policy2 = channel.Policy2,
+                Policy1V2 = channel.Policy1V2,
+                Policy2V2 = channel.Policy2V2,
+                RawAnnouncement = version == GraphGossipVersions.V1
+                                      ? rawAnnouncement.ToArray()
+                                      : channel.RawAnnouncement,
+                RawAnnouncement2 = version == GraphGossipVersions.V2
+                                       ? rawAnnouncement.ToArray()
+                                       : channel.RawAnnouncement2
+            };
+            SetChannelLocked(channel, merged);
+            _dirtyChannels.Add(shortChannelId);
+            _version++;
+            return true;
+        }
     }
 
     /// <inheritdoc />
@@ -476,53 +515,103 @@ public sealed class GraphStore : IGraphStore
             if (!_channels.TryGetValue(shortChannelId, out var channel))
                 return false;
 
-            var current = channel.GetPolicy(policy.Direction);
+            var current = channel.GetPolicy(policy.Direction, policy.GossipVersion);
             if (current is not null && current.Timestamp >= policy.Timestamp)
                 return false;
 
             SetChannelLocked(channel, channel.WithPolicy(policy));
-            _dirtyPolicies.Add((shortChannelId, policy.Direction));
+            _dirtyPolicies.Add((shortChannelId, policy.Direction, policy.GossipVersion));
             _version++;
             return true;
         }
     }
 
     /// <inheritdoc />
-    public bool TryApplyNode(GraphNode node)
+    public bool TryApplyNode(GraphNode node) => TryApplyNodeCore(node, own: false);
+
+    /// <inheritdoc />
+    public bool TryApplyOwnNode(GraphNode node) => TryApplyNodeCore(node, own: true);
+
+    /// <inheritdoc />
+    public bool TryApplyNode2(GraphNode node) => TryApplyNodeCore(node, own: false);
+
+    /// <inheritdoc />
+    public bool TryApplyOwnNode2(GraphNode node) => TryApplyNodeCore(node, own: true);
+
+    /// <summary>
+    /// Applies a node announcement of one protocol (<paramref name="node"/> has exactly one of
+    /// <see cref="GraphGossipVersions.V1"/> and <see cref="GraphGossipVersions.V2"/>), merged with the stored node's
+    /// other protocol (NL-878: both are kept, the v2 fields win). False when the stored one of that protocol is not
+    /// older. Our own node is applied in memory only (its row has one writer, the node announcement service).
+    /// </summary>
+    private bool TryApplyNodeCore(GraphNode node, bool own)
     {
         ArgumentNullException.ThrowIfNull(node);
         lock (_lock)
         {
-            if (_nodes.TryGetValue(node.NodeId, out var current) && current.Timestamp >= node.Timestamp)
+            _nodes.TryGetValue(node.NodeId, out var current);
+            if (current is not null && !IsNewerNode(current, node))
                 return false;
 
-            Account(current, node);
-            _nodes[node.NodeId] = node;
+            var merged = current is null ? node : MergeNodes(current, node);
+            Account(current, merged);
+            _nodes[node.NodeId] = merged;
             _nodeReceivedAt[node.NodeId] = _timeProvider.GetUtcNow();
             _deletedNodes.Remove(node.NodeId);
-            _dirtyNodes.Add(node.NodeId);
+            if (own)
+                _dirtyNodes.Remove(node.NodeId);
+            else
+                _dirtyNodes.Add(node.NodeId);
             _version++;
             return true;
         }
     }
 
-    /// <inheritdoc />
-    public bool TryApplyOwnNode(GraphNode node)
+    /// <summary>
+    /// True when <paramref name="incoming"/> is newer than what <paramref name="current"/> holds of its protocol (a
+    /// greater timestamp for a v1 announcement, a greater block height for a v2 one; anything when the current node
+    /// lacks that protocol).
+    /// </summary>
+    private static bool IsNewerNode(GraphNode current, GraphNode incoming)
     {
-        ArgumentNullException.ThrowIfNull(node);
-        lock (_lock)
-        {
-            if (_nodes.TryGetValue(node.NodeId, out var current) && current.Timestamp >= node.Timestamp)
-                return false;
+        if (incoming.HasV2)
+            return !current.HasV2 || incoming.BlockHeight > current.BlockHeight;
 
-            Account(current, node);
-            _nodes[node.NodeId] = node;
-            _nodeReceivedAt[node.NodeId] = _timeProvider.GetUtcNow();
-            _deletedNodes.Remove(node.NodeId);
-            _dirtyNodes.Remove(node.NodeId);
-            _version++;
-            return true;
+        return !current.HasV1 || current.Timestamp < incoming.Timestamp;
+    }
+
+    /// <summary>
+    /// The stored node with <paramref name="incoming"/>'s protocol replaced: both raw announcements and orderings are
+    /// kept, and the fields are the v2 announcement's whenever the node has one (the draft favours the new protocol).
+    /// </summary>
+    internal static GraphNode MergeNodes(GraphNode current, GraphNode incoming)
+    {
+        if (incoming.HasV2)
+        {
+            if (!current.HasV1)
+                return incoming;
+
+            return new GraphNode(incoming.NodeId, current.Timestamp, incoming.Features, incoming.Alias.Span,
+                                 incoming.RgbColor.Span, incoming.Addresses)
+            {
+                Versions = GraphGossipVersions.V1 | GraphGossipVersions.V2,
+                BlockHeight = incoming.BlockHeight,
+                RawAnnouncement = current.RawAnnouncement,
+                RawAnnouncement2 = incoming.RawAnnouncement2
+            };
         }
+
+        if (!current.HasV2)
+            return incoming;
+
+        return new GraphNode(incoming.NodeId, incoming.Timestamp, current.Features, current.Alias.Span,
+                             current.RgbColor.Span, current.Addresses)
+        {
+            Versions = GraphGossipVersions.V1 | GraphGossipVersions.V2,
+            BlockHeight = current.BlockHeight,
+            RawAnnouncement = incoming.RawAnnouncement,
+            RawAnnouncement2 = current.RawAnnouncement2
+        };
     }
 
     /// <inheritdoc />
@@ -589,8 +678,11 @@ public sealed class GraphStore : IGraphStore
                 _channelsByFundingOutpoint.Remove((fundingTxId, shortChannelId.OutputIndex));
             CountChannelEnds(channel, -1);
             _dirtyChannels.Remove(shortChannelId);
-            _dirtyPolicies.Remove((shortChannelId, 0));
-            _dirtyPolicies.Remove((shortChannelId, 1));
+            for (byte version = 1; version <= 2; version++)
+            {
+                _dirtyPolicies.Remove((shortChannelId, 0, version));
+                _dirtyPolicies.Remove((shortChannelId, 1, version));
+            }
             _deletedChannels.Add(shortChannelId);
             _version++;
             return true;
@@ -681,7 +773,7 @@ public sealed class GraphStore : IGraphStore
                 if (!_channels.TryGetValue(shortChannelId, out var channel))
                     continue;
 
-                var current = channel.GetPolicy(policy.Direction);
+                var current = channel.GetPolicy(policy.Direction, policy.GossipVersion);
                 if (current is null || current.Timestamp < policy.Timestamp)
                     SetChannelLocked(channel, channel.WithPolicy(policy));
             }
@@ -792,9 +884,10 @@ public sealed class GraphStore : IGraphStore
         }
 
         var policies = new List<GraphPolicyRecord>(_dirtyPolicies.Count);
-        foreach (var (shortChannelId, direction) in _dirtyPolicies)
+        foreach (var (shortChannelId, direction, version) in _dirtyPolicies)
         {
-            if (_channels.TryGetValue(shortChannelId, out var channel) && channel.GetPolicy(direction) is { } policy)
+            if (_channels.TryGetValue(shortChannelId, out var channel)
+             && channel.GetPolicy(direction, version) is { } policy)
                 policies.Add(ToRecord(shortChannelId, policy));
         }
 
@@ -832,7 +925,7 @@ public sealed class GraphStore : IGraphStore
             foreach (var channel in work.Channels.Where(c => _channels.ContainsKey(c.ShortChannelId)))
                 _dirtyChannels.Add(channel.ShortChannelId);
             foreach (var policy in work.Policies.Where(p => _channels.ContainsKey(p.ShortChannelId)))
-                _dirtyPolicies.Add((policy.ShortChannelId, policy.Direction));
+                _dirtyPolicies.Add((policy.ShortChannelId, policy.Direction, policy.Version));
             foreach (var node in work.Nodes.Where(n => _nodes.ContainsKey(n.NodeId)))
                 _dirtyNodes.Add(node.NodeId);
             foreach (var ban in work.Bans)
@@ -843,21 +936,29 @@ public sealed class GraphStore : IGraphStore
     private static GraphChannelRecord ToRecord(GraphChannel channel, DateTimeOffset receivedAt, TxId? fundingTxId) =>
         new(channel.ShortChannelId, channel.NodeId1, channel.NodeId2, channel.BitcoinKey1, channel.BitcoinKey2,
             channel.CapacitySat ?? 0, channel.Features.ToArray(), channel.RawAnnouncement.ToArray(),
-            (StoredVerification)(byte)channel.Verification, channel.SpentAtHeight, receivedAt, fundingTxId);
+            (StoredVerification)(byte)channel.Verification, channel.SpentAtHeight, receivedAt, fundingTxId,
+            channel.Versions, channel.HasV2 ? channel.RawAnnouncement2.ToArray() : null);
 
     private static GraphPolicyRecord ToRecord(ShortChannelId shortChannelId, GraphPolicy policy) =>
         new(shortChannelId, policy.Direction, policy.Timestamp, policy.MessageFlags, policy.ChannelFlags,
             policy.CltvExpiryDelta, policy.HtlcMinimumMsat, policy.HtlcMaximumMsat, policy.FeeBaseMsat,
-            policy.FeeProportionalMillionths, policy.RawUpdate.ToArray());
+            policy.FeeProportionalMillionths, policy.RawUpdate.ToArray(), policy.GossipVersion,
+            policy.InboundFeeBaseMsat, policy.InboundFeeProportionalMillionths);
 
     private static GraphNodeRecord ToRecord(GraphNode node, DateTimeOffset receivedAt)
     {
-        // The raw addresses field as signed (unknown descriptors included), from the announcement when we have it
-        var addresses = NodeAnnouncementPayload.TryParse(node.RawAnnouncement.Span, out var payload)
+        // The raw addresses field as signed (unknown descriptors included), from the announcement when we have it;
+        // a node_announcement_2's fields win (NL-878), so its usable addresses are encoded as descriptors
+        var addresses = !node.HasV2 && NodeAnnouncementPayload.TryParse(node.RawAnnouncement.Span, out var payload)
                             ? payload.Addresses.ToArray()
                             : AddressDescriptorCodec.EncodeList(node.Addresses);
         return new GraphNodeRecord(node.NodeId, node.Timestamp, node.Features.ToArray(), node.Alias.ToArray(),
-                                   node.RgbColor.ToArray(), addresses, node.RawAnnouncement.ToArray(), receivedAt);
+                                   node.RgbColor.ToArray(), addresses, node.RawAnnouncement.ToArray(), receivedAt)
+        {
+            Versions = node.Versions,
+            BlockHeight = node.BlockHeight,
+            RawAnnouncement2 = node.HasV2 ? node.RawAnnouncement2.ToArray() : null
+        };
     }
 
     private GraphChannel? MapChannel(GraphChannelRecord record)
@@ -873,7 +974,9 @@ public sealed class GraphStore : IGraphStore
                                     record.Features, verification)
             {
                 SpentAtHeight = record.SpentAtHeight,
-                RawAnnouncement = record.RawAnnouncement
+                RawAnnouncement = record.RawAnnouncement,
+                Versions = record.Versions == GraphGossipVersions.None ? GraphGossipVersions.V1 : record.Versions,
+                RawAnnouncement2 = record.RawAnnouncement2 ?? ReadOnlyMemory<byte>.Empty
             };
         }
         catch (ArgumentException e)
@@ -885,6 +988,27 @@ public sealed class GraphStore : IGraphStore
 
     private static GraphPolicy MapPolicy(GraphPolicyRecord record)
     {
+        // A channel_update_2's record holds its resolved htlc_maximum_msat (the default needs the capacity)
+        if (record.Version == 2)
+        {
+            if (ChannelUpdate2Payload.TryParse(record.RawUpdate, out var update2))
+                return GraphPolicy.FromChannelUpdate2(update2, null) with
+                {
+                    HtlcMaximumMsat = record.HtlcMaximumMsat,
+                    RawUpdate = record.RawUpdate
+                };
+
+            return new GraphPolicy(record.Timestamp, record.MessageFlags, record.ChannelFlags, record.CltvExpiryDelta,
+                                   record.HtlcMinimumMsat, record.HtlcMaximumMsat, record.FeeBaseMsat,
+                                   record.FeeProportionalMillionths)
+            {
+                GossipVersion = 2,
+                InboundFeeBaseMsat = record.InboundFeeBaseMsat,
+                InboundFeeProportionalMillionths = record.InboundFeeProportionalMillionths,
+                RawUpdate = record.RawUpdate
+            };
+        }
+
         // The unknown trailing fields live only in the signed bytes (BOLT 7 compares them at the same timestamp)
         if (ChannelUpdatePayload.TryParse(record.RawUpdate, out var update))
             return GraphPolicy.FromChannelUpdate(update) with { RawUpdate = record.RawUpdate };
@@ -899,7 +1023,10 @@ public sealed class GraphStore : IGraphStore
         new(record.NodeId, record.Timestamp, record.Features, record.Alias, record.Color,
             AddressDescriptorCodec.DecodeList(record.Addresses).Addresses)
         {
-            RawAnnouncement = record.RawAnnouncement
+            RawAnnouncement = record.RawAnnouncement,
+            Versions = record.Versions == GraphGossipVersions.None ? GraphGossipVersions.V1 : record.Versions,
+            BlockHeight = record.BlockHeight,
+            RawAnnouncement2 = record.RawAnnouncement2 ?? ReadOnlyMemory<byte>.Empty
         };
 
     private sealed record FlushWork(

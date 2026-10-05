@@ -101,8 +101,18 @@ public interface IGraphStore
     bool TryAddChannel(GraphChannel channel, TxId? fundingTxId = null);
 
     /// <summary>
-    /// Sets the policy of one direction of a stored channel; false when the channel is unknown or the stored policy of
-    /// that direction is not older.
+    /// Adds the announcement of the other gossip protocol to a stored channel (NL-878: a channel announced with both
+    /// <c>channel_announcement</c> and <c>channel_announcement_2</c> keeps both, so each is served to the peers that
+    /// speak it); missing bitcoin keys are taken from it. The caller checked it names the same nodes. False when the
+    /// channel is unknown or already has that protocol's announcement.
+    /// </summary>
+    bool TryAddAnnouncementVersion(ShortChannelId shortChannelId, GraphGossipVersions version,
+                                   ReadOnlyMemory<byte> rawAnnouncement, CompactPubKey? bitcoinKey1,
+                                   CompactPubKey? bitcoinKey2);
+
+    /// <summary>
+    /// Sets the policy of one direction of a stored channel, in the slot of its <see cref="GraphPolicy.GossipVersion"/>;
+    /// false when the channel is unknown or the stored policy of that direction and version is not older.
     /// </summary>
     bool TryApplyPolicy(ShortChannelId shortChannelId, GraphPolicy policy);
 
@@ -118,6 +128,15 @@ public interface IGraphStore
     /// can never overwrite the newer row); false when the stored one is not older.
     /// </summary>
     bool TryApplyOwnNode(GraphNode node);
+
+    /// <summary>
+    /// Stores a <c>node_announcement_2</c> (<see cref="GraphNode.FromNodeAnnouncement2"/>, NL-878), merged with the
+    /// node's <c>node_announcement</c> if any; false when the stored v2 one's block height is not lower.
+    /// </summary>
+    bool TryApplyNode2(GraphNode node);
+
+    /// <summary>Our own <c>node_announcement_2</c>, in memory only (like <see cref="TryApplyOwnNode"/>).</summary>
+    bool TryApplyOwnNode2(GraphNode node);
 
     /// <summary>Ignores the gossip of <paramref name="nodeId"/> until <paramref name="until"/>.</summary>
     void Ban(CompactPubKey nodeId, string reason, DateTimeOffset until);

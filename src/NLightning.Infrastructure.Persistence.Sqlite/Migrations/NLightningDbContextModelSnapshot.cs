@@ -1594,11 +1594,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasColumnType("BLOB");
 
                     b.Property<byte[]>("BitcoinKey1")
-                        .IsRequired()
                         .HasColumnType("BLOB");
 
                     b.Property<byte[]>("BitcoinKey2")
-                        .IsRequired()
                         .HasColumnType("BLOB");
 
                     b.Property<long>("CapacitySat")
@@ -1611,6 +1609,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<byte[]>("FundingTxId")
                         .HasColumnType("BLOB");
 
+                    b.Property<byte>("GossipVersions")
+                        .HasColumnType("INTEGER");
+
                     b.Property<byte[]>("NodeId1")
                         .IsRequired()
                         .HasColumnType("BLOB");
@@ -1621,6 +1622,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 
                     b.Property<byte[]>("RawAnnouncement")
                         .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("RawAnnouncement2")
                         .HasColumnType("BLOB");
 
                     b.Property<long>("ReceivedAt")
@@ -1651,6 +1655,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<byte>("Direction")
                         .HasColumnType("INTEGER");
 
+                    b.Property<byte>("Version")
+                        .HasColumnType("INTEGER");
+
                     b.Property<byte>("ChannelFlags")
                         .HasColumnType("INTEGER");
 
@@ -1669,6 +1676,12 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<ulong>("HtlcMinimumMsat")
                         .HasColumnType("INTEGER");
 
+                    b.Property<uint>("InboundFeeBaseMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("InboundFeePpm")
+                        .HasColumnType("INTEGER");
+
                     b.Property<byte>("MessageFlags")
                         .HasColumnType("INTEGER");
 
@@ -1679,7 +1692,7 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<uint>("Timestamp")
                         .HasColumnType("INTEGER");
 
-                    b.HasKey("ShortChannelId", "Direction");
+                    b.HasKey("ShortChannelId", "Direction", "Version");
 
                     b.ToTable("GraphChannelPolicies");
                 });
@@ -1697,6 +1710,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .IsRequired()
                         .HasColumnType("BLOB");
 
+                    b.Property<uint?>("BlockHeight")
+                        .HasColumnType("INTEGER");
+
                     b.Property<byte[]>("Color")
                         .IsRequired()
                         .HasColumnType("BLOB");
@@ -1705,8 +1721,14 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .IsRequired()
                         .HasColumnType("BLOB");
 
+                    b.Property<byte>("GossipVersions")
+                        .HasColumnType("INTEGER");
+
                     b.Property<byte[]>("RawAnnouncement")
                         .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("RawAnnouncement2")
                         .HasColumnType("BLOB");
 
                     b.Property<long>("ReceivedAt")
