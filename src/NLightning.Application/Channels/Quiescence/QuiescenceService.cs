@@ -170,7 +170,7 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
             // Q-S-01 (checked above), Q-S-03: a second stfu, or initiator = 0 replying to nothing
             var state = existing?.State ?? QuiescenceState.None;
             if (QuiescenceRules.Receive(state, stfu.Initiator, true, channel.IsInitiator, _timeProvider.GetUtcNow())
-                    .Violation is { } violation)
+                is QuiescenceViolation violation)
                 throw QuiescenceRules.CreateWarning(violation, channelId);
 
             var entry = existing;

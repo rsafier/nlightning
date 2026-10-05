@@ -64,7 +64,6 @@ public class QuiescenceRulesTests
 
         // Assert
         Assert.Equal(QuiescenceViolation.NotNegotiated, result.Violation);
-        Assert.Same(QuiescenceState.None, result.Next);
     }
 
     #endregion
@@ -306,7 +305,6 @@ public class QuiescenceRulesTests
 
         // Assert
         Assert.Equal(QuiescenceViolation.SecondStfu, result.Violation);
-        Assert.Same(received, result.Next);
     }
 
     [Fact]
@@ -331,7 +329,6 @@ public class QuiescenceRulesTests
 
         // Assert
         Assert.Equal(QuiescenceViolation.UnsolicitedReply, result.Violation);
-        Assert.Same(QuiescenceState.None, result.Next);
     }
 
     #endregion
@@ -531,4 +528,18 @@ public class QuiescenceRulesTests
     }
 
     #endregion
+}
+
+/// <summary>
+/// The <see cref="StfuReceiveResult"/> union read as the record it was before the C# 15 pilot (NL-1086): the next state
+/// (the test fails on a violation) or the violation (null for a state).
+/// </summary>
+file static class StfuReceiveResultView
+{
+    extension(StfuReceiveResult result)
+    {
+        public QuiescenceState Next => Assert.IsType<QuiescenceState>(result.Value);
+
+        public QuiescenceViolation? Violation => result.Value as QuiescenceViolation?;
+    }
 }

@@ -142,20 +142,20 @@ public static class QuiescenceRules
     /// <param name="quiesceNegotiated"><see cref="IsNegotiated"/> for the peer.</param>
     /// <param name="localIsFunder">We are the channel funder.</param>
     /// <param name="now">The time the channel becomes quiescent, if it does.</param>
-    /// <returns>The next state, or the unchanged state and the violation (<see cref="CreateWarning"/>).</returns>
+    /// <returns>The next state, or the violation (<see cref="CreateWarning"/>).</returns>
     public static StfuReceiveResult Receive(QuiescenceState state, bool initiator, bool quiesceNegotiated,
                                             bool localIsFunder, DateTimeOffset now)
     {
         ArgumentNullException.ThrowIfNull(state);
         if (!quiesceNegotiated)
-            return new StfuReceiveResult(state, QuiescenceViolation.NotNegotiated);
+            return QuiescenceViolation.NotNegotiated;
         if (state.StfuReceived)
-            return new StfuReceiveResult(state, QuiescenceViolation.SecondStfu);
+            return QuiescenceViolation.SecondStfu;
         if (!initiator && !state.StfuSent)
-            return new StfuReceiveResult(state, QuiescenceViolation.UnsolicitedReply);
+            return QuiescenceViolation.UnsolicitedReply;
 
         var next = state with { ReceivedStfuInitiator = initiator };
-        return new StfuReceiveResult(next.StfuSent ? BecomeQuiescent(next, localIsFunder, now) : next, null);
+        return next.StfuSent ? BecomeQuiescent(next, localIsFunder, now) : next;
     }
 
     /// <summary>
