@@ -1,3 +1,5 @@
+using NLightning.Tests.Utils.Channels;
+
 namespace NLightning.Domain.Tests.Channels.Reestablish;
 
 using Domain.Bitcoin.ValueObjects;

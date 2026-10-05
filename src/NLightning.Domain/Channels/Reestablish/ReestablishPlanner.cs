@@ -38,7 +38,8 @@ using Protocol.Models;
 /// before <c>retransmit_flags</c>); that X is accepted as R + 1 with bit 0 for our unsigned latest transaction.
 /// <c>channel_ready</c> is not resent when a splice TLV is in either message (SP-RE-05). The peer's
 /// <c>my_current_funding_locked</c> naming a pending splice whose <c>splice_locked</c> we lack becomes
-/// <see cref="ReestablishPlan.PeerSpliceLocked"/>, and its bit 0 our <c>announcement_signatures</c> last (SP-RE-04).
+/// <see cref="ReestablishPlan.Resume.PeerSpliceLocked"/>, and its bit 0 our <c>announcement_signatures</c> last
+/// (SP-RE-04).
 /// </para>
 /// </remarks>
 public static class ReestablishPlanner
@@ -160,8 +161,9 @@ public static class ReestablishPlanner
         }
         else if (peerNextFunding is not null && GetOwnNextFunding(local) is { } ownNextFunding)
         {
-            return ReestablishPlan.Failed("SP-RE-03",
-                                          $"next_funding {peerNextFunding.TxId} differs from ours {ownNextFunding.TxId}");
+            return new ReestablishPlan.Fail("SP-RE-03",
+                                            $"next_funding {peerNextFunding.TxId} differs from ours {ownNextFunding.TxId}",
+                                            []);
         }
         else if (peerNextFunding is not null || peer.HasNextFunding)
         {
@@ -169,24 +171,24 @@ public static class ReestablishPlanner
         }
 
         if (x == 0)
-            return ReestablishPlan.Failed("B2-RE-14", "next_commitment_number is 0", steps, mustBroadcast: true);
+            return new ReestablishPlan.Fail("B2-RE-14", "next_commitment_number is 0", steps, MustBroadcast: true);
 
         // Data loss first: the peer expects a revocation we never made and proves it with our own secret
         if (y > l)
         {
             if (SecretMatches(y, peer.YourLastPerCommitmentSecret, isOurSecret))
-                return ReestablishPlan.LostData(
+                return new ReestablishPlan.DataLoss(
                     $"The peer expects revocation {y} but our current commitment is {l}, and it knows our secret {y - 1}");
 
-            return ReestablishPlan.Failed("B2-RE-21",
-                                          $"next_revocation_number {y} is ahead of our commitment {l} without proof",
-                                          steps);
+            return new ReestablishPlan.Fail("B2-RE-21",
+                                            $"next_revocation_number {y} is ahead of our commitment {l} without proof",
+                                            steps);
         }
 
         if (!SecretMatches(y, peer.YourLastPerCommitmentSecret, isOurSecret))
-            return ReestablishPlan.Failed("B2-RE-24",
-                                          $"your_last_per_commitment_secret is not our secret {(y == 0 ? "(zeroes)" : y - 1)}",
-                                          steps);
+            return new ReestablishPlan.Fail("B2-RE-24",
+                                            $"your_last_per_commitment_secret is not our secret {(y == 0 ? "(zeroes)" : y - 1)}",
+                                            steps);
 
         bool resendRevokeAndAck;
         if (y == l)
@@ -194,8 +196,8 @@ public static class ReestablishPlanner
         else if (l > 0 && y == l - 1)
             resendRevokeAndAck = true;
         else
-            return ReestablishPlan.Failed("B2-RE-21",
-                                          $"next_revocation_number {y} does not fit our commitment {l}", steps);
+            return new ReestablishPlan.Fail("B2-RE-21",
+                                            $"next_revocation_number {y} does not fit our commitment {l}", steps);
 
         bool resendCommitDiff;
         if (x == checked(r + 1))
@@ -203,9 +205,9 @@ public static class ReestablishPlanner
             // The peer is missing the commitment_signed we sent for R + 1, if we sent one
             resendCommitDiff = local.HasRemoteNextCommit;
             if (resendCommitDiff && !local.HasSentCommitDiff)
-                return ReestablishPlan.Failed("B2-RE-18",
-                                              $"commitment_signed {x} must be retransmitted but it is not stored",
-                                              steps);
+                return new ReestablishPlan.Fail("B2-RE-18",
+                                                $"commitment_signed {x} must be retransmitted but it is not stored",
+                                                steps);
         }
         else if (local.HasRemoteNextCommit && x == checked(r + 2))
         {
@@ -215,7 +217,7 @@ public static class ReestablishPlanner
         else
         {
             var expected = local.HasRemoteNextCommit ? $"{r + 1} or {r + 2}" : $"{r + 1}";
-            return ReestablishPlan.Failed("B2-RE-19", $"next_commitment_number {x}, expected {expected}", steps);
+            return new ReestablishPlan.Fail("B2-RE-19", $"next_commitment_number {x}, expected {expected}", steps);
         }
 
         // SP-RE-05: not when a message of the exchange carries a splice's funding TLV
@@ -257,7 +259,7 @@ public static class ReestablishPlanner
                 steps.Add(ReestablishStep.AnnouncementSignatures);
         }
 
-        return ReestablishPlan.Resume(steps) with { PeerSpliceLocked = peerSpliceLocked };
+        return new ReestablishPlan.Resume(steps, peerSpliceLocked);
     }
 
     /// <summary>

@@ -1,3 +1,5 @@
+using NLightning.Tests.Utils.Channels;
+
 namespace NLightning.Application.Tests.Channels.Reestablish;
 
 using Domain.Channels.Enums;
@@ -325,7 +327,7 @@ public class ReestablishPlannerTests
 
         // "if next_commitment_number is zero: MUST immediately fail the channel and broadcast"
         if (x == 0)
-            return ReestablishPlan.Failed("", "", mustBroadcast: true);
+            return new ReestablishPlan.Fail("", "", [], MustBroadcast: true);
 
         // "the commitment number of the last revoke_and_ack the receiving node sent": we revoked l - 1 (none at l = 0)
         ulong? lastRevokeAndAck = l == 0 ? null : l - 1;
@@ -335,13 +337,13 @@ public class ReestablishPlannerTests
         // that next_revocation_number minus 1": data loss; otherwise the secret must match
         var secretCorrect = y == 0 ? secret.SequenceEqual(s_zeroes) : secret.SequenceEqual(Secret(y - 1));
         if (y > expectedY)
-            return secretCorrect ? ReestablishPlan.LostData("") : ReestablishPlan.Failed("", "");
+            return secretCorrect ? new ReestablishPlan.DataLoss("") : new ReestablishPlan.Fail("", "", []);
         if (!secretCorrect)
-            return ReestablishPlan.Failed("", "");
+            return new ReestablishPlan.Fail("", "", []);
 
         var resendRevokeAndAck = y == lastRevokeAndAck;
         if (!resendRevokeAndAck && y != expectedY)
-            return ReestablishPlan.Failed("", "");
+            return new ReestablishPlan.Fail("", "", []);
 
         // "if next_commitment_number is equal to the commitment number of the last commitment_signed the receiving node
         // has sent" (only one still unacked matters: an acked one can't be asked for again)
@@ -349,7 +351,7 @@ public class ReestablishPlannerTests
         var nextCommitmentSigned = local.HasRemoteNextCommit ? r + 2 : r + 1;
         var resendCommitmentSigned = x == lastUnackedCommitmentSigned;
         if (!resendCommitmentSigned && x != nextCommitmentSigned)
-            return ReestablishPlan.Failed("", "");
+            return new ReestablishPlan.Fail("", "", []);
 
         var steps = new List<ReestablishStep>();
         if (x == 1 && l + 1 == 1)
@@ -368,7 +370,7 @@ public class ReestablishPlannerTests
         if (local.HasUnsignedLocalUpdates)
             steps.Add(ReestablishStep.UnsignedUpdates);
 
-        return ReestablishPlan.Resume(steps);
+        return new ReestablishPlan.Resume(steps);
     }
 
     #endregion

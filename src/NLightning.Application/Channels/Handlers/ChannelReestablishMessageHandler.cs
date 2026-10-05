@@ -165,37 +165,51 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
         var plan = ReestablishPlanner.Plan(local, peer,
                                            (number, secret) => _reestablishService.IsOurSecret(channel, number, secret));
 
+        var steps = plan switch
+        {
+            ReestablishPlan.Resume resume => resume.Steps,
+            ReestablishPlan.Fail fail => fail.Steps,
+            ReestablishPlan.DataLoss => []
+        };
         _logger.LogInformation(
             "channel_reestablish for {ChannelId}: ours {LocalNext}/{LocalRevocation}, theirs {Next}/{Revocation} (next_funding {NextFunding}, my_current_funding_locked {FundingLocked}) -> {Outcome} [{Steps}]",
             channelId, local.LocalCommitmentNumber + 1, local.RemoteCommitmentNumber, peer.NextCommitmentNumber,
-            peer.NextRevocationNumber, peer.NextFunding, peer.MyCurrentFundingLocked, plan.Outcome,
-            string.Join(", ", plan.Steps));
+            peer.NextRevocationNumber, peer.NextFunding, peer.MyCurrentFundingLocked, plan.Value?.GetType().Name,
+            string.Join(", ", steps));
 
-        // A Closing channel's transaction is agreed, persisted and broadcast: a mismatch can't fail it (that would
-        // broadcast a commitment against the close); only our shutdown is retransmitted
-        if (channel.State == ChannelState.Closing && plan.Outcome != ReestablishOutcome.Resume)
+        TxId? peerSpliceLocked = null;
+        switch (plan)
         {
-            _logger.LogWarning(
-                "channel_reestablish mismatch on closing channel {ChannelId} ({Requirement}: {Reason}); waiting for the closing transaction",
-                channelId, plan.RequirementId, plan.Reason);
-            plan = plan with { Steps = [] };
-        }
+            case ReestablishPlan.Resume resume:
+                peerSpliceLocked = resume.PeerSpliceLocked;
+                break;
 
-        switch (plan.Outcome)
-        {
-            case ReestablishOutcome.DataLoss when channel.State != ChannelState.Closing:
-                await PersistDataLossAsync(channel, plan);
-                throw new ChannelFailedException(channelId, $"[{plan.RequirementId}] {plan.Reason}",
+            // A Closing channel's transaction is agreed, persisted and broadcast: a mismatch can't fail it (that would
+            // broadcast a commitment against the close); only our shutdown is retransmitted
+            case ReestablishPlan.Fail fail when channel.State == ChannelState.Closing:
+                LogClosingMismatch(channelId, fail.RequirementId, fail.Reason);
+                steps = [];
+                break;
+            case ReestablishPlan.DataLoss loss when channel.State == ChannelState.Closing:
+                LogClosingMismatch(channelId, ReestablishPlan.DataLoss.RequirementId, loss.Reason);
+                steps = [];
+                break;
+
+            case ReestablishPlan.DataLoss loss:
+                await PersistDataLossAsync(channel, loss);
+                throw new ChannelFailedException(channelId,
+                                                 $"[{ReestablishPlan.DataLoss.RequirementId}] {loss.Reason}",
                                                  "we lost channel state, please fail the channel")
                 {
-                    RequirementId = plan.RequirementId
+                    RequirementId = ReestablishPlan.DataLoss.RequirementId
                 };
-            case ReestablishOutcome.Fail when channel.State != ChannelState.Closing:
-                throw new ChannelFailedException(channelId, $"[{plan.RequirementId}] {plan.Reason}",
-                                                 $"channel_reestablish mismatch: {plan.Reason}")
+
+            case ReestablishPlan.Fail fail:
+                throw new ChannelFailedException(channelId, $"[{fail.RequirementId}] {fail.Reason}",
+                                                 $"channel_reestablish mismatch: {fail.Reason}")
                 {
-                    RequirementId = plan.RequirementId,
-                    MustBroadcast = plan.MustBroadcast
+                    RequirementId = fail.RequirementId,
+                    MustBroadcast = fail.MustBroadcast
                 };
         }
 
@@ -230,12 +244,12 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
         }
 
         // SP-RE-04: the peer's my_current_funding_locked processed as its splice_locked, before the retransmissions
-        if (plan.PeerSpliceLocked is { } lockedTxId && plan.Outcome == ReestablishOutcome.Resume)
+        if (peerSpliceLocked is { } lockedTxId)
             replies.AddRange(await ProcessPeerSpliceLockedAsync(channel, lockedTxId));
 
         // NL-867: the abandoned attempt's tx_abort answers the peer's next_funding (the planner's TxAbort step too)
         replies.AddRange(abandoned);
-        foreach (var step in plan.Steps.Where(s => s != ReestablishStep.TxAbort || abandoned.Count == 0))
+        foreach (var step in steps.Where(s => s != ReestablishStep.TxAbort || abandoned.Count == 0))
             replies.AddRange(await BuildStepAsync(channel, step, local, peer, peerPubKey));
 
         // B2-RE-28: our shutdown again, after the retransmitted updates; the fee negotiation restarts (B2-RE-29)
@@ -493,12 +507,17 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
         return bytes is { Length: ShortChannelId.Length };
     }
 
+    private void LogClosingMismatch(ChannelId channelId, string requirementId, string reason) =>
+        _logger.LogWarning(
+            "channel_reestablish mismatch on closing channel {ChannelId} ({Requirement}: {Reason}); waiting for the closing transaction",
+            channelId, requirementId, reason);
+
     /// <summary>Persists the data-loss flag before anything else (I12), then keeps it in memory.</summary>
-    private async Task PersistDataLossAsync(ChannelModel channel, ReestablishPlan plan)
+    private async Task PersistDataLossAsync(ChannelModel channel, ReestablishPlan.DataLoss loss)
     {
         _logger.LogCritical(
             "DATA LOSS on channel {ChannelId}: {Reason}. Our commitment must never be broadcast; asking the peer to close",
-            channel.ChannelId, plan.Reason);
+            channel.ChannelId, loss.Reason);
 
         channel.MarkDataLossDetected();
         _channelMemoryRepository.UpdateChannel(channel);

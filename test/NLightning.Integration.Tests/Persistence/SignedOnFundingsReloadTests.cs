@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Tests.Utils.Channels;
 
 namespace NLightning.Integration.Tests.Persistence;
 
