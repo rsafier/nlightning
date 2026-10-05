@@ -179,10 +179,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 82 | 83 |
 | in-progress | 0 | 0 | 4 | 1 | 5 |
-| fixed | 15 | 68 | 223 | 461 | 767 |
+| fixed | 15 | 68 | 224 | 461 | 768 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **237** | **564** | **884** |
+| **Total** | **15** | **68** | **238** | **564** | **885** |
 
 ### Epics
 
@@ -9385,3 +9385,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** Wave C: the real bark wallet claim side (arkoor package, musig2 nonces), xpay through captaind, and upstreaming the missing bits.
 - **Blocks/Blocked-by:** Builds on NL-995
 - **Plan ref:** `docs/agents/LN_BACKEND_PLAN.md`
+
+### NL-1089 LN backend: TLS without `ca.pem` was accepted on any listen address, with no client authentication
+- **Status:** fixed (8a8520e0)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.LnBackend/LnBackendOptions.cs` (`GetValidationErrors`), `LnBackendHost.ConfigureListener`
+- **Evidence:** found reviewing the `wip/nltg-ln-backend` integration (NL-1148): the host requires a client certificate only when `ca.pem` exists in `LnBackend:TlsDirectory`, but validation treated any `TlsDirectory` as secure, so `TlsDirectory` with `server.pem`/`server.key` alone on `0.0.0.0` passed and served TLS that authenticates nobody — anyone reaching the port could create, settle and cancel hold invoices and pay through `cln.Node` `xpay`. `LnBackendOptionsTests.Given_Tls_When_Validated_Then_TheListenerMayBeOffLoopback` asserted that shape. A non-IP `ListenAddress` threw from `IPAddress.Parse` instead of being reported, and `::1` was not counted as loopback.
+- **Fix sketch:** done: the Cashu payment processor's NL-998 rules — off loopback only with mutual TLS (`ca.pem`); on loopback without client authentication (h2c or TLS without `ca.pem`) only with `AllowInsecureLoopback`; `IPAddress.TryParse` + `IPAddress.IsLoopback`. 83 LnBackend tests.
+- **Blocks/Blocked-by:** found by NL-1148; same rule as NL-998
