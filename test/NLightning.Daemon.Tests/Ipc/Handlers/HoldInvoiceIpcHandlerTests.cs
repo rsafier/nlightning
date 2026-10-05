@@ -313,7 +313,7 @@ public class HoldInvoiceIpcHandlerTests
     [Fact]
     public void Given_Handlers_When_CommandRead_Then_EachServesItsClientCommand()
     {
-        // Arrange: 48 stays free for payroute (NL-1082), so these pin 49-51
+        // Arrange: 48 is payroute (NL-1082), so the hold invoice commands are 49-51
         var provider = BuildProvider();
         IIpcCommandHandler[] handlers =
         [

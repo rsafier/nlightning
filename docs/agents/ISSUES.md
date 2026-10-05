@@ -9205,6 +9205,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 
 
 ## Wire codec
+- **Seen again 2026-10-05:** matrix hold-mx1 (7069b1ab, no coverage): the Eclair-force-close case `Given_HtlcsInFlightBothWays_When_EclairForceClosesATaprootChannel_*` failed once, green on the class rerun alone; so not only under coverlet.
 
 ### NL-1100 [EPIC] Wire codec redesign: one declarative definition per message, both directions
 - **Status:** open
