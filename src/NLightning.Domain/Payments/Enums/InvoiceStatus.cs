@@ -28,5 +28,12 @@ public enum InvoiceStatus : byte
     /// <summary>
     /// Canceled before it was paid; HTLCs for it fail with <c>incorrect_or_unknown_payment_details</c>. Final.
     /// </summary>
-    Canceled = 3
+    Canceled = 3,
+
+    /// <summary>
+    /// A hold invoice (NL-995) whose paying HTLC set is complete and held: locked in, nothing fulfilled or failed,
+    /// waiting for the operator's settle (the preimage arrives from outside) or cancel. The deadline monitor's
+    /// fail-back is the guard: a part failed back near its CLTV cancels the hold.
+    /// </summary>
+    Held = 4
 }

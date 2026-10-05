@@ -146,7 +146,7 @@ Before C0 there was no "invoice paid" or "payment finished" notification, only p
 | C1b | Processor breadth: BOLT 12 both ways, on-chain mint and melt quotes (NUT-30), quotes stored before they are sent (`CashuQuotes`/`CashuDeposits`); MPP partial melts stay refused | NL-997 | done (§8) |
 | C2 | Proof against `cdk-mintd` + `cdk-cli` (cluster harness since the wip/fafo integration) | NL-993 | done (§7) |
 | C3 | Native Cashu wallet | NL-994 | open |
-| C4 | Hold invoices + NUT-14 | NL-995 | open |
+| C4 | Hold invoices (the node-side half of NUT-14: ecash locked to a hash settles them atomically once C3 lands) | NL-995 | done (§10) |
 
 ### C0 design
 
@@ -356,3 +356,19 @@ The mint reaches the in-process node's processor, which listens on the host's lo
 - `Infrastructure.Bitcoin.Tests` `WalletSpendServiceTests`: the estimate matches the spend and holds nothing; the fee limit refuses and releases the inputs.
 - `Integration.Tests/Persistence`: `CashuQuoteSchemaRoundTrip` (SQLite, and Postgres in `Docker/PostgresTests`), and `Bolt12SchemaRoundTrip` lists an offer's settled invoices.
 - The CDK mint proof (`CdkMintdInteropTests`, then a Docker suite, a cluster suite since the wip/fafo integration, §7) gained two cases, green twice in a row on Docker (about 30 s and 50 s): BOLT 12 (`cdk-cli mint --method bolt12`: the payer pays the mint's offer, 3,001 sat minted, the extra sat being our dummy blinded hops' fee the payer paid, NL-526; `melt --method bolt12` into the payer's 1,000 sat offer, reserve 5 sat, paid with a 2 sat fee) and on-chain (1 confirmation, one fee option because `cdk-cli` prompts when there are several: bitcoind pays 50,000 sat to the quote's address and 50,000 sat are minted; `melt --method onchain` of 20,000 sat (reserve 2,108 sat, fee 1,405 sat), `cdk-mintd` restarted while the melt is pending, a block mined, the restarted mint's quote `PAID` with its outpoint and bitcoind credited; the wallet finished its wait across the restart with `state=PAID`).
+
+## 10. C4 as built: hold invoices (NL-995, `wip/nl995`)
+
+`createholdinvoice <hash> [msat|any] [description] [--expiry <s>]` (IPC 49), `settleholdinvoice <hash> <preimage>`
+(50) and `cancelholdinvoice <hash>` (51). The invoice row stores no preimage (nullable column, migration
+`AddHoldInvoices` on all three providers); its completed HTLC set is **Held** (`InvoiceStatus.Held`, the mpp timer
+killed, an `InvoiceHeldEvent` published) — locked in, nothing fulfilled or failed — until the operator settles
+(the preimage is verified by hash, stored, the invoice settles in one save with its accounting event, every part
+marked and fulfilled) or cancels (parts failed back `incorrect_or_unknown_payment_details`). The CLTV guard is the
+deadline monitor's own fail-back: a held part carries no `KnownPreimage` and its invoice is not `Settled`, so it is
+`UnresolvedFinalHop` and failed back 18 blocks before expiry, and any non-Fulfill removal of a held part cancels the
+whole hold. After a restart the replayed lock-ins rebuild the set and re-hold it idempotently. BOLT 11 only (a
+blinded path's `path_id` is derived from the preimage we do not have). Pinned by `HoldInvoiceTests` (9 in-process,
+incl. the MPP shard set, mpp timeout of an incomplete hold, restart replay and the cascade) and
+`HoldInvoiceFlowTests` (cluster, LND pays, we hold, settle completes LND's payment with our preimage; cancel fails
+it). This is also the seam an Ark ASP (Bark's captaind) would drive for its LN receive swaps.

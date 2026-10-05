@@ -69,9 +69,9 @@ public class OnchainFinalHopSwitchTests
 
         // Assert: the preimage on the record (memory and database), the invoice settled for the HTLC, nothing sent
         var committed = CarolIncoming(harness).Single();
-        Assert.Equal(invoice.Preimage, committed.KnownPreimage);
+        Assert.Equal(invoice.Preimage!.Value, committed.KnownPreimage);
         Assert.Null(committed.Removal);
-        Assert.Equal(invoice.Preimage, (await StoredIncomingAsync(harness, committed.Id))!.KnownPreimage);
+        Assert.Equal(invoice.Preimage!.Value, (await StoredIncomingAsync(harness, committed.Id))!.KnownPreimage);
         var stored = await GetInvoiceAsync(harness, invoice);
         Assert.Equal(InvoiceStatus.Settled, stored.Status);
         Assert.Equal(s_amount, stored.AmountReceived);
@@ -116,9 +116,9 @@ public class OnchainFinalHopSwitchTests
 
         // Assert: the preimage on the record, the invoice settled, nothing sent
         var committed = CarolIncoming(harness).Single();
-        Assert.Equal(invoice.Preimage, committed.KnownPreimage);
+        Assert.Equal(invoice.Preimage!.Value, committed.KnownPreimage);
         Assert.Null(committed.Removal);
-        Assert.Equal(invoice.Preimage, (await StoredIncomingAsync(harness, committed.Id))!.KnownPreimage);
+        Assert.Equal(invoice.Preimage!.Value, (await StoredIncomingAsync(harness, committed.Id))!.KnownPreimage);
         var stored = await GetInvoiceAsync(harness, invoice);
         Assert.Equal(InvoiceStatus.Settled, stored.Status);
         Assert.Equal(s_amount, stored.AmountReceived);
@@ -174,9 +174,9 @@ public class OnchainFinalHopSwitchTests
         await harness.PumpAsync();
 
         // Assert: every part carries the preimage, the invoice settled for the sum, nothing sent
-        Assert.All(CarolIncoming(harness), h => Assert.Equal(invoice.Preimage, h.KnownPreimage));
+        Assert.All(CarolIncoming(harness), h => Assert.Equal(invoice.Preimage!.Value, h.KnownPreimage));
         foreach (var htlc in CarolIncoming(harness))
-            Assert.Equal(invoice.Preimage, (await StoredIncomingAsync(harness, htlc.Id))!.KnownPreimage);
+            Assert.Equal(invoice.Preimage!.Value, (await StoredIncomingAsync(harness, htlc.Id))!.KnownPreimage);
         var stored = await GetInvoiceAsync(harness, invoice);
         Assert.Equal(InvoiceStatus.Settled, stored.Status);
         Assert.Equal(s_amount, stored.AmountReceived);
@@ -222,7 +222,7 @@ public class OnchainFinalHopSwitchTests
         await PayPartAsync(harness, invoice, s_firstPart, s_amount);
         await harness.PumpAsync();
         var part = CarolIncoming(harness).Single();
-        await MarkAsync(harness, part.Id, invoice.Preimage);
+        await MarkAsync(harness, part.Id, invoice.Preimage!.Value);
         harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId).UpdateState(ChannelState.OnchainResolving);
         var sentBefore = harness.Sent.Count;
 
@@ -246,7 +246,7 @@ public class OnchainFinalHopSwitchTests
         await PayPartAsync(harness, invoice, s_firstPart, s_amount);
         await harness.PumpAsync();
         var part = CarolIncoming(harness).Single();
-        await MarkAsync(harness, part.Id, invoice.Preimage);
+        await MarkAsync(harness, part.Id, invoice.Preimage!.Value);
 
         // Act
         _clock.Advance(TimeSpan.FromSeconds(60));

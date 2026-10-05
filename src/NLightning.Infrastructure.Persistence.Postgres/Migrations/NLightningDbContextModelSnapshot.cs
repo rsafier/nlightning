@@ -2738,7 +2738,6 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnName("payment_secret");
 
                     b.Property<byte[]>("Preimage")
-                        .IsRequired()
                         .HasColumnType("bytea")
                         .HasColumnName("preimage");
 

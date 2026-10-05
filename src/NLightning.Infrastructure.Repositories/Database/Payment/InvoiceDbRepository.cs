@@ -46,7 +46,7 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
         Insert(new InvoiceEntity
         {
             PaymentHash = invoice.PaymentHash,
-            Preimage = ((byte[])invoice.Preimage).ToArray(),
+            Preimage = invoice.Preimage is { } preimage ? ((byte[])preimage).ToArray() : null,
             PaymentSecret = ((byte[])invoice.PaymentSecret).ToArray(),
             AmountMsat = ToMsat(invoice.Amount),
             Description = invoice.Description,
@@ -82,6 +82,8 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
         entity.Status = (byte)invoice.Status;
         entity.AmountReceivedMsat = ToMsat(invoice.AmountReceived);
         entity.SettledAt = invoice.SettledAt;
+        // A hold invoice (NL-995) gains its preimage with the operator's settle
+        entity.Preimage = invoice.Preimage is { } preimage ? ((byte[])preimage).ToArray() : entity.Preimage;
     }
 
     /// <inheritdoc />
@@ -179,7 +181,9 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
 
     internal static InvoiceModel MapEntityToDomain(InvoiceEntity entity)
     {
-        return new InvoiceModel(entity.PaymentHash, new Secret(entity.Preimage), new Secret(entity.PaymentSecret),
+        return new InvoiceModel(entity.PaymentHash,
+                                entity.Preimage is { } preimage ? new Secret(preimage) : (Secret?)null,
+                                new Secret(entity.PaymentSecret),
                                 ToMoney(entity.AmountMsat), entity.Description, entity.Bolt11, entity.CreatedAt,
                                 entity.ExpirySeconds, entity.MinFinalCltvExpiry, (InvoiceStatus)entity.Status,
                                 ToMoney(entity.AmountReceivedMsat), entity.SettledAt, MapBolt12(entity),

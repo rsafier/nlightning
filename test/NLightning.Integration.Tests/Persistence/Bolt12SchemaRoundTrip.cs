@@ -360,7 +360,7 @@ internal static class Bolt12SchemaRoundTrip
                        ("CreatedAt", $"{invoice.CreatedAt.UtcTicks}"), ("ExpirySeconds", $"{invoice.ExpirySeconds}"),
                        ("MinFinalCltvExpiry", $"{invoice.MinFinalCltvExpiry}"), ("Status", "0")),
             [
-                (byte[])invoice.PaymentHash, (byte[])invoice.Preimage, (byte[])invoice.PaymentSecret,
+                (byte[])invoice.PaymentHash, (byte[])invoice.Preimage!.Value, (byte[])invoice.PaymentSecret,
                 invoice.Description!, invoice.Bolt11!
             ], cancellationToken);
         await context.Database.ExecuteSqlRawAsync(

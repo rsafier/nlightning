@@ -130,7 +130,7 @@ public class ShutdownFailBackTests
         // Assert: added before the shutdown (id 0 < boundary 1), so routed and paid; then the close went on
         Assert.Equal(1UL, harness.Bob.Channel(ThreeNodeHarness.AliceBobChannelId).FirstRemoteHtlcIdAfterLocalShutdown);
         var fulfilled = Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
-        Assert.Equal(invoice.Preimage, fulfilled.PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, fulfilled.PaymentPreimage);
         Assert.Empty(harness.Alice.PaymentHandler.Failed);
         Assert.Contains(harness.Sent, m => m is { From: "Bob", To: "Carol" } && m.Message is UpdateAddHtlcMessage);
         Assert.True(harness.Bob.Channel(ThreeNodeHarness.AliceBobChannelId).State >= ChannelState.Negotiating);
@@ -199,7 +199,7 @@ public class ShutdownFailBackTests
         // Assert: no failure attempted (the channel cannot carry one), the preimage committed for the on-chain claim
         Assert.Equal(sentBefore, harness.Sent.Count);
         Assert.Empty(harness.Alice.PaymentHandler.Failed);
-        Assert.Equal(invoice.Preimage,
+        Assert.Equal(invoice.Preimage!.Value,
                      bobChannel.Commitments!.GetHtlc(HtlcDirection.Incoming, incoming.Id)!.KnownPreimage);
         Assert.Equal(InvoiceStatus.Settled,
                      (await harness.Bob.InScopeAsync(u => u.InvoiceDbRepository

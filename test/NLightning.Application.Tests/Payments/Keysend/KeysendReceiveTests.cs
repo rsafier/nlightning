@@ -71,7 +71,7 @@ public class KeysendReceiveTests
         Assert.Equal(InvoiceStatus.Open, record.Status);
         Assert.Null(record.Amount);
         Assert.Null(record.Bolt11);
-        Assert.Equal(s_preimage, (byte[])record.Preimage);
+        Assert.Equal(s_preimage, (byte[])record.Preimage!);
         Assert.Equal(s_now, record.CreatedAt);
         Assert.Equal((ushort)18, record.MinFinalCltvExpiry);
         var custom = Assert.Single(record.Keysend!.CustomRecords);

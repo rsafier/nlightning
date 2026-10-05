@@ -51,7 +51,7 @@ public class InvoiceServiceTests : IDisposable
         Assert.False(decoded.Features.IsFeatureSet(Feature.BasicMpp, true));
 
         // Assert: the model
-        Assert.Equal(invoice.PaymentHash, (Hash)SHA256.HashData(invoice.Preimage));
+        Assert.Equal(invoice.PaymentHash, (Hash)SHA256.HashData(invoice.Preimage!.Value));
         Assert.Equal(amount, invoice.Amount);
         Assert.Equal(InvoiceStatus.Open, invoice.Status);
         Assert.Equal(3_600U, invoice.ExpirySeconds);

@@ -2126,7 +2126,6 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("Preimage")
-                        .IsRequired()
                         .HasColumnType("varbinary(32)");
 
                     b.Property<decimal?>("Quantity")

@@ -33,7 +33,7 @@ public class PayBlindedTests
         var ct = TestContext.Current.CancellationToken;
         await using var harness = await CreateAsync();
         var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "bolt12", null, ct);
-        var paths = await BuildPathsAsync(harness, invoice.Preimage, invoice.MinFinalCltvExpiry, 1);
+        var paths = await BuildPathsAsync(harness, invoice.Preimage!.Value, invoice.MinFinalCltvExpiry, 1);
         var details = new Bolt12PaymentDetails("lno1test", new byte[] { 1, 2, 3 }, new byte[] { 9, 9 }, "a note");
         var request = new PayBlindedRequest(invoice.PaymentHash, s_amount, paths)
         {
@@ -69,7 +69,7 @@ public class PayBlindedTests
         var ct = TestContext.Current.CancellationToken;
         await using var harness = await CreateAsync();
         var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "two paths", null, ct);
-        var paths = await BuildPathsAsync(harness, invoice.Preimage, invoice.MinFinalCltvExpiry, 2);
+        var paths = await BuildPathsAsync(harness, invoice.Preimage!.Value, invoice.MinFinalCltvExpiry, 2);
         var dearer = paths[0] with { PayInfo = paths[0].PayInfo with { FeeBaseMsat = paths[0].PayInfo.FeeBaseMsat + 500 } };
 
         // Act
@@ -92,7 +92,7 @@ public class PayBlindedTests
         var ct = TestContext.Current.CancellationToken;
         await using var harness = await CreateAsync();
         var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "split", null, ct);
-        var paths = (await BuildPathsAsync(harness, invoice.Preimage, invoice.MinFinalCltvExpiry, 2))
+        var paths = (await BuildPathsAsync(harness, invoice.Preimage!.Value, invoice.MinFinalCltvExpiry, 2))
                    .Select(p => p with { PayInfo = p.PayInfo with { HtlcMaximumMsat = s_amount.MilliSatoshi * 6 / 10 } })
                    .ToList();
         var request = new PayBlindedRequest(invoice.PaymentHash, s_amount, paths)
@@ -122,7 +122,7 @@ public class PayBlindedTests
         var ct = TestContext.Current.CancellationToken;
         await using var harness = await CreateAsync();
         var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "no split", null, ct);
-        var paths = (await BuildPathsAsync(harness, invoice.Preimage, invoice.MinFinalCltvExpiry, 2))
+        var paths = (await BuildPathsAsync(harness, invoice.Preimage!.Value, invoice.MinFinalCltvExpiry, 2))
                    .Select(p => p with { PayInfo = p.PayInfo with { HtlcMaximumMsat = s_amount.MilliSatoshi * 6 / 10 } })
                    .ToList();
 
@@ -143,7 +143,7 @@ public class PayBlindedTests
         var ct = TestContext.Current.CancellationToken;
         await using var harness = await CreateAsync(bobPays: true);
         var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "introduced by the payer", null, ct);
-        var path = Assert.Single(await BuildPathsAsync(harness, invoice.Preimage, invoice.MinFinalCltvExpiry, 1));
+        var path = Assert.Single(await BuildPathsAsync(harness, invoice.Preimage!.Value, invoice.MinFinalCltvExpiry, 1));
         Assert.Equal(harness.Bob.NodeId, path.Path.FirstNodeId);
         var request = new PayBlindedRequest(invoice.PaymentHash, s_amount, [path]) { PayeeNodeId = harness.Carol.NodeId };
 
@@ -155,7 +155,7 @@ public class PayBlindedTests
         // Assert: one HTLC straight to Carol, carrying the next path_key; Carol settled; Bob paid no one a fee beyond
         // what his own hop's payment_relay leaves
         Assert.True(result.Payment.Status == PaymentStatus.Succeeded, result.Payment.FailureReason);
-        Assert.Equal(invoice.Preimage, result.Payment.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, result.Payment.Preimage);
         var add = Assert.IsType<UpdateAddHtlcMessage>(Assert.Single(harness.Carol.Received, m => m is UpdateAddHtlcMessage));
         Assert.NotNull(add.BlindedPathTlv);
         Assert.NotEqual(path.Path.FirstPathKey, add.BlindedPathTlv!.PathKey);
@@ -175,7 +175,7 @@ public class PayBlindedTests
         var ct = TestContext.Current.CancellationToken;
         await using var harness = await CreateAsync(bobPays: true);
         var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "bad first path", null, ct);
-        var paths = await BuildPathsAsync(harness, invoice.Preimage, invoice.MinFinalCltvExpiry, 2);
+        var paths = await BuildPathsAsync(harness, invoice.Preimage!.Value, invoice.MinFinalCltvExpiry, 2);
         Assert.True(paths[0].PayInfo.ComputeFeeMsat(s_amount.MilliSatoshi) > 0);
         var underpaid = paths[0] with
         {
@@ -205,7 +205,7 @@ public class PayBlindedTests
         var ct = TestContext.Current.CancellationToken;
         await using var harness = await CreateAsync(bobPays: true);
         var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "to Carol", null, ct);
-        var path = Assert.Single(await BuildPathsAsync(harness, invoice.Preimage, invoice.MinFinalCltvExpiry, 1));
+        var path = Assert.Single(await BuildPathsAsync(harness, invoice.Preimage!.Value, invoice.MinFinalCltvExpiry, 1));
         var onlyBob = path with { Path = path.Path with { Hops = [path.Path.Hops[0]] } };
 
         // Act
@@ -225,7 +225,7 @@ public class PayBlindedTests
         var ct = TestContext.Current.CancellationToken;
         await using var harness = await CreateAsync();
         var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "self", null, ct);
-        var paths = await BuildPathsAsync(harness, invoice.Preimage, invoice.MinFinalCltvExpiry, 1);
+        var paths = await BuildPathsAsync(harness, invoice.Preimage!.Value, invoice.MinFinalCltvExpiry, 1);
 
         // Act / Assert
         await Assert.ThrowsAsync<ArgumentException>(() => Payments(harness.Alice).PayBlindedAsync(

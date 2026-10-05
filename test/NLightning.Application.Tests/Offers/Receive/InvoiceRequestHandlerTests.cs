@@ -170,14 +170,14 @@ public sealed class InvoiceRequestHandlerTests : IDisposable
         Assert.Equal("n", row.Bolt12.PayerNote);
         Assert.Equal(InvoiceStatus.Open, row.Status);
         Assert.Equal(LightningMoney.MilliSatoshis(50_000), row.Amount);
-        Assert.Equal(new Hash(SHA256.HashData(row.Preimage)), row.PaymentHash);
+        Assert.Equal(new Hash(SHA256.HashData(row.Preimage!)), row.PaymentHash);
         // B12-0's InvoiceModel still requires a string (the invoice as lni1...); B12-C's takes none
         Assert.True(row.Bolt11 is null || row.Bolt11.StartsWith("lni1", StringComparison.Ordinal));
         var (_, invoice) = SingleReply();
         Assert.Equal(row.Bolt12.InvoiceBytes.ToArray(), Assert.Single(_onionMessages.Sent).Contents.Records[0].Value
                                                               .ToArray());
         Assert.Equal((byte[])row.PaymentHash, invoice.Get(Bolt12TlvTypes.InvoicePaymentHash));
-        _paths.Verify(p => p.CreateAsync(row.Preimage, row.Amount!, Bolt12Constants.DefaultInvoiceRelativeExpirySeconds,
+        _paths.Verify(p => p.CreateAsync(row.Preimage!.Value, row.Amount!, Bolt12Constants.DefaultInvoiceRelativeExpirySeconds,
                                          It.IsAny<CancellationToken>()), Times.Once);
     }
 

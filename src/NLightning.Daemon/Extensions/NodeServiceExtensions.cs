@@ -177,6 +177,17 @@ public static class NodeServiceExtensions
                                          sp.GetService<IPaymentEventSource>(),
                                          sp.GetRequiredService<TimeProvider>(),
                                          sp.GetService<IpcClientConnectionAccessor>()));
+        // Hold invoices (NL-995): create (ClientCommand 49) from IInvoiceService, settle/cancel (50/51) from the HTLC
+        // switch's IHoldInvoiceService, which owns the held sets
+        services.AddScoped<IClientCommandHandler<CreateHoldInvoiceClientRequest, HoldInvoiceClientResponse>>(sp =>
+            new CreateHoldInvoiceClientHandler(GetPaymentLayerService<IInvoiceService>(sp),
+                                               sp.GetRequiredService<TimeProvider>()));
+        services.AddScoped<IClientCommandHandler<SettleHoldInvoiceClientRequest, HoldInvoiceClientResponse>>(sp =>
+            new SettleHoldInvoiceClientHandler(GetPaymentLayerService<IHoldInvoiceService>(sp),
+                                               sp.GetRequiredService<TimeProvider>()));
+        services.AddScoped<IClientCommandHandler<CancelHoldInvoiceClientRequest, HoldInvoiceClientResponse>>(sp =>
+            new CancelHoldInvoiceClientHandler(GetPaymentLayerService<IHoldInvoiceService>(sp),
+                                               sp.GetRequiredService<TimeProvider>()));
         services.AddScoped<IClientCommandHandler<ListForwardsClientRequest, ListForwardsClientResponse>>(sp =>
             new ListForwardsClientHandler(GetPaymentLayerService<IForwardCircuitDbRepository>(sp),
                                           sp.GetRequiredService<ILogger<ListForwardsClientHandler>>(),
@@ -229,6 +240,10 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, OpenChannelSubscriptionIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListChannelsIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, CreateInvoiceIpcHandler>();
+        // Hold invoices (NL-995): createholdinvoice/settleholdinvoice/cancelholdinvoice (ClientCommand 49-51)
+        services.AddSingleton<IIpcCommandHandler, CreateHoldInvoiceIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, SettleHoldInvoiceIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, CancelHoldInvoiceIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, PayInvoiceIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListInvoicesIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListPaymentsIpcHandler>();

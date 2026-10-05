@@ -67,7 +67,7 @@ public class TrampolineRelayE2ETests
 
         // Assert: A paid T's policy (A's default budget) and nothing else (A–T is direct)
         Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
-        Assert.Equal(invoice.Preimage, result.Payment.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, result.Payment.Preimage);
         Assert.Equal(s_trampolineFee, result.Payment.Fee);
         Assert.Equal(harness.C.NodeId, result.Payment.PayeeNodeId);
         var hops = await TrampolineHarness.GetTrampolineHopsAsync(harness.A, invoice.PaymentHash);
@@ -83,7 +83,7 @@ public class TrampolineRelayE2ETests
         var (relay, parts) = (await TrampolineHarness.GetRelayAsync(harness.T, invoice.PaymentHash))!.Value;
         Assert.Equal(TrampolineRelayStatus.Fulfilled, relay.Status);
         Assert.Equal(s_trampolineFee - s_xFee, relay.FeeEarned);
-        Assert.Equal(invoice.Preimage, relay.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, relay.Preimage);
         Assert.Single(parts);
 
         // Assert: T's leg is a relay payment, X's fee only, over one HTLC
@@ -245,7 +245,7 @@ public class TrampolineRelayE2ETests
         // Assert: A (the trampoline client) published its success with the trampoline fee, after its save
         var succeeded = Assert.IsType<PaymentSucceededEvent>(await PaymentEventHubTests.ReadOneAsync(aEvents));
         Assert.Equal(invoice.PaymentHash, succeeded.PaymentHash);
-        Assert.Equal(invoice.Preimage, succeeded.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, succeeded.Preimage);
         Assert.Equal(s_amount, succeeded.Amount);
         Assert.Equal(s_trampolineFee, succeeded.Fee);
         Assert.Equal(PaymentStatus.Succeeded,
@@ -368,7 +368,7 @@ public class TrampolineRelayE2ETests
         Assert.Empty(Engine(harness.T).CollectingPaymentHashes);
         Assert.Equal(1, CountAdds(harness, "T", "X", invoice.PaymentHash));
         Assert.Equal(2, harness.A.PaymentHandler.Fulfilled.Count);
-        Assert.All(harness.A.PaymentHandler.Fulfilled, f => Assert.Equal(invoice.Preimage, f.PaymentPreimage));
+        Assert.All(harness.A.PaymentHandler.Fulfilled, f => Assert.Equal(invoice.Preimage!.Value, f.PaymentPreimage));
         Assert.Empty(harness.A.PaymentHandler.Failed);
         Assert.Equal(InvoiceStatus.Settled,
                      (await TrampolineHarness.GetInvoiceAsync(harness.C, invoice.PaymentHash))!.Status);
@@ -782,7 +782,7 @@ public class TrampolineRelayE2ETests
         Assert.True(harness.C.Services.GetRequiredService<IChannelUpdateService>()
                            .HandleRemoteChannelUpdate(harness.X.NodeId, update!));
         var builder = harness.C.Services.GetRequiredService<BlindedPathBuilder>();
-        return await builder.BuildAsync(new BlindedPathRequest(invoice.Preimage, invoice.Amount,
+        return await builder.BuildAsync(new BlindedPathRequest(invoice.Preimage!.Value, invoice.Amount,
                                                                invoice.MinFinalCltvExpiry,
                                                                TrampolineHarness.BlockHeight, pathLifetimeBlocks,
                                                                IncludePrivateChannels: true, DummyHops: dummyHops),

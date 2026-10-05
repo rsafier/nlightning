@@ -63,7 +63,7 @@ public class TrampolineHarnessTests
 
         // Assert: paid with X's fee only
         Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
-        Assert.Equal(invoice.Preimage, result.Payment.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, result.Payment.Preimage);
         var xFee = Channels.Harness.ThreeNodeHarness.ForwardingFeeOf(TrampolineHarness.XRouting, s_amount);
         Assert.Equal(xFee, result.Payment.Fee);
         Assert.Equal(InvoiceStatus.Settled,
@@ -112,7 +112,7 @@ public class TrampolineHarnessTests
         await harness.PumpAsync();
 
         // Assert
-        Assert.Equal(invoice.Preimage, Assert.Single(harness.A.PaymentHandler.Fulfilled).PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, Assert.Single(harness.A.PaymentHandler.Fulfilled).PaymentPreimage);
         Assert.Equal(InvoiceStatus.Settled,
                      (await TrampolineHarness.GetInvoiceAsync(harness.C, invoice.PaymentHash))!.Status);
         harness.AssertQuiescent();

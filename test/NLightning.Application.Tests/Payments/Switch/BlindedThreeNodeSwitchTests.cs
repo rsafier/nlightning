@@ -52,7 +52,7 @@ public class BlindedThreeNodeSwitchTests
         Assert.Equal(expected, forwarded.Payload.Amount.MilliSatoshi);
         Assert.Equal(FinalCltv, forwarded.Payload.CltvExpiry);
         var fulfilled = Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
-        Assert.Equal(invoice.Preimage, fulfilled.PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, fulfilled.PaymentPreimage);
         var stored = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
                                                              .GetByPaymentHashAsync(invoice.PaymentHash));
         Assert.Equal(InvoiceStatus.Settled, stored!.Status);
@@ -197,7 +197,7 @@ public class BlindedThreeNodeSwitchTests
         };
         var carolData = new BlindedRecipientData
         {
-            PathId = pathId ?? BlindedPathId.Compute(invoice.Preimage),
+            PathId = pathId ?? BlindedPathId.Compute(invoice.Preimage!.Value),
             PaymentConstraints = new BlindedPaymentConstraints(FinalCltv + 1_000, 1)
         };
         var path = blinding.CreateBlindedPath([harness.Bob.NodeId, harness.Carol.NodeId],

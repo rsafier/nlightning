@@ -55,10 +55,10 @@ public class QuiescenceSwitchTests
 
         // Assert
         Assert.Equal(InvoiceStatus.Settled, whileQuiescent!.Status);
-        Assert.Equal(invoice.Preimage, committed.KnownPreimage);
+        Assert.Equal(invoice.Preimage!.Value, committed.KnownPreimage);
         Assert.Null(committed.Removal);
         Assert.Single(harness.Sent, m => m is { From: "Carol", To: "Bob" } && m.Message is UpdateFulfillHtlcMessage);
-        Assert.Equal(invoice.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
         AssertNoHtlcs(harness);
     }
 
@@ -90,7 +90,7 @@ public class QuiescenceSwitchTests
         Assert.Equal(0, upstreamWhileQuiescent);
         Assert.Equal(0, paidWhileQuiescent);
         Assert.Single(harness.Sent, m => m is { From: "Bob", To: "Alice" } && m.Message is UpdateFulfillHtlcMessage);
-        Assert.Equal(invoice.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
         AssertNoHtlcs(harness);
     }
 

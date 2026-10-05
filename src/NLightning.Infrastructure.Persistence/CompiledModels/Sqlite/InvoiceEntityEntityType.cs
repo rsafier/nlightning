@@ -789,7 +789,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                 "Preimage",
                 typeof(byte[]),
                 propertyInfo: typeof(InvoiceEntity).GetProperty("Preimage", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
-                fieldInfo: typeof(InvoiceEntity).GetField("<Preimage>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly));
+                fieldInfo: typeof(InvoiceEntity).GetField("<Preimage>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
             preimage.SetGetter(
                 byte[] (InvoiceEntity instance) => InvoiceEntityUnsafeAccessors.Preimage(instance),
                 bool (InvoiceEntity instance) => InvoiceEntityUnsafeAccessors.Preimage(instance) == null);

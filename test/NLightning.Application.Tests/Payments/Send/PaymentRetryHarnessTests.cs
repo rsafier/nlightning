@@ -80,7 +80,7 @@ public class PaymentRetryHarnessTests
         // Assert: two HTLCs; the second carries Carol's new fee on top of the amount
         var newFee = 3_000 + s_amount.MilliSatoshi * 1_000 / 1_000_000;
         Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
-        Assert.Equal(invoice.Preimage, result.Payment.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, result.Payment.Preimage);
         Assert.Equal((2, 1), (result.Attempts, result.Parts));
         Assert.Equal(newFee, result.Payment.Fee.MilliSatoshi);
         var forwards = harness.Carol.Switch.Forwards.ToArray();
@@ -269,7 +269,7 @@ public class PaymentRetryHarnessTests
 
         // Assert: two HTLCs, each telling Carol total_msat = the amount, together the amount
         Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
-        Assert.Equal(invoice.Preimage, result.Payment.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, result.Payment.Preimage);
         Assert.Equal((2, 2), (result.Attempts, result.Parts));
         Assert.True(result.Payment.Fee.IsZero);
         var received = harness.Carol.Switch.Received.ToArray();
@@ -336,7 +336,7 @@ public class PaymentRetryHarnessTests
         // Assert: two parts, then the refused one's amount sent again at Carol's new fee (it no longer fits its channel
         // alone, so it may be split again); every HTLC but the refused one reached David, together the amount
         Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
-        Assert.Equal(invoice.Preimage, result.Payment.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, result.Payment.Preimage);
         Assert.True(result.Attempts >= 3, $"{result.Attempts} HTLC(s)");
         Assert.True(result.Parts >= 2, $"{result.Parts} part(s) at once");
         Assert.Equal(result.Attempts, harness.Carol.Switch.Forwards.Count);

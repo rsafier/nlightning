@@ -116,7 +116,7 @@ public class OnchainFinalHopTests : IAsyncLifetime
             return stored.Status == InvoiceStatus.Settled ? stored : null;
         }, s_timeout, "our invoice settled", ct);
         Assert.Equal(s_amount, settled.AmountReceived);
-        Assert.Equal(invoice.Preimage, IncomingHtlcs(first.ChannelId).Single(h => h.Id == held.Id).KnownPreimage);
+        Assert.Equal(invoice.Preimage!.Value, IncomingHtlcs(first.ChannelId).Single(h => h.Id == held.Id).KnownPreimage);
         var secondResult = await secondAttempt.WaitAsync(s_timeout, ct);
         Console.WriteLine($"Second part: {secondResult.Status} {secondResult.Failure?.Code}");
         Assert.Equal(HTLCAttempt.Types.HTLCStatus.Succeeded, secondResult.Status);
@@ -137,7 +137,7 @@ public class OnchainFinalHopTests : IAsyncLifetime
         Assert.True(confirmedAt < held.CltvExpiry, $"claimed at {confirmedAt}, expiry {held.CltvExpiry}");
         Assert.Equal(0U, claim.LockTime.Value);
         Assert.Equal(commitmentTxId, Assert.Single(claim.Inputs).PrevOut.Hash);
-        Assert.Equal((byte[])invoice.Preimage, claim.Inputs[0].WitScript.Pushes.ElementAt(1));
+        Assert.Equal((byte[])invoice.Preimage!.Value, claim.Inputs[0].WitScript.Pushes.ElementAt(1));
         await Poll.UntilAsync(async () => (await GetOutputAsync(first.ChannelId,
                                                                 OutputDescriptorKind.RemoteOfferedHtlc))?.State
                                           >= OutputResolutionState.Resolved,

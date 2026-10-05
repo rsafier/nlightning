@@ -78,7 +78,7 @@ public class OfferHarnessTests
         Assert.Equal(offer.OfferId, invoice.Bolt12!.OfferId);
         Assert.Equal("from alice", invoice.Bolt12.PayerNote);
         Assert.Equal(result.Fetch.Invoice!.InvoiceBytes.ToArray(), invoice.Bolt12.InvoiceBytes.ToArray());
-        Assert.Equal(invoice.Preimage, payment.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, payment.Preimage);
 
         // Alice's payment row keeps the offer, the invoice and her request's metadata
         var stored = await harness.Alice.InScopeAsync(u => u.PaymentDbRepository

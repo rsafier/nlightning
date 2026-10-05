@@ -59,7 +59,7 @@ public class TrampolineReceiveSwitchTests
 
         // Assert
         var fulfilled = Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
-        Assert.Equal(invoice.Preimage, fulfilled.PaymentPreimage);
+        Assert.Equal(invoice.Preimage!.Value, fulfilled.PaymentPreimage);
         Assert.Empty(harness.Alice.PaymentHandler.Failed);
         var stored = await GetInvoiceAsync(harness, invoice);
         Assert.Equal(InvoiceStatus.Settled, stored.Status);

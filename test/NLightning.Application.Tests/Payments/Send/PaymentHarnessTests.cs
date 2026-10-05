@@ -58,7 +58,7 @@ public class PaymentHarnessTests : IDisposable
 
         // Assert
         Assert.Equal(PaymentStatus.Succeeded, payment.Status);
-        Assert.Equal(invoice.Preimage, payment.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, payment.Preimage);
         Assert.Equal(LightningMoney.Zero, payment.Fee);
         Assert.Equal(_harness.BobCarol, payment.OutgoingChannelId);
         var hop = Assert.Single(payment.Route);
@@ -88,7 +88,7 @@ public class PaymentHarnessTests : IDisposable
         // Assert: the event carries the proof, and the row it announces is already Succeeded
         var succeeded = Assert.IsType<PaymentSucceededEvent>(await PaymentEventHubTests.ReadOneAsync(subscription));
         Assert.Equal(invoice.PaymentHash, succeeded.PaymentHash);
-        Assert.Equal(invoice.Preimage, succeeded.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, succeeded.Preimage);
         Assert.Equal(s_amount, succeeded.Amount);
         Assert.Equal(LightningMoney.Zero, succeeded.Fee);
         Assert.Equal(PaymentStatus.Succeeded,
@@ -168,7 +168,7 @@ public class PaymentHarnessTests : IDisposable
 
         // Assert: the payment and its stored route
         Assert.Equal(PaymentStatus.Succeeded, payment.Status);
-        Assert.Equal(invoice.Preimage, payment.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, payment.Preimage);
         Assert.Equal(invoice.PaymentHash, (Domain.Crypto.ValueObjects.Hash)SHA256.HashData(payment.Preimage!.Value));
         Assert.Equal(feeCarol, payment.Fee.MilliSatoshi);
         Assert.Equal(2, payment.Route.Count);
@@ -394,7 +394,7 @@ public class PaymentHarnessTests : IDisposable
         await _harness.PumpAsync();
         var stored = await _harness.Bob.PaymentService.GetPaymentAsync(invoice.PaymentHash, ct);
         Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
-        Assert.Equal(invoice.Preimage, stored.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, stored.Preimage);
         AssertNoPendingHtlcs();
     }
 
@@ -438,7 +438,7 @@ public class PaymentHarnessTests : IDisposable
         // Assert: the fulfill matched through the HTLC's record in channel memory
         Assert.Empty(_harness.Bob.Store.Origins);
         Assert.Equal(PaymentStatus.Succeeded, payment.Status);
-        Assert.Equal(invoice.Preimage, payment.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, payment.Preimage);
         Assert.Equal((_harness.BobCarol, 0UL), (payment.OutgoingChannelId!.Value, payment.OutgoingHtlcId!.Value));
         AssertNoPendingHtlcs();
     }

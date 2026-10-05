@@ -33,6 +33,7 @@ public class NLightningFormatterResolver : IFormatterResolver
         _formatters[typeof(ChannelId)] = new ChannelIdFormatter();
         _formatters[typeof(ChannelId?)] = new ChannelIdNullableFormatter();
         _formatters[typeof(TxId)] = new TxIdFormatter();
+        _formatters[typeof(Secret)] = new SecretFormatter();
         _formatters[typeof(Secret?)] = new SecretNullableFormatter();
     }
 

@@ -59,7 +59,7 @@ public class GraphPaymentHarnessTests
         Assert.Empty(Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints);
         var payment = result.Payment;
         Assert.Equal(PaymentStatus.Succeeded, payment.Status);
-        Assert.Equal(invoice.Preimage, payment.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, payment.Preimage);
         Assert.Equal(1, result.Attempts);
 
         // Assert: the route and every hop's HTLC, BOLT 7 fees and CLTV deltas (Erin's c = 40, +3 safety blocks)
@@ -159,7 +159,7 @@ public class GraphPaymentHarnessTests
 
         // Assert: two HTLCs, one over each Carol–David channel, delivering the amount to Erin together
         Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
-        Assert.Equal(invoice.Preimage, result.Payment.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, result.Payment.Preimage);
         Assert.Equal(2, result.Attempts);
         var forwards = harness.Carol.Switch.Forwards.ToArray();
         Assert.Equal(2, forwards.Length);

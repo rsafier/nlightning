@@ -19,7 +19,8 @@ public class InvoiceEntity
     /// <summary>
     /// The 32-byte preimage of <see cref="PaymentHash"/>.
     /// </summary>
-    public required byte[] Preimage { get; set; }
+    /// <summary>Null only for a hold invoice (NL-995), settled with an outside preimage.</summary>
+    public byte[]? Preimage { get; set; }
 
     /// <summary>
     /// The 32-byte BOLT 11 <c>payment_secret</c>.

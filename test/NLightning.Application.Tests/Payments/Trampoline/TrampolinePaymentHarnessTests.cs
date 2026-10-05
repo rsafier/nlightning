@@ -117,7 +117,7 @@ public class TrampolinePaymentHarnessTests
         // The leg reported once, stored as a relay and carried origin 3; no payment event of Carol's
         await ((PaymentService)harness.Carol.PaymentService).WhenRoundsIdleAsync();
         var outcome = Assert.Single(carol.Outcomes);
-        Assert.Equal(invoice.Preimage, outcome.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, outcome.Preimage);
         var legRow = await harness.Carol.Payments.GetByPaymentHashAsync(invoice.PaymentHash);
         Assert.True(legRow!.IsTrampolineRelay);
         Assert.Equal(PaymentStatus.Succeeded, legRow.Status);
@@ -531,7 +531,7 @@ public class TrampolinePaymentHarnessTests
         Assert.Equal(PaymentHarness.BlockHeight + 100, atDavid.CltvExpiry);
         Assert.Equal(s_amount.MilliSatoshi, atDavid.AmountMsat);
         var outcome = Assert.Single(carol.Outcomes);
-        Assert.Equal(invoice.Preimage, outcome.Preimage);
+        Assert.Equal(invoice.Preimage!.Value, outcome.Preimage);
         var row = await harness.Carol.Payments.GetByPaymentHashAsync(invoice.PaymentHash);
         Assert.True(row!.IsTrampolineRelay);
         Assert.Single(harness.Carol.Store.Origins.Values, o => o == HtlcOrigin.Trampoline(invoice.PaymentHash));

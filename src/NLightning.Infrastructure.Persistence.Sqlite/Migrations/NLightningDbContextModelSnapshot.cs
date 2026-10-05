@@ -2105,7 +2105,6 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasColumnType("BLOB");
 
                     b.Property<byte[]>("Preimage")
-                        .IsRequired()
                         .HasColumnType("BLOB");
 
                     b.Property<ulong?>("Quantity")

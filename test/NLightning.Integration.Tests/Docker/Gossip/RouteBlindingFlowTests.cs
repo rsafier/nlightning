@@ -240,7 +240,7 @@ public class RouteBlindingFlowTests
         var paths = await Poll.ForAsync(async () =>
         {
             var built = await builder.BuildAsync(
-                            new BlindedPathRequest(invoice.Preimage, amount, invoice.MinFinalCltvExpiry,
+                            new BlindedPathRequest(invoice.Preimage!.Value, amount, invoice.MinFinalCltvExpiry,
                                                    node.BlockchainMonitor.LastProcessedBlockHeight), ct);
             return built.Count > 0 ? built : null;
         }, s_timeout, "a blinded path through alice (her channel_update received)", ct, TimeSpan.FromSeconds(2));
@@ -277,7 +277,7 @@ public class RouteBlindingFlowTests
         foreach (var line in node.NodeLog.Where(l => l.Contains("blinded", StringComparison.OrdinalIgnoreCase)))
             Console.WriteLine(line);
         Assert.Equal(Testing.Lnd.Lnrpc.HTLCAttempt.Types.HTLCStatus.Succeeded, attempt.Status);
-        Assert.Equal(Convert.ToHexStringLower((byte[])invoice.Preimage),
+        Assert.Equal(Convert.ToHexStringLower((byte[])invoice.Preimage!.Value),
                      Convert.ToHexStringLower(attempt.Preimage.ToByteArray()));
         var stored = await Poll.ForAsync(async () => await node.GetInvoiceAsync(invoice.PaymentHash, ct) is
         { Status: InvoiceStatus.Settled } settled

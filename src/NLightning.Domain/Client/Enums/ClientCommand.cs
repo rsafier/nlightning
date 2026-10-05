@@ -4,7 +4,8 @@ namespace NLightning.Domain.Client.Enums;
 /// Commands sent by a client.
 /// </summary>
 /// <remarks>
-/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 48.
+/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 52;
+/// 48 is reserved for <c>payroute</c> (wip/payroute, NL-1145), so the branches merge without a renumber.
 /// </remarks>
 public enum ClientCommand
 {
@@ -120,5 +121,24 @@ public enum ClientCommand
     /// Waits until one of our invoices leaves <c>Open</c> (<c>waitinvoice</c>, Cashu plan C0, NL-991), at most the
     /// request's timeout; answers with the invoice either way.
     /// </summary>
-    WaitInvoice = 47
+    WaitInvoice = 47,
+
+    /// <summary>
+    /// Creates a hold invoice (NL-995, <c>createholdinvoice</c>) for a caller-supplied payment hash: the paying HTLC
+    /// set is held once complete until the operator settles it with the outside preimage or cancels it. Value 48 is
+    /// reserved for <c>payroute</c> (wip/payroute, NL-1145).
+    /// </summary>
+    CreateHoldInvoice = 49,
+
+    /// <summary>
+    /// Settles a held invoice (NL-995, <c>settleholdinvoice</c>) with the preimage from outside, which must hash to
+    /// the invoice's payment hash; its held parts are fulfilled with it.
+    /// </summary>
+    SettleHoldInvoice = 50,
+
+    /// <summary>
+    /// Cancels a hold invoice (NL-995, <c>cancelholdinvoice</c>): a held set's parts are failed back and the invoice
+    /// is <c>Canceled</c>; an open one is simply canceled.
+    /// </summary>
+    CancelHoldInvoice = 51
 }

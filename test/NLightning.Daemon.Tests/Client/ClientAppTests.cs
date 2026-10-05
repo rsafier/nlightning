@@ -13,6 +13,11 @@ public class ClientAppTests
     private static readonly string s_missingCookieDir =
         Path.Combine(Path.GetTempPath(), $"nltg-missing-{Guid.NewGuid():N}");
 
+    /// <summary>A payment hash and a preimage, both 64 hex characters (NL-995).</summary>
+    private const string Hash64Hex = "abababababababababababababababababababababababababababababababab";
+
+    private const string Preimage64Hex = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+
     [Theory]
     [InlineData("--help")]
     [InlineData("-h")]
@@ -42,6 +47,20 @@ public class ClientAppTests
     [InlineData("addinvoice", "12abc")]
     [InlineData("create-invoice", "-5")]
     [InlineData("createinvoice", "1000", "desc", "0")]
+    [InlineData("createholdinvoice")]
+    [InlineData("create-hold-invoice", "abcd")]
+    [InlineData("createholdinvoice", Hash64Hex, "0")]
+    [InlineData("createholdinvoice", Hash64Hex, "12abc")]
+    [InlineData("createholdinvoice", Hash64Hex, "1000", "desc", "extra")]
+    [InlineData("createholdinvoice", Hash64Hex, "--expiry")]
+    [InlineData("createholdinvoice", Hash64Hex, "1000", "desc", "--expiry", "0")]
+    [InlineData("createholdinvoice", Hash64Hex, "1000", "desc", "--fast")]
+    [InlineData("settleholdinvoice")]
+    [InlineData("settle-hold-invoice", Hash64Hex)]
+    [InlineData("settleholdinvoice", Hash64Hex, "nope")]
+    [InlineData("settleholdinvoice", Hash64Hex, Preimage64Hex, "extra")]
+    [InlineData("cancelholdinvoice")]
+    [InlineData("cancel-hold-invoice", Hash64Hex, "extra")]
     [InlineData("payinvoice")]
     [InlineData("pay", "lnbcrt1", "1.5")]
     [InlineData("pay-invoice", "lnbcrt1", "1000", "soon")]

@@ -17,7 +17,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
     public partial class NLightningDbContextModel
     {
         private NLightningDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("4e79a88c-41d3-49a0-a443-e280f346ce5a"), entityTypeCount: 56)
+            : base(skipDetectChanges: false, modelId: new Guid("6281e8b6-37a8-41cc-9ea9-300238fde95c"), entityTypeCount: 56)
         {
         }
 
@@ -6431,7 +6431,10 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.Columns.Add("payment_hash", payment_hashColumnBase4);
             var payment_secretColumnBase = new ColumnBase<ColumnMappingBase>("payment_secret", "bytea", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.Columns.Add("payment_secret", payment_secretColumnBase);
-            var preimageColumnBase = new ColumnBase<ColumnMappingBase>("preimage", "bytea", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase);
+            var preimageColumnBase = new ColumnBase<ColumnMappingBase>("preimage", "bytea", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase)
+            {
+                IsNullable = true
+            };
             nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.Columns.Add("preimage", preimageColumnBase);
             var quantityColumnBase = new ColumnBase<ColumnMappingBase>("quantity", "numeric(20,0)", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase)
             {
@@ -6557,7 +6560,10 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var payment_secretColumn = new Column("payment_secret", "bytea", invoicesTable);
             invoicesTable.Columns.Add("payment_secret", payment_secretColumn);
             payment_secretColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(payment_secretColumn);
-            var preimageColumn = new Column("preimage", "bytea", invoicesTable);
+            var preimageColumn = new Column("preimage", "bytea", invoicesTable)
+            {
+                IsNullable = true
+            };
             invoicesTable.Columns.Add("preimage", preimageColumn);
             preimageColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(preimageColumn);
             var quantityColumn = new Column("quantity", "numeric(20,0)", invoicesTable)
