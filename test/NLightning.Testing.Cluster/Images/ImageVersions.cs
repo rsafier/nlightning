@@ -82,6 +82,13 @@ public static class ImageVersions
     /// </summary>
     public static readonly ImageRef CdkCli = new("nltg-cdk-cli", "0.18.1", PullPolicy: ImagePullPolicy.Never);
 
+    /// <summary>
+    /// Second's captaind (the Bark ASP server), built locally from the bark repo (<c>github.com/ark-bitcoin/bark</c>,
+    /// the mirror of <c>gitlab.com/ark-bitcoin/bark</c>, master pinned by the Bark node's vendored default config; a
+    /// cold Rust build takes 10-20 min). Reused as it is.
+    /// </summary>
+    public static readonly ImageRef Captaind = new("nltg-captaind", "latest", PullPolicy: ImagePullPolicy.Never);
+
     /// <summary>A tiny image for the harness's own smoke tests.</summary>
     public static readonly ImageRef Busybox = new("busybox", "1.37");
 

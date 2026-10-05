@@ -179,10 +179,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 82 | 83 |
 | in-progress | 0 | 0 | 4 | 1 | 5 |
-| fixed | 15 | 68 | 222 | 461 | 766 |
+| fixed | 15 | 68 | 223 | 461 | 767 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **236** | **564** | **883** |
+| **Total** | **15** | **68** | **237** | **564** | **884** |
 
 ### Epics
 
@@ -9375,3 +9375,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** in the NL-1091 full net10.0 run (2026-10-05, `wip/nbitcoin10`) the payment was still `InFlight` when its wall-clock `PayInvoiceOptions.Timeout` of 30 s ran out (test took 43 s); the class passed 3/3 alone right after, and the net11.0 full run passed it. Bob's `invalid_onion_blinding` answer waits a random delay (`Node:Switch:BlindedErrorMaxDelay`) on a real clock.
 - **Fix sketch:** drive the blinded-error delay and the payment timeout from a stepped clock (as the de-timing pass did for NL-382 and others) or set the harness's `BlindedErrorMaxDelay` to zero; else move the class to the `timing-serial` collection.
 - **Blocks/Blocked-by:** found by NL-1091
+
+### NL-1148 LN backend for Bark ASPs: hold.Hold + a minimal cln.Node gRPC on the node
+- **Status:** fixed (123dc6c3)
+- **Severity:** medium
+- **Kind:** feature
+- **Location:** `src/NLightning.LnBackend/` (`Protos/hold.proto` vendored from BoltzExchange/hold, MIT; `Protos/cln_node.proto` minimal `cln.Node`), `HoldBackendService`, `ClnNodeBackendService`, `LnBackendHost` (one mTLS Kestrel listener, `LnBackend:Enabled`, refused on mainnet without `AllowMainnet`), tests `test/NLightning.LnBackend.Tests` (77) + `Docker/Bark/BarkAspFlowTests.cs` (cluster, lnd suite, captaind pod `Nodes/Bark/CaptaindNode.cs`)
+- **Evidence:** Second's captaind (the Bark ASP) drives a Lightning node through exactly two gRPC contracts: Boltz's hold.Hold (receive: Invoice/Inject by payment hash, Track/TrackAll states, Settle by preimage, Cancel) and CLN's cln.Node (getinfo liveness, xpay, listpays) — both served by the node over its hold invoices (NL-995) and payments. Field numbers copied from the upstream protos. Proof: unmodified captaind (master 2c5f0fcb, image nltg-captaind) on the cluster creates a hold invoice through us, LND pays it, TrackAll sees ACCEPTED, the preimage reaches captaind's settlement WAL and captaind itself calls Settle; LND's payment completes with that preimage and our invoice Settles. lnd suite 61/61. Findings: captaind cannot use h2c http:// URIs (tonic 0.14 parses the client key eagerly even for http — their default TOML example is stale), so the backend needs its mTLS TLS directory (the Cashu NL-998 shape works); bark added hold.List payment_hashes=3 (served); CancelLightningReceive is disabled in captaind; captaind needs bitcoind >= 31 (it runs its own chain beside the fixture's Core 29). Four service bugs the tests found were fixed: TrackAll's PeriodicTimer single-waiter fault (the stream died after one event), proto3 optional expiry read as 0, amountless Inject reached the service, and the backend's invoices carried no label so List/TrackAll never saw them.
+- **Fix sketch:** Wave C: the real bark wallet claim side (arkoor package, musig2 nonces), xpay through captaind, and upstreaming the missing bits.
+- **Blocks/Blocked-by:** Builds on NL-995
+- **Plan ref:** `docs/agents/LN_BACKEND_PLAN.md`

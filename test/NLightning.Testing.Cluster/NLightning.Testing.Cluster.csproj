@@ -43,6 +43,9 @@
 
   <ItemGroup>
     <None Include="deploy/**" CopyToOutputDirectory="Never"/>
+    <!-- captaind's default configuration (Nodes/Bark), the base the Bark node builder splices the run's addresses into
+         (embedded: the harness never reads it from disk) -->
+    <EmbeddedResource Include="Nodes/Bark/captaind.template.toml"/>
   </ItemGroup>
 
 </Project>

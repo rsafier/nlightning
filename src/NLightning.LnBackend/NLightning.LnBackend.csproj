@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Version>0.0.1</Version>
+    <Description>The Boltz hold-invoice gRPC backend (hold.Hold) over an NLightning node: lets an unmodified ASP (Second's captaind, the Bark server) use the node as its Lightning rail</Description>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(Configuration.Contains('Debug'))">
+    <DefineConstants>DEBUG;$(DefineConstants)</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(Configuration.Contains('Release'))">
+    <Optimize Condition=" '$(Optimize)' == '' ">true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.34.0"/>
+    <PackageReference Include="Grpc.AspNetCore.Server" Version="2.76.0"/>
+    <PackageReference Include="Grpc.Tools" Version="2.76.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Server for the daemon, client for the tests -->
+    <Protobuf Include="Protos\hold.proto" GrpcServices="Both" Access="Public"/>
+    <Protobuf Include="Protos\cln_node.proto" GrpcServices="Both" Access="Public"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NLightning.Application\NLightning.Application.csproj"/>
+    <ProjectReference Include="..\NLightning.Domain\NLightning.Domain.csproj"/>
+  </ItemGroup>
+
+</Project>
