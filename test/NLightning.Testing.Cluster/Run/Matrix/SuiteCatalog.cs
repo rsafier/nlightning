@@ -83,8 +83,10 @@ public static class SuiteCatalog
             [], "off", 1, 1, TimeSpan.FromMinutes(45), SuiteRequirement.LndClusterBackend),
         // Simple taproot channels against LND (taproot plan T6): their own network, one LND run with
         // --protocol.simple-taproot-chans (the flag also forces LND's RBF close, so the shared regtest network's nodes
-        // never get it)
-        new("taproot", "simple taproot channels against LND (Docker.Taproot, LndTaprootRegtestCollection)",
+        // never get it); also the regtest e2e of public taproot channels between NLightning nodes on its bitcoind
+        // (taproot gossip, NL-878)
+        new("taproot", "simple taproot channels against LND and public taproot channels between NLightning nodes "
+                     + "(Docker.Taproot, LndTaprootRegtestCollection)",
             "integration",
             ["-namespace", $"{Docker}.Taproot"],
             [], "off", 1, 1, TimeSpan.FromMinutes(30), SuiteRequirement.LndClusterBackend),

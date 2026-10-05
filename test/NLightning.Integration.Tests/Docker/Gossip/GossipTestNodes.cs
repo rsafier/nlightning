@@ -90,9 +90,14 @@ public static class GossipTestNodes
             cltvExpiryDelta.ToString(CultureInfo.InvariantCulture);
     }
 
-    private static async Task<NLightningTestNode> StartGossipNodeAsync(NLightningTestNode node, string alias,
-                                                                       CancellationToken cancellationToken,
-                                                                       Action<NLightningTestNode>? configure)
+    /// <summary>
+    /// As <see cref="StartGossipNodeAsync(LightningRegtestNetworkFixture, string, string, CancellationToken,
+    /// Action{NLightningTestNode}?)"/>, for a node already made (e.g. with its own <c>NodeOptions</c> changes); the
+    /// node is disposed when the start fails.
+    /// </summary>
+    public static async Task<NLightningTestNode> StartGossipNodeAsync(NLightningTestNode node, string alias,
+                                                                      CancellationToken cancellationToken,
+                                                                      Action<NLightningTestNode>? configure = null)
     {
         foreach (var flag in s_gossipFlags)
             node.ExtraConfiguration[$"{GossipSection}:{flag}"] = "true";

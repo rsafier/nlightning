@@ -11,8 +11,9 @@ using Infrastructure.Serialization.Messages;
 
 /// <summary>
 /// Records the wire bytes (type prefix included) of every BOLT 7 message (256-265: announcements, updates, queries,
-/// replies and timestamp filters) a node receives <b>and sends</b>, for the G3 proofs: which queries our node sent,
-/// which replies it got, and whether a message it relayed came back (plan Proof G3 (a), (c)).
+/// replies and timestamp filters; the taproot gossip messages 267, 269 and 271) a node receives <b>and sends</b>, for
+/// the G3 proofs: which queries our node sent, which replies it got, and whether a message it relayed came back (plan
+/// Proof G3 (a), (c)). Other types are recorded only when named at construction (e.g. <c>channel_reestablish</c>).
 /// </summary>
 /// <remarks>
 /// Install it with <see cref="Install"/> through <c>NLightningTestNode.ConfigureServices</c>: it replaces the node's
@@ -27,8 +28,18 @@ public sealed class GossipTrafficRecorder
     public const ushort QueryChannelRangeType = 263;
     public const ushort ReplyChannelRangeType = 264;
     public const ushort GossipTimestampFilterType = 265;
+    public const ushort ChannelAnnouncement2Type = 267;
+    public const ushort NodeAnnouncement2Type = 269;
+    public const ushort ChannelUpdate2Type = 271;
 
+    private readonly HashSet<ushort> _extraTypes;
     private readonly ConcurrentQueue<GossipTraffic> _traffic = new();
+
+    /// <param name="extraTypes">Message types recorded besides the gossip ones.</param>
+    public GossipTrafficRecorder(params IEnumerable<ushort> extraTypes)
+    {
+        _extraTypes = [.. extraTypes];
+    }
 
     /// <summary>
     /// Every recorded message, in order.
@@ -68,7 +79,9 @@ public sealed class GossipTrafficRecorder
             return;
 
         var type = BinaryPrimitives.ReadUInt16BigEndian(wire);
-        if (type is >= 256 and <= GossipTimestampFilterType)
+        if (type is >= 256 and <= GossipTimestampFilterType or ChannelAnnouncement2Type or NodeAnnouncement2Type
+                                                          or ChannelUpdate2Type
+         || _extraTypes.Contains(type))
             _traffic.Enqueue(new GossipTraffic(type, wire, outbound, DateTimeOffset.UtcNow));
     }
 
