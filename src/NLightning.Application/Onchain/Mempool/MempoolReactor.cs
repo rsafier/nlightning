@@ -581,18 +581,8 @@ public sealed class MempoolReactor : IMempoolReactor, IDisposable
         }
     }
 
-    private static ChannelCommitments WithRecords(ChannelCommitments commitments, IEnumerable<HtlcRecord> records)
-    {
-        var htlcs = commitments.Htlcs;
-        foreach (var record in records)
-            htlcs = htlcs.SetItem(record.Key, record);
-
-        return ChannelCommitments.Restore(commitments.ChannelId, commitments.Params, commitments.LocalBalanceMsat,
-                                          commitments.RemoteBalanceMsat, htlcs.Values, commitments.FeeUpdates,
-                                          commitments.LocalNextHtlcId, commitments.RemoteNextHtlcId,
-                                          commitments.LocalCommit, commitments.RemoteCommit,
-                                          commitments.RemoteNextCommit, commitments.RemoteNextPerCommitmentPoint);
-    }
+    private static ChannelCommitments WithRecords(ChannelCommitments commitments, IEnumerable<HtlcRecord> records) =>
+        commitments.WithHtlcRecords(records);
 
     private static bool Hashes(Secret preimage, Hash paymentHash) =>
         SHA256.HashData((byte[])preimage).AsSpan().SequenceEqual((byte[])paymentHash);

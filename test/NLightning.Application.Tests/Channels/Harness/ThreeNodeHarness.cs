@@ -126,6 +126,7 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
 
     private readonly string _directory;
     private bool _simpleTaproot;
+    private bool _anchors;
     private readonly ConcurrentDictionary<(string From, string To), ConcurrentQueue<IChannelMessage>> _links = new();
 
     public SwitchNode Alice { get; }
@@ -158,6 +159,8 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
     /// <param name="carolAlice">Also open <see cref="CarolAliceChannelId"/> (Carol funds and pushes, as the others),
     /// so the three nodes form a triangle (NL-609).</param>
     /// <param name="simpleTaproot">Every channel is a simple taproot channel (NL-877 T5: MuSig2 commitments).</param>
+    /// <param name="anchors">Every channel is an <c>option_anchors</c> channel (implied by
+    /// <paramref name="simpleTaproot"/>).</param>
     /// <param name="announceAliceBob">The Alice-Bob channel is public (<c>announce_channel</c>; taproot gossip proofs,
     /// NL-878).</param>
     /// <param name="splicing">Every node runs the splicing services (<see cref="SwitchNode.Splicing"/>; the spliced
@@ -165,11 +168,12 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
     public static async Task<ThreeNodeHarness> CreateAsync(Action<ThreeNodeHarness>? beforeStart = null,
                                                            FeatureSupport bobCarolScidAlias = FeatureSupport.No,
                                                            bool carolAlice = false, bool simpleTaproot = false,
-                                                           bool announceAliceBob = false, bool splicing = false)
+                                                           bool announceAliceBob = false, bool splicing = false,
+                                                           bool anchors = false)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"nltg-three-node-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
-        var harness = new ThreeNodeHarness(directory) { _simpleTaproot = simpleTaproot };
+        var harness = new ThreeNodeHarness(directory) { _simpleTaproot = simpleTaproot, _anchors = anchors };
         if (splicing)
             foreach (var node in harness.Nodes)
                 node.Splicing = new SwitchNodeSplicing();
@@ -465,10 +469,10 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
 
         var funderChannel = CreateChannel(funder, funderKeyIndex, fundee, fundeeKeyIndex, funderParty, fundeeParty,
                                           true, channelId, scid, fundingTxId, obscuring, scidAlias, _simpleTaproot,
-                                          announce);
+                                          announce, _anchors);
         var fundeeChannel = CreateChannel(fundee, fundeeKeyIndex, funder, funderKeyIndex, fundeeParty, funderParty,
                                           false, channelId, scid, fundingTxId, obscuring, scidAlias, _simpleTaproot,
-                                          announce);
+                                          announce, _anchors);
         if (scidAlias != FeatureSupport.No && funderAlias is { } a && fundeeAlias is { } b)
         {
             funderChannel.LocalAliases = [a];
@@ -493,12 +497,12 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
                                               ChannelId channelId, ShortChannelId scid, TxId fundingTxId,
                                               CommitmentNumber obscuring,
                                               FeatureSupport scidAlias = FeatureSupport.No, bool simpleTaproot = false,
-                                              bool announce = false)
+                                              bool announce = false, bool anchors = false)
     {
         var selfBasepoints = self.Basepoints(selfKeyIndex);
         var peerBasepoints = peer.Basepoints(peerKeyIndex);
-        var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(InitialFeeratePerKw), 3, false,
-                                              scidAlias)
+        var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(InitialFeeratePerKw), 3,
+                                              anchors, scidAlias)
         {
             OptionSimpleTaproot = simpleTaproot,
             AnnounceChannel = announce

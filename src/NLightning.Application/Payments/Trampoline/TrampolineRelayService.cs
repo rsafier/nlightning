@@ -956,15 +956,8 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
         var next = commitments;
         if (updated.Count > 0)
         {
-            var htlcs = commitments.Htlcs;
-            foreach (var record in updated)
-                htlcs = htlcs.SetItem(record.Key, record);
-            next = ChannelCommitments.Restore(commitments.ChannelId, commitments.Params, commitments.LocalBalanceMsat,
-                                              commitments.RemoteBalanceMsat, htlcs.Values, commitments.FeeUpdates,
-                                              commitments.LocalNextHtlcId, commitments.RemoteNextHtlcId,
-                                              commitments.LocalCommit, commitments.RemoteCommit,
-                                              commitments.RemoteNextCommit,
-                                              commitments.RemoteNextPerCommitmentPoint);
+            // Only the records change: the taproot nonces and pending fundings stay (NL-1090)
+            next = commitments.WithHtlcRecords(updated);
             await unitOfWork.ChannelStateDbRepository.ApplyAsync(next, new ChannelTransition(updated, [], [], false,
                                                                      false, false, false));
         }

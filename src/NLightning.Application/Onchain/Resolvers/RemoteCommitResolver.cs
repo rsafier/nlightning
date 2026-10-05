@@ -1146,11 +1146,7 @@ public sealed class RemoteCommitResolver : IOutputResolver
     }
 
     private static ChannelCommitments WithRecord(ChannelCommitments commitments, HtlcRecord record) =>
-        ChannelCommitments.Restore(commitments.ChannelId, commitments.Params, commitments.LocalBalanceMsat,
-                                   commitments.RemoteBalanceMsat, commitments.Htlcs.SetItem(record.Key, record).Values,
-                                   commitments.FeeUpdates, commitments.LocalNextHtlcId,
-                                   commitments.RemoteNextHtlcId, commitments.LocalCommit, commitments.RemoteCommit,
-                                   commitments.RemoteNextCommit, commitments.RemoteNextPerCommitmentPoint);
+        commitments.WithHtlcRecords([record]);
 
     #endregion
 

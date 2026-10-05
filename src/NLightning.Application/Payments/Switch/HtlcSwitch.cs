@@ -918,13 +918,8 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
         if (record.KnownPreimage != preimage)
         {
             var updated = record with { KnownPreimage = preimage };
-            next = ChannelCommitments.Restore(commitments.ChannelId, commitments.Params, commitments.LocalBalanceMsat,
-                                              commitments.RemoteBalanceMsat,
-                                              commitments.Htlcs.SetItem(updated.Key, updated).Values,
-                                              commitments.FeeUpdates, commitments.LocalNextHtlcId,
-                                              commitments.RemoteNextHtlcId, commitments.LocalCommit,
-                                              commitments.RemoteCommit, commitments.RemoteNextCommit,
-                                              commitments.RemoteNextPerCommitmentPoint);
+            // Only the record changes: the taproot nonces and pending fundings stay (NL-1090)
+            next = commitments.WithHtlcRecords([updated]);
             await unitOfWork.ChannelStateDbRepository.ApplyAsync(next, new ChannelTransition([updated], [], [], false,
                                                                                              false, false, false));
         }

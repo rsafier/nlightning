@@ -179,10 +179,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 81 | 82 |
 | in-progress | 0 | 0 | 4 | 1 | 5 |
-| fixed | 15 | 68 | 221 | 460 | 764 |
+| fixed | 15 | 68 | 222 | 460 | 765 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **235** | **562** | **880** |
+| **Total** | **15** | **68** | **236** | **562** | **881** |
 
 ### Epics
 
@@ -9346,3 +9346,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** Fails on net11.0 every run (alone too), also at `6ad5f292` without the C# 15 pilot: a refused client handshake surfaces as gRPC `StatusCode.Internal` instead of `Unavailable` (net10.0 passes). The server still refuses the client, so the security property holds; the status a refused TLS handshake maps to changed under the .NET 11 rc.1 runtime (Kestrel/SslStream or Grpc.Net.Client).
 - **Fix sketch:** Find which layer changed (log the inner exception on net11.0), then assert the refusal itself (no response, either status) or the per-runtime status.
 - **Blocks/Blocked-by:** Found by NL-1086
+
+### NL-1090 A preimage mark on an incoming HTLC drops the peer's taproot nonces: a settled hold invoice (or an MPP set) wedges a simple taproot channel until a reconnection
+- **Status:** fixed (42ba1679)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs` (`MarkPartAsync`, the snapshot rebuilt with `ChannelCommitments.Restore` without `pendingFundings`/`remoteNextNonces`), the same rebuild in `Payments/Trampoline/TrampolineRelayService.cs` (`MarkPreimageAsync`), `Onchain/Mempool/MempoolReactor.cs` and the three resolvers' `WithRecord`
+- **Evidence:** live on Mutinynet (2026-10-05 21:39-21:41Z, FAFO payee/settler, FAFO2 payer, both NLightning at 734dfd01, simple taproot channel 8dc3b8f4...): `createholdinvoice` 600,000 msat, FAFO2 paid, FAFO held the set, `settleholdinvoice` logged "Settled hold invoice ... over 1 part(s)" and FAFO2's payment Succeeded (the `update_fulfill_htlc` went out), but FAFO never sent its `commitment_signed`: HTLC 4 stayed SentRemoveHtlc (35) on FAFO, RcvdRemoveHtlc (15) on FAFO2. FAFO2's next payment (300,000 msat hold) got FAFO's `revoke_and_ack` but no `commitment_signed` (HTLC 5 SentAddRevocation (32) / RcvdAddRevocation (12)), so it never locked in and the invoice stayed Open; `disconnect --force` + `connect` resolved both at once (the `channel_reestablish` nonces). Unresolved, the HTLC would have forced a channel close at its deadline. Root cause: `HtlcSwitch.MarkPartAsync` stores `KnownPreimage` on the incoming record by rebuilding the in-memory snapshot with `ChannelCommitments.Restore(...)` and its optional `pendingFundings` and `remoteNextNonces` left out, so the memory snapshot lost `RemoteNextNonces` (the database kept them) and `CanSendCommit` stayed false on a taproot channel until the next reestablish. A hold settle marks every part (a plain single-part receive marks none, which is why ordinary payments worked); an MPP receive marks all parts but one, so taproot MPP receives wedged too. On a channel with a pending splice the same rebuild dropped the pending fundings from memory. Hidden from the LND cluster proof (anchors channels) and from the in-process hold tests (static_remotekey channels).
+- **Fix sketch:** annotate the record without rebuilding the snapshot (a Domain `with` that keeps every other field); tests on taproot and anchors channels: hold settle/cancel followed by another payment, a taproot MPP receive, and a cluster NLightning-to-NLightning taproot hold proof.
+- **Blocks/Blocked-by:** found after NL-995
+- **Fix (42ba1679):** `ChannelCommitments.WithHtlcRecords(records)` replaces records of the same key and state and keeps everything else (nonces, pending fundings); the switch, the trampoline relay, the mempool reactor and the resolvers use it instead of `Restore`. Tests: Application `HoldInvoiceTests` settle/cancel + follow-up payment and a two-part settle on anchors and taproot channels (`ThreeNodeHarness` gained `anchors`), `MppReceiveTests.Given_TwoPartsOnASimpleTaprootChannel_*` (all four taproot cases failed before the fix), Domain `SimpleTaprootCommitmentsTests` for `WithHtlcRecords`, and the cluster `Docker/Taproot/TaprootHoldInvoiceFlowTests` (two NLightning nodes on a taproot channel: settle, cancel, plain payment on one connection; timed out on "no HTLC left" before the fix, green after).
+

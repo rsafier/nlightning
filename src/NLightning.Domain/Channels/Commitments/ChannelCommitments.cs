@@ -475,6 +475,28 @@ public sealed record ChannelCommitments
     public HtlcRecord? GetHtlc(HtlcDirection direction, ulong id) =>
         Htlcs.TryGetValue(new HtlcKey(direction, id), out var htlc) ? htlc : null;
 
+    /// <summary>
+    /// This snapshot with <paramref name="records"/> in place of the HTLCs of the same keys, everything else kept (the
+    /// pending fundings and the peer's taproot nonces included): for annotations outside the state machine such as
+    /// <see cref="HtlcRecord.KnownPreimage"/>. Rebuilding the snapshot with <see cref="Restore"/> instead dropped the
+    /// nonces, so a simple taproot channel could not sign again until a reconnection (NL-1090).
+    /// </summary>
+    /// <exception cref="ArgumentException">A record is unknown or changes its HTLC's state.</exception>
+    public ChannelCommitments WithHtlcRecords(IEnumerable<HtlcRecord> records)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+        var htlcs = Htlcs;
+        foreach (var record in records)
+        {
+            if (!htlcs.TryGetValue(record.Key, out var current) || current.State != record.State)
+                throw new ArgumentException($"HTLC {record.Key} is not in state {record.State}", nameof(records));
+
+            htlcs = htlcs.SetItem(record.Key, record);
+        }
+
+        return this with { Htlcs = htlcs };
+    }
+
     #endregion
 
     #region Adds
