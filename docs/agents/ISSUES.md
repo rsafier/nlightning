@@ -177,9 +177,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 82 | 83 |
+| open | 0 | 0 | 1 | 81 | 82 |
 | in-progress | 0 | 0 | 4 | 1 | 5 |
-| fixed | 15 | 68 | 221 | 459 | 763 |
+| fixed | 15 | 68 | 221 | 460 | 764 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
 | **Total** | **15** | **68** | **235** | **562** | **880** |
@@ -9329,13 +9329,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix (1683c295):** `getroute --json` (`Printers/GetRouteJsonPrinter`, source-generated) prints each hop's incoming view and its outgoing view in payroute's terms; the old recipe also read the incoming fields as the outgoing ones, off by one hop, so the help and `PAYROUTE_PLAN.md` recipe now copy the outgoing keys; `outgoingShortChannelId` takes `BLOCKxTXxOUTPUT` or the number, a malformed value is named with its route and hop; the recipe end to end in `PayRouteCommandTests`, checked with real jq.
 
 ### NL-1087 net11.0: `Convert.ToDecimal(double)` is exact on .NET 11, so bitcoind fee answers parse with binary noise
-- **Status:** open
+- **Status:** fixed (this commit)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinChainService.cs` (`Value<decimal?>()` on `mempoolminfee`, `effective-feerate`, `package-feerate`, around lines 540-586); `test/NLightning.Testing.Cluster/Nodes/BitcoinCore/Rpc/` (`BitcoinCoreRpcClient` estimates, `BitcoinCli` scalar parsing)
 - **Evidence:** On net11.0 (runtime 11.0.0-rc.1) 5 tests fail, also at `6ad5f292` without the C# 15 pilot: `BitcoinChainServicePackageTests.Given_Core28Success_*`/`Given_Core27Success_*` (expected 0.00012000, actual 0.0001200000000000000030401029), `Given_GetMempoolInfoAnswer_When_MinFeeParsed_Then_SatPerKwRoundedUp(0.00001000)` (250 sat/kw expected, 251), `BitcoinCoreRpcClientTests.Given_AnEstimate_*`, `BitcoinCliTests.Given_ScalarOutput_*`. Newtonsoft parses JSON numbers as `double` and `Value<decimal?>` goes through `Convert.ToDecimal(double)`, which rounds to 15 significant digits on .NET 10 (0.00001 → 0.00001) and converts exactly on .NET 11 rc.1 (0.0000100000000000000008180305). net10.0, the runtime the node ships on, is unaffected; a net11.0 node would round some fee floors up by one sat/kw.
 - **Fix sketch:** Parse bitcoind answers with `FloatParseHandling.Decimal` (or read the raw token text with `decimal.Parse(..., CultureInfo.InvariantCulture)`), in the product client and the cluster test client; re-run the five tests on both frameworks.
 - **Blocks/Blocked-by:** Found by NL-1086
+- **Fix:** bitcoind numbers are read as the decimal bitcoind wrote: `BitcoinChainService.ReadDecimal` takes a token Newtonsoft parsed as a double through its shortest round-trip text (NBitcoin's `RPCClient` parses the response itself, so `FloatParseHandling` cannot be set there) for `mempoolminfee`, `effective-feerate` and `package-feerate`; the cluster harness parses bitcoin-cli output with `FloatParseHandling.Decimal` and reads its estimates and balances the same way (`BitcoinCli.ReadDecimal`). `estimatesmartfee` goes through NBitcoin's whole-satoshi `FeeRate`, which absorbs the noise. The five tests pass on net11.0 and net10.0 (Infrastructure.Bitcoin 1,989, Testing.Cluster 678 on both). The cleaner fix is our own bitcoind RPC client on System.Text.Json (not filed yet).
 
 ### NL-1088 net11.0: `CashuPaymentProcessorHostTests` mutual-TLS refusal reports `Internal`, not `Unavailable`
 - **Status:** open

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -537,7 +538,7 @@ public class BitcoinChainService : IBitcoinChainService
                     continue;
 
                 var error = entry["error"]?.Value<string>();
-                var effective = entry["fees"]?["effective-feerate"]?.Value<decimal?>();
+                var effective = ReadDecimal(entry["fees"]?["effective-feerate"]);
                 if (effective is { } rate && (highestEffective is null || rate > highestEffective))
                     highestEffective = rate;
 
@@ -546,7 +547,7 @@ public class BitcoinChainService : IBitcoinChainService
             }
         }
 
-        var packageFeerate = answer["package-feerate"]?.Value<decimal?>() ?? highestEffective;
+        var packageFeerate = ReadDecimal(answer["package-feerate"]) ?? highestEffective;
         var success = message is null || message.Equals("success", StringComparison.OrdinalIgnoreCase);
         var status = success && transactions.Count > 0 && transactions.All(t => t.Accepted)
                          ? PackageSubmitStatus.Accepted
@@ -580,12 +581,29 @@ public class BitcoinChainService : IBitcoinChainService
     /// </summary>
     internal static uint? ParseMempoolMinFeeRatePerKw(JToken? result)
     {
-        if (result?["mempoolminfee"]?.Value<decimal?>() is not { } btcPerKvb || btcPerKvb <= 0)
+        if (ReadDecimal(result?["mempoolminfee"]) is not { } btcPerKvb || btcPerKvb <= 0)
             return null;
 
         var satPerKw = decimal.Ceiling(btcPerKvb * 100_000_000m / 4m);
         return satPerKw > uint.MaxValue ? uint.MaxValue : (uint)satPerKw;
     }
+
+    /// <summary>
+    /// A JSON number of a bitcoind answer as the decimal it was written as (NL-1087). NBitcoin's RPC client parses
+    /// numbers as <see cref="double"/>, and .NET 11 converts a double to decimal exactly, so <c>Value&lt;decimal&gt;()</c>
+    /// turned 0.00012 into 0.0001200000000000000030401029; the shortest round-trip text of the double ("1.2E-04") is
+    /// what bitcoind sent, so it is parsed instead. Null for a missing or null token.
+    /// </summary>
+    internal static decimal? ReadDecimal(JToken? token) =>
+        token switch
+        {
+            null => null,
+            JValue { Type: JTokenType.Null or JTokenType.Undefined } => null,
+            JValue { Value: double d } => decimal.Parse(d.ToString("R", CultureInfo.InvariantCulture),
+                                                        NumberStyles.Float, CultureInfo.InvariantCulture),
+            JValue { Value: string text } => decimal.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture),
+            _ => token.Value<decimal?>()
+        };
 
     public async Task<uint> GetTransactionConfirmationsAsync(uint256 txId)
     {

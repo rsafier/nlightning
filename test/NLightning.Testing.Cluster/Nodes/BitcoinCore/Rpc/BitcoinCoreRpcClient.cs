@@ -100,7 +100,7 @@ public sealed class BitcoinCoreRpcClient(IBitcoinRpcTransport transport) : IBitc
     public async Task<long> GetTrustedBalanceSatAsync(CancellationToken cancellationToken)
     {
         var balances = await CallAsync("getbalances", null, cancellationToken).ConfigureAwait(false);
-        var trusted = balances["mine"]?.Value<decimal?>("trusted")
+        var trusted = BitcoinCli.ReadDecimal(balances["mine"]?["trusted"])
                    ?? throw new BitcoinRpcException("getbalances", null, "no mine.trusted in the answer");
         return ToSatoshis(trusted);
     }
@@ -167,7 +167,7 @@ public sealed class BitcoinCoreRpcClient(IBitcoinRpcTransport transport) : IBitc
                                                                   ? "economical"
                                                                   : "conservative")),
                                        cancellationToken).ConfigureAwait(false);
-        var feeRate = estimate.Value<decimal?>("feerate");
+        var feeRate = BitcoinCli.ReadDecimal(estimate["feerate"]);
         return feeRate is null
                    ? null
                    : new FeeEstimate(feeRate.Value / BtcPerKvBPerSatPerVb,

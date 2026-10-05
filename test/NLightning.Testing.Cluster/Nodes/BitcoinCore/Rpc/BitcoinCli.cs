@@ -63,6 +63,31 @@ public static partial class BitcoinCli
     /// null result, and the raw text for a string (bitcoin-cli prints strings without quotes).
     /// </summary>
     /// <exception cref="BitcoinRpcException">bitcoin-cli failed (the RPC error's code and message when it printed them).</exception>
+    /// <summary>
+    /// Parses bitcoin-cli's JSON with numbers as decimals (NL-1087): Newtonsoft's default reads them as doubles, and
+    /// .NET 11 converts a double to decimal exactly, so 0.00012 BTC came back with binary noise.
+    /// </summary>
+    /// <summary>
+    /// A JSON number as the decimal bitcoind wrote (NL-1087): a token parsed as a double is read back through its
+    /// shortest round-trip text, since .NET 11 converts a double to decimal exactly. Null for a missing or null token.
+    /// </summary>
+    public static decimal? ReadDecimal(JToken? token) =>
+        token switch
+        {
+            null => null,
+            JValue { Type: JTokenType.Null or JTokenType.Undefined } => null,
+            JValue { Value: double d } => decimal.Parse(d.ToString("R", CultureInfo.InvariantCulture),
+                                                        NumberStyles.Float, CultureInfo.InvariantCulture),
+            JValue { Value: string text } => decimal.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture),
+            _ => token.Value<decimal?>()
+        };
+
+    private static JToken ParseJson(string text)
+    {
+        using var reader = new JsonTextReader(new StringReader(text)) { FloatParseHandling = FloatParseHandling.Decimal };
+        return JToken.ReadFrom(reader);
+    }
+
     public static JToken ParseResult(string method, ExecResult result)
     {
         ArgumentNullException.ThrowIfNull(result);
@@ -73,12 +98,12 @@ public static partial class BitcoinCli
         if (text.Length == 0)
             return JValue.CreateNull();
         if (text[0] is '{' or '[')
-            return JToken.Parse(text);
+            return ParseJson(text);
         if (text is "true" or "false" or "null")
-            return JToken.Parse(text);
+            return ParseJson(text);
         // A number, but never a 64-character hash that happens to be all digits
         if (text.Length <= 30 && Number().IsMatch(text))
-            return JToken.Parse(text);
+            return ParseJson(text);
 
         return new JValue(text);
     }
