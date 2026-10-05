@@ -20,12 +20,14 @@ public sealed class LnBackendOptions
     public int Port { get; set; } = DefaultPort;
 
     /// <summary>
-    /// The directory holding <c>server.pem</c>/<c>server.key</c> (and <c>ca.pem</c> for client authentication); empty:
-    /// HTTP/2 without TLS, allowed on loopback only with <c>AllowInsecureLoopback</c>.
+    /// The directory holding <c>server.pem</c>/<c>server.key</c> and <c>ca.pem</c>: TLS where every client must present
+    /// a certificate <c>ca.pem</c> signed (mutual TLS). Empty, or without <c>ca.pem</c>: no client authentication,
+    /// allowed on a loopback address only and only with <c>AllowInsecureLoopback</c> (NL-1089).
     /// </summary>
     public string? TlsDirectory { get; set; }
 
-    /// <summary>Whether the insecure no-TLS listener is allowed on a loopback address (single-user hosts).</summary>
+    /// <summary>Whether a listener without client authentication is allowed on a loopback address (single-user
+    /// hosts).</summary>
     public bool AllowInsecureLoopback { get; set; }
 
     /// <summary>Refused on mainnet unless set (an ASP backend moves real money on the operator's behalf).</summary>
@@ -41,16 +43,21 @@ public sealed class LnBackendOptions
             errors.Add($"{SectionName}:{nameof(Port)} must be a TCP port.");
         if (MaxConnections is < 1 or > 64)
             errors.Add($"{SectionName}:{nameof(MaxConnections)} must be 1 to 64.");
-        if (string.IsNullOrWhiteSpace(TlsDirectory))
-        {
-            if (!AllowInsecureLoopback)
-                errors.Add($"{SectionName}:{nameof(TlsDirectory)} is required (or set "
-                         + $"{SectionName}:{nameof(AllowInsecureLoopback)} for a loopback listener without TLS).");
-            else if (!IPAddress.Parse(ListenAddress).Equals(IPAddress.Loopback))
-                errors.Add($"{SectionName}:{nameof(AllowInsecureLoopback)} needs a loopback "
-                         + $"{nameof(ListenAddress)}.");
-        }
-
+        // Client authentication is mutual TLS (a ca.pem in TlsDirectory); without it the listener must be loopback
+        // and opted into, whether it serves h2c or TLS: cln.Node's xpay pays from the node (NL-1089, the NL-998 rules)
+        var hasTls = !string.IsNullOrWhiteSpace(TlsDirectory);
+        var authenticatesClients = hasTls && File.Exists(Path.Combine(TlsDirectory!, "ca.pem"));
+        if (!IPAddress.TryParse(ListenAddress, out var address))
+            errors.Add($"{SectionName}:{nameof(ListenAddress)} '{ListenAddress}' is not an IP address.");
+        else if (!IPAddress.IsLoopback(address) && !authenticatesClients)
+            errors.Add($"{SectionName}:{nameof(ListenAddress)} {ListenAddress} is not loopback: set "
+                     + $"{nameof(TlsDirectory)} with server.pem, server.key and ca.pem (mutual TLS); anyone who reaches "
+                     + "the port could otherwise settle or cancel hold invoices and pay from the node.");
+        else if (!authenticatesClients && !AllowInsecureLoopback)
+            errors.Add($"{SectionName} has no client authentication ({(hasTls ? "no ca.pem" : "no TlsDirectory")}): "
+                     + "any local process could settle or cancel hold invoices and pay from the node. Set "
+                     + $"{nameof(TlsDirectory)} with server.pem, server.key and ca.pem (mutual TLS), or "
+                     + $"{nameof(AllowInsecureLoopback)}=true on a single-user host.");
         return errors;
     }
 }

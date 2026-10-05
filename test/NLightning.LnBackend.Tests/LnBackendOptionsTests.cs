@@ -44,8 +44,8 @@ public sealed class LnBackendOptionsTests
 
         // Assert
         var error = Assert.Single(errors);
-        Assert.StartsWith("LnBackend:TlsDirectory is required (or set LnBackend:AllowInsecureLoopback",
-                          error, StringComparison.Ordinal);
+        Assert.StartsWith("LnBackend has no client authentication (no TlsDirectory)", error,
+                          StringComparison.Ordinal);
     }
 
     [Fact]
@@ -60,18 +60,105 @@ public sealed class LnBackendOptionsTests
 
         // Assert
         var error = Assert.Single(errors);
-        Assert.StartsWith("LnBackend:AllowInsecureLoopback needs a loopback ListenAddress", error,
-                          StringComparison.Ordinal);
+        Assert.StartsWith("LnBackend:ListenAddress 0.0.0.0 is not loopback", error, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Given_Tls_When_Validated_Then_TheListenerMayBeOffLoopback()
+    public void Given_MutualTls_When_Validated_Then_TheListenerMayBeOffLoopback()
     {
-        // Arrange: a certificate directory makes any address a valid listener
+        // Arrange: a certificate directory with ca.pem authenticates every client, so any address is a valid listener
+        var directory = Directory.CreateTempSubdirectory("nltg-lnbackend-").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "ca.pem"), "");
+            var options = Valid();
+            options.AllowInsecureLoopback = false;
+            options.TlsDirectory = directory;
+            options.ListenAddress = "0.0.0.0";
+
+            // Act & Assert
+            Assert.Empty(options.GetValidationErrors());
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Given_TlsWithoutCaOffLoopback_When_Validated_Then_ItIsReported(bool allowInsecureLoopback)
+    {
+        // Arrange: server TLS without ca.pem authenticates no client, and cln.Node's xpay pays from the node (NL-1089)
+        var directory = Directory.CreateTempSubdirectory("nltg-lnbackend-").FullName;
+        try
+        {
+            var options = Valid();
+            options.AllowInsecureLoopback = allowInsecureLoopback;
+            options.TlsDirectory = directory;
+            options.ListenAddress = "0.0.0.0";
+
+            // Act
+            var errors = options.GetValidationErrors();
+
+            // Assert
+            var error = Assert.Single(errors);
+            Assert.StartsWith("LnBackend:ListenAddress 0.0.0.0 is not loopback", error, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void Given_TlsWithoutCaOnLoopbackAndNoOptIn_When_Validated_Then_ItIsReported()
+    {
+        // Arrange
+        var directory = Directory.CreateTempSubdirectory("nltg-lnbackend-").FullName;
+        try
+        {
+            var options = Valid();
+            options.AllowInsecureLoopback = false;
+            options.TlsDirectory = directory;
+
+            // Act
+            var errors = options.GetValidationErrors();
+
+            // Assert
+            var error = Assert.Single(errors);
+            Assert.StartsWith("LnBackend has no client authentication (no ca.pem)", error, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Theory]
+    [InlineData("localhost")]
+    [InlineData("not-an-address")]
+    public void Given_AListenAddressThatIsNoIp_When_Validated_Then_ItIsReported(string listenAddress)
+    {
+        // Arrange
         var options = Valid();
-        options.AllowInsecureLoopback = false;
-        options.TlsDirectory = Path.GetTempPath();
-        options.ListenAddress = "0.0.0.0";
+        options.ListenAddress = listenAddress;
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        var error = Assert.Single(errors);
+        Assert.EndsWith("is not an IP address.", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Given_InsecureIpv6Loopback_When_Validated_Then_ThereIsNoError()
+    {
+        // Arrange
+        var options = Valid();
+        options.ListenAddress = "::1";
 
         // Act & Assert
         Assert.Empty(options.GetValidationErrors());

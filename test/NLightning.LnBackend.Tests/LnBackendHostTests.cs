@@ -216,7 +216,7 @@ public sealed class LnBackendHostTests
                         () => node.Host.StartAsync(CancellationToken.None));
 
         // Assert
-        Assert.StartsWith("LnBackend:TlsDirectory is required", error.Message, StringComparison.Ordinal);
+        Assert.StartsWith("LnBackend has no client authentication (no TlsDirectory)", error.Message, StringComparison.Ordinal);
     }
 
     /// <summary>The node around one backend host: the mocked services, the event hub and the in-memory invoices.</summary>
