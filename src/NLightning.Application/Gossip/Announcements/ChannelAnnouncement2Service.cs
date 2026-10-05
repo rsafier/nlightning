@@ -4,10 +4,13 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Gossip.Announcements;
 
+using Channels.Splicing.Interfaces;
 using Channels.Taproot;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
@@ -39,9 +42,16 @@ using Interfaces;
 /// the announcement, consumes the nonces) and send <c>announcement_signatures_2</c>; the peer's two partial signatures
 /// are verified against its nonces and keys. With both pairs the four partial signatures are aggregated and the final
 /// signature is checked like any received <c>channel_announcement_2</c> before we publish it.</para>
+/// <para><b>Splices</b> (NL-1131). A spliced channel is announced again under its new funding: our nonces for the
+/// splice ride our <c>splice_locked</c> (TLVs 0/2, bound to the splice transaction), the peer's ride its own; once the
+/// splice is locked both ways and 6 deep, <c>announcement_signatures_2</c> name the splice's txid and short channel id
+/// and the new <c>channel_announcement_2</c> is published (the old short channel id keeps forwarding through the retired
+/// map; the graphs see the old funding spent). A session belongs to one funding: the splice's session waits beside the
+/// announced old funding until the lock. On a reconnection the nonces ride <c>channel_reestablish</c> TLV 7 for the
+/// funding our <c>my_current_funding_locked</c> names (the current funding, or a splice whose <c>splice_locked</c> we
+/// sent); a spliced channel never re-sends <c>channel_ready</c> for its nonces.</para>
 /// <para>Nothing of a session is persisted: a restart re-runs it on the next connection (<see cref="AnnouncedChannels2"/>).
-/// Splice re-announcement (<c>splice_locked</c> TLVs 0/2) is not implemented: splicing a public taproot channel is
-/// refused (NL-1131).</para>
+/// </para>
 /// </remarks>
 public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
 {
@@ -56,6 +66,7 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
     private readonly INodeAnnouncementService? _nodeAnnouncementService;
     private readonly NodeOptions _nodeOptions;
     private readonly OwnGossipPublisher _publisher;
+    private readonly ISpliceStatePort? _spliceStatePort;
     private readonly IGossipV2SignatureVerifier _verifier;
 
     private readonly ConcurrentDictionary<ChannelId, Session> _sessions = new();
@@ -67,7 +78,8 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
                                        IOptions<NodeOptions> nodeOptions,
                                        IOptions<GossipOptions>? gossipOptions = null,
                                        IChannelUpdateService? channelUpdateService = null,
-                                       INodeAnnouncementService? nodeAnnouncementService = null)
+                                       INodeAnnouncementService? nodeAnnouncementService = null,
+                                       ISpliceStatePort? spliceStatePort = null)
     {
         _announced = announced;
         _blockchainMonitor = blockchainMonitor;
@@ -81,6 +93,7 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
         _gossipOptions = gossipOptions?.Value ?? new GossipOptions();
         _channelUpdateService = channelUpdateService;
         _nodeAnnouncementService = nodeAnnouncementService;
+        _spliceStatePort = spliceStatePort;
     }
 
     /// <inheritdoc />
@@ -98,23 +111,7 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
     public ChannelAnnouncement2Payload BuildUnsigned(ChannelModel channel)
     {
         ArgumentNullException.ThrowIfNull(channel);
-        if (channel.FundingOutput is not { TransactionId: { } fundingTxId, Index: { } index } funding
-         || channel.RemoteFundingPubKey is not { } remoteFundingKey)
-            throw new InvalidOperationException($"Channel {channel.ChannelId} has no funding output yet");
-        if (!HasShortChannelId(channel))
-            throw new InvalidOperationException($"Channel {channel.ChannelId} has no short channel id yet");
-
-        var ourNodeId = _lightningSigner.GetNodePublicKey();
-        var weAreNode1 = ((ReadOnlySpan<byte>)ourNodeId).SequenceCompareTo(channel.RemoteNodeId) < 0;
-        var (node1, node2) = weAreNode1 ? (ourNodeId, channel.RemoteNodeId) : (channel.RemoteNodeId, ourNodeId);
-        var (key1, key2) = weAreNode1
-                               ? (channel.LocalFundingPubKey, remoteFundingKey)
-                               : (remoteFundingKey, channel.LocalFundingPubKey);
-
-        // BIP 86 funding: both keys, no merkle root (see GossipV2SignatureVerifier, NL-1130)
-        return ChannelAnnouncement2Payload.Create(_nodeOptions.BitcoinNetwork.ChainHash, [], channel.ShortChannelId,
-                                                  (ulong)funding.Amount.Satoshi, node1, node2, key1, key2, [],
-                                                  fundingTxId, index);
+        return BuildUnsigned(channel, GetCurrentFunding(channel));
     }
 
     /// <inheritdoc />
@@ -122,6 +119,12 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
     {
         ArgumentNullException.ThrowIfNull(channel);
         if (!IsDue(channel))
+            return [];
+
+        // A splice's session (its nonces went out in splice_locked) waits for the lock beside the current funding
+        var current = channel.FundingOutput!.TransactionId!.Value;
+        if (_sessions.TryGetValue(channel.ChannelId, out var waiting) && waiting.Peer == peer
+                                                                       && waiting.FundingTxId != current)
             return [];
 
         var session = GetSession(channel, peer);
@@ -132,8 +135,13 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
         var messages = new List<IChannelMessage>();
         if (!session.OursSent)
         {
+            // BOLTs #1059: channel_ready names the original funding only; a spliced channel's nonces ride splice_locked
+            // or the next channel_reestablish
+            if (IsSpliced(channel))
+                return [];
+
             // BOLTs #1059: at the announcement depth, a channel_ready carrying our announcement nonces
-            var ours = CreateNonces(channel, session);
+            var ours = CreateNonces(channel, session, GetCurrentFunding(channel));
             messages.Add(CreateNonceChannelReady(channel, ours));
             session.OursSent = true;
             _logger.LogInformation("Sending our channel_announcement_2 nonces for channel {ChannelId} "
@@ -159,10 +167,11 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
                 $"channel_ready of channel {channel.ChannelId} carries only one announcement nonce", channel.ChannelId,
                 "channel_ready: announcement_node_pubnonce and announcement_bitcoin_pubnonce go together");
 
-        if (!IsV2Channel(channel) || channel.State != ChannelState.Open)
+        if (!IsV2Channel(channel) || channel.State != ChannelState.Open || IsSpliced(channel)
+         || channel.FundingOutput?.TransactionId is null)
         {
-            _logger.LogDebug("Ignoring the announcement nonces of channel {ChannelId}: not a public taproot channel "
-                           + "we announce now", channel.ChannelId);
+            _logger.LogDebug("Ignoring the channel_ready announcement nonces of channel {ChannelId}: not a public "
+                           + "taproot channel we announce on its original funding now", channel.ChannelId);
             return [];
         }
 
@@ -174,20 +183,135 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
     }
 
     /// <inheritdoc />
+    public (AnnouncementNodeNonceTlv Node, AnnouncementBitcoinNonceTlv Bitcoin)? CreateSpliceLockedNonces(
+        ChannelModel channel, CompactPubKey peer, ChannelFunding splice)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(splice);
+        if (!IsV2Channel(channel) || channel.State != ChannelState.Open || channel.RemoteFundingPubKey is null)
+            return null;
+        if (splice.ShortChannelId is not { } shortChannelId)
+        {
+            _logger.LogWarning("No announcement nonces in the splice_locked of {TxId} for channel {ChannelId}: the "
+                             + "splice has no short channel id", splice.FundingTxId, channel.ChannelId);
+            return null;
+        }
+
+        // The peer's nonces for this splice may have come first (its splice_locked); a session for anything else ends
+        var session = _sessions.TryGetValue(channel.ChannelId, out var existing) && existing.Peer == peer
+                                                                                 && existing.FundingTxId
+                                                                                 == splice.FundingTxId
+                          ? existing
+                          : NewSession(channel.ChannelId, peer, splice.FundingTxId, shortChannelId);
+        session.ShortChannelId = shortChannelId;
+        try
+        {
+            var ours = CreateNonces(channel, session, FromSplice(splice, shortChannelId));
+            session.OursSent = true;
+            _logger.LogInformation("Sending our channel_announcement_2 nonces for splice {TxId} of channel {ChannelId} "
+                                 + "({ShortChannelId}) in splice_locked", splice.FundingTxId, channel.ChannelId,
+                                   shortChannelId);
+            return (new AnnouncementNodeNonceTlv(ours.NodeNonce), new AnnouncementBitcoinNonceTlv(ours.BitcoinNonce));
+        }
+        catch (SignerException e)
+        {
+            _logger.LogWarning(e, "No announcement nonces for splice {TxId} of channel {ChannelId}",
+                               splice.FundingTxId, channel.ChannelId);
+            return null;
+        }
+    }
+
+    /// <inheritdoc />
+    public void OnSpliceLockedNonces(ChannelModel channel, CompactPubKey peer, TxId spliceTxId,
+                                     AnnouncementNodeNonceTlv? nodeNonce, AnnouncementBitcoinNonceTlv? bitcoinNonce)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        if (nodeNonce is null && bitcoinNonce is null)
+            return;
+
+        // BOLTs #1059: as for channel_ready, both nonces or none
+        if (nodeNonce is null || bitcoinNonce is null)
+            throw new ChannelWarningException(
+                $"splice_locked of channel {channel.ChannelId} carries only one announcement nonce", channel.ChannelId,
+                "splice_locked: announcement_node_pubnonce and announcement_bitcoin_pubnonce go together");
+
+        if (!IsV2Channel(channel) || channel.State != ChannelState.Open)
+        {
+            _logger.LogDebug("Ignoring the splice_locked announcement nonces of channel {ChannelId}: not a public "
+                           + "taproot channel we announce now", channel.ChannelId);
+            return;
+        }
+
+        var session = _sessions.TryGetValue(channel.ChannelId, out var existing) && existing.Peer == peer
+                                                                                 && existing.FundingTxId == spliceTxId
+                          ? existing
+                          : NewSession(channel.ChannelId, peer, spliceTxId, default);
+        session.Theirs = new ChannelAnnouncement2Nonces(nodeNonce.Nonce, bitcoinNonce.Nonce);
+        session.Done = false;
+        _logger.LogDebug("Stored the channel_announcement_2 nonces of splice {TxId} of channel {ChannelId}",
+                         spliceTxId, channel.ChannelId);
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<IChannelMessage> OnSpliceLocked(ChannelModel channel, CompactPubKey peer)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        if (!IsV2Channel(channel))
+            return [];
+
+        // The old funding's announcement is void: the channel is announced again under the splice
+        _announced.Remove(channel.ChannelId);
+        if (channel.FundingOutput?.TransactionId is not { } current
+         || !_sessions.TryGetValue(channel.ChannelId, out var session))
+            return [];
+
+        if (session.Peer != peer || session.FundingTxId != current)
+        {
+            // Nonces for another funding (an RBF sibling that did not lock, the replaced funding): the next
+            // channel_reestablish starts a session for this one
+            if (_sessions.TryRemove(new KeyValuePair<ChannelId, Session>(channel.ChannelId, session)))
+                _lightningSigner.DiscardChannelAnnouncement2Nonces(channel.ChannelId);
+            _logger.LogInformation("Channel {ChannelId} locked {TxId}; its channel_announcement_2 waits for the next "
+                                 + "channel_reestablish (no announcement nonces were exchanged for it)",
+                                   channel.ChannelId, current);
+            return [];
+        }
+
+        session.ShortChannelId = channel.ShortChannelId;
+        session.Done = false;
+        return TrySignAndAssemble(channel, session);
+    }
+
+    /// <inheritdoc />
     public (MyCurrentFundingLockedTlv? FundingLocked, AnnouncementNoncesTlv? Nonces) CreateReestablishTlvs(
-        ChannelModel channel, CompactPubKey peer)
+        ChannelModel channel, CompactPubKey peer, TxId? fundingLockedTxId = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
         if (!IsV2Channel(channel) || channel.State != ChannelState.Open || !HasShortChannelId(channel)
          || channel.FundingOutput?.TransactionId is not { } fundingTxId)
             return (null, null);
 
+        // BOLTs #1059: the nonces apply to the funding my_current_funding_locked names: the current one, or a splice
+        // whose splice_locked we sent and the peer may not have received
+        var target = fundingLockedTxId is { } named && named != fundingTxId
+                         ? GetPendingSplice(channel, named) is { ShortChannelId: { } spliceScid } splice
+                               ? FromSplice(splice, spliceScid)
+                               : (AnnouncementFunding?)null
+                         : GetCurrentFunding(channel);
+        if (target is not { } funding)
+        {
+            _logger.LogDebug("No announcement nonces in the channel_reestablish of channel {ChannelId}: its "
+                           + "my_current_funding_locked names {TxId}, which has no short channel id here",
+                             channel.ChannelId, fundingLockedTxId);
+            return (null, null);
+        }
+
         // A new connection: a new session with fresh nonces (the signer drops any older secret halves)
-        var session = NewSession(channel, peer);
+        var session = NewSession(channel.ChannelId, peer, funding.TxId, funding.ShortChannelId);
         ChannelAnnouncement2Nonces ours;
         try
         {
-            ours = CreateNonces(channel, session);
+            ours = CreateNonces(channel, session, funding);
         }
         catch (SignerException e)
         {
@@ -197,12 +321,13 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
 
         session.OursSent = true;
 
-        // BOLTs #1059: bit 1 asks the peer to (re)transmit announcement_signatures_2 for the current funding while
-        // the exchange is not complete in this process; the nonces go out either way, so the peer can ask us too
-        var flags = _announced.IsAnnounced(channel.ChannelId)
+        // BOLTs #1059: bit 1 asks the peer to (re)transmit announcement_signatures_2 for the named funding while the
+        // exchange is not complete in this process (a splice is never announced before its lock); the nonces go out
+        // either way, so the peer can ask us too
+        var flags = funding.TxId == fundingTxId && _announced.IsAnnounced(channel.ChannelId)
                         ? (byte)0
                         : MyCurrentFundingLockedTlv.AnnouncementSignatures2Flag;
-        return (new MyCurrentFundingLockedTlv(fundingTxId, flags),
+        return (new MyCurrentFundingLockedTlv(funding.TxId, flags),
                 new AnnouncementNoncesTlv(ours.NodeNonce, ours.BitcoinNonce));
     }
 
@@ -227,14 +352,13 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
             return [];
         }
 
-        if (message.MyCurrentFundingLockedTlv?.FundingTxId is { } named
-         && channel.FundingOutput?.TransactionId is { } current && named != current)
-        {
-            _logger.LogDebug("Ignoring the announcement nonces of channel {ChannelId}: they name funding {Named}, not "
-                           + "{Current}", channel.ChannelId, named, current);
+        if (channel.FundingOutput?.TransactionId is not { } current)
             return [];
-        }
 
+        // BOLTs #1059: the nonces apply to the funding the peer's my_current_funding_locked names (the current one
+        // when it names none)
+        var named = message.MyCurrentFundingLockedTlv?.FundingTxId ?? current;
+        var theirs = new ChannelAnnouncement2Nonces(nonces.NodeNonce, nonces.BitcoinNonce);
         if (!_sessions.TryGetValue(channel.ChannelId, out var session) || session.Peer != peer)
         {
             _logger.LogDebug("Ignoring the announcement nonces of channel {ChannelId}: our channel_reestablish carried "
@@ -242,8 +366,29 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
             return [];
         }
 
-        session.Theirs = new ChannelAnnouncement2Nonces(nonces.NodeNonce, nonces.BitcoinNonce);
+        if (session.FundingTxId != named)
+        {
+            // The peer names a splice whose splice_locked we have not sent yet: its nonces wait for ours, which ride
+            // our splice_locked (the session of the funding we named is moot: the splice replaces it)
+            if (named != current && GetPendingSplice(channel, named) is { } splice)
+            {
+                var spliceSession = NewSession(channel.ChannelId, peer, named, splice.ShortChannelId ?? default);
+                spliceSession.Theirs = theirs;
+                _logger.LogDebug("Stored the channel_announcement_2 nonces of splice {TxId} of channel {ChannelId} from "
+                               + "channel_reestablish", named, channel.ChannelId);
+                return [];
+            }
+
+            _logger.LogDebug("Ignoring the announcement nonces of channel {ChannelId}: they name funding {Named}, ours "
+                           + "{Ours}", channel.ChannelId, named, session.FundingTxId);
+            return [];
+        }
+
+        session.Theirs = theirs;
         session.RetransmitRequested = askedForUs;
+        if (named != current)
+            return [];
+
         session.Done = !askedForUs && _announced.IsAnnounced(channel.ChannelId);
         return Advance(channel, peer);
     }
@@ -262,6 +407,16 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
 
         // BOLTs #1059: a funding txid that is not one of the channel's, or a short channel id that is not the
         // canonical one of that funding: warning and close
+        if (channel.FundingOutput?.TransactionId is { } current && payload.FundingTxId != current
+                                                                 && GetPendingSplice(channel, payload.FundingTxId)
+                                                                        is not null)
+        {
+            // A splice we have not locked yet (the peer locked first): its signatures come again once both locked
+            _logger.LogWarning("Ignoring announcement_signatures_2 of channel {ChannelId} for splice {TxId}, which is "
+                             + "not locked here yet", channel.ChannelId, payload.FundingTxId);
+            return [];
+        }
+
         if (channel.FundingOutput?.TransactionId is not { } fundingTxId || payload.FundingTxId != fundingTxId)
             throw new ChannelWarningException(
                 $"announcement_signatures_2 of channel {channel.ChannelId} names funding {payload.FundingTxId}",
@@ -276,7 +431,7 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
             };
 
         if (!_sessions.TryGetValue(channel.ChannelId, out var session) || session.Peer != peer
-         || session.Ours is null || session.Theirs is null)
+         || session.FundingTxId != fundingTxId || session.Ours is null || session.Theirs is null)
         {
             // BOLTs #1059 MAY warn and close; the next reestablish starts a session with nonces both ways
             _logger.LogWarning("Ignoring announcement_signatures_2 of channel {ChannelId}: no nonces were exchanged on "
@@ -343,30 +498,90 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
         return tip >= fundingHeight && tip - fundingHeight + 1 >= depth;
     }
 
+    /// <summary>The session of the channel's current funding on this connection (a new one otherwise).</summary>
     private Session GetSession(ChannelModel channel, CompactPubKey peer)
     {
-        var session = _sessions.GetOrAdd(channel.ChannelId, _ => new Session(peer, channel.ShortChannelId));
-        if (session.Peer == peer && session.ShortChannelId == channel.ShortChannelId)
+        var fundingTxId = channel.FundingOutput!.TransactionId!.Value;
+        var session = _sessions.GetOrAdd(channel.ChannelId,
+                                         _ => new Session(peer, fundingTxId, channel.ShortChannelId));
+        if (session.Peer == peer && session.FundingTxId == fundingTxId
+                                 && session.ShortChannelId == channel.ShortChannelId)
             return session;
 
-        return NewSession(channel, peer);
+        return NewSession(channel.ChannelId, peer, fundingTxId, channel.ShortChannelId);
     }
 
-    private Session NewSession(ChannelModel channel, CompactPubKey peer)
+    private Session NewSession(ChannelId channelId, CompactPubKey peer, TxId fundingTxId,
+                               ShortChannelId shortChannelId)
     {
-        var session = new Session(peer, channel.ShortChannelId);
-        _sessions[channel.ChannelId] = session;
-        _lightningSigner.DiscardChannelAnnouncement2Nonces(channel.ChannelId);
+        var session = new Session(peer, fundingTxId, shortChannelId);
+        _sessions[channelId] = session;
+        _lightningSigner.DiscardChannelAnnouncement2Nonces(channelId);
         return session;
     }
 
-    private ChannelAnnouncement2Nonces CreateNonces(ChannelModel channel, Session session)
+    private ChannelAnnouncement2Nonces CreateNonces(ChannelModel channel, Session session, AnnouncementFunding funding)
     {
-        var ours = _lightningSigner.CreateChannelAnnouncement2Nonces(channel.ChannelId, BuildUnsigned(channel));
+        var ours = _lightningSigner.CreateChannelAnnouncement2Nonces(channel.ChannelId,
+                                                                     BuildUnsigned(channel, funding));
         session.Ours = ours;
         session.OurSignatures = null;
         return ours;
     }
+
+    /// <summary>
+    /// The unsigned announcement of <paramref name="funding"/> (the current funding, or a splice before its lock): our
+    /// node id and the peer's in ascending order, each funding key next to its node, the outpoint and capacity, no
+    /// merkle root (BIP 86 funding, see <c>GossipV2SignatureVerifier</c>, NL-1130).
+    /// </summary>
+    private ChannelAnnouncement2Payload BuildUnsigned(ChannelModel channel, AnnouncementFunding funding)
+    {
+        var ourNodeId = _lightningSigner.GetNodePublicKey();
+        var weAreNode1 = ((ReadOnlySpan<byte>)ourNodeId).SequenceCompareTo(channel.RemoteNodeId) < 0;
+        var (node1, node2) = weAreNode1 ? (ourNodeId, channel.RemoteNodeId) : (channel.RemoteNodeId, ourNodeId);
+        var (key1, key2) = weAreNode1
+                               ? (funding.LocalFundingKey, funding.RemoteFundingKey)
+                               : (funding.RemoteFundingKey, funding.LocalFundingKey);
+
+        return ChannelAnnouncement2Payload.Create(_nodeOptions.BitcoinNetwork.ChainHash, [], funding.ShortChannelId,
+                                                  funding.CapacitySatoshis, node1, node2, key1, key2, [],
+                                                  funding.TxId, funding.OutputIndex);
+    }
+
+    private static AnnouncementFunding GetCurrentFunding(ChannelModel channel)
+    {
+        if (channel.FundingOutput is not { TransactionId: { } fundingTxId, Index: { } index } funding
+         || channel.RemoteFundingPubKey is not { } remoteFundingKey)
+            throw new InvalidOperationException($"Channel {channel.ChannelId} has no funding output yet");
+        if (!HasShortChannelId(channel))
+            throw new InvalidOperationException($"Channel {channel.ChannelId} has no short channel id yet");
+
+        return new AnnouncementFunding(fundingTxId, index, (ulong)funding.Amount.Satoshi, channel.ShortChannelId,
+                                       channel.LocalFundingPubKey, remoteFundingKey);
+    }
+
+    private static AnnouncementFunding FromSplice(ChannelFunding splice, ShortChannelId shortChannelId) =>
+        new(splice.FundingTxId, splice.OutputIndex, splice.CapacitySatoshis, shortChannelId,
+            splice.LocalFundingPubKey, splice.RemoteFundingPubKey);
+
+    /// <summary>The channel's pending splice <paramref name="fundingTxId"/> (with the splice service's flags), if any.</summary>
+    private ChannelFunding? GetPendingSplice(ChannelModel channel, TxId fundingTxId)
+    {
+        if (_spliceStatePort is null)
+            return null;
+
+        try
+        {
+            return _spliceStatePort.GetFundings(channel).Pending.FirstOrDefault(f => f.FundingTxId == fundingTxId);
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The channel runs on a splice (a rotated funding key, splicing plan D5), not its original funding.</summary>
+    private static bool IsSpliced(ChannelModel channel) => channel.LocalFundingKeyIndex != 0;
 
     /// <summary>
     /// Our <c>channel_ready</c> again (what the open sent: the point of local commitment 1, our verification nonce for
@@ -392,7 +607,8 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
 
     private IReadOnlyList<IChannelMessage> TrySignAndAssemble(ChannelModel channel, Session session)
     {
-        if (!IsDue(channel) || session.Ours is not { } ours || session.Theirs is not { } theirs)
+        if (!IsDue(channel) || session.Ours is not { } ours || session.Theirs is not { } theirs
+         || session.FundingTxId != channel.FundingOutput!.TransactionId)
             return [];
 
         var messages = new List<IChannelMessage>();
@@ -491,12 +707,19 @@ public sealed class ChannelAnnouncement2Service : IChannelAnnouncement2Service
 
     private static bool HasShortChannelId(ChannelModel channel) => ((byte[]?)channel.ShortChannelId) is not null;
 
-    /// <summary>One connection's MuSig2 session of a channel's announcement.</summary>
-    private sealed class Session(CompactPubKey peer, ShortChannelId shortChannelId)
+    /// <summary>What a <c>channel_announcement_2</c> names of the funding it announces.</summary>
+    private readonly record struct AnnouncementFunding(TxId TxId, ushort OutputIndex, ulong CapacitySatoshis,
+                                                       ShortChannelId ShortChannelId, CompactPubKey LocalFundingKey,
+                                                       CompactPubKey RemoteFundingKey);
+
+    /// <summary>One connection's MuSig2 session of the announcement of one funding of a channel.</summary>
+    private sealed class Session(CompactPubKey peer, TxId fundingTxId, ShortChannelId shortChannelId)
     {
         public CompactPubKey Peer { get; } = peer;
 
-        public ShortChannelId ShortChannelId { get; } = shortChannelId;
+        public TxId FundingTxId { get; } = fundingTxId;
+
+        public ShortChannelId ShortChannelId { get; set; } = shortChannelId;
 
         public ChannelAnnouncement2Nonces? Ours { get; set; }
 

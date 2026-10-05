@@ -202,8 +202,11 @@ public interface IMessageFactory
                                             CompactPubKey fundingPubKey, bool requireConfirmedInputs = false,
                                             WillFund? willFund = null);
 
-    /// <summary>A <c>splice_locked</c> (BOLT 2, type 77, SP-LK-01).</summary>
-    SpliceLockedMessage CreateSpliceLockedMessage(ChannelId channelId, TxId spliceTxId);
+    /// <summary>A <c>splice_locked</c> (BOLT 2, type 77, SP-LK-01), with our announcement nonces for the splice when
+    /// given (taproot gossip, BOLTs PR #1059 TLVs 0/2, NL-1131).</summary>
+    SpliceLockedMessage CreateSpliceLockedMessage(ChannelId channelId, TxId spliceTxId,
+                                                  AnnouncementNodeNonceTlv? announcementNodeNonce = null,
+                                                  AnnouncementBitcoinNonceTlv? announcementBitcoinNonce = null);
 
     /// <summary>
     /// A <c>start_batch</c> (BOLT 2, type 127) announcing <paramref name="batchSize"/> <c>commitment_signed</c>

@@ -161,10 +161,11 @@ public sealed class ReestablishService
         var currentCommitNonce = GetCurrentCommitNonce(channel, localState, pendingSplice);
 
         // Taproot gossip (BOLTs PR #1059, NL-878): a public taproot channel sends fresh announcement nonces (TLV 7) and,
-        // while its announcement is not complete in this process, my_current_funding_locked retransmit bit 1
+        // while its announcement is not complete in this process, my_current_funding_locked retransmit bit 1; the
+        // nonces are for the funding our my_current_funding_locked names (a splice whose splice_locked we sent, NL-1131)
         var (gossipFundingLocked, announcementNonces) =
             _serviceProvider?.GetService<IChannelAnnouncement2Service>()?.CreateReestablishTlvs(
-                channel, channel.RemoteNodeId) ?? (null, null);
+                channel, channel.RemoteNodeId, own.MyCurrentFundingLocked?.TxId) ?? (null, null);
         var fundingLockedTlv = own.MyCurrentFundingLocked is { } fundingLocked
                                    ? new MyCurrentFundingLockedTlv(
                                        fundingLocked.TxId,

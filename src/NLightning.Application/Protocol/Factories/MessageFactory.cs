@@ -818,9 +818,12 @@ public partial class MessageFactory : IMessageFactory
     }
 
     /// <inheritdoc />
-    public SpliceLockedMessage CreateSpliceLockedMessage(ChannelId channelId, TxId spliceTxId)
+    public SpliceLockedMessage CreateSpliceLockedMessage(ChannelId channelId, TxId spliceTxId,
+                                                         AnnouncementNodeNonceTlv? announcementNodeNonce = null,
+                                                         AnnouncementBitcoinNonceTlv? announcementBitcoinNonce = null)
     {
-        return new SpliceLockedMessage(new SpliceLockedPayload(channelId, spliceTxId));
+        return new SpliceLockedMessage(new SpliceLockedPayload(channelId, spliceTxId), announcementNodeNonce,
+                                       announcementBitcoinNonce);
     }
 
     /// <inheritdoc />

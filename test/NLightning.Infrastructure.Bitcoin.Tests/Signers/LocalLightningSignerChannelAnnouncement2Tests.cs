@@ -5,6 +5,8 @@ namespace NLightning.Infrastructure.Bitcoin.Tests.Signers;
 
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
@@ -216,6 +218,46 @@ public class LocalLightningSignerChannelAnnouncement2Tests
         // Act / Assert
         Assert.Throws<SignerException>(() => _alice.Signer.CreateChannelAnnouncement2Nonces(channelId,
                                                                                            BuildUnsigned()));
+    }
+
+    [Fact]
+    public void Given_APendingSplice_When_CreatingNonces_Then_AllowedButSigningWaitsForTheLock()
+    {
+        // Arrange (NL-1131): a registered pending splice with the rotated funding keys (index 1 on both sides)
+        var spliceTxId = new TxId(Enumerable.Repeat((byte)0xAD, 32).ToArray());
+        var spliceScid = new ShortChannelId(520, 2, FundingOutputIndex);
+        const ulong spliceSatoshis = FundingSatoshis + 100_000;
+        var aliceKey = _alice.Signer.GetFundingPubKey(s_channelId, 1);
+        var bobKey = _bob.Signer.GetFundingPubKey(s_channelId, 1);
+        _alice.Signer.RegisterFunding(s_channelId,
+                                      new ChannelFunding(spliceTxId, FundingOutputIndex, spliceSatoshis, aliceKey,
+                                                         bobKey, 1, 0, 0, ChannelFundingKind.Splice,
+                                                         ChannelFundingStatus.Pending));
+        var aliceIsNode1 = ((ReadOnlySpan<byte>)_alice.NodeId).SequenceCompareTo(_bob.NodeId) < 0;
+        var splice = aliceIsNode1
+                         ? ChannelAnnouncement2Payload.Create(ChainConstants.Regtest, [], spliceScid, spliceSatoshis,
+                                                              _alice.NodeId, _bob.NodeId, aliceKey, bobKey, [],
+                                                              spliceTxId, FundingOutputIndex)
+                         : ChannelAnnouncement2Payload.Create(ChainConstants.Regtest, [], spliceScid, spliceSatoshis,
+                                                              _bob.NodeId, _alice.NodeId, bobKey, aliceKey, [],
+                                                              spliceTxId, FundingOutputIndex);
+        var bobNonces = _bob.Signer.CreateChannelAnnouncement2Nonces(s_channelId, BuildUnsigned());
+
+        // Act: the nonces of a splice_locked are made for the splice before it locks
+        var nonces = _alice.Signer.CreateChannelAnnouncement2Nonces(s_channelId, splice);
+
+        // Assert: but nothing is signed for a funding that is not the channel's current one
+        Assert.NotEqual(nonces.NodeNonce, bobNonces.NodeNonce);
+        var exception = Assert.Throws<SignerException>(() => _alice.Signer.SignChannelAnnouncement2(
+                                                           s_channelId, splice, bobNonces.NodeNonce,
+                                                           bobNonces.BitcoinNonce));
+        Assert.Contains("short channel id", exception.Message);
+
+        // A splice's announcement with the wrong keys is refused at the nonces already
+        var wrongKeys = ChannelAnnouncement2Payload.Create(ChainConstants.Regtest, [], spliceScid, spliceSatoshis,
+                                                           splice.NodeId1, splice.NodeId2, _alice.FundingKey,
+                                                           _bob.FundingKey, [], spliceTxId, FundingOutputIndex);
+        Assert.Throws<SignerException>(() => _alice.Signer.CreateChannelAnnouncement2Nonces(s_channelId, wrongKeys));
     }
 
     [Fact]

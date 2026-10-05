@@ -88,7 +88,9 @@ public interface ILightningSigner
     /// signer, in memory only, bound to <paramref name="unsignedAnnouncement"/>'s message, and are consumed by
     /// <see cref="SignChannelAnnouncement2"/>; a new call (or <see cref="DiscardChannelAnnouncement2Nonces"/>) drops the
     /// previous pair, so no nonce ever signs twice. The announcement is checked as <see cref="SignChannelAnnouncement2"/>
-    /// checks it.
+    /// checks it, except that it may also name a registered pending splice of the channel (its outpoint, capacity and
+    /// funding keys; the nonces of a <c>splice_locked</c>, made before the splice locks, NL-1131): those nonces sign
+    /// only once the splice is the channel's current funding.
     /// </summary>
     /// <exception cref="Exceptions.SignerException">The announcement is not one this channel may sign.</exception>
     ChannelAnnouncement2Nonces CreateChannelAnnouncement2Nonces(ChannelId channelId,

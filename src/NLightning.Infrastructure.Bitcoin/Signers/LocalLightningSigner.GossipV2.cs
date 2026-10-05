@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 namespace NLightning.Infrastructure.Bitcoin.Signers;
 
 using Crypto.Contexts;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.Constants;
 using Domain.Crypto.Models;
@@ -39,7 +40,7 @@ public partial class LocalLightningSigner
                                                                        ChannelAnnouncement2Payload unsignedAnnouncement)
     {
         ArgumentNullException.ThrowIfNull(unsignedAnnouncement);
-        var (signingInfo, funding) = CheckAnnouncement2(channelId, unsignedAnnouncement);
+        var (signingInfo, funding) = CheckAnnouncement2(channelId, unsignedAnnouncement, allowPendingSplice: true);
         var aggregate = GetAnnouncement2Aggregate(unsignedAnnouncement);
         byte[] message = unsignedAnnouncement.GetSignatureHash();
 
@@ -174,9 +175,12 @@ public partial class LocalLightningSigner
     /// The guards of a <c>channel_announcement_2</c> signature: a registered public simple taproot channel without data
     /// loss, and an announcement of exactly this channel (chain, real scid, funding outpoint and capacity, our node id
     /// and the peer's in ascending order, each funding key next to its node, no merkle root: the funding is BIP 86).
+    /// With <paramref name="allowPendingSplice"/> (nonces only, NL-1131) it may name a registered pending splice
+    /// instead: its outpoint, capacity and funding keys; its short channel id is only checked for the output index (the
+    /// splice is not the channel's yet), and signing it waits for the lock, which makes it the current funding.
     /// </summary>
     private (ChannelSigningInfo SigningInfo, FundingKeys Funding) CheckAnnouncement2(
-        ChannelId channelId, ChannelAnnouncement2Payload announcement)
+        ChannelId channelId, ChannelAnnouncement2Payload announcement, bool allowPendingSplice = false)
     {
         var signingInfo = GetRegisteredSigningInfo(channelId);
         ThrowIfDataLoss(channelId, "sign a channel_announcement_2");
@@ -188,10 +192,26 @@ public partial class LocalLightningSigner
                                       channelId, "Internal error");
 
         var funding = FromSigningInfo(signingInfo);
+        var pendingSplice = false;
+        if (allowPendingSplice && announcement.FundingTxId != funding.TxId)
+        {
+            lock (GetCommitmentLock(channelId))
+            {
+                if (_spliceFundings.TryGetValue(channelId, out var state)
+                 && state.Fundings.TryGetValue(announcement.FundingTxId, out var splice)
+                 && splice.Status == ChannelFundingStatus.Pending)
+                {
+                    funding = FromFunding(splice);
+                    pendingSplice = true;
+                }
+            }
+        }
+
         string? refusal = null;
         if (announcement.ChainHash != _chainHash)
             refusal = "it is for another chain";
-        else if (GetCurrentShortChannelId(channelId, signingInfo) is not { } scid || scid != announcement.ShortChannelId)
+        else if (!pendingSplice && (GetCurrentShortChannelId(channelId, signingInfo) is not { } scid
+                                 || scid != announcement.ShortChannelId))
             refusal = $"it names {announcement.ShortChannelId}, not the channel's short channel id";
         else if (announcement.FundingTxId != funding.TxId || announcement.FundingOutputIndex != funding.OutputIndex
               || announcement.ShortChannelId.OutputIndex != funding.OutputIndex)

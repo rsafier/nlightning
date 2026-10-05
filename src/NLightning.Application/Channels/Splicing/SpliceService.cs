@@ -125,14 +125,6 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
     /// </summary>
     internal const string TaprootLiquidityRefusal = "liquidity ads are not supported with simple taproot channels yet";
 
-    /// <summary>
-    /// A public simple taproot channel is not spliced yet (NL-1131): its re-announcement for the new funding
-    /// (<c>splice_locked</c> announcement nonces and a new <c>channel_announcement_2</c>, BOLTs PR #1059) is not
-    /// implemented, so a splice would leave the network with a closed channel's announcement.
-    /// </summary>
-    internal const string PublicTaprootSpliceRefusal =
-        "splicing a public simple taproot channel is not supported yet (its channel_announcement_2 would not follow)";
-
     #region ISpliceService
 
     /// <inheritdoc />
@@ -153,8 +145,6 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         if (!_channelMemoryRepository.TryGetChannel(channelId, out var unlocked))
             throw new KeyNotFoundException($"Channel {channelId} is not loaded");
         var simpleTaproot = unlocked.ChannelParams.OptionSimpleTaproot;
-        if (simpleTaproot && unlocked.AnnounceChannel)
-            throw new InvalidOperationException($"Channel {channelId}: " + PublicTaprootSpliceRefusal + " (NL-1131)");
         if (simpleTaproot && request.Liquidity is not null)
             throw new InvalidOperationException($"Channel {channelId} is a simple taproot channel: "
                                               + TaprootLiquidityRefusal + " (NL-971)");
@@ -333,10 +323,6 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         // NL-591: a node draining for its shutdown starts no splice (BOLT 2: MAY send tx_abort for any reason)
         if (IsDraining())
             return EndQuiescenceWithTxAbort(channelId, peerPubKey, NodeDrain.Refusal("splice_init"));
-
-        // NL-1131: a public taproot channel's re-announcement after a splice is not implemented
-        if (channel.ChannelParams.OptionSimpleTaproot && channel.AnnounceChannel)
-            return EndQuiescenceWithTxAbort(channelId, peerPubKey, PublicTaprootSpliceRefusal);
 
         var fundings = _statePort.GetFundings(channel);
         var conditions = GetConditions(channel, negotiatedFeatures, quiescenceState, fundings) with
@@ -1092,6 +1078,12 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
                 CloseConnection = true
             };
 
+        // Taproot gossip (BOLTs PR #1059, NL-1131): the peer's announcement nonces for the splice, kept for its
+        // re-announcement once it locks
+        _serviceProvider.GetService<IChannelAnnouncement2Service>()
+                       ?.OnSpliceLockedNonces(channel, peerPubKey, txId, message.AnnouncementNodeNonceTlv,
+                                              message.AnnouncementBitcoinNonceTlv);
+
         return await ReceiveSpliceLockedAsync(channel, fundings, txId, unitOfWork, cancellationToken);
     }
 
@@ -1147,6 +1139,12 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         var shortChannelId = transactionIndex is { } txIndex
                                  ? new ShortChannelId(height, txIndex, funding.OutputIndex)
                                  : funding.ShortChannelId;
+
+        // Taproot gossip (BOLTs PR #1059, NL-1131): a public taproot channel's splice_locked carries our announcement
+        // nonces for the splice (made before the lock below, which may sign with them at once)
+        var nonces = _serviceProvider.GetService<IChannelAnnouncement2Service>()
+                                    ?.CreateSpliceLockedNonces(channel, channel.RemoteNodeId,
+                                                               funding with { ShortChannelId = shortChannelId });
         var followUps = await AdvanceLockAsync(channel, fundings,
                                                funding with
                                                {
@@ -1159,7 +1157,11 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         _logger.LogInformation("Splice {TxId} of channel {ChannelId} reached its depth at {Height}; sending "
                              + "splice_locked", spliceTxId, channelId, height);
         GetPublisher()?.Publish(channel.RemoteNodeId,
-                                [_messageFactory.CreateSpliceLockedMessage(channelId, spliceTxId), .. followUps]);
+                                [
+                                    _messageFactory.CreateSpliceLockedMessage(channelId, spliceTxId, nonces?.Node,
+                                                                              nonces?.Bitcoin),
+                                    .. followUps
+                                ]);
     }
 
     /// <summary>
@@ -1349,8 +1351,30 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
                            ?.Retire(RetiredScidMap.Create(previousShortChannelId, channel.ChannelId, retiredAt));
         }
 
-        if (!channel.AnnounceChannel
-         || _serviceProvider.GetService<IChannelAnnouncementService>() is not { } announcements)
+        if (!channel.AnnounceChannel)
+            return [];
+
+        // Taproot gossip (BOLTs PR #1059, NL-1131): the old channel_announcement_2 is void; the splice's session (its
+        // nonces exchanged in splice_locked) signs now when the splice already has the announcement depth, otherwise
+        // the block-driven announcement round does
+        if (_serviceProvider.GetService<IChannelAnnouncement2Service>() is { } announcements2
+         && announcements2.IsV2Channel(channel))
+        {
+            try
+            {
+                _serviceProvider.GetService<IChannelAnnouncementService>()?.OnShortChannelIdChanged(channel.ChannelId);
+                _channelMemoryRepository.UpdateChannel(channel);
+                return announcements2.OnSpliceLocked(channel, channel.RemoteNodeId);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Could not start the channel_announcement_2 of the splice of channel {ChannelId}",
+                                 channel.ChannelId);
+                return [];
+            }
+        }
+
+        if (_serviceProvider.GetService<IChannelAnnouncementService>() is not { } announcements)
             return [];
 
         try

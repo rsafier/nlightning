@@ -1,6 +1,8 @@
 namespace NLightning.Application.Gossip.Announcements.Interfaces;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Interfaces;
@@ -35,11 +37,35 @@ public interface IChannelAnnouncement2Service
                                                         AnnouncementBitcoinNonceTlv? bitcoinNonce);
 
     /// <summary>
+    /// Our announcement nonces for <paramref name="splice"/> (its short channel id known), to ride our
+    /// <c>splice_locked</c> (BOLTs #1059, TLVs 0/2, NL-1131): the splice's session starts (keeping the peer's nonces when
+    /// its <c>splice_locked</c> came first) and signs once the splice is locked and deep enough. Null for a channel we do
+    /// not announce with gossip v2.
+    /// </summary>
+    (AnnouncementNodeNonceTlv Node, AnnouncementBitcoinNonceTlv Bitcoin)? CreateSpliceLockedNonces(
+        ChannelModel channel, CompactPubKey peer, ChannelFunding splice);
+
+    /// <summary>
+    /// The peer's announcement nonces from its <c>splice_locked</c> for <paramref name="spliceTxId"/> (NL-1131), kept
+    /// for that splice's session. One nonce without the other is a <c>ChannelWarningException</c>.
+    /// </summary>
+    void OnSpliceLockedNonces(ChannelModel channel, CompactPubKey peer, TxId spliceTxId,
+                              AnnouncementNodeNonceTlv? nodeNonce, AnnouncementBitcoinNonceTlv? bitcoinNonce);
+
+    /// <summary>
+    /// After a splice lock (the channel's funding is the splice): the old announcement is forgotten, and the splice's
+    /// session signs when both nonce pairs are in and the splice has the announcement depth (NL-1131).
+    /// </summary>
+    IReadOnlyList<IChannelMessage> OnSpliceLocked(ChannelModel channel, CompactPubKey peer);
+
+    /// <summary>
     /// The TLVs of our <c>channel_reestablish</c>: <c>my_current_funding_locked</c> (retransmit bit 1 while the
-    /// announcement is not complete in this process) and fresh <c>announcement_nonces</c> (a new session).
+    /// announcement is not complete in this process) and fresh <c>announcement_nonces</c> (a new session) for the
+    /// funding <paramref name="fundingLockedTxId"/> names (the current funding when null; a splice whose
+    /// <c>splice_locked</c> we sent otherwise, NL-1131).
     /// </summary>
     (MyCurrentFundingLockedTlv? FundingLocked, AnnouncementNoncesTlv? Nonces) CreateReestablishTlvs(
-        ChannelModel channel, CompactPubKey peer);
+        ChannelModel channel, CompactPubKey peer, TxId? fundingLockedTxId = null);
 
     /// <summary>The peer's <c>channel_reestablish</c> announcement TLVs, once ours went out on this connection.</summary>
     IReadOnlyList<IChannelMessage> OnReestablish(ChannelModel channel, CompactPubKey peer,

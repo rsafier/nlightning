@@ -10,7 +10,8 @@ using Tlv;
 /// </summary>
 /// <remarks>
 /// Sent when a splice transaction reaches acceptable depth; the splice completes when both sides sent it for the same
-/// txid (SP-LK-03). No TLVs. Handled in wave SP2 (lane SP2-B); the wire is lane SP1-A's.
+/// txid (SP-LK-03). Its only TLVs are taproot gossip's announcement nonces (BOLTs PR #1059, NL-1131). Handled in wave
+/// SP2 (lane SP2-B); the wire is lane SP1-A's.
 /// </remarks>
 /// <param name="payload">The splice_locked payload.</param>
 public sealed class SpliceLockedMessage : BaseChannelMessage
