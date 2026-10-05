@@ -320,6 +320,12 @@ public sealed class PendingAnnouncementIndex
         {
             try
             {
+                if (entry.IsV2)
+                {
+                    var announcement2 = entry.ParseAnnouncement2();
+                    return first ? announcement2.NodeId1 : announcement2.NodeId2;
+                }
+
                 var announcement = entry.ParseAnnouncement();
                 return first ? announcement.NodeId1 : announcement.NodeId2;
             }
@@ -352,11 +358,36 @@ public enum PendingAddOutcome
 /// A signed <c>channel_announcement</c> waiting for its first <c>channel_update</c>: its short channel id, its wire bytes
 /// (only these are kept, about 430 bytes; the payload is parsed again when an update arrives, and once when it is added
 /// for the reverse index of the candidates' nodes, NL-425), the node id of the peer
-/// that sent it (not the connection, which may be long gone when the update arrives) and when it was kept.
+/// that sent it (not the connection, which may be long gone when the update arrives) and when it was kept. With
+/// <see cref="IsV2"/> the bytes are a keyless <c>channel_announcement_2</c> waiting for its first
+/// <c>channel_update_2</c> (NL-1140; kept in an index of its own, never mixed with BOLT 7 entries).
 /// </summary>
 public sealed record PendingAnnouncement(ShortChannelId ShortChannelId, byte[] Raw, CompactPubKey? OriginNodeId,
                                          DateTimeOffset AddedAt)
 {
+    /// <summary>True for a <c>channel_announcement_2</c> (NL-1140), false for a BOLT 7 <c>channel_announcement</c>.</summary>
+    public bool IsV2 { get; init; }
+
+    /// <summary>The <c>channel_announcement_2</c>, parsed from <see cref="Raw"/> (only when <see cref="IsV2"/>).</summary>
+    public ChannelAnnouncement2Payload ParseAnnouncement2() => ChannelAnnouncement2Payload.Parse(Raw);
+
+    /// <summary>
+    /// The channel a pending <c>channel_announcement_2</c> describes, not checked on chain (the announced capacity):
+    /// what its first <c>channel_update_2</c> is validated against before the chain lookup (NL-1140).
+    /// </summary>
+    public GraphChannel ToUncheckedChannel2(ChannelAnnouncement2Payload announcement)
+    {
+        ArgumentNullException.ThrowIfNull(announcement);
+        return new GraphChannel(announcement.ShortChannelId, announcement.NodeId1, announcement.NodeId2,
+                                announcement.BitcoinKey1, announcement.BitcoinKey2, announcement.CapacitySatoshis,
+                                announcement.Features ?? ReadOnlyMemory<byte>.Empty,
+                                GraphChannelVerification.Unverified)
+        {
+            Versions = GraphGossipVersions.V2,
+            RawAnnouncement2 = Raw
+        };
+    }
+
     /// <summary>The announcement, parsed from <see cref="Raw"/>.</summary>
     public ChannelAnnouncementPayload ParseAnnouncement() => ChannelAnnouncementPayload.Parse(Raw);
 

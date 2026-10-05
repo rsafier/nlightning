@@ -24,10 +24,10 @@ public sealed record DescribeGraphClientResponse
     /// <summary>Our own announced channels.</summary>
     public required int OwnChannels { get; init; }
 
-    /// <summary>Channels without a <c>channel_update</c> in either direction.</summary>
+    /// <summary>Channels without a <c>channel_update</c> nor <c>channel_update_2</c> in either direction.</summary>
     public required int ChannelsWithoutPolicy { get; init; }
 
-    /// <summary>Stored <c>channel_update</c> directions.</summary>
+    /// <summary>Stored <c>channel_update</c> directions (BOLT 7; <see cref="V2Policies"/> counts the v2 ones).</summary>
     public required int Policies { get; init; }
 
     /// <summary>Directions with the <c>disable</c> bit set.</summary>
@@ -116,6 +116,27 @@ public sealed record DescribeGraphClientResponse
 
     /// <summary>Own and relayed gossip a full outbox refused since the start, or null without a peer manager.</summary>
     public long? OutboxGossipRefused { get; init; }
+
+    /// <summary>Channels with a taproot <c>channel_announcement_2</c>, spent ones included (NL-1141).</summary>
+    public int V2Channels { get; init; }
+
+    /// <summary>Of those, channels also announced with a BOLT 7 <c>channel_announcement</c>.</summary>
+    public int ChannelsWithBothVersions { get; init; }
+
+    /// <summary>Stored <c>channel_update_2</c> directions (<see cref="Policies"/> counts BOLT 7 only).</summary>
+    public int V2Policies { get; init; }
+
+    /// <summary>Of those, directions with a disable flag set.</summary>
+    public int V2DisabledPolicies { get; init; }
+
+    /// <summary>Nodes with a <c>node_announcement_2</c>.</summary>
+    public int V2AnnouncedNodes { get; init; }
+
+    /// <summary>
+    /// Keyless <c>channel_announcement_2</c>s kept outside the graph until their first <c>channel_update_2</c>
+    /// (NL-1140), or null without an ingress.
+    /// </summary>
+    public int? PendingAnnouncements2 { get; init; }
 }
 
 /// <summary>The gossip sync state of one connection.</summary>

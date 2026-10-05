@@ -89,6 +89,24 @@ public sealed class DescribeGraphIpcResponse
     /// <summary>Own and relayed gossip a full outbox refused since the start (NL-360).</summary>
     [Key(34)] public long? OutboxGossipRefused { get; init; }
 
+    /// <summary>Channels with a taproot <c>channel_announcement_2</c>, spent ones included (NL-1141).</summary>
+    [Key(35)] public int V2Channels { get; init; }
+
+    /// <summary>Of those, channels also announced with a BOLT 7 <c>channel_announcement</c>.</summary>
+    [Key(36)] public int ChannelsWithBothVersions { get; init; }
+
+    /// <summary>Stored <c>channel_update_2</c> directions (key 6 counts BOLT 7 only).</summary>
+    [Key(37)] public int V2Policies { get; init; }
+
+    /// <summary>Of those, directions with a disable flag set.</summary>
+    [Key(38)] public int V2DisabledPolicies { get; init; }
+
+    /// <summary>Nodes with a <c>node_announcement_2</c>.</summary>
+    [Key(39)] public int V2AnnouncedNodes { get; init; }
+
+    /// <summary>Keyless channel_announcement_2s waiting for their first channel_update_2 (NL-1140); null without an ingress.</summary>
+    [Key(40)] public int? PendingAnnouncements2 { get; init; }
+
     public static DescribeGraphIpcResponse FromClientResponse(DescribeGraphClientResponse clientResponse)
     {
         ArgumentNullException.ThrowIfNull(clientResponse);
@@ -142,7 +160,13 @@ public sealed class DescribeGraphIpcResponse
             RelayPausedConnections = clientResponse.RelayPausedConnections,
             OutboxGossipMessages = clientResponse.OutboxGossipMessages,
             OutboxGossipBytes = clientResponse.OutboxGossipBytes,
-            OutboxGossipRefused = clientResponse.OutboxGossipRefused
+            OutboxGossipRefused = clientResponse.OutboxGossipRefused,
+            V2Channels = clientResponse.V2Channels,
+            ChannelsWithBothVersions = clientResponse.ChannelsWithBothVersions,
+            V2Policies = clientResponse.V2Policies,
+            V2DisabledPolicies = clientResponse.V2DisabledPolicies,
+            V2AnnouncedNodes = clientResponse.V2AnnouncedNodes,
+            PendingAnnouncements2 = clientResponse.PendingAnnouncements2
         };
     }
 }

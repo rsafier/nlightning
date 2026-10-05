@@ -17,7 +17,8 @@ using Interfaces;
 
 /// <summary>
 /// Describes the gossip graph (ClientCommand 20, BOLT 7 plan G5-T4): the counts, the store's memory estimate, the
-/// process memory against <c>Gossip:MaxMemoryMb</c> (<see cref="GossipMemoryBudget"/>, NL-373), pending writes, the ingress queue, dropped messages and orphans, the relay and outbox depths
+/// process memory against <c>Gossip:MaxMemoryMb</c> (<see cref="GossipMemoryBudget"/>, NL-373), pending writes, the ingress queue, dropped messages and orphans, the relay and outbox depths, the taproot gossip
+/// counts (NL-1141)
 /// (<see cref="GossipRelayScheduler.GetStatus"/>, NL-360), and each connection's sync state; on request one
 /// page of channels (by short channel id) and one of node announcements (by node id), at most
 /// <see cref="DescribeGraphClientRequest.MaxLimit"/> each. Refused with <c>invalid_operation</c> while the graph is
@@ -108,7 +109,13 @@ public sealed class DescribeGraphClientHandler
             RelayPausedConnections = relay?.PausedConnections,
             OutboxGossipMessages = relay?.OutboxMessages ?? _peerManager?.QueuedOutboxGossipCount,
             OutboxGossipBytes = relay?.OutboxBytes ?? _peerManager?.QueuedOutboxGossipBytes,
-            OutboxGossipRefused = _peerManager?.RefusedOutboxGossipCount
+            OutboxGossipRefused = _peerManager?.RefusedOutboxGossipCount,
+            V2Channels = description.V2.Channels,
+            ChannelsWithBothVersions = description.V2.ChannelsWithBothVersions,
+            V2Policies = description.V2.Policies,
+            V2DisabledPolicies = description.V2.DisabledPolicies,
+            V2AnnouncedNodes = description.V2.AnnouncedNodes,
+            PendingAnnouncements2 = description.Ingress?.PendingAnnouncements2
         };
 
         if (request.IncludeChannels)

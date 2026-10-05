@@ -653,6 +653,38 @@ public class PrinterSnapshotTests
                          "More channels: describegraph --channels --offset 1"), output);
     }
 
+    [Fact]
+    public void Given_AGraphWithTaprootGossip_When_GraphDescriptionPrinted_Then_TheTaprootLineShowsTheV2Counts()
+    {
+        // Arrange (NL-1141)
+        var description = new DescribeGraphIpcResponse
+        {
+            V2Channels = 4,
+            ChannelsWithBothVersions = 1,
+            V2Policies = 7,
+            V2DisabledPolicies = 2,
+            V2AnnouncedNodes = 3,
+            PendingAnnouncements2 = 5,
+            Peers = [],
+            ChannelPage = [],
+            NodePage = []
+        };
+
+        // Act
+        var output = Print(w => new DescribeGraphPrinter(w).Print(description));
+        var withoutV2 = Print(w => new DescribeGraphPrinter(w).Print(new DescribeGraphIpcResponse
+        {
+            Peers = [],
+            ChannelPage = [],
+            NodePage = []
+        }));
+
+        // Assert
+        Assert.Contains("  Taproot gossip:     4 channels (1 also BOLT 7), 7 policies (2 disabled), 3 announced nodes, "
+                      + "5 announcements without update\n", output);
+        Assert.DoesNotContain("Taproot gossip", withoutV2);
+    }
+
     [Theory]
     [InlineData(1024L, true, "  Memory (process):   1100.0 MiB RSS, 300.0 MiB managed heap; budget 1024.0 MiB (OVER BUDGET, new channels and nodes refused, 12 refused)")]
     [InlineData(0L, false, "  Memory (process):   1100.0 MiB RSS, 300.0 MiB managed heap; budget off (ok, 12 refused)")]
