@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 81 | 82 |
+| open | 0 | 0 | 1 | 82 | 83 |
 | in-progress | 0 | 0 | 4 | 1 | 5 |
 | fixed | 15 | 68 | 221 | 457 | 761 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **235** | **559** | **877** |
+| **Total** | **15** | **68** | **235** | **560** | **878** |
 
 ### Epics
 
@@ -9316,4 +9316,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** if it recurs, read the run's node log for why we broadcast our commitment; if it is a race in the test (our node failing the channel on LDK's error before LDK's commitment confirms), wait for LDK's close to reach our node before asserting, or accept either commitment with its own sweep assertions.
 - **Blocks/Blocked-by:** Related NL-556
 - **Plan ref:** `TEST_HARNESS_PLAN.md`
+
+### NL-1085 `payroute` CLI: the help's `getroute --json` recipe does not exist, and hop SCIDs take only the numeric form
+- **Status:** open
+- **Severity:** low
+- **Kind:** ux
+- **Location:** `src/NLightning.Client/Utils/ClientUtils.cs` (the payroute help recipe, around line 106), `src/NLightning.Client/PayRouteRoutesJson.cs` (`outgoingShortChannelId`), `getroute` in `ClientApp`
+- **Evidence:** live payroute test on Mutinynet (2026-10-05, fc52757b; FAFO2 → FAFO → FAFO3 over FAFO's private channel, 500 sat, fee 1,000 msat, Succeeded): (1) the help says to build `--routes` with `nltg getroute <node_id> <msat> --json | jq ...`, but `getroute` has no `--json` ("Missing value for --json"), so the route had to be written by hand; (2) `firstHopChannel` takes `BLOCKxTXxOUTPUT` or a channel id, but a hop's `outgoingShortChannelId` accepts only the 64-bit number ("The JSON value could not be converted to System.Nullable`1[System.UInt64]") although the help shows scids as BLOCKxTXxOUTPUT everywhere else.
+- **Fix sketch:** add `getroute --json` with the field names the recipe expects (`channelId`, `amountMsat`, `cltvExpiry`, `hops[].{nodeId, shortChannelId, amountMsat, cltvExpiry}`), or change the recipe to what exists; let `outgoingShortChannelId` take a string in `BLOCKxTXxOUTPUT` form as well as the number. Tests: the recipe end to end in `PayRouteCommandTests`.
+- **Blocks/Blocked-by:** Part of NL-1082
+- **Plan ref:** `docs/agents/PAYROUTE_PLAN.md`
 
