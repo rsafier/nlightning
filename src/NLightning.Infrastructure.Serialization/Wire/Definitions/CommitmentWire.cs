@@ -77,7 +77,8 @@ internal static class ChannelReestablishWire
         Decode, TlvDef.Typed<NextFundingTlv>(TlvConstants.NextFunding),
         TlvDef.Typed<MyCurrentFundingLockedTlv>(TlvConstants.MyCurrentFundingLocked),
         TlvDef.Typed<NextLocalNoncesTlv>(TaprootTlvConstants.NextLocalNonces),
-        TlvDef.Typed<CurrentCommitNonceTlv>(TaprootTlvConstants.CurrentCommitNonce));
+        TlvDef.Typed<CurrentCommitNonceTlv>(TaprootTlvConstants.CurrentCommitNonce),
+        TlvDef.Typed<AnnouncementNoncesTlv>(TaprootTlvConstants.AnnouncementNonces));
 
     private static void Encode(ref WireWriter writer, ChannelReestablishMessage message)
     {
@@ -103,7 +104,8 @@ internal static class ChannelReestablishWire
             tlvs.Get<NextFundingTlv>(TlvConstants.NextFunding),
             tlvs.Get<MyCurrentFundingLockedTlv>(TlvConstants.MyCurrentFundingLocked),
             tlvs.Get<NextLocalNoncesTlv>(TaprootTlvConstants.NextLocalNonces),
-            tlvs.Get<CurrentCommitNonceTlv>(TaprootTlvConstants.CurrentCommitNonce));
+            tlvs.Get<CurrentCommitNonceTlv>(TaprootTlvConstants.CurrentCommitNonce),
+            tlvs.Get<AnnouncementNoncesTlv>(TaprootTlvConstants.AnnouncementNonces));
     }
 }
 

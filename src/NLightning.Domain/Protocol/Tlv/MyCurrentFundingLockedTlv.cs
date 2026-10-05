@@ -24,6 +24,12 @@ public sealed class MyCurrentFundingLockedTlv : BaseTlv
     /// <summary><c>retransmit_flags</c> bit 0: <c>announcement_signatures</c>.</summary>
     public const byte AnnouncementSignaturesFlag = 0x01;
 
+    /// <summary>
+    /// <c>retransmit_flags</c> bit 1 (taproot gossip, BOLTs PR #1059): retransmit <c>announcement_signatures_2</c> for
+    /// this funding, signing a new MuSig2 session with the <c>announcement_nonces</c> of the same message.
+    /// </summary>
+    public const byte AnnouncementSignatures2Flag = 0x02;
+
     /// <summary>The funding (or splice) transaction the sender considers locked.</summary>
     public TxId FundingTxId { get; }
 

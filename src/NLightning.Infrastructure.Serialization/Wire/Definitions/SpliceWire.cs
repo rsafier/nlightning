@@ -10,8 +10,8 @@ using Domain.Protocol.Tlv;
 /// <summary>
 /// The wire definitions of BOLT 2 "Channel Splicing" and batching: <c>splice_init</c> (80), <c>splice_ack</c> (81),
 /// <c>splice_locked</c> (77) and <c>start_batch</c> (127). The s64 funding contributions ride
-/// <see cref="WireReader.S64"/>/<see cref="WireWriter.S64"/>; <c>splice_locked</c> defines no TLVs, so its trailing
-/// extension is validated with an empty known set (BOLT 1: unknown even fails, odd ignored).
+/// <see cref="WireReader.S64"/>/<see cref="WireWriter.S64"/>; <c>splice_locked</c> carries only the taproot gossip
+/// announcement nonces 0 and 2 (BOLTs PR #1059), any other even type fails it (BOLT 1).
 /// </summary>
 internal static class SpliceInitWire
 {
@@ -73,7 +73,9 @@ internal static class SpliceAckWire
 internal static class SpliceLockedWire
 {
     public static readonly MessageWire<SpliceLockedMessage> Def =
-        new(MessageTypes.SpliceLocked, Encode, Decode, strictEmptyExtension: true, keepRawExtension: false);
+        new(MessageTypes.SpliceLocked, Encode, Decode,
+            TlvDef.Typed<AnnouncementNodeNonceTlv>(TaprootTlvConstants.AnnouncementNodeNonce),
+            TlvDef.Typed<AnnouncementBitcoinNonceTlv>(TaprootTlvConstants.AnnouncementBitcoinNonce));
 
     private static void Encode(ref WireWriter writer, SpliceLockedMessage message)
     {
@@ -87,7 +89,9 @@ internal static class SpliceLockedWire
         var channelId = reader.ChannelId();
         var spliceTxId = new TxId(reader.BytesArray(CryptoConstants.Sha256HashLen));
 
-        return tlvs => new SpliceLockedMessage(new SpliceLockedPayload(channelId, spliceTxId));
+        return tlvs => new SpliceLockedMessage(new SpliceLockedPayload(channelId, spliceTxId),
+            tlvs.Get<AnnouncementNodeNonceTlv>(TaprootTlvConstants.AnnouncementNodeNonce),
+            tlvs.Get<AnnouncementBitcoinNonceTlv>(TaprootTlvConstants.AnnouncementBitcoinNonce));
     }
 }
 

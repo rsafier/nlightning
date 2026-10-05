@@ -81,7 +81,13 @@ public sealed class WireRegistry
             ReplyShortChannelIdsEndWire.Def,
             QueryChannelRangeWire.Def,
             ReplyChannelRangeWire.Def,
-            GossipTimestampFilterWire.Def
+            GossipTimestampFilterWire.Def,
+
+            // Taproot gossip (BOLTs PR #1059), pure TLV messages, in ascending message type order
+            AnnouncementSignatures2Wire.Def,
+            ChannelAnnouncement2Wire.Def,
+            NodeAnnouncement2Wire.Def,
+            ChannelUpdate2Wire.Def
         ];
 
         foreach (var def in defs)

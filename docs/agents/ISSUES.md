@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 75 | 76 |
-| in-progress | 0 | 0 | 3 | 0 | 3 |
-| fixed | 15 | 68 | 221 | 451 | 755 |
+| open | 0 | 0 | 1 | 74 | 75 |
+| in-progress | 0 | 0 | 3 | 1 | 4 |
+| fixed | 15 | 68 | 221 | 452 | 756 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **233** | **546** | **862** |
+| **Total** | **15** | **68** | **233** | **547** | **863** |
 
 ### Epics
 
@@ -4303,7 +4303,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G3-T3
 
 ### NL-878 Taproot gossip (`channel_announcement_2` and related; public taproot channels) not implemented
-- **Status:** open
+- **Status:** in-progress (branch `wip/taproot-t7`, plan `TAPROOT_CHANNELS_PLAN.md` T7)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/`, `src/NLightning.Domain/Gossip/` (v1 messages only)
@@ -4311,6 +4311,17 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** After #1059 is merged: plan T7 (typed v2 messages, MuSig2 announcement signing, graph and sync for v2 next to v1), proven against LND's implementation.
 - **Blocks/Blocked-by:** Blocked-by NL-877 and BOLTs #1059
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T7; BOLT7_GOSSIP_PLAN "Out of scope"
+- **Update (T7 stage 1, 2026-10-05, `wip/taproot-t7`):** coded against the BOLTs #1059 draft head `4eef3dfa` (2026-05-22, still a draft; PR updated 2026-09-28) and LND's lnwire of lnd #11164 head `5082b81c`. Wire: the four pure TLV messages (260 `announcement_signatures_2`, 267 `channel_announcement_2`, 269 `node_announcement_2`, 271 `channel_update_2`) as Domain payloads over `Domain/Protocol/GossipV2/PureTlvStream` (records kept as received, signed ranges 0-239 and 1,000,000,000-2,999,999,999, `GossipV2MsgHash`) and declarative definitions in `Infrastructure.Serialization/Wire/Definitions/GossipV2Wire.cs` (TLV table = known set, unknown even rejected, `keepRawExtension`); `channel_ready`/`splice_locked` TLVs 0/2 (announcement nonces), `channel_reestablish` TLV 7 and `my_current_funding_locked` retransmit bit 1. Gate: `Feature.OptionGossipV2` 70/71 in `FeatureOptions.ExperimentalFeatures` (advertised `No` by default), 72-75 known but never advertised (a peer's 73 without 71 is tolerated like NL-973). LND's encode/decode vectors round-trip byte-exact (`Serialization.Tests/Wire/GossipV2WireTests`). LND master has the wire types only (no announcement flow), so interop is limited to these vectors (NL-1130).
+
+### NL-1130 Taproot gossip draft drift: LND's lnwire tolerates unknown even TLVs and numbers `disable_flags` differently
+- **Status:** open
+- **Severity:** low
+- **Kind:** interop
+- **Location:** `src/NLightning.Infrastructure.Serialization/Wire/Definitions/GossipV2Wire.cs`, `src/NLightning.Domain/Protocol/Payloads/ChannelUpdate2Payload.cs`
+- **Evidence:** lnd #11164 (`5082b81c`) decodes `channel_update_2` and `announcement_signatures_2` with unknown even records (its own test vectors carry types 24 and 48) where we reject them per BOLT 1 (`GossipV2WireTests.Given_LndVectorsWithUnknownEvenRecords_*`); its `ChanUpdateDisableFlags` puts `incoming` at bit 0 and `outgoing` at bit 1, while the #1059 draft (`4eef3dfa`) has `permanent` 0, `incoming` 1, `outgoing` 2 (we follow the draft). The draft's own text has known gaps: Appendix B test vectors are TODO, the v2 query extensions are TODO, the `channel_ready` nonce description swaps node/bitcoin, and "merkle_root_hash ... equal to the serialisation of the taproot_internal_key" contradicts the BIP 86 funding of simple taproot channels.
+- **Fix sketch:** re-check against the draft and LND when either moves; align the even-type policy and the flag bits with whatever the merged spec says.
+- **Blocks/Blocked-by:** Related NL-878
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T7
 
 ## BOLT 8: Transport
 
@@ -6312,13 +6323,14 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **t03 lane ECL:** `PrevTxDetailsTlv` (Domain, `InteractiveTxTlvConstants.PrevTxDetails` 2 and `PrevTxDetailsEclair` 1111) and `PrevTxDetailsTlvConverter` (both types); `TxAddInputMessage.PrevTxDetailsTlv`; the serializer reads 2 and 1111 (2 wins when both are present) and 2 is in the known even set. Receive rules (PR #1324, `InteractiveTxRules.CheckPrevTxDetails`/`CheckPrevTxDetailsInputs`): with `prevtx_len` = 0 and `prevtx_details`, the script must be a witness program of version 1-16, the amount at most `MAX_MONEY`, the outpoint new and not the funding outpoint (SP-TX-01); `prevtx_details` together with a `prevtx` or with `shared_input_txid` aborts; at `tx_complete` an input added with details (no prevtx, not shared) requires every input, ours and the shared one included, to be P2TR (IT-R-04); the amount and script feed the transaction model as for a prevtx input (they are what the taproot sighash of our inputs commits to); `require_confirmed_inputs` checks such an input by its outpoint. We never send it: Eclair 0.14.3 sends its own inputs with `prevtx` and reads 1111 only in a splice of a taproot channel, and PR #1324 forbids sending both, so our inputs keep their `prevtx`.
 
 ### NL-958 LND's channel_ready announcement nonces (TLVs 0 and 2) are unknown even types to us
-- **Status:** open
+- **Status:** fixed (wip/taproot-t7 T7 stage 1)
 - **Severity:** low
 - **Kind:** interop
 - **Location:** `src/NLightning.Infrastructure.Serialization/Messages/Types/ChannelReadyMessageTypeSerializer.cs`
 - **Evidence:** LND 0.21.4 (`lnwire/channel_ready.go:34-44`) defines channel_ready TLVs 0 and 2 as announcement nonces for public taproot channels; our known set is {1, 4}, so a channel_ready carrying them is refused (warning + close). LND sends them only for announced taproot channels, which both LND and Eclair refuse today, and the simple taproot proposal leaves public taproot channels to the gossip v1.75 work.
 - **Fix sketch:** read and ignore (or model) TLVs 0 and 2 when taproot gossip lands, or as soon as an LND peer is seen sending them on a private channel.
 - **t02 note:** LND 0.21.4 sends channel_ready TLVs 0/2 (announcement nonces) only on public taproot channels, which LND itself refuses to open; the private-channel LND proof (`taproot` suite, `tap2-mx2` and `o983b-taproot` 3/3) passes channel_ready without them. Stays open for T7.
+- **Fix (T7):** modeled, not ignored: BOLTs #1059 defines them as `announcement_node_pubnonce` (0) and `announcement_bitcoin_pubnonce` (2) on `channel_ready` (and `splice_locked`), the nonces of the `channel_announcement_2` MuSig2 session that public taproot channels need, so they are typed (`AnnouncementNodeNonceTlv`/`AnnouncementBitcoinNonceTlv`, converters in `PublicNonceTlvConverter.cs`) and in the known sets of `ChannelReadyWire`/`SpliceLockedWire`; a wrong length still fails the message.
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T2
 

@@ -11,7 +11,7 @@ using Helpers;
 /// </summary>
 public class WireRegistryTests
 {
-    /// <summary>The wire types the P0 vertical slice, the BOLT 2 channel wave, the P2 wave and the gossip wave migrated.</summary>
+    /// <summary>The wire types the P0 vertical slice, the BOLT 2 channel wave, the P2 wave, the gossip wave and taproot gossip (NL-878) migrated.</summary>
     public static TheoryData<MessageTypes> MigratedTypes => new()
     {
         MessageTypes.Init, MessageTypes.Error, MessageTypes.Warning, MessageTypes.Ping, MessageTypes.Pong,
@@ -27,7 +27,9 @@ public class WireRegistryTests
         MessageTypes.SpliceInit, MessageTypes.SpliceAck, MessageTypes.StartBatch, MessageTypes.OnionMessage,
         MessageTypes.ChannelAnnouncement, MessageTypes.NodeAnnouncement, MessageTypes.ChannelUpdate,
         MessageTypes.AnnouncementSignatures, MessageTypes.QueryShortChannelIds, MessageTypes.ReplyShortChannelIdsEnd,
-        MessageTypes.QueryChannelRange, MessageTypes.ReplyChannelRange, MessageTypes.GossipTimestampFilter
+        MessageTypes.QueryChannelRange, MessageTypes.ReplyChannelRange, MessageTypes.GossipTimestampFilter,
+        MessageTypes.AnnouncementSignatures2, MessageTypes.ChannelAnnouncement2, MessageTypes.NodeAnnouncement2,
+        MessageTypes.ChannelUpdate2
     };
 
     [Theory]

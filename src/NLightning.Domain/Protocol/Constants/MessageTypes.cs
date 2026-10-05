@@ -83,11 +83,15 @@ public enum MessageTypes : ushort
     NodeAnnouncement = 257,
     ChannelUpdate = 258,
     AnnouncementSignatures = 259,
+    AnnouncementSignatures2 = 260,
     QueryShortChannelIds = 261,
     ReplyShortChannelIdsEnd = 262,
     QueryChannelRange = 263,
     ReplyChannelRange = 264,
     GossipTimestampFilter = 265,
+    ChannelAnnouncement2 = 267,
+    NodeAnnouncement2 = 269,
+    ChannelUpdate2 = 271,
 
     #endregion
 

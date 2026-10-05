@@ -40,23 +40,32 @@ public sealed class ChannelReestablishMessage : BaseChannelMessage
     /// </summary>
     public CurrentCommitNonceTlv? CurrentCommitNonceTlv { get; }
 
+    /// <summary>
+    /// <c>announcement_nonces</c> (type 7, taproot gossip, BOLTs PR #1059): fresh nonces for the
+    /// <c>announcement_signatures_2</c> retransmission asked by <c>my_current_funding_locked</c>'s bit 1.
+    /// </summary>
+    public AnnouncementNoncesTlv? AnnouncementNoncesTlv { get; }
+
     public ChannelReestablishMessage(ChannelReestablishPayload payload, NextFundingTlv? nextFundingTlv = null,
                                      MyCurrentFundingLockedTlv? myCurrentFundingLockedTlv = null,
                                      NextLocalNoncesTlv? nextLocalNoncesTlv = null,
-                                     CurrentCommitNonceTlv? currentCommitNonceTlv = null)
+                                     CurrentCommitNonceTlv? currentCommitNonceTlv = null,
+                                     AnnouncementNoncesTlv? announcementNoncesTlv = null)
         : base(MessageTypes.ChannelReestablish, payload)
     {
+        AnnouncementNoncesTlv = announcementNoncesTlv;
         NextFundingTlv = nextFundingTlv;
         MyCurrentFundingLockedTlv = myCurrentFundingLockedTlv;
         NextLocalNoncesTlv = nextLocalNoncesTlv;
         CurrentCommitNonceTlv = currentCommitNonceTlv;
 
         if (NextFundingTlv is null && MyCurrentFundingLockedTlv is null && NextLocalNoncesTlv is null
-         && CurrentCommitNonceTlv is null)
+         && CurrentCommitNonceTlv is null && AnnouncementNoncesTlv is null)
             return;
 
-        // BOLT 1: ascending type order (1, 5, 22, 24)
+        // BOLT 1: ascending type order (1, 5, 7, 22, 24)
         Extension = new TlvStream();
-        Extension.Add(NextFundingTlv, MyCurrentFundingLockedTlv, NextLocalNoncesTlv, CurrentCommitNonceTlv);
+        Extension.Add(NextFundingTlv, MyCurrentFundingLockedTlv, AnnouncementNoncesTlv, NextLocalNoncesTlv,
+                      CurrentCommitNonceTlv);
     }
 }

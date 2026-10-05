@@ -63,6 +63,11 @@ public class TlvConverterFactory : ITlvConverterFactory
         _converters.Add(typeof(SharedInputPartialSignatureTlv), new SharedInputPartialSignatureTlvConverter());
         _converters.Add(typeof(ShutdownNonceTlv), new ShutdownNonceTlvConverter());
 
+        // Taproot gossip (BOLTs PR #1059, NL-878): announcement nonces of channel_ready/splice_locked/channel_reestablish
+        _converters.Add(typeof(AnnouncementNodeNonceTlv), new AnnouncementNodeNonceTlvConverter());
+        _converters.Add(typeof(AnnouncementBitcoinNonceTlv), new AnnouncementBitcoinNonceTlvConverter());
+        _converters.Add(typeof(AnnouncementNoncesTlv), new AnnouncementNoncesTlvConverter());
+
         // Liquidity ads (BOLT PR #1153, TLV 1339; NL-850)
         _converters.Add(typeof(RequestFundingTlv), new RequestFundingTlvConverter());
         _converters.Add(typeof(ProvideFundingTlv), new ProvideFundingTlvConverter());

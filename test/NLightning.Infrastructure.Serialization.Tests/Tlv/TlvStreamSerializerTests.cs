@@ -262,6 +262,9 @@ public class TlvStreamSerializerTests
             new SharedInputPartialSignatureTlv(new MusigPartialSignatureWithNonce(
                                                    Enumerable.Repeat((byte)0x2a, 98).ToArray())),
             new ShutdownNonceTlv(Nonce(0x2b)),
+            new AnnouncementNodeNonceTlv(Nonce(0x2e)),
+            new AnnouncementBitcoinNonceTlv(Nonce(0x2f)),
+            new AnnouncementNoncesTlv(Nonce(0x30), Nonce(0x31)),
             new AmtToForwardTlv(LightningMoney.MilliSatoshis(1_000_000)),
             new OutgoingCltvValueTlv(800_000),
             new OnionShortChannelIdTlv(new ShortChannelId(800_000, 1, 2)),

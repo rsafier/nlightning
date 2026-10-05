@@ -24,7 +24,7 @@ public class FeatureOptions
     /// Add a feature here while it is not implemented, and remove it from this set when it is.
     /// </remarks>
     public static readonly IReadOnlySet<Feature> ExperimentalFeatures =
-        new HashSet<Feature> { Feature.OptionTrampolineRouting, Feature.OptionSimpleTaproot };
+        new HashSet<Feature> { Feature.OptionTrampolineRouting, Feature.OptionSimpleTaproot, Feature.OptionGossipV2 };
 
     /// <summary>
     /// The experimental set these options are gated by: <see cref="ExperimentalFeatures"/>, replaced only by tests of
@@ -254,6 +254,19 @@ public class FeatureOptions
     public FeatureSupport OptionSimpleTaproot { get; set; } = FeatureSupport.No;
 
     /// <summary>
+    /// Enable taproot gossip (<c>option_gossip_v2</c>, bits 70/71, BOLTs PR #1059, a draft; contexts init and
+    /// node_announcement): we read, validate, store, serve and relay the v2 gossip messages next to v1 and, with
+    /// <see cref="OptionSimpleTaproot"/>, open and announce public simple taproot channels with them.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to No and is in <see cref="ExperimentalFeatures"/> while the spec is a draft (NL-878): enabling it fails
+    /// <see cref="GetValidationErrors"/> unless <see cref="AllowExperimentalFeatures"/> is set.
+    /// <c>option_gossip_v2_p2wsh</c> (72/73) and <c>option_gossip_announce_private</c> (74/75) are not supported and
+    /// never advertised.
+    /// </remarks>
+    public FeatureSupport OptionGossipV2 { get; set; } = FeatureSupport.No;
+
+    /// <summary>
     /// Enable initial routing sync.
     /// </summary>
     /// [Deprecated]
@@ -350,6 +363,7 @@ public class FeatureOptions
         { Feature.OptionSplice, OptionSplice },
         { Feature.OptionTrampolineRouting, OptionTrampolineRouting },
         { Feature.OptionSimpleTaproot, OptionSimpleTaproot },
+        { Feature.OptionGossipV2, OptionGossipV2 },
     };
 
     /// <summary>
@@ -368,6 +382,12 @@ public class FeatureOptions
     /// <see cref="AllowExperimentalFeatures"/> set (NL-877 T5: our taproot opens need it).
     /// </summary>
     public bool IsSimpleTaprootAdvertised => IsAdvertised(Feature.OptionSimpleTaproot, OptionSimpleTaproot);
+
+    /// <summary>
+    /// Whether our init advertises <c>option_gossip_v2</c>: configured and, while it is experimental,
+    /// <see cref="AllowExperimentalFeatures"/> set (NL-878: the v2 gossip messages and public taproot channels need it).
+    /// </summary>
+    public bool IsGossipV2Advertised => IsAdvertised(Feature.OptionGossipV2, OptionGossipV2);
 
     private FeatureSet BuildFeatureSet()
     {
@@ -484,6 +504,11 @@ public class FeatureOptions
         if (IsAdvertised(Feature.OptionSimpleTaproot, OptionSimpleTaproot))
         {
             features.SetFeature(Feature.OptionSimpleTaproot, OptionSimpleTaproot == FeatureSupport.Compulsory);
+        }
+
+        if (IsAdvertised(Feature.OptionGossipV2, OptionGossipV2))
+        {
+            features.SetFeature(Feature.OptionGossipV2, OptionGossipV2 == FeatureSupport.Compulsory);
         }
 
         return features;
@@ -644,6 +669,11 @@ public class FeatureOptions
                                       : featureSet.IsFeatureSet(Feature.OptionSimpleTaproot, false)
                                           ? FeatureSupport.Optional
                                           : FeatureSupport.No,
+            OptionGossipV2 = featureSet.IsFeatureSet(Feature.OptionGossipV2, true)
+                                 ? FeatureSupport.Compulsory
+                                 : featureSet.IsFeatureSet(Feature.OptionGossipV2, false)
+                                     ? FeatureSupport.Optional
+                                     : FeatureSupport.No,
         };
 
         if (extension?.TryGetTlv(new BigSize(1), out var chainHashes) ?? false)

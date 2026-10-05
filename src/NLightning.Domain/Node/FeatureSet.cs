@@ -35,7 +35,19 @@ public class FeatureSet
         { Feature.OptionSimpleClose, [Feature.OptionShutdownAnySegwit] },
         { Feature.OptionOnionMessagesOnlyChannels, [Feature.OptionOnionMessages] },
         { Feature.OptionSimpleTaproot, [Feature.OptionChannelType, Feature.OptionSimpleClose] },
+        { Feature.OptionGossipV2P2wsh, [Feature.OptionGossipV2] },
     };
+
+    /// <summary>
+    /// Features a peer may advertise without their dependencies while we do not set them ourselves: we read them as
+    /// the unknown odd bits they were before we knew them (NL-973 for <c>option_simple_taproot</c>; the draft taproot
+    /// gossip bits likewise, NL-878), so a peer's draft bits never cut us off from it.
+    /// </summary>
+    private static readonly HashSet<Feature> s_lenientPeerDependencyFeatures =
+    [
+        Feature.OptionSimpleTaproot,
+        Feature.OptionGossipV2P2wsh
+    ];
 
     /// <summary>
     /// Features BOLT 9 marks ASSUMED: every node is assumed to support them, so a peer that omits them is treated as
@@ -88,6 +100,9 @@ public class FeatureSet
         { Feature.OptionSplice, InitAndNode },
         { Feature.OptionOnionMessagesOnlyChannels, InitAndNode },
         { Feature.OptionSimpleTaproot, InitAndNode | FeatureContext.ChannelType },
+        { Feature.OptionGossipV2, InitAndNode },
+        { Feature.OptionGossipV2P2wsh, InitAndNode },
+        { Feature.OptionGossipAnnouncePrivate, InitAndNode },
     };
 
     internal BitArray FeatureFlags;
@@ -354,8 +369,8 @@ public class FeatureSet
         // bit it was before we knew it while we do not set it ourselves (NL-973): LND with taproot overlay channels
         // (litd) advertises 81 without option_simple_close, and refusing it would cut nodes that never negotiate
         // taproot with us off from them
-        if (other.GetMissingDependencies().All(m => m.Feature == Feature.OptionSimpleTaproot
-                                                 && !HasFeature(Feature.OptionSimpleTaproot)))
+        if (other.GetMissingDependencies().All(m => s_lenientPeerDependencyFeatures.Contains(m.Feature)
+                                                 && !HasFeature(m.Feature)))
             return true;
 
         negotiatedFeatureSet = null;

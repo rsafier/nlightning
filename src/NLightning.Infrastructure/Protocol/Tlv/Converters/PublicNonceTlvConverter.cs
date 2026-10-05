@@ -87,3 +87,17 @@ public sealed class CurrentCommitNonceTlvConverter : PublicNonceTlvConverter<Cur
     protected override BigSize TlvType => TaprootTlvConstants.CurrentCommitNonce;
     protected override CurrentCommitNonceTlv Create(MusigPublicNonce nonce) => new(nonce);
 }
+
+/// <summary>Converts <c>announcement_node_pubnonce</c> (type 0 of channel_ready and splice_locked, BOLTs PR #1059).</summary>
+public sealed class AnnouncementNodeNonceTlvConverter : PublicNonceTlvConverter<AnnouncementNodeNonceTlv>
+{
+    protected override BigSize TlvType => TaprootTlvConstants.AnnouncementNodeNonce;
+    protected override AnnouncementNodeNonceTlv Create(MusigPublicNonce nonce) => new(nonce);
+}
+
+/// <summary>Converts <c>announcement_bitcoin_pubnonce</c> (type 2 of channel_ready and splice_locked, BOLTs PR #1059).</summary>
+public sealed class AnnouncementBitcoinNonceTlvConverter : PublicNonceTlvConverter<AnnouncementBitcoinNonceTlv>
+{
+    protected override BigSize TlvType => TaprootTlvConstants.AnnouncementBitcoinNonce;
+    protected override AnnouncementBitcoinNonceTlv Create(MusigPublicNonce nonce) => new(nonce);
+}

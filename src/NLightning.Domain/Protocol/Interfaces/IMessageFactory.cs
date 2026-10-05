@@ -172,6 +172,17 @@ public interface IMessageFactory
                                                                       CompactSignature nodeSignature,
                                                                       CompactSignature bitcoinSignature);
 
+    /// <summary>
+    /// An <c>announcement_signatures_2</c> (taproot gossip, BOLTs PR #1059, type 260) for <paramref name="channelId"/>:
+    /// our two MuSig2 partial signatures (node key, funding key) of the channel's <c>channel_announcement_2</c>
+    /// session for the funding <paramref name="fundingTxId"/>.
+    /// </summary>
+    AnnouncementSignatures2Message CreateAnnouncementSignatures2Message(ChannelId channelId,
+                                                                        ShortChannelId shortChannelId,
+                                                                        MusigPartialSignature nodePartialSignature,
+                                                                        MusigPartialSignature bitcoinPartialSignature,
+                                                                        TxId fundingTxId);
+
     /// <summary>A <c>splice_init</c> (BOLT 2, type 80, SP-W-01).</summary>
     /// <param name="channelId">The channel.</param>
     /// <param name="fundingContributionSatoshis">Our signed contribution (negative for a splice-out).</param>

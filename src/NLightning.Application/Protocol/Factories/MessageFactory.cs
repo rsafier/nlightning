@@ -779,6 +779,16 @@ public partial class MessageFactory : IMessageFactory
         return new AnnouncementSignaturesMessage(payload);
     }
 
+    /// <inheritdoc />
+    public AnnouncementSignatures2Message CreateAnnouncementSignatures2Message(
+        ChannelId channelId, ShortChannelId shortChannelId, MusigPartialSignature nodePartialSignature,
+        MusigPartialSignature bitcoinPartialSignature, TxId fundingTxId)
+    {
+        return new AnnouncementSignatures2Message(AnnouncementSignatures2Payload.Create(
+                                                      channelId, shortChannelId, nodePartialSignature,
+                                                      bitcoinPartialSignature, fundingTxId));
+    }
+
     #endregion
 
     #region Splicing

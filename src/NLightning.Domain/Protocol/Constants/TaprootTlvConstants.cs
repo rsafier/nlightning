@@ -86,4 +86,23 @@ public static class TaprootTlvConstants
     /// with nonce for the shared MuSig2 input of a splice, 98 bytes.
     /// </summary>
     public static readonly BigSize SharedInputPartialSignature = 2;
+
+    /// <summary>
+    /// <c>announcement_node_pubnonce</c>, type 0 of <c>channel_ready</c> and <c>splice_locked</c> (taproot gossip,
+    /// BOLTs PR #1059): the sender's MuSig2 public nonce for its node-key partial signature of the
+    /// <c>channel_announcement_2</c> session.
+    /// </summary>
+    public static readonly BigSize AnnouncementNodeNonce = 0;
+
+    /// <summary>
+    /// <c>announcement_bitcoin_pubnonce</c>, type 2 of <c>channel_ready</c> and <c>splice_locked</c> (BOLTs PR #1059):
+    /// the sender's public nonce for its funding-key partial signature.
+    /// </summary>
+    public static readonly BigSize AnnouncementBitcoinNonce = 2;
+
+    /// <summary>
+    /// <c>announcement_nonces</c>, type 7 of <c>channel_reestablish</c> (BOLTs PR #1059): fresh node and funding nonces
+    /// for a retransmitted <c>announcement_signatures_2</c> (<c>my_current_funding_locked</c> retransmit bit 1).
+    /// </summary>
+    public static readonly BigSize AnnouncementNonces = 7;
 }

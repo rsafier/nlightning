@@ -219,6 +219,35 @@ public enum Feature
     OptionOnionMessagesOnlyChannels = 67,
 
     /// <summary>
+    /// 70 is for the compulsory bit, 71 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Taproot gossip (<c>option_gossip_v2</c>, BOLTs PR #1059, draft): the node understands the v2 gossip messages
+    /// (<c>channel_announcement_2</c>, <c>channel_update_2</c>, <c>node_announcement_2</c>,
+    /// <c>announcement_signatures_2</c>) and, with <see cref="OptionSimpleTaproot"/>, opens and announces public simple
+    /// taproot channels with them. Contexts I and N. Experimental (NL-878; see <c>FeatureOptions.ExperimentalFeatures</c>).
+    /// </remarks>
+    OptionGossipV2 = 71,
+
+    /// <summary>
+    /// 72 is for the compulsory bit, 73 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// <c>option_gossip_v2_p2wsh</c> (BOLTs PR #1059): the node can announce P2WSH channels with the v2 messages.
+    /// Depends on <see cref="OptionGossipV2"/>. Not supported (known so dependencies can be validated); we never set it.
+    /// </remarks>
+    OptionGossipV2P2wsh = 73,
+
+    /// <summary>
+    /// 74 is for the compulsory bit, 75 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// <c>option_gossip_announce_private</c> (BOLTs PR #1059): the node can announce a channel that started out
+    /// unannounced. Not supported (known so its context can be filtered); we never set it.
+    /// </remarks>
+    OptionGossipAnnouncePrivate = 75,
+
+    /// <summary>
     /// 80 is for the compulsory bit, 81 is for the optional bit.
     /// </summary>
     /// <remarks>
