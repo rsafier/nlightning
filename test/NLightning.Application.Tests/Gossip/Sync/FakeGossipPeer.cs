@@ -28,7 +28,7 @@ internal sealed class FakeGossipPeer : IPeerService
     private readonly Lock _lock = new();
 
     public FakeGossipPeer(byte seed, bool gossipQueries = true, bool gossipQueriesEx = false,
-                          bool provideStorage = true)
+                          bool provideStorage = true, bool gossipV2 = false)
     {
         PeerPubKey = new TestGossipKey(seed).PubKey;
         Features = new FeatureOptions
@@ -36,7 +36,9 @@ internal sealed class FakeGossipPeer : IPeerService
             ChainHashes = [ChainConstants.Regtest],
             GossipQueries = gossipQueries ? FeatureSupport.Optional : FeatureSupport.No,
             ExpandedGossipQueries = gossipQueriesEx ? FeatureSupport.Optional : FeatureSupport.No,
-            OptionProvideStorage = provideStorage ? FeatureSupport.Optional : FeatureSupport.No
+            OptionProvideStorage = provideStorage ? FeatureSupport.Optional : FeatureSupport.No,
+            AllowExperimentalFeatures = gossipV2,
+            OptionGossipV2 = gossipV2 ? FeatureSupport.Optional : FeatureSupport.No
         };
     }
 

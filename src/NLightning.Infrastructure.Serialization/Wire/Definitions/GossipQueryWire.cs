@@ -14,7 +14,8 @@ using Domain.Protocol.ValueObjects;
 /// <c>reply_short_channel_ids_end</c> (262), <c>query_channel_range</c> (263), <c>reply_channel_range</c> (264) and
 /// <c>gossip_timestamp_filter</c> (265): fixed big-endian fields, then the odd advisory TLVs kept as raw records
 /// (<c>query_flags</c> 1, <c>query_option</c> 1, <c>reply_channel_range</c> timestamps 1 / checksums 3 — the known set
-/// rejects unknown even types, BOLT 1). The query TLVs are advisory, so the message ctors rebuild them as plain
+/// rejects unknown even types, BOLT 1; <c>gossip_timestamp_filter</c>'s taproot gossip <c>block_height_range</c> 2,
+/// NL-878, is even and known). The query TLVs are advisory, so the message ctors rebuild them as plain
 /// <see cref="BaseTlv"/>s and a body failure surfaces as <see cref="PayloadSerializationException"/> while an
 /// extension failure is a <see cref="MessageSerializationException"/>, like the hand-written pair.
 /// </summary>
@@ -119,7 +120,8 @@ internal static class ReplyChannelRangeWire
 internal static class GossipTimestampFilterWire
 {
     public static readonly MessageWire<GossipTimestampFilterMessage> Def =
-        new(MessageTypes.GossipTimestampFilter, Encode, Decode);
+        new(MessageTypes.GossipTimestampFilter, Encode, Decode,
+            TlvDef.RawKnown(TlvConstants.GossipTimestampFilterBlockHeightRange));
 
     private static void Encode(ref WireWriter writer, GossipTimestampFilterMessage message)
     {
@@ -134,8 +136,9 @@ internal static class GossipTimestampFilterWire
         var firstTimestamp = reader.U32();
         var timestampRange = reader.U32();
 
-        return _ => new GossipTimestampFilterMessage(
-            new GossipTimestampFilterPayload(chainHash, firstTimestamp, timestampRange));
+        return tlvs => new GossipTimestampFilterMessage(
+            new GossipTimestampFilterPayload(chainHash, firstTimestamp, timestampRange),
+            tlvs.RawTlv(TlvConstants.GossipTimestampFilterBlockHeightRange));
     }
 }
 

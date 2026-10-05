@@ -138,6 +138,58 @@ public class GossipQueryMessageTests
     }
 
     [Fact]
+    public async Task Given_AFilterWithABlockHeightRange_When_SerializeAsync_Then_TheTlvFollowsTheV1Fields()
+    {
+        // Arrange: taproot gossip (NL-878) gossip_timestamp_filter TLV 2 block_height_range = u32 || tu32
+        var message = new GossipTimestampFilterMessage(
+            new GossipTimestampFilterPayload(ChainConstants.Regtest, 5, 6),
+            new Domain.Gossip.Queries.GossipBlockHeightRange(800_000, 2_016));
+        using var stream = new MemoryStream();
+
+        // Act
+        await _messageSerializer.SerializeAsync(message, stream);
+        stream.Position = 0;
+        var parsed = Assert.IsType<GossipTimestampFilterMessage>(await _messageSerializer.DeserializeMessageAsync(stream));
+
+        // Assert: type 2, length 6, first_block_height 800000 (0x000C3500), num_blocks 2016 (0x07E0, minimal)
+        Assert.Equal(Convert.FromHexString("0109" + RegtestHex + "00000005" + "00000006" + "0206" + "000C3500" + "07E0"),
+                     stream.ToArray());
+        Assert.Equal(new Domain.Gossip.Queries.GossipBlockHeightRange(800_000, 2_016), parsed.BlockHeightRange);
+        Assert.Equal(5u, parsed.Payload.FirstTimestamp);
+    }
+
+    [Fact]
+    public async Task Given_AFilterWithoutABlockHeightRange_When_SerializeAsync_Then_TheBolt7BytesAreUnchanged()
+    {
+        // Arrange
+        var message = new GossipTimestampFilterMessage(new GossipTimestampFilterPayload(ChainConstants.Regtest, 5, 6));
+        using var stream = new MemoryStream();
+
+        // Act
+        await _messageSerializer.SerializeAsync(message, stream);
+
+        // Assert
+        Assert.Equal(Convert.FromHexString("0109" + RegtestHex + "00000005" + "00000006"), stream.ToArray());
+        Assert.Null(message.BlockHeightRange);
+    }
+
+    [Fact]
+    public async Task Given_AFilterWithAnUnknownEvenTlv_When_DeserializeMessageAsync_Then_Throws()
+    {
+        // Arrange: type 4 is not known (BOLT 1: an unknown even type fails the message); odd 3 is ignored
+        var unknownEven = Convert.FromHexString("0109" + RegtestHex + "00000005" + "00000006" + "040100");
+        var unknownOdd = Convert.FromHexString("0109" + RegtestHex + "00000005" + "00000006" + "030100");
+        using var evenStream = new MemoryStream(unknownEven);
+        using var oddStream = new MemoryStream(unknownOdd);
+
+        // Act & Assert
+        await Assert.ThrowsAnyAsync<Exception>(() => _messageSerializer.DeserializeMessageAsync(evenStream));
+        var parsed = Assert.IsType<GossipTimestampFilterMessage>(
+            await _messageSerializer.DeserializeMessageAsync(oddStream));
+        Assert.Null(parsed.BlockHeightRange);
+    }
+
+    [Fact]
     public async Task Given_EmptyReplyChannelRange_When_SerializeAsync_Then_WritesSpecLayout()
     {
         // Arrange

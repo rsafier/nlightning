@@ -9,6 +9,7 @@ using Application.Gossip.Sync.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Gossip.Enums;
+using Domain.Gossip.Graph;
 using Domain.Gossip.Interfaces;
 using Domain.Gossip.Queries;
 using Domain.Node.Options;
@@ -333,6 +334,128 @@ public class GossipSyncManagerTests : IDisposable
         Assert.NotNull(scidQuery.QueryFlagsTlv);
         Assert.Equal([GossipQueryCodec.QueryFlagChannelUpdate2, GossipQueryCodec.QueryFlagAll],
                      GossipQueryCodec.DecodeQueryFlags(scidQuery.QueryFlagsTlv.Value, 2));
+    }
+
+    [Fact]
+    public async Task Given_GossipV2OnBothSides_When_Synced_Then_BlockHeightsDecideTheV2QueryFlags()
+    {
+        // Arrange: NL-878, a v2-only channel with node 1's channel_update_2 at block 400; the peer has node 1's at
+        // 450 (a block height in timestamps_tlv) and an unknown v2 channel whose heights must not read as 1970
+        var v2Channel = new ShortChannelId(200, 0, 0);
+        var (node1, node2) = ((ReadOnlySpan<byte>)SyncTestGraph.NodeA.PubKey).SequenceCompareTo(
+                                 SyncTestGraph.NodeB.PubKey) < 0
+                                 ? (SyncTestGraph.NodeA, SyncTestGraph.NodeB)
+                                 : (SyncTestGraph.NodeB, SyncTestGraph.NodeA);
+        Assert.True(_graph.Store.TryAddChannel(
+                        new GraphChannel(v2Channel, node1.PubKey, node2.PubKey, null, null, 1_000_000)
+                        {
+                            Versions = GraphGossipVersions.V2,
+                            RawAnnouncement2 = new byte[] { 1 }
+                        }));
+        Assert.True(_graph.Store.TryApplyPolicy(v2Channel, new GraphPolicy(400, 0, 0, 40, 1, 1_000, 1, 1)
+        {
+            GossipVersion = 2
+        }));
+        var unknownV2 = new ShortChannelId(210, 0, 0);
+        var manager = CreateManager();
+        var peer = new FakeGossipPeer(1, gossipQueriesEx: true, gossipV2: true);
+        manager.OnPeerInitialized(peer);
+
+        // Act
+        await peer.NextAsync<QueryChannelRangeMessage>();
+        manager.HandleMessage(peer, new ReplyChannelRangeMessage(
+                                  new ReplyChannelRangePayload(
+                                      s_chain, 0, Tip + 1, true,
+                                      GossipQueryCodec.EncodeShortChannelIds([v2Channel, unknownV2])),
+                                  new BaseTlv(TlvConstants.ReplyChannelRangeTimestamps,
+                                              GossipQueryCodec.EncodeTimestamps([new(450, 300), new(480, 470)]))));
+        var scidQuery = await peer.NextAsync<QueryShortChannelIdsMessage>();
+
+        // Assert: node 1's newer v2 update and node 2's, which we lack; the unknown channel with everything
+        Assert.Equal([v2Channel, unknownV2], Ids(scidQuery));
+        Assert.Equal([GossipQueryCodec.QueryFlagChannelUpdate1 | GossipQueryCodec.QueryFlagChannelUpdate2,
+                      GossipQueryCodec.QueryFlagAll],
+                     GossipQueryCodec.DecodeQueryFlags(scidQuery.QueryFlagsTlv!.Value, 2));
+    }
+
+    [Fact]
+    public async Task Given_AGossipV2Peer_When_ItsLiveFilterIsSent_Then_ItCarriesABlockHeightRangeFromTheTip()
+    {
+        // Arrange: NL-878, not a sync peer: the live filter (now, max) and the v2 range (tip, max)
+        var manager = CreateManager(o => o.SyncPeers = 0);
+        var v2Peer = new FakeGossipPeer(1, gossipV2: true);
+        var v1Peer = new FakeGossipPeer(2);
+
+        // Act
+        manager.OnPeerInitialized(v2Peer);
+        manager.OnPeerInitialized(v1Peer);
+        var v2Filter = await v2Peer.NextAsync<GossipTimestampFilterMessage>();
+        var v1Filter = await v1Peer.NextAsync<GossipTimestampFilterMessage>();
+
+        // Assert
+        Assert.Equal(new GossipBlockHeightRange(Tip, uint.MaxValue), v2Filter.BlockHeightRange);
+        Assert.Null(v1Filter.BlockHeightRangeTlv);
+    }
+
+    [Fact]
+    public async Task Given_AGossipV2PeerWithoutQueries_When_Initialized_Then_ItsNothingFilterAsksForNoV2GossipEither()
+    {
+        // Arrange
+        var manager = CreateManager();
+        var peer = new FakeGossipPeer(1, gossipQueries: false, gossipV2: true);
+
+        // Act
+        manager.OnPeerInitialized(peer);
+        var filter = await peer.NextAsync<GossipTimestampFilterMessage>();
+
+        // Assert
+        Assert.Equal(GossipBlockHeightRange.None, filter.BlockHeightRange);
+    }
+
+    [Fact]
+    public void Given_PeersFilters_When_TheyCarryABlockHeightRange_Then_OnlyAGossipV2PeersRangeIsKept()
+    {
+        // Arrange
+        var manager = CreateManager();
+        var v2Peer = new FakeGossipPeer(1, gossipQueries: false, gossipV2: true);
+        var v1Peer = new FakeGossipPeer(2, gossipQueries: false);
+        manager.OnPeerInitialized(v2Peer);
+        manager.OnPeerInitialized(v1Peer);
+        var range = new GossipBlockHeightRange(300, 100);
+        var filter = new GossipTimestampFilterMessage(new GossipTimestampFilterPayload(s_chain, 0, uint.MaxValue),
+                                                      range);
+
+        // Act
+        manager.HandleMessage(v2Peer, filter);
+        manager.HandleMessage(v1Peer, filter);
+
+        // Assert
+        Assert.True(manager.TryGetPeerBlockHeightRange(v2Peer, out var kept));
+        Assert.Equal(range, kept);
+        Assert.False(manager.TryGetPeerBlockHeightRange(v1Peer, out _));
+        Assert.True(manager.TryGetPeerFilter(v1Peer, out _));
+
+        // A later filter without the TLV asks for no v2 gossip any more
+        manager.HandleMessage(v2Peer, new GossipTimestampFilterMessage(
+                                          new GossipTimestampFilterPayload(s_chain, 0, uint.MaxValue)));
+        Assert.False(manager.TryGetPeerBlockHeightRange(v2Peer, out _));
+    }
+
+    [Fact]
+    public void Given_ATimestampFilter_When_MadeABlockHeightRange_Then_ItsAgeIsCountedInTenMinuteBlocksBelowTheTip()
+    {
+        // Arrange
+        var manager = CreateManager();
+
+        // Act
+        var twoHours = manager.ToBlockHeightRange(new GossipTimestampFilter(Now - 7_200, uint.MaxValue));
+        var all = manager.ToBlockHeightRange(new GossipTimestampFilter(0, uint.MaxValue));
+        var nothing = manager.ToBlockHeightRange(GossipTimestampFilter.None);
+
+        // Assert
+        Assert.Equal(new GossipBlockHeightRange(Tip - 12, uint.MaxValue), twoHours);
+        Assert.Equal(new GossipBlockHeightRange(0, uint.MaxValue), all);
+        Assert.Equal(GossipBlockHeightRange.None, nothing);
     }
 
     [Theory]
