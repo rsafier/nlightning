@@ -37,6 +37,7 @@ public static class GossipBitcoinServiceCollectionExtensions
         services.AddOptions<FundingOutputLookupOptions>();
         services.AddOptions<FundingTxIdSourceOptions>();
         services.TryAddSingleton<IGossipSignatureVerifier, GossipSignatureVerifier>();
+        services.TryAddSingleton<IGossipV2SignatureVerifier, GossipV2SignatureVerifier>();
         services.TryAddSingleton(sp =>
         {
             var options = sp.GetRequiredService<IOptions<FundingTxIdSourceOptions>>();

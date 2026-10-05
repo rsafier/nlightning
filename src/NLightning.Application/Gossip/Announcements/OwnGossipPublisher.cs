@@ -41,4 +41,25 @@ public sealed class OwnGossipPublisher
         _sink.AddOwnNodeAnnouncement(announcement);
         _relay.EnqueueOwnNodeAnnouncement(announcement);
     }
+
+    /// <summary>Our own <c>channel_announcement_2</c> (NL-878) into the graph and out to the v2 peers.</summary>
+    public void PublishChannelAnnouncement2(ChannelAnnouncement2Payload announcement, LightningMoney capacity)
+    {
+        _sink.AddOwnChannelAnnouncement2(announcement, capacity);
+        _relay.EnqueueOwnChannelAnnouncement2(announcement);
+    }
+
+    /// <summary>Our own <c>channel_update_2</c> into the graph and out to the v2 peers.</summary>
+    public void PublishChannelUpdate2(ChannelUpdate2Payload update)
+    {
+        _sink.AddOwnChannelUpdate2(update);
+        _relay.EnqueueOwnChannelUpdate2(update);
+    }
+
+    /// <summary>Our own <c>node_announcement_2</c> into the graph and out to the v2 peers.</summary>
+    public void PublishNodeAnnouncement2(NodeAnnouncement2Payload announcement)
+    {
+        _sink.AddOwnNodeAnnouncement2(announcement);
+        _relay.EnqueueOwnNodeAnnouncement2(announcement);
+    }
 }

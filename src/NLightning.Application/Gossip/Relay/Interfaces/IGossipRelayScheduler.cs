@@ -32,5 +32,23 @@ public interface IGossipRelayScheduler
     /// Sends every queued message that the current connection of each connected peer has not received yet, in the
     /// order above. The periodic flush calls it; a caller may call it to flush at once.
     /// </summary>
+    /// <summary>
+    /// Queues our own <c>channel_announcement_2</c> (taproot gossip, NL-878) for the peers that negotiated
+    /// <c>option_gossip_v2</c>; the default drops it (a scheduler without v2 support).
+    /// </summary>
+    void EnqueueOwnChannelAnnouncement2(ChannelAnnouncement2Payload announcement)
+    {
+    }
+
+    /// <summary>Queues our own <c>channel_update_2</c>; the default drops it.</summary>
+    void EnqueueOwnChannelUpdate2(ChannelUpdate2Payload update)
+    {
+    }
+
+    /// <summary>Queues our own <c>node_announcement_2</c>; the default drops it.</summary>
+    void EnqueueOwnNodeAnnouncement2(NodeAnnouncement2Payload announcement)
+    {
+    }
+
     Task FlushAsync(CancellationToken cancellationToken = default);
 }

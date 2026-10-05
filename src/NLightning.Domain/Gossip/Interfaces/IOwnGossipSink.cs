@@ -35,4 +35,22 @@ public interface IOwnGossipSink
     /// channel id once both <c>announcement_signatures</c> halves are exchanged for it.
     /// </summary>
     void ForgetOwnChannel(ShortChannelId shortChannelId);
+
+    /// <summary>
+    /// Our own <c>channel_announcement_2</c> (taproot gossip, NL-878), complete with its MuSig2 signature, into the
+    /// graph; the default ignores it (a sink without v2 support).
+    /// </summary>
+    void AddOwnChannelAnnouncement2(ChannelAnnouncement2Payload announcement, LightningMoney capacity)
+    {
+    }
+
+    /// <summary>Our own <c>channel_update_2</c> into the graph; the default ignores it.</summary>
+    void AddOwnChannelUpdate2(ChannelUpdate2Payload update)
+    {
+    }
+
+    /// <summary>Our own <c>node_announcement_2</c> into the graph; the default ignores it.</summary>
+    void AddOwnNodeAnnouncement2(NodeAnnouncement2Payload announcement)
+    {
+    }
 }
