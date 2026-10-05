@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 80 | 81 |
+| open | 0 | 0 | 1 | 81 | 82 |
 | in-progress | 0 | 0 | 4 | 1 | 5 |
 | fixed | 15 | 68 | 221 | 457 | 761 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **235** | **558** | **876** |
+| **Total** | **15** | **68** | **235** | **559** | **877** |
 
 ### Epics
 
@@ -5527,6 +5527,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Find what CLN's closingd objects to after the estimate moved (compare its `closing_fee_range`/ideal fee with the fee it sent), then pin CLN's feerate in the test as NL-486 did for the open, or keep the fee-moving classes in their own collection.
 - **Blocks/Blocked-by:** Related NL-486
 - **Plan ref:** `SPLICING_PLAN.md` "Lane dfrbf record"
+- **Seen again 2026-10-05:** matrix payroute-mx1 (eb414798): "Test execution timed out" in the full cln suite; the class rerun alone was green.
 
 ### NL-532 A peer closing the connection is logged at Error level
 - **Status:** fixed (20062e88)
@@ -9305,3 +9306,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** Phase C remains, plan §6.
 - **Blocks/Blocked-by:** Part of NL-1082
 - **Plan ref:** `docs/agents/PAYROUTE_PLAN.md`
+
+### NL-1084 `LdkOnchainTests` LDK force close classified as our own commitment once
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Ldk/LdkOnchainTests.cs` (`Given_LdkFundedChannel_When_LdkForceCloses_Then_WeSweepOurToRemoteAndLdkItsToLocal`)
+- **Evidence:** matrix payroute-mx1 (2026-10-05, wip/fafo 821e3c56 + wip/payroute, eb414798): `Assert.Equal() Failure: Expected: RemoteCommitment, Actual: LocalCommitment`, i.e. the funding spend we classified was our own commitment, not LDK's; the class rerun alone was green, and the suite was 27/27 in every earlier matrix (codec-mx1, t7-mx1, mx-20261005170938). Possibly our side force-closed first (an HTLC deadline or an error from LDK's close) and its commitment won; not yet read in the diag (`TestResults/cluster/payroute-mx1/ldk/diag/` in the payroute-int worktree, removed after landing).
+- **Fix sketch:** if it recurs, read the run's node log for why we broadcast our commitment; if it is a race in the test (our node failing the channel on LDK's error before LDK's commitment confirms), wait for LDK's close to reach our node before asserting, or accept either commitment with its own sweep assertions.
+- **Blocks/Blocked-by:** Related NL-556
+- **Plan ref:** `TEST_HARNESS_PLAN.md`
+
