@@ -177,9 +177,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 80 | 81 |
+| open | 0 | 0 | 1 | 79 | 80 |
 | in-progress | 0 | 0 | 3 | 1 | 4 |
-| fixed | 15 | 68 | 220 | 457 | 760 |
+| fixed | 15 | 68 | 220 | 458 | 761 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
 | **Total** | **15** | **68** | **233** | **558** | **874** |
@@ -8941,7 +8941,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `CASHU_PLAN.md` C3
 
 ### NL-995 No hold invoices (needed for NUT-14 LN/ecash atomic swaps)
-- **Status:** fixed (<SHA>)
+- **Status:** fixed (aa07ad78)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.Hold.cs` (+ the `ReceiveAsync` hold branch), `Invoices/InvoiceService.CreateHoldInvoiceAsync`, `Domain/Payments/{Enums/InvoiceStatus.Held,Models/InvoiceModel (nullable preimage, Hold/SettleHeld),Events/InvoiceHeldEvent,Interfaces/IHoldInvoiceService}`, migration `AddHoldInvoices` (all three providers), IPC 49-51 (`createholdinvoice`/`settleholdinvoice`/`cancelholdinvoice`; 48 reserved for payroute on `wip/payroute`), tests `Application.Tests/Payments/Switch/HoldInvoiceTests.cs` (9) + `Docker/HoldInvoiceFlowTests.cs` (cluster)

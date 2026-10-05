@@ -78,7 +78,10 @@ public class HoldInvoiceFlowTests : IAsyncLifetime
         // Assert: LND's payment is still in flight — no preimage of ours exists to fulfill it with
         var inFlight = await GetLndPaymentAsync(alice, paymentHash, ct);
         Assert.Equal(Payment.Types.PaymentStatus.InFlight, inFlight.Status);
-        Assert.Empty(inFlight.PaymentPreimage);
+        // LND reports an all-zero placeholder, not an empty string, while the payment is held in flight
+        Assert.True(string.IsNullOrEmpty(inFlight.PaymentPreimage)
+                 || inFlight.PaymentPreimage.Trim('0').Length == 0,
+                    $"the held payment must not carry a preimage: {inFlight.PaymentPreimage}");
 
         // Act: the operator settles with the outside preimage
         var settled = await Node.SettleHoldInvoiceAsync(hash, new Secret(preimage), ct);
@@ -138,7 +141,7 @@ public class HoldInvoiceFlowTests : IAsyncLifetime
         Console.WriteLine($"LND's payment: {payment.Status} {payment.FailureReason}, "
                         + $"{payment.Htlcs.Count} attempt(s)");
         Assert.Equal(Payment.Types.PaymentStatus.Failed, payment.Status);
-        Assert.Equal(PaymentFailureReason.FailureReasonError, payment.FailureReason);
+        Assert.Equal(PaymentFailureReason.FailureReasonIncorrectPaymentDetails, payment.FailureReason);
         var failed = Assert.Single(payment.Htlcs, h => h.Status == HTLCAttempt.Types.HTLCStatus.Failed);
         Assert.Equal(Failure.Types.FailureCode.IncorrectOrUnknownPaymentDetails, failed.Failure!.Code);
 

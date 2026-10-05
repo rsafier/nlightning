@@ -274,8 +274,9 @@ public sealed class InvoiceService : IInvoiceService
         // hold invoice has no blinded-path form (the blinded path_id is derived from the preimage)
         var paymentSecret = RandomNumberGenerator.GetBytes(CryptoConstants.SecretLen);
         var invoice = new Invoice(amount ?? LightningMoney.Zero, description,
-                                  new uint256((byte[])paymentHash),
-                                  new uint256(paymentSecret), nodeOptions.BitcoinNetwork, _secureKeyManager)
+                                  PaymentTarget.FromWireBytes(paymentHash),
+                                  PaymentTarget.FromWireBytes(paymentSecret), nodeOptions.BitcoinNetwork,
+                                  _secureKeyManager)
         {
             MinFinalCltvExpiry = routing.InvoiceMinFinalCltvExpiry
         };
