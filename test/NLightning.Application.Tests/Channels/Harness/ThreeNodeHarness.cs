@@ -30,6 +30,7 @@ using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Cashu.Interfaces;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
@@ -52,6 +53,7 @@ using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.InteractiveTx.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
@@ -158,14 +160,19 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
     /// <param name="simpleTaproot">Every channel is a simple taproot channel (NL-877 T5: MuSig2 commitments).</param>
     /// <param name="announceAliceBob">The Alice-Bob channel is public (<c>announce_channel</c>; taproot gossip proofs,
     /// NL-878).</param>
+    /// <param name="splicing">Every node runs the splicing services (<see cref="SwitchNode.Splicing"/>; the spliced
+    /// taproot gossip proof, NL-1131).</param>
     public static async Task<ThreeNodeHarness> CreateAsync(Action<ThreeNodeHarness>? beforeStart = null,
                                                            FeatureSupport bobCarolScidAlias = FeatureSupport.No,
                                                            bool carolAlice = false, bool simpleTaproot = false,
-                                                           bool announceAliceBob = false)
+                                                           bool announceAliceBob = false, bool splicing = false)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"nltg-three-node-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         var harness = new ThreeNodeHarness(directory) { _simpleTaproot = simpleTaproot };
+        if (splicing)
+            foreach (var node in harness.Nodes)
+                node.Splicing = new SwitchNodeSplicing();
         beforeStart?.Invoke(harness);
         foreach (var node in harness.Nodes)
             await node.StartAsync(migrate: true);
@@ -203,6 +210,37 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
         }
 
         throw new InvalidOperationException("The message exchange did not converge");
+    }
+
+    /// <summary>
+    /// <see cref="PumpAsync"/> until <paramref name="until"/> completed and nothing moves, the nodes' quiescence and
+    /// splice work included (a splice's <c>splice_init</c> goes out off the message that ended the quiescence).
+    /// </summary>
+    public async Task PumpUntilAsync(Task until)
+    {
+        for (var round = 0; round < 2_000; round++)
+        {
+            await PumpAsync();
+            foreach (var node in Nodes.Where(n => n is { IsRunning: true, Splicing: not null }))
+                await SwitchNodeSplicing.WhenIdleAsync(node.Services);
+
+            if (!_links.Values.All(q => q.IsEmpty))
+                continue;
+
+            if (until.IsCompleted)
+                return;
+
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+
+        throw new InvalidOperationException("The message exchange did not converge");
+    }
+
+    /// <summary>Moves every node's chain tip (what its services read), without a block event.</summary>
+    public void SetTip(uint height)
+    {
+        foreach (var node in Nodes)
+            node.TipHeight = height;
     }
 
     /// <summary>
@@ -373,6 +411,24 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
 
         // One flow per delivery: the lock audit follows it into the switch and the channel operations it calls
         LockAudit.BeginFlow();
+        if (message is StartBatchMessage startBatch)
+        {
+            // As the peer's inbound loop groups them: start_batch and its commitment_signed messages go to the
+            // channel manager as one batch
+            var members = new List<CommitmentSignedMessage>();
+            for (var i = 0; i < startBatch.Payload.BatchSize; i++)
+            {
+                if (!queue.TryDequeue(out var member))
+                    throw new InvalidOperationException("A start_batch was published without all its members");
+                to.Received.Add(member);
+                members.Add((CommitmentSignedMessage)member);
+            }
+
+            await to.ChannelManager.HandleCommitmentSignedBatchAsync(
+                new CommitmentSignedBatch(startBatch.Payload.ChannelId, members), NegotiatedFeatures, from.NodeId);
+            return true;
+        }
+
         await to.ChannelManager.HandleChannelMessageAsync(message, NegotiatedFeatures, from.NodeId);
         return true;
     }
@@ -526,6 +582,12 @@ internal sealed class SwitchNode
     /// <summary>Called before every <c>IChannelStateDbRepository.SetOnionSharedSecretAsync</c> (the switch storing an
     /// incoming HTLC's shared secret); throwing from it fails that save, as a crash right before it would.</summary>
     public Action<ChannelId, HtlcKey>? BeforeSetOnionSharedSecret { get; set; }
+
+    /// <summary>The chain tip the node's services read (its chain monitor's last processed block).</summary>
+    public uint TipHeight { get; set; } = ThreeNodeHarness.BlockHeight;
+
+    /// <summary>The node's splicing services and wallet, when the harness runs them (null otherwise).</summary>
+    public SwitchNodeSplicing? Splicing { get; set; }
 
     /// <summary>Last changes to the node's services, applied on every start (e.g. a manual clock).</summary>
     public Action<IServiceCollection>? ConfigureServices { get; set; }
@@ -681,7 +743,7 @@ internal sealed class SwitchNode
                            .Build();
 
         var blockchainMonitor = new Mock<IBlockchainMonitor>();
-        blockchainMonitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(ThreeNodeHarness.BlockHeight);
+        blockchainMonitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(() => TipHeight);
 
         var services = new ServiceCollection();
         services.AddLogging();
@@ -727,6 +789,7 @@ internal sealed class SwitchNode
         services.AddScoped<IChannelMessageHandler<CommitmentSignedMessage>, CommitmentSignedMessageHandler>();
         services.AddScoped<IChannelMessageHandler<RevokeAndAckMessage>, RevokeAndAckMessageHandler>();
         services.AddScoped<IChannelMessageHandler<UpdateFeeMessage>, UpdateFeeMessageHandler>();
+        Splicing?.Configure(services);
         ConfigureServices?.Invoke(services);
         return services.BuildServiceProvider();
     }
@@ -812,6 +875,11 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
     public IPaymentDbRepository PaymentDbRepository => inner.PaymentDbRepository;
     public IPaymentPartDbRepository PaymentPartDbRepository => inner.PaymentPartDbRepository;
     public IOfferDbRepository OfferDbRepository => inner.OfferDbRepository;
+    public IInteractiveTxSessionDbRepository InteractiveTxSessionDbRepository =>
+        inner.InteractiveTxSessionDbRepository;
+    public IPeerStorageRetrievalDbRepository PeerStorageRetrievalDbRepository =>
+        inner.PeerStorageRetrievalDbRepository;
+    public ICashuQuoteDbRepository CashuQuoteDbRepository => inner.CashuQuoteDbRepository;
     public IForwardCircuitDbRepository ForwardCircuitDbRepository => inner.ForwardCircuitDbRepository;
     public ITrampolineRelayDbRepository TrampolineRelayDbRepository => inner.TrampolineRelayDbRepository;
     public IPaymentTrampolineHopDbRepository PaymentTrampolineHopDbRepository =>
