@@ -4323,6 +4323,46 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-878
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T7
 
+### NL-1140 Taproot gossip ingress: the chain lookup precedes the signature check, and no v2 blacklist or chain-check shortcuts
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.V2.cs`
+- **Evidence:** NL-878 T7 lane G: a `channel_announcement_2`'s proof can only be checked against its funding output (the 3-key form needs the output key, the 4-key form the output to match the keys), so the ingress looks the output up first and stores a valid announcement at once; there is no pending index like NL-406 for v1, so a flood of made-up v2 announcements costs one funding lookup each (bounded by the lookup's own rate and concurrency limits and the per-peer queue). Not done for v2: the B7-CA-04 blacklist of a conflicting announcement (a conflict is only ignored), `Gossip:AssumeChannelValid` and `FundingValidation=SkipUnavailable` (a v2 proof needs the output, so such announcements are refused).
+- **Fix sketch:** Verify the 4-key MuSig2 signature before the lookup when both bitcoin keys are present (the aggregate does not depend on the output), and keep keyless announcements pending until their first `channel_update_2` like NL-406; add the v2 blacklist once the draft settles.
+- **Blocks/Blocked-by:** Related NL-878, NL-406
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T7
+
+### NL-1141 Taproot gossip relay: the v2 backlog of a new filter is not paced, and v2 is missing from `describegraph`
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Gossip/Relay/GossipRelayScheduler.RelayV2.cs`, `src/NLightning.Application/Gossip/Graph/GossipGraphDescriber.cs`
+- **Evidence:** NL-878 T7 lane G: a new `gossip_timestamp_filter` with a `block_height_range` queues the graph's v2 gossip inside it into the connection's v2 pending set at the next flush, bounded by `Gossip:MaxRelayPendingPerPeer` (the oldest evicted) but not paced like the v1 backlog (`BacklogMessagesPerSecond`), and a stalled connection's v2 pending set is not dropped by the NL-360 stall rule (it is bounded and flushed into the capped outbox, a full outbox keeps it for the next flush). `describegraph` counts only BOLT 7 policies and has no v2 channel or node counts; `listgraphchannels`/`listnodes` show the versions (IPC keys 9 and 7/8).
+- **Fix sketch:** Route the v2 backlog through the paced v1 backlog machinery once v2 gossip exists on a real network; add v2 counts to `describegraph` (new IPC keys at the end).
+- **Blocks/Blocked-by:** Related NL-878, NL-360
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T7
+
+### NL-1142 Our own `node_announcement_2` lives in memory only
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Gossip/Graph/GraphStore.cs` (`TryApplyOwnNode2`), `src/NLightning.Application/Gossip/Announcements/NodeAnnouncementService.cs`
+- **Evidence:** NL-878 T7 lane G: like our `node_announcement`, our `node_announcement_2` is applied to the graph in memory only (the row has one writer, the node announcement service, plan G1-T6), but no v2 writer saves the row yet, and the v1 service's upsert of our row writes `GossipVersions = 1` without the v2 columns, so after a restart our node is v1-only until the v2 announcement is published again. (The invoice route-hint decision reads the routing policies, v2 included, since lane G.)
+- **Fix sketch:** The v2 node announcement service saves our row (both versions, `GraphNodeRecord.Versions`/`BlockHeight`/`RawAnnouncement2`) before it publishes, as G1-T6 does, and the v1 service keeps the v2 columns of the row it upserts.
+- **Blocks/Blocked-by:** Related NL-878
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T7
+
+### NL-1143 A malformed taproot gossip broadcast closes the connection, unlike a malformed `channel_update`
+- **Status:** open
+- **Severity:** low
+- **Kind:** interop
+- **Location:** `src/NLightning.Infrastructure/Protocol/Services/MessageService.cs` (`IsGossipBroadcast`)
+- **Evidence:** NL-878 T7 lane G: `MessageService` ignores a malformed 256/257/258 with one warning per connection (NL-401: they are relayed on behalf of other nodes, so the relaying peer is not at fault), but 267/269/271 take the generic malformed-message path (warning and close). The draft only says SHOULD warn, MAY close; once others' v2 gossip is relayed (LND #11164 tolerates unknown even records, NL-1130), an honest peer relaying a message we cannot parse loses its connection to us.
+- **Fix sketch:** Treat 267/269/271 as gossip broadcasts in `IsGossipBroadcast`.
+- **Blocks/Blocked-by:** Related NL-401, NL-1130
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T7
+
 ## BOLT 8: Transport
 
 ### NL-104 Transport read loop uses ReadAsync; short TCP reads kill the connection
