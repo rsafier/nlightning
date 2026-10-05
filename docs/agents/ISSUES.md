@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 77 | 78 |
+| open | 0 | 0 | 1 | 78 | 79 |
 | in-progress | 0 | 0 | 3 | 1 | 4 |
-| fixed | 15 | 68 | 221 | 454 | 758 |
+| fixed | 15 | 68 | 220 | 454 | 757 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **233** | **552** | **868** |
+| **Total** | **15** | **68** | **233** | **553** | **869** |
 
 ### Epics
 
@@ -9220,3 +9220,14 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement/channel_update frame the Domain codecs (ExtraData verbatim, the plan's predicted raw-trailing-bytes requirement absorbed by `Payload.ExtraData`), announcement_signatures uses the strict-empty + keep-raw extension options (the payload ctor takes extraData), and the five gossip queries carry `TlvDef.RawKnown` records (known variable-length raw TLVs). 19 further legacy files deleted; the hand-written `Payloads/` directory is gone entirely — `MessageTypeSerializerFactory`'s fallback dictionaries are empty and the hand-written layer is reduced to the shared `TlvStreamSerializer`/converters and the onion codecs. **P4 resolved:** `onion_message` 513 migrated in P2; `HopPayloadSerializer` (186 code lines) and `FailureMessageSerializer` (123) stay dedicated — `invalid_onion_payload` needs the offending record's type+offset as wire-visible error data the strict reader deliberately does not carry, the failure serializer is synchronous inside the crypto loop with its own lenient framing, and neither is a `MessageTypes`-keyed peer message (plan P4).
 - **Blocks/Blocked-by:** Part of NL-1100
 - **Plan ref:** `docs/agents/CODEC_REDESIGN_PLAN.md` P1/P2/P3, P4 resolution
+
+### NL-1080 Public simple taproot channels (taproot gossip v2) not yet tried live on Mutinynet
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** FAFO/FAFO2 Mutinynet nodes (`~/.nltg/mutinynet`, `~/.nltg/mutinynet-fafo2`); feature `Features:OptionGossipV2`
+- **Evidence:** T7 (NL-878, landed at bcdea597, 2026-10-05) is proven in-process (`TaprootGossipProofTests`, `Announcement2HarnessTests`) and by the full cluster matrix t7-mx1 for regressions; no live run yet. Owner decision 2026-10-05: hold the Mutinynet trial; the regtest end-to-end cluster test comes first. Low risk to third parties: bits 70/71 are advertised odd, 267/269/271 are odd messages, 260 goes only to the channel peer and v2 gossip is relayed only to v2 peers.
+- **Fix sketch:** deploy a build with T7 to FAFO and FAFO2 (migration `AddGossipV2`, back up first), set `Features:OptionGossipV2=Optional` on both, open `openchannel <FAFO2> <sat> --public --channel-type taproot`, mine to the announcement depth, and check that the MuSig2 `channel_announcement_2` and both `channel_update_2`s are in both graphs, a restart's nonce re-exchange, and a payment routed by the graph.
+- **Blocks/Blocked-by:** Related NL-878, NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T7
+
