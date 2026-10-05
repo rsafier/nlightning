@@ -9329,7 +9329,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix (1683c295):** `getroute --json` (`Printers/GetRouteJsonPrinter`, source-generated) prints each hop's incoming view and its outgoing view in payroute's terms; the old recipe also read the incoming fields as the outgoing ones, off by one hop, so the help and `PAYROUTE_PLAN.md` recipe now copy the outgoing keys; `outgoingShortChannelId` takes `BLOCKxTXxOUTPUT` or the number, a malformed value is named with its route and hop; the recipe end to end in `PayRouteCommandTests`, checked with real jq.
 
 ### NL-1087 net11.0: `Convert.ToDecimal(double)` is exact on .NET 11, so bitcoind fee answers parse with binary noise
-- **Status:** fixed (this commit)
+- **Status:** fixed (1fb36d9b)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinChainService.cs` (`Value<decimal?>()` on `mempoolminfee`, `effective-feerate`, `package-feerate`, around lines 540-586); `test/NLightning.Testing.Cluster/Nodes/BitcoinCore/Rpc/` (`BitcoinCoreRpcClient` estimates, `BitcoinCli` scalar parsing)
