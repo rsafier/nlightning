@@ -30,7 +30,7 @@ using Sync;
 /// pending set of every such connection (the newest version per key, at most
 /// <see cref="GossipRelayOptions.MaxRelayPendingPerPeer"/>: the oldest goes first). Like the BOLT 7 path, the first
 /// collect is a baseline and our own messages, spent channels and channels not checked against the chain are left
-/// out.
+/// out (a channel of ours: only its 267, the peer's 271 is relayed as BOLT 7's is, NL-1145).
 /// </para>
 /// <para>
 /// <b>Flush:</b> at the connection's BOLT 7 flush, in the order 267, 271, 269: a <c>channel_update_2</c> or
@@ -94,11 +94,13 @@ public sealed partial class GossipRelayScheduler
 
         void AddChannelItems(GraphChannel channel, byte? onlyDirection)
         {
-            if (!IsRelayableV2(channel) || IsOurs(channel.NodeId1) || IsOurs(channel.NodeId2))
+            if (!IsRelayableV2(channel))
                 return;
 
-            // A 267 counts as seen only once its channel has a relayable v2 update (it never goes out alone)
-            if (HasRelayablePolicyV2(channel))
+            // A 267 counts as seen only once its channel has a relayable v2 update (it never goes out alone); the 267
+            // of a channel of ours goes through the own path, but the peer's update of it is relayed (as BOLT 7's,
+            // NL-1145)
+            if (!IsOurs(channel.NodeId1) && !IsOurs(channel.NodeId2) && HasRelayablePolicyV2(channel))
                 See(AnnouncementItem(channel));
             for (byte direction = 0; direction < 2; direction++)
             {
@@ -225,7 +227,10 @@ public sealed partial class GossipRelayScheduler
             if (announcements.ContainsKey(shortChannelId) || state.WasAnnounced(shortChannelId))
                 continue;
 
-            if (_graphStore!.TryGetChannel(shortChannelId, out var channel) && IsRelayableV2(channel))
+            // Ours goes through the own path (NL-1145)
+            if (_graphStore!.TryGetChannel(shortChannelId, out var channel) && IsRelayableV2(channel)
+                                                                           && !IsOurs(channel.NodeId1)
+                                                                           && !IsOurs(channel.NodeId2))
                 announcements[shortChannelId] = AnnouncementItem(channel);
         }
 
@@ -247,8 +252,7 @@ public sealed partial class GossipRelayScheduler
         var snapshot = _graphStore!.GetSnapshot();
         foreach (var channel in snapshot.Channels.OrderBy(c => QueryResponder.ToUInt64(c.ShortChannelId)))
         {
-            if (!IsRelayableV2(channel) || IsOurs(channel.NodeId1) || IsOurs(channel.NodeId2)
-                                        || !HasRelayablePolicyV2(channel))
+            if (!IsRelayableV2(channel) || !HasRelayablePolicyV2(channel))
                 continue;
 
             var inside = new List<V2RelayItem>(2);
@@ -259,7 +263,9 @@ public sealed partial class GossipRelayScheduler
             if (inside.Count == 0)
                 continue;
 
-            items.Add(AnnouncementItem(channel) with { Height = inside.Min(i => i.Height) });
+            // The 267 of a channel of ours goes through the own path; the peer's update of it is relayed (NL-1145)
+            if (!IsOurs(channel.NodeId1) && !IsOurs(channel.NodeId2))
+                items.Add(AnnouncementItem(channel) with { Height = inside.Min(i => i.Height) });
             items.AddRange(inside);
         }
 

@@ -13,6 +13,7 @@ using Domain.Gossip.Queries;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Protocol.Constants;
+using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
@@ -39,9 +40,14 @@ public class GossipRelayV2Tests : IDisposable
     private readonly Dictionary<IPeerService, GossipBlockHeightRange> _ranges = new(ReferenceEqualityComparer.Instance);
     private readonly Mock<IGossipSyncManager> _syncManager = new();
     private readonly GossipOriginTracker _origins = new();
-    private readonly GossipRelayScheduler _relay;
+    private GossipRelayScheduler _relay;
 
     public GossipRelayV2Tests()
+    {
+        _relay = CreateRelay(null);
+    }
+
+    private GossipRelayScheduler CreateRelay(GossipV2TestKey? ourNode)
     {
         var options = new GossipRelayOptions
         {
@@ -58,10 +64,18 @@ public class GossipRelayV2Tests : IDisposable
                                                  _ranges.TryGetValue(peer, out range)));
         var directory = new Mock<IGossipPeerDirectory>();
         directory.Setup(d => d.GetConnectedPeers()).Returns(() => _peers.ToList());
-        _relay = new GossipRelayScheduler(directory.Object, NullLogger<GossipRelayScheduler>.Instance,
-                                          Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }),
-                                          Options.Create(new GossipOptions()), _clock, null, _graph.Store,
-                                          _syncManager.Object, _origins, Options.Create(options));
+        ISecureKeyManager? keys = null;
+        if (ourNode is { } node)
+        {
+            var keyManager = new Mock<ISecureKeyManager>();
+            keyManager.Setup(k => k.GetNodePubKey()).Returns(node.PubKey);
+            keys = keyManager.Object;
+        }
+
+        return new GossipRelayScheduler(directory.Object, NullLogger<GossipRelayScheduler>.Instance,
+                                        Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }),
+                                        Options.Create(new GossipOptions()), _clock, null, _graph.Store,
+                                        _syncManager.Object, _origins, Options.Create(options), keys);
     }
 
     private delegate bool TryGetFilter(IPeerService peer, out GossipTimestampFilter filter);
@@ -189,6 +203,35 @@ public class GossipRelayV2Tests : IDisposable
 
         // Assert: BOLT 7 never sends an announcement without its update, nor a node before its channel
         Assert.Empty(v2Peer.Sent);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_AChannelOfOurs_When_ThePeersUpdate2Changes_Then_ItIsRelayedWithoutOurAnnouncement(
+        bool asBacklog)
+    {
+        // Arrange (NL-1145): we are Carol, an end of the channel; Dave's channel_update_2 of it reached our graph
+        _relay.Dispose();
+        _relay = CreateRelay(s_carol);
+        var peer = AddPeer(0x41, gossipV2: true, new GossipBlockHeightRange(0, uint.MaxValue));
+        if (!asBacklog)
+            await BaselineAsync();
+        var (_, update1, update2, _) = AddV2Channel();
+        var daves = Node1() == s_dave ? update1 : update2;
+        if (asBacklog)
+        {
+            await BaselineAsync();
+            _syncManager.Raise(m => m.FilterReceived += null,
+                               new GossipFilterReceivedEventArgs(peer, _filters[peer]));
+        }
+
+        // Act
+        await FlushAllAsync();
+
+        // Assert: Dave's update goes out as BOLT 7's would; our 267, our 271 and our 269 are the own path's
+        var sent = Assert.Single(peer.Sent);
+        Assert.Equal(daves.GetBytes(), Assert.IsType<ChannelUpdate2Message>(sent).Payload.GetBytes());
     }
 
     private static ChannelAnnouncement2Payload Announcement() =>
