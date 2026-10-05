@@ -7,8 +7,8 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class OpenChannel1MessageTests
 {
@@ -58,17 +58,14 @@ public class OpenChannel1MessageTests
     private static readonly string s_acceptChannelPayloadHex =
         Zero32 + new string('0', 4 * 16) + "00000003" + "0090" + "01E3" + string.Concat(Enumerable.Repeat(Point, 6));
 
-    private readonly OpenChannel1MessageTypeSerializer _openChannel1Serializer =
-        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
-            SerializerHelper.TlvStreamSerializer);
+    private readonly IMessageTypeSerializer<OpenChannel1Message> _openChannel1Serializer =
+        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<OpenChannel1Message>()!;
 
-    private readonly AcceptChannel1MessageTypeSerializer _acceptChannel1Serializer =
-        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
-            SerializerHelper.TlvStreamSerializer);
+    private readonly IMessageTypeSerializer<AcceptChannel1Message> _acceptChannel1Serializer =
+        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<AcceptChannel1Message>()!;
 
-    private readonly OpenChannel1MessageTypeSerializer _serializer =
-        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
-            SerializerHelper.TlvStreamSerializer);
+    private readonly IMessageTypeSerializer<OpenChannel1Message> _serializer =
+        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<OpenChannel1Message>()!;
 
     [Fact]
     public async Task Given_SpecShapedBytes_When_DeserializeAsync_Then_AllFieldsAreDecoded()

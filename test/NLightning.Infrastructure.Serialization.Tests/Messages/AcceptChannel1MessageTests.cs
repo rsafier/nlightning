@@ -7,8 +7,8 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class AcceptChannel1MessageTests
 {
@@ -43,9 +43,8 @@ public class AcceptChannel1MessageTests
                                     + RevocationBasepointHex + PaymentBasepointHex + DelayedPaymentBasepointHex
                                     + HtlcBasepointHex + FirstPerCommitmentPointHex;
 
-    private readonly AcceptChannel1MessageTypeSerializer _serializer =
-        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
-            SerializerHelper.TlvStreamSerializer);
+    private readonly IMessageTypeSerializer<AcceptChannel1Message> _serializer =
+        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<AcceptChannel1Message>()!;
 
     [Fact]
     public async Task Given_SpecShapedBytes_When_DeserializeAsync_Then_AllFieldsAreDecoded()

@@ -53,6 +53,14 @@ internal ref struct WireWriter
         _position += 8;
     }
 
+    /// <summary>Writes a big-endian signed 64-bit integer (e.g. splice_init's s64 funding contribution).</summary>
+    public void S64(long value)
+    {
+        Ensure(8);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(_buffer.AsSpan(_position), value);
+        _position += 8;
+    }
+
     /// <summary>Writes the minimal BOLT 1 <c>bigsize</c> encoding of <paramref name="value"/>.</summary>
     public void BigSize(ulong value)
     {

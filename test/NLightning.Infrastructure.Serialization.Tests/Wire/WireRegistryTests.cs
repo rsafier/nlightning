@@ -11,13 +11,16 @@ using Helpers;
 /// </summary>
 public class WireRegistryTests
 {
-    /// <summary>The wire types the P0 vertical slice migrated.</summary>
+    /// <summary>The wire types the P0 vertical slice and the BOLT 2 channel wave migrated.</summary>
     public static TheoryData<MessageTypes> MigratedTypes => new()
     {
         MessageTypes.Init, MessageTypes.Error, MessageTypes.Warning, MessageTypes.Ping, MessageTypes.Pong,
         MessageTypes.UpdateAddHtlc, MessageTypes.UpdateFulfillHtlc, MessageTypes.UpdateFailHtlc,
         MessageTypes.UpdateFailMalformedHtlc, MessageTypes.CommitmentSigned, MessageTypes.RevokeAndAck,
-        MessageTypes.UpdateFee, MessageTypes.ChannelReestablish, MessageTypes.TxAddInput
+        MessageTypes.UpdateFee, MessageTypes.ChannelReestablish, MessageTypes.TxAddInput,
+        MessageTypes.Stfu, MessageTypes.OpenChannel, MessageTypes.AcceptChannel, MessageTypes.FundingCreated,
+        MessageTypes.FundingSigned, MessageTypes.ChannelReady, MessageTypes.Shutdown, MessageTypes.ClosingSigned,
+        MessageTypes.ClosingComplete, MessageTypes.ClosingSig, MessageTypes.OpenChannel2, MessageTypes.AcceptChannel2
     };
 
     [Theory]

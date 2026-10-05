@@ -33,6 +33,9 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
     private readonly WireEncode<TMessage> _encodeBody;
     private readonly WireDecode<TMessage> _decodeBody;
     private readonly Dictionary<BigSize, TlvDef> _tlvsByType;
+    private readonly bool _strictEmptyExtension;
+    private readonly bool _keepRawExtension;
+    private readonly bool _wrapBodyErrors;
     private ITlvConverterFactory? _converters;
 
     internal MessageWire(MessageTypes type, WireEncode<TMessage> encodeBody, WireDecode<TMessage> decodeBody,
@@ -42,6 +45,29 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
         _encodeBody = encodeBody;
         _decodeBody = decodeBody;
         _tlvsByType = tlvs.ToDictionary(t => t.Type);
+    }
+
+    /// <summary>
+    /// The form for messages whose extension has no typed TLVs but whose trailing bytes still carry meaning:
+    /// <paramref name="strictEmptyExtension"/> validates the trailing records with an empty known set (BOLT 1:
+    /// unknown even type fails, unknown odd is ignored — splice_locked, peer_storage, onion_message),
+    /// <paramref name="keepRawExtension"/> hands the raw extension region to the constructor via
+    /// <see cref="WireTlvs.RawBytes"/> (gossip payloads that replay unknown records verbatim), and
+    /// <paramref name="wrapBodyErrors"/> reproduces a legacy serializer that wrapped body errors into
+    /// <see cref="MessageSerializationException"/> (the closing pair). Raw TLV definitions (the closing pair's
+    /// fixed-length closing_tlvs signatures) can ride along in <paramref name="tlvs"/>.
+    /// </summary>
+    internal MessageWire(MessageTypes type, WireEncode<TMessage> encodeBody, WireDecode<TMessage> decodeBody,
+                       bool strictEmptyExtension, bool keepRawExtension, bool wrapBodyErrors = false,
+                       params TlvDef[] tlvs)
+    {
+        Type = type;
+        _encodeBody = encodeBody;
+        _decodeBody = decodeBody;
+        _tlvsByType = tlvs.ToDictionary(t => t.Type);
+        _strictEmptyExtension = strictEmptyExtension;
+        _keepRawExtension = keepRawExtension;
+        _wrapBodyErrors = wrapBodyErrors;
     }
 
     public override MessageTypes Type { get; }
@@ -85,18 +111,29 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
         }
         catch (Exception e)
         {
-            throw new PayloadSerializationException($"Error deserializing {typeof(TMessage).Name} payload", e);
+            throw WrapBodyError(e);
         }
 
-        var tlvs = _tlvsByType.Count == 0 ? WireTlvs.Empty : ReadTlvs(ref reader);
+        var tlvs = _tlvsByType.Count > 0 || _strictEmptyExtension || _keepRawExtension
+            ? ReadTlvs(ref reader)
+            : WireTlvs.Empty;
         try
         {
             return construct(tlvs);
         }
         catch (Exception e)
         {
-            throw new PayloadSerializationException($"Error deserializing {typeof(TMessage).Name} payload", e);
+            throw WrapBodyError(e);
         }
+    }
+
+    /// <summary>Body/constructor failures are PayloadSerializationException, unless the legacy serializer this
+    /// definition replaces wrapped them into MessageSerializationException (the closing pair).</summary>
+    private Exception WrapBodyError(Exception e)
+    {
+        return _wrapBodyErrors
+            ? new MessageSerializationException($"Error deserializing {typeof(TMessage).Name}", e)
+            : new PayloadSerializationException($"Error deserializing {typeof(TMessage).Name} payload", e);
     }
 
     /// <inheritdoc />
@@ -145,10 +182,24 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
                     $"TLV type {tlv.Type.Value} is not greater than the previous type {previous.Value}.");
             previousType = tlv.Type;
 
-            writer.BigSize(tlv.Type.Value);
-            writer.BigSize((ulong)tlv.Length.Value);
-            writer.Bytes(tlv.Value);
+            // Typed TLVs are converted through their registered converter, exactly as TlvStreamSerializer did —
+            // some typed TLVs (e.g. fee_range) only compute their wire bytes in ConvertToBase
+            var baseTlv = tlv.GetType() == typeof(BaseTlv) ? tlv : ConvertToBase(tlv);
+            writer.BigSize(baseTlv.Type.Value);
+            writer.BigSize((ulong)baseTlv.Length.Value);
+            writer.Bytes(baseTlv.Value);
         }
+    }
+
+    private BaseTlv ConvertToBase(BaseTlv tlv)
+    {
+        var converters = _converters
+                      ?? throw new InvalidOperationException(
+                             $"The wire definition of {typeof(TMessage).Name} was not bound to a converter factory");
+
+        return converters.GetConverter(tlv.GetType())
+                    ?.ConvertToBase(tlv)
+               ?? throw new SerializationException($"No converter found for tlv type {tlv.GetType().Name}");
     }
 
     private WireTlvs ReadTlvs(ref WireReader reader)
@@ -171,6 +222,7 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
 
         var typed = new Dictionary<BigSize, object?>();
         var raws = new Dictionary<BigSize, BaseTlv>();
+        ReadOnlyMemory<byte>? rawBytes = _keepRawExtension ? reader.RemainingBytes().ToArray() : null;
         BigSize? previousType = null;
         while (reader.Remaining > 0)
         {
@@ -199,7 +251,7 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
                 throw new SerializationException($"Unknown even TLV type {type.Value}.");
         }
 
-        return new WireTlvs(typed, raws);
+        return new WireTlvs(typed, raws, rawBytes);
     }
 }
 
@@ -249,6 +301,22 @@ public sealed class TlvDef
             var converter = converters.GetConverter<TTlv>()
                          ?? throw new SerializationException($"No converter found for tlv type {nameof(TTlv)}");
             return converter.ConvertFromBase(raw);
+        });
+    }
+
+    /// <summary>
+    /// A raw TLV with an exact value length and no Domain type or converter: the record marks the type known
+    /// (BOLT 1 unknown-even rejection), enforces the length like the legacy hand-parsers did, and exposes the
+    /// value bytes via <c>Get&lt;byte[]&gt;</c> (the closing pair's 64/98/32-byte signatures, closing_tlvs 1-7).
+    /// </summary>
+    public static TlvDef Raw(BigSize type, int exactLength)
+    {
+        return new TlvDef(type, (raw, _) =>
+        {
+            if (raw.Value.Length != exactLength)
+                throw new SerializationException(
+                    $"TLV type {type.Value} holds {raw.Value.Length} bytes, not {exactLength}");
+            return raw.Value;
         });
     }
 
@@ -304,11 +372,19 @@ public sealed class WireTlvs
     private readonly Dictionary<BigSize, object?> _typed;
     private readonly Dictionary<BigSize, BaseTlv> _raws;
 
-    internal WireTlvs(Dictionary<BigSize, object?> typed, Dictionary<BigSize, BaseTlv> raws)
+    internal WireTlvs(Dictionary<BigSize, object?> typed, Dictionary<BigSize, BaseTlv> raws,
+                      ReadOnlyMemory<byte>? rawBytes = null)
     {
         _typed = typed;
         _raws = raws;
+        RawBytes = rawBytes;
     }
+
+    /// <summary>
+    /// The raw extension region, when the definition asked to keep it (<see cref="WireTlvs"/> overloads): gossip
+    /// payloads replay unknown records byte-verbatim, so the constructor rebuilds its ExtraData from this.
+    /// </summary>
+    public ReadOnlyMemory<byte>? RawBytes { get; }
 
     /// <summary>The typed TLV of <paramref name="type"/>, or null when the message carried none.</summary>
     public T? Get<T>(BigSize type) where T : class

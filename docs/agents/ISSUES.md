@@ -178,11 +178,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 75 | 76 |
-| in-progress | 0 | 0 | 3 | 0 | 3 |
+| in-progress | 0 | 0 | 4 | 0 | 4 |
 | fixed | 15 | 68 | 220 | 451 | 754 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **232** | **546** | **861** |
+| **Total** | **15** | **68** | **233** | **546** | **862** |
 
 ### Epics
 
@@ -9144,3 +9144,13 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** remaining phases in plan §5.
 - **Blocks/Blocked-by:** Part of NL-1100
 - **Plan ref:** `docs/agents/CODEC_REDESIGN_PLAN.md` P0
+
+### NL-1102 The wire codec P1+P2 waves: the rest of BOLT 2, the interactive-tx family, splice, peer storage and onion_message
+- **Status:** in-progress (`wip/codec-redesign`)
+- **Severity:** medium
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Serialization/Wire/Definitions/`
+- **Evidence:** P1 (12 messages) and P2 (15 messages) of NL-1100 migrated onto the Wire codec: open_channel/accept_channel (v1+v2 with their upfront_shutdown_script/channel_type/next_local_nonce/require_confirmed_inputs/liquidity-ads TLVs), funding_created/funding_signed, channel_ready, shutdown, the closing pair (closing_signed/closing_complete/closing_sig — the closing_tlvs 1-7 signatures as exact-length `TlvDef.Raw` entries, `wrapBodyErrors` reproducing the legacy wide catch a test pins), stfu, tx_add_output/remove_input/remove_output/complete/signatures/init_rbf/ack_rbf/abort (the locktime-before-feerate order and the tx_abort 256-byte read clamp reproduced; splice_init/ack s64 contributions), splice_locked/start_batch, peer_storage/retrieval (65531-byte cap), onion_message (66-byte packet minimum; strict-empty trailing validation). 54 legacy serializer files (~4,600 lines) deleted; ~1,030 lines of definitions added (~24/message). Runtime additions: `S64`, `TlvDef.Raw`, the strict-empty/keep-raw-extension/wrap-body-error definition options, and encode-side `ConvertToBase` for typed TLVs (fee_range only computes wire bytes in its converter — a latent P0 gap the P1 fixtures surfaced). Accepted behavior normalizations (wire behavior unchanged, recorded per the plan's rules): converter `InvalidCastException`s that legacy open_channel2/accept_channel2/stfu/tx_init_rbf/tx_ack_rbf/splice/onion/peer-storage catches let escape are now `MessageSerializationException`; channel_ready's malformed scid TLV is a serialization failure instead of an uncaught `ArgumentException`. All pre-existing byte-exact fixtures, the strictness matrix and captured-vector tests pass unchanged (Serialization suite 770); full non-Docker suite green.
+- **Fix sketch:** P3 (gossip 256/257/258/259 with ExtraData-verbatim — announcement_signatures deferred from P1 to ride with its family) and P4 (onion hop payloads' error-detailing reader) remain.
+- **Blocks/Blocked-by:** Part of NL-1100
+- **Plan ref:** `docs/agents/CODEC_REDESIGN_PLAN.md` P1/P2

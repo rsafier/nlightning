@@ -6,9 +6,9 @@ using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class FundingCreatedMessageTests
 {
@@ -25,9 +25,8 @@ public class FundingCreatedMessageTests
 
     private const string MessageHex = TemporaryChannelIdHex + FundingTxIdHex + FundingOutputIndexHex + SignatureHex;
 
-    private readonly FundingCreatedMessageTypeSerializer _serializer =
-        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
-            SerializerHelper.TlvStreamSerializer);
+    private readonly IMessageTypeSerializer<FundingCreatedMessage> _serializer =
+        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<FundingCreatedMessage>()!;
 
     [Fact]
     public async Task Given_SpecShapedBytes_When_DeserializeAsync_Then_AllFieldsAreDecoded()

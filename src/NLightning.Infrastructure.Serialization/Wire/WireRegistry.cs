@@ -37,7 +37,21 @@ public sealed class WireRegistry
             RevokeAndAckWire.Def,
             UpdateFeeWire.Def,
             ChannelReestablishWire.Def,
-            TxAddInputWire.Def
+            TxAddInputWire.Def,
+
+            // The BOLT 2 channel lifecycle wave, in ascending message type order
+            StfuWire.Def,
+            OpenChannelWire.Def,
+            AcceptChannelWire.Def,
+            FundingWire.Def,
+            FundingSignedWire.Def,
+            ChannelReadyWire.Def,
+            ShutdownWire.Def,
+            ClosingSignedWire.Def,
+            ClosingCompleteWire.Def,
+            ClosingSigWire.Def,
+            OpenChannel2Wire.Def,
+            AcceptChannel2Wire.Def
         ];
 
         foreach (var def in defs)

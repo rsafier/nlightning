@@ -301,7 +301,10 @@ registration fails `WireRegistryTests` at build time instead of killing peers at
 ## 5. Migration phases
 
 Phase 0 (this branch) is the vertical slice below; each later phase is one reviewable PR,
-same gates, same equivalence harness.
+same gates, same equivalence harness. **Status: P0, P1 and P2 are implemented on
+`wip/codec-redesign` (NL-1101, NL-1102) — 41 of ~50 peer messages migrated; announcement_signatures
+259 moved from P1 to P3 with its gossip family (it is a `GossipCodecPayloadSerializer` framing a
+Domain codec, structurally like 256/258).**
 
 - **P0 (this PR): infrastructure + slice.** Wire runtime (reader/writer, primitives, strict
   TLV stream, `MessageWire<T>`, `WireRegistry`, factory merge), then migrate:
