@@ -9318,7 +9318,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Plan ref:** `TEST_HARNESS_PLAN.md`
 
 ### NL-1085 `payroute` CLI: the help's `getroute --json` recipe does not exist, and hop SCIDs take only the numeric form
-- **Status:** fixed (wip/nl1085: `getroute --json` (`Printers/GetRouteJsonPrinter`, source-generated) prints each hop's incoming view and its outgoing view in payroute's terms; the old recipe also read the incoming fields as the outgoing ones, off by one hop, so the help and `PAYROUTE_PLAN.md` recipe now copy the outgoing keys; `outgoingShortChannelId` takes `BLOCKxTXxOUTPUT` or the number, a malformed value is named with its route and hop; the recipe end to end in `PayRouteCommandTests`, checked with real jq)
+- **Status:** fixed (1683c295) prints each hop's incoming view and its outgoing view in payroute's terms; the old recipe also read the incoming fields as the outgoing ones, off by one hop, so the help and `PAYROUTE_PLAN.md` recipe now copy the outgoing keys; `outgoingShortChannelId` takes `BLOCKxTXxOUTPUT` or the number, a malformed value is named with its route and hop; the recipe end to end in `PayRouteCommandTests`, checked with real jq)
 - **Severity:** low
 - **Kind:** ux
 - **Location:** `src/NLightning.Client/Utils/ClientUtils.cs` (the payroute help recipe, around line 106), `src/NLightning.Client/PayRouteRoutesJson.cs` (`outgoingShortChannelId`), `getroute` in `ClientApp`
