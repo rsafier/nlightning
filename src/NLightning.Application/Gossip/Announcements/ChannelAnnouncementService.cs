@@ -110,7 +110,8 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
 
         // BOLT 7: only with announce_channel, after channel_ready was sent and received and before any shutdown; on
         // mainnet only once public channels are allowed there (plan D12)
-        return channel.AnnounceChannel
+        // A simple taproot channel is announced with channel_announcement_2 only (taproot gossip, NL-878)
+        return channel.AnnounceChannel && !channel.ChannelParams.OptionSimpleTaproot
             && _gossipOptions.ArePublicChannelsAllowed(_nodeOptions.BitcoinNetwork)
             && channel.State == ChannelState.Open
             && channel.LocalShutdownScript is null && channel.RemoteShutdownScript is null

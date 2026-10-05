@@ -94,14 +94,26 @@ public class ChannelOpenValidatorTaprootTests
     }
 
     [Fact]
-    public void Given_PublicTaprootOpen_When_Checked_Then_Refused()
+    public void Given_PublicTaprootOpenWithoutGossipV2_When_Checked_Then_Refused()
     {
-        // The spec: the opener MUST NOT set announce_channel (LND: "taproot channel type for public channel")
+        // BOLTs #1059: without option_gossip_v2 negotiated the receiver MUST fail a taproot open with announce_channel
         var parameters = Parameters(TaprootType(), announce: true);
 
         var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
                                                                     out _));
-        Assert.Contains("public", exception.Message);
+        Assert.Contains("option_gossip_v2", exception.Message);
+    }
+
+    [Fact]
+    public void Given_PublicTaprootOpenWithGossipV2_When_Checked_Then_Accepted()
+    {
+        // BOLTs #1059 (NL-878 T7): with option_gossip_v2 negotiated the opener MAY set announce_channel
+        var negotiated = Negotiated;
+        negotiated.OptionGossipV2 = FeatureSupport.Optional;
+        var parameters = Parameters(TaprootType(), negotiated, announce: true);
+
+        // Act / Assert
+        _validator.PerformMandatoryChecks(parameters, out _);
     }
 
     [Fact]

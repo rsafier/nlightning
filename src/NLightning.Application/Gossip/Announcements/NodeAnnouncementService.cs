@@ -14,6 +14,7 @@ using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Payloads;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 
 /// <inheritdoc cref="INodeAnnouncementService"/>
@@ -31,16 +32,25 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
     private readonly IReadOnlyList<IAnnouncedAddressSource> _addressSources;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
+    private readonly AnnouncedChannels2? _announced2;
+    private readonly IBlockchainMonitor? _blockchainMonitor;
+
     private NodeAnnouncementPayload? _current;
     private DateTimeOffset _currentMadeAt;
+    private NodeAnnouncement2Payload? _currentV2;
+    private DateTimeOffset _currentV2MadeAt;
 
     public NodeAnnouncementService(IChannelMemoryRepository channelMemoryRepository,
                                    ILightningSigner lightningSigner, ILogger<NodeAnnouncementService> logger,
                                    OwnGossipPublisher publisher, IServiceProvider serviceProvider,
                                    IOptions<NodeOptions> nodeOptions, IOptions<GossipOptions>? gossipOptions = null,
                                    TimeProvider? timeProvider = null,
-                                   IEnumerable<IAnnouncedAddressSource>? addressSources = null)
+                                   IEnumerable<IAnnouncedAddressSource>? addressSources = null,
+                                   AnnouncedChannels2? announcedChannels2 = null,
+                                   IBlockchainMonitor? blockchainMonitor = null)
     {
+        _announced2 = announcedChannels2;
+        _blockchainMonitor = blockchainMonitor;
         _channelMemoryRepository = channelMemoryRepository;
         _lightningSigner = lightningSigner;
         _logger = logger;
@@ -65,6 +75,9 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
     /// <inheritdoc />
     public async Task<NodeAnnouncementPayload?> AnnounceAsync(CancellationToken cancellationToken = default)
     {
+        // Taproot gossip (NL-878): a node_announcement_2 once a channel of ours has a channel_announcement_2
+        await AnnounceV2Async(cancellationToken);
+
         // BOLT 7: others ignore the node_announcement of a node they know no channel_announcement of
         if (_channelMemoryRepository.FindChannels(ChannelAnnouncementService.IsAnnounced).Count == 0)
         {
@@ -118,6 +131,64 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
     /// Signs a new announcement with a timestamp after every one made before (the stored one included) and saves it
     /// as our node's row before it is handed out, so a restart never reuses a timestamp.
     /// </summary>
+    /// <summary>The node_announcement_2 last made in this process (tests).</summary>
+    public NodeAnnouncement2Payload? CurrentV2 => _currentV2;
+
+    /// <summary>
+    /// Our <c>node_announcement_2</c> (BOLTs PR #1059): the same features, alias, color and addresses as the v1 one,
+    /// a block-height timestamp (the tip, above our previous one; the draft lets a node announce it only after a
+    /// <c>channel_announcement_2</c> of its own) and a BIP 340 signature. An unchanged recent one is published again;
+    /// a second one in the same block waits for the next block.
+    /// </summary>
+    private async Task AnnounceV2Async(CancellationToken cancellationToken)
+    {
+        if (_announced2 is not { Any: true } || _blockchainMonitor is null)
+            return;
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var fields = BuildFields();
+            var descriptors = AddressDescriptorCodec.DecodeList(fields.Addresses).Addresses;
+            var alias = TrimAlias(fields.Alias);
+            var now = _timeProvider.GetUtcNow();
+            var tip = _blockchainMonitor.LastProcessedBlockHeight;
+            if (_currentV2 is { } current
+             && ((current.Features.Span.SequenceEqual(fields.Features)
+               && (current.Alias ?? ReadOnlyMemory<byte>.Empty).Span.SequenceEqual(alias)
+               && (current.Color ?? ReadOnlyMemory<byte>.Empty).Span.SequenceEqual(fields.Color)
+               && current.Addresses.SequenceEqual(descriptors)
+               && now - _currentV2MadeAt < _gossipOptions.NodeAnnouncementRefreshInterval)
+              || current.BlockHeight >= tip))
+            {
+                _publisher.PublishNodeAnnouncement2(current);
+                return;
+            }
+
+            var unsigned = NodeAnnouncement2Payload.Create(fields.Features, tip, _lightningSigner.GetNodePublicKey(),
+                                                           fields.Color, alias, descriptors);
+            var announcement =
+                unsigned.WithSignature(_lightningSigner.SignNodeMessageBip340(unsigned.GetSignatureHash()));
+            _currentV2 = announcement;
+            _currentV2MadeAt = now;
+            _publisher.PublishNodeAnnouncement2(announcement);
+            _logger.LogInformation("Announcing our node with node_announcement_2 at block height {BlockHeight}", tip);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>The v1 alias without its zero padding (v2's alias is plain UTF-8, at most 32 bytes).</summary>
+    private static byte[] TrimAlias(byte[] alias)
+    {
+        var length = alias.Length;
+        while (length > 0 && alias[length - 1] == 0)
+            length--;
+        return alias[..length];
+    }
+
     private async Task<NodeAnnouncementPayload> CreateAndSaveAsync(AnnouncementFields fields, DateTimeOffset now,
                                                                    CancellationToken cancellationToken)
     {

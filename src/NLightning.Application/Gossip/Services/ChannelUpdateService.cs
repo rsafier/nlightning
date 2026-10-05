@@ -18,10 +18,12 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.GossipV2;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Events;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 
 /// <inheritdoc cref="IChannelUpdateService"/>
@@ -122,6 +124,9 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     private readonly ConcurrentDictionary<ChannelId, byte> _disabledOnClose = new();
     private readonly ConcurrentDictionary<ChannelId, DateTimeOffset> _offlineSince = new();
     private readonly ConcurrentDictionary<ChannelId, byte> _disabledOffline = new();
+    private readonly ConcurrentDictionary<ChannelId, uint> _lastLocalBlockHeights = new();
+    private readonly AnnouncedChannels2? _announced2;
+    private readonly IBlockchainMonitor? _blockchainMonitor;
     private readonly IServiceProvider? _serviceProvider;
     private readonly TimeSpan _disableAfter;
     private readonly ITimer? _offlineCheckTimer;
@@ -138,8 +143,12 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
                                 OwnGossipPublisher? ownGossipPublisher = null,
                                 IOptions<GossipOptions>? gossipOptions = null,
                                 IServiceProvider? serviceProvider = null,
-                                IChannelPolicyProvider? channelPolicyProvider = null)
+                                IChannelPolicyProvider? channelPolicyProvider = null,
+                                AnnouncedChannels2? announcedChannels2 = null,
+                                IBlockchainMonitor? blockchainMonitor = null)
     {
+        _announced2 = announcedChannels2;
+        _blockchainMonitor = blockchainMonitor;
         _channelMemoryRepository = channelMemoryRepository;
         _channelLockProvider = channelLockProvider;
         _lightningSigner = lightningSigner;
@@ -211,7 +220,72 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
         // BOLT 7: only the update of an announced channel may be forwarded (dont_forward clear)
         if (IsPublic(channel))
             _ownGossipPublisher?.PublishChannelUpdate(message.Payload);
+
+        // Taproot gossip (NL-878): a channel announced with channel_announcement_2 gets the same policy as a
+        // channel_update_2 (the v1 update above stays private, dont_forward)
+        if (_announced2?.IsAnnounced(channel.ChannelId) == true)
+            PublishChannelUpdate2(channel, policy, disabled);
         return message;
+    }
+
+    /// <inheritdoc/>
+    public ChannelUpdate2Payload? OnChannelAnnounced2(ChannelModel channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        if (channel.State != ChannelState.Open || _announced2?.IsAnnounced(channel.ChannelId) != true)
+            return null;
+
+        if (!TryGetPolicy(channel, out var policy, out var reason))
+        {
+            _logger.LogWarning("No channel_update_2 for announced channel {ChannelId}: {Reason}", channel.ChannelId,
+                               reason);
+            return null;
+        }
+
+        _sentOnOpen.TryAdd(channel.ChannelId, 0);
+        _logger.LogInformation("Sending the channel_update_2 of announced channel {ChannelId} ({ShortChannelId})",
+                               channel.ChannelId, channel.ShortChannelId);
+        return PublishChannelUpdate2(channel, policy, _disabledOffline.ContainsKey(channel.ChannelId));
+    }
+
+    /// <summary>
+    /// Our <c>channel_update_2</c> (BOLTs PR #1059) with <paramref name="policy"/>: the real short channel id with our
+    /// direction byte, a block-height timestamp (<see cref="NextBlockHeight"/>), both disable bits when
+    /// <paramref name="disabled"/>, BIP 340 signed with the node key; published to the graph and the v2 peers.
+    /// </summary>
+    private ChannelUpdate2Payload? PublishChannelUpdate2(ChannelModel channel, UpdatePolicy policy, bool disabled)
+    {
+        if (_ownGossipPublisher is null || NextBlockHeight(channel) is not { } blockHeight)
+            return null;
+
+        var direction = IsNode2(_secureKeyManager.GetNodePubKey(), channel.RemoteNodeId) ? (byte)1 : (byte)0;
+        var disableFlags = disabled
+                               ? (byte)(ChannelUpdate2Payload.DisableIncoming | ChannelUpdate2Payload.DisableOutgoing)
+                               : (byte)0;
+        var unsigned = ChannelUpdate2Payload.Create(_nodeOptions.BitcoinNetwork.ChainHash, channel.ShortChannelId,
+                                                    direction, blockHeight, disableFlags, policy.CltvExpiryDelta,
+                                                    policy.HtlcMinimumMsat, policy.HtlcMaximumMsat,
+                                                    policy.FeeBaseMsat, policy.FeeProportionalMillionths);
+        var update = unsigned.WithSignature(_lightningSigner.SignNodeMessageBip340(unsigned.GetSignatureHash()));
+        _ownGossipPublisher.PublishChannelUpdate2(update);
+        return update;
+    }
+
+    /// <summary>
+    /// The block height of our next <c>channel_update_2</c> of the channel (BOLTs PR #1059 "Rate Limiting"): one more
+    /// than the last one we made (never two updates at one height), at least the funding block and at most the tip;
+    /// the first one in this process takes the tip. Null without a chain view.
+    /// </summary>
+    private uint? NextBlockHeight(ChannelModel channel)
+    {
+        if (_blockchainMonitor is null)
+            return null;
+
+        var tip = _blockchainMonitor.LastProcessedBlockHeight;
+        var floor = Math.Max(channel.ShortChannelId.BlockHeight,
+                             tip > GossipV2Constants.MaxBackdateBlocks ? tip - GossipV2Constants.MaxBackdateBlocks : 0);
+        return _lastLocalBlockHeights.AddOrUpdate(channel.ChannelId, Math.Max(tip, floor),
+                                                  (_, last) => Math.Min(tip, Math.Max(last + 1, floor)));
     }
 
     /// <inheritdoc/>

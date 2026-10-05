@@ -468,11 +468,11 @@ public class DualFundTaprootTests
         await using var harness = await CreateTaprootHarnessAsync(BobShareSat);
         var request = Request(harness);
 
-        // Act / Assert: never announced
+        // Act / Assert: public only with option_gossip_v2 negotiated (taproot gossip, NL-878 T7)
         var isPublic = await Assert.ThrowsAsync<InvalidOperationException>(
             () => harness.Alice.DualFund.OpenAsync(request with { IsPublic = true },
                                                    TestContext.Current.CancellationToken));
-        Assert.Contains("private", isPublic.Message);
+        Assert.Contains("option_gossip_v2", isPublic.Message);
 
         // Without option_simple_taproot on our side
         harness.Alice.Options.Features.OptionSimpleTaproot = FeatureSupport.No;

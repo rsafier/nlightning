@@ -125,6 +125,14 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
     /// </summary>
     internal const string TaprootLiquidityRefusal = "liquidity ads are not supported with simple taproot channels yet";
 
+    /// <summary>
+    /// A public simple taproot channel is not spliced yet (NL-1131): its re-announcement for the new funding
+    /// (<c>splice_locked</c> announcement nonces and a new <c>channel_announcement_2</c>, BOLTs PR #1059) is not
+    /// implemented, so a splice would leave the network with a closed channel's announcement.
+    /// </summary>
+    internal const string PublicTaprootSpliceRefusal =
+        "splicing a public simple taproot channel is not supported yet (its channel_announcement_2 would not follow)";
+
     #region ISpliceService
 
     /// <inheritdoc />
@@ -145,6 +153,8 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         if (!_channelMemoryRepository.TryGetChannel(channelId, out var unlocked))
             throw new KeyNotFoundException($"Channel {channelId} is not loaded");
         var simpleTaproot = unlocked.ChannelParams.OptionSimpleTaproot;
+        if (simpleTaproot && unlocked.AnnounceChannel)
+            throw new InvalidOperationException($"Channel {channelId}: " + PublicTaprootSpliceRefusal + " (NL-1131)");
         if (simpleTaproot && request.Liquidity is not null)
             throw new InvalidOperationException($"Channel {channelId} is a simple taproot channel: "
                                               + TaprootLiquidityRefusal + " (NL-971)");
@@ -323,6 +333,10 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         // NL-591: a node draining for its shutdown starts no splice (BOLT 2: MAY send tx_abort for any reason)
         if (IsDraining())
             return EndQuiescenceWithTxAbort(channelId, peerPubKey, NodeDrain.Refusal("splice_init"));
+
+        // NL-1131: a public taproot channel's re-announcement after a splice is not implemented
+        if (channel.ChannelParams.OptionSimpleTaproot && channel.AnnounceChannel)
+            return EndQuiescenceWithTxAbort(channelId, peerPubKey, PublicTaprootSpliceRefusal);
 
         var fundings = _statePort.GetFundings(channel);
         var conditions = GetConditions(channel, negotiatedFeatures, quiescenceState, fundings) with

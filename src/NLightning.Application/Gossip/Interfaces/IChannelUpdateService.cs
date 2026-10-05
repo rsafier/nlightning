@@ -46,6 +46,13 @@ public interface IChannelUpdateService
     ChannelUpdateMessage? OnChannelAnnounced(ChannelModel channel);
 
     /// <summary>
+    /// The channel was just announced with <c>channel_announcement_2</c> (taproot gossip, NL-878): signs our
+    /// <c>channel_update_2</c> (BIP 340, block-height timestamp) and hands it to the graph and the v2 peers. Call it
+    /// under the channel's lock. Null when the channel is not Open, not v2-announced, or has no valid policy.
+    /// </summary>
+    ChannelUpdate2Payload? OnChannelAnnounced2(ChannelModel channel) => null;
+
+    /// <summary>
     /// Builds our update for the channel and raises <see cref="OnChannelUpdateReady"/> under the channel's lock, if
     /// the channel is <c>Open</c>. Call it without holding any channel lock (e.g. after <c>channel_reestablish</c>).
     /// </summary>

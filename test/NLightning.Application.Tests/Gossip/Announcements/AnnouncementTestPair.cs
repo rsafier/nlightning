@@ -216,6 +216,12 @@ internal sealed class RecordingRelayScheduler : IGossipRelayScheduler
 
     public void EnqueueOwnNodeAnnouncement(NodeAnnouncementPayload announcement) => Add(announcement);
 
+    public void EnqueueOwnChannelAnnouncement2(ChannelAnnouncement2Payload announcement) => Add(announcement);
+
+    public void EnqueueOwnChannelUpdate2(ChannelUpdate2Payload update) => Add(update);
+
+    public void EnqueueOwnNodeAnnouncement2(NodeAnnouncement2Payload announcement) => Add(announcement);
+
     public Task FlushAsync(CancellationToken cancellationToken = default)
     {
         Flushes++;
@@ -237,6 +243,27 @@ internal sealed class RecordingOwnGossipSink : IOwnGossipSink
     public List<ChannelUpdatePayload> ChannelUpdates { get; } = [];
     public List<NodeAnnouncementPayload> NodeAnnouncements { get; } = [];
     public List<ShortChannelId> ForgottenChannels { get; } = [];
+    public List<(ChannelAnnouncement2Payload Announcement, LightningMoney Capacity)> ChannelAnnouncements2 { get; } = [];
+    public List<ChannelUpdate2Payload> ChannelUpdates2 { get; } = [];
+    public List<NodeAnnouncement2Payload> NodeAnnouncements2 { get; } = [];
+
+    public void AddOwnChannelAnnouncement2(ChannelAnnouncement2Payload announcement, LightningMoney capacity)
+    {
+        lock (ChannelAnnouncements2)
+            ChannelAnnouncements2.Add((announcement, capacity));
+    }
+
+    public void AddOwnChannelUpdate2(ChannelUpdate2Payload update)
+    {
+        lock (ChannelUpdates2)
+            ChannelUpdates2.Add(update);
+    }
+
+    public void AddOwnNodeAnnouncement2(NodeAnnouncement2Payload announcement)
+    {
+        lock (NodeAnnouncements2)
+            NodeAnnouncements2.Add(announcement);
+    }
 
     public void AddOwnChannelAnnouncement(ChannelAnnouncementPayload announcement, LightningMoney capacity)
     {

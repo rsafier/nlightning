@@ -159,8 +159,23 @@ public sealed class ReestablishService
                                                 channel.ChannelId, splice.LocalFundingKeyIndex, splice.FundingTxId,
                                                 own.NextCommitmentNumber))));
         var currentCommitNonce = GetCurrentCommitNonce(channel, localState, pendingSplice);
-        if (own.NextFunding is null && own.MyCurrentFundingLocked is null && nonces is null
-         && currentCommitNonce is null)
+
+        // Taproot gossip (BOLTs PR #1059, NL-878): a public taproot channel sends fresh announcement nonces (TLV 7) and,
+        // while its announcement is not complete in this process, my_current_funding_locked retransmit bit 1
+        var (gossipFundingLocked, announcementNonces) =
+            _serviceProvider?.GetService<IChannelAnnouncement2Service>()?.CreateReestablishTlvs(
+                channel, channel.RemoteNodeId) ?? (null, null);
+        var fundingLockedTlv = own.MyCurrentFundingLocked is { } fundingLocked
+                                   ? new MyCurrentFundingLockedTlv(
+                                       fundingLocked.TxId,
+                                       (byte)(fundingLocked.RetransmitFlags
+                                            | (gossipFundingLocked is { } gossip
+                                            && gossip.FundingTxId == fundingLocked.TxId
+                                                   ? gossip.RetransmitFlags
+                                                   : (byte)0)))
+                                   : gossipFundingLocked;
+        if (own.NextFunding is null && fundingLockedTlv is null && nonces is null && currentCommitNonce is null
+         && announcementNonces is null)
             return reestablish;
 
         return new ChannelReestablishMessage(
@@ -168,11 +183,10 @@ public sealed class ReestablishService
             own.NextFunding is { } nextFunding
                 ? new NextFundingTlv((byte[])nextFunding.TxId, nextFunding.RetransmitFlags)
                 : null,
-            own.MyCurrentFundingLocked is { } fundingLocked
-                ? new MyCurrentFundingLockedTlv(fundingLocked.TxId, fundingLocked.RetransmitFlags)
-                : null,
+            fundingLockedTlv,
             nonces is null ? null : new NextLocalNoncesTlv(nonces),
-            currentCommitNonce is { } nonce ? new CurrentCommitNonceTlv(nonce) : null);
+            currentCommitNonce is { } nonce ? new CurrentCommitNonceTlv(nonce) : null,
+            announcementNonces);
     }
 
     /// <summary>

@@ -83,6 +83,46 @@ public interface ILightningSigner
                                                           ShortChannelId shortChannelId);
 
     /// <summary>
+    /// Fresh MuSig2 nonces for the <c>channel_announcement_2</c> session of a public simple taproot channel (taproot
+    /// gossip, BOLTs PR #1059, NL-878): one for our node key, one for our funding key. The secret nonces stay in the
+    /// signer, in memory only, bound to <paramref name="unsignedAnnouncement"/>'s message, and are consumed by
+    /// <see cref="SignChannelAnnouncement2"/>; a new call (or <see cref="DiscardChannelAnnouncement2Nonces"/>) drops the
+    /// previous pair, so no nonce ever signs twice. The announcement is checked as <see cref="SignChannelAnnouncement2"/>
+    /// checks it.
+    /// </summary>
+    /// <exception cref="Exceptions.SignerException">The announcement is not one this channel may sign.</exception>
+    ChannelAnnouncement2Nonces CreateChannelAnnouncement2Nonces(ChannelId channelId,
+                                                                Protocol.Payloads.ChannelAnnouncement2Payload
+                                                                    unsignedAnnouncement) =>
+        throw new NotImplementedException("Taproot gossip T7");
+
+    /// <summary>
+    /// Our two partial signatures (node key, funding key) of <paramref name="unsignedAnnouncement"/>'s MuSig2 session
+    /// with the peer's nonces: the key aggregate <c>KeyAgg(KeySort(node_id_1, node_id_2, bitcoin_key_1,
+    /// bitcoin_key_2))</c>, the aggregate of all four nonces and the message <c>MsgHash("channel_announcement_2",
+    /// "signature", m)</c>. Consumes the nonces of <see cref="CreateChannelAnnouncement2Nonces"/> (for the same
+    /// announcement), so it signs at most once per pair. Refused for a private channel, a channel that is not simple
+    /// taproot, another chain, scid, outpoint, capacity or key set, and after data loss.
+    /// </summary>
+    /// <exception cref="Exceptions.SignerException">Refused, or no live nonce pair for this announcement.</exception>
+    ChannelAnnouncement2PartialSignatures SignChannelAnnouncement2(
+        ChannelId channelId, Protocol.Payloads.ChannelAnnouncement2Payload unsignedAnnouncement,
+        MusigPublicNonce remoteNodeNonce, MusigPublicNonce remoteBitcoinNonce) =>
+        throw new NotImplementedException("Taproot gossip T7");
+
+    /// <summary>Drops the channel's live <c>channel_announcement_2</c> nonce pair, if any (a closed connection).</summary>
+    void DiscardChannelAnnouncement2Nonces(ChannelId channelId)
+    {
+    }
+
+    /// <summary>
+    /// A BIP 340 signature of <paramref name="messageHash"/> with the node key (taproot gossip's
+    /// <c>channel_update_2</c> and <c>node_announcement_2</c>, verified against the x-only node id), fresh auxiliary
+    /// randomness.
+    /// </summary>
+    CompactSignature SignNodeMessageBip340(Hash messageHash) => throw new NotImplementedException("Taproot gossip T7");
+
+    /// <summary>
     /// Generate the per-commitment point of one of our commitment transactions.
     /// </summary>
     /// <param name="channelKeyIndex">The channel key index.</param>

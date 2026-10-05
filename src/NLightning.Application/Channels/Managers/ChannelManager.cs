@@ -450,6 +450,10 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 if (announcementDue)
                     replies = await AppendAnnouncementSignaturesAsync(scope, channelId, peerPubKey, replies);
 
+                // Taproot gossip (BOLTs PR #1059, NL-878): the announcement nonces of a channel_ready or a
+                // channel_reestablish, and our nonces/partial signatures when due
+                replies = AppendAnnouncement2Messages(message, channelId, peerPubKey, announcementDue, replies);
+
                 replies = await AdvanceCloseAsync(scope, channelId, replies);
                 RaiseResponseMessages(peerPubKey, replies);
 
@@ -587,8 +591,10 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         var tracker = GetTracker();
         tracker?.ResetPeer(peerPubKey);
 
-        // BOLT 7: announcement_signatures are sent again on every reconnection (G1-T4)
+        // BOLT 7: announcement_signatures are sent again on every reconnection (G1-T4); taproot gossip sessions are
+        // per connection too (NL-878)
         _serviceProvider.GetService<IChannelAnnouncementService>()?.OnPeerConnectionChanged(peerPubKey);
+        _serviceProvider.GetService<IChannelAnnouncement2Service>()?.OnPeerConnectionChanged(peerPubKey);
 
         var errors = new List<ErrorMessage>();
         foreach (var channel in GetPeerChannels(peerPubKey))
@@ -697,6 +703,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             GetTracker()?.ResetPeer(peerPubKey);
 
         _serviceProvider.GetService<IChannelAnnouncementService>()?.OnPeerConnectionChanged(peerPubKey);
+        _serviceProvider.GetService<IChannelAnnouncement2Service>()?.OnPeerConnectionChanged(peerPubKey);
     }
 
     /// <inheritdoc />
@@ -1741,6 +1748,13 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                           .HandleAsync(Cast<AnnouncementSignaturesMessage>(message), currentState,
                                        negotiatedFeatures, peerPubKey);
 
+            // Taproot gossip announcement_signatures_2 of a public simple taproot channel (BOLTs PR #1059, NL-878)
+            case MessageTypes.AnnouncementSignatures2:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                return await GetChannelMessageHandler<AnnouncementSignatures2Message>(scope)
+                          .HandleAsync(Cast<AnnouncementSignatures2Message>(message), currentState,
+                                       negotiatedFeatures, peerPubKey);
+
             // BOLT 2 channel quiescence (splicing plan Q1-T1, NL-019): stfu is a channel message handled under the
             // channel's lock like the updates it stops; like them it needs the channel reestablished on this
             // connection (B2-RE-07)
@@ -2045,12 +2059,15 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         if (_serviceProvider.GetService<IChannelAnnouncementService>() is not { } announcementService)
             return;
 
+        var announcements2 = _serviceProvider.GetService<IChannelAnnouncement2Service>();
         var pending = _channelMemoryRepository
                      .FindChannels(c => c.AnnounceChannel && c.State == ChannelState.Open
-                                     && !announcementService.IsAnnouncementComplete(c.ChannelId))
+                                     && !announcementService.IsAnnouncementComplete(c.ChannelId)
+                                     && announcements2?.IsAnnounced(c.ChannelId) != true)
                      .Select(c => c.ChannelId)
                      .ToList();
-        if (_channelMemoryRepository.FindChannels(c => announcementService.IsAnnouncementComplete(c.ChannelId))
+        if (_channelMemoryRepository.FindChannels(c => announcementService.IsAnnouncementComplete(c.ChannelId)
+                                                    || announcements2?.IsAnnounced(c.ChannelId) == true)
                                     .Count > 0)
             _serviceProvider.GetService<INodeAnnouncementService>()?.RequestAnnouncement();
 
@@ -2089,6 +2106,12 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             if (own is not null)
                 Publish(channel.RemoteNodeId, [own]);
 
+            // Taproot gossip (NL-878): our announcement nonces at the depth, our partial signatures when due
+            if (_serviceProvider.GetService<IChannelAnnouncement2Service>() is { } announcements2
+             && announcements2.IsV2Channel(channel)
+             && announcements2.Advance(channel, channel.RemoteNodeId) is { Count: > 0 } v2Messages)
+                Publish(channel.RemoteNodeId, v2Messages);
+
             await announcementService.CompleteAnnouncementAsync(channel, unitOfWork);
         }
         catch (Exception e)
@@ -2118,6 +2141,45 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         catch (Exception e)
         {
             _logger.LogError(e, "Could not prepare the announcement_signatures of channel {ChannelId}", channelId);
+            return replies;
+        }
+    }
+
+    /// <summary>
+    /// Taproot gossip (BOLTs PR #1059, NL-878): <paramref name="replies"/> followed by what the channel's
+    /// <c>channel_announcement_2</c> session answers to <paramref name="message"/> (the peer's announcement nonces in a
+    /// <c>channel_ready</c> or <c>channel_reestablish</c>) or, when <paramref name="due"/>, our nonces and partial
+    /// signatures. Call it under the channel's lock. A failure other than a channel warning is logged.
+    /// </summary>
+    private IReadOnlyList<IChannelMessage> AppendAnnouncement2Messages(IChannelMessage message, ChannelId channelId,
+                                                                      CompactPubKey peerPubKey, bool due,
+                                                                      IReadOnlyList<IChannelMessage> replies)
+    {
+        if (_serviceProvider.GetService<IChannelAnnouncement2Service>() is not { } announcements
+         || !_channelMemoryRepository.TryGetChannel(channelId, out var channel) || !announcements.IsV2Channel(channel))
+            return replies;
+
+        try
+        {
+            var more = message switch
+            {
+                ChannelReadyMessage ready when ready.AnnouncementNodeNonceTlv is not null
+                                            || ready.AnnouncementBitcoinNonceTlv is not null =>
+                    announcements.OnChannelReadyNonces(channel, peerPubKey, ready.AnnouncementNodeNonceTlv,
+                                                       ready.AnnouncementBitcoinNonceTlv),
+                ChannelReestablishMessage reestablish => announcements.OnReestablish(channel, peerPubKey, reestablish),
+                _ when due => announcements.Advance(channel, peerPubKey),
+                _ => []
+            };
+            return more.Count == 0 ? replies : [.. replies, .. more];
+        }
+        catch (ChannelWarningException)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not advance the channel_announcement_2 of channel {ChannelId}", channelId);
             return replies;
         }
     }

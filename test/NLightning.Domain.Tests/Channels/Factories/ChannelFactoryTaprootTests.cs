@@ -104,7 +104,7 @@ public class ChannelFactoryTaprootTests
     }
 
     [Fact]
-    public async Task Given_APublicTaprootRequest_When_CreatingChannelAsInitiator_Then_Refused()
+    public async Task Given_APublicTaprootRequestWithoutGossipV2_When_CreatingChannelAsInitiator_Then_Refused()
     {
         var request = Request();
         request.IsPublic = true;
@@ -112,7 +112,33 @@ public class ChannelFactoryTaprootTests
         var exception = await Assert.ThrowsAsync<ChannelErrorException>(
                             () => CreateFactory(Advertising).CreateChannelV1AsInitiatorAsync(request, Negotiated,
                                                                                              s_remoteNodeId));
-        Assert.Contains("private", exception.Message);
+        Assert.Contains("taproot gossip", exception.Message);
+    }
+
+    [Fact]
+    public async Task Given_APublicTaprootRequestWithGossipV2BothWays_When_CreatingChannelAsInitiator_Then_Public()
+    {
+        // Arrange (NL-878 T7: our option_gossip_v2 advertised and negotiated with the peer)
+        var request = Request();
+        request.IsPublic = true;
+        var options = Advertising;
+        options.Features.OptionGossipV2 = FeatureSupport.Optional;
+        var negotiated = Negotiated;
+        negotiated.OptionGossipV2 = FeatureSupport.Optional;
+
+        // Act
+        var channel = await CreateFactory(options).CreateChannelV1AsInitiatorAsync(request, negotiated,
+                                                                                   s_remoteNodeId);
+
+        // Assert
+        Assert.True(channel.ChannelParams.OptionSimpleTaproot);
+        Assert.True(channel.AnnounceChannel);
+
+        // ... but not when only our side advertises it
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => CreateFactory(options).CreateChannelV1AsInitiatorAsync(request, Negotiated,
+                                                                                         s_remoteNodeId));
+        Assert.Contains("taproot gossip", exception.Message);
     }
 
     [Fact]

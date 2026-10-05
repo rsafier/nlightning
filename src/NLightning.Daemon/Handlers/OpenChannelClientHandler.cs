@@ -147,7 +147,7 @@ public sealed class OpenChannelClientHandler
         // Simple taproot channels (NL-877 T5): our advertisement, the peer's support and option_simple_close; the open
         // then goes v1 or v2 by the NL-551 rules like any other (DualFundedOpenRequest.SimpleTaproot on v2)
         if (request.IsSimpleTaproot)
-            CheckSimpleTaprootPeer(peer);
+            CheckSimpleTaprootPeer(peer, request.IsPublic);
 
         // Wave DF: a dual-funded (v2) open negotiates the funding transaction interactively, our share from the wallet.
         // NL-551: it is the default when the peer supports it (Eclair refuses a v1 open once option_dual_fund is
@@ -463,20 +463,22 @@ public sealed class OpenChannelClientHandler
     }
 
     /// <summary>
-    /// <c>openchannel --channel-type taproot</c> (NL-877 T5), before anything is looked up: a simple taproot channel is
-    /// private (the spec forbids <c>announce_channel</c>, taproot gossip is T7). It may open v1 or dual-funded
+    /// <c>openchannel --channel-type taproot</c> (NL-877 T5), before anything is looked up: a public one (<c>--public</c>)
+    /// needs our taproot gossip gate (<c>option_gossip_v2</c>, NL-878 T7). It may open v1 or dual-funded
     /// (<c>--dual-fund</c>, or v2 by default by the NL-551 rules), and buy liquidity (<c>--request-inbound</c>, a v2 open
     /// over the P2TR funding script, NL-971).
     /// </summary>
-    internal static void CheckSimpleTaprootRequest(OpenChannelClientRequest request)
+    internal void CheckSimpleTaprootRequest(OpenChannelClientRequest request)
     {
-        if (!request.IsSimpleTaproot)
+        if (!request.IsSimpleTaproot || !request.IsPublic)
             return;
 
-        if (request.IsPublic)
+        // Taproot gossip (NL-878 T7): a public taproot channel is announced with channel_announcement_2 only
+        if (!_nodeOptions.Features.IsGossipV2Advertised)
             throw new ClientException(ErrorCodes.InvalidOperation,
-                                      "Simple taproot channels are private: --public can't be used with "
-                                    + "--channel-type taproot");
+                                      "A public simple taproot channel needs taproot gossip: set "
+                                    + "Features:OptionGossipV2=Optional and Features:AllowExperimentalFeatures=true "
+                                    + "(or open it without --public)");
     }
 
     /// <summary>
@@ -484,8 +486,12 @@ public sealed class OpenChannelClientHandler
     /// advertised (with <c>Features:AllowExperimentalFeatures</c>), the peer supporting it (bits 80/81) and
     /// <c>option_simple_close</c>.
     /// </summary>
-    private void CheckSimpleTaprootPeer(PeerModel peer)
+    private void CheckSimpleTaprootPeer(PeerModel peer, bool isPublic)
     {
+        if (isPublic && peer.NegotiatedFeatures.OptionGossipV2 == FeatureSupport.No)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      "A public simple taproot channel needs taproot gossip (option_gossip_v2, bits "
+                                    + "70/71), which the peer did not negotiate");
         if (!_nodeOptions.Features.IsSimpleTaprootAdvertised)
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       "Simple taproot channels are not enabled on this node: set "

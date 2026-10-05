@@ -237,7 +237,7 @@ public class OpenChannelTaprootClientHandlerTests
     [InlineData(new[] { "node", "100000", "--channel-type", "taproot", "--v1" }, "taproot", null)]
     [InlineData(new[] { "node", "100000", "--channel-type", "anchors" }, "anchors", null)]
     [InlineData(new[] { "node", "100000", "--channel-type", "taproot", "--dual-fund" }, "taproot", null)]
-    [InlineData(new[] { "node", "100000", "--channel-type", "taproot", "--public" }, "taproot", "private channel")]
+    [InlineData(new[] { "node", "100000", "--channel-type", "taproot", "--public" }, "taproot", null)]
     [InlineData(new[] { "node", "100000", "--channel-type", "taproot", "--request-inbound", "50000" }, "taproot",
                 null)]
     [InlineData(new[] { "node", "100000", "--channel-type" }, null, "expects taproot or anchors")]

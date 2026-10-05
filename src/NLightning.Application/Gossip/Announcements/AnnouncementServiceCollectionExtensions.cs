@@ -22,6 +22,8 @@ public static class AnnouncementServiceCollectionExtensions
         services.TryAddSingleton<OwnGossipPublisher>();
         services.TryAddSingleton<INodeAnnouncementService, NodeAnnouncementService>();
         services.TryAddSingleton<IChannelAnnouncementService, ChannelAnnouncementService>();
+        services.TryAddSingleton<AnnouncedChannels2>();
+        services.TryAddSingleton<IChannelAnnouncement2Service, ChannelAnnouncement2Service>();
         return services;
     }
 }

@@ -220,6 +220,8 @@ public static class DependencyInjection
         // BOLT 2 channel_reestablish (N7) and announcement_signatures (the channel's gossip flow, NL-342)
         services.AddScoped<IChannelMessageHandler<ChannelReestablishMessage>, ChannelReestablishMessageHandler>();
         services.AddScoped<IChannelMessageHandler<AnnouncementSignaturesMessage>, AnnouncementSignaturesMessageHandler>();
+        // taproot gossip announcement_signatures_2 (BOLTs PR #1059, NL-878)
+        services.AddScoped<IChannelMessageHandler<AnnouncementSignatures2Message>, AnnouncementSignatures2MessageHandler>();
         // BOLT 2 cooperative close (N10: shutdown/closing_signed) and option_simple_close (N11: closing_complete/sig)
         services.AddScoped<IChannelMessageHandler<ShutdownMessage>, ShutdownMessageHandler>();
         services.AddScoped<IChannelMessageHandler<ClosingSignedMessage>, ClosingSignedMessageHandler>();

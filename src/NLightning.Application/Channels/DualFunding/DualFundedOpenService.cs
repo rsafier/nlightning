@@ -2436,15 +2436,16 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
     /// <summary>
     /// The gates of a simple taproot dual-funded open, ours or the peer's (taproot wave t02 lane V2): the type needs
-    /// <c>option_simple_taproot</c> negotiated, and a taproot channel is never announced (bolt-simple-taproot.md: until
-    /// taproot gossip exists). A liquidity ads purchase may go with it (NL-971).
+    /// <c>option_simple_taproot</c> negotiated, and a public one <c>option_gossip_v2</c> (taproot gossip, NL-878 T7). A
+    /// liquidity ads purchase may go with it (NL-971).
     /// </summary>
     private static void CheckTaprootOpen(FeatureOptions features, bool isPublic)
     {
         if (features.OptionSimpleTaproot == FeatureSupport.No)
             throw new InvalidOperationException("option_simple_taproot is not negotiated with the peer");
-        if (isPublic)
-            throw new InvalidOperationException("A simple taproot channel must be private (no --public)");
+        if (isPublic && features.OptionGossipV2 == FeatureSupport.No)
+            throw new InvalidOperationException(
+                "A public simple taproot channel needs option_gossip_v2 negotiated with the peer (NL-878)");
     }
 
     /// <summary>The commitment format of a channel being opened (the first commitment's fee, NL-971).</summary>

@@ -237,9 +237,6 @@ internal class OpenChannelMessageHandler
                   + $"can't be used with {V1Option}.";
         else if (positional.Count > 3)
             error = $"Too many arguments. Usage: openchannel {Usage}";
-        else if (OpenChannelIpcRequest.IsSimpleTaprootChannelType(channelType) == true && isPublic)
-            error = $"{ChannelTypeOption} {OpenChannelIpcRequest.TaprootChannelType} opens a private channel; it can't "
-                  + $"be used with {PublicOption}.";
 
         return positional.ToArray();
     }

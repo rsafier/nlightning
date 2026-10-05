@@ -315,8 +315,8 @@ public class ChannelFactory : IChannelFactory
     /// <summary>
     /// Our simple taproot open (NL-877 T5): our <c>Features:OptionSimpleTaproot</c> advertised (the experimental gate:
     /// <c>Features:AllowExperimentalFeatures</c>), the peer supporting it and <c>option_simple_close</c> (the spec's
-    /// dependency; LND and Eclair refuse it otherwise), and a private channel (the spec forbids
-    /// <c>announce_channel</c>; taproot gossip is T7).
+    /// dependency; LND and Eclair refuse it otherwise), and for a public channel <c>option_gossip_v2</c> on both
+    /// nodes (taproot gossip, BOLTs PR #1059, NL-878 T7).
     /// </summary>
     private void CheckSimpleTaprootOpen(OpenChannelClientRequest request, FeatureOptions negotiatedFeatures)
     {
@@ -329,8 +329,12 @@ public class ChannelFactory : IChannelFactory
         if (negotiatedFeatures.OptionSimpleClose == FeatureSupport.No)
             throw new ChannelErrorException(
                 "A simple taproot channel needs option_simple_close, which the peer did not negotiate");
-        if (request.IsPublic)
-            throw new ChannelErrorException("Simple taproot channels are private: --public can't be used with them");
+        // Taproot gossip (NL-878 T7): a public taproot channel is announced with channel_announcement_2 only
+        if (request.IsPublic && (!_nodeOptions.Features.IsGossipV2Advertised
+                              || negotiatedFeatures.OptionGossipV2 == FeatureSupport.No))
+            throw new ChannelErrorException(
+                "A public simple taproot channel needs taproot gossip (option_gossip_v2) on both nodes: set "
+              + "Features:OptionGossipV2=Optional and Features:AllowExperimentalFeatures=true");
     }
 
     /// <summary>

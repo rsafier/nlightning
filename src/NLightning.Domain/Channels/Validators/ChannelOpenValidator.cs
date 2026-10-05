@@ -255,8 +255,8 @@ public class ChannelOpenValidator : IChannelOpenValidator
     /// <c>option_static_remotekey</c> and <c>option_anchors</c> (LND 0.21 accepts exactly {80} plus 46 and/or 50), only
     /// in a flow that can run it (<see cref="ChannelOpenMandatoryValidationParameters.AllowSimpleTaproot"/>), with
     /// <c>option_simple_taproot</c> and <c>option_simple_close</c> negotiated (our advertisement included, so the
-    /// experimental gate applies), and never for a public channel (the spec: the opener MUST NOT set
-    /// <c>announce_channel</c>; taproot gossip is T7).
+    /// experimental gate applies), and public (<c>announce_channel</c>) only with <c>option_gossip_v2</c> negotiated
+    /// (taproot gossip, BOLTs PR #1059, NL-878 T7).
     /// </summary>
     private static void CheckSimpleTaprootChannelType(ChannelOpenMandatoryValidationParameters parameters)
     {
@@ -276,8 +276,12 @@ public class ChannelOpenValidator : IChannelOpenValidator
             throw new ChannelErrorException("A simple taproot channel needs option_simple_close, which is not negotiated",
                                             "ChannelTypeTlv: option_simple_taproot needs option_simple_close");
 
-        if (parameters.ChannelFlags is { AnnounceChannel: true })
-            throw new ChannelErrorException("A simple taproot channel can't be public (announce_channel is set)",
-                                            "taproot channel type for public channel");
+        // Taproot gossip (BOLTs PR #1059 "open_channel Extensions", NL-878): announce_channel only with
+        // option_gossip_v2 negotiated (which our experimental gate controls); otherwise the receiver MUST fail it
+        if (parameters.ChannelFlags is { AnnounceChannel: true }
+         && parameters.NegotiatedFeatures.OptionGossipV2 == FeatureSupport.No)
+            throw new ChannelErrorException(
+                "A simple taproot channel can't be public without option_gossip_v2 (announce_channel is set)",
+                "taproot channel type for public channel without option_gossip_v2");
     }
 }

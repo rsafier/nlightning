@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 74 | 75 |
+| open | 0 | 0 | 1 | 75 | 76 |
 | in-progress | 0 | 0 | 3 | 1 | 4 |
 | fixed | 15 | 68 | 221 | 452 | 756 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **233** | **547** | **863** |
+| **Total** | **15** | **68** | **233** | **548** | **864** |
 
 ### Epics
 
@@ -4312,6 +4312,18 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Blocked-by NL-877 and BOLTs #1059
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T7; BOLT7_GOSSIP_PLAN "Out of scope"
 - **Update (T7 stage 1, 2026-10-05, `wip/taproot-t7`):** coded against the BOLTs #1059 draft head `4eef3dfa` (2026-05-22, still a draft; PR updated 2026-09-28) and LND's lnwire of lnd #11164 head `5082b81c`. Wire: the four pure TLV messages (260 `announcement_signatures_2`, 267 `channel_announcement_2`, 269 `node_announcement_2`, 271 `channel_update_2`) as Domain payloads over `Domain/Protocol/GossipV2/PureTlvStream` (records kept as received, signed ranges 0-239 and 1,000,000,000-2,999,999,999, `GossipV2MsgHash`) and declarative definitions in `Infrastructure.Serialization/Wire/Definitions/GossipV2Wire.cs` (TLV table = known set, unknown even rejected, `keepRawExtension`); `channel_ready`/`splice_locked` TLVs 0/2 (announcement nonces), `channel_reestablish` TLV 7 and `my_current_funding_locked` retransmit bit 1. Gate: `Feature.OptionGossipV2` 70/71 in `FeatureOptions.ExperimentalFeatures` (advertised `No` by default), 72-75 known but never advertised (a peer's 73 without 71 is tolerated like NL-973). LND's encode/decode vectors round-trip byte-exact (`Serialization.Tests/Wire/GossipV2WireTests`). LND master has the wire types only (no announcement flow), so interop is limited to these vectors (NL-1130).
+
+- **Update (T7 stage 2, 2026-10-05):** the MuSig2 announcement session between two NLightning nodes. Signer (`LocalLightningSigner.GossipV2.cs`): `CreateChannelAnnouncement2Nonces` (fresh randomness mixed with the key, the 4-key aggregate and the message; memory only, one pair per channel, bound to the announcement's message, disposed by a new pair or `DiscardChannelAnnouncement2Nonces`) and `SignChannelAnnouncement2` (checks chain, scid, outpoint, capacity, node and funding keys, no merkle root; consumes the pair; self-verifies both partial signatures), `SignNodeMessageBip340`. `Application/Gossip/Announcements/ChannelAnnouncement2Service` runs one session per connection: nonces in a re-sent `channel_ready` at the announcement depth (the original fields repeated) or in `channel_reestablish` TLV 7 with `my_current_funding_locked` bit 1 while the announcement is not complete in this process (nothing of a session is persisted; a restart re-signs a fresh session, `AnnouncedChannels2`); the peer's partial signatures verified with `PartialSigVerify`; the four aggregated and checked with `GossipV2SignatureVerifier` before `OwnGossipPublisher.PublishChannelAnnouncement2`, then our `channel_update_2` (`ChannelUpdateService.OnChannelAnnounced2`, block-height timestamps, both disable bits when disabled) and `node_announcement_2` (`NodeAnnouncementService`). `AnnouncementSignatures2MessageHandler` (registered, `ChannelManager` case). A simple taproot channel never sends v1 `announcement_signatures`. Proven by `Application.Tests/Gossip/Announcements/Announcement2HarnessTests` (two nodes, real signers: depth, lost nonces + reconnection, restart, forged partial signature) and the signer/verifier tests in Infrastructure.Bitcoin.Tests. Stage 4 (same commit): `openchannel --public --channel-type taproot` and the inbound validator accept a public taproot channel only with `option_gossip_v2` advertised by us and negotiated with the peer (v1 and dual-funded opens); splicing such a channel is refused (NL-1131).
+
+### NL-1131 Splicing a public simple taproot channel is refused: its re-announcement is not implemented
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Splicing/SpliceService.cs` (`PublicTaprootSpliceRefusal`), `src/NLightning.Application/Gossip/Announcements/ChannelAnnouncement2Service.cs`
+- **Evidence:** BOLTs #1059 re-announces a spliced channel with `splice_locked` TLVs 0/2 (announcement nonces bound to the splice txid) and a new `announcement_signatures_2`/`channel_announcement_2` for the new funding. The wire types exist (stage 1) but the flow does not, so `StartAsync` throws and a peer's `splice_init` gets `tx_abort` for a public taproot channel.
+- **Fix sketch:** at `splice_locked` of a public taproot channel send our nonces in it, start a session for the new funding (the retired scid map keeps the old name for 72 blocks), re-announce, and lift the refusal.
+- **Blocks/Blocked-by:** Related NL-878, NL-021
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T7
 
 ### NL-1130 Taproot gossip draft drift: LND's lnwire tolerates unknown even TLVs and numbers `disable_flags` differently
 - **Status:** open
