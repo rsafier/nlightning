@@ -321,6 +321,16 @@ public sealed class TlvDef
     }
 
     /// <summary>
+    /// A known raw record of any length with no Domain type or converter (the gossip-query TLVs: query_flags 1,
+    /// query_option 1, reply_channel_range timestamps 1 / checksums 3 — all odd, all kept as raw bytes): it marks
+    /// the type known (BOLT 1 unknown-even rejection) and exposes the value bytes via <c>Get&lt;byte[]&gt;</c>.
+    /// </summary>
+    public static TlvDef RawKnown(BigSize type)
+    {
+        return new TlvDef(type, (raw, _) => raw.Value);
+    }
+
+    /// <summary>
     /// An advisory TLV: a decode failure leaves the typed value null and the raw record available via
     /// <see cref="WireTlvs.RawValue"/> (init's undecodable <c>remote_addr</c> / liquidity-ads rates, NL-344).
     /// </summary>

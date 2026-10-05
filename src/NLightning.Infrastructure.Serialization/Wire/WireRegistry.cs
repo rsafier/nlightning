@@ -70,7 +70,18 @@ public sealed class WireRegistry
             SpliceInitWire.Def,
             SpliceAckWire.Def,
             StartBatchWire.Def,
-            OnionMessageWire.Def
+            OnionMessageWire.Def,
+
+            // The BOLT 7 gossip wave, in ascending message type order
+            ChannelAnnouncementWire.Def,
+            NodeAnnouncementWire.Def,
+            ChannelUpdateWire.Def,
+            AnnouncementSignaturesWire.Def,
+            QueryShortChannelIdsWire.Def,
+            ReplyShortChannelIdsEndWire.Def,
+            QueryChannelRangeWire.Def,
+            ReplyChannelRangeWire.Def,
+            GossipTimestampFilterWire.Def
         ];
 
         foreach (var def in defs)
