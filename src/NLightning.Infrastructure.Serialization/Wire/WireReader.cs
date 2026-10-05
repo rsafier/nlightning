@@ -51,6 +51,16 @@ internal ref struct WireReader(ReadOnlySpan<byte> span)
         return value;
     }
 
+    /// <summary>Reads a big-endian signed 64-bit integer (e.g. the splices' s64 funding contribution).</summary>
+    public long S64()
+    {
+        if (Remaining < 8)
+            throw Truncated(8);
+        var value = BinaryPrimitives.ReadInt64BigEndian(Span[Position..]);
+        Position += 8;
+        return value;
+    }
+
     /// <summary>
     /// Reads a BOLT 1 <c>bigsize</c>. Non-minimal encodings are rejected, like the stream-based serializer.
     /// </summary>

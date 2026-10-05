@@ -44,9 +44,6 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
         _serializers.Add(typeof(NodeAnnouncementPayload), new NodeAnnouncementPayloadSerializer());
         _serializers.Add(typeof(GossipTimestampFilterPayload),
                          new GossipTimestampFilterPayloadSerializer(_valueObjectSerializerFactory));
-        _serializers.Add(typeof(OnionMessagePayload), new OnionMessagePayloadSerializer());
-        _serializers.Add(typeof(PeerStoragePayload), new PeerStoragePayloadSerializer());
-        _serializers.Add(typeof(PeerStorageRetrievalPayload), new PeerStorageRetrievalPayloadSerializer());
         _serializers.Add(typeof(QueryChannelRangePayload),
                          new QueryChannelRangePayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(QueryShortChannelIdsPayload),
@@ -55,41 +52,10 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
                          new ReplyChannelRangePayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(ReplyShortChannelIdsEndPayload),
                          new ReplyShortChannelIdsEndPayloadSerializer(_valueObjectSerializerFactory));
-        _serializers.Add(typeof(SpliceAckPayload), new SpliceAckPayloadSerializer(_valueObjectSerializerFactory));
-        _serializers.Add(typeof(SpliceInitPayload), new SpliceInitPayloadSerializer(_valueObjectSerializerFactory));
-        _serializers.Add(typeof(SpliceLockedPayload),
-                         new SpliceLockedPayloadSerializer(_valueObjectSerializerFactory));
-        _serializers.Add(typeof(StartBatchPayload), new StartBatchPayloadSerializer(_valueObjectSerializerFactory));
-        _serializers.Add(typeof(TxAbortPayload), new TxAbortPayloadSerializer(_valueObjectSerializerFactory));
-        _serializers.Add(typeof(TxAckRbfPayload), new TxAckRbfPayloadSerializer(_valueObjectSerializerFactory));
-        _serializers.Add(typeof(TxAddOutputPayload), new TxAddOutputPayloadSerializer(_valueObjectSerializerFactory));
-        _serializers.Add(typeof(TxCompletePayload), new TxCompletePayloadSerializer(_valueObjectSerializerFactory));
-        _serializers.Add(typeof(TxInitRbfPayload), new TxInitRbfPayloadSerializer(_valueObjectSerializerFactory));
-        _serializers.Add(typeof(TxRemoveInputPayload),
-                         new TxRemoveInputPayloadSerializer(_valueObjectSerializerFactory));
-        _serializers.Add(typeof(TxRemoveOutputPayload),
-                         new TxRemoveOutputPayloadSerializer(_valueObjectSerializerFactory));
-        _serializers.Add(typeof(TxSignaturesPayload), new TxSignaturesPayloadSerializer(_valueObjectSerializerFactory));
     }
 
     private void RegisterTypeDictionary()
     {
-        _messageTypeDictionary.Add(MessageTypes.OnionMessage, typeof(OnionMessagePayload));
-        _messageTypeDictionary.Add(MessageTypes.PeerStorage, typeof(PeerStoragePayload));
-        _messageTypeDictionary.Add(MessageTypes.PeerStorageRetrieval, typeof(PeerStorageRetrievalPayload));
-        _messageTypeDictionary.Add(MessageTypes.SpliceAck, typeof(SpliceAckPayload));
-        _messageTypeDictionary.Add(MessageTypes.SpliceInit, typeof(SpliceInitPayload));
-        _messageTypeDictionary.Add(MessageTypes.SpliceLocked, typeof(SpliceLockedPayload));
-        _messageTypeDictionary.Add(MessageTypes.StartBatch, typeof(StartBatchPayload));
-        _messageTypeDictionary.Add(MessageTypes.TxAbort, typeof(TxAbortPayload));
-        _messageTypeDictionary.Add(MessageTypes.TxAckRbf, typeof(TxAckRbfPayload));
-        _messageTypeDictionary.Add(MessageTypes.TxAddOutput, typeof(TxAddOutputPayload));
-        _messageTypeDictionary.Add(MessageTypes.TxComplete, typeof(TxCompletePayload));
-        _messageTypeDictionary.Add(MessageTypes.TxInitRbf, typeof(TxInitRbfPayload));
-        _messageTypeDictionary.Add(MessageTypes.TxRemoveInput, typeof(TxRemoveInputPayload));
-        _messageTypeDictionary.Add(MessageTypes.TxRemoveOutput, typeof(TxRemoveOutputPayload));
-        _messageTypeDictionary.Add(MessageTypes.TxSignatures, typeof(TxSignaturesPayload));
-
         // BOLT 7: gossip queries, announcements and channel_update are parsed
         _messageTypeDictionary.Add(MessageTypes.QueryShortChannelIds, typeof(QueryShortChannelIdsPayload));
         _messageTypeDictionary.Add(MessageTypes.ReplyShortChannelIdsEnd, typeof(ReplyShortChannelIdsEndPayload));

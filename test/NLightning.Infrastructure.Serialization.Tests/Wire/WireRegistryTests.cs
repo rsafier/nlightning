@@ -11,7 +11,7 @@ using Helpers;
 /// </summary>
 public class WireRegistryTests
 {
-    /// <summary>The wire types the P0 vertical slice and the BOLT 2 channel wave migrated.</summary>
+    /// <summary>The wire types the P0 vertical slice, the BOLT 2 channel wave and the P2 wave migrated.</summary>
     public static TheoryData<MessageTypes> MigratedTypes => new()
     {
         MessageTypes.Init, MessageTypes.Error, MessageTypes.Warning, MessageTypes.Ping, MessageTypes.Pong,
@@ -20,7 +20,11 @@ public class WireRegistryTests
         MessageTypes.UpdateFee, MessageTypes.ChannelReestablish, MessageTypes.TxAddInput,
         MessageTypes.Stfu, MessageTypes.OpenChannel, MessageTypes.AcceptChannel, MessageTypes.FundingCreated,
         MessageTypes.FundingSigned, MessageTypes.ChannelReady, MessageTypes.Shutdown, MessageTypes.ClosingSigned,
-        MessageTypes.ClosingComplete, MessageTypes.ClosingSig, MessageTypes.OpenChannel2, MessageTypes.AcceptChannel2
+        MessageTypes.ClosingComplete, MessageTypes.ClosingSig, MessageTypes.OpenChannel2, MessageTypes.AcceptChannel2,
+        MessageTypes.PeerStorage, MessageTypes.PeerStorageRetrieval, MessageTypes.TxAddOutput,
+        MessageTypes.TxRemoveInput, MessageTypes.TxRemoveOutput, MessageTypes.TxComplete, MessageTypes.TxSignatures,
+        MessageTypes.TxInitRbf, MessageTypes.TxAckRbf, MessageTypes.TxAbort, MessageTypes.SpliceLocked,
+        MessageTypes.SpliceInit, MessageTypes.SpliceAck, MessageTypes.StartBatch, MessageTypes.OnionMessage
     };
 
     [Theory]

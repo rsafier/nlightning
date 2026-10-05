@@ -24,6 +24,8 @@ public sealed class WireRegistry
     {
         IMessageTypeSerializer[] defs =
         [
+            PeerStorageWire.Def,
+            PeerStorageRetrievalWire.Def,
             InitWire.Def,
             ErrorWire.Def,
             WarningWire.Def,
@@ -37,7 +39,17 @@ public sealed class WireRegistry
             RevokeAndAckWire.Def,
             UpdateFeeWire.Def,
             ChannelReestablishWire.Def,
+
+            // The interactive-tx wave, in ascending message type order after tx_add_input
             TxAddInputWire.Def,
+            TxAddOutputWire.Def,
+            TxRemoveInputWire.Def,
+            TxRemoveOutputWire.Def,
+            TxCompleteWire.Def,
+            TxSignaturesWire.Def,
+            TxInitRbfWire.Def,
+            TxAckRbfWire.Def,
+            TxAbortWire.Def,
 
             // The BOLT 2 channel lifecycle wave, in ascending message type order
             StfuWire.Def,
@@ -51,7 +63,14 @@ public sealed class WireRegistry
             ClosingCompleteWire.Def,
             ClosingSigWire.Def,
             OpenChannel2Wire.Def,
-            AcceptChannel2Wire.Def
+            AcceptChannel2Wire.Def,
+
+            // The splicing/batching wave, in ascending message type order, then BOLT 4 onion_message
+            SpliceLockedWire.Def,
+            SpliceInitWire.Def,
+            SpliceAckWire.Def,
+            StartBatchWire.Def,
+            OnionMessageWire.Def
         ];
 
         foreach (var def in defs)

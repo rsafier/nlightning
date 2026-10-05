@@ -54,44 +54,6 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
 
     private void RegisterSerializers()
     {
-        _serializers.Add(typeof(OnionMessageMessage),
-                         new OnionMessageMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
-        _serializers.Add(typeof(PeerStorageMessage),
-         new PeerStorageMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
-        _serializers.Add(typeof(PeerStorageRetrievalMessage),
-                         new PeerStorageRetrievalMessageTypeSerializer(_payloadSerializerFactory,
-                                                                       _tlvStreamSerializer));
-        _serializers.Add(typeof(SpliceAckMessage),
-                         new SpliceAckMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
-                                                            _tlvStreamSerializer));
-        _serializers.Add(typeof(SpliceInitMessage),
-                         new SpliceInitMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
-                                                             _tlvStreamSerializer));
-        _serializers.Add(typeof(SpliceLockedMessage),
-                         new SpliceLockedMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
-        _serializers.Add(typeof(StartBatchMessage),
-                         new StartBatchMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
-                                                             _tlvStreamSerializer));
-        _serializers.Add(typeof(TxAbortMessage), new TxAbortMessageTypeSerializer(_payloadSerializerFactory));
-        _serializers.Add(typeof(TxAckRbfMessage),
-                         new TxAckRbfMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
-                                                           _tlvStreamSerializer));
-        _serializers.Add(typeof(TxAddOutputMessage),
-                 new TxAddOutputMessageTypeSerializer(_payloadSerializerFactory));
-        _serializers.Add(typeof(TxCompleteMessage),
-                         new TxCompleteMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
-                                                             _tlvStreamSerializer));
-        _serializers.Add(typeof(TxInitRbfMessage),
-                         new TxInitRbfMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
-                                                            _tlvStreamSerializer));
-        _serializers.Add(typeof(TxRemoveInputMessage),
-                         new TxRemoveInputMessageTypeSerializer(_payloadSerializerFactory));
-        _serializers.Add(typeof(TxRemoveOutputMessage),
-                         new TxRemoveOutputMessageTypeSerializer(_payloadSerializerFactory));
-        _serializers.Add(typeof(TxSignaturesMessage),
-                         new TxSignaturesMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
-                                                               _tlvStreamSerializer));
-
         // BOLT 7 gossip queries are parsed so the node can answer them
         _serializers.Add(typeof(QueryShortChannelIdsMessage),
                          new QueryShortChannelIdsMessageTypeSerializer(_payloadSerializerFactory,
@@ -124,22 +86,6 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
 
     private void RegisterTypeDictionary()
     {
-        _messageTypeDictionary.Add(MessageTypes.OnionMessage, typeof(OnionMessageMessage));
-        _messageTypeDictionary.Add(MessageTypes.PeerStorage, typeof(PeerStorageMessage));
-        _messageTypeDictionary.Add(MessageTypes.PeerStorageRetrieval, typeof(PeerStorageRetrievalMessage));
-        _messageTypeDictionary.Add(MessageTypes.SpliceAck, typeof(SpliceAckMessage));
-        _messageTypeDictionary.Add(MessageTypes.SpliceInit, typeof(SpliceInitMessage));
-        _messageTypeDictionary.Add(MessageTypes.SpliceLocked, typeof(SpliceLockedMessage));
-        _messageTypeDictionary.Add(MessageTypes.StartBatch, typeof(StartBatchMessage));
-        _messageTypeDictionary.Add(MessageTypes.TxAbort, typeof(TxAbortMessage));
-        _messageTypeDictionary.Add(MessageTypes.TxAckRbf, typeof(TxAckRbfMessage));
-        _messageTypeDictionary.Add(MessageTypes.TxAddOutput, typeof(TxAddOutputMessage));
-        _messageTypeDictionary.Add(MessageTypes.TxComplete, typeof(TxCompleteMessage));
-        _messageTypeDictionary.Add(MessageTypes.TxInitRbf, typeof(TxInitRbfMessage));
-        _messageTypeDictionary.Add(MessageTypes.TxRemoveInput, typeof(TxRemoveInputMessage));
-        _messageTypeDictionary.Add(MessageTypes.TxRemoveOutput, typeof(TxRemoveOutputMessage));
-        _messageTypeDictionary.Add(MessageTypes.TxSignatures, typeof(TxSignaturesMessage));
-
         _messageTypeDictionary.Add(MessageTypes.ChannelAnnouncement, typeof(ChannelAnnouncementMessage));
         _messageTypeDictionary.Add(MessageTypes.NodeAnnouncement, typeof(NodeAnnouncementMessage));
         _messageTypeDictionary.Add(MessageTypes.ChannelUpdate, typeof(ChannelUpdateMessage));

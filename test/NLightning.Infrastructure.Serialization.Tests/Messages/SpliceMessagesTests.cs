@@ -10,11 +10,11 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Factories;
 using Helpers;
 using Serialization.Messages;
-using Serialization.Messages.Types;
 
 /// <summary>
 /// BOLT 2 "Channel Splicing" wire (SP1-A-T1): <c>splice_init</c> (80), <c>splice_ack</c> (81) and
@@ -38,16 +38,14 @@ public class SpliceMessagesTests
                                              SerializerHelper.TlvConverterFactory,
                                              SerializerHelper.TlvStreamSerializer));
 
-    private readonly SpliceInitMessageTypeSerializer _spliceInitSerializer =
-        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
-            SerializerHelper.TlvStreamSerializer);
+    private readonly IMessageTypeSerializer<SpliceInitMessage> _spliceInitSerializer =
+        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<SpliceInitMessage>()!;
 
-    private readonly SpliceAckMessageTypeSerializer _spliceAckSerializer =
-        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
-            SerializerHelper.TlvStreamSerializer);
+    private readonly IMessageTypeSerializer<SpliceAckMessage> _spliceAckSerializer =
+        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<SpliceAckMessage>()!;
 
-    private readonly SpliceLockedMessageTypeSerializer _spliceLockedSerializer =
-        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvStreamSerializer);
+    private readonly IMessageTypeSerializer<SpliceLockedMessage> _spliceLockedSerializer =
+        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<SpliceLockedMessage>()!;
 
     #region splice_init
 
@@ -273,9 +271,7 @@ public class SpliceMessagesTests
         // Arrange (regression: the payload serializer passed locktime and feerate to the (channel_id, feerate,
         // locktime) constructor in the wrong order; the wire order is locktime then feerate)
         var stream = new MemoryStream(Convert.FromHexString(ChannelIdHex + "000C357B" + "00000A28"));
-        var serializer = new TxInitRbfMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                                            SerializerHelper.TlvConverterFactory,
-                                                            SerializerHelper.TlvStreamSerializer);
+        var serializer = SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxInitRbfMessage>()!;
 
         // Act
         var message = await serializer.DeserializeAsync(stream);
@@ -292,9 +288,7 @@ public class SpliceMessagesTests
         // Arrange (regression: the contribution is satoshis on the wire, 10 means 10 sat)
         var stream = new MemoryStream(Convert.FromHexString(ChannelIdHex + "00000001" + "00000001"
                                                           + "0008000000000000000A"));
-        var serializer = new TxInitRbfMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                                            SerializerHelper.TlvConverterFactory,
-                                                            SerializerHelper.TlvStreamSerializer);
+        var serializer = SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxInitRbfMessage>()!;
 
         // Act
         var message = await serializer.DeserializeAsync(stream);
