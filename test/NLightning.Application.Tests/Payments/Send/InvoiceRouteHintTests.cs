@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace NLightning.Application.Tests.Payments.Send;
 
 using Application.Channels.Interfaces;
+using Application.Gossip.Announcements;
 using Application.Gossip.Graph.Interfaces;
 using Application.Gossip.Interfaces;
 using Application.Payments.Invoices;
@@ -37,6 +38,7 @@ public class InvoiceRouteHintTests : IDisposable
     private readonly Mock<IGraphStore> _graph = new();
     private readonly Dictionary<ShortChannelId, (GraphChannel Channel, DateTimeOffset ReceivedAt)> _graphChannels = [];
     private readonly List<ChannelModel> _open = [];
+    private readonly AnnouncedChannels2 _announced2 = new();
     private readonly ServiceProvider _provider;
 
     public InvoiceRouteHintTests()
@@ -408,7 +410,52 @@ public class InvoiceRouteHintTests : IDisposable
         Assert.Equal(announced.RemoteNodeId, hint.CompactPubKey);
     }
 
-    private void PutInGraph(ChannelModel channel, TimeSpan inGraphFor, bool bothPolicies = true)
+    [Fact]
+    public async Task Given_ATaprootChannelAnnouncedWithGossipV2_When_CreatingAnInvoice_Then_NoHints()
+    {
+        // Arrange: NL-1144, a public taproot channel (announced with channel_announcement_2, no
+        // announcement_signatures) in our graph with both channel_update_2s, and a private channel
+        var announced = AddChannel(new TestNodeKeyManager(0x0c).NodeId, 1, new ShortChannelId(401, 2, 1),
+                                   remoteSat: 600_000, announcedV2: true);
+        var hidden = AddChannel(new TestNodeKeyManager(0x0e).NodeId, 2, new ShortChannelId(402, 2, 1),
+                                remoteSat: 600_000);
+        SetPeerUpdate(announced, 1_000, 1, 40);
+        SetPeerUpdate(hidden, 1_000, 1, 40);
+        PutInGraph(announced, TimeSpan.FromHours(1), gossipVersion: 2);
+
+        // Act
+        var invoice = await CreateService().CreateInvoiceAsync(LightningMoney.Satoshis(50_000), "taproot", null,
+                                                               TestContext.Current.CancellationToken);
+
+        // Assert: payers find us through the v2 graph; the private channel stays unrevealed
+        Assert.Empty(Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints);
+    }
+
+    [Fact]
+    public async Task Given_APublicTaprootChannelNotAnnouncedYetInThisProcess_When_CreatingAnInvoice_Then_HintsStay()
+    {
+        // Arrange: public, in our graph, but no complete channel_announcement_2 in this process (e.g. right after a
+        // restart, before the next connection re-signs it)
+        var announced = AddChannel(new TestNodeKeyManager(0x0c).NodeId, 1, new ShortChannelId(401, 2, 1),
+                                   remoteSat: 600_000, announcedV2: true);
+        var hidden = AddChannel(new TestNodeKeyManager(0x0e).NodeId, 2, new ShortChannelId(402, 2, 1),
+                                remoteSat: 600_000);
+        SetPeerUpdate(announced, 1_000, 1, 40);
+        SetPeerUpdate(hidden, 1_000, 1, 40);
+        PutInGraph(announced, TimeSpan.FromHours(1), gossipVersion: 2);
+        _announced2.Remove(announced.ChannelId);
+
+        // Act
+        var invoice = await CreateService().CreateInvoiceAsync(LightningMoney.Satoshis(50_000), "taproot", null,
+                                                               TestContext.Current.CancellationToken);
+
+        // Assert
+        var hints = Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints;
+        Assert.Contains(hints, h => h.Any(e => e.CompactPubKey == hidden.RemoteNodeId));
+    }
+
+    private void PutInGraph(ChannelModel channel, TimeSpan inGraphFor, bool bothPolicies = true,
+                            byte gossipVersion = 1)
     {
         var us = _us.NodeId;
         var peer = channel.RemoteNodeId;
@@ -420,8 +467,11 @@ public class InvoiceRouteHintTests : IDisposable
             graphChannel = graphChannel.WithPolicy(Policy(peerDirection));
         _graphChannels[channel.ShortChannelId] = (graphChannel, DateTimeOffset.UtcNow - inGraphFor);
 
-        static GraphPolicy Policy(byte direction) =>
-            new(1_700_000_000, ChannelUpdatePayload.MessageFlagMustBeOne, direction, 40, 1, 1_000_000_000, 1_000, 1);
+        GraphPolicy Policy(byte direction) =>
+            new(1_700_000_000, ChannelUpdatePayload.MessageFlagMustBeOne, direction, 40, 1, 1_000_000_000, 1_000, 1)
+            {
+                GossipVersion = gossipVersion
+            };
     }
 
     private InvoiceService CreateService(InvoiceRouteHintMode mode = InvoiceRouteHintMode.Auto, bool withGraph = true) =>
@@ -429,18 +479,18 @@ public class InvoiceRouteHintTests : IDisposable
             Microsoft.Extensions.Options.Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }),
             NullLogger<InvoiceService>.Instance, _channels.Object, _updates.Object, _links.Object,
             Microsoft.Extensions.Options.Options.Create(new InvoiceOptions { RouteHints = mode }),
-            withGraph ? _graph.Object : null);
+            withGraph ? _graph.Object : null, announcedChannels2: _announced2);
 
     private ChannelModel AddChannel(CompactPubKey peer, byte tag, ShortChannelId shortChannelId, ulong remoteSat,
                                     FeatureSupport scidAlias = FeatureSupport.No, bool weFunded = true,
-                                    bool announced = false)
+                                    bool announced = false, bool announcedV2 = false)
     {
         var key = new CompactPubKey(new NBitcoin.Key().PubKey.ToBytes());
         var party = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(20_000),
                                      LightningMoney.MilliSatoshis(1_000), 30, LightningMoney.Satoshis(2_000_000), 144);
         var channelParams = new ChannelParams(party, party, LightningMoney.Satoshis(2_500), 3, false, scidAlias)
         {
-            AnnounceChannel = announced
+            AnnounceChannel = announced || announcedV2
         };
         var keySet = new ChannelKeySetModel(tag, key, key, key, key, key, key);
         var channel = new ChannelModel(channelParams, new ChannelId(Enumerable.Repeat(tag, 32).ToArray()), null, null,
@@ -456,6 +506,16 @@ public class InvoiceRouteHintTests : IDisposable
             // Both halves of announcement_signatures exchanged (ChannelAnnouncementService.IsAnnounced)
             channel.SetRemoteAnnouncementSignatures(new ChannelAnnouncementSignatures(new byte[64], new byte[64]));
             channel.MarkAnnouncementSignaturesSent(DateTimeOffset.UnixEpoch);
+        }
+
+        if (announcedV2)
+        {
+            // A complete channel_announcement_2 in this process (taproot gossip, NL-878)
+            var us = _us.NodeId;
+            var (node1, node2) = GraphChannel.CompareNodeIds(us, peer) < 0 ? (us, peer) : (peer, us);
+            _announced2.Set(channel.ChannelId,
+                            ChannelAnnouncement2Payload.Create(ChainConstants.Regtest, [], shortChannelId, 2_000_000,
+                                                               node1, node2, key, key, [], new byte[32], 1));
         }
 
         _open.Add(channel);

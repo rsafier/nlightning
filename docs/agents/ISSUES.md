@@ -179,10 +179,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 78 | 79 |
 | in-progress | 0 | 0 | 3 | 1 | 4 |
-| fixed | 15 | 68 | 220 | 454 | 757 |
+| fixed | 15 | 68 | 220 | 455 | 758 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **233** | **553** | **869** |
+| **Total** | **15** | **68** | **233** | **554** | **870** |
 
 ### Epics
 
@@ -4375,6 +4375,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** NL-878 T7 lane G: `MessageService` ignores a malformed 256/257/258 with one warning per connection (NL-401: they are relayed on behalf of other nodes, so the relaying peer is not at fault), but 267/269/271 take the generic malformed-message path (warning and close). The draft only says SHOULD warn, MAY close; once others' v2 gossip is relayed (LND #11164 tolerates unknown even records, NL-1130), an honest peer relaying a message we cannot parse loses its connection to us.
 - **Fix sketch:** Treat 267/269/271 as gossip broadcasts in `IsGossipBroadcast`.
 - **Blocks/Blocked-by:** Related NL-401, NL-1130
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T7
+
+### NL-1144 A channel announced with taproot gossip does not count as public: our invoices keep their route hints
+- **Status:** fixed (wip/t7-regtest: `ChannelAnnouncementService.IsAnnounced(channel, AnnouncedChannels2?)` counts a complete `channel_announcement_2` of this process; `InvoiceService`, `BlindedPathBuilder` and `OfferService` use it)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Gossip/Announcements/ChannelAnnouncementService.cs` (`IsAnnounced`), `src/NLightning.Application/Payments/Invoices/InvoiceService.cs` (`HasReachablePublicChannelAsync`), `src/NLightning.Application/Payments/Invoices/BlindedPathBuilder.cs`, `src/NLightning.Application/Offers/Receive/OfferService.cs` (`HasAnnouncedChannel`)
+- **Evidence:** Found by the NL-878 regtest e2e (`Docker/Taproot/TaprootPublicChannelFlowTests`): `ChannelAnnouncementService.IsAnnounced` reads the persisted BOLT 7 state (both halves of `announcement_signatures`), which a public taproot channel never has (its announcement is the memory-only MuSig2 session, D-T6). So a node whose public channel is a taproot one never left the route hints out of its invoices (`Node:Invoices:RouteHints=Auto`), even with the channel and both `channel_update_2`s in its graph past the grace period: `createinvoice` stayed hinted for 2 minutes and the test timed out. Blinded paths skipped the channel unless private channels were included, and offers treated the node as unannounced.
+- **Fix sketch:** A second `IsAnnounced` overload that also counts `AnnouncedChannels2` (same public, confirmed, not-closing rule), injected where invoices and offers decide; unit tests in `InvoiceRouteHintTests` (announced with v2 = no hints; not announced in this process = hints stay). Right after a restart the channel counts again once the next connection re-signs it (D-T6).
+- **Blocks/Blocked-by:** Related NL-878
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T7
 
 ## BOLT 8: Transport

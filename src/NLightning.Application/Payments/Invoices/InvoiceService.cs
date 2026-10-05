@@ -107,6 +107,7 @@ public sealed class InvoiceService : IInvoiceService
     private readonly InvoiceRouteHintMode _routeHintMode;
     private readonly TimeSpan _publicChannelGracePeriod;
     private readonly IGraphStore? _graphStore;
+    private readonly AnnouncedChannels2? _announcedChannels2;
     private readonly TimeProvider _timeProvider;
     private readonly bool _blindedPaths;
 
@@ -125,14 +126,17 @@ public sealed class InvoiceService : IInvoiceService
     /// both policies for <see cref="InvoiceOptions.PublicChannelGracePeriod"/>; without it every invoice keeps its hints.
     /// </param>
     /// <param name="timeProvider">The clock of that grace period (the system clock by default).</param>
+    /// <param name="announcedChannels2">Our channels announced with taproot gossip (NL-878): without it only channels
+    /// announced with BOLT 7 count as public.</param>
     public InvoiceService(IServiceScopeFactory serviceScopeFactory, ISecureKeyManager secureKeyManager,
                           IOptions<NodeOptions> nodeOptions, ILogger<InvoiceService> logger,
                           IChannelMemoryRepository? channelMemoryRepository = null,
                           IChannelUpdateService? channelUpdateService = null,
                           IPeerLivenessProbe? peerLivenessProbe = null,
                           IOptions<InvoiceOptions>? invoiceOptions = null, IGraphStore? graphStore = null,
-                          TimeProvider? timeProvider = null)
+                          TimeProvider? timeProvider = null, AnnouncedChannels2? announcedChannels2 = null)
     {
+        _announcedChannels2 = announcedChannels2;
         _blindedPaths = invoiceOptions?.Value.BlindedPaths ?? false;
         _routeHintMode = invoiceOptions?.Value.RouteHints ?? InvoiceRouteHintMode.Auto;
         _publicChannelGracePeriod = invoiceOptions?.Value.PublicChannelGracePeriod
@@ -351,7 +355,8 @@ public sealed class InvoiceService : IInvoiceService
         var needed = amount?.MilliSatoshi ?? 1;
         foreach (var channel in _channelMemoryRepository!.FindChannels(c => c.State == ChannelState.Open))
         {
-            if (!ChannelAnnouncementService.IsAnnounced(channel) || GetPeerSpendable(channel) < needed
+            if (!ChannelAnnouncementService.IsAnnounced(channel, _announcedChannels2)
+             || GetPeerSpendable(channel) < needed
              || !IsInOurGraph(channel))
                 continue;
 

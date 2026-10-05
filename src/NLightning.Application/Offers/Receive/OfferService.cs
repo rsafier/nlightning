@@ -248,7 +248,8 @@ public sealed class OfferService : IOfferService
 
     private bool HasAnnouncedChannel() =>
         _channelMemoryRepository.FindChannels(c => c.State == ChannelState.Open)
-                                .Any(ChannelAnnouncementService.IsAnnounced);
+                                .Any(c => ChannelAnnouncementService.IsAnnounced(
+                                         c, _serviceProvider.GetService<AnnouncedChannels2>()));
 
     /// <summary>
     /// Message paths to us, introduced by connected onion-message peers (<see cref="SelectIntroductionNodes"/>),

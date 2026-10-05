@@ -88,14 +88,17 @@ public sealed class BlindedPathBuilder
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly IChannelUpdateService _channelUpdateService;
     private readonly IPeerLivenessProbe? _peerLivenessProbe;
+    private readonly AnnouncedChannels2? _announcedChannels2;
     private readonly ILogger<BlindedPathBuilder> _logger;
 
     public BlindedPathBuilder(IRouteBlindingService routeBlindingService, ISecureKeyManager secureKeyManager,
                               IChannelMemoryRepository channelMemoryRepository,
                               IChannelUpdateService channelUpdateService, ILogger<BlindedPathBuilder> logger,
                               IPeerLivenessProbe? peerLivenessProbe = null,
-                              IOptions<InvoiceOptions>? invoiceOptions = null)
+                              IOptions<InvoiceOptions>? invoiceOptions = null,
+                              AnnouncedChannels2? announcedChannels2 = null)
     {
+        _announcedChannels2 = announcedChannels2;
         _routeBlindingService = routeBlindingService;
         _secureKeyManager = secureKeyManager;
         _channelMemoryRepository = channelMemoryRepository;
@@ -138,7 +141,7 @@ public sealed class BlindedPathBuilder
         var candidates = new List<(ulong Spendable, BlindedPaymentPath Path)>();
         foreach (var channel in _channelMemoryRepository.FindChannels(c => c.State == ChannelState.Open))
         {
-            var announced = ChannelAnnouncementService.IsAnnounced(channel);
+            var announced = ChannelAnnouncementService.IsAnnounced(channel, _announcedChannels2);
             if (!announced && !request.IncludePrivateChannels)
                 continue;
 

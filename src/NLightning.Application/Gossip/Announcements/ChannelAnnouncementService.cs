@@ -103,6 +103,21 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
             && channel.State is ChannelState.Open or ChannelState.ShuttingDown or ChannelState.Negotiating;
     }
 
+    /// <summary>
+    /// Whether the channel is announced with either gossip protocol: BOLT 7 (<see cref="IsAnnounced(ChannelModel)"/>)
+    /// or taproot gossip, a complete <c>channel_announcement_2</c> in this process (<paramref name="announced2"/>,
+    /// NL-878), under the same public, confirmed and not-closing rule. A taproot channel never exchanges
+    /// <c>announcement_signatures</c>, so the persisted test alone never counts it (NL-1144).
+    /// </summary>
+    public static bool IsAnnounced(ChannelModel channel, AnnouncedChannels2? announced2)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        return IsAnnounced(channel)
+            || (announced2?.IsAnnounced(channel.ChannelId) == true && channel.AnnounceChannel
+             && HasShortChannelId(channel)
+             && channel.State is ChannelState.Open or ChannelState.ShuttingDown or ChannelState.Negotiating);
+    }
+
     /// <inheritdoc />
     public bool CanSendAnnouncementSignatures(ChannelModel channel)
     {
