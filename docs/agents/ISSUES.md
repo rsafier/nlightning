@@ -9253,3 +9253,22 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** Related NL-878, NL-1130
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T7
 
+### NL-1145 [EPIC] payroute: full IPC control over the payment path (single routes and MPP shard sets)
+- **Status:** in-progress (`wip/payroute`)
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** plan `docs/agents/PAYROUTE_PLAN.md`
+- **Evidence:** No way existed to pay along an explicit route (the closest were the planner pins `payinvoice --out/--in`); the building blocks existed (`PaymentRoute`, `PaymentOnionFactory`, `OfferHtlcAsync` — proven by the test harnesses) but nothing exposed them. The approved design (2026-10-05): client-driven only (the daemon offers exactly the supplied routes, never re-plans; a failure ends its route and the client decides next), two identity forms (a BOLT 11 invoice, or a raw payment hash + optional secret + explicit total — the LND SendToRoute form), one call = one attempt (N routes = an MPP shard set), everything downstream of planning reused.
+- **Fix sketch:** Phase A single route + Phase B shard sets are NL-1146; Phase C (attach replacement shards to an in-flight manual payment) deferred, plan §6.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `docs/agents/PAYROUTE_PLAN.md`
+
+### NL-1146 payroute implementation: PayRouteAsync, the manual round, IPC command 48, the CLI verb
+- **Status:** fixed (1199cad8, 5772c2af)
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.PayRoute.cs` (+ `PaymentSession.SuppliedRoutes`/`RunManualRoundAsync`/the manual no-retry branch in `PaymentService.cs`), `Domain/Payments/Models/PayRoute*.cs`, `Domain/Client/{Requests,Responses}/PayRoute*`, `Transport.Ipc/{Requests,Responses}/PayRoute*` (`ClientCommand.PayRoute = 48`), `Daemon/Handlers/PayRouteClientHandler.cs` + `Ipc/Handlers/PayRouteIpcHandler.cs` (refused while draining), `Client` (verb `payroute`/`pay-route`, JSON routes over a file or stdin via a source-generated System.Text.Json context, labels), tests: `Application.Tests/Payments/Send/PayRouteTests.cs` (8), `Daemon.Tests/Ipc/{Handlers/PayRouteIpcHandlerTests,Formatters/PayRouteMessagePackTests}` + `Client/PayRouteCommandTests`, `Integration.Tests/Docker/PayRouteFlowTests.cs` (cluster, lnd suite)
+- **Evidence:** Validation before any offer (shape; exactly-one identity; first-hop channel open with commitments, peer match, link alive; CLTV window with two tail rules the tests found — the payee's expiry may equal the last forwarding hop's, and a one-hop route's only hop IS the payee whose cltv equals the first HTLC's; fee limit; graph-known forwarding policies incl. htlc min/max; per-channel liquidity across routes sharing it; basic_mpp for shard sets; sum >= total with over-delivery logged). The manual round offers exactly the given routes (`MaxParts = MaxAttempts = count`; a refused offer ends that route; `HandleSessionFailureAsync` forces no-retry while mission control still learns through the same Decide call); a succeeded shard set settles atomically for the response and its leftover part rows (`SettleLeftoverPartRowsAsync`). MPP edge catalog in plan §4, each pinned by a test (same-channel shards, one-fails-one-held -> the payee's mpp_timeout with per-route attribution, replace-over-failed-row). Gates: build 0/0, format clean, full non-Docker suite green (Application 4283, Daemon 1606, Integration 1192); cluster `PayRouteFlowTests` against LND (a getroute quote paid verbatim; a hand-built two-shard set over two channels each too small alone), the first run having found the two direct-route edge bugs above.
+- **Fix sketch:** Phase C remains, plan §6.
+- **Blocks/Blocked-by:** Part of NL-1145
+- **Plan ref:** `docs/agents/PAYROUTE_PLAN.md`
