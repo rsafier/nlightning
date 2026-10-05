@@ -6,20 +6,18 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class InitMessageTests
 {
-    private readonly InitMessageTypeSerializer _initMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<InitMessage> _initMessageTypeSerializer;
 
     public InitMessageTests()
     {
         _initMessageTypeSerializer =
-            new InitMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                          SerializerHelper.TlvConverterFactory,
-                                          SerializerHelper.TlvStreamSerializer);
+            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<InitMessage>()!;
     }
 
     [Fact]

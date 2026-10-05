@@ -6,9 +6,9 @@ using Domain.Money;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class AcceptChannel2MessageTypeSerializerTests
 {
@@ -18,19 +18,12 @@ public class AcceptChannel2MessageTypeSerializerTests
     private const ushort ExpectedMinimumDepth = 3;
     private readonly LightningMoney _expectedMaxHtlcValueInFlightAmount = LightningMoney.Satoshis(1_000);
     private const ushort ExpectedMaxAcceptedHtlcs = 2;
-    private readonly AcceptChannel2MessageTypeSerializer _acceptChannel2TypeSerializer;
+    private readonly IMessageTypeSerializer<AcceptChannel2Message> _acceptChannel2TypeSerializer =
+        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<AcceptChannel2Message>()!;
 
     // BOLT 2 accept_channel2 carries second_per_commitment_point after first_per_commitment_point (NL-037 / DF1)
     private static readonly CompactPubKey s_secondPerCommitmentCompactPoint =
         Convert.FromHexString("02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27");
-
-    public AcceptChannel2MessageTypeSerializerTests()
-    {
-        _acceptChannel2TypeSerializer =
-            new AcceptChannel2MessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                                    SerializerHelper.TlvConverterFactory,
-                                                    SerializerHelper.TlvStreamSerializer);
-    }
 
     #region Deserialize
 

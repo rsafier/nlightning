@@ -7,20 +7,15 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Factories;
 using Helpers;
 using Serialization.Messages;
-using Serialization.Messages.Types;
 
 public class StfuMessageTests
 {
-    private readonly StfuMessageTypeSerializer _stfuMessageTypeSerializer;
-
-    public StfuMessageTests()
-    {
-        _stfuMessageTypeSerializer =
-            new StfuMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
-    }
+    private readonly IMessageTypeSerializer<StfuMessage> _stfuMessageTypeSerializer =
+        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<StfuMessage>()!;
 
     [Fact]
     public async Task Given_ValidStream_When_DeserializeAsync_Then_ReturnsStfuMessage()

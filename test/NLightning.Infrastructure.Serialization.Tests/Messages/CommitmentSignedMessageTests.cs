@@ -6,20 +6,18 @@ using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class CommitmentSignedMessageTests
 {
-    private readonly CommitmentSignedMessageTypeSerializer _commitmentSignedMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<CommitmentSignedMessage> _commitmentSignedMessageTypeSerializer;
 
     public CommitmentSignedMessageTests()
     {
         _commitmentSignedMessageTypeSerializer =
-            new CommitmentSignedMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                                  SerializerHelper.TlvConverterFactory,
-                                                  SerializerHelper.TlvStreamSerializer);
+            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<CommitmentSignedMessage>()!;
     }
 
     [Fact]

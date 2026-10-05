@@ -6,9 +6,9 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class TxSignaturesMessageTests
 {
@@ -18,14 +18,12 @@ public class TxSignaturesMessageTests
     private const string SignatureHex =
         "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320";
 
-    private readonly TxSignaturesMessageTypeSerializer _txSignaturesMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<TxSignaturesMessage> _txSignaturesMessageTypeSerializer;
 
     public TxSignaturesMessageTests()
     {
         _txSignaturesMessageTypeSerializer =
-            new TxSignaturesMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                                  SerializerHelper.TlvConverterFactory,
-                                                  SerializerHelper.TlvStreamSerializer);
+            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxSignaturesMessage>()!;
     }
 
     [Fact]

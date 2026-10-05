@@ -3,17 +3,17 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 using Domain.Channels.ValueObjects;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class TxRemoveOutputMessageTests
 {
-    private readonly TxRemoveOutputMessageTypeSerializer _txRemoveOutputMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<TxRemoveOutputMessage> _txRemoveOutputMessageTypeSerializer;
 
     public TxRemoveOutputMessageTests()
     {
         _txRemoveOutputMessageTypeSerializer =
-            new TxRemoveOutputMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
+            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxRemoveOutputMessage>()!;
     }
 
     [Fact]

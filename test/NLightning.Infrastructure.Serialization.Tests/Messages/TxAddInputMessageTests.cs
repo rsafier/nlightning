@@ -4,9 +4,9 @@ using Domain.Channels.ValueObjects;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class TxAddInputMessageTests
 {
@@ -20,14 +20,12 @@ public class TxAddInputMessageTests
 
     private const string FundingTxIdHex = "0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20";
 
-    private readonly TxAddInputMessageTypeSerializer _txAddInputMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<TxAddInputMessage> _txAddInputMessageTypeSerializer;
 
     public TxAddInputMessageTests()
     {
         _txAddInputMessageTypeSerializer =
-            new TxAddInputMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                                SerializerHelper.TlvConverterFactory,
-                                                SerializerHelper.TlvStreamSerializer);
+            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxAddInputMessage>()!;
     }
 
     [Fact]

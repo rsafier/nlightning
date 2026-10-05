@@ -6,21 +6,14 @@ using Domain.Money;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class ClosingSignedMessageTests
 {
-    private readonly ClosingSignedMessageTypeSerializer _closingSignedMessageTypeSerializer;
-
-    public ClosingSignedMessageTests()
-    {
-        _closingSignedMessageTypeSerializer =
-            new ClosingSignedMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory,
-                                                   SerializerHelper.TlvConverterFactory,
-                                                   SerializerHelper.TlvStreamSerializer);
-    }
+    private readonly IMessageTypeSerializer<ClosingSignedMessage> _closingSignedMessageTypeSerializer =
+        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ClosingSignedMessage>()!;
 
     private const string Signature =
         "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320";

@@ -7,11 +7,11 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Factories;
 using Helpers;
 using Serialization.Messages;
-using Serialization.Messages.Types;
 
 /// <summary>
 /// BOLT 2 "Batching channel messages" wire (SP1-A-T1): <c>start_batch</c> (127) = <c>channel_id</c> ‖
@@ -30,9 +30,8 @@ public class StartBatchMessageTests
                                              SerializerHelper.TlvConverterFactory,
                                              SerializerHelper.TlvStreamSerializer));
 
-    private readonly StartBatchMessageTypeSerializer _serializer =
-        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
-            SerializerHelper.TlvStreamSerializer);
+    private readonly IMessageTypeSerializer<StartBatchMessage> _serializer =
+        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<StartBatchMessage>()!;
 
     [Fact]
     public async Task Given_StartBatchOfCommitmentSigned_When_RoundTripped_Then_ItIsByteExact()

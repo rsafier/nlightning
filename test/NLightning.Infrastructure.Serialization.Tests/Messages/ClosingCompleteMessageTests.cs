@@ -9,11 +9,11 @@ using Domain.Money;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Factories;
 using Helpers;
 using Serialization.Messages;
-using Serialization.Messages.Types;
 
 /// <summary>
 /// <c>closing_complete</c> (40) and <c>closing_sig</c> (41) on the wire (BOLT 2 <c>option_simple_close</c>, B2-SC-W01):
@@ -40,8 +40,8 @@ public class ClosingCompleteMessageTests
     /// <summary>closer_output_only (1) and closer_and_closee_outputs (3).</summary>
     private const string ClosingCompleteHex = FixedHex + "0140" + Sig1Hex + "0340" + Sig3Hex;
 
-    private readonly ClosingCompleteMessageTypeSerializer _serializer =
-        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvStreamSerializer);
+    private readonly IMessageTypeSerializer<ClosingCompleteMessage> _serializer =
+        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ClosingCompleteMessage>()!;
 
     private readonly MessageSerializer _messageSerializer =
         new(NullLogger<MessageSerializer>.Instance,

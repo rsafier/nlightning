@@ -6,11 +6,11 @@ using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Exceptions;
 using Factories;
 using Helpers;
 using Serialization.Messages;
-using Serialization.Messages.Types;
 
 /// <summary><c>closing_sig</c> (41) on the wire (BOLT 2 <c>option_simple_close</c>, B2-SC-W01).</summary>
 public class ClosingSigMessageTests
@@ -19,9 +19,8 @@ public class ClosingSigMessageTests
     private const string ClosingSigHex = ClosingCompleteMessageTests.FixedHex + "0240"
                                                                               + ClosingCompleteMessageTests.Sig1Hex;
 
-    private readonly ClosingSigMessageTypeSerializer _serializer =
-        new(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
-            SerializerHelper.TlvStreamSerializer);
+    private readonly IMessageTypeSerializer<ClosingSigMessage> _serializer =
+        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ClosingSigMessage>()!;
 
     private readonly MessageSerializer _messageSerializer =
         new(NullLogger<MessageSerializer>.Instance,

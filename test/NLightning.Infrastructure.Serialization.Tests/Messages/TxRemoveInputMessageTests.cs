@@ -4,17 +4,17 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Serialization.Interfaces;
 using Helpers;
-using Serialization.Messages.Types;
 
 public class TxRemoveInputMessageTests
 {
-    private readonly TxRemoveInputMessageTypeSerializer _txRemoveInputMessageTypeSerializer;
+    private readonly IMessageTypeSerializer<TxRemoveInputMessage> _txRemoveInputMessageTypeSerializer;
 
     public TxRemoveInputMessageTests()
     {
         _txRemoveInputMessageTypeSerializer =
-            new TxRemoveInputMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
+            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxRemoveInputMessage>()!;
     }
 
     [Fact]

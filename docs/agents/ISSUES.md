@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 0 | 75 | 75 |
+| open | 0 | 0 | 1 | 75 | 76 |
 | in-progress | 0 | 0 | 3 | 0 | 3 |
-| fixed | 15 | 68 | 218 | 451 | 752 |
+| fixed | 15 | 68 | 221 | 451 | 755 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **230** | **546** | **859** |
+| **Total** | **15** | **68** | **233** | **546** | **862** |
 
 ### Epics
 
@@ -6982,6 +6982,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Move `PayUntilSentAsync` to the shared Docker utils and use it wherever LND pays right after an open.
 - **Blocks/Blocked-by:** Related NL-180
 - **Plan ref:** —
+- **Evidence (2026-10-04, codec-redesign matrix):** the same LND router lag also surfaces as `Grpc.Core.RpcException: edge not found` from LND's `BuildRoute`/`SendToRoute` in the cluster `lnd` suite when a test pins a payment to a fresh private channel: 3 such failures in the loaded 4-suite matrix (cln/eclair/ldk green), 1 in the suite-alone rerun with 57/58 green; the class is LND-side, before any of our message bytes are read.
 
 ### NL-331 Docker tests must not assume LND default fees on shared channels
 - **Status:** wontfix (the shared LNUnit fixture is gone with NL-820, 42e96743; the cluster LND network pins each funder's policy at setup, 7a16ab70)
@@ -9121,3 +9122,35 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Blocks/Blocked-by:** Related NL-966, NL-957
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T6
 
+
+## Wire codec
+
+### NL-1100 [EPIC] Wire codec redesign: one declarative definition per message, both directions
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure.Serialization/Wire/`, plan `docs/agents/CODEC_REDESIGN_PLAN.md`
+- **Evidence:** The wire codec layer costs ~12.9k code lines in 341 files where Eclair's scodec-based layer needs ~2.0k in 12 (6.4x); one message costs 4 classes + 4 factory registrations + a Create* pair, and a missing registration silently turns a message "unknown" (dropped if odd, peer killed if even). The plan compares hand-written combinators, spec-CSV codegen (CLN-style), a Roslyn source generator and the hybrid; the decision (plan §3) is the hybrid: a span-based `WireReader`/`WireWriter` runtime with a strict TLV reader and per-message declarative `MessageWire<T>` definitions. Scope of the epic: wire messages and their TLV streams; later phases P1 (rest of BOLT 2), P2 (interactive-tx, splice, liquidity-ads TLV 1339), P3 (gossip incl. ExtraData-verbatim), P4 (onion 513; hop payloads need an error-detailing reader); BOLT 12 stays on its pure Domain codecs.
+- **Fix sketch:** per-phase checklists in plan §5; each phase keeps every round-trip/vector test green unchanged and adds registry + property coverage.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `docs/agents/CODEC_REDESIGN_PLAN.md`
+
+### NL-1101 The Wire codec runtime (reader/writer, strict TLV stream, MessageWire, WireRegistry) and the P0 vertical slice
+- **Status:** fixed (81e90dd4)
+- **Severity:** medium
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Serialization/Wire/` (+ `Wire/Definitions/`), `Factories/MessageTypeSerializerFactory.cs`
+- **Evidence:** P0 of NL-1100 migrated 14 messages — BOLT 1 (init, error, warning, ping, pong), the BOLT 2 HTLC/commitment set (update_add/fulfill/fail/fail_malformed_htlc, commitment_signed, revoke_and_ack, update_fee), channel_reestablish (TLVs 1/5/22/24) and tx_add_input (TLVs 0/2/1111, the type-2-wins-over-1111 rule kept) — from hand-written payload+message serializers to one declarative definition per message; deleted 27 serializer files (1,610 code lines), added the runtime (718) and definitions (384). The merged `MessageTypeSerializerFactory` prefers the registry and falls back to legacy, so callers, handlers and the `IMessageSerializer` API are unchanged; `init`'s lenient advisory TLVs keep the NL-344/NL-850 undecodable-raw-value behavior; error wrapping matches the hand-written pair (payload errors escape as `PayloadSerializationException`, extension errors as `MessageSerializationException`). All 711 pre-existing Serialization tests (exact-hex round trips, BOLT 1 BigSize vectors, the strictness matrix) pass unchanged against the new path, plus 33 new tests (`Wire/WirePropertyTests` randomized round trips + strict-rejection, `Wire/WireRegistryTests` completeness). AOT analyzer build 0 warnings; hot-path micro-benchmark faster than the old codecs (update_add_htlc decode 1.5 -> 1.0 us, commitment_signed decode 2.7 -> 1.6 us; plan §6).
+- **Fix sketch:** remaining phases in plan §5.
+- **Blocks/Blocked-by:** Part of NL-1100
+- **Plan ref:** `docs/agents/CODEC_REDESIGN_PLAN.md` P0
+
+### NL-1102 The wire codec P1+P2+P3 waves: every message the node speaks is on the declarative codec
+- **Status:** fixed (105b1f7a)
+- **Severity:** medium
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Serialization/Wire/Definitions/`
+- **Evidence:** P1 (12 messages) and P2 (15 messages) of NL-1100 migrated onto the Wire codec: open_channel/accept_channel (v1+v2 with their upfront_shutdown_script/channel_type/next_local_nonce/require_confirmed_inputs/liquidity-ads TLVs), funding_created/funding_signed, channel_ready, shutdown, the closing pair (closing_signed/closing_complete/closing_sig — the closing_tlvs 1-7 signatures as exact-length `TlvDef.Raw` entries, `wrapBodyErrors` reproducing the legacy wide catch a test pins), stfu, tx_add_output/remove_input/remove_output/complete/signatures/init_rbf/ack_rbf/abort (the locktime-before-feerate order and the tx_abort 256-byte read clamp reproduced; splice_init/ack s64 contributions), splice_locked/start_batch, peer_storage/retrieval (65531-byte cap), onion_message (66-byte packet minimum; strict-empty trailing validation). 54 legacy serializer files (~4,600 lines) deleted; ~1,030 lines of definitions added (~24/message). Runtime additions: `S64`, `TlvDef.Raw`, the strict-empty/keep-raw-extension/wrap-body-error definition options, and encode-side `ConvertToBase` for typed TLVs (fee_range only computes wire bytes in its converter — a latent P0 gap the P1 fixtures surfaced). Accepted behavior normalizations (wire behavior unchanged, recorded per the plan's rules): converter `InvalidCastException`s that legacy open_channel2/accept_channel2/stfu/tx_init_rbf/tx_ack_rbf/splice/onion/peer-storage catches let escape are now `MessageSerializationException`; channel_ready's malformed scid TLV is a serialization failure instead of an uncaught `ArgumentException`. All pre-existing byte-exact fixtures, the strictness matrix and captured-vector tests pass unchanged (Serialization suite 770); full non-Docker suite green. Cluster matrix mx-20261005011750 + rc-20261005014221/rc-20261005014619: lnd 58/58, cln 95 (91+4 not run), eclair 33 (31+2), ldk 27/27, eclair2 12/12, taproot 6/6 — the first matrix's taproot 0/6 was environmental (the local `custom_lnd:0.21.4-beta` tag had been a stale LND 0.19.1 build, which cannot advertise bits 80/81; rebuilding the pinned image turned the suite green, 6/6, and the lnd suite 58/58 without a flake).
+P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement/channel_update frame the Domain codecs (ExtraData verbatim, the plan's predicted raw-trailing-bytes requirement absorbed by `Payload.ExtraData`), announcement_signatures uses the strict-empty + keep-raw extension options (the payload ctor takes extraData), and the five gossip queries carry `TlvDef.RawKnown` records (known variable-length raw TLVs). 19 further legacy files deleted; the hand-written `Payloads/` directory is gone entirely — `MessageTypeSerializerFactory`'s fallback dictionaries are empty and the hand-written layer is reduced to the shared `TlvStreamSerializer`/converters and the onion codecs. **P4 resolved:** `onion_message` 513 migrated in P2; `HopPayloadSerializer` (186 code lines) and `FailureMessageSerializer` (123) stay dedicated — `invalid_onion_payload` needs the offending record's type+offset as wire-visible error data the strict reader deliberately does not carry, the failure serializer is synchronous inside the crypto loop with its own lenient framing, and neither is a `MessageTypes`-keyed peer message (plan P4).
+- **Blocks/Blocked-by:** Part of NL-1100
+- **Plan ref:** `docs/agents/CODEC_REDESIGN_PLAN.md` P1/P2/P3, P4 resolution
