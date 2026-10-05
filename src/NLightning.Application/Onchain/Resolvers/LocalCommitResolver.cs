@@ -479,27 +479,28 @@ public sealed class LocalCommitResolver : IOutputResolver
         var raiseUpstream = row.State != OutputResolutionState.Irrevocable;
         foreach (var action in plan.Actions)
         {
-            switch (action.Kind)
+            switch (action)
             {
-                case ResolutionActionKind.Wait:
-                    waitUntil = waitUntil is { } earlier ? Math.Min(earlier, action.WaitUntilHeight!.Value)
-                                                         : action.WaitUntilHeight;
+                case ResolutionAction.Wait wait:
+                    waitUntil = waitUntil is { } earlier ? Math.Min(earlier, wait.UntilHeight) : wait.UntilHeight;
                     break;
 
-                case ResolutionActionKind.BroadcastHtlcTimeoutTx or ResolutionActionKind.BroadcastHtlcSuccessTx
+                case ResolutionAction.BroadcastHtlcTimeoutTx or ResolutionAction.BroadcastHtlcSuccessTx
                     when updated.ResolvingTransactionId is null:
-                    updated = await AddHtlcTransactionAsync(context, descriptor, updated, action, actions,
-                                                            cancellationToken);
+                    updated = await AddHtlcTransactionAsync(context, descriptor, updated,
+                                                            action.Value as ResolutionAction.BroadcastHtlcSuccessTx,
+                                                            actions, cancellationToken);
                     break;
 
-                case ResolutionActionKind.BroadcastHtlcTimeoutTx or ResolutionActionKind.BroadcastHtlcSuccessTx
+                case ResolutionAction.BroadcastHtlcTimeoutTx or ResolutionAction.BroadcastHtlcSuccessTx
                     when spend is null && descriptor.HasAnchors && updated.ResolvingTransactionId is { } pendingTxId:
-                    updated = await MaintainAnchorHtlcTransactionAsync(context, descriptor, updated, pendingTxId,
-                                                                       action, actions, cancellationToken);
+                    updated = await MaintainAnchorHtlcTransactionAsync(
+                        context, descriptor, updated, pendingTxId,
+                        action.Value as ResolutionAction.BroadcastHtlcSuccessTx, actions, cancellationToken);
                     break;
 
-                case ResolutionActionKind.Sweep when action is { SpendKind: SweepSpendKind.DelayedOutput }:
-                    if (!action.OnSecondLevel)
+                case ResolutionAction.Sweep { SpendKind: SweepSpendKind.DelayedOutput } sweep:
+                    if (!sweep.OnSecondLevel)
                     {
                         if (updated.ResolvingTransactionId is null)
                             updated = await AddSweepAsync(context, updated,
@@ -516,11 +517,11 @@ public sealed class LocalCommitResolver : IOutputResolver
 
                     break;
 
-                case ResolutionActionKind.RaiseFulfilled when raiseUpstream && descriptor.Htlc is { } offered:
-                    AddFulfill(context, offered, new Secret(action.Preimage!), actions);
+                case ResolutionAction.RaiseFulfilled fulfilled when raiseUpstream && descriptor.Htlc is { } offered:
+                    AddFulfill(context, offered, new Secret(fulfilled.Preimage), actions);
                     break;
 
-                case ResolutionActionKind.RaiseFailed when raiseUpstream && lossUnproven
+                case ResolutionAction.RaiseFailed when raiseUpstream && lossUnproven
                                                         && descriptor.Htlc is { } offered:
                     // The peer may have been paid on chain with the preimage: failing upstream could lose the amount
                     _logger.LogError("Not failing HTLC {HtlcId} of channel {ChannelId} upstream: its output was taken "
@@ -541,7 +542,7 @@ public sealed class LocalCommitResolver : IOutputResolver
                                                     () => _unreadableSpendAlerts.TryAdd(alertKey, 0)));
                     break;
 
-                case ResolutionActionKind.RaiseFailed when raiseUpstream && descriptor.Htlc is { } offered:
+                case ResolutionAction.RaiseFailed when raiseUpstream && descriptor.Htlc is { } offered:
                     AddFail(context, offered, record, actions);
                     break;
             }
@@ -676,7 +677,7 @@ public sealed class LocalCommitResolver : IOutputResolver
     private async Task<OutputResolutionModel> AddHtlcTransactionAsync(LocalCommitContext context,
                                                                       CommitmentOutputDescriptor descriptor,
                                                                       OutputResolutionModel row,
-                                                                      ResolutionAction action,
+                                                                      ResolutionAction.BroadcastHtlcSuccessTx? success,
                                                                       List<OutputResolverAction> actions,
                                                                       CancellationToken cancellationToken,
                                                                       PendingAnchorHtlcTransaction? replacing = null)
@@ -694,13 +695,13 @@ public sealed class LocalCommitResolver : IOutputResolver
         }
 
         var built = _htlcTransactionBuilder.Build(model);
-        var preimage = model.Type == HtlcTransactionType.Success ? action.Preimage : null;
+        var preimage = model.Type == HtlcTransactionType.Success ? success?.Preimage : null;
         SignedTransaction signed;
         uint feeratePerKw;
         LightningMoney fee;
         if (model.HasAnchors)
         {
-            var anchored = await BuildAnchorHtlcTransactionAsync(context, descriptor, model, built, action, row,
+            var anchored = await BuildAnchorHtlcTransactionAsync(context, descriptor, model, built, success, row,
                                                                  signatures.HtlcSignatures[index], preimage,
                                                                  replacing, cancellationToken);
             if (anchored is null)
@@ -747,7 +748,7 @@ public sealed class LocalCommitResolver : IOutputResolver
         return row with
         {
             ResolvingTransactionId = signed.TxId,
-            DeadlineHeight = action.DeadlineHeight ?? row.DeadlineHeight
+            DeadlineHeight = success?.DeadlineHeight ?? row.DeadlineHeight
         };
     }
 
@@ -760,13 +761,10 @@ public sealed class LocalCommitResolver : IOutputResolver
     /// <c>SweepScheduler</c> never bumps <see cref="BroadcastPurpose.HtlcTransaction"/>: without anchors those carry a
     /// fee fixed at signing).
     /// </summary>
-    private async Task<OutputResolutionModel> MaintainAnchorHtlcTransactionAsync(LocalCommitContext context,
-                                                                                CommitmentOutputDescriptor descriptor,
-                                                                                OutputResolutionModel row,
-                                                                                TxId pendingTxId,
-                                                                                ResolutionAction action,
-                                                                                List<OutputResolverAction> actions,
-                                                                                CancellationToken cancellationToken)
+    private async Task<OutputResolutionModel> MaintainAnchorHtlcTransactionAsync(
+        LocalCommitContext context, CommitmentOutputDescriptor descriptor, OutputResolutionModel row, TxId pendingTxId,
+        ResolutionAction.BroadcastHtlcSuccessTx? success, List<OutputResolverAction> actions,
+        CancellationToken cancellationToken)
     {
         var broadcast = await context.UnitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(pendingTxId);
         if (broadcast is not { State: BroadcastState.Pending, Purpose: BroadcastPurpose.HtlcTransaction })
@@ -795,14 +793,14 @@ public sealed class LocalCommitResolver : IOutputResolver
                                              (uow, _) => uow.BroadcastTransactionDbRepository
                                                             .MarkAbandonedAsync(pendingTxId)));
             var cleared = row with { ResolvingTransactionId = null };
-            return await AddHtlcTransactionAsync(context, descriptor, cleared, action, actions, cancellationToken);
+            return await AddHtlcTransactionAsync(context, descriptor, cleared, success, actions, cancellationToken);
         }
 
-        var deadline = action.DeadlineHeight ?? row.DeadlineHeight;
+        var deadline = success?.DeadlineHeight ?? row.DeadlineHeight;
         if (!_feePolicy.ShouldBump(broadcast.FirstBroadcastHeight, context.Height, deadline))
             return row;
 
-        return await AddHtlcTransactionAsync(context, descriptor, row, action, actions, cancellationToken,
+        return await AddHtlcTransactionAsync(context, descriptor, row, success, actions, cancellationToken,
                                              new PendingAnchorHtlcTransaction(broadcast, pending));
     }
 
@@ -849,7 +847,7 @@ public sealed class LocalCommitResolver : IOutputResolver
     /// </summary>
     private async Task<(SignedTransaction Signed, uint FeeratePerKw, ulong FeeSat)?> BuildAnchorHtlcTransactionAsync(
         LocalCommitContext context, CommitmentOutputDescriptor descriptor, HtlcTransactionModel model,
-        HtlcTransactionBuildResult built, ResolutionAction action, OutputResolutionModel row,
+        HtlcTransactionBuildResult built, ResolutionAction.BroadcastHtlcSuccessTx? success, OutputResolutionModel row,
         CompactSignature remoteSignature, byte[]? preimage, PendingAnchorHtlcTransaction? replacing,
         CancellationToken cancellationToken)
     {
@@ -865,7 +863,7 @@ public sealed class LocalCommitResolver : IOutputResolver
 
         var owner = new AnchorFeeInputOwner(channelId, context.CommitmentTxId, descriptor.Vout);
         var baseWeight = _htlcTransactionBuilder.EstimateAnchorBaseWeight(model, built, EstimatedChangeScriptLength);
-        var feeratePerKw = await GetAnchorHtlcFeerateAsync(context, model, action, row, baseWeight, cancellationToken);
+        var feeratePerKw = await GetAnchorHtlcFeerateAsync(context, model, success, row, baseWeight, cancellationToken);
         var htlcSat = (ulong)model.OutputAmount.Satoshi;
         ulong? oldFeeSat = null;
         if (replacing is { } old)
@@ -1000,10 +998,11 @@ public sealed class LocalCommitResolver : IOutputResolver
     /// with one wallet input would exceed the HTLC's value (it is never worth more than the HTLC).
     /// </summary>
     private async Task<uint> GetAnchorHtlcFeerateAsync(LocalCommitContext context, HtlcTransactionModel model,
-                                                       ResolutionAction action, OutputResolutionModel row,
-                                                       long baseWeight, CancellationToken cancellationToken)
+                                                       ResolutionAction.BroadcastHtlcSuccessTx? success,
+                                                       OutputResolutionModel row, long baseWeight,
+                                                       CancellationToken cancellationToken)
     {
-        var deadline = action.DeadlineHeight ?? row.DeadlineHeight
+        var deadline = success?.DeadlineHeight ?? row.DeadlineHeight
                     ?? (model.Type == HtlcTransactionType.Success ? model.SpentOutput.CltvExpiry : (uint?)null);
         var estimate = await Fees.FeeEstimates.GetForTargetAsync(_feeService,
                                                                  _feePolicy.GetConfirmationTarget(context.Height,
@@ -1224,9 +1223,9 @@ public sealed class LocalCommitResolver : IOutputResolver
                                                    _options.ReasonableDepth, _options.IrrevocableDepth);
             foreach (var action in OutputResolutionPlanner.PlanHtlcWithoutOutput(htlc, facts).Actions)
             {
-                if (action.Kind == ResolutionActionKind.RaiseFulfilled)
-                    AddFulfill(context, htlc, new Secret(action.Preimage!), actions);
-                else if (action.Kind == ResolutionActionKind.RaiseFailed)
+                if (action is ResolutionAction.RaiseFulfilled fulfilled)
+                    AddFulfill(context, htlc, new Secret(fulfilled.Preimage), actions);
+                else if (action is ResolutionAction.RaiseFailed)
                     AddFail(context, htlc, record, actions);
             }
         }

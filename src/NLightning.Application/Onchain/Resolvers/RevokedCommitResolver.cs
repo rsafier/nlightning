@@ -382,34 +382,33 @@ public sealed class RevokedCommitResolver : IOutputResolver
 
         foreach (var action in plan.Actions)
         {
-            switch (action.Kind)
+            switch (action)
             {
-                case ResolutionActionKind.Sweep when action.OnSecondLevel:
+                case ResolutionAction.Sweep { OnSecondLevel: true } sweep:
                     if (secondLevelRow is not null && !IsFinished(secondLevelRow)
                      && CreateSecondLevelInput(context, secondLevelRow) is { } secondLevelInput)
                         needs.Add(new PenaltyNeed(secondLevelRow, secondLevelInput,
-                                                  secondLevelRow.DeadlineHeight ?? action.DeadlineHeight));
+                                                  secondLevelRow.DeadlineHeight ?? sweep.DeadlineHeight));
                     break;
 
-                case ResolutionActionKind.Sweep:
+                case ResolutionAction.Sweep:
                     if (spend is null && !IsFinished(row))
                         needs.Add(new PenaltyNeed(row, CreateInput(context, descriptor),
                                                   GetDeadline(round.Close, descriptor),
                                                   IsInDangerWindow(context, descriptor)));
                     break;
 
-                case ResolutionActionKind.RaiseFulfilled when descriptor.Htlc is { } fulfilled
-                                                            && action.Preimage is { } preimage:
-                    AddFulfill(round, context.Channel, fulfilled, new Secret(preimage), round.Actions);
+                case ResolutionAction.RaiseFulfilled raised when descriptor.Htlc is { } fulfilled:
+                    AddFulfill(round, context.Channel, fulfilled, new Secret(raised.Preimage), round.Actions);
                     break;
 
-                case ResolutionActionKind.RaiseFailed when descriptor.Htlc is { } failed:
+                case ResolutionAction.RaiseFailed when descriptor.Htlc is { } failed:
                     Raise(round.Actions, new OutgoingHtlcFailed(round.Close.ChannelId, failed.Id, failed.PaymentHash,
                                                                  OnchainHtlcRemovals.OnchainTimeout()));
                     break;
 
-                case ResolutionActionKind.AlertLostFunds:
-                    round.Actions.Add(new AlertAction(action.RequirementId,
+                case ResolutionAction.AlertLostFunds alert:
+                    round.Actions.Add(new AlertAction(alert.RequirementId,
                                                       $"Output {descriptor.Vout} of revoked commitment {commitmentTxId} "
                                                     + $"of channel {round.Close.ChannelId} ({descriptor.AmountSat} sat) "
                                                     + "went to the peer"));
@@ -467,9 +466,9 @@ public sealed class RevokedCommitResolver : IOutputResolver
                                                  _options.IrrevocableDepth));
             foreach (var action in plan.Actions)
             {
-                if (action is { Kind: ResolutionActionKind.RaiseFulfilled, Preimage: { } preimage })
-                    AddFulfill(round, round.Context.Channel, spec, new Secret(preimage), round.Actions);
-                else if (action.Kind == ResolutionActionKind.RaiseFailed)
+                if (action is ResolutionAction.RaiseFulfilled fulfilled)
+                    AddFulfill(round, round.Context.Channel, spec, new Secret(fulfilled.Preimage), round.Actions);
+                else if (action is ResolutionAction.RaiseFailed)
                     Raise(round.Actions, new OutgoingHtlcFailed(round.Close.ChannelId, spec.Id, spec.PaymentHash,
                                                                  OnchainHtlcRemovals.OnchainTimeout()));
             }

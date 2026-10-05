@@ -1,3 +1,5 @@
+using NLightning.Tests.Utils.Onchain;
+
 namespace NLightning.Domain.Tests.Onchain;
 
 using Domain.Channels.Commitments;

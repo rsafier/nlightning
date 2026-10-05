@@ -15,7 +15,7 @@ using Models;
 /// Heights: a CSV-locked spend of an output confirmed at <c>h</c> with delay <c>d</c> can enter block <c>h + d</c>, so
 /// it is broadcast once <c>tip + 1 &gt;= h + d</c>; a <c>nLockTime = cltv_expiry</c> spend can enter block
 /// <c>cltv_expiry + 1</c>, so it is broadcast once <c>tip &gt;= cltv_expiry</c> ("timed out", BOLT 5). Upstream events
-/// (<see cref="ResolutionActionKind.RaiseFulfilled"/>, <see cref="ResolutionActionKind.RaiseFailed"/>) are only asked
+/// (<see cref="ResolutionAction.RaiseFulfilled"/>, <see cref="ResolutionAction.RaiseFailed"/>) are only asked
 /// for HTLCs we offered: a fulfill as soon as a preimage is known (on chain or off chain), a fail only once the
 /// transaction that settles the HTLC without a preimage is <see cref="OutputResolutionFacts.ReasonableDepth"/> deep.
 /// </remarks>
@@ -117,7 +117,7 @@ public static class OutputResolutionPlanner
             var actions = new List<ResolutionAction>();
             AddKnownPreimageFulfill(actions, facts, "B5-LCL-LO-01");
             actions.Add(facts.TipHeight >= htlc.CltvExpiry
-                            ? new ResolutionAction(ResolutionActionKind.BroadcastHtlcTimeoutTx, "B5-LCL-LO-02")
+                            ? new ResolutionAction.BroadcastHtlcTimeoutTx("B5-LCL-LO-02")
                             : WaitFor("B5-LCL-LO-02", htlc.CltvExpiry));
             return new OutputResolutionPlan(PlannedResolutionState.Unresolved, actions);
         }
@@ -141,8 +141,7 @@ public static class OutputResolutionPlanner
         {
             if (facts.RemoteIrrevocablyCommitted && facts.AllowedPreimage is not null)
                 return new OutputResolutionPlan(PlannedResolutionState.Unresolved, [
-                    new ResolutionAction(ResolutionActionKind.BroadcastHtlcSuccessTx, "B5-LCL-RO-01",
-                                         DeadlineHeight: htlc.CltvExpiry, Preimage: facts.AllowedPreimage)
+                    new ResolutionAction.BroadcastHtlcSuccessTx("B5-LCL-RO-01", htlc.CltvExpiry, facts.AllowedPreimage)
                 ]);
 
             return ExpiresUnclaimed(htlc, facts,
@@ -167,8 +166,7 @@ public static class OutputResolutionPlanner
             var actions = new List<ResolutionAction>();
             AddKnownPreimageFulfill(actions, facts, "B5-RMT-LO-01");
             actions.Add(facts.TipHeight >= htlc.CltvExpiry
-                            ? new ResolutionAction(ResolutionActionKind.Sweep, "B5-RMT-LO-02",
-                                                   SweepSpendKind.HtlcTimeoutClaim)
+                            ? new ResolutionAction.Sweep("B5-RMT-LO-02", SweepSpendKind.HtlcTimeoutClaim)
                             : WaitFor("B5-RMT-LO-02", htlc.CltvExpiry));
             return new OutputResolutionPlan(PlannedResolutionState.Unresolved, actions);
         }
@@ -195,8 +193,8 @@ public static class OutputResolutionPlanner
         {
             if (facts.RemoteIrrevocablyCommitted && facts.AllowedPreimage is not null)
                 return new OutputResolutionPlan(PlannedResolutionState.Unresolved, [
-                    new ResolutionAction(ResolutionActionKind.Sweep, "B5-RMT-RO-01", SweepSpendKind.HtlcPreimageClaim,
-                                         DeadlineHeight: htlc.CltvExpiry, Preimage: facts.AllowedPreimage)
+                    new ResolutionAction.Sweep("B5-RMT-RO-01", SweepSpendKind.HtlcPreimageClaim,
+                                               DeadlineHeight: htlc.CltvExpiry, Preimage: facts.AllowedPreimage)
                 ]);
 
             return ExpiresUnclaimed(htlc, facts, "B5-RMT-RO-02");
@@ -219,8 +217,8 @@ public static class OutputResolutionPlanner
                        : ResolvedAt(facts, spend.Height, [Alert(requirement)]);
 
         return new OutputResolutionPlan(PlannedResolutionState.Unresolved, [
-            new ResolutionAction(ResolutionActionKind.Sweep, requirement, SweepSpendKind.RevokedDelayedOutput,
-                                 DeadlineHeight: facts.CommitmentHeight + output.CsvDelay)
+            new ResolutionAction.Sweep(requirement, SweepSpendKind.RevokedDelayedOutput,
+                                       DeadlineHeight: facts.CommitmentHeight + output.CsvDelay)
         ]);
     }
 
@@ -237,8 +235,8 @@ public static class OutputResolutionPlanner
                 AddKnownPreimageFulfill(actions, facts, "B5-REV-RES-01");
 
             // The cheater can take our offered HTLC with its HTLC-success at any time, its own after cltv_expiry
-            actions.Add(new ResolutionAction(ResolutionActionKind.Sweep, requirement, SweepSpendKind.RevokedHtlc,
-                                             DeadlineHeight: ours ? facts.TipHeight + 1 : htlc.CltvExpiry));
+            actions.Add(new ResolutionAction.Sweep(requirement, SweepSpendKind.RevokedHtlc,
+                                                   DeadlineHeight: ours ? facts.TipHeight + 1 : htlc.CltvExpiry));
             return new OutputResolutionPlan(PlannedResolutionState.Unresolved, actions);
         }
 
@@ -260,9 +258,8 @@ public static class OutputResolutionPlanner
             var csv = RequireSecondLevelCsv(facts);
             if (facts.SecondLevelSpend is not { } secondLevel)
             {
-                actions.Add(new ResolutionAction(ResolutionActionKind.Sweep, "B5-REV-06",
-                                                 SweepSpendKind.RevokedDelayedOutput, true,
-                                                 DeadlineHeight: spend.Height + csv));
+                actions.Add(new ResolutionAction.Sweep("B5-REV-06", SweepSpendKind.RevokedDelayedOutput, true,
+                                                       spend.Height + csv));
                 return new OutputResolutionPlan(PlannedResolutionState.Unresolved, actions);
             }
 
@@ -332,7 +329,7 @@ public static class OutputResolutionPlanner
         // A spend with nSequence = csv can enter block confirmedHeight + csv (at once without a delay)
         var firstBlock = confirmedHeight + csv;
         return facts.TipHeight + 1 >= firstBlock
-                   ? new ResolutionAction(ResolutionActionKind.Sweep, requirement, kind, onSecondLevel)
+                   ? new ResolutionAction.Sweep(requirement, kind, onSecondLevel)
                    : WaitFor(requirement, firstBlock - 1);
     }
 
@@ -395,13 +392,12 @@ public static class OutputResolutionPlanner
     private static uint Depth(uint tip, uint height) => tip >= height ? tip - height + 1 : 0;
 
     private static ResolutionAction WaitFor(string requirement, uint height) =>
-        new(ResolutionActionKind.Wait, requirement, WaitUntilHeight: height);
+        new ResolutionAction.Wait(requirement, height);
 
     private static ResolutionAction Fulfilled(string requirement, byte[] preimage) =>
-        new(ResolutionActionKind.RaiseFulfilled, requirement, Preimage: preimage);
+        new ResolutionAction.RaiseFulfilled(requirement, preimage);
 
-    private static ResolutionAction Failed(string requirement) => new(ResolutionActionKind.RaiseFailed, requirement);
+    private static ResolutionAction Failed(string requirement) => new ResolutionAction.RaiseFailed(requirement);
 
-    private static ResolutionAction Alert(string requirement) =>
-        new(ResolutionActionKind.AlertLostFunds, requirement);
+    private static ResolutionAction Alert(string requirement) => new ResolutionAction.AlertLostFunds(requirement);
 }

@@ -665,16 +665,14 @@ public sealed class RemoteCommitResolver : IOutputResolver
         var updated = row;
         foreach (var action in plan.Actions)
         {
-            switch (action.Kind)
+            switch (action)
             {
-                case ResolutionActionKind.Wait:
-                    waitUntil = waitUntil is { } earlier
-                                    ? Math.Min(earlier, action.WaitUntilHeight!.Value)
-                                    : action.WaitUntilHeight;
+                case ResolutionAction.Wait wait:
+                    waitUntil = waitUntil is { } earlier ? Math.Min(earlier, wait.UntilHeight) : wait.UntilHeight;
                     break;
 
-                case ResolutionActionKind.Sweep when spend is null && updated.ResolvingTransactionId is null:
-                    updated = await SweepAsync(context, updated, descriptor, data, action, actions, cancellationToken);
+                case ResolutionAction.Sweep sweep when spend is null && updated.ResolvingTransactionId is null:
+                    updated = await SweepAsync(context, updated, descriptor, data, sweep, actions, cancellationToken);
                     break;
             }
         }
@@ -694,9 +692,9 @@ public sealed class RemoteCommitResolver : IOutputResolver
 
         foreach (var action in plan.Actions)
         {
-            if (action is { Kind: ResolutionActionKind.RaiseFulfilled, Preimage: { } preimage })
-                AddFulfill(context, htlc, new Secret(preimage), actions);
-            else if (action.Kind == ResolutionActionKind.RaiseFailed)
+            if (action is ResolutionAction.RaiseFulfilled fulfilled)
+                AddFulfill(context, htlc, new Secret(fulfilled.Preimage), actions);
+            else if (action is ResolutionAction.RaiseFailed)
                 AddFail(context, htlc, record, actions);
         }
     }
@@ -707,7 +705,7 @@ public sealed class RemoteCommitResolver : IOutputResolver
     /// </summary>
     private async Task<OutputResolutionModel> SweepAsync(RemoteCommitContext context, OutputResolutionModel row,
                                                          CommitmentOutputDescriptor descriptor,
-                                                         OutputDescriptorData data, ResolutionAction action,
+                                                         OutputDescriptorData data, ResolutionAction.Sweep action,
                                                          List<OutputResolverAction> actions,
                                                          CancellationToken cancellationToken)
     {
