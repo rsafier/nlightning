@@ -178,11 +178,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 79 | 80 |
-| in-progress | 0 | 0 | 3 | 1 | 4 |
-| fixed | 15 | 68 | 220 | 455 | 758 |
+| in-progress | 0 | 0 | 4 | 1 | 5 |
+| fixed | 15 | 68 | 221 | 455 | 759 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **233** | **555** | **871** |
+| **Total** | **15** | **68** | **235** | **555** | **873** |
 
 ### Epics
 

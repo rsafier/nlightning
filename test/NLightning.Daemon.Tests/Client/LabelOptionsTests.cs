@@ -9,7 +9,7 @@ using Transport.Ipc.Responses;
 
 /// <summary>
 /// The CLI side of the operator's label and tags (NL-602 A3-T1): <c>--label</c> and repeatable <c>--tag</c> on the
-/// seven commands that take them, checked with the daemon's rules before anything is sent, and printed by the list
+/// commands that take them, checked with the daemon's rules before anything is sent, and printed by the list
 /// commands.
 /// </summary>
 public class LabelOptionsTests
@@ -85,6 +85,7 @@ public class LabelOptionsTests
     [InlineData("payinvoice", "lnbcrt1 --tag category=supplies --max-parts 2")]
     [InlineData("pay", "lnbcrt1 any 30 --label supplier")]
     [InlineData("keysend", NodeId + " 21 --label tip --tlv 65537=00")]
+    [InlineData("payroute", "lnbcrt1 --routes routes.json --label retry --tag attempt=1")]
     [InlineData("createoffer", "any --label shop --issuer acme")]
     [InlineData("payoffer", "lno1qgsqvgnwgcg35z6ee2h3yczraddm72xrfua9uve2rlrm9deu7xyfzrc 1000 --tag vendor=acme")]
     [InlineData("withdraw", Address + " 40000 --label cold --sat-per-vb 2")]

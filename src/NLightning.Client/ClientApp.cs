@@ -190,6 +190,17 @@ internal static class ClientApp
                     if (keysendPayment.Payment.Status == PaymentStatus.Failed)
                         return Failure;
                     break;
+                case "payroute":
+                case "pay-route":
+                    var payRouteArgs = ParsePayRouteOptions(commandArgs, out _)!;
+                    var suppliedRoutes = await PayRouteRoutesJson.ReadAsync(payRouteArgs.RoutesPath, Console.In,
+                                                                           cancellationToken);
+                    var payRoute = await client.PayRouteAsync(payRouteArgs, suppliedRoutes, cancellationToken,
+                                                             labels);
+                    new PayRoutePrinter().Print(payRoute);
+                    if (payRoute.Payment.Status == PaymentStatus.Failed)
+                        return Failure;
+                    break;
                 case "fetchinvoice":
                 case "fetch-invoice":
                     var fetched = await client.FetchInvoiceAsync(ParsePayOfferOptions(commandArgs, false, out _)!,
@@ -477,6 +488,11 @@ internal static class ClientApp
             case "keysend":
                 return ParseKeysendOptions(commandArgs, out var keysendError) is null
                            ? $"{keysendError} Usage: {cmd} {KeysendUsage}"
+                           : null;
+            case "payroute":
+            case "pay-route":
+                return ParsePayRouteOptions(commandArgs, out var payRouteError) is null
+                           ? $"{payRouteError} Usage: {cmd} {PayRouteUsage}"
                            : null;
             case "fetchinvoice":
             case "fetch-invoice":
@@ -1254,6 +1270,156 @@ internal static class ClientApp
         return true;
     }
 
+    /// <summary>The usage of payroute.</summary>
+    internal const string PayRouteUsage =
+        "<bolt11> | --payment-hash <64hex> [--payment-secret <64hex>] [--total-msat <msat>] --routes <file|-> "
+      + "[--max-fee-msat <msat>] [--timeout <seconds>]";
+
+    /// <summary>
+    /// The arguments of payroute (NL-1145): the payment identity — a BOLT 11 invoice positionally, or the raw form's
+    /// <c>--payment-hash</c> with the optional <c>--payment-secret</c> and <c>--total-msat</c> (every route's
+    /// <c>total_msat</c>; the invoice form takes them from the invoice) — plus <c>--routes &lt;file|-&gt;</c> (the
+    /// routes as JSON, a file or standard input) and the limits <c>--max-fee-msat &lt;msat&gt;</c> (a positive number
+    /// of msat) and <c>--timeout &lt;seconds&gt;</c> (1 to <see cref="MaxPayTimeoutSeconds"/>), each also as
+    /// <c>--option=value</c>, anywhere after the command.
+    /// </summary>
+    /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
+    internal static PayRouteArguments? ParsePayRouteOptions(string[] commandArgs, out string? error)
+    {
+        var positional = new List<string>();
+        string? paymentHash = null;
+        string? paymentSecret = null;
+        ulong? totalMsat = null;
+        string? routesPath = null;
+        uint? timeout = null;
+        ulong? maxFeeMsat = null;
+        for (var i = 0; i < commandArgs.Length; i++)
+        {
+            var argument = commandArgs[i];
+            if (!argument.StartsWith("--", StringComparison.Ordinal))
+            {
+                positional.Add(argument);
+                continue;
+            }
+
+            var separator = argument.IndexOf('=');
+            var name = separator < 0 ? argument : argument[..separator];
+            string value;
+            if (separator >= 0)
+            {
+                value = argument[(separator + 1)..];
+            }
+            else if (i + 1 < commandArgs.Length)
+            {
+                value = commandArgs[++i];
+            }
+            else
+            {
+                error = $"Missing value for {name}.";
+                return null;
+            }
+
+            switch (name.ToLowerInvariant())
+            {
+                case "--routes":
+                    if (value.Length == 0)
+                    {
+                        error = "Missing value for --routes.";
+                        return null;
+                    }
+
+                    routesPath = value;
+                    break;
+                case "--payment-hash":
+                    if (!TryParseHex(value, out _) || value.Length != 64)
+                    {
+                        error = $"Invalid payment hash '{value}': expected 64 hex characters.";
+                        return null;
+                    }
+
+                    paymentHash = value;
+                    break;
+                case "--payment-secret":
+                    if (!TryParseHex(value, out _) || value.Length != 64)
+                    {
+                        error = $"Invalid payment secret '{value}': expected 64 hex characters.";
+                        return null;
+                    }
+
+                    paymentSecret = value;
+                    break;
+                case "--total-msat":
+                    if (!ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var total)
+                     || total == 0)
+                    {
+                        error = $"Invalid total '{value}': expected a positive number of msat.";
+                        return null;
+                    }
+
+                    totalMsat = total;
+                    break;
+                case "--max-fee-msat":
+                    if (!ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var fee)
+                     || fee == 0 || fee > MaxPayFeeMsat)
+                    {
+                        error = $"Invalid fee limit '{value}': expected a number of msat from 1 to {MaxPayFeeMsat}.";
+                        return null;
+                    }
+
+                    maxFeeMsat = fee;
+                    break;
+                case "--timeout":
+                    if (!TryParsePositiveUInt(value, out var seconds) || seconds > MaxPayTimeoutSeconds)
+                    {
+                        error = $"Invalid timeout '{value}': expected 1 to {MaxPayTimeoutSeconds} seconds.";
+                        return null;
+                    }
+
+                    timeout = seconds;
+                    break;
+                default:
+                    error = $"Unknown option '{name}': expected --routes, --payment-hash, --payment-secret, "
+                          + "--total-msat, --max-fee-msat or --timeout.";
+                    return null;
+            }
+        }
+
+        if (positional.Count > 1)
+        {
+            error = $"Unexpected argument '{positional[1]}': the invoice is the only positional argument, or give "
+                  + "--payment-hash.";
+            return null;
+        }
+
+        var bolt11 = positional.Count == 1 ? positional[0] : null;
+        if (bolt11 is not null && paymentHash is not null)
+        {
+            error = "Give the payment identity once: the invoice, or --payment-hash of the raw form, not both.";
+            return null;
+        }
+
+        if (paymentSecret is not null && paymentHash is null)
+        {
+            error = "--payment-secret belongs to the raw form; an invoice carries its own secret.";
+            return null;
+        }
+
+        if (bolt11 is null && paymentHash is null)
+        {
+            error = "Missing the payment identity: the invoice, or --payment-hash of the raw form.";
+            return null;
+        }
+
+        if (routesPath is null)
+        {
+            error = "Missing option --routes <file|->: the routes to pay, as JSON.";
+            return null;
+        }
+
+        error = null;
+        return new PayRouteArguments(bolt11, paymentHash, paymentSecret, totalMsat, routesPath, timeout, maxFeeMsat);
+    }
+
     /// <summary>The arguments of payoffer.</summary>
     internal const string PayOfferUsage =
         "<offer> [amount_msat] [--quantity <n>] [--note <text>] [--max-fee-msat <msat>] [--max-parts <n>] "
@@ -1906,6 +2072,35 @@ public sealed record PayOfferArguments(
     /// <summary><c>--trampoline</c>: the trampoline node to pay through (NL-875); payoffer only.</summary>
     public CompactPubKey? TrampolineNode { get; init; }
 }
+
+/// <summary>
+/// The parsed arguments of payroute (NL-1145): the identity — a BOLT 11 invoice, or a raw payment hash (hex) with an
+/// optional payment secret (hex) and total — the routes input path (a file, or <c>-</c> for standard input) and the
+/// limits.
+/// </summary>
+public sealed record PayRouteArguments(
+    string? Bolt11,
+    string? PaymentHash,
+    string? PaymentSecret,
+    ulong? TotalMsat,
+    string RoutesPath,
+    uint? TimeoutSeconds,
+    ulong? MaxFeeMsat,
+    LabelArguments? Labels = null);
+
+/// <summary>
+/// One validated route of the payroute routes file: the channel of ours the first HTLC leaves through (a channel id
+/// or a short channel id <c>BLOCKxTXxOUTPUT</c>), what that HTLC carries and the hops after ours.
+/// </summary>
+public sealed record PayRouteRouteArguments(string FirstHopChannel, ulong FirstHopAmountMsat, uint FirstHopCltv,
+                                            IReadOnlyList<PayRouteHopArguments> Hops);
+
+/// <summary>
+/// One validated hop of a payroute route: the node, the channel it forwards over (a short channel id, null on the
+/// payee's final hop), the amount it forwards onward and that HTLC's absolute <c>outgoing_cltv_value</c>.
+/// </summary>
+public sealed record PayRouteHopArguments(CompactPubKey NodeId, ulong? OutgoingShortChannelId,
+                                          ulong AmountToForwardMsat, uint OutgoingCltvValue);
 
 /// <summary>
 /// The parsed arguments of withdraw (a null amount is "all").

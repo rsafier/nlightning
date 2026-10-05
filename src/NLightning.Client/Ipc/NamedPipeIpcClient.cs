@@ -587,6 +587,70 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Pays over exactly the caller-supplied routes, single or an MPP shard set, and waits for the outcome
+    /// (ClientCommand 48, NL-1145); the daemon never re-plans, and the response carries each route's outcome.
+    /// </summary>
+    /// <param name="arguments">The parsed <c>payroute</c> arguments: the identity (an invoice, or a payment hash with
+    /// an optional secret and total) and the limits.</param>
+    /// <param name="routes">The validated routes of the <c>--routes</c> input.</param>
+    /// <param name="ct">Cancels the call (the payment itself keeps going in the daemon).</param>
+    /// <param name="labels">The operator's label and tags (NL-602 A3-T1), or null for none.</param>
+    public Task<PayRouteIpcResponse> PayRouteAsync(PayRouteArguments arguments,
+                                                   IReadOnlyList<PayRouteRouteArguments> routes,
+                                                   CancellationToken ct = default, LabelArguments? labels = null)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        ArgumentNullException.ThrowIfNull(routes);
+        var effectiveLabels = labels ?? arguments.Labels;
+        var req = new PayRouteIpcRequest
+        {
+            Bolt11 = arguments.Bolt11,
+            PaymentHash = ToHash(arguments.PaymentHash),
+            PaymentSecret = ToSecret(arguments.PaymentSecret),
+            TotalMsatMsat = arguments.TotalMsat,
+            Routes = [.. routes.Select(ToRouteInfo)],
+            // The request's own default (60) when the caller gave no --timeout
+            TimeoutSeconds = arguments.TimeoutSeconds ?? 60,
+            MaxFeeMsat = arguments.MaxFeeMsat,
+            Label = effectiveLabels?.Label,
+            Tags = effectiveLabels?.TagsOrNull
+        };
+        return SendRequestAsync<PayRouteIpcRequest, PayRouteIpcResponse>(ClientCommand.PayRoute, req, ct);
+    }
+
+    /// <summary>The raw form's payment hash (64-hex, validated by the parser), or null for the invoice form.</summary>
+    private static Hash? ToHash(string? hex)
+    {
+        if (hex is null)
+            return null;
+
+        return new Hash(Convert.FromHexString(hex));
+    }
+
+    /// <summary>The raw form's payment secret (64-hex, validated by the parser), or null for none.</summary>
+    private static Secret? ToSecret(string? hex)
+    {
+        if (hex is null)
+            return null;
+
+        return new Secret(Convert.FromHexString(hex));
+    }
+
+    private static PayRouteRouteIpcInfo ToRouteInfo(PayRouteRouteArguments route) => new()
+    {
+        FirstHopChannel = route.FirstHopChannel,
+        FirstHopAmountMsat = route.FirstHopAmountMsat,
+        FirstHopCltv = route.FirstHopCltv,
+        Hops = [.. route.Hops.Select(hop => new PayRouteHopIpcInfo
+        {
+            NodeId = hop.NodeId,
+            OutgoingShortChannelId = hop.OutgoingShortChannelId,
+            AmountToForwardMsat = hop.AmountToForwardMsat,
+            OutgoingCltvValue = hop.OutgoingCltvValue
+        })]
+    };
+
+    /// <summary>
     /// Fetches an invoice for a BOLT 12 offer and pays it (ClientCommand 29).
     /// </summary>
     /// <param name="arguments">The parsed <c>payoffer</c> arguments.</param>

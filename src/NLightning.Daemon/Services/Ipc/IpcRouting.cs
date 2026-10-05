@@ -36,7 +36,8 @@ internal sealed class IpcRequestRouter : IIpcRequestRouter
         ClientCommand.SpliceIn,
         ClientCommand.SpliceOut,
         ClientCommand.BumpSplice,
-        ClientCommand.BumpOpen
+        ClientCommand.BumpOpen,
+        ClientCommand.PayRoute
     };
 
     private readonly IReadOnlyDictionary<ClientCommand, IIpcCommandHandler> _handlers;

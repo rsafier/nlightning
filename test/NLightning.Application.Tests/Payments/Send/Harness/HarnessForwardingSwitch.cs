@@ -7,6 +7,7 @@ namespace NLightning.Application.Tests.Payments.Send.Harness;
 using Application.Payments.FinalHop;
 using Application.Payments.Onion;
 using Application.Payments.Send.Interfaces;
+using Application.Payments.Switch;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
@@ -44,12 +45,14 @@ internal sealed class HarnessForwardingSwitch(
     IPaymentOutcomeHandler paymentOutcomeHandler,
     IBlockchainMonitor blockchainMonitor,
     IServiceScopeFactory serviceScopeFactory,
-    IAttributionDataService attributionDataService) : IHtlcSwitch
+    IAttributionDataService attributionDataService,
+    TimeProvider timeProvider) : IHtlcSwitch
 {
     private readonly ConcurrentDictionary<(ChannelId, ulong), Circuit> _circuits = new();
     private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _handledIncoming = new();
     private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _resolvedOutgoing = new();
-    private readonly Dictionary<Hash, List<(ChannelId ChannelId, ulong HtlcId, ulong AmountMsat)>> _parts = [];
+    private readonly Dictionary<Hash, HeldSet> _parts = [];
+    private readonly ConcurrentDictionary<Task, byte> _mppTimeoutRounds = new();
 
     /// <summary>Every event handed to the switch, in order.</summary>
     public ConcurrentQueue<IChannelDomainEvent> Events { get; } = new();
@@ -83,6 +86,23 @@ internal sealed class HarnessForwardingSwitch(
 
     /// <summary>The final-hop HTLCs this node received, in order: (amount, <c>total_msat</c>).</summary>
     public ConcurrentQueue<(ulong AmountMsat, ulong TotalMsat)> Received { get; } = new();
+
+    /// <summary>The payment hashes of the multi-part sets this node currently holds (incomplete sets only).</summary>
+    public IReadOnlyCollection<Hash> HeldPaymentHashes
+    {
+        get
+        {
+            lock (_parts)
+                return _parts.Keys.ToArray();
+        }
+    }
+
+    /// <summary>Waits until no <c>mpp_timeout</c> round this switch started still runs (tests).</summary>
+    public async Task WhenIdleAsync()
+    {
+        while (!_mppTimeoutRounds.IsEmpty)
+            await Task.WhenAll(_mppTimeoutRounds.Keys);
+    }
 
     /// <summary>
     /// When set, this node sends <c>attribution_data</c> with every <c>update_fail_htlc</c> and
@@ -241,7 +261,9 @@ internal sealed class HarnessForwardingSwitch(
 
     /// <summary>
     /// A stand-in for a <c>basic_mpp</c> payee (our production final hop takes one HTLC per payment): holds each part
-    /// until the parts of the hash reach <c>total_msat</c>, then fulfills them all with the invoice's preimage.
+    /// until the parts of the hash reach <c>total_msat</c>, then fulfills them all with the invoice's preimage. An
+    /// incomplete set is failed back with <c>mpp_timeout</c> after the BOLT 4 wait (as the production switch's timer
+    /// would), on the node's clock: a test fires it deterministically by advancing that clock.
     /// </summary>
     private async Task ReceivePartAsync(ChannelId channelId, HtlcRecord htlc, IncomingOnionFinal final,
                                         ulong totalMsat, CancellationToken cancellationToken)
@@ -258,23 +280,68 @@ internal sealed class HarnessForwardingSwitch(
             return;
         }
 
-        List<(ChannelId ChannelId, ulong HtlcId, ulong AmountMsat)> complete;
+        List<(ChannelId ChannelId, ulong HtlcId, ulong AmountMsat, Secret SharedSecret)> complete;
         lock (_parts)
         {
             if (!_parts.TryGetValue(htlc.PaymentHash, out var held))
-                _parts[htlc.PaymentHash] = held = [];
-            held.Add((channelId, htlc.Id, htlc.AmountMsat));
-            if (held.Aggregate(0UL, (sum, p) => sum + p.AmountMsat) < totalMsat)
+            {
+                _parts[htlc.PaymentHash] = held = new HeldSet();
+                held.Timer = timeProvider.CreateTimer(_ => RunMppTimeout(htlc.PaymentHash), null,
+                                                      HtlcSwitchOptions.DefaultMppTimeout,
+                                                      Timeout.InfiniteTimeSpan);
+            }
+
+            held.Parts.Add((channelId, htlc.Id, htlc.AmountMsat, final.SharedSecret));
+            if (held.Parts.Aggregate(0UL, (sum, p) => sum + p.AmountMsat) < totalMsat)
                 return;
 
-            complete = [.. held];
+            held.Timer.Dispose();
+            complete = [.. held.Parts];
             _parts.Remove(htlc.PaymentHash);
         }
 
         invoice.Accept(LightningMoney.MilliSatoshis(complete.Aggregate(0UL, (sum, p) => sum + p.AmountMsat)));
         await invoices.UpdateAsync(invoice);
-        foreach (var (partChannelId, partHtlcId, _) in complete)
+        foreach (var (partChannelId, partHtlcId, _, _) in complete)
             await channelOperations.FulfillHtlcAsync(partChannelId, partHtlcId, invoice.Preimage, cancellationToken);
+    }
+
+    /// <summary>
+    /// The <c>mpp_timeout</c> of an incomplete set on a tracked background round (the timer's callback cannot await,
+    /// and the clock fires it on the advancing thread).
+    /// </summary>
+    private void RunMppTimeout(Hash paymentHash)
+    {
+        var round = Task.Run(() => ExpireSetAsync(paymentHash));
+        _mppTimeoutRounds[round] = 0;
+        round.ContinueWith(t => _mppTimeoutRounds.TryRemove(t, out _), TaskScheduler.Default);
+    }
+
+    private async Task ExpireSetAsync(Hash paymentHash)
+    {
+        List<(ChannelId ChannelId, ulong HtlcId, ulong AmountMsat, Secret SharedSecret)> incomplete;
+        lock (_parts)
+        {
+            if (!_parts.TryGetValue(paymentHash, out var held))
+                return;
+
+            held.Timer.Dispose();
+            incomplete = [.. held.Parts];
+            _parts.Remove(paymentHash);
+        }
+
+        foreach (var (partChannelId, partHtlcId, _, sharedSecret) in incomplete)
+            await FailAsync(partChannelId, partHtlcId, sharedSecret, FailureMessage.MppTimeout(),
+                            CancellationToken.None);
+    }
+
+    /// <summary>An incomplete multi-part set this node holds: its parts (each with its onion shared secret) and the
+    /// <c>mpp_timeout</c> timer that fails them back when no more parts arrive.</summary>
+    private sealed class HeldSet
+    {
+        public List<(ChannelId ChannelId, ulong HtlcId, ulong AmountMsat, Secret SharedSecret)> Parts { get; } = [];
+
+        public ITimer Timer { get; set; } = null!;
     }
 
     private async Task FailUpstreamAsync(Circuit circuit, HtlcRemoval removal, CancellationToken cancellationToken)

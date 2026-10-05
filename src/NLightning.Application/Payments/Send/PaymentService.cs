@@ -1072,6 +1072,14 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             if (partsAllowed <= 0)
                 return;
 
+            // NL-1145: a payroute session pays over caller-supplied routes; they are offered exactly as given and
+            // never re-planned (the round returns; the parts' outcomes complete the session)
+            if (session.SuppliedRoutes is { } suppliedRoutes)
+            {
+                await RunManualRoundAsync(session, suppliedRoutes);
+                return;
+            }
+
             // A payment through a trampoline node pays its fee too: the routes get what is left of the limit
             var feesCommitted = session.FeesInFlightMsat + session.TrampolineFeeMsat;
             var feeLeft = session.MaxFee.MilliSatoshi > feesCommitted ? session.MaxFee.MilliSatoshi - feesCommitted : 0;
@@ -1483,6 +1491,47 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     /// </summary>
     private sealed record BlindedCandidate(int Index, BlindedPaymentPath Path, SelfIntroducedBlindedPath? Self);
 
+    /// <summary>
+    /// The one round a <c>payroute</c> session makes (NL-1145): build every supplied route's onion, persist the round
+    /// and offer the parts in order. A refused offer ends that route (its part is marked failed with the refusal);
+    /// nothing is re-planned — when no part is in flight afterwards the payment is decided here, else the parts'
+    /// outcomes complete it.
+    /// </summary>
+    private async Task RunManualRoundAsync(PaymentSession session, IReadOnlyList<SuppliedRoutePart> suppliedRoutes)
+    {
+        var round = new List<(PaymentPart Part, OnionPacket Packet)>(suppliedRoutes.Count);
+        for (var i = 0; i < suppliedRoutes.Count; i++)
+        {
+            var suppliedPart = suppliedRoutes[i];
+            var onion = await _onionFactory.CreateAsync(suppliedPart.Route, session.Keysend);
+            round.Add((new PaymentPart(suppliedPart.Channel, suppliedPart.Route,
+                                       BuildHops(suppliedPart.Route, onion.SharedSecrets,
+                                                 suppliedPart.Channel.ShortChannelId, session.PayeeNodeId, false),
+                                       $"caller route {i + 1} of {suppliedRoutes.Count}"),
+                       onion.Packet));
+        }
+
+        await PersistRoundAsync(session, round.Select(r => r.Part).ToList());
+
+        foreach (var (part, packet) in round)
+        {
+            session.Parts.Add(part);
+            session.Attempts++;
+            if (await OfferPartAsync(session, part, packet) == OfferOutcome.Error)
+                break;
+        }
+
+        // The engine refused the round's recorded part while others were offered: the row follows a live one
+        await MovePrimaryPartAsync(session);
+        session.MaxPartsInFlight = Math.Max(session.MaxPartsInFlight, session.InFlightParts.Count());
+
+        if (!session.HasPartsInFlight)
+            await FinishFailedAsync(session,
+                                    session.TerminalReason
+                                    ?? session.LastFailure?.Reason
+                                    ?? "the HTLC could not be offered");
+    }
+
     private string? GetStopReason(PaymentSession session)
     {
         if (session.TerminalReason is { } terminal)
@@ -1568,6 +1617,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             else
                 session.Constraints.ExcludedLocalChannels.Add(channelId);
 
+            part.Failure = (null, null, $"The HTLC could not be offered on channel {channelId}: {e.Message}");
             session.LastFailure = (null, null, $"The HTLC could not be offered on channel {channelId}: {e.Message}");
             _logger.LogInformation("Payment {PaymentHash}: the HTLC of {Amount} msat on channel {ChannelId} was "
                                  + "refused ({Reason}); planning again", session.PaymentHash,
@@ -1583,6 +1633,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             {
                 part.Status = PaymentPartStatus.Failed;
                 var reason = $"The HTLC could not be offered on channel {channelId}: {e.Message}";
+                part.Failure = (null, null, reason);
                 session.TerminalReason = reason;
                 session.LastFailure = (null, null, reason);
                 return OfferOutcome.Error;
@@ -2084,6 +2135,13 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                                                 attribution.InvalidHopIndex);
         }
 
+        part.Failure = (code, sourceIndex, reason);
+
+        // NL-1145: a manual payroute session never re-plans — the failure ends this route, mission control still
+        // learns from it (the same Decide call), and the caller decides what is next
+        if (session.ManualRoutes)
+            retry = false;
+
         session.LastFailureMessage = interpretation?.Message;
         session.LastFailure = (code, sourceIndex, $"{reason} ({note}).");
         session.LastFailureHoldTimes = attribution.IsPresent
@@ -2118,6 +2176,9 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             await FinishFailedAsync(session, stop);
             return true;
         }
+
+        if (session.ManualRoutes)
+            return true;
 
         await SaveAttemptFailedAsync(session);
         ScheduleRound(session);

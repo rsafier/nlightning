@@ -101,6 +101,16 @@ internal sealed class PaymentSession
     public SourceLabels Labels { get; init; } = SourceLabels.None;
 
     /// <summary>
+    /// The caller-supplied routes of a <c>payroute</c> call (NL-1145): offered exactly as given, in this order, and
+    /// never re-planned — a refusal or failure ends its route and the caller decides what is next. Null for every
+    /// planner-driven session.
+    /// </summary>
+    public IReadOnlyList<SuppliedRoutePart>? SuppliedRoutes { get; init; }
+
+    /// <summary>Whether this session pays over caller-supplied routes (<see cref="SuppliedRoutes"/>).</summary>
+    public bool ManualRoutes => SuppliedRoutes is not null;
+
+    /// <summary>
     /// What the stored row keeps of <see cref="Keysend"/> (its custom records), or null.
     /// </summary>
     public KeysendDetails? KeysendDetails => Keysend is null ? null : new KeysendDetails(Keysend.CustomRecords);
@@ -258,6 +268,12 @@ internal sealed class PaymentPart
     public string Description { get; }
     public ulong? HtlcId { get; set; }
     public PaymentPartStatus Status { get; set; } = PaymentPartStatus.InFlight;
+
+    /// <summary>
+    /// The part's failure once it failed (NL-1145): the attributed code, the erring hop index and the local
+    /// description — what a <c>payroute</c> call reports per route. Null while in flight or when fulfilled.
+    /// </summary>
+    public (FailureCode? Code, int? SourceIndex, string? Reason)? Failure { get; set; }
 
     /// <summary>For a payment through a trampoline node: the attempt whose trampoline onion the part carries.</summary>
     public int? TrampolineAttempt { get; init; }
