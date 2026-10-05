@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 79 | 80 |
+| open | 0 | 0 | 1 | 78 | 79 |
 | in-progress | 0 | 0 | 3 | 1 | 4 |
-| fixed | 15 | 68 | 220 | 455 | 758 |
+| fixed | 15 | 68 | 220 | 457 | 760 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **233** | **555** | **871** |
+| **Total** | **15** | **68** | **233** | **556** | **872** |
 
 ### Epics
 
@@ -4320,7 +4320,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Update (regtest e2e, 2026-10-05, `wip/t7-regtest`):** `Integration.Tests/Docker/Taproot/TaprootPublicChannelFlowTests` (cluster suite `taproot`, three NLightning daemons on the taproot network's regtest bitcoind): (1) `openchannel --public --channel-type taproot` (dual-funded by NL-551) announced at depth 6 over `announcement_signatures_2`, both graphs v2-only with both `channel_update_2`s and `node_announcement_2`s, the MuSig2 proof valid against the P2TR output the real `FundingOutputLookup` reads, no 256/259 on the wire; (2) a third node synced by queries (its ingress `Verified`) pays a hint-free invoice over carol → bob → alice; (4) simple close, every graph marks the spend and forgets the channel 72 blocks later; (3) the peer stopped between depth 3 and 6: both `channel_reestablish`es carry TLV 7 and the announcement completes; a node without `option_gossip_v2` neither opens nor is opened a public taproot channel. Found NL-1144 (fixed). NL-1080 (the Mutinynet trial) stays open.
 
 ### NL-1131 Splicing a public simple taproot channel is refused: its re-announcement is not implemented
-- **Status:** open
+- **Status:** fixed (8be037ac, merged with its proofs in a793bc8e; relay fix NL-1145 0b8de5c8)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Splicing/SpliceService.cs` (`PublicTaprootSpliceRefusal`), `src/NLightning.Application/Gossip/Announcements/ChannelAnnouncement2Service.cs`
@@ -4328,6 +4328,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** at `splice_locked` of a public taproot channel send our nonces in it, start a session for the new funding (the retired scid map keeps the old name for 72 blocks), re-announce, and lift the refusal.
 - **Blocks/Blocked-by:** Related NL-878, NL-021
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T7
+- **Update (t7 follow-ups, 2026-10-05, `wip/t7-followups`):** BOLTs #1059 still at `4eef3dfa` (no new commits). Our `splice_locked` of a public taproot channel carries fresh announcement nonces bound to the splice (TLVs 0/2; `ILightningSigner.CreateChannelAnnouncement2Nonces` accepts a registered pending splice for nonces only, signing still needs the current funding), the peer's are kept for the splice's session; `ChannelAnnouncement2Service` sessions are per funding (`CreateSpliceLockedNonces`, `OnSpliceLockedNonces`, `OnSpliceLocked` from `SpliceService.AfterLockAsync`, which drops the old announcement and signs when the splice is 6 deep); `announcement_signatures_2` name the splice's txid and scid (one naming a pending splice we have not locked is ignored, not a close); a reconnection's TLV 7 nonces are for the funding `my_current_funding_locked` names (a splice whose `splice_locked` we sent; `ReestablishService` passes it); a spliced channel never re-sends `channel_ready` nonces; the old scid forwards through the retired SCID map; both refusals (`StartAsync`, the peer's `splice_init`) are gone, still behind the experimental `option_simple_taproot`/`option_gossip_v2` gates. Splice RBF: the sibling that locks is announced. Proofs: `Application.Tests/Gossip/Announcements/SpliceAnnouncement2HarnessTests` (7: splice-in by Alice, splice-out by Bob, lock already 6 deep, restart after our `splice_locked`, restart between the lock and the 6th block, forged partial signature, splice RBF), the signer test `Given_APendingSplice_When_CreatingNonces_*`, `TaprootGossipProofTests` (+1, 4ed73bf2: Carol re-syncs the new scid, verified against the splice's P2TR output, and pays over it; an onion naming the old scid is forwarded by Bob through the retired map; `ThreeNodeHarness` gained opt-in splicing), and the regtest e2e `Docker/Taproot/TaprootPublicChannelFlowTests` splice case (splice-in by alice, splice-out by bob, every graph follows the new scid with the proof checked against bitcoind's P2TR output and the old one spent, a payment over the old scid inside the 72-block window, a hint-free payment over the latest scid), 3/3 runs green on the cluster (`rc-20261005165432`). Found NL-1145.
 
 ### NL-1130 Taproot gossip draft drift: LND's lnwire tolerates unknown even TLVs and numbers `disable_flags` differently
 - **Status:** open
@@ -4340,7 +4341,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T7
 
 ### NL-1140 Taproot gossip ingress: the chain lookup precedes the signature check, and no v2 blacklist or chain-check shortcuts
-- **Status:** open
+- **Status:** open (partial: 2ce6cc31)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.V2.cs`
@@ -4351,7 +4352,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Update (t7 follow-ups, 2026-10-05):** signature first: a 4-key `channel_announcement_2` (both bitcoin keys) has its MuSig2 signature checked against `KeyAgg(KeySort(node_id_1, node_id_2, bitcoin_key_1, bitcoin_key_2))` before any chain lookup (new `IGossipV2SignatureVerifier.CheckChannelSignature`, which needs no output); a bad signature (or keys that do not aggregate) warns, scores the peer and closes, with no lookup, so a flood of forged 4-key announcements costs no funding lookups. The lookup then checks only the output (outpoint = scid output, depth, amount >= capacity, P2TR = the untweaked or BIP 86 tweaked KeyAgg(b1, b2) via `CheckChannelProof`). A keyless (3-key) announcement of a new channel waits without a lookup in a second `PendingAnnouncementIndex` (`PendingAnnouncement.IsV2`, the v1 bounds `Gossip:MaxPendingAnnouncements`/`PendingAnnouncementTtl`, at most 4 candidates per scid, NL-418 eviction, pruned with the v1 index, gauge `queue=pending_announcements_v2`, counted by `IsPending` for the sync) until its first valid `channel_update_2` promotes it (`GossipIngress.PromoteV2Async`: the candidate whose node signed the update, then the lookup and the 3-key proof; a failed proof drops the candidate without blaming the update's sender). Tests: `Application.Tests/Gossip/Graph/GossipIngressV2PendingTests` (16), `Infrastructure.Bitcoin.Tests/Gossip/GossipV2SignatureVerifierTests` (+1). Remains: the v2 blacklist of a conflicting announcement (B7-CA-04), `Gossip:AssumeChannelValid` and `FundingValidation=SkipUnavailable` for v2 (such announcements are still refused), and the NL-425 refresh of an orphaned `node_announcement_2` whose node's only channels are pending v2 (it expires with the orphan TTL).
 
 ### NL-1141 Taproot gossip relay: the v2 backlog of a new filter is not paced, and v2 is missing from `describegraph`
-- **Status:** open
+- **Status:** open (partial: b4fb6269)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Relay/GossipRelayScheduler.RelayV2.cs`, `src/NLightning.Application/Gossip/Graph/GossipGraphDescriber.cs`
@@ -9255,3 +9256,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** Related NL-878, NL-1130
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T7
 
+### NL-1145 The taproot gossip relay never sends the peer's `channel_update_2` of a channel of ours
+- **Status:** fixed (0b8de5c8)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Gossip/Relay/GossipRelayScheduler.RelayV2.cs`
+- **Evidence:** the regtest e2e of a spliced public taproot channel (NL-1131, `TaprootPublicChannelFlowTests`, cluster batch `rc-20261005162927`, 3/3 failed): carol, connected to bob before the splice's re-announcement, got bob's own `channel_announcement_2` and `channel_update_2` but never alice's `channel_update_2`, though bob's graph held it. `CollectV2`, `SelectV2` and the v2 backlog skipped every channel we are an end of, so only the own path (our 267/271/269) reached peers; BOLT 7's relay skips only our own messages and relays the peer's update of our channel. The original T7 proofs passed because their third node learned the channel by queries after its announcement.
+- **Fix sketch:** As BOLT 7: leave only the 267 of a channel of ours to the own path, relay the peer's 271. Done: `GossipRelayV2Tests.Given_AChannelOfOurs_When_ThePeersUpdate2Changes_*` (collect and backlog; both fail without the fix); the e2e 3/3 green after it (`rc-20261005165432`).
+- **Blocks/Blocked-by:** Related NL-878, NL-1131
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T7

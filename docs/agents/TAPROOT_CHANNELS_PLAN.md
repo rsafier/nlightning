@@ -208,6 +208,10 @@ After the merge the integrator replays the spec's signed commitment vectors end 
 
 **Open:** NL-1140 (v2 blacklist and chain-check shortcuts; the signature-first check and the keyless pending index are done), NL-1141 (v2 relay backlog pacing; the `describegraph` counts are done), NL-1130 (draft drift), an interop proof once LND (or another implementation) ships the announcement flow, the P2WSH re-announcement bit (73) and announce-private bit (75).
 
+## T7 follow-ups record (2026-10-05, branch `wip/t7-followups` from `wip/fafo` at `b6adfa2e`)
+
+BOLTs #1059 unchanged (head `4eef3dfa`). **NL-1131 fixed** (`8be037ac`): a public taproot channel can be spliced and is re-announced under the splice (see "Exchange" above); proofs `SpliceAnnouncement2HarnessTests` (7), the extended `TaprootGossipProofTests` (`4ed73bf2`, a lane in `wip/t7-followups-proof`: Carol pays over the new scid, an onion naming the old scid forwards through the retired map) and the regtest e2e splice case of `Docker/Taproot/TaprootPublicChannelFlowTests` (splice-in by alice, splice-out by bob, every graph follows, a payment over the old scid inside the window). The e2e found **NL-1145** (`0b8de5c8`): the v2 relay never sent the peer's `channel_update_2` of a channel of ours. **NL-1140 partial** (`2ce6cc31`, lane `wip/t7-followups-ingress`): a 4-key `channel_announcement_2`'s MuSig2 signature is checked before the funding lookup; keyless announcements wait in a pending index until their first `channel_update_2`. **NL-1141 partial** (`b4fb6269`): `describegraph` v2 counts (IPC keys 35-40). Still open: the v2 blacklist and chain-check shortcuts (NL-1140), the v2 backlog pacing (NL-1141), NL-1130, NL-1081, an interop proof.
+
 ## 3. Decisions
 
 - **D-T1 (owner decision 2026-10-03): `OptionSimpleClose` Optional by default on every network**, independent of taproot (proven against LND, CLN and Eclair since ABCD wave 6 and batch10). Done in wave t01, lane SC.
