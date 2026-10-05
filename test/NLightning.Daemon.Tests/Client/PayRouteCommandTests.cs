@@ -1,5 +1,9 @@
+using System.Globalization;
+using System.Text.Json.Nodes;
+
 namespace NLightning.Daemon.Tests.Client;
 
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Payments.Enums;
@@ -163,6 +167,15 @@ public class PayRouteCommandTests
           "route 1, hop 1: outgoingShortChannelId is missing" },
         { """[{"firstHopChannel":"812345x12x0","firstHopAmountMsat":1,"firstHopCltv":1,"hops":[{"nodeId":"0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c","outgoingShortChannelId":1,"amountToForwardMsat":1,"outgoingCltvValue":1},{"nodeId":"02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","outgoingShortChannelId":2,"amountToForwardMsat":1,"outgoingCltvValue":1}]}]""",
           "route 1, hop 2 is the payee's final hop" },
+        // A short channel id is BLOCKxTXxOUTPUT or its 64-bit number, nothing else (NL-1085)
+        { """[{"firstHopChannel":"812345x12x0","firstHopAmountMsat":1,"firstHopCltv":1,"hops":[{"nodeId":"0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c","outgoingShortChannelId":"812345x12","amountToForwardMsat":1,"outgoingCltvValue":1},{"nodeId":"02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","amountToForwardMsat":1,"outgoingCltvValue":1}]}]""",
+          "route 1, hop 1: outgoingShortChannelId '812345x12' is neither a short channel id (BLOCKxTXxOUTPUT)" },
+        { """[{"firstHopChannel":"812345x12x0","firstHopAmountMsat":1,"firstHopCltv":1,"hops":[{"nodeId":"0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c","outgoingShortChannelId":-5,"amountToForwardMsat":1,"outgoingCltvValue":1},{"nodeId":"02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","amountToForwardMsat":1,"outgoingCltvValue":1}]}]""",
+          "route 1, hop 1: outgoingShortChannelId '-5' is neither" },
+        { """[{"firstHopChannel":"812345x12x0","firstHopAmountMsat":1,"firstHopCltv":1,"hops":[{"nodeId":"0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c","outgoingShortChannelId":true,"amountToForwardMsat":1,"outgoingCltvValue":1},{"nodeId":"02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","amountToForwardMsat":1,"outgoingCltvValue":1}]}]""",
+          "outgoingShortChannelId must be a BLOCKxTXxOUTPUT string or a number" },
+        { """[{"firstHopChannel":"812345x12x0","firstHopAmountMsat":1,"firstHopCltv":1,"hops":[{"nodeId":"02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","outgoingShortChannelId":"1x2x3","amountToForwardMsat":1,"outgoingCltvValue":1}]}]""",
+          "route 1, hop 1 is the payee's final hop and omits outgoingShortChannelId (1x2x3 given)" },
         { """[{"firstHopChannel":"812345x12x0","firstHopAmountMsat":1,"firstHopCltv":1,"hops":[{"nodeId":"0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c","amountToForwardMsat":1,"outgoingCltvValue":1}]},{"firstHopChannel":"812345x12x0","firstHopAmountMsat":1,"firstHopCltv":1,"hops":[{"nodeId":"02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","amountToForwardMsat":0,"outgoingCltvValue":1}]}]""",
           "route 2, hop 1: amountToForwardMsat" },
         { """[{"firstHopChannel":"812345x12x0","firstHopAmountMsat":1,"firstHopCltv":1,"hops":[{"nodeId":"0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c","amountToForwardMsat":1,"outgoingCltvValue":0}]}]""",
@@ -258,4 +271,164 @@ public class PayRouteCommandTests
         Assert.Contains("Failure:          TemporaryChannelFailure (0x1007) at hop 1", text);
         Assert.Contains("Failure Reason:   channel disabled", text);
     }
+
+    [Fact]
+    public void Given_StringAndNumericShortChannelIds_When_Parsed_Then_BothGiveTheSameId()
+    {
+        // Arrange (NL-1085): 812345x7x1 as BLOCKxTXxOUTPUT and as its 64-bit number
+        const ulong scid = (812_345UL << 40) | (7UL << 16) | 1;
+        static string Json(string outgoing) =>
+            $$"""
+              [{"firstHopChannel":"812345x12x0","firstHopAmountMsat":1001000,"firstHopCltv":812,
+                "hops":[{"nodeId":"{{PeerId}}","outgoingShortChannelId":{{outgoing}},"amountToForwardMsat":1000000,
+                         "outgoingCltvValue":800},
+                        {"nodeId":"{{PayeeId}}","amountToForwardMsat":1000000,"outgoingCltvValue":800}]}]
+              """;
+
+        // Act
+        var fromString = PayRouteRoutesJson.Parse(Json("\"812345x7x1\""), out var stringError);
+        var fromNumber = PayRouteRoutesJson.Parse(Json(scid.ToString(CultureInfo.InvariantCulture)),
+                                                  out var numberError);
+
+        // Assert
+        Assert.Null(stringError);
+        Assert.Null(numberError);
+        Assert.Equal(scid, Assert.Single(fromString!).Hops[0].OutgoingShortChannelId);
+        Assert.Equal(scid, Assert.Single(fromNumber!).Hops[0].OutgoingShortChannelId);
+    }
+
+    [Fact]
+    public void Given_TheJsonFlag_When_GetRouteIsParsed_Then_ItIsKept()
+    {
+        // Arrange (NL-1085)
+        string[] args = [PayeeId, "1000000", "--json", "--final-cltv", "40"];
+
+        // Act
+        var parsed = ClientApp.ParseGetRouteOptions(args, out var error);
+        var plain = ClientApp.ParseGetRouteOptions([PayeeId, "1000000"], out _);
+
+        // Assert: a flag without a value, anywhere among the options
+        Assert.Null(error);
+        Assert.True(parsed!.Json);
+        Assert.Equal((ushort?)40, parsed.FinalCltvDelta);
+        Assert.False(plain!.Json);
+        Assert.Null(ClientApp.ValidateArguments("getroute", args));
+        Assert.Null(ClientApp.ValidateArguments("get-route", ["--json", PayeeId, "10"]));
+    }
+
+    [Fact]
+    public void Given_ATwoHopQuote_When_PrintedAsJson_Then_EachHopCarriesWhatItReceivesAndForwards()
+    {
+        // Arrange
+        var output = new StringWriter();
+
+        // Act
+        new GetRouteJsonPrinter(output).Print(TwoHopQuote());
+
+        // Assert: the top level is our first HTLC; hop 0's outgoing fields are hop 1's incoming ones, and the payee's
+        // final hop forwards what it receives, without an outgoing channel
+        var root = JsonNode.Parse(output.ToString())!;
+        Assert.Equal(string.Concat(Enumerable.Repeat("c1", 32)), root["channelId"]!.GetValue<string>());
+        Assert.Equal(1_002_500UL, root["amountMsat"]!.GetValue<ulong>());
+        Assert.Equal(2_500UL, root["feeMsat"]!.GetValue<ulong>());
+        Assert.Equal(783U, root["cltvExpiry"]!.GetValue<uint>());
+        Assert.Equal(700U, root["blockHeight"]!.GetValue<uint>());
+        Assert.Equal(0.6, root["probability"]!.GetValue<double>());
+        Assert.Null(root["trampoline"]);
+        var hops = root["hops"]!.AsArray();
+        Assert.Equal(2, hops.Count);
+        Assert.Equal(PeerId, hops[0]!["nodeId"]!.GetValue<string>());
+        Assert.Equal("300x1x0", hops[0]!["shortChannelId"]!.GetValue<string>());
+        Assert.Equal(1_002_500UL, hops[0]!["amountMsat"]!.GetValue<ulong>());
+        Assert.Equal(783U, hops[0]!["cltvExpiry"]!.GetValue<uint>());
+        Assert.Equal(2_500UL, hops[0]!["feeMsat"]!.GetValue<ulong>());
+        Assert.Equal("101x2x1", hops[0]!["outgoingShortChannelId"]!.GetValue<string>());
+        Assert.Equal(1_000_000UL, hops[0]!["amountToForwardMsat"]!.GetValue<ulong>());
+        Assert.Equal(743U, hops[0]!["outgoingCltvValue"]!.GetValue<uint>());
+        Assert.Equal(PayeeId, hops[1]!["nodeId"]!.GetValue<string>());
+        Assert.Equal("101x2x1", hops[1]!["shortChannelId"]!.GetValue<string>());
+        Assert.False(hops[1]!.AsObject().ContainsKey("outgoingShortChannelId"));
+        Assert.Equal(1_000_000UL, hops[1]!["amountToForwardMsat"]!.GetValue<ulong>());
+        Assert.Equal(743U, hops[1]!["outgoingCltvValue"]!.GetValue<uint>());
+    }
+
+    [Fact]
+    public void Given_AGetRouteJsonAnswer_When_TheHelpRecipeTransformsIt_Then_PayRouteAcceptsTheQuotedRoute()
+    {
+        // Arrange: getroute --json, then the help's jq program, mirrored step by step:
+        //   [{firstHopChannel:.channelId,firstHopAmountMsat:.amountMsat,firstHopCltv:.cltvExpiry,
+        //     hops:[.hops[]|{nodeId,outgoingShortChannelId,amountToForwardMsat,outgoingCltvValue}]}
+        //    |.hops[-1]|=del(.outgoingShortChannelId)]
+        var output = new StringWriter();
+        new GetRouteJsonPrinter(output).Print(TwoHopQuote());
+        var quote = JsonNode.Parse(output.ToString())!;
+        var hops = new JsonArray();
+        foreach (var hop in quote["hops"]!.AsArray())
+        {
+            hops.Add(new JsonObject
+            {
+                ["nodeId"] = hop!["nodeId"]?.DeepClone(),
+                ["outgoingShortChannelId"] = hop["outgoingShortChannelId"]?.DeepClone(),
+                ["amountToForwardMsat"] = hop["amountToForwardMsat"]?.DeepClone(),
+                ["outgoingCltvValue"] = hop["outgoingCltvValue"]?.DeepClone()
+            });
+        }
+
+        hops[^1]!.AsObject().Remove("outgoingShortChannelId");
+        var routes = new JsonArray(new JsonObject
+        {
+            ["firstHopChannel"] = quote["channelId"]?.DeepClone(),
+            ["firstHopAmountMsat"] = quote["amountMsat"]?.DeepClone(),
+            ["firstHopCltv"] = quote["cltvExpiry"]?.DeepClone(),
+            ["hops"] = hops
+        });
+
+        // Act
+        var parsed = PayRouteRoutesJson.Parse(routes.ToJsonString(), out var error);
+
+        // Assert: exactly the quoted route: our HTLC on our channel, the peer forwarding the payee's HTLC over
+        // 101x2x1, the payee paid at the same expiry (the same HTLC)
+        Assert.Null(error);
+        var route = Assert.Single(parsed!);
+        Assert.Equal(string.Concat(Enumerable.Repeat("c1", 32)), route.FirstHopChannel);
+        Assert.Equal((1_002_500UL, 783U), (route.FirstHopAmountMsat, route.FirstHopCltv));
+        Assert.Equal(2, route.Hops.Count);
+        Assert.Equal(PeerId, Convert.ToHexStringLower(route.Hops[0].NodeId));
+        Assert.Equal((101UL << 40) | (2UL << 16) | 1, route.Hops[0].OutgoingShortChannelId);
+        Assert.Equal((1_000_000UL, 743U), (route.Hops[0].AmountToForwardMsat, route.Hops[0].OutgoingCltvValue));
+        Assert.Equal(PayeeId, Convert.ToHexStringLower(route.Hops[1].NodeId));
+        Assert.Null(route.Hops[1].OutgoingShortChannelId);
+        Assert.Equal((1_000_000UL, 743U), (route.Hops[1].AmountToForwardMsat, route.Hops[1].OutgoingCltvValue));
+    }
+
+    /// <summary>A quote over our channel 300x1x0 to the peer, which forwards over 101x2x1 to the payee.</summary>
+    private static GetRouteIpcResponse TwoHopQuote() => new()
+    {
+        ChannelId = new ChannelId(Enumerable.Repeat((byte)0xC1, 32).ToArray()),
+        Hops =
+        [
+            new GetRouteHopIpcInfo
+            {
+                NodeId = new CompactPubKey(Convert.FromHexString(PeerId)),
+                ShortChannelId = (300UL << 40) | (1UL << 16),
+                AmountMsat = 1_002_500,
+                CltvExpiry = 783,
+                FeeMsat = 2_500
+            },
+            new GetRouteHopIpcInfo
+            {
+                NodeId = new CompactPubKey(Convert.FromHexString(PayeeId)),
+                ShortChannelId = (101UL << 40) | (2UL << 16) | 1,
+                AmountMsat = 1_000_000,
+                CltvExpiry = 743,
+                FeeMsat = 0
+            }
+        ],
+        AmountMsat = 1_002_500,
+        FeeMsat = 2_500,
+        CltvExpiry = 783,
+        BlockHeight = 700,
+        Probability = 0.6,
+        Description = "graph route over 300x1x0 through 101x2x1"
+    };
 }

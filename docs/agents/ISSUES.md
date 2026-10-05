@@ -177,9 +177,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 82 | 83 |
+| open | 0 | 0 | 1 | 81 | 82 |
 | in-progress | 0 | 0 | 4 | 1 | 5 |
-| fixed | 15 | 68 | 221 | 457 | 761 |
+| fixed | 15 | 68 | 221 | 458 | 762 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
 | **Total** | **15** | **68** | **235** | **560** | **878** |
@@ -9318,7 +9318,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Plan ref:** `TEST_HARNESS_PLAN.md`
 
 ### NL-1085 `payroute` CLI: the help's `getroute --json` recipe does not exist, and hop SCIDs take only the numeric form
-- **Status:** open
+- **Status:** fixed (wip/nl1085: `getroute --json` (`Printers/GetRouteJsonPrinter`, source-generated) prints each hop's incoming view and its outgoing view in payroute's terms; the old recipe also read the incoming fields as the outgoing ones, off by one hop, so the help and `PAYROUTE_PLAN.md` recipe now copy the outgoing keys; `outgoingShortChannelId` takes `BLOCKxTXxOUTPUT` or the number, a malformed value is named with its route and hop; the recipe end to end in `PayRouteCommandTests`, checked with real jq)
 - **Severity:** low
 - **Kind:** ux
 - **Location:** `src/NLightning.Client/Utils/ClientUtils.cs` (the payroute help recipe, around line 106), `src/NLightning.Client/PayRouteRoutesJson.cs` (`outgoingShortChannelId`), `getroute` in `ClientApp`

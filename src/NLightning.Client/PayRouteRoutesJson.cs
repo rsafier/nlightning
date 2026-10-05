@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -132,13 +133,20 @@ internal static class PayRouteRoutesJson
         if (isFinal && hop.OutgoingShortChannelId is not null)
         {
             error = $"{name} is the payee's final hop and omits outgoingShortChannelId "
-                  + $"({hop.OutgoingShortChannelId} given).";
+                  + $"({hop.OutgoingShortChannelId.Text} given).";
             return null;
         }
 
         if (!isFinal && hop.OutgoingShortChannelId is null)
         {
             error = $"{name}: outgoingShortChannelId is missing; only the payee's final hop omits it.";
+            return null;
+        }
+
+        if (hop.OutgoingShortChannelId is { Value: null } malformed)
+        {
+            error = $"{name}: outgoingShortChannelId '{malformed.Text}' is neither a short channel id "
+                  + "(BLOCKxTXxOUTPUT) nor its 64-bit number.";
             return null;
         }
 
@@ -155,7 +163,7 @@ internal static class PayRouteRoutesJson
         }
 
         error = null;
-        return new PayRouteHopArguments(nodeId, hop.OutgoingShortChannelId, hop.AmountToForwardMsat.Value,
+        return new PayRouteHopArguments(nodeId, hop.OutgoingShortChannelId?.Value, hop.AmountToForwardMsat.Value,
                                         hop.OutgoingCltvValue.Value);
     }
 }
@@ -177,11 +185,53 @@ internal sealed class PayRouteHopJson
 {
     public string? NodeId { get; set; }
 
-    public ulong? OutgoingShortChannelId { get; set; }
+    [JsonConverter(typeof(PayRouteShortChannelIdJsonConverter))]
+    public PayRouteShortChannelIdJson? OutgoingShortChannelId { get; set; }
 
     public ulong? AmountToForwardMsat { get; set; }
 
     public uint? OutgoingCltvValue { get; set; }
+}
+
+/// <summary>
+/// A hop's <c>outgoingShortChannelId</c> as given (NL-1085): <see cref="Text"/> is the JSON value, <see cref="Value"/>
+/// the short channel id, or null when the value is neither form.
+/// </summary>
+internal sealed record PayRouteShortChannelIdJson(string Text, ulong? Value);
+
+/// <summary>
+/// Reads a short channel id as the 64-bit JSON number or as a <c>BLOCKxTXxOUTPUT</c> string (the form every other CLI
+/// command and <c>getroute --json</c> use). A malformed value is kept with a null <see cref="PayRouteShortChannelIdJson.Value"/>
+/// so the validation can name its route and hop; any other JSON type is not a short channel id at all.
+/// </summary>
+internal sealed class PayRouteShortChannelIdJsonConverter : JsonConverter<PayRouteShortChannelIdJson>
+{
+    public override PayRouteShortChannelIdJson Read(ref Utf8JsonReader reader, Type typeToConvert,
+                                                     JsonSerializerOptions options)
+    {
+        switch (reader.TokenType)
+        {
+            case JsonTokenType.Number:
+                var number = System.Text.Encoding.UTF8.GetString(reader.HasValueSequence
+                                                                     ? reader.ValueSequence.ToArray()
+                                                                     : reader.ValueSpan);
+                return new PayRouteShortChannelIdJson(number,
+                                                      reader.TryGetUInt64(out var value) ? value : null);
+            case JsonTokenType.String:
+                var text = reader.GetString() ?? string.Empty;
+                return new PayRouteShortChannelIdJson(text,
+                                                      ClientApp.TryParseShortChannelId(text, out var scid)
+                                                          ? scid
+                                                          : null);
+            default:
+                throw new JsonException(
+                    $"outgoingShortChannelId must be a BLOCKxTXxOUTPUT string or a number, not {reader.TokenType}.");
+        }
+    }
+
+    public override void Write(Utf8JsonWriter writer, PayRouteShortChannelIdJson value,
+                               JsonSerializerOptions options) =>
+        throw new NotSupportedException("The routes JSON is only read.");
 }
 
 /// <summary>

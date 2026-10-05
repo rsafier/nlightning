@@ -36,7 +36,17 @@ the as-built state and the edge-case catalog.
   1 `RouteOutcomes[]` (Index, Status, HtlcId, FailureCode, FailureSourceIndex, FailureReason).
 - CLI: `nltg payroute <bolt11> --routes <file|->` / `--payment-hash [--payment-secret]
   [--total-msat]`; JSON routes (camelCase, case-insensitive), `--routes -` reads stdin; labels
-  supported; `RefusedWhileDraining` refuses it while draining.
+  supported; `RefusedWhileDraining` refuses it while draining. A hop's `outgoingShortChannelId`
+  is `BLOCKxTXxOUTPUT` or its u64 number (NL-1085). `getroute --json` (client only,
+  `GetRouteJsonPrinter`) prints a quote with each hop's incoming view (`shortChannelId`,
+  `amountMsat`, `cltvExpiry`, as the text form) and its outgoing view in this schema's terms
+  (`outgoingShortChannelId` = the next hop's incoming channel, omitted on the final hop;
+  `amountToForwardMsat`/`outgoingCltvValue` = the next hop's incoming amount/expiry, the
+  final hop's own), so the help's recipe is a key-for-key copy:
+  `nltg getroute <node> <msat> --final-cltv <delta> --json | jq -c '[{firstHopChannel:.channelId,
+  firstHopAmountMsat:.amountMsat,firstHopCltv:.cltvExpiry,hops:[.hops[]|{nodeId,
+  outgoingShortChannelId,amountToForwardMsat,outgoingCltvValue}]}|.hops[-1]|=del(.outgoingShortChannelId)]'`
+  (not for a `--trampoline` quote).
 
 ## 3. Service layer
 

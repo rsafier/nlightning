@@ -257,7 +257,10 @@ internal static class ClientApp
                     var route = await client.GetRouteAsync(routeArgs.NodeId, routeArgs.AmountMsat,
                                                            routeArgs.MaxFeeMsat, routeArgs.FinalCltvDelta,
                                                            routeArgs.TrampolineNode, cancellationToken);
-                    new GetRoutePrinter().Print(route);
+                    if (routeArgs.Json)
+                        new GetRouteJsonPrinter().Print(route);
+                    else
+                        new GetRoutePrinter().Print(route);
                     break;
                 case "describegraph":
                 case "describe-graph":
@@ -1567,24 +1570,31 @@ internal static class ClientApp
     /// <c>--max-fee-msat &lt;msat&gt;</c> (0 to <see cref="MaxPayFeeMsat"/>), <c>--final-cltv &lt;blocks&gt;</c> (the
     /// destination's <c>min_final_cltv_expiry_delta</c>, 1 to 65535) and <c>--trampoline &lt;node_id&gt;</c> (quote the
     /// outer route to a trampoline node, priced with its cached or the default policy, NL-940), each also as
-    /// <c>--option=value</c>.
+    /// <c>--option=value</c>, and the flag <c>--json</c> (print the route as JSON, NL-1085).
     /// </summary>
     /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
     internal static GetRouteArguments? ParseGetRouteOptions(string[] commandArgs, out string? error)
     {
         const string usage =
             "Usage: getroute <node_id> <amount_msat> [--max-fee-msat <msat>] [--final-cltv <blocks>] "
-            + "[--trampoline <node_id>]";
+            + "[--trampoline <node_id>] [--json]";
         var positional = new List<string>();
         ulong? maxFeeMsat = null;
         ushort? finalCltv = null;
         CompactPubKey? trampolineNode = null;
+        var json = false;
         for (var i = 0; i < commandArgs.Length; i++)
         {
             var argument = commandArgs[i];
             if (!argument.StartsWith("--", StringComparison.Ordinal))
             {
                 positional.Add(argument);
+                continue;
+            }
+
+            if (string.Equals(argument, "--json", StringComparison.OrdinalIgnoreCase))
+            {
+                json = true;
                 continue;
             }
 
@@ -1637,7 +1647,7 @@ internal static class ClientApp
                     trampolineNode = trampoline;
                     break;
                 default:
-                    error = $"Unknown option '{name}': expected --max-fee-msat, --final-cltv or --trampoline.";
+                    error = $"Unknown option '{name}': expected --max-fee-msat, --final-cltv, --trampoline or --json.";
                     return null;
             }
         }
@@ -1662,7 +1672,7 @@ internal static class ClientApp
         }
 
         error = null;
-        return new GetRouteArguments(nodeId, amount, maxFeeMsat, finalCltv, trampolineNode);
+        return new GetRouteArguments(nodeId, amount, maxFeeMsat, finalCltv, trampolineNode, json);
     }
 
     /// <summary>
@@ -2025,7 +2035,8 @@ internal sealed record ListForwardsArguments(int Skip, int Take, long? Since, lo
 /// The parsed arguments of getroute.
 /// </summary>
 internal sealed record GetRouteArguments(CompactPubKey NodeId, ulong AmountMsat, ulong? MaxFeeMsat,
-                                         ushort? FinalCltvDelta, CompactPubKey? TrampolineNode = null);
+                                         ushort? FinalCltvDelta, CompactPubKey? TrampolineNode = null,
+                                         bool Json = false);
 
 /// <summary>
 /// The parsed arguments of payinvoice.
