@@ -32,6 +32,13 @@ public sealed class DescribeGraphPrinter : IPrinter<DescribeGraphIpcResponse>
             var state = item.IsOverMemoryBudget == true ? "OVER BUDGET, new channels and nodes refused" : "ok";
             Line($"  Memory (process):   {ToMegabytes(item.ProcessWorkingSetBytes ?? 0)} MiB RSS, {ToMegabytes(item.ProcessManagedHeapBytes ?? 0)} MiB managed heap; budget {limit} ({state}, {item.MemoryBudgetRefused ?? 0} refused)");
         }
+        if (item.V2Channels > 0 || item.V2Policies > 0 || item.V2AnnouncedNodes > 0
+         || item.PendingAnnouncements2 is > 0)
+        {
+            // NL-1141: taproot gossip (NL-878), shown once the graph holds any
+            Line($"  Taproot gossip:     {item.V2Channels} channels ({item.ChannelsWithBothVersions} also BOLT 7), {item.V2Policies} policies ({item.V2DisabledPolicies} disabled), {item.V2AnnouncedNodes} announced nodes, {Optional(item.PendingAnnouncements2)} announcements without update");
+        }
+
         Line($"  Pending writes:     {item.PendingWrites}");
         Line($"  Ingress:            {Optional(item.IngressQueued)} queued, {Optional(item.IngressDropped)} dropped, {Optional(item.Orphans)} orphans, {Optional(item.PendingAnnouncements)} announcements without update");
         if (item.IsRelayingOthers is not null || item.OutboxGossipMessages is not null)

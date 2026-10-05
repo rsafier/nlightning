@@ -29,6 +29,7 @@ public sealed class GossipGraphDescriber
     {
         var snapshot = _store.GetSnapshot();
         int spent = 0, unverified = 0, own = 0, withoutPolicy = 0, disabled = 0, policies = 0;
+        int v2Channels = 0, bothVersions = 0, v2Policies = 0, v2Disabled = 0;
         ulong capacitySat = 0;
         foreach (var channel in snapshot.Channels)
         {
@@ -40,7 +41,8 @@ public sealed class GossipGraphDescriber
                 unverified++;
             if (channel.Verification == Domain.Gossip.Graph.GraphChannelVerification.Own)
                 own++;
-            if (channel.Policy1 is null && channel.Policy2 is null)
+            if (channel.Policy1 is null && channel.Policy2 is null && channel.Policy1V2 is null
+             && channel.Policy2V2 is null)
                 withoutPolicy++;
             foreach (var policy in (ReadOnlySpan<GraphPolicy?>)[channel.Policy1, channel.Policy2])
             {
@@ -52,6 +54,24 @@ public sealed class GossipGraphDescriber
                     disabled++;
             }
 
+            // NL-1141: taproot gossip (NL-878), counted apart from the BOLT 7 policies above
+            if (channel.HasV2)
+            {
+                v2Channels++;
+                if (channel.HasV1)
+                    bothVersions++;
+            }
+
+            foreach (var policy in (ReadOnlySpan<GraphPolicy?>)[channel.Policy1V2, channel.Policy2V2])
+            {
+                if (policy is null)
+                    continue;
+
+                v2Policies++;
+                if (policy.IsDisabled)
+                    v2Disabled++;
+            }
+
             // Only unspent channels whose capacity came from the chain (verified or our own) count
             if (channel.SpentAtHeight is null && channel.IsChainChecked)
                 capacitySat += channel.CapacitySat ?? 0;
@@ -60,13 +80,27 @@ public sealed class GossipGraphDescriber
         var ingress = _ingress is null
                           ? null
                           : new GossipIngressState(_ingress.QueuedCount, _ingress.DroppedCount,
-                                                   _ingress.Orphans.Count, _ingress.PendingAnnouncementCount);
+                                                   _ingress.Orphans.Count, _ingress.PendingAnnouncementCount)
+                          {
+                              PendingAnnouncements2 = _ingress.PendingAnnouncement2Count
+                          };
         var sync = _syncManager is null
                        ? null
                        : new GossipSyncState(_syncManager.HasCompletedInitialSync, _syncManager.GetPeerStates());
+        int announcedNodes = 0, v2Nodes = 0;
+        foreach (var node in snapshot.Nodes)
+        {
+            announcedNodes++;
+            if (node.HasV2)
+                v2Nodes++;
+        }
+
         return new GraphDescription(_store.IsLoaded, snapshot, snapshot.ChannelCount, spent, unverified, own,
-                                    withoutPolicy, policies, disabled, snapshot.Nodes.Count(), snapshot.NodeCount,
-                                    capacitySat, _store.PendingChanges, _store.GetMemoryEstimate(), ingress, sync);
+                                    withoutPolicy, policies, disabled, announcedNodes, snapshot.NodeCount,
+                                    capacitySat, _store.PendingChanges, _store.GetMemoryEstimate(), ingress, sync)
+        {
+            V2 = new GraphV2Counts(v2Channels, bothVersions, v2Policies, v2Disabled, v2Nodes)
+        };
     }
 }
 
@@ -79,8 +113,10 @@ public sealed class GossipGraphDescriber
 /// Channels kept without a funding check (<c>FundingValidation = SkipUnavailable</c>, or <c>AssumeChannelValid</c>).
 /// </param>
 /// <param name="OwnChannels">Our own announced channels.</param>
-/// <param name="ChannelsWithoutPolicy">Channels with no <c>channel_update</c> in either direction.</param>
-/// <param name="Policies">Stored <c>channel_update</c> directions.</param>
+/// <param name="ChannelsWithoutPolicy">
+/// Channels with no <c>channel_update</c> nor <c>channel_update_2</c> in either direction.
+/// </param>
+/// <param name="Policies">Stored <c>channel_update</c> directions (BOLT 7 only; see <see cref="V2"/>).</param>
 /// <param name="DisabledPolicies">Directions whose <c>disable</c> bit is set.</param>
 /// <param name="AnnouncedNodes">Nodes with a <c>node_announcement</c>.</param>
 /// <param name="GraphNodes">Nodes the graph knows (channel ends and announced nodes).</param>
@@ -107,7 +143,20 @@ public sealed record GraphDescription(
     int PendingWrites,
     GraphMemoryEstimate Memory,
     GossipIngressState? Ingress,
-    GossipSyncState? Sync);
+    GossipSyncState? Sync)
+{
+    /// <summary>The taproot gossip counts (NL-878, NL-1141).</summary>
+    public GraphV2Counts V2 { get; init; } = new(0, 0, 0, 0, 0);
+}
+
+/// <summary>The taproot gossip part of the graph (BOLTs PR #1059, NL-878; NL-1141).</summary>
+/// <param name="Channels">Channels with a <c>channel_announcement_2</c>, spent ones included.</param>
+/// <param name="ChannelsWithBothVersions">Of those, channels also announced with a BOLT 7 <c>channel_announcement</c>.</param>
+/// <param name="Policies">Stored <c>channel_update_2</c> directions.</param>
+/// <param name="DisabledPolicies">Of those, directions with a disable flag set.</param>
+/// <param name="AnnouncedNodes">Nodes with a <c>node_announcement_2</c>.</param>
+public sealed record GraphV2Counts(int Channels, int ChannelsWithBothVersions, int Policies, int DisabledPolicies,
+                                   int AnnouncedNodes);
 
 /// <summary>The graph ingress's queues.</summary>
 /// <param name="QueuedMessages">Messages waiting for a worker.</param>
@@ -117,7 +166,14 @@ public sealed record GraphDescription(
 /// Signed <c>channel_announcement</c>s kept outside the graph until their first <c>channel_update</c> (NL-406).
 /// </param>
 public sealed record GossipIngressState(int QueuedMessages, long DroppedMessages, int Orphans,
-                                        int PendingAnnouncements);
+                                        int PendingAnnouncements)
+{
+    /// <summary>
+    /// Keyless <c>channel_announcement_2</c>s kept outside the graph until their first <c>channel_update_2</c>
+    /// (NL-1140).
+    /// </summary>
+    public int PendingAnnouncements2 { get; init; }
+}
 
 /// <summary>The gossip sync's state.</summary>
 /// <param name="HasCompletedInitialSync">A range sync with at least one peer completed.</param>

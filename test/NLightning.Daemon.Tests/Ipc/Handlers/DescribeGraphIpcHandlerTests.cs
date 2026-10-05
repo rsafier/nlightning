@@ -81,6 +81,9 @@ public class DescribeGraphIpcHandlerTests
         Assert.Equal(0L, payload.IngressDropped);
         Assert.Equal(0, payload.Orphans);
         Assert.Equal(0, payload.PendingAnnouncements);
+        Assert.Equal((0, 0, 0, 0, 0, 0), (payload.V2Channels, payload.ChannelsWithBothVersions,
+                                          payload.V2Policies, payload.V2DisabledPolicies, payload.V2AnnouncedNodes,
+                                          payload.PendingAnnouncements2!.Value));
         Assert.False(payload.HasCompletedInitialSync);
         Assert.Empty(payload.Peers);
         Assert.Empty(payload.ChannelPage);
@@ -237,6 +240,12 @@ public class DescribeGraphIpcHandlerTests
             Orphans = 11,
             PendingAnnouncements = 12,
             HasCompletedInitialSync = true,
+            V2Channels = 13,
+            ChannelsWithBothVersions = 14,
+            V2Policies = 15,
+            V2DisabledPolicies = 16,
+            V2AnnouncedNodes = 17,
+            PendingAnnouncements2 = 18,
             Peers =
             [
                 new GraphPeerSyncInfo(s_bob, true, true, true, false, lastSync, 1_700_000_000, uint.MaxValue,
@@ -267,6 +276,9 @@ public class DescribeGraphIpcHandlerTests
         Assert.Equal((9, 10L, 11, true), (payload.IngressQueued, payload.IngressDropped, payload.Orphans,
                                           payload.HasCompletedInitialSync));
         Assert.Equal(12, payload.PendingAnnouncements);
+        Assert.Equal((13, 14, 15, 16, 17, 18),
+                     (payload.V2Channels, payload.ChannelsWithBothVersions, payload.V2Policies,
+                      payload.V2DisabledPolicies, payload.V2AnnouncedNodes, payload.PendingAnnouncements2!.Value));
         Assert.Equal(2, payload.Peers.Count);
         var bob = payload.Peers[0];
         Assert.Equal(s_bob, bob.PeerId);
@@ -326,6 +338,53 @@ public class DescribeGraphIpcHandlerTests
         Assert.Null(payload.MemoryBudgetBytes);
         Assert.Null(payload.ProcessWorkingSetBytes);
         Assert.Null(payload.IsOverMemoryBudget);
+    }
+
+    [Fact]
+    public async Task Given_AGraphWithTaprootGossip_When_DescribeGraph_Then_TheV2CountsCrossTheWire()
+    {
+        // Arrange (NL-1141): a v2-only channel with a v2 policy in each direction (one disabled), a channel announced
+        // with both protocols and one v2 policy, and alice's node_announcement_2
+        var store = new GraphStore(new Mock<IServiceScopeFactory>().Object, NullLogger<GraphStore>.Instance);
+        Assert.True(store.TryAddChannel(new GraphChannel(s_ab, s_alice, s_bob, null, null, 1_000_000)
+        {
+            Versions = GraphGossipVersions.V2
+        }));
+        Assert.True(store.TryAddChannel(new GraphChannel(s_bc, s_bob, s_carol, PubKey(0x02, 12), PubKey(0x03, 13),
+                                                         2_000_000)
+        {
+            Versions = GraphGossipVersions.V1 | GraphGossipVersions.V2
+        }));
+        Assert.True(store.TryApplyPolicy(s_ab, new GraphPolicy(900, 1, 0, 40, 1_000, 990_000_000, 1_000, 100)
+        {
+            GossipVersion = 2
+        }));
+        Assert.True(store.TryApplyPolicy(s_ab, new GraphPolicy(900, 1, 3, 40, 1_000, 990_000_000, 1_000, 100)
+        {
+            GossipVersion = 2
+        }));
+        Assert.True(store.TryApplyPolicy(s_bc, new GraphPolicy(901, 1, 0, 40, 1_000, 990_000_000, 1_000, 100)
+        {
+            GossipVersion = 2
+        }));
+        Assert.True(store.TryApplyNode2(new GraphNode(s_alice, 900, default, new byte[32], [4, 5, 6])
+        {
+            Versions = GraphGossipVersions.V2
+        }));
+        using var provider = BuildProvider(store);
+        var handler = new DescribeGraphIpcHandler(NullLogger<DescribeGraphIpcHandler>.Instance, provider);
+
+        // Act
+        var response = await handler.HandleAsync(Envelope(new DescribeGraphIpcRequest()),
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        var payload = Read(response);
+        Assert.Equal(2, payload.Channels);
+        Assert.Equal((2, 1, 3, 1, 1, 0), (payload.V2Channels, payload.ChannelsWithBothVersions, payload.V2Policies,
+                                          payload.V2DisabledPolicies, payload.V2AnnouncedNodes,
+                                          payload.PendingAnnouncements2!.Value));
+        Assert.Equal((0, 0), (payload.Policies, payload.ChannelsWithoutPolicy));
     }
 
     /// <summary>

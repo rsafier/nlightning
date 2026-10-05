@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Tests.Utils.Gossip;
 
 namespace NLightning.Application.Tests.Gossip.Graph;
 
@@ -56,6 +57,61 @@ public class GossipGraphDescriberTests
         Assert.Equal(kit.Store.GetMemoryEstimate(), description.Memory);
         Assert.Equal(new GossipIngressState(0, 0, 1, 1), description.Ingress);
         Assert.Null(description.Sync);
+    }
+
+    [Fact]
+    public async Task Given_TaprootGossip_When_Described_Then_TheV2CountsAndPendingV2AnnouncementsAreReported()
+    {
+        // Arrange (NL-1141): a v2 channel through the real ingress with both v2 updates (bob's disabled) and alice's
+        // node_announcement_2, and a keyless channel_announcement_2 waiting for its first update (NL-1140)
+        const uint tip = 3_000;
+        var alice = new GossipV2TestKey(1);
+        var bob = new GossipV2TestKey(2);
+        var aliceFunding = new GossipV2TestKey(11);
+        var bobFunding = new GossipV2TestKey(12);
+        var scid = new ShortChannelId(900, 1, 0);
+        var kit = new GraphTestKit(gossipV2: true, tipHeight: tip);
+        kit.OutputFound(GossipV2TestSigner.TaprootFundingScript(aliceFunding.PubKey, bobFunding.PubKey));
+        var ct = TestContext.Current.CancellationToken;
+        var peer = GraphTestKit.CreatePeer().Object;
+        var (node1, node2) = ((ReadOnlySpan<byte>)alice.PubKey).SequenceCompareTo(bob.PubKey) < 0
+                                 ? (alice, bob)
+                                 : (bob, alice);
+        Assert.Equal(GossipIngressOutcome.Accepted,
+                     (await kit.Ingress.ProcessAsync(
+                          peer, new ChannelAnnouncement2Message(GossipV2TestSigner.SignedChannelAnnouncement2(
+                                                                    ChainConstants.Regtest, scid, 1_000_000, alice,
+                                                                    bob, aliceFunding, bobFunding,
+                                                                    GraphTestKit.TxIdFor(scid))), 0, ct)).Outcome);
+        await kit.Ingress.ProcessAsync(peer, new ChannelUpdate2Message(
+                                           GossipV2TestSigner.SignedChannelUpdate2(ChainConstants.Regtest, scid, 0,
+                                                                                   tip - 1, node1)), 0, ct);
+        await kit.Ingress.ProcessAsync(peer, new ChannelUpdate2Message(
+                                           GossipV2TestSigner.SignedChannelUpdate2(ChainConstants.Regtest, scid, 1,
+                                                                                   tip - 1, node2,
+                                                                                   disableFlags: 1)), 0, ct);
+        await kit.Ingress.ProcessAsync(peer, new NodeAnnouncement2Message(
+                                           GossipV2TestSigner.SignedNodeAnnouncement2(alice, tip - 1)), 0, ct);
+        var keylessScid = new ShortChannelId(901, 1, 0);
+        var unsigned = ChannelAnnouncement2Payload.Create(ChainConstants.Regtest, ReadOnlySpan<byte>.Empty,
+                                                          keylessScid, 1_000_000, node1.PubKey, node2.PubKey, null,
+                                                          null, ReadOnlySpan<byte>.Empty,
+                                                          GraphTestKit.TxIdFor(keylessScid), 0);
+        var keyless = unsigned.WithSignature(new Domain.Crypto.ValueObjects.CompactSignature(
+                                                 GossipV2TestSigner.MusigSign([node1, node2],
+                                                                              (byte[])unsigned.GetSignatureHash())));
+        Assert.Equal(GossipIngressOutcome.Pending,
+                     (await kit.Ingress.ProcessAsync(peer, new ChannelAnnouncement2Message(keyless), 0, ct)).Outcome);
+        var describer = new GossipGraphDescriber(kit.Store, kit.Ingress);
+
+        // Act
+        var description = describer.Describe();
+
+        // Assert
+        Assert.Equal(new GraphV2Counts(1, 0, 2, 1, 1), description.V2);
+        Assert.Equal((1, 0, 0), (description.Channels, description.Policies, description.ChannelsWithoutPolicy));
+        Assert.NotNull(description.Ingress);
+        Assert.Equal((0, 1), (description.Ingress.PendingAnnouncements, description.Ingress.PendingAnnouncements2));
     }
 
     [Fact]
