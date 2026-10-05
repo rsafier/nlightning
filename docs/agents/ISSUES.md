@@ -9318,7 +9318,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Plan ref:** `TEST_HARNESS_PLAN.md`
 
 ### NL-1085 `payroute` CLI: the help's `getroute --json` recipe does not exist, and hop SCIDs take only the numeric form
-- **Status:** fixed (1683c295) prints each hop's incoming view and its outgoing view in payroute's terms; the old recipe also read the incoming fields as the outgoing ones, off by one hop, so the help and `PAYROUTE_PLAN.md` recipe now copy the outgoing keys; `outgoingShortChannelId` takes `BLOCKxTXxOUTPUT` or the number, a malformed value is named with its route and hop; the recipe end to end in `PayRouteCommandTests`, checked with real jq)
+- **Status:** fixed (1683c295)
 - **Severity:** low
 - **Kind:** ux
 - **Location:** `src/NLightning.Client/Utils/ClientUtils.cs` (the payroute help recipe, around line 106), `src/NLightning.Client/PayRouteRoutesJson.cs` (`outgoingShortChannelId`), `getroute` in `ClientApp`
@@ -9326,4 +9326,5 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** add `getroute --json` with the field names the recipe expects (`channelId`, `amountMsat`, `cltvExpiry`, `hops[].{nodeId, shortChannelId, amountMsat, cltvExpiry}`), or change the recipe to what exists; let `outgoingShortChannelId` take a string in `BLOCKxTXxOUTPUT` form as well as the number. Tests: the recipe end to end in `PayRouteCommandTests`.
 - **Blocks/Blocked-by:** Part of NL-1082
 - **Plan ref:** `docs/agents/PAYROUTE_PLAN.md`
+- **Fix (1683c295):** `getroute --json` (`Printers/GetRouteJsonPrinter`, source-generated) prints each hop's incoming view and its outgoing view in payroute's terms; the old recipe also read the incoming fields as the outgoing ones, off by one hop, so the help and `PAYROUTE_PLAN.md` recipe now copy the outgoing keys; `outgoingShortChannelId` takes `BLOCKxTXxOUTPUT` or the number, a malformed value is named with its route and hop; the recipe end to end in `PayRouteCommandTests`, checked with real jq.
 
