@@ -65,6 +65,8 @@ public sealed class TaprootPublicChannelFlowTests : IAsyncLifetime
     private const long CarolChannelSat = 400_000;
     private const long PaymentSat = 25_000;
     private const int AnnouncementDepth = 6;
+    private const ulong SpliceInSat = 200_000;
+    private const ulong SpliceOutSat = 100_000;
     private const ushort ChannelReestablishType = 136;
     private const ushort AnnouncementSignaturesType = 259;
     private const ushort AnnouncementSignatures2Type = 260;
@@ -283,6 +285,84 @@ public sealed class TaprootPublicChannelFlowTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Given_APublicTaprootChannel_When_SplicedInAndOut_Then_EveryGraphFollowsTheNewScidAndTheOldOneStillForwards()
+    {
+        // Arrange: alice and bob announce their public taproot channel; carol, bob's peer only, learns it and opens a
+        // private channel to bob
+        var ct = TestContext.Current.CancellationToken;
+        var alice = await StartNodeAsync("tps-alice", "nltg-tps-alice", true, ct);
+        var bob = await StartNodeAsync("tps-bob", "nltg-tps-bob", true, ct, AccepterContributionSat);
+        var carol = await StartNodeAsync("tps-carol", "nltg-tps-carol", true, ct);
+        await alice.FundWalletAsync(LightningMoney.Satoshis(1_500_000), AddressType.P2Wpkh, ct);
+        await bob.FundWalletAsync(LightningMoney.Satoshis(1_000_000), AddressType.P2Wpkh, ct);
+        await carol.FundWalletAsync(LightningMoney.Satoshis(1_000_000), AddressType.P2Wpkh, ct);
+        await Day0Harness.ConnectBothWaysAsync(alice, bob, ct);
+        var channelId = await OpenPublicTaprootChannelAsync(alice, bob, ct);
+        var (openAlice, _) = await Day0Harness.MineUntilUsableAsync(_fixture, [], alice, bob, channelId, ct);
+        var openScid = openAlice.ShortChannelId!.Value;
+        await MineUntilAnnouncedAsync([alice, bob], openScid, [alice, bob], ct);
+        await carol.ConnectToAsync(bob, ct);
+        var carolChannel = await carol.OpenChannelAsync(new OpenChannelClientRequest(bob.Address,
+                                                            LightningMoney.Satoshis(CarolChannelSat)), ct);
+        await Day0Harness.MineUntilUsableAsync(_fixture, [], carol, bob, carolChannel.ChannelId, ct);
+        await MineUntilAnnouncedAsync([carol], openScid, [alice, bob], ct);
+
+        // Act 1: alice splices in (NL-1131: refused before), mined until locked both ways
+        await Day0Harness.WaitSettledAsync(alice, channelId, ct);
+        var spliceIn = await Day0Harness.SpliceInAsync(alice, channelId, SpliceInSat, ct);
+        var spliceInTxId = Day0Harness.AssertSigned(spliceIn);
+        await Day0Harness.WaitInMempoolAsync(_fixture, spliceInTxId, ct);
+        var (lockedIn, _) = await Day0Harness.MineUntilSpliceLockedAsync(_fixture, [], alice, bob, channelId,
+                                                                        spliceInTxId, ct);
+        var spliceInScid = lockedIn.ShortChannelId!.Value;
+        Assert.NotEqual(openScid, spliceInScid);
+        Assert.Contains(lockedIn.RetiredShortChannelIds, r => r.ShortChannelId == openScid);
+
+        // Act 2: inside the 72-block window, carol pays alice over the OLD scid (alice's invoice re-signed with a
+        // route hint naming it; carol's graph has no usable route to alice before the splice is announced)
+        var oldScidPayment = await PayOverHintAsync(carol, alice, bob, openScid, ct);
+
+        // Assert 2: bob forwarded it through the retired map onto the channel
+        Assert.Equal(PaymentStatus.Succeeded, oldScidPayment.Payment.Status);
+        var retiredForward = await WaitForwardFulfilledAsync(bob, oldScidPayment.PaymentHash, ct);
+        Assert.Equal(channelId, retiredForward.OutgoingChannelId);
+
+        // Act 3: mined until every graph holds the splice's scid as a v2 channel
+        await MineUntilAnnouncedAsync([alice, bob, carol], spliceInScid, [alice, bob], ct);
+
+        // Assert 3: the new channel_announcement_2 checks against the splice's P2TR output, the old scid is spent
+        await AssertSpliceAnnouncedAsync([alice, bob, carol], [alice, bob], spliceInScid, lockedIn, openScid, ct);
+
+        // Act 4: bob splices out to a bitcoind address, mined until locked and announced again
+        await Day0Harness.WaitSettledAsync(bob, channelId, ct);
+        var address = await _fixture.Bitcoin.GetNewAddressAsync(ct);
+        var spliceOut = await Day0Harness.SpliceOutAsync(bob, channelId, SpliceOutSat, address.ToString(), ct);
+        var spliceOutTxId = Day0Harness.AssertSigned(spliceOut);
+        await Day0Harness.WaitInMempoolAsync(_fixture, spliceOutTxId, ct);
+        var (lockedOut, _) = await Day0Harness.MineUntilSpliceLockedAsync(_fixture, [], alice, bob, channelId,
+                                                                         spliceOutTxId, ct);
+        var spliceOutScid = lockedOut.ShortChannelId!.Value;
+        Assert.NotEqual(spliceInScid, spliceOutScid);
+        Assert.InRange(lockedIn.Capacity.Satoshi - (long)SpliceOutSat - lockedOut.Capacity.Satoshi, 0, 20_000);
+        await MineUntilAnnouncedAsync([alice, bob, carol], spliceOutScid, [alice, bob], ct);
+        await AssertSpliceAnnouncedAsync([alice, bob, carol], [alice, bob], spliceOutScid, lockedOut, spliceInScid,
+                                         ct);
+
+        // Act 5: carol pays alice's hint-free invoice from her graph
+        await Day0Harness.WaitSettledAsync(alice, channelId, ct);
+        var invoice = await CreateHintFreeInvoiceAsync(alice, ct);
+        var payment = await carol.PayInvoiceAsync(invoice.Bolt11!, ct);
+
+        // Assert 5: over carol -> bob -> alice by the latest scid
+        Console.WriteLine($"carol's payment: {payment.Status}, fee {payment.Fee.MilliSatoshi} msat, "
+                        + $"{payment.FailureReason}");
+        Assert.Equal(PaymentStatus.Succeeded, payment.Status);
+        var forward = await WaitForwardFulfilledAsync(bob, invoice.PaymentHash, ct);
+        Assert.Equal(spliceOutScid, forward.OutgoingShortChannelId);
+        Assert.Equal(carolChannel.ChannelId, forward.IncomingChannelId);
+    }
+
+    [Fact]
     public async Task Given_APeerWithoutGossipV2_When_APublicTaprootChannelIsAsked_Then_EitherSideRefusesItWithTheReason()
     {
         // Arrange: alice with taproot gossip, dave with simple taproot channels but without option_gossip_v2
@@ -477,6 +557,72 @@ public sealed class TaprootPublicChannelFlowTests : IAsyncLifetime
         Assert.NotNull(policy);
         return policy.FeeBaseMsat + (ulong)amountMsat * policy.FeeProportionalMillionths / 1_000_000;
     }
+
+    /// <summary>
+    /// Every graph of <paramref name="observers"/> holds <paramref name="scid"/> as a v2 channel of the splice
+    /// <paramref name="locked"/> runs on (capacity, the MuSig2 proof against the splice's P2TR output from bitcoind) and
+    /// marks <paramref name="previous"/> spent at the splice's block (BOLT 7: forgotten 72 blocks later).
+    /// </summary>
+    private static async Task AssertSpliceAnnouncedAsync(IReadOnlyList<NLightningTestNode> observers,
+                                                         IReadOnlyList<NLightningTestNode> ends, ShortChannelId scid,
+                                                         ChannelInfoClientResponse locked, ShortChannelId previous,
+                                                         CancellationToken ct)
+    {
+        foreach (var node in observers)
+        {
+            var stored = await AssertV2ChannelAsync(node, scid, ends);
+            Assert.Equal((ulong)locked.Capacity.Satoshi, stored.CapacitySat);
+            var fundingScript = await AssertP2TrFundingOutputAsync(node, scid, locked.FundingTxId!.Value, ct);
+            var announcement = ChannelAnnouncement2Payload.Parse(stored.RawAnnouncement2.Span);
+            Assert.Equal(locked.FundingTxId!.Value, announcement.FundingTxId);
+            Assert.Equal(GossipV2ProofResult.Valid,
+                         node.Services.GetRequiredService<IGossipV2SignatureVerifier>()
+                             .CheckChannelProof(announcement, fundingScript));
+            var spent = await Poll.ForAsync(async () =>
+            {
+                var channel = await GossipGraphProbe.TryGetOurGraphChannelAsync(node, previous.ToUInt64());
+                return channel?.SpentAtHeight is not null ? channel : null;
+            }, s_graphTimeout, $"{node.Name}'s graph marks {previous} spent", ct, GossipGraphProbe.PollInterval);
+            Assert.Equal(scid.BlockHeight, spent.SpentAtHeight);
+            Console.WriteLine($"[{node.Name}] {scid}: v2, {stored.Verification}; {previous} spent at "
+                            + spent.SpentAtHeight);
+        }
+    }
+
+    /// <summary>
+    /// <paramref name="payer"/> pays a fresh invoice of <paramref name="payee"/> re-signed with one route hint, from
+    /// <paramref name="forwarder"/> over <paramref name="scid"/> at the forwarder's policy on the channel.
+    /// </summary>
+    private static async Task<(PaymentInfoClientResponse Payment, Domain.Crypto.ValueObjects.Hash PaymentHash)>
+        PayOverHintAsync(NLightningTestNode payer, NLightningTestNode payee, NLightningTestNode forwarder,
+                         ShortChannelId scid, CancellationToken ct)
+    {
+        var created = await payee.CreateInvoiceAsync(LightningMoney.Satoshis(PaymentSat), "retired scid", ct);
+        var invoice = Invoice.Decode(created.Bolt11!, BitcoinNetwork.Regtest);
+        var channel = await GossipGraphProbe.TryGetOurGraphChannelAsync(payee, scid.ToUInt64());
+        var policy = channel?.GetPolicy(channel.GetDirectionFrom(forwarder.NodeId), 2);
+        invoice.RoutingInfos =
+        [
+            new Domain.Models.RoutingInfo(forwarder.NodeId, scid, (uint)(policy?.FeeBaseMsat ?? 1_000),
+                                          policy?.FeeProportionalMillionths ?? 1_000,
+                                          policy?.CltvExpiryDelta ?? 144)
+        ];
+        var nodeKey = payee.SecureKeyManager.GetNodeKeyPair();
+        using var key = new Key(nodeKey.PrivKey.Value.ToArray());
+        var bolt11 = invoice.Encode(key);
+        Console.WriteLine($"[{payee.Name}] invoice re-signed with a hint over {scid}: {bolt11}");
+        var payment = await payer.PayInvoiceAsync(bolt11, ct);
+        Console.WriteLine($"[{payer.Name}] payment over {scid}: {payment.Status}, {payment.FailureReason}");
+        return (payment, created.PaymentHash);
+    }
+
+    private static Task<ForwardInfoClientResponse> WaitForwardFulfilledAsync(
+        NLightningTestNode forwarder, Domain.Crypto.ValueObjects.Hash paymentHash, CancellationToken ct) =>
+        Poll.ForAsync(async () =>
+        {
+            var current = await forwarder.GetForwardAsync(paymentHash, ct);
+            return current?.Status == ForwardCircuitStatus.Fulfilled ? current : null;
+        }, Day0Harness.StepTimeout, $"{forwarder.Name}'s forward fulfilled", ct);
 
     /// <summary>The confirmations of the funding transaction <paramref name="scid"/> names.</summary>
     private async Task<int> FundingDepthAsync(ShortChannelId scid, CancellationToken ct) =>
