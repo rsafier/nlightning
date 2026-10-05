@@ -116,6 +116,23 @@ public interface IPaymentService
                                            CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Pays over exactly the routes the caller supplied (<c>payroute</c>, NL-1082): they are offered as given, never
+    /// re-planned or retried by the node — every outcome is reported per route and the caller decides what is next.
+    /// </summary>
+    /// <remarks>
+    /// The identity is the request's BOLT 11 invoice (its hash, secret, amount and <c>basic_mpp</code> support are
+    /// used) or a raw payment hash with an optional secret and an explicit total. More than one route (or one route
+    /// delivering less than the total) is an MPP shard set: every route reports the same total and the payee holds
+    /// the parts until it is reached. The routes are validated before anything is offered (shape, our first-hop
+    /// channels, CLTV bounds, the fee limit, forwarding policies the graph knows and per-channel liquidity), then
+    /// offered in order; a refusal or a decrypted failure ends that route only. Everything else behaves like
+    /// <see cref="PayInvoiceAsync(string, LightningMoney?, PayInvoiceOptions, CancellationToken)"/>: one row per
+    /// hash, part rows for restart-safe failure decryption, mission control learns from failures.
+    /// </remarks>
+    Task<PayRouteResult> PayRouteAsync(PayRouteRequest request, PayInvoiceOptions options,
+                                       CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// The payment for <paramref name="paymentHash"/>, or null.
     /// </summary>
     Task<PaymentModel?> GetPaymentAsync(Hash paymentHash, CancellationToken cancellationToken = default);

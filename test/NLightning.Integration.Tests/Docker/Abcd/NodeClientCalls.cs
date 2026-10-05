@@ -89,6 +89,33 @@ public static class NodeClientCalls
     }
 
     /// <summary>
+    /// <c>getroute</c>: the route a payment of <paramref name="amount"/> to <paramref name="destination"/> would take.
+    /// </summary>
+    public static async Task<GetRouteClientResponse> GetRouteAsync(this NLightningTestNode node,
+                                                                    CompactPubKey destination, LightningMoney amount,
+                                                                    CancellationToken cancellationToken,
+                                                                    ushort? finalCltvDelta = null)
+    {
+        return await HandleAsync<GetRouteClientRequest, GetRouteClientResponse>(
+                   node, new GetRouteClientRequest(destination, amount) { FinalCltvDelta = finalCltvDelta },
+                   cancellationToken);
+    }
+
+    /// <summary>
+    /// <c>payroute</c> (NL-1082): pays the invoice over exactly <paramref name="routes"/>, through the daemon's own
+    /// IPC handler — the same path the CLI takes.
+    /// </summary>
+    public static async Task<PayRouteClientResponse> PayRouteAsync(this NLightningTestNode node, string bolt11,
+                                                                   IReadOnlyList<PayRouteRouteClientInfo> routes,
+                                                                   CancellationToken cancellationToken,
+                                                                   uint timeoutSeconds = 120)
+    {
+        return await HandleAsync<PayRouteClientRequest, PayRouteClientResponse>(
+                   node, new PayRouteClientRequest { Bolt11 = bolt11, Routes = routes, TimeoutSeconds = timeoutSeconds },
+                   cancellationToken);
+    }
+
+    /// <summary>
     /// <c>listchannels</c>, the channel <paramref name="channelId"/> (fails the test when it is not listed).
     /// </summary>
     public static async Task<ChannelInfoClientResponse> GetChannelAsync(this NLightningTestNode node,

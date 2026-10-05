@@ -18,7 +18,7 @@ public sealed record LabelArguments(string? Label, IReadOnlyList<string> Tags)
 /// <summary>
 /// <c>--label &lt;text&gt;</c> and repeatable <c>--tag &lt;key&gt;=&lt;value&gt;</c> (each also as
 /// <c>--option=value</c>, anywhere after the command) on <c>createinvoice</c>, <c>payinvoice</c>, <c>keysend</c>,
-/// <c>createoffer</c>, <c>payoffer</c>, <c>withdraw</c> and <c>openchannel</c> (NL-602 A3-T1, plan
+/// <c>payroute</c>, <c>createoffer</c>, <c>payoffer</c>, <c>withdraw</c> and <c>openchannel</c> (NL-602 A3-T1, plan
 /// <c>docs/agents/ACCOUNTING_PLAN.md</c> §9). They are taken out of the arguments before the command's own parser
 /// runs, so every command takes them the same way.
 /// </summary>
@@ -37,6 +37,7 @@ internal static class LabelOptions
         cmd is "createinvoice" or "create-invoice" or "addinvoice"
             or "payinvoice" or "pay-invoice" or "pay"
             or "keysend"
+            or "payroute" or "pay-route"
             or "createoffer" or "create-offer"
             or "payoffer" or "pay-offer"
             or "withdraw" or "send-coins" or "sendcoins"

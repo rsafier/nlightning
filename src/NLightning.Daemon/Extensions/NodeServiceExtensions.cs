@@ -182,7 +182,12 @@ public static class NodeServiceExtensions
                                           sp.GetRequiredService<ILogger<ListForwardsClientHandler>>(),
                                           sp.GetService<IChannelMemoryRepository>(),
                                           sp.GetService<IRefusedHtlcCounter>(),
-                                          sp.GetService<ITrampolineRelayDbRepository>()));
+                                          sp.GetService<ITrampolineRelayDbRepository>()!));
+        // Pay over caller-supplied routes, never re-planned (NL-1082, ClientCommand 48)
+        services.AddScoped<IClientCommandHandler<PayRouteClientRequest, PayRouteClientResponse>>(sp =>
+            new PayRouteClientHandler(GetPaymentLayerService<IPaymentService>(sp),
+                                      sp.GetService<IBlockchainMonitor>(),
+                                      sp.GetService<IChannelMemoryRepository>()));
         services.TryAddSingleton(TimeProvider.System);
 
         // Cooperative close (ClientCommand 13, BOLT2 plan N10); IChannelCloseService comes from AddApplicationServices
@@ -242,6 +247,7 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, ListGraphChannelsIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, GetRouteIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, DescribeGraphIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, PayRouteIpcHandler>();
 
         // Static channel backups and restore (wave rf1 R1, ClientCommand 21-23) and the operator commands (wave rf1
         // R4, disconnect = ClientCommand 24); each registers its client and IPC handlers once

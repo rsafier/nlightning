@@ -63,6 +63,22 @@ public class ClientAppTests
     [InlineData("payinvoice", "lnbcrt1", "--fast")]
     [InlineData("payinvoice", "lnbcrt1", "any", "30", "extra")]
     [InlineData("payinvoice", "--max-parts", "2")]
+    [InlineData("payroute")]
+    [InlineData("pay-route", "lnbcrt1")]
+    [InlineData("payroute", "lnbcrt1", "--routes")]
+    [InlineData("payroute", "--routes", "-")]
+    [InlineData("payroute", "lnbcrt1", "--payment-hash",
+                "2121212121212121212121212121212121212121212121212121212121212121")]
+    [InlineData("payroute", "--payment-hash", "zz", "--routes", "-")]
+    [InlineData("payroute", "--payment-hash",
+                "2121212121212121212121212121212121212121212121212121212121212121", "--payment-secret", "not-hex")]
+    [InlineData("payroute", "--payment-hash",
+                "2121212121212121212121212121212121212121212121212121212121212121", "--routes", "-", "--timeout", "301")]
+    [InlineData("payroute", "--payment-hash",
+                "2121212121212121212121212121212121212121212121212121212121212121", "--routes", "-", "--timeout", "0")]
+    [InlineData("payroute", "--payment-hash",
+                "2121212121212121212121212121212121212121212121212121212121212121", "--routes", "-", "--max-fee-msat", "0")]
+    [InlineData("payroute", "lnbcrt1", "--routes", "routes.json", "extra")]
     [InlineData("closechannel")]
     [InlineData("close-channel", "abcd")]
     [InlineData("closechannel", "zz21212121212121212121212121212121212121212121212121212121212121")]
