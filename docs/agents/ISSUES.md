@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 78 | 79 |
+| open | 0 | 0 | 1 | 79 | 80 |
 | in-progress | 0 | 0 | 3 | 1 | 4 |
 | fixed | 15 | 68 | 220 | 455 | 758 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **233** | **554** | **870** |
+| **Total** | **15** | **68** | **233** | **555** | **871** |
 
 ### Epics
 
@@ -9241,5 +9241,15 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** T7 (NL-878, landed at bcdea597, 2026-10-05) is proven in-process (`TaprootGossipProofTests`, `Announcement2HarnessTests`) and by the full cluster matrix t7-mx1 for regressions; no live run yet. Owner decision 2026-10-05: hold the Mutinynet trial; the regtest end-to-end cluster test comes first. Low risk to third parties: bits 70/71 are advertised odd, 267/269/271 are odd messages, 260 goes only to the channel peer and v2 gossip is relayed only to v2 peers.
 - **Fix sketch:** deploy a build with T7 to FAFO and FAFO2 (migration `AddGossipV2`, back up first), set `Features:OptionGossipV2=Optional` on both, open `openchannel <FAFO2> <sat> --public --channel-type taproot`, mine to the announcement depth, and check that the MuSig2 `channel_announcement_2` and both `channel_update_2`s are in both graphs, a restart's nonce re-exchange, and a payment routed by the graph.
 - **Blocks/Blocked-by:** Related NL-878, NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T7
+
+### NL-1081 A public simple taproot channel still sends the peer one BOLT 7 `channel_update` (258)
+- **Status:** open (on hold until BOLTs #1059 settles how a v2 channel's direct peer update is sent; owner decision 2026-10-05)
+- **Severity:** low
+- **Kind:** spec
+- **Location:** `src/NLightning.Application/Gossip/Services/ChannelUpdateService.cs` (the direct `channel_update` to the channel peer, ABCD W1-E), read by the private route-hint path (`InvoiceService`)
+- **Evidence:** the NL-878 regtest e2e (`Docker/Taproot/TaprootPublicChannelFlowTests`, 9f9db672) recorded on the wire that alice and bob each send the other one v1 `channel_update` (258) for their public taproot channel, the direct peer-only update from before the announcement, next to the v2 `channel_update_2`s (269). Harmless: it is never relayed, and both sides already route by the v2 policy once announced. The #1059 draft (4eef3dfa) does not say whether a v2 channel may or must send a v1 direct update for the private-channel path.
+- **Fix sketch:** when #1059 is final: send the direct update as `channel_update_2` (or nothing) for v2 channels and read the peer's policy from it for route hints and the pre-announcement window; keep v1 for every other channel.
+- **Blocks/Blocked-by:** Related NL-878, NL-1130
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T7
 
