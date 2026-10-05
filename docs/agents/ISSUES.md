@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 81 | 82 |
+| open | 0 | 0 | 1 | 82 | 83 |
 | in-progress | 0 | 0 | 4 | 1 | 5 |
-| fixed | 15 | 68 | 222 | 460 | 765 |
+| fixed | 15 | 68 | 222 | 461 | 766 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **236** | **562** | **881** |
+| **Total** | **15** | **68** | **236** | **564** | **883** |
 
 ### Epics
 
@@ -9357,3 +9357,21 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** found after NL-995
 - **Fix (42ba1679):** `ChannelCommitments.WithHtlcRecords(records)` replaces records of the same key and state and keeps everything else (nonces, pending fundings); the switch, the trampoline relay, the mempool reactor and the resolvers use it instead of `Restore`. Tests: Application `HoldInvoiceTests` settle/cancel + follow-up payment and a two-part settle on anchors and taproot channels (`ThreeNodeHarness` gained `anchors`), `MppReceiveTests.Given_TwoPartsOnASimpleTaprootChannel_*` (all four taproot cases failed before the fix), Domain `SimpleTaprootCommitmentsTests` for `WithHtlcRecords`, and the cluster `Docker/Taproot/TaprootHoldInvoiceFlowTests` (two NLightning nodes on a taproot channel: settle, cancel, plain payment on one connection; timed out on "no HTLC left" before the fix, green after).
 
+### NL-1091 Upgrade NBitcoin 9.0.5 -> 10.0.14 and NBitcoin.Secp256k1 3.2.0 -> 4.0.3
+- **Status:** fixed (250ea790)
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/NLightning.Infrastructure.Bitcoin.csproj`, `test/NLightning.Application.Tests/NLightning.Application.Tests.csproj`, `test/NLightning.Testing.Cluster/NLightning.Testing.Cluster.csproj`
+- **Evidence:** NBitcoin 10 (MetacoSA/NBitcoin v9.0.5..v10.0.14) targets net10.0 (net6.0 dropped) and fixes `ComputeTapTweak` span aliasing that produced an all-zero taproot output key on .NET 10 ARM64 (#1300; we run net10/net11 on arm64 with P2TR wallets and taproot channels), `Money.Bits`, and the PSBT ForkId sighash compare; it rejects non-canonical CompactSize (#1305), uncompressed keys for segwit, off-curve raw public keys, infinity keys, BIP32 seeds outside 16..64 bytes, a depth-0 extended key with a parent fingerprint or child number, derivation past depth 255, CHECKMULTISIG in tapscript, trailing PSBT data and empty bech32 data (#1345); it removes OutputDescriptor/the Scripting parser, ScriptCompressor/TxOutCompressor, `Script.VerifyScriptConsensus` (libbitcoinconsensus), RPC `ImportMulti`, `SigningRepository`, `Utils.ReadEx`/`ArrayEqual` and the BouncyCastle HMAC helpers, none of which we use; the RPC client parses transactions with `Transaction.Parse(hex, Network)`, marks the getpeerinfo `startingheight`/`banscore`/`whitelisted` fields obsolete and adds getblock verbosity 3. NBitcoin.Secp256k1 4.0.3 (net10.0/netstandard2.1) changes four source files only: `ECPubKey.TryCreateRawFormat` refuses off-curve points, `ECPubKey`/`ECPrivKey`/`ECXOnlyPubKey` implement `IEquatable` (`ECXOnlyPubKey` gains value `==` by x; ours only test `is null`), and `MusigContext` binds deterministic nonces to the adaptor and fixes tweaked adaptor extraction (not used: our `Bip327` port uses only `GE`/`GEJ`/`Scalar`/`ECPubKey`, unchanged).
+- **Fix sketch:** bump the three references; no source change needed.
+- **Blocks/Blocked-by:** none
+- **Fix (250ea790):** references bumped, docs name the new versions. Release (net10.0 + net11.0, SDK 11 rc.1) and Release.Native builds 0 warnings, AOT analyzer build 0 warnings, AOT publish + `scripts/aot-smoke.sh` pass on net10.0 and net11.0 (NBitcoin's ILCompiler warnings unchanged in kind: one IL2104 + one IL3053, NL-752), `dotnet format` clean; non-Docker suite net10.0 16,633 passed / 8 skipped / 1 failed (`BlindedSendThreeNodeTests`, a loaded-run timeout, 3/3 alone, NL-1092), net11.0 16,633 passed / 1 failed (NL-1088); BOLT 3, 4 (onion, error onion, route blinding, onion messages, attribution, trampoline), 7, 8, 11 and 12 vectors, BIP 327 vectors, simple taproot vectors and liquidity-ads vectors byte-exact as before. Full cluster matrix (`scripts/run-cluster.sh --matrix`, cap 12, run `mx-20261005224230`, 2,049 s): 14 suites, 11 green and 3 rerun-green on known flakes (`cln` `ClnCloseTests` NL-531, `eclair` `EclairTaprootOnchainTests` NL-1053, `taproot` `LndTaprootFlowTests` NL-1052), 0 failed; Tor not run (Docker only).
+
+### NL-1092 `BlindedSendThreeNodeTests.Given_APathForAnotherInvoice_*` times out in a loaded full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Payments/Send/BlindedSendThreeNodeTests.cs` (`Given_APathForAnotherInvoice_When_AlicePaysThisHash_Then_FailedWithInvalidOnionBlindingFromBob`)
+- **Evidence:** in the NL-1091 full net10.0 run (2026-10-05, `wip/nbitcoin10`) the payment was still `InFlight` when its wall-clock `PayInvoiceOptions.Timeout` of 30 s ran out (test took 43 s); the class passed 3/3 alone right after, and the net11.0 full run passed it. Bob's `invalid_onion_blinding` answer waits a random delay (`Node:Switch:BlindedErrorMaxDelay`) on a real clock.
+- **Fix sketch:** drive the blinded-error delay and the payment timeout from a stepped clock (as the de-timing pass did for NL-382 and others) or set the harness's `BlindedErrorMaxDelay` to zero; else move the class to the `timing-serial` collection.
+- **Blocks/Blocked-by:** found by NL-1091
