@@ -289,7 +289,9 @@ public sealed class PeerService : IPeerService
     public Task SendGossipMessageAsync(IMessage message)
     {
         ArgumentNullException.ThrowIfNull(message);
-        if (message.Type is < MessageTypes.ChannelAnnouncement or > MessageTypes.GossipTimestampFilter)
+        if (message.Type is (< MessageTypes.ChannelAnnouncement or > MessageTypes.GossipTimestampFilter)
+                         and not (MessageTypes.ChannelAnnouncement2 or MessageTypes.NodeAnnouncement2
+                                                                    or MessageTypes.ChannelUpdate2))
             throw new ArgumentException($"{Enum.GetName(message.Type) ?? message.Type.ToString()} is not a gossip message",
                                         nameof(message));
 
@@ -442,8 +444,11 @@ public sealed class PeerService : IPeerService
             // which only queues here. Never a channel message, and never answered (no error replies)
             HandleOnionMessage(onionMessage);
         }
-        else if (message is ChannelAnnouncementMessage or NodeAnnouncementMessage)
+        else if (message is ChannelAnnouncementMessage or NodeAnnouncementMessage or ChannelAnnouncement2Message
+                                or NodeAnnouncement2Message or ChannelUpdate2Message)
         {
+            // Taproot gossip (267/269/271, NL-878) takes the same path: the ingress keeps it only while we advertise
+            // option_gossip_v2 and drops it silently otherwise
             // BOLT 7 graph gossip: validated (signatures, funding output) and stored by the graph ingress (G2-T4),
             // which warns the peer itself; without an ingress (or with the graph disabled) it is dropped.
             // announcement_signatures (259) is a channel message: it takes the IChannelMessage arm above (G0-T2)

@@ -156,7 +156,8 @@ internal sealed class GraphTestKit
                         CompactPubKey? ourNodeId = null, int writeBatchSize = GraphStore.DefaultWriteBatchSize,
                         int loadBatchSize = GraphStore.DefaultLoadBatchSize,
                         Application.Gossip.Metrics.GossipMetrics? metrics = null,
-                        GossipMemoryBudget? memoryBudget = null, bool steppedTimers = false)
+                        GossipMemoryBudget? memoryBudget = null, bool steppedTimers = false,
+                        bool gossipV2 = false, uint tipHeight = 0)
     {
         Repository = repository ?? new InMemoryGraphDbRepository();
         Clock = new SettableTimeProvider(now ?? DefaultNow, steppedTimers);
@@ -182,6 +183,17 @@ internal sealed class GraphTestKit
         };
         FundingLookup = new Mock<IFundingOutputLookup>();
         var nodeOptions = new NodeOptions { BitcoinNetwork = BitcoinNetwork.Resolve("regtest") };
+        if (gossipV2)
+            nodeOptions.Features = new FeatureOptions
+            {
+                AllowExperimentalFeatures = true,
+                OptionGossipV2 = Domain.Enums.FeatureSupport.Optional
+            };
+
+        // NL-878: the chain tip the v2 checks read (block heights), settable through TipHeight
+        TipHeight = tipHeight;
+        ChainMonitor = new Mock<Infrastructure.Bitcoin.Wallet.Interfaces.IBlockchainMonitor>();
+        ChainMonitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(() => TipHeight);
         ISecureKeyManager? keyManager = null;
         if (ourNodeId is { } nodeId)
         {
@@ -194,8 +206,28 @@ internal sealed class GraphTestKit
                                     Microsoft.Extensions.Options.Options.Create(Options),
                                     Microsoft.Extensions.Options.Options.Create(nodeOptions),
                                     NullLogger<GossipIngress>.Instance, Clock, channelMemoryRepository, keyManager,
-                                    metrics, memoryBudget);
+                                    metrics, memoryBudget, NLightning.Tests.Utils.Gossip.GossipV2TestSigner.Verifier,
+                                    ChainMonitor.Object);
     }
+
+    /// <summary>The chain tip the ingress's taproot gossip checks read (0: unknown).</summary>
+    public uint TipHeight { get; set; }
+
+    /// <summary>The chain monitor the ingress reads <see cref="TipHeight"/> from.</summary>
+    public Mock<Infrastructure.Bitcoin.Wallet.Interfaces.IBlockchainMonitor> ChainMonitor { get; }
+
+    /// <summary>
+    /// Every short channel id names an unspent output with <paramref name="scriptPubKey"/>, this amount and
+    /// <paramref name="confirmations"/>, in the transaction <see cref="TxIdFor"/> (or <paramref name="txId"/>), as
+    /// <see cref="IFundingOutputLookup.LookupAsync"/> answers it for a <c>channel_announcement_2</c> (NL-878).
+    /// </summary>
+    public void OutputFound(byte[] scriptPubKey, long amountSat = 1_000_000, uint confirmations = 100,
+                            TxId? txId = null) =>
+        FundingLookup.Setup(l => l.LookupAsync(It.IsAny<ShortChannelId>(), It.IsAny<CancellationToken>()))
+                     .ReturnsAsync((ShortChannelId scid, CancellationToken _) =>
+                                       FundingOutputLookupResult.WithOutput(
+                                           FundingOutputStatus.Found, txId ?? TxIdFor(scid),
+                                           LightningMoney.Satoshis(amountSat), scriptPubKey, confirmations));
 
     public InMemoryGraphDbRepository Repository { get; }
     public SettableTimeProvider Clock { get; }

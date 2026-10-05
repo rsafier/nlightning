@@ -48,8 +48,38 @@ public class PeerServiceGossipTests
         new NodeAnnouncementMessage(
             new NodeAnnouncementPayload(NodeAnnouncementPayload.EmptySignature, ReadOnlyMemory<byte>.Empty,
                                         1_700_000_000, CreateKey(2), new byte[3],
-                                        NodeAnnouncementPayload.EncodeAlias("alias"), ReadOnlyMemory<byte>.Empty))
+                                        NodeAnnouncementPayload.EncodeAlias("alias"), ReadOnlyMemory<byte>.Empty)),
+
+        // Taproot gossip (NL-878) takes the same path; the ingress decides whether it is wanted
+        new ChannelAnnouncement2Message(
+            ChannelAnnouncement2Payload.Create(ChainConstants.Regtest, ReadOnlySpan<byte>.Empty,
+                                               new ShortChannelId(103, 1, 0), 1_000, CreateKey(2), CreateKey(3), null,
+                                               null, ReadOnlySpan<byte>.Empty,
+                                               new Domain.Bitcoin.ValueObjects.TxId(new byte[32]), 0)),
+        new ChannelUpdate2Message(
+            ChannelUpdate2Payload.Create(ChainConstants.Regtest, new ShortChannelId(103, 1, 0), 0, 900, 0, 40, 1,
+                                         1_000, 1, 1)),
+        new NodeAnnouncement2Message(
+            NodeAnnouncement2Payload.Create(ReadOnlySpan<byte>.Empty, 900, CreateKey(2), ReadOnlySpan<byte>.Empty,
+                                            ReadOnlySpan<byte>.Empty, []))
     };
+
+    [Fact]
+    public async Task Given_AV2GossipMessage_When_SentAsGossip_Then_ItIsAccepted()
+    {
+        // Arrange: 267/269/271 are outside BOLT 7's 256..265 range (NL-878)
+        var peerService = CreatePeerService(_ingress.Object);
+        RaiseMessage(CreateInitMessage());
+        var message = new ChannelUpdate2Message(
+            ChannelUpdate2Payload.Create(ChainConstants.Regtest, new ShortChannelId(103, 1, 0), 0, 900, 0, 40, 1,
+                                         1_000, 1, 1));
+
+        // Act
+        await peerService.SendGossipMessageAsync(message);
+
+        // Assert
+        _communication.Verify(x => x.SendMessageAsync(message), Times.Once);
+    }
 
     [Theory]
     [MemberData(nameof(GraphMessages))]

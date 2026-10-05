@@ -28,6 +28,8 @@ public sealed class OrphanUpdateCache
     private readonly Lock _lock = new();
     private readonly Dictionary<(ShortChannelId, byte), OrphanEntry<ChannelUpdateMessage>> _updates = new();
     private readonly Dictionary<CompactPubKey, OrphanEntry<NodeAnnouncementMessage>> _nodes = new();
+    private readonly Dictionary<(ShortChannelId, byte), OrphanEntry<ChannelUpdate2Message>> _updates2 = new();
+    private readonly Dictionary<CompactPubKey, OrphanEntry<NodeAnnouncement2Message>> _nodes2 = new();
 
     public OrphanUpdateCache(int capacity, TimeSpan ttl, TimeProvider? timeProvider = null)
     {
@@ -43,7 +45,79 @@ public sealed class OrphanUpdateCache
         get
         {
             lock (_lock)
-                return _updates.Count + _nodes.Count;
+                return TotalLocked;
+        }
+    }
+
+    private int TotalLocked => _updates.Count + _nodes.Count + _updates2.Count + _nodes2.Count;
+
+    /// <summary>
+    /// Keeps a <c>channel_update_2</c> (NL-878) until its channel arrives, replacing an older one (a lower block
+    /// height) of the same direction; <paramref name="full"/> tells a refusal for lack of room.
+    /// </summary>
+    public bool AddUpdate2(ChannelUpdate2Message message, IPeerService? origin, out bool full)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        return Add(_updates2, (message.Payload.ShortChannelId, message.Payload.Direction), message, origin,
+                   m => m.Payload.BlockHeight, out full);
+    }
+
+    /// <summary>
+    /// Keeps a <c>node_announcement_2</c> (NL-878) until its node has a channel, replacing an older one.
+    /// </summary>
+    public bool AddNodeAnnouncement2(NodeAnnouncement2Message message, IPeerService? origin, out bool full)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        return Add(_nodes2, message.Payload.NodeId, message, origin, m => m.Payload.BlockHeight, out full);
+    }
+
+    /// <summary>Removes and returns the live <c>channel_update_2</c>s kept for <paramref name="shortChannelId"/>.</summary>
+    public IReadOnlyList<OrphanEntry<ChannelUpdate2Message>> TakeUpdates2(ShortChannelId shortChannelId)
+    {
+        var taken = new List<OrphanEntry<ChannelUpdate2Message>>(2);
+        lock (_lock)
+        {
+            for (byte direction = 0; direction <= 1; direction++)
+            {
+                if (_updates2.Remove((shortChannelId, direction), out var entry) && !IsExpired(entry))
+                    taken.Add(entry);
+            }
+        }
+
+        return taken;
+    }
+
+    /// <summary>Removes and returns the live <c>node_announcement_2</c> kept for <paramref name="nodeId"/>.</summary>
+    public OrphanEntry<NodeAnnouncement2Message>? TakeNodeAnnouncement2(CompactPubKey nodeId)
+    {
+        lock (_lock)
+            return _nodes2.Remove(nodeId, out var entry) && !IsExpired(entry) ? entry : null;
+    }
+
+    private bool Add<TKey, TMessage>(Dictionary<TKey, OrphanEntry<TMessage>> entries, TKey key, TMessage message,
+                                     IPeerService? origin, Func<TMessage, uint> order, out bool full)
+        where TKey : notnull
+    {
+        full = false;
+        lock (_lock)
+        {
+            if (entries.TryGetValue(key, out var existing))
+            {
+                if (order(existing.Message) >= order(message) && !IsExpired(existing))
+                    return false;
+
+                entries[key] = new OrphanEntry<TMessage>(message, origin, _timeProvider.GetUtcNow());
+                return true;
+            }
+
+            if (!HasRoom())
+            {
+                full = true;
+                return false;
+            }
+
+            entries[key] = new OrphanEntry<TMessage>(message, origin, _timeProvider.GetUtcNow());
+            return true;
         }
     }
 
@@ -193,11 +267,11 @@ public sealed class OrphanUpdateCache
 
     private bool HasRoom()
     {
-        if (_updates.Count + _nodes.Count < _capacity)
+        if (TotalLocked < _capacity)
             return true;
 
         PruneExpiredLocked();
-        return _updates.Count + _nodes.Count < _capacity;
+        return TotalLocked < _capacity;
     }
 
     private int PruneExpiredLocked()
@@ -207,6 +281,10 @@ public sealed class OrphanUpdateCache
             removed += _updates.Remove(key) ? 1 : 0;
         foreach (var key in _nodes.Where(p => IsExpired(p.Value)).Select(p => p.Key).ToList())
             removed += _nodes.Remove(key) ? 1 : 0;
+        foreach (var key in _updates2.Where(p => IsExpired(p.Value)).Select(p => p.Key).ToList())
+            removed += _updates2.Remove(key) ? 1 : 0;
+        foreach (var key in _nodes2.Where(p => IsExpired(p.Value)).Select(p => p.Key).ToList())
+            removed += _nodes2.Remove(key) ? 1 : 0;
         return removed;
     }
 

@@ -48,4 +48,16 @@ public readonly record struct GossipAcceptedKey(
     /// <summary>The slot of a <c>node_announcement</c>.</summary>
     public static GossipAcceptedKey NodeAnnouncement(CompactPubKey nodeId) =>
         new(MessageTypes.NodeAnnouncement, default, 0, nodeId);
+
+    /// <summary>The slot of a <c>channel_announcement_2</c> (NL-878).</summary>
+    public static GossipAcceptedKey ChannelAnnouncement2(ShortChannelId shortChannelId) =>
+        new(MessageTypes.ChannelAnnouncement2, shortChannelId, 0, default);
+
+    /// <summary>The slot of a <c>channel_update_2</c> direction (NL-878).</summary>
+    public static GossipAcceptedKey ChannelUpdate2(ShortChannelId shortChannelId, byte direction) =>
+        new(MessageTypes.ChannelUpdate2, shortChannelId, direction, default);
+
+    /// <summary>The slot of a <c>node_announcement_2</c> (NL-878).</summary>
+    public static GossipAcceptedKey NodeAnnouncement2(CompactPubKey nodeId) =>
+        new(MessageTypes.NodeAnnouncement2, default, 0, nodeId);
 }
