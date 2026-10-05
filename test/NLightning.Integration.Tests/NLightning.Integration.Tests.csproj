@@ -33,6 +33,14 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="xunit.v3" Version="3.2.2"/>
+    <!-- The Bark/ASP integration test's client of captaind's Ark gRPC (versions as NLightning.Testing.Lnd resolves
+         them: Google.Protobuf 3.34.0, Grpc 2.76.0) -->
+    <PackageReference Include="Google.Protobuf" Version="3.34.0"/>
+    <PackageReference Include="Grpc.Net.Client" Version="2.76.0"/>
+    <PackageReference Include="Grpc.Tools" Version="2.76.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
   </ItemGroup>
 
   <ItemGroup>
@@ -70,6 +78,14 @@
     <Content Include="BOLT4/Vectors/*.json" CopyToOutputDirectory="PreserveNewest"/>
     <Content Include="BOLT12/Vectors/*.json" CopyToOutputDirectory="PreserveNewest"/>
     <Content Include="BOLT3/Vectors/*.txt;BOLT3/Vectors/*.json" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
+  <!-- captaind's public Ark gRPC (the client the Bark/ASP tests drive captaind with) -->
+  <ItemGroup>
+    <Protobuf Include="Docker\Bark\Protos\core.proto" ProtoRoot="Docker\Bark\Protos" GrpcServices="None"
+              Access="Public"/>
+    <Protobuf Include="Docker\Bark\Protos\bark_server.proto" ProtoRoot="Docker\Bark\Protos" GrpcServices="Client"
+              Access="Public"/>
   </ItemGroup>
 
 </Project>

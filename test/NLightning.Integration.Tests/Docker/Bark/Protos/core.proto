@@ -1,0 +1,10 @@
+// Vendored from the bark repo (https://github.com/ark-bitcoin/bark, the mirror of
+// gitlab.com/ark-bitcoin/bark; server-rpc/protos), MIT License, Copyright (c) Team Second —
+// the public Ark gRPC surface of captaind (bark_server.proto's ArkService and the admin services) the
+// Bark/ASP integration tests speak. Field numbers are the wire contract; never reorder.
+
+syntax = "proto3";
+
+package core;
+
+message Empty {}

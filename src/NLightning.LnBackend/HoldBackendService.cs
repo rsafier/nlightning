@@ -127,7 +127,18 @@ public sealed class HoldBackendService : Hold.Hold.HoldBase
     public override async Task<Hold.ListResponse> List(Hold.ListRequest request, ServerCallContext context)
     {
         var invoices = new List<InvoiceModel>();
-        if (request.ConstraintCase == Hold.ListRequest.ConstraintOneofCase.PaymentHash)
+        if (request.ConstraintCase == Hold.ListRequest.ConstraintOneofCase.PaymentHashes)
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var repository = scope.ServiceProvider.GetRequiredService<IInvoiceDbRepository>();
+            foreach (var hash in request.PaymentHashes.Hashes.Select(h => new Hash(h.ToByteArray())))
+            {
+                var one = await repository.GetByPaymentHashAsync(hash);
+                if (one is not null)
+                    invoices.Add(one);
+            }
+        }
+        else if (request.ConstraintCase == Hold.ListRequest.ConstraintOneofCase.PaymentHash)
         {
             using var scope = _scopeFactory.CreateScope();
             var one = await scope.ServiceProvider.GetRequiredService<IInvoiceDbRepository>()

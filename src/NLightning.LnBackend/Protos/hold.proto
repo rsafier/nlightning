@@ -80,7 +80,13 @@ message ListRequest {
   oneof constraint {
     bytes payment_hash = 1;
     Pagination pagination = 2;
+    // bark commit 2f27d597: batch pull by hashes (their ListAcceptedPaymentHashes)
+    PaymentHashes payment_hashes = 3;
   }
+}
+
+message PaymentHashes {
+  repeated bytes hashes = 1;
 }
 
 enum InvoiceState {
