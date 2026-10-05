@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 78 | 79 |
+| open | 0 | 0 | 1 | 80 | 81 |
 | in-progress | 0 | 0 | 3 | 1 | 4 |
 | fixed | 15 | 68 | 220 | 457 | 760 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **233** | **556** | **872** |
+| **Total** | **15** | **68** | **233** | **558** | **874** |
 
 ### Epics
 
@@ -9264,4 +9264,24 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** the regtest e2e of a spliced public taproot channel (NL-1131, `TaprootPublicChannelFlowTests`, cluster batch `rc-20261005162927`, 3/3 failed): carol, connected to bob before the splice's re-announcement, got bob's own `channel_announcement_2` and `channel_update_2` but never alice's `channel_update_2`, though bob's graph held it. `CollectV2`, `SelectV2` and the v2 backlog skipped every channel we are an end of, so only the own path (our 267/271/269) reached peers; BOLT 7's relay skips only our own messages and relays the peer's update of our channel. The original T7 proofs passed because their third node learned the channel by queries after its announcement.
 - **Fix sketch:** As BOLT 7: leave only the 267 of a channel of ours to the own path, relay the peer's 271. Done: `GossipRelayV2Tests.Given_AChannelOfOurs_When_ThePeersUpdate2Changes_*` (collect and backlog; both fail without the fix); the e2e 3/3 green after it (`rc-20261005165432`).
 - **Blocks/Blocked-by:** Related NL-878, NL-1131
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T7
+
+### NL-1146 An orphaned `node_announcement_2` whose node has only pending v2 channels expires instead of waiting for the promotion
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.V2.cs`, `OrphanUpdateCache`
+- **Evidence:** t7 follow-ups lane (NL-1140, 2ce6cc31): the NL-425 refresh, which keeps a pending node's orphaned `node_announcement` while its channel waits in the pending index, covers BOLT 7 only. A `node_announcement_2` of a node whose only channels are keyless v2 announcements waiting for their first `channel_update_2` expires with the orphan TTL (10 min); the node is learned again from its next announcement or the sync.
+- **Fix sketch:** Extend the NL-425 refresh to the v2 pending index (keep the orphaned 269 while a pending v2 channel names the node) and replay it at the promotion.
+- **Blocks/Blocked-by:** Related NL-1140, NL-425
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T7
+
+### NL-1147 A keyless `channel_announcement_2` whose proof fails at promotion does not score its sender
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.V2.cs` (`PromoteV2Async`)
+- **Evidence:** t7 follow-ups lane (NL-1140, 2ce6cc31): the pending index keeps only the sender's node id, not its connection, so a keyless announcement whose proof fails when its first `channel_update_2` promotes it is dropped (counted as rejected `invalid_signature`) without a misbehaviour score for the peer that sent it. As with v1 (NL-406), a self-signed keyless announcement plus a matching update still costs one funding lookup, bounded by the lookup's rate and concurrency limits.
+- **Fix sketch:** Score the original sender through the misbehaviour tracker by node id (or keep a weak reference to its connection) when a promoted keyless proof fails.
+- **Blocks/Blocked-by:** Related NL-1140, NL-406
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T7
