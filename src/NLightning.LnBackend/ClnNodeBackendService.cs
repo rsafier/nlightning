@@ -158,7 +158,7 @@ public sealed class ClnNodeBackendService : Cln.Node.NodeBase
                                    Convert.ToHexString((byte[])result.Payment.PaymentHash).ToLowerInvariant(),
                                    result.Payment.Amount.MilliSatoshi, result.Payment.Status);
 
-        return result.Payment.Status switch
+        return ListedStatus(result.Payment) switch
         {
             PaymentStatus.Succeeded => Succeeded(result),
             PaymentStatus.InFlight => throw new RpcException(new Status(StatusCode.DeadlineExceeded,
@@ -290,11 +290,12 @@ public sealed class ClnNodeBackendService : Cln.Node.NodeBase
         var response = new Cln.ListpaysResponse();
         foreach (var payment in payments)
         {
-            if (request.HasStatus && ToRequestStatus(payment.Status) != request.Status)
+            var status = ListedStatus(payment);
+            if (request.HasStatus && ToRequestStatus(status) != request.Status)
                 continue;
             if (request.HasBolt11 && payment.Bolt11 != request.Bolt11)
                 continue;
-            response.Pays.Add(ToListpaysPays(payment));
+            response.Pays.Add(ToListpaysPays(payment, status));
         }
 
         return response;
@@ -318,27 +319,38 @@ public sealed class ClnNodeBackendService : Cln.Node.NodeBase
             _ => Cln.ListpaysPays.Types.ListpaysPaysStatus.Pending
         };
 
-    private static Cln.ListpaysPays ToListpaysPays(PaymentModel model)
+    /// <summary>
+    /// The status <c>ListPays</c> reports: a row that reads <see cref="PaymentStatus.Failed"/> while a call of this
+    /// process is still paying the hash (between two attempts: the row is saved <c>Failed</c> before a retry replaces
+    /// it, NL-999) is <c>PENDING</c> — captaind fails its attempt (the user's HTLC VTXOs become revocable) on a
+    /// <c>FAILED</c> row, so one must never be shown while a retry may still put an HTLC out (NL-1154).
+    /// </summary>
+    private PaymentStatus ListedStatus(PaymentModel payment) =>
+        payment.Status == PaymentStatus.Failed && _paymentService.IsPaying(payment.PaymentHash)
+            ? PaymentStatus.InFlight
+            : payment.Status;
+
+    private static Cln.ListpaysPays ToListpaysPays(PaymentModel model, PaymentStatus status)
     {
         var createdIndex = (ulong)((DateTimeOffset)model.CreatedAt).ToUnixTimeMilliseconds();
         var pays = new Cln.ListpaysPays
         {
             PaymentHash = Google.Protobuf.ByteString.CopyFrom((byte[])model.PaymentHash),
-            Status = ToPaysStatus(model.Status),
+            Status = ToPaysStatus(status),
             Destination = Google.Protobuf.ByteString.CopyFrom((byte[])model.PayeeNodeId),
             CreatedAt = (ulong)((DateTimeOffset)model.CreatedAt).ToUnixTimeSeconds(),
             AmountMsat = new Cln.Amount { Msat = model.Amount.MilliSatoshi },
             // Nothing was sent unless the payee settled: a failed or pending payment sent no funds
             AmountSentMsat = new Cln.Amount
             {
-                Msat = model.Status == PaymentStatus.Succeeded
+                Msat = status == PaymentStatus.Succeeded
                            ? (model.Amount + model.Fee).MilliSatoshi
                            : 0
             },
             Bolt11 = model.Bolt11 ?? string.Empty,
             // Their client unwraps created_index to pick the latest attempt of a hash: always set
             CreatedIndex = createdIndex,
-            UpdatedIndex = model.CompletedAt is { } completedAt
+            UpdatedIndex = status != PaymentStatus.InFlight && model.CompletedAt is { } completedAt
                                ? (ulong)((DateTimeOffset)completedAt).ToUnixTimeMilliseconds()
                                : createdIndex
         };
@@ -346,7 +358,7 @@ public sealed class ClnNodeBackendService : Cln.Node.NodeBase
             pays.Bolt12 = Bolt12Bech32.Encode(Bolt12Constants.InvoiceHrp, bolt12.InvoiceBytes.Span);
         if (model.Label is { } label)
             pays.Label = label;
-        if (model.CompletedAt is { } at)
+        if (status != PaymentStatus.InFlight && model.CompletedAt is { } at)
             pays.CompletedAt = (ulong)((DateTimeOffset)at).ToUnixTimeSeconds();
         if (model.Preimage is { } preimage)
             pays.Preimage = Google.Protobuf.ByteString.CopyFrom((byte[])preimage);

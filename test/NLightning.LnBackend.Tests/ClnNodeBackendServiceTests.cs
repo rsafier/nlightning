@@ -373,6 +373,75 @@ public sealed class ClnNodeBackendServiceTests
         Assert.Equal(0ul, pay.AmountSentMsat.Msat);
     }
 
+    /// <summary>
+    /// NL-1154: between two attempts the row reads Failed while the payment service is still paying the hash (a retry
+    /// may still put an HTLC out). captaind fails its attempt on a FAILED row, so ListPays must say PENDING then.
+    /// </summary>
+    [Fact]
+    public async Task Given_AFailedRowOfAPaymentStillRetrying_When_ListPays_Then_PendingWithNothingFinal()
+    {
+        // Arrange
+        using var harness = new Harness();
+        var row = Failed("lnbcrt1retrying", "temporary_channel_failure");
+        harness.Repository.Setup(r => r.GetByPaymentHashAsync(row.PaymentHash)).ReturnsAsync(row);
+        harness.PaymentService.Setup(s => s.IsPaying(row.PaymentHash)).Returns(true);
+
+        // Act
+        var byHash = await harness.Build().ListPays(new Cln.ListpaysRequest
+        {
+            PaymentHash = ByteString.CopyFrom((byte[])row.PaymentHash)
+        }, new TestServerCallContext());
+
+        // Assert: PENDING, with no completion time; the failure is not the outcome yet
+        var pay = Assert.Single(byHash.Pays);
+        Assert.Equal(Cln.ListpaysPays.Types.ListpaysPaysStatus.Pending, pay.Status);
+        Assert.False(pay.HasCompletedAt);
+        Assert.Equal(pay.CreatedIndex, pay.UpdatedIndex);
+    }
+
+    [Fact]
+    public async Task Given_AFailedRowOfAPaymentStillRetrying_When_FilteredByStatus_Then_ItIsPendingNotFailed()
+    {
+        // Arrange
+        using var harness = new Harness();
+        var row = Failed("lnbcrt1retrying", "temporary_channel_failure");
+        harness.Repository.Setup(r => r.ListAsync(It.IsAny<int>(), It.IsAny<int>()))
+               .ReturnsAsync((int skip, int _) => skip == 0 ? [row] : []);
+        harness.PaymentService.Setup(s => s.IsPaying(row.PaymentHash)).Returns(true);
+
+        // Act
+        var failed = await harness.Build().ListPays(
+                         new Cln.ListpaysRequest { Status = Cln.ListpaysRequest.Types.ListpaysStatus.Failed },
+                         new TestServerCallContext());
+        var pending = await harness.Build().ListPays(
+                          new Cln.ListpaysRequest { Status = Cln.ListpaysRequest.Types.ListpaysStatus.Pending },
+                          new TestServerCallContext());
+
+        // Assert
+        Assert.Empty(failed.Pays);
+        Assert.Single(pending.Pays);
+    }
+
+    [Fact]
+    public async Task Given_AnXpayEndingOnAFailedRowWhileTheHashIsStillPaid_When_Xpay_Then_DeadlineExceeded()
+    {
+        // Arrange: the wait ended between two attempts
+        using var harness = new Harness();
+        var row = Failed("lnbcrt1between", "temporary_channel_failure");
+        harness.PaymentService
+               .Setup(s => s.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
+                                             It.IsAny<PayInvoiceOptions>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new PayInvoiceResult(row, 1, 1));
+        harness.PaymentService.Setup(s => s.IsPaying(row.PaymentHash)).Returns(true);
+
+        // Act
+        var error = await Assert.ThrowsAsync<RpcException>(() => harness.Build().Xpay(
+                         new Cln.XpayRequest { Invstring = "lnbcrt1between" }, new TestServerCallContext()));
+
+        // Assert
+        Assert.Equal(StatusCode.DeadlineExceeded, error.StatusCode);
+    }
+
     [Fact]
     public async Task Given_AFailedPayment_When_Xpay_Then_FailedPreconditionWithTheReason()
     {
