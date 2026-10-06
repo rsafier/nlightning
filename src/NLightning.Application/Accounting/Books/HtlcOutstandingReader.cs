@@ -33,8 +33,8 @@ internal sealed record HtlcOutstanding(long Msat, int HtlcCount, int ChannelCoun
 /// <remarks>
 /// <para><b>Per HTLC</b>, by the exact key of the event that books its settle (indexed lookups, bounded by the
 /// snapshot's live HTLCs, never by history): an incoming HTLC by <c>ForwardSettled</c> of (its channel, its id), else
-/// by our invoice's <c>InvoiceSettled</c> of its payment hash; an outgoing HTLC by its stored origin
-/// (<c>IChannelStateDbRepository.GetHtlcOriginAsync</c>, written in the add's save): a forward by the
+/// by the interceptor's <c>InterceptedHtlcSettled</c> of the same (NL-1182), else by our invoice's
+/// <c>InvoiceSettled</c> of its payment hash; an outgoing HTLC by its stored origin (<c>IChannelStateDbRepository.GetHtlcOriginAsync</c>, written in the add's save): a forward by the
 /// <c>ForwardSettled</c> of its incoming HTLC, our payment (or no origin, NL-265) by the <c>PaymentSucceeded</c> of the
 /// origin's hash, a trampoline relay's (NL-875) by its <c>TrampolineRelaySettled</c> (incoming HTLCs too, by hash). So a forward is counted on each of its channels by its own HTLC: the upstream HTLC while its fulfill
 /// is not committed (even before it is sent, the link down), the downstream one while the peer's fulfill is not.
@@ -114,6 +114,11 @@ internal static class HtlcOutstandingReader
         var forward = AccountingEventKeys.ForwardSettled(channelId, htlc.HtlcId);
         if (await isBooked(forward))
             return forward;
+
+        // NL-1182: a forward the HTLC interceptor settled books the whole HTLC, keyed like a forward's
+        var intercepted = AccountingEventKeys.InterceptedHtlcSettled(channelId, htlc.HtlcId);
+        if (await isBooked(intercepted))
+            return intercepted;
 
         var invoice = AccountingEventKeys.InvoiceSettled(htlc.PaymentHash);
         if (await isBooked(invoice))

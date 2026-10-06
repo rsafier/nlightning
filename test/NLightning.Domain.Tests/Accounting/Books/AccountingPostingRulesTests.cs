@@ -118,6 +118,17 @@ public class AccountingPostingRulesTests
     }
 
     [Fact]
+    public void Given_AnInterceptedHtlcSettled_When_Posted_Then_TheWholeHtlcIsReceived()
+    {
+        // Act (NL-1182): the interceptor settled a held forward of 40,001 sat: nothing went out
+        var postings = Post(Event(AccountingEventKind.InterceptedHtlcSettled, 40_001_000, 0, ("kind", "intercepted"),
+                                  ("amountToForwardMsat", "40000000")));
+
+        // Assert
+        AssertPostings(postings, (AccountRole.Channels, 40_001_000), (AccountRole.Received, -40_001_000));
+    }
+
+    [Fact]
     public void Given_ATrampolineRelayThatCostMoreThanItBrought_When_Posted_Then_TheDifferenceIsARoutingExpense()
     {
         // Act (NL-875)
@@ -824,6 +835,9 @@ public class AccountingPostingRulesTests
         Assert.Equal("Trampoline relay settled: 400x1x0 -> ?",
                      AccountingPostingRules.Describe(Event(AccountingEventKind.TrampolineRelaySettled, 1, 0,
                                                            ("incomingScid", "400x1x0"))));
+        Assert.Equal("Intercepted HTLC settled: 400x1x0 -> 400x2x1",
+                     AccountingPostingRules.Describe(Event(AccountingEventKind.InterceptedHtlcSettled, 1, 0,
+                                                           ("incomingScid", "400x1x0"), ("outgoingScid", "400x2x1"))));
         Assert.Equal("Channel force-closed: RemoteCommitment",
                      AccountingPostingRules.Describe(Event(AccountingEventKind.ChannelForceClosed, -1, 0,
                                                            ("closeKind", "RemoteCommitment"))));

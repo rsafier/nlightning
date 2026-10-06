@@ -294,7 +294,8 @@ run when registered (`AddLndGrpc` does).
   held until the disconnect resumes it); an unknown circuit ends the stream (LND); `RESUME_MODIFIED` is UNIMPLEMENTED.
   **Restart:** holds are memory only; the lock-in replay of an HTLC without a circuit offers it again when a client is
   connected, otherwise forwards it (LND without `requireinterceptor`). A client that disconnects resumes every held
-  forward. Gaps NL-1182 (incl. the accounting of a SETTLE).
+  forward. Gaps NL-1182. A SETTLE books `InterceptedHtlcSettled` (accounting kind 8, the whole HTLC received) in the
+  fulfill's save (NL-1205).
 - **walletrpc (NL-1184).** `IWalletPsbtService` / `Infrastructure.Bitcoin/Wallet/WalletPsbtService`, registered with
   `withdraw`. Leases are fee-input reservations with purpose `lnd-lease:<id hex>:<unix expiry>` (persisted; LND's default
   10 min and `LndInternalLockID` for FundPsbt). FinalizePsbt and PublishTransaction **are implemented** because they go

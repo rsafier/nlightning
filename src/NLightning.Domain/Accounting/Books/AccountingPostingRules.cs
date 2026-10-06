@@ -56,6 +56,7 @@ public static class AccountingPostingRules
             note = accountingEvent.Kind switch
             {
                 AccountingEventKind.InvoiceSettled => PostInvoiceSettled(accountingEvent, lines),
+                AccountingEventKind.InterceptedHtlcSettled => PostInterceptedHtlcSettled(accountingEvent, lines),
                 AccountingEventKind.PaymentSucceeded => PostPaymentSucceeded(accountingEvent, lines),
                 AccountingEventKind.PaymentFailed => null,
                 AccountingEventKind.ForwardSettled => PostForwardSettled(accountingEvent, lines),
@@ -114,6 +115,8 @@ public static class AccountingPostingRules
                                                                        : "Payment sent", description),
             AccountingEventKind.PaymentFailed => WithDetail("Payment failed",
                                                             Text(accountingEvent, AccountingDetailKeys.Reason)),
+            AccountingEventKind.InterceptedHtlcSettled =>
+                WithDetail("Intercepted HTLC settled", Route(accountingEvent)),
             AccountingEventKind.ForwardSettled => WithDetail("Forward settled", Route(accountingEvent)),
             AccountingEventKind.TrampolineRelaySettled => WithDetail("Trampoline relay settled", Route(accountingEvent)),
             AccountingEventKind.ForwardLostOnchain => WithDetail("Forward lost on chain", Route(accountingEvent)),
@@ -184,6 +187,15 @@ public static class AccountingPostingRules
 
         lines.Add(AccountRole.Sent, amount);
         lines.Add(AccountRole.RoutingFees, fee);
+        return null;
+    }
+
+    /// <summary>A forward settled by the HTLC interceptor (NL-1182), AmountMsat = the incoming HTLC's amount: Dr
+    /// Channels a; Cr Received a, as an invoice of ours (no outgoing leg took anything out of the channels).</summary>
+    private static string? PostInterceptedHtlcSettled(AccountingEventModel e, Lines lines)
+    {
+        lines.Add(AccountRole.Channels, e.AmountMsat);
+        lines.Add(AccountRole.Received, -e.AmountMsat);
         return null;
     }
 

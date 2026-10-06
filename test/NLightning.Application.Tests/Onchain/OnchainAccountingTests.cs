@@ -614,6 +614,81 @@ public sealed class OnchainAccountingTests : IDisposable
                                          && e.Details[OnchainAccounting.ReversesKey] == loss.EventKey);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_AnHtlcTheInterceptorSettled_When_ThePeerTimesItOutOnChain_Then_ItsAmountIsLost(bool booked)
+    {
+        // Arrange (NL-1182): the peer's HTLC to us was a held forward the HTLC interceptor settled (its
+        // InterceptedHtlcSettled is in the feed, no circuit); our fulfill never got through
+        var remote = _pair.Alice.State.RemoteCommit;
+        var commitment = BuildCommitment(CommitmentSide.Remote, remote.Spec, remote.Number,
+                                         remote.PerCommitmentPoint);
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+        var theirHtlc = Row(OutputDescriptorKind.RemoteOfferedHtlc);
+        if (booked)
+            _store.AccountingEvents.Add((InterceptedSettled(theirHtlc.HtlcId!.Value), 0));
+        var executor = CreateExecutor();
+
+        // Act: the peer's HTLC-timeout transaction takes it
+        var timeout = Spend([(commitment.TxId, theirHtlc.OutputIndex)], TheirHtlcSat - 300);
+        await MineSpendAsync(executor, timeout, commitment.TxId, theirHtlc.OutputIndex, SpendHeight + 40);
+
+        // Assert: the HTLC's amount, which the interceptor's settle left in the channels, is a loss
+        var lost = _store.Events.Where(e => e.Kind == AccountingEventKind.ForwardLostOnchain).ToList();
+        if (!booked)
+        {
+            Assert.Empty(lost);
+            return;
+        }
+
+        var loss = Assert.Single(lost);
+        Assert.Equal(AccountingEventKeys.ForwardLostOnchain(_channel.ChannelId, theirHtlc.HtlcId!.Value), loss.EventKey);
+        Assert.Equal(-(long)TheirHtlcSat * 1_000, loss.AmountMsat);
+        Assert.Equal(PaymentAccountingEvents.InterceptedKind, loss.Details["kind"]);
+        Assert.Equal(PaymentAccountingEvents.UpstreamOnchainCause, loss.Details["cause"]);
+        Assert.Equal(AccountingEventKeys.InterceptedHtlcSettled(_channel.ChannelId, theirHtlc.HtlcId!.Value),
+                     loss.Details["settledKey"]);
+
+        // Act: a reorg rolls the timeout back
+        _store.Watches[(commitment.TxId, theirHtlc.OutputIndex)].ClearSpend();
+        await executor.RunRoundAsync(SpendHeight + 41, TestContext.Current.CancellationToken);
+
+        // Assert: reversed as a forward's loss
+        Assert.Contains(_store.Events, e => e.Kind == AccountingEventKind.Reversal
+                                         && e.Details[OnchainAccounting.ReversesKey] == loss.EventKey);
+    }
+
+    [Fact]
+    public async Task Given_AnHtlcTheInterceptorSettled_When_WeClaimItOnChain_Then_ItsValueIsBookedByTheInterceptor()
+    {
+        // Arrange (NL-1182): the peer's commitment confirmed with the HTLC the interceptor settled still on it
+        var remote = _pair.Alice.State.RemoteCommit;
+        var commitment = BuildCommitment(CommitmentSide.Remote, remote.Spec, remote.Number,
+                                         remote.PerCommitmentPoint);
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+        var theirHtlc = Row(OutputDescriptorKind.RemoteOfferedHtlc);
+        _store.AccountingEvents.Add((InterceptedSettled(theirHtlc.HtlcId!.Value), 0));
+        var executor = CreateExecutor();
+
+        // Act: we claim it with the preimage
+        var ourClaim = Stored(Spend([(commitment.TxId, theirHtlc.OutputIndex)], TheirHtlcSat - 400),
+                              BroadcastPurpose.HtlcClaim);
+        await MineSpendAsync(executor, ourClaim, commitment.TxId, theirHtlc.OutputIndex, SpendHeight + 3);
+
+        // Assert: rule (a), the value is the interceptor settle's (not new income), and no loss
+        var claimed = _store.Events.Single(e => e.OutputIndex == theirHtlc.OutputIndex);
+        Assert.Equal(OnchainAccounting.IncomingHtlc, claimed.Details[OnchainAccounting.HtlcDirectionKey]);
+        Assert.Equal(OnchainAccounting.InterceptorValueOwner, claimed.Details[OnchainAccounting.ValueBookedByKey]);
+        Assert.DoesNotContain(_store.Events, e => e.Kind == AccountingEventKind.ForwardLostOnchain);
+    }
+
+    private AccountingEventModel InterceptedSettled(ulong htlcId) =>
+        PaymentAccountingEvents.InterceptedHtlcSettled(
+            _channel.ChannelId, htlcId, RealSigningCommitmentPair.Hash(RealSigningCommitmentPair.Preimage(2)),
+            LightningMoney.Satoshis(TheirHtlcSat), _channel, null, null, LightningMoney.Satoshis(TheirHtlcSat - 10),
+            s_now, 0);
+
     [Fact]
     public async Task Given_AFailedForwardsIncomingHtlc_When_ThePeerTimesItOutOnChain_Then_NoLossIsRecorded()
     {

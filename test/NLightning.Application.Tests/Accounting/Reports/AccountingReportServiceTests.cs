@@ -192,6 +192,27 @@ public class AccountingReportServiceTests
     }
 
     [Fact]
+    public async Task Given_AnHtlcTheInterceptorSettled_When_TheChannelsViewIsRead_Then_ItIsAPaymentReceived()
+    {
+        // Arrange (NL-1182): a held forward on A settled by the HTLC interceptor: no routing, the whole HTLC received
+        var a = Channel(0xA1);
+        _kit.Add(AccountingEventKind.ChannelFunded, T0, 0, 0, a, Peer(0x11),
+                 AccountingDetailsCodec.Create(("capacitySat", "1000000"), ("isInitiator", "false")));
+        _kit.Add(AccountingEventKind.InterceptedHtlcSettled, T0.AddDays(1), 40_001, 0, a, Peer(0x11),
+                 AccountingDetailsCodec.Create(("kind", "intercepted"), ("incomingChannelId", a.ToString())));
+
+        // Act
+        var report = await _kit.CreateReports().GetChannelsReportAsync(null, null, null,
+                                                                       TestContext.Current.CancellationToken);
+
+        // Assert
+        var line = report.Channels.Single(c => c.ChannelId == a);
+        Assert.Equal(40_001, line.PaymentsReceivedMsat);
+        Assert.Equal(0, line.RoutingInMsat);
+        Assert.Equal(0, line.ForwardsIn);
+    }
+
+    [Fact]
     public async Task Given_ATrampolineRelayOverTwoChannels_When_TheChannelsViewIsRead_Then_TheIncomeIsSplitByAmount()
     {
         // Arrange (NL-899): 600,000 msat in on A, 400,000 on B, the leg out on C, 1,001 msat earned; and a relay sealed

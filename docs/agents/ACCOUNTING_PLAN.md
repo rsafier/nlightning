@@ -115,6 +115,7 @@ Every row stores these fields:
 | `PaymentSucceeded` | `PaymentService` completion save | −(amount+fee); fee = route fee | One per payment, not per part. Covers destination, invoice description and hash, offer id, and keysend. A payment to our own invoice is flagged `SelfPayment` (rebalance). |
 | `PaymentFailed` | `PaymentService` | 0 | Informational only; it never posts money. |
 | `ForwardSettled` | Circuit → Fulfilled (the incoming fulfill's save) | +fee = in − out | Records the in and out channels and amounts. |
+| `InterceptedHtlcSettled` (8) | `HtlcSwitch` interception, the interceptor's SETTLE (the fulfill's save; NL-1182) | +HTLC amount; fee 0 | A held forward the HTLC interceptor (LND's `routerrpc.HtlcInterceptor`) settled with the preimage: no outgoing leg, so the whole HTLC is ours, received for whoever runs the interceptor. Keyed per incoming HTLC (`icpt:{channel}:{htlc}:settled`); FAIL and RESUME write nothing of their own (a resumed forward books its `ForwardSettled`). Lost on chain afterwards: a `ForwardLostOnchain` with cause `upstreamOnchain` under the forward's key. |
 | `ForwardLostOnchain` | Resolver path where we paid downstream on chain but lost upstream, or the reverse | ± | Loss event. Rare but real. |
 | `InvoiceLostOnchain` | `OnchainResolutionExecutor`, in the resolution's save: an incoming HTLC of our settled invoice (its record carries the preimage) that the peer took by its timeout, or we gave up (NL-688) | −HTLC amount | Keyed per HTLC (`inv:{hash}:{channel}:{htlc}:onchain`); a reorg or a replaced close reverses it. The sale stays income (the payer holds the preimage). |
 | `ChannelFunded` | Funding confirmation (`ChannelFundings` lock save) | −our contribution; fee = our share of the funding tx fee | Records push (NL-605), dual-fund shares, public/private, and whether it is an anchors channel. The contribution moves wallet → channel; the push is a separate `PushSent`/`PushReceived`. |
@@ -195,6 +196,7 @@ A mismatch is a bug, never an adjustment.
 | `PaymentSucceeded` (amount a = −AmountMsat − fee) | Cr Channels (a + fee); Dr Sent a; Dr RoutingFees fee. With `selfPayment` (a rebalance, NL-609): Cr Channels (a + fee); Dr Rebalance (a + fee), so with its `InvoiceSettled` only the route fee stays in Rebalance |
 | `PaymentFailed` | none |
 | `ForwardSettled` | Dr Channels fee; Cr Routing fee |
+| `InterceptedHtlcSettled` | Dr Channels a; Cr Received a (as `InvoiceSettled`; NL-1182) |
 | `ForwardLostOnchain` | Cr Channels v; Dr LossOnchain v |
 | `InvoiceLostOnchain` | Cr Channels v; Dr LossOnchain v (the amount `InvoiceSettled` put in the channels, which the close never took out; NL-688) |
 | `ChannelFunded` | Dr Channels c; Dr FeeFunding fee; Cr Clearing (c + fee) |
