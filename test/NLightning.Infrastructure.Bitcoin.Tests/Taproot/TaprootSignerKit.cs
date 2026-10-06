@@ -114,12 +114,19 @@ internal sealed class TaprootSignerKit
         return tx.CreateValidator([spentOutput]).ValidateInput(0).Error;
     }
 
-    public static LocalLightningSigner CreateSigner(byte seedByte)
+    /// <param name="seedByte">The channel key seed.</param>
+    /// <param name="handedOut">Collects every extended channel key array the key manager hands out (NL-911).</param>
+    public static LocalLightningSigner CreateSigner(byte seedByte, List<byte[]>? handedOut = null)
     {
         var seed = Enumerable.Repeat(seedByte, 32).ToArray();
         var keyManager = new Mock<ISecureKeyManager>();
         keyManager.Setup(k => k.GetChannelKeyAtIndex(It.IsAny<uint>()))
-                  .Returns((uint index) => ExtKey.CreateFromSeed(seed).Derive((int)index, true).ToBytes());
+                  .Returns((uint index) =>
+                   {
+                       var bytes = ExtKey.CreateFromSeed(seed).Derive((int)index, true).ToBytes();
+                       handedOut?.Add(bytes);
+                       return bytes;
+                   });
         var utxos = new Mock<IUtxoMemoryRepository>();
         utxos.Setup(u => u.GetLockedUtxosForChannel(It.IsAny<ChannelId>())).Returns([]);
         return new LocalLightningSigner(new FundingOutputBuilder(), new KeyDerivationService(new Secp256K1Math()),

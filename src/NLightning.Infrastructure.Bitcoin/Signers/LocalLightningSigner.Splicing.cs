@@ -325,8 +325,7 @@ public partial class LocalLightningSigner
             throw new ArgumentOutOfRangeException(nameof(fundingKeyIndex), fundingKeyIndex,
                                                   "Funding key indexes are hardened BIP 32 indexes (below 2^31)");
 
-        var channelKey = ExtKey.CreateFromBytes(_secureKeyManager.GetChannelKeyAtIndex(channelKeyIndex));
-        return channelKey.Derive(FundingDerivationIndex, true).Derive((int)fundingKeyIndex, true).PrivateKey;
+        return DeriveChannelChildKey(channelKeyIndex, [FundingDerivationIndex, (int)fundingKeyIndex]);
     }
 
     /// <summary>

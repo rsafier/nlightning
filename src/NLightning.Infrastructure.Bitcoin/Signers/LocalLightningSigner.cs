@@ -1167,13 +1167,8 @@ public partial class LocalLightningSigner : ILightningSigner
         }
     }
 
-    protected virtual Key GenerateFundingPrivateKey(uint channelKeyIndex)
-    {
-        var channelExtKey = _secureKeyManager.GetChannelKeyAtIndex(channelKeyIndex);
-        var channelKey = ExtKey.CreateFromBytes(channelExtKey);
-
-        return GenerateFundingPrivateKey(channelKey);
-    }
+    protected virtual Key GenerateFundingPrivateKey(uint channelKeyIndex) =>
+        DeriveChannelChildKey(channelKeyIndex, [FundingDerivationIndex]);
 
     /// <summary>
     /// The channel's <c>htlc_basepoint_secret</c> (m/4' of the channel key).
