@@ -178,14 +178,15 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 84 | 85 |
-| in-progress | 0 | 0 | 4 | 1 | 5 |
+| in-progress | 0 | 0 | 5 | 1 | 6 |
 | fixed | 15 | 68 | 227 | 465 | 775 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **241** | **570** | **894** |
+| **Total** | **15** | **68** | **242** | **570** | **895** |
 
 ### Epics
 
+- NL-1160: LND gRPC compatibility (in-progress, medium; plan `docs/agents/LND_GRPC_PLAN.md`, branch `wip/lnd-grpc-compat`: wave 1 read/invoice/message surface with real macaroons NL-1161..NL-1163, wave 2 NL-1164, wave 3 NL-1168)
 - NL-990: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-991 (fixed), C1 CDK gRPC payment processor NL-992 (fixed, BOLT 11; follow-ups NL-997), C2 proof NL-993 (fixed, on the cluster harness), C3 native wallet NL-994, C4 hold invoices NL-995; integration review NL-998, NL-999, NL-1001..NL-1004 fixed, NL-1000 fixed, NL-1010 and NL-1011 open; BOLT 12 and on-chain NL-997 fixed)
 - NL-877: Simple taproot channels (`option_simple_taproot`) (open, medium; plan `docs/agents/TAPROOT_CHANNELS_PLAN.md` T0-T6; spec merged 2026-05-04, LND 0.21 and Eclair 0.14 run it as private channels; taproot gossip NL-878 waits for BOLTs #1059)
 - NL-875: Trampoline routing (BOLTs PR #836): client, relay and target (in-progress, medium; plan `docs/agents/TRAMPOLINE_PLAN.md`, TR0-TR5 built on `wip/fafo` 2026-10-03, merges `7f5c5d85` TR0, `e958b8eb` TR1, `9f0d1050` TR3-P, `165acd77` TR2, `fb2b07ca` TR5 phase 1, `1c09e718` TR4, `dd48b26d` TR3, `c1811bbf` TR5 phase 2; experimental until an owner decision; follow-ups NL-895..NL-899)
@@ -9476,3 +9477,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** NL-1151 kept verified fetches in memory only, so a restart between captaind's `FetchInvoice` and its `xpay` of the `lni` refused the payment ("not an invoice this node fetched"); captaind then failed the attempt and the user had to pay the offer again. No funds at risk (nothing was sent).
 - **Fix sketch:** done: our `invreq_metadata` is 16 random bytes plus the first 16 bytes of SHA-256(nonce || every other mirrored request field), and `invreq_payer_id` is derived from the whole metadata with our node's secret, so metadata that commits to the invoice's request fields and derives its payer id proves the invoice answers a request of this node, unchanged — no state kept (the scheme LDK uses for its own requests). An `lni` absent from the cache is checked that way, its request rebuilt from the mirrored fields (the offer re-encoded from its records), and then verified by `InvoiceVerifier` as a fresh fetch through whichever offer path names its node. The cache stays the fast path. Requests made before this change (random metadata) are still refused after a restart. Tests: `InvoiceRequestFactoryTests.Given_ARequest_When_ItsMetadataIsChecked_*`, `OfferHarnessTests.Given_AFetchForgottenByARestart_*` (pays), `Given_InvoicesThisNodeDidNotRequest_*` (another node's keys: refused, nothing sent).
 - **Blocks/Blocked-by:** follow-up of NL-1151
+
+### NL-1160 LND gRPC compatibility: serve a subset of LND's gRPC API (epic)
+- **Status:** in-progress (wave 0 plan done; wave 1 NL-1161..NL-1163)
+- **Severity:** medium
+- **Kind:** feature
+- **Location:** `docs/agents/LND_GRPC_PLAN.md`; branch `wip/lnd-grpc-compat`
+- **Evidence:** Existing Lightning tooling (BTCPay Server, Zeus/RTL-class wallets, Loop, the Fedimint gateway, our own `test/NLightning.Testing.Lnd` client) speaks LND's gRPC (`lnrpc.Lightning` and its sub-servers) with TLS and macaroons; NLightning only offers its IPC, the Cashu processor and the Bark/ASP backend, so none of them can use the node.
+- **Fix sketch:** Waves of `LND_GRPC_PLAN.md`: wave 1 the read/invoice/message surface with real LND-format macaroons and TLS (NL-1161..NL-1163), wave 2 pay/channels/hold invoices and the streams (NL-1164), wave 3 ChannelAcceptor, walletrpc and the HTLC interceptor (NL-1168).
+- **Blocks/Blocked-by:** NL-1161..NL-1169
+- **Plan ref:** `docs/agents/LND_GRPC_PLAN.md`
