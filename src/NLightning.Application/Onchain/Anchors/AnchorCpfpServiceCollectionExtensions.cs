@@ -55,7 +55,8 @@ public static class AnchorCpfpServiceCollectionExtensions
                                                              sp.GetService<IOptions<AnchorCpfpOptions>>()?.Value,
                                                              sp.GetService<IBitcoinChainService>(),
                                                              sp.GetService<ICommitmentOutputMapper>(),
-                                                             sp.GetService<ICommitmentKeyDerivationService>()));
+                                                             sp.GetService<ICommitmentKeyDerivationService>(),
+                                                             sp.GetService<ISecretStorageServiceFactory>()));
         services.TryAddSingleton<IAnchorCpfpService>(sp => sp.GetRequiredService<AnchorCpfpService>());
         return services;
     }

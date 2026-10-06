@@ -1,3 +1,5 @@
+using NBitcoin;
+
 namespace NLightning.Application.Onchain.Anchors;
 
 using Domain.Bitcoin.Transactions.Extensions;
@@ -5,6 +7,10 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Models;
+using Domain.Persistence.Interfaces;
+using Domain.Protocol.Models;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 
 /// <summary>
@@ -52,10 +58,12 @@ public sealed partial class AnchorCpfpService
     /// <summary>
     /// The peer's anchor in a commitment, for the sweep anyone may make after 16 blocks: on our commitment keyed to the
     /// peer's payment basepoint; on the peer's (simple taproot) keyed to its <c>local_delayedpubkey</c>, found for the
-    /// per-commitment points we hold (its current and next commitment).
+    /// per-commitment points we hold (its current and next commitment, and <paramref name="extraPoint"/>: the point of
+    /// a revoked commitment, from the secret the peer revealed, NL-1050). A future commitment's point is never known
+    /// (BOLT 2: <c>my_current_per_commitment_point</c> is ignored), so its anchor stays the peer's.
     /// </summary>
     private AnchorOutpoint? FindPeerAnchor(ChannelModel channel, TxId commitmentTxId, byte[] commitmentTransaction,
-                                           bool isPeers)
+                                           bool isPeers, CompactPubKey? extraPoint = null)
     {
         if (!IsTaprootChannel(channel))
             return channel.RemoteFundingPubKey is { } theirs
@@ -80,6 +88,8 @@ public sealed partial class AnchorCpfpService
         var points = new List<CompactPubKey> { commitments.RemoteCommit.PerCommitmentPoint };
         if (commitments.RemoteNextCommit is { } next)
             points.Add(next.Commit.PerCommitmentPoint);
+        if (extraPoint is { } extra)
+            points.Add(extra);
         foreach (var point in points)
         {
             try
@@ -97,6 +107,36 @@ public sealed partial class AnchorCpfpService
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// The peer's per-commitment point of the revoked commitment of <paramref name="close"/> on a simple taproot channel
+    /// (<c>secret * G</c>, the secret from our copy of the peer's shachain, as <c>RevokedCommitDataSource</c> reads it),
+    /// so the sweep finds the peer's anchor too (NL-1050); null for any other close or when the secret is not held.
+    /// </summary>
+    private async Task<CompactPubKey?> GetRevokedPeerPointAsync(ChannelModel channel, IUnitOfWork unitOfWork,
+                                                                ChannelCloseModel close)
+    {
+        if (close.Kind != ChannelCloseKind.RevokedCommitment || !IsTaprootChannel(channel)
+         || close.CommitmentNumber is not { } number || _secretStorageServiceFactory is null)
+            return null;
+
+        try
+        {
+            var entries = await unitOfWork.RemoteShachainDbRepository.GetByChannelIdAsync(close.ChannelId);
+            using var shachain = _secretStorageServiceFactory.CreatePerCommitmentStorage();
+            shachain.Load(entries);
+            var secret = shachain.DeriveOldSecret(PerCommitmentIndex.From(number));
+            using var key = new Key((byte[])secret);
+            return key.PubKey.ToBytes();
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException or FormatException)
+        {
+            LogOnce($"{channel.ChannelId}:{number}:revoked-point", e,
+                    "The peer's secret of revoked commitment {Number} of channel {ChannelId} is not held; its anchor is "
+                  + "not swept", number, channel.ChannelId);
+            return null;
+        }
     }
 
     /// <summary>
