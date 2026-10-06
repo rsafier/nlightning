@@ -85,7 +85,8 @@ public static class ImageVersions
     /// <summary>
     /// Second's captaind (the Bark ASP server), built locally from the bark repo (<c>github.com/ark-bitcoin/bark</c>,
     /// the mirror of <c>gitlab.com/ark-bitcoin/bark</c>, master pinned by the Bark node's vendored default config; a
-    /// cold Rust build takes 10-20 min). Reused as it is.
+    /// cold Rust build takes 10-20 min): <c>docker build -t nltg-captaind:latest test/Docker/captaind</c>. Reused as it
+    /// is.
     /// </summary>
     public static readonly ImageRef Captaind = new("nltg-captaind", "latest", PullPolicy: ImagePullPolicy.Never);
 
