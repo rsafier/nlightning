@@ -100,8 +100,9 @@ now served).
 2. **NL-1152 (fixed):** our method was `Listpays`, CLN's `ListPays`; captaind reached it only because
    ASP.NET Core routes gRPC paths case-insensitively.
 3. **NL-1151 (fixed):** BOLT 12 pay through captaind (FetchInvoice + xpay of `lni`). Fetched invoices
-   live in memory until expiry: after a restart captaind's xpay of an earlier fetch is refused (the
-   attempt fails, the wallet retries).
+   live in memory until expiry; since NL-1157 an `lni` the memory lacks (a restart in between) is
+   verified statelessly — our `invreq_metadata` commits to the request fields and derives
+   `invreq_payer_id` with our key — and paid.
 4. **NL-1154 (fixed):** our row reads `Failed` between two attempts while `PaymentService` still retries
    (NL-999); `ListPays` (and `Xpay`'s mapping) now report it PENDING while `IsPaying` is true, so captaind
    never sees FAILED while a retry may still put an HTLC out. An empty `ListPays` (which fails the attempt)

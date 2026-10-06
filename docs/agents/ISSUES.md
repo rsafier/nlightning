@@ -179,10 +179,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 84 | 85 |
 | in-progress | 0 | 0 | 4 | 1 | 5 |
-| fixed | 15 | 68 | 227 | 464 | 774 |
+| fixed | 15 | 68 | 227 | 465 | 775 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **241** | **569** | **893** |
+| **Total** | **15** | **68** | **241** | **570** | **894** |
 
 ### Epics
 
@@ -9467,3 +9467,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** in the NL-1155 full net10.0 run (2026-10-06, `wip/fafo` at `58d65f2c`, while `run-cluster.sh --suite lnd` built and ran on the same host) it failed after 10 s; the class passed 50/50 three times alone right after. Unrelated to the change under test (onion message reply paths).
 - **Fix sketch:** check whether the query timeout and the slot hand-over run on a real clock (move them to a stepped `TimeProvider` as the de-timing pass did), else put the class in the `timing-serial` collection.
 - **Blocks/Blocked-by:** found by NL-1155
+
+### NL-1157 A BOLT 12 invoice fetched for captaind could not be paid after a node restart
+- **Status:** fixed (c8881476)
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Offers/Send/InvoiceRequestFactory.cs` (`IsCommittedMetadata`), `OfferPaymentService.PayFetchedInvoiceAsync`/`TryVerifyStateless`
+- **Evidence:** NL-1151 kept verified fetches in memory only, so a restart between captaind's `FetchInvoice` and its `xpay` of the `lni` refused the payment ("not an invoice this node fetched"); captaind then failed the attempt and the user had to pay the offer again. No funds at risk (nothing was sent).
+- **Fix sketch:** done: our `invreq_metadata` is 16 random bytes plus the first 16 bytes of SHA-256(nonce || every other mirrored request field), and `invreq_payer_id` is derived from the whole metadata with our node's secret, so metadata that commits to the invoice's request fields and derives its payer id proves the invoice answers a request of this node, unchanged — no state kept (the scheme LDK uses for its own requests). An `lni` absent from the cache is checked that way, its request rebuilt from the mirrored fields (the offer re-encoded from its records), and then verified by `InvoiceVerifier` as a fresh fetch through whichever offer path names its node. The cache stays the fast path. Requests made before this change (random metadata) are still refused after a restart. Tests: `InvoiceRequestFactoryTests.Given_ARequest_When_ItsMetadataIsChecked_*`, `OfferHarnessTests.Given_AFetchForgottenByARestart_*` (pays), `Given_InvoicesThisNodeDidNotRequest_*` (another node's keys: refused, nothing sent).
+- **Blocks/Blocked-by:** follow-up of NL-1151
