@@ -353,6 +353,60 @@ public class WalletPsbtServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_BitcoindRefusesASpend_When_Published_Then_ItIsLndsErrorAndNothingIsStored()
+    {
+        // Arrange: LND returns an RPC error for a refused publish and keeps nothing (lndclient ignores publish_error)
+        AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
+        var finalized = await _service.FinalizePsbtAsync((await _service.FundPsbtAsync(Request(40_000), Ct)).Psbt, Ct);
+        _chain.Setup(c => c.SendTransactionAsync(It.IsAny<Transaction>()))
+              .ThrowsAsync(new NBitcoin.RPC.RPCException(NBitcoin.RPC.RPCErrorCode.RPC_VERIFY_REJECTED,
+                                                         "txn-mempool-conflict", null!));
+
+        // Act
+        var e = await Assert.ThrowsAsync<WalletPsbtException>(() => _service.PublishAsync(finalized.RawFinalTx, null,
+                                                                                         Ct));
+
+        // Assert
+        Assert.Equal(WalletPsbtError.PublishRefused, e.Error);
+        Assert.Equal("transaction rejected: output already spent", e.Message);
+        Assert.Empty(_published);
+    }
+
+    [Fact]
+    public async Task Given_BitcoindAlreadyHasTheSpend_When_Published_Then_ItIsStoredAsPublished()
+    {
+        // Arrange
+        AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
+        var finalized = await _service.FinalizePsbtAsync((await _service.FundPsbtAsync(Request(40_000), Ct)).Psbt, Ct);
+        _chain.Setup(c => c.SendTransactionAsync(It.IsAny<Transaction>()))
+              .ThrowsAsync(new NBitcoin.RPC.RPCException(NBitcoin.RPC.RPCErrorCode.RPC_VERIFY_ALREADY_IN_CHAIN,
+                                                         "txn-already-in-mempool", null!));
+
+        // Act
+        var published = await _service.PublishAsync(finalized.RawFinalTx, null, Ct);
+
+        // Assert
+        Assert.True(published);
+        Assert.Single(_published);
+    }
+
+    [Theory]
+    [InlineData("bad-txns-inputs-missingorspent", "transaction rejected: output already spent")]
+    [InlineData("txn-mempool-conflict", "transaction rejected: output already spent")]
+    [InlineData("insufficient fee, rejecting replacement", "insufficient fee")]
+    [InlineData("txn-same-nonwitness-data-in-mempool", "txn same nonwitness data in mempool")]
+    [InlineData("mempool min fee not met, 100 < 200",
+                "transaction rejected by the mempool because of low fees: mempool min fee not met, 100 < 200")]
+    [InlineData("txn-already-known", null)]
+    [InlineData("Transaction outputs already in utxo set", null)]
+    [InlineData("something else", "something else")]
+    public void Given_ARejectReason_When_Mapped_Then_ItIsLndsError(string reason, string? expected)
+    {
+        // Act / Assert
+        Assert.Equal(expected, WalletPsbtService.MapRefusal(reason));
+    }
+
+    [Fact]
     public void Given_ALeasePurpose_When_ParsedBack_Then_TheIdAndExpirationRoundTrip()
     {
         // Arrange

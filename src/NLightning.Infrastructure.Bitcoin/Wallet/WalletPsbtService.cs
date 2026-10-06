@@ -434,7 +434,7 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
             if (_bitcoinChainService is null)
                 throw new WalletPsbtException(WalletPsbtError.FailedPrecondition, "no chain service to publish with");
 
-            await _bitcoinChainService.SendTransactionAsync(tx);
+            await SendOrRefuseAsync(tx);
             _logger.LogInformation("Published transaction {TxId} (no wallet input)", tx.GetHash());
             return true;
         }
@@ -443,6 +443,11 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
         var feeSat = spent.Sum(o => o.Value.Satoshi) - tx.Outputs.Sum(o => o.Value.Satoshi);
         if (feeSat < 0)
             throw new WalletPsbtException(WalletPsbtError.InvalidArgument, "the outputs exceed the inputs");
+
+        // LND (btcwallet PublishTransaction): a transaction bitcoind refuses is an error and nothing is kept. So it is sent
+        // first; only an accepted (or already known) one gets the WalletSend row that rebroadcasts it until it confirms
+        if (_bitcoinChainService is not null)
+            await SendOrRefuseAsync(tx);
 
         var weight = WalletSpendService.GetWeight(tx);
         var row = new BroadcastTransactionModel(new SignedTransaction(new TxId(tx.GetHash().ToBytes()), tx.ToBytes()),
@@ -495,6 +500,49 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// Sends <paramref name="tx"/>; bitcoind's refusal becomes LND's error (<see cref="MapRefusal"/>), an "already known"
+    /// answer counts as published (LND ignores those too).
+    /// </summary>
+    private async Task SendOrRefuseAsync(Transaction tx)
+    {
+        try
+        {
+            await _bitcoinChainService!.SendTransactionAsync(tx);
+        }
+        catch (NBitcoin.RPC.RPCException e)
+        {
+            if (MapRefusal(e.Message) is { } error)
+            {
+                _logger.LogWarning("bitcoind refused {TxId}: {Reason}", tx.GetHash(), e.Message);
+                throw new WalletPsbtException(WalletPsbtError.PublishRefused, error);
+            }
+        }
+    }
+
+    /// <summary>
+    /// LND's reading of bitcoind's reject reason (<c>lnwallet/btcwallet</c> <c>mapRpcclientError</c> over btcwallet's
+    /// <c>chain</c> errors): null when the transaction is already in the mempool or the chain (a success), else the error
+    /// text LND returns.
+    /// </summary>
+    internal static string? MapRefusal(string reason)
+    {
+        var text = reason.ToLowerInvariant();
+        if (text.Contains("txn-already-in-mempool") || text.Contains("txn-already-known")
+         || text.Contains("already in block chain") || text.Contains("outputs already in utxo set"))
+            return null;
+        if (text.Contains("txn-mempool-conflict") || text.Contains("missingorspent") || text.Contains("missing-inputs")
+         || text.Contains("missing inputs"))
+            return "transaction rejected: output already spent";
+        if (text.Contains("min relay fee not met") || text.Contains("mempool min fee not met"))
+            return $"transaction rejected by the mempool because of low fees: {reason}";
+        if (text.Contains("insufficient fee"))
+            return "insufficient fee";
+        if (text.Contains("txn-same-nonwitness-data-in-mempool"))
+            return "txn same nonwitness data in mempool";
+        return reason;
     }
 
     private static uint Confirmations(uint blockHeight, uint tipHeight) =>

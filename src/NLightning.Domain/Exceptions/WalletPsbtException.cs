@@ -10,7 +10,10 @@ public enum WalletPsbtError
     FailedPrecondition,
 
     /// <summary>The output or lease does not exist.</summary>
-    NotFound
+    NotFound,
+
+    /// <summary>bitcoind refused to publish the transaction (LND answers this with a plain RPC error).</summary>
+    PublishRefused
 }
 
 /// <summary>A refused wallet PSBT or lease request (NL-1184); nothing was changed.</summary>

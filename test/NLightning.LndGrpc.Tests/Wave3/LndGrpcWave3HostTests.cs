@@ -58,6 +58,7 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
     private readonly ChannelOpenDecisionGate _gate = new(NullLogger<ChannelOpenDecisionGate>.Instance);
     private readonly HtlcInterceptorHub _hub = new(NullLogger<HtlcInterceptorHub>.Instance);
     private readonly Mock<IWalletPsbtService> _psbt = new();
+    private readonly Mock<IBitcoinChainService> _chain = new();
     private readonly List<AccountingEventModel> _accountingEvents = [];
 
     private ServiceProvider? _services;
@@ -396,6 +397,84 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Given_ARefusedPublish_When_PublishTransaction_Then_ItIsAnRpcErrorLikeLnd()
+    {
+        // Arrange
+        _psbt.Setup(x => x.PublishAsync(It.IsAny<byte[]>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+             .ThrowsAsync(new WalletPsbtException(WalletPsbtError.PublishRefused,
+                                                  "transaction rejected: output already spent"));
+        using var connection = Connect(LndMacaroonFiles.AdminFileName);
+
+        // Act
+        var e = await Assert.ThrowsAsync<RpcException>(async () =>
+            await connection.WalletKitClient.PublishTransactionAsync(new Testing.Lnd.Walletrpc.Transaction
+            {
+                TxHex = ByteString.CopyFrom([1, 2, 3])
+            }, cancellationToken: Ct));
+
+        // Assert
+        Assert.Equal(StatusCode.Unknown, e.StatusCode);
+        Assert.Equal("transaction rejected: output already spent", e.Status.Detail);
+    }
+
+    [Fact]
+    public async Task Given_AnAcceptedPublish_When_PublishTransaction_Then_PublishErrorIsEmpty()
+    {
+        // Arrange
+        _psbt.Setup(x => x.PublishAsync(It.IsAny<byte[]>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync(true);
+        using var connection = Connect(LndMacaroonFiles.AdminFileName);
+
+        // Act
+        var response = await connection.WalletKitClient.PublishTransactionAsync(new Testing.Lnd.Walletrpc.Transaction
+        {
+            TxHex = ByteString.CopyFrom([1, 2, 3])
+        }, cancellationToken: Ct);
+
+        // Assert
+        Assert.Equal("", response.PublishError);
+    }
+
+    [Fact]
+    public async Task Given_BitcoindsMempoolMinimum_When_EstimateFee_Then_ItIsTheMinRelayFee()
+    {
+        // Arrange
+        _chain.Setup(c => c.GetMempoolMinFeeRatePerKwAsync()).ReturnsAsync(1_000U);
+        using var connection = Connect(LndMacaroonFiles.ReadOnlyFileName);
+
+        // Act
+        var response = await connection.WalletKitClient.EstimateFeeAsync(new Testing.Lnd.Walletrpc.EstimateFeeRequest { ConfTarget = 6 },
+                                                                          cancellationToken: Ct);
+
+        // Assert
+        Assert.Equal(2_500, response.SatPerKw);
+        Assert.Equal(1_000, response.MinRelayFeeSatPerKw);
+    }
+
+    [Fact]
+    public async Task Given_ADepositNotBroadcastByUs_When_GetTransactions_Then_ItsRawTransactionComesFromItsBlock()
+    {
+        // Arrange
+        var deposit = NBitcoin.Network.RegTest.CreateTransaction();
+        deposit.Inputs.Add(new NBitcoin.TxIn(new NBitcoin.OutPoint(NBitcoin.RandomUtils.GetUInt256(), 0)));
+        deposit.Outputs.Add(NBitcoin.Money.Satoshis(30_000), new NBitcoin.Key().PubKey.WitHash.ScriptPubKey);
+        var block = NBitcoin.Network.RegTest.Consensus.ConsensusFactory.CreateBlock();
+        block.Transactions.Add(deposit);
+        _chain.Setup(c => c.GetBlockAsync(101)).ReturnsAsync(block);
+        AddEvent(AccountingEventKind.WalletReceived, new TxId(deposit.GetHash().ToBytes()), 0, 101, 30_000_000);
+        using var connection = Connect(LndMacaroonFiles.ReadOnlyFileName);
+
+        // Act
+        var response = await connection.LightningClient.GetTransactionsAsync(new GetTransactionsRequest(),
+                                                                              cancellationToken: Ct);
+
+        // Assert
+        var listed = Assert.Single(response.Transactions);
+        Assert.Equal(Convert.ToHexStringLower(NBitcoin.BitcoinSerializableExtensions.ToBytes(deposit)), listed.RawTxHex);
+        Assert.True(Assert.Single(listed.OutputDetails).IsOurAddress);
+    }
+
+    [Fact]
     public async Task Given_TheAccountingFeed_When_GetTransactions_Then_EachWalletTransactionHasItsNetAmount()
     {
         // Arrange: a 100,000 sat deposit at block 101, then a spend of it at block 120 paying 60,000 away with 39,000
@@ -503,7 +582,11 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
         services.AddSingleton<IChannelOpenDecisionGate>(_gate);
         services.AddSingleton(_hub);
         services.AddSingleton(_psbt.Object);
-        services.AddSingleton(new Mock<IFeeService>().Object);
+        var fees = new Mock<IFeeService>();
+        fees.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<uint>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(LightningMoney.Satoshis(2_500));
+        services.AddSingleton(fees.Object);
+        services.AddSingleton(_chain.Object);
 
         var monitor = new Mock<IBlockchainMonitor>();
         monitor.SetupGet(x => x.LastProcessedBlockHeight).Returns(150);

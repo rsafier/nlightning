@@ -263,11 +263,16 @@ run when registered (`AddLndGrpc` does).
   output reserved for a CPFP, a withdraw or an interactive-tx is refused) and then calls `SignWalletTransaction`, which
   signs reserved wallet inputs only; nothing a pending broadcast of ours spends (a funding whose memory lock a restart
   dropped) or a channel funding locks can be leased; FundPsbt keeps the anchors reserve like `withdraw`. PublishTransaction
-  stores a spend of leased outputs as a `WalletSend` row (rebroadcast, booked as a wallet send) and sends a transaction
-  without wallet inputs once. Refused or UNIMPLEMENTED: NL-1186.
+  sends first and answers bitcoind's refusal with an RPC error like LND (UNKNOWN, LND's texts: "transaction rejected:
+  output already spent", "... because of low fees: ...", "insufficient fee", "txn same nonwitness data in mempool";
+  lndclient ignores `publish_error`, so a refusal reported there would look published) and keeps nothing; an accepted or
+  already-known spend of leased outputs is then stored as a `WalletSend` row (rebroadcast, booked as a wallet send), a
+  transaction without wallet inputs is sent once. EstimateFee's `min_relay_fee_sat_per_kw` is bitcoind's
+  `mempoolminfee` (at least 253). Refused or UNIMPLEMENTED: NL-1186.
 - **GetTransactions (NL-1185).** The accounting feed (sealed first): `WalletReceived` by creating transaction and
   `WalletOutputSpent` by its `spentBy`, reorg reversals removed; pending broadcasts and unconfirmed deposits as
-  unconfirmed entries; raw transaction, label and fee from our broadcast rows. Gaps NL-1187.
+  unconfirmed entries; label and fee from our broadcast rows; the raw transaction from the row, else from bitcoind (out of its block, no
+  `txindex` needed, or the mempool). Gaps NL-1187.
 - **Tests:** Domain `Channels/Acceptance` (14), Application `Channels/Acceptance` (gate, v1 handler, dual-funded harness:
   rejection, accepted values on `accept_channel2`, refused reserve), `Payments/Interception/HtlcInterceptorHubTests`,
   `Payments/Switch/HtlcInterceptionSwitchTests` (three-node harness: FAIL decrypted at Alice as Bob's

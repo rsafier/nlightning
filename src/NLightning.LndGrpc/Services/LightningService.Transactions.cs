@@ -31,8 +31,9 @@ public sealed partial class LightningService
     /// </summary>
     /// <remarks>
     /// Gaps: history from before the accounting cutover (the opening balance) and with <c>Accounting:Enabled=false</c>
-    /// is not listed; <c>block_hash</c> comes from bitcoind when it still knows the height; <c>raw_tx_hex</c> and
-    /// <c>total_fees</c> only for our own broadcasts (and the fee also when every input was ours).
+    /// is not listed; <c>block_hash</c> and the raw transactions that are not ours come from bitcoind (out of the block, so
+    /// no <c>txindex</c> is needed) while it still has them; <c>total_fees</c> is our broadcast row's, or computed when
+    /// every input was ours.
     /// </remarks>
     public override async Task<TransactionDetails> GetTransactions(GetTransactionsRequest request,
                                                                    ServerCallContext context)
@@ -139,10 +140,11 @@ public sealed partial class LightningService
         var network = _nodeOptions.BitcoinNetwork.ToNBitcoinNetwork();
         var chain = scope.ServiceProvider.GetService<IBitcoinChainService>();
         var blockHashes = new Dictionary<uint, string>();
+        var blocks = new Dictionary<uint, Block?>();
         foreach (var entry in page)
         {
             var row = await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(entry.TxId);
-            response.Transactions.Add(await ToRpcAsync(entry, row, tip, network, chain, blockHashes));
+            response.Transactions.Add(await ToRpcAsync(entry, row, tip, network, chain, blockHashes, blocks));
         }
 
         return response;
@@ -174,7 +176,8 @@ public sealed partial class LightningService
 
     private async Task<Transaction> ToRpcAsync(HistoryEntry entry, BroadcastTransactionModel? row, uint tip,
                                                Network network, IBitcoinChainService? chain,
-                                               Dictionary<uint, string> blockHashes)
+                                               Dictionary<uint, string> blockHashes,
+                                               Dictionary<uint, Block?> blocks)
     {
         var rpc = new Transaction
         {
@@ -191,10 +194,11 @@ public sealed partial class LightningService
 
         NBitcoin.Transaction? tx = null;
         if (row is not null && TryLoad(row.RawTransaction, out var loaded))
-        {
             tx = loaded;
-            rpc.RawTxHex = Convert.ToHexString(row.RawTransaction).ToLowerInvariant();
-        }
+        else if (chain is not null)
+            tx = await FetchTransactionAsync(entry, chain, blocks);
+        if (tx is not null)
+            rpc.RawTxHex = Convert.ToHexString(tx.ToBytes()).ToLowerInvariant();
 
         var outputsSat = tx?.Outputs.Sum(o => o.Value.Satoshi);
         rpc.TotalFees = row?.Fee?.Satoshi
@@ -245,6 +249,30 @@ public sealed partial class LightningService
         }
 
         return rpc;
+    }
+
+    /// <summary>
+    /// A transaction that is not ours from bitcoind: out of its block when it is confirmed (no <c>txindex</c> needed),
+    /// from the mempool otherwise; null when bitcoind does not have it (pruned) or cannot be reached.
+    /// </summary>
+    private static async Task<NBitcoin.Transaction?> FetchTransactionAsync(HistoryEntry entry,
+                                                                          IBitcoinChainService chain,
+                                                                          Dictionary<uint, Block?> blocks)
+    {
+        var hash = new uint256((byte[])entry.TxId);
+        try
+        {
+            if (entry.Height is not { } height)
+                return await chain.GetTransactionAsync(hash);
+
+            if (!blocks.TryGetValue(height, out var block))
+                blocks[height] = block = await chain.GetBlockAsync(height);
+            return block?.Transactions.FirstOrDefault(t => t.GetHash() == hash);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     private static async Task<string> BlockHashAsync(uint height, IBitcoinChainService? chain,

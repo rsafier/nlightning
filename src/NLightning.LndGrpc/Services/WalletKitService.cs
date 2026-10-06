@@ -37,6 +37,9 @@ public sealed class WalletKitService : WalletKit.WalletKitBase
 {
     private const string DefaultAccount = "default";
 
+    /// <summary>bitcoind's default minimum relay fee, 1 sat/vB, in sat/kw.</summary>
+    private const long MinRelayFeePerKw = 253;
+
     private readonly IFeeService _feeService;
     private readonly Network _network;
     private readonly IServiceScopeFactory _scopeFactory;
@@ -103,7 +106,16 @@ public sealed class WalletKitService : WalletKit.WalletKitBase
             throw new RpcException(new Status(StatusCode.InvalidArgument, "confirmation target must be greater than 1"));
 
         var rate = await _feeService.GetFeeRatePerKwAsync((uint)request.ConfTarget, context.CancellationToken);
-        return new EstimateFeeResponse { SatPerKw = rate.Satoshi, MinRelayFeeSatPerKw = 253 };
+
+        // bitcoind's mempoolminfee (at least its relay floor, 253 sat/kw = 1 sat/vB), as LND reports its backend's
+        var minRelay = _serviceProvider.GetService<IBitcoinChainService>() is { } chain
+                           ? await chain.GetMempoolMinFeeRatePerKwAsync() ?? MinRelayFeePerKw
+                           : MinRelayFeePerKw;
+        return new EstimateFeeResponse
+        {
+            SatPerKw = rate.Satoshi,
+            MinRelayFeeSatPerKw = Math.Max(MinRelayFeePerKw, minRelay)
+        };
     }
 
     /// <inheritdoc />
@@ -240,20 +252,9 @@ public sealed class WalletKitService : WalletKit.WalletKitBase
         if (request.Label.Length > 500)
             throw new RpcException(new Status(StatusCode.InvalidArgument, "label too long"));
 
-        try
-        {
-            var published = await Run(() => Psbt.PublishAsync(request.TxHex.ToByteArray(), request.Label,
-                                                               context.CancellationToken));
-            // LND reports a refused broadcast in publish_error, not as a failed call
-            return new PublishResponse
-            {
-                PublishError = published ? "" : "the transaction was stored but bitcoind refused it for now"
-            };
-        }
-        catch (NBitcoin.RPC.RPCException e)
-        {
-            return new PublishResponse { PublishError = e.Message };
-        }
+        // LND: a refused publish is an RPC error (UNKNOWN, LND's plain error text); publish_error stays empty on success
+        await Run(() => Psbt.PublishAsync(request.TxHex.ToByteArray(), request.Label, context.CancellationToken));
+        return new PublishResponse();
     }
 
     /// <summary>LND's <c>ParseConfs</c>.</summary>
@@ -318,6 +319,7 @@ public sealed class WalletKitService : WalletKit.WalletKitBase
             {
                 WalletPsbtError.InvalidArgument => StatusCode.InvalidArgument,
                 WalletPsbtError.NotFound => StatusCode.NotFound,
+                WalletPsbtError.PublishRefused => StatusCode.Unknown,
                 _ => StatusCode.FailedPrecondition
             }, e.Message));
         }
