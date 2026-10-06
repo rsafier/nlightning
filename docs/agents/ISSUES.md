@@ -178,8 +178,8 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 99 | 100 |
-| in-progress | 0 | 0 | 8 | 1 | 9 |
-| fixed | 15 | 69 | 231 | 479 | 794 |
+| in-progress | 0 | 0 | 7 | 1 | 8 |
+| fixed | 15 | 69 | 232 | 479 | 795 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
 | **Total** | **15** | **69** | **249** | **599** | **932** |
@@ -9764,7 +9764,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Severity:** medium
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Cluster/Live/LoopClusterTests.cs`
-- **Evidence:** Pinned source-built Loop PR 1222 and Aperture 0.4.0 cluster runner tests classic out/in and static in through real L402 and our TLS/macaroon listener. Real classic out/in and static in passed in loop-proof20 (including on-chain MuSig2 signatures combined by each side). loop-proof21 also resumed an outstanding Loop Out after restarting both NLightning and loopd, then timed out processing a 4321-block CSV jump; the suite now mines in 64-block batches. Direct notifier parity and CSV rerun are pending. The pinned regtest server has no static withdrawal implementation. Live deposit reorg and direct raw-signature descriptor parity remain outstanding; in-process reorg/nonce tests do not prove these external state machines.
+- **Evidence:** Pinned source-built Loop PR 1222, Aperture 0.4.0, LND 0.21.4 and Core 29 cluster run `loop-proof25` passed (1/1, 636 seconds): real L402 and our TLS/macaroon listener, classic out/in and static in, outstanding Loop Out resumed after restarting both node and loopd, historical notifier parity against LND, ECDH and six raw-signature shapes, four mixed MuSig2 rounds with either combiner, live deposit reorg removal/reinstatement in both UTXOs and transaction history, and confirmed unilateral CSV timeout sweep after 4,321 blocks. Logs: `TestResults/cluster/loop-proof25/loop-proof25-1/output.log.gz`. Static cooperative withdrawal cannot be proved with the pinned regtest server because it has no withdrawal implementation. Additional adversarial external failure/restart cases remain; unit coverage alone does not prove them.
 - **Fix sketch:** Extend the owned loop cluster suite to the remaining cases; do not claim their end-to-end proof from unit tests.
 - **Blocks/Blocked-by:** NL-1190
 
@@ -9774,7 +9774,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/Imports/ImportedTapscriptTracker.cs`
-- **Evidence:** Correct confirmed-only reconstruction from active blocks, bounded to 1000 scripts and one million blocks, but ListUnspent/GetTransactions each scan from the earliest import. Long-lived imports increase RPC latency and chain reads. Pruned data fails explicitly.
+- **Evidence:** Correct confirmed-only reconstruction from active blocks, bounded to 1000 scripts and one million blocks. A tip-hash/script-set cache now avoids repeated scans at the same tip (needed for Loop's epoch reconciliation backlog); imports/reorgs invalidate it and callers receive defensive copies. A changed tip still rebuilds from the earliest import, so long-lived imports increase RPC latency and chain reads. Pruned data fails explicitly.
 - **Fix sketch:** Persist indexed raw imported history and update/reverse it with monitor block events while retaining fresh-scope and reorg guarantees.
 - **Blocks/Blocked-by:** NL-1190
 
@@ -9830,10 +9830,10 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1203 ChainNotifier streams fail while Core disconnects ahead of the monitor
-- **Status:** in-progress
+- **Status:** fixed
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.LndGrpc/Services/ChainNotifierService.cs`
-- **Evidence:** Real loop-proof23 passed notifier/signer parity but a six-block deposit disconnect caused getblockhash(old-tip) RPC -8 errors before monitor rewind; the epoch error stopped loopd. The monitor rewinds after a replacement block, so the test now mines an empty replacement branch before waiting.
-- **Fix sketch:** Wait for a committed height available in Core, retry height lookups raced by disconnects, preserve registrations/rearm notifications, and map real pruned-data errors explicitly. Add lagging-tip tests for all three streams and rerun the real reorg/CSV proof.
+- **Evidence:** Real loop-proof23 passed notifier/signer parity but a six-block deposit disconnect caused getblockhash(old-tip) RPC -8 errors before monitor rewind; the epoch error stopped loopd. The monitor rewinds after a replacement block, so the test now mines an empty replacement branch before waiting. All-stream lag/race tests pass; loop-proof24 and loop-proof25 both removed/reinstated imported UTXOs and history with loopd alive.
+- **Fix sketch:** Implemented committed-height availability checks, retryable raced height lookups, retained/rearmed registrations, and explicit real pruned-data error mapping.
 - **Blocks/Blocked-by:** NL-1196

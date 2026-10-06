@@ -50,9 +50,10 @@ Imported outputs are confirmed-only and kept outside wallet UTXOs and the accoun
 WalletKit.ListUnspent and GetTransactions with raw transactions and spent outpoints, but never in ordinary
 coin selection, FundPsbt, wallet signing, anchor reserves or spendable balances. Imports persist the exact
 request and script; rebuilding from active blocks handles restart, disconnected deposits and disconnected
-spends without txindex. This first implementation rescans from the earliest import on each query (maximum one
-million blocks, 1000 scripts); missing/pruned blocks fail explicitly. It has no mempool tracking or persistent
-history index. ChainNotifier reconciles the committed monitor tip every 500 ms, with a 100-block epoch reorg
+spends without txindex. This first implementation rebuilds from the earliest import when the processed tip or script set changes
+(maximum one million blocks, 1000 scripts). A memory-only cache validates the active tip hash and persisted
+script set on each query and returns defensive copies. Imports and same-height reorgs invalidate it; missing
+or pruned data fails explicitly during rebuild. It has no mempool tracking or persistent history index. ChainNotifier reconciles the committed monitor tip every 500 ms, with a 100-block epoch reorg
 window, bounded registrations/scans, cancellation cleanup and halt errors. Taproot spend registration requires
 an outpoint; legacy/v0 scripts can be registered alone.
 
@@ -61,12 +62,13 @@ releases its leases; an ambiguous publication failure keeps them. Unconfirmed se
 remain UNIMPLEMENTED. Outgoing-channel sets restrict every route-planning round; blinded payments with such a
 restriction are refused explicitly. L5 external PSBT channel funding and Taproot Assets remain optional/out of scope.
 
-Verification: focused gRPC tests (180), real SQLite restart/import recovery and all-provider compiled-model checks
-(24), and key-file derivation vectors (3) pass. Both Release and Release.Native compile on net10/net11; the
-180 gRPC tests also pass with native crypto. Wallet spend tests cover production dependency injection, fee
+Verification: focused gRPC tests (185), real SQLite restart/import/cache recovery and all-provider compiled-model checks
+(25), and key-file derivation vectors (3) pass. Both Release and Release.Native compile on net10/net11; the
+185 gRPC tests, 42 wallet spend tests and 25 persistence/compiled-model checks also pass with native crypto on both frameworks. Wallet spend tests cover production dependency injection, fee
 quotes for Loop's zero-x taproot witness program, and safe lease handling after signing/publication failures.
 The exact PR #14 baseline reproduces the two native Sphinx allocation-budget failures; these are NL-1201.
-Timing-sensitive baseline tests are recorded separately in NL-1198, NL-1199 and NL-1202.
+Timing-sensitive baseline tests are recorded separately in NL-1198, NL-1199 and NL-1202. The full non-Docker
+Release suite passed on both frameworks (34,164 passed tests); later reorg/cache changes have focused checks.
 The `loop` cluster suite launches the pinned Loop PR #1222 (`3d10930491713c1ee2f9957316747da9a3813072`),
 Aperture v0.4.0, LND 0.21.4 and Bitcoin Core 29.0. Build with:
 
@@ -79,10 +81,12 @@ NLTG_LOOP_RUNNER_IMAGE=nltg-loop-runner:dev scripts/run-cluster.sh --suite loop 
 Images must be loaded into the selected local cluster; pull policy is Never. The suite owns one harness namespace,
 runs our node and the Go processes in its in-cluster runner, and tests L402 plus real classic out/in and static in.
 It fails on a terminal swap failure or a bounded timeout; it cannot pass by skipping missing binaries.
-A real Loop/Aperture/LND run (`loop-proof20`) passed classic out, classic in and static in, including on-chain
-MuSig2 signatures combined by each side. A subsequent run (`loop-proof21`) also resumed Loop Out after restarting
-both NLightning and loopd; its CSV block jump exceeded the chain-sync barrier, so the suite now mines expiry
-blocks in bounded batches. CSV, direct notifier parity and remaining failure proofs are tracked in NL-1196.
+The final real Loop/Aperture/LND run (`loop-proof25`) passed in 636 seconds: classic out, classic in,
+static in, recovery of an outstanding Loop Out after restarting both NLightning and loopd, historical
+confirmation/spend/epoch parity against LND, six raw-signature descriptor shapes, and four mixed MuSig2
+rounds with either side combining signatures. It also removed and reinstated a deposit through a live
+reorg and confirmed its unilateral CSV timeout sweep after 4,321 expiry blocks. Logs are retained under
+`TestResults/cluster/loop-proof25/loop-proof25-1/output.log.gz`. Remaining proof cases are tracked in NL-1196.
 Static withdrawal is not implemented by the pinned source-built regtest server; its absence is a proof limitation,
 not an additional NLightning RPC requirement.
 
