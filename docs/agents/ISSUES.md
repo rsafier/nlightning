@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 82 | 83 |
+| open | 0 | 0 | 1 | 83 | 84 |
 | in-progress | 0 | 0 | 4 | 1 | 5 |
-| fixed | 15 | 68 | 224 | 461 | 768 |
+| fixed | 15 | 68 | 225 | 464 | 772 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **238** | **564** | **885** |
+| **Total** | **15** | **68** | **239** | **568** | **890** |
 
 ### Epics
 
@@ -9383,6 +9383,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `src/NLightning.LnBackend/` (`Protos/hold.proto` vendored from BoltzExchange/hold, MIT; `Protos/cln_node.proto` minimal `cln.Node`), `HoldBackendService`, `ClnNodeBackendService`, `LnBackendHost` (one mTLS Kestrel listener, `LnBackend:Enabled`, refused on mainnet without `AllowMainnet`), tests `test/NLightning.LnBackend.Tests` (77) + `Docker/Bark/BarkAspFlowTests.cs` (cluster, lnd suite, captaind pod `Nodes/Bark/CaptaindNode.cs`)
 - **Evidence:** Second's captaind (the Bark ASP) drives a Lightning node through exactly two gRPC contracts: Boltz's hold.Hold (receive: Invoice/Inject by payment hash, Track/TrackAll states, Settle by preimage, Cancel) and CLN's cln.Node (getinfo liveness, xpay, listpays) — both served by the node over its hold invoices (NL-995) and payments. Field numbers copied from the upstream protos. Proof: unmodified captaind (master 2c5f0fcb, image nltg-captaind) on the cluster creates a hold invoice through us, LND pays it, TrackAll sees ACCEPTED, the preimage reaches captaind's settlement WAL and captaind itself calls Settle; LND's payment completes with that preimage and our invoice Settles. lnd suite 61/61. Findings: captaind cannot use h2c http:// URIs (tonic 0.14 parses the client key eagerly even for http — their default TOML example is stale), so the backend needs its mTLS TLS directory (the Cashu NL-998 shape works); bark added hold.List payment_hashes=3 (served); CancelLightningReceive is disabled in captaind; captaind needs bitcoind >= 31 (it runs its own chain beside the fixture's Core 29). Four service bugs the tests found were fixed: TrackAll's PeriodicTimer single-waiter fault (the stream died after one event), proto3 optional expiry read as 0, amountless Inject reached the service, and the backend's invoices carried no label so List/TrackAll never saw them.
 - **Fix sketch:** Wave C: the real bark wallet claim side (arkoor package, musig2 nonces), xpay through captaind, and upstreaming the missing bits.
+- **Wave C (2026-10-06, branch `wip/lnbackend-wavec`):** done. A real bark wallet (the `bark` CLI of bark 2c5f0fcb, built into the `nltg-captaind` image; `Nodes/Bark/BarkWalletNode`) on captaind over our LN backend, `Docker/Bark/BarkWalletFlowTests` (cluster lnd suite): the wallet boards, pays an LND invoice through captaind's xpay on us (our ListPays COMPLETE with the preimage), pays an LND hold invoice past its retry window (our xpay DEADLINE_EXCEEDED, ListPays PENDING, the wallet's send stays `payment-initiated` through captaind's reconciliation rounds, completes with the preimage once LND settles), pays a second NLightning node's BOLT 12 offer through captaind's FetchInvoice + xpay of the `lni` string, and receives with its own claim (PrepareLightningReceiveClaim + ClaimLightningReceive; captaind settles our hold invoice, LND completes). In-flight finding: captaind (`server/src/ln/cln/xpay.rs`) ignores how xpay ended and reconciles each attempt by ListPays on the hash (right after the call, then from `retry_for` + 15 s with backoff): no row fails the attempt, PENDING keeps it open, COMPLETE needs the preimage — our InFlight→PENDING, Failed only with no part in flight, already fit. Fixes: NL-1149 (hold.Invoice ignored min_final_cltv_expiry: no real receive could complete), NL-1150, NL-1151 (BOLT 12 through captaind), NL-1152; open NL-1153.
 - **Blocks/Blocked-by:** Builds on NL-995
 - **Plan ref:** `docs/agents/LN_BACKEND_PLAN.md`
 
@@ -9394,3 +9395,48 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** found reviewing the `wip/nltg-ln-backend` integration (NL-1148): the host requires a client certificate only when `ca.pem` exists in `LnBackend:TlsDirectory`, but validation treated any `TlsDirectory` as secure, so `TlsDirectory` with `server.pem`/`server.key` alone on `0.0.0.0` passed and served TLS that authenticates nobody — anyone reaching the port could create, settle and cancel hold invoices and pay through `cln.Node` `xpay`. `LnBackendOptionsTests.Given_Tls_When_Validated_Then_TheListenerMayBeOffLoopback` asserted that shape. A non-IP `ListenAddress` threw from `IPAddress.Parse` instead of being reported, and `::1` was not counted as loopback.
 - **Fix sketch:** done: the Cashu payment processor's NL-998 rules — off loopback only with mutual TLS (`ca.pem`); on loopback without client authentication (h2c or TLS without `ca.pem`) only with `AllowInsecureLoopback`; `IPAddress.TryParse` + `IPAddress.IsLoopback`. 83 LnBackend tests.
 - **Blocks/Blocked-by:** found by NL-1148; same rule as NL-998
+
+### NL-1149 LN backend: hold.Invoice ignored `min_final_cltv_expiry`, so no real Bark receive could complete
+- **Status:** fixed (26aefe19)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.LnBackend/HoldBackendService.cs` (`Invoice`, `Inject`), `IInvoiceService.CreateHoldInvoiceAsync`, `InvoiceService.CreateHoldInvoiceAsync`
+- **Evidence:** NL-1148 wave C, the real bark wallet's claim on the cluster: captaind asks `hold.Invoice` for `min_final_cltv_expiry` = the user's delta + its `htlc_expiry_delta` (40), but the backend created every hold invoice with our `Routing:InvoiceMinFinalCltvExpiry` (40), so LND's HTLC arrived 43 blocks out and captaind refused the wallet's grant: "Requested HTLC recv expiry too close to inbound HTLC expiry: 482 + htlc_expiry_delta 40 > lowest incoming HTLC expiry 309". Wave B's proof hid it by hand-picking the grant expiry below the HTLC's. `Inject` also dropped its `min_cltv_expiry`.
+- **Fix sketch:** done: `CreateHoldInvoiceAsync` takes the final CLTV delta (never below `Routing:InvoiceMinFinalCltvExpiry`, at most `MaxCltvExpiryDistance`), encodes it as `c` and stores it, so `FinalHopProcessor` enforces it; `hold.Invoice` passes `min_final_cltv_expiry` (beyond 16 bits or refused by the service: INVALID_ARGUMENT), `Inject` keeps the invoice's own `c` raised to `min_cltv_expiry`; `settleholdinvoice`'s IPC create keeps the node default. Proven by `BarkWalletFlowTests`' receive leg.
+- **Blocks/Blocked-by:** found by NL-1148 wave C
+
+### NL-1150 LN backend: Xpay stopped the payment's retries when its gRPC caller went away
+- **Status:** fixed (2ca05e7f)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.LnBackend/ClnNodeBackendService.cs` (`Xpay`)
+- **Evidence:** NL-1148 wave C review of captaind's xpay use: the call's `CancellationToken` went into `PayInvoiceAsync`, which marks the session stopped on cancellation, so a captaind restarting mid-call ended our retries early. CLN's xpay keeps running in lightningd when its gRPC client leaves; captaind relies on ListPays for the outcome either way, so this was a fidelity gap, not a fund risk.
+- **Fix sketch:** done: the payment runs with `CancellationToken.None` and only the call's wait takes the caller's token (CANCELLED); a fault after the caller left is logged.
+- **Blocks/Blocked-by:** found by NL-1148 wave C
+
+### NL-1151 LN backend: captaind's BOLT 12 pay path (cln.Node FetchInvoice + xpay of an `lni` invoice) was not served
+- **Status:** fixed (dfb82d12)
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `src/NLightning.LnBackend/Protos/cln_node.proto`, `ClnNodeBackendService` (`FetchInvoice`, `Xpay`, `ListPays`), `IOfferPaymentService.PayFetchedInvoiceAsync`, `Application/Offers/Send/OfferPaymentService`
+- **Evidence:** a bark wallet paying an offer makes captaind call `cln.Node/FetchInvoice` (bark `server/src/ln/node_manager.rs` `fetch_bolt12_invoice`) and later xpay the returned `lni` string; we answered UNIMPLEMENTED, so Bark users of an NLightning-backed ASP could not pay offers.
+- **Fix sketch:** done: `FetchInvoice` with CLN's field numbers (bark's `cln-rpc/protos/node.proto`): an invoice_request over onion messages, the verified invoice served as `lni` (the issuer's amount as a change when none was asked; recurrence, `payer_metadata`, `bip353` refused); `OfferPaymentService` keeps each verified fetch until its invoice expires (at most 1,024) and `PayFetchedInvoiceAsync` pays it over the verified paths — an invoice this process did not fetch is refused, never paid unverified; `Xpay` routes `lni1…` there; `ListPays` reports the `bolt12` field. Proven in-process (`OfferHarnessTests`) and by the bark wallet paying a second NLightning node's offer through captaind (`BarkWalletFlowTests`).
+- **Blocks/Blocked-by:** found by NL-1148 wave C; a restart forgets fetched invoices (captaind then fails that attempt; the wallet can retry)
+
+### NL-1152 LN backend: the cln.Node method was `Listpays`, CLN's is `ListPays`
+- **Status:** fixed (dfb82d12)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.LnBackend/Protos/cln_node.proto`
+- **Evidence:** NL-1148 wave C, comparing our proto with bark's `cln-rpc/protos/node.proto`: the gRPC path is `/cln.Node/ListPays` there and was `/cln.Node/Listpays` here. captaind's calls only reached us because ASP.NET Core matches gRPC paths case-insensitively; a case-sensitive server or proxy would answer UNIMPLEMENTED and captaind would never resolve a payment. `amount_sent_msat` was also not `optional` as upstream (same wire).
+- **Fix sketch:** done: `rpc ListPays`, `optional Amount amount_sent_msat = 9`; every message diffed against bark's copy (`ListRequest.PaymentHashes` is nested there, top-level here: same wire).
+- **Blocks/Blocked-by:** found by NL-1148 wave C
+
+### NL-1153 LN backend: Xpay caps `retry_for` at 300 s while captaind's `cln_xpay_max_retry_for` may be larger
+- **Status:** open
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `src/NLightning.LnBackend/ClnNodeBackendService.cs` (`Xpay`: `Math.Clamp(request.RetryFor, 1, 300)`)
+- **Evidence:** captaind's default `cln_xpay_max_retry_for` is 5 min (= our cap) but an operator may raise it (up to i32 seconds). We would then stop starting new attempts earlier than captaind expects. Safe: captaind reconciles by ListPays and fails the attempt only on a FAILED row, which needs no part in flight; the user just gets fewer retries.
+- **Fix sketch:** a `LnBackend:MaxXpayRetryFor` option (default 300 s) or follow the request up to a sane bound (e.g. 1 h).
+- **Blocks/Blocked-by:** found by NL-1148 wave C
