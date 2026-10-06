@@ -184,7 +184,7 @@ public sealed class CaptaindNode
     /// <summary>
     /// <c>captaind.toml</c>: the vendored default template with this run's addresses (data directory, bitcoind,
     /// PostgreSQL, the public and admin sockets), the test-friendly timings (a fast round cadence, a one-second settler
-    /// poll and invoice check) and the <c>[[cln_array]]</c> pointing at the NLightning LN backend with the certificate
+    /// poll and invoice check, a payment reconciliation backing off from 1 s to 5 s) and the <c>[[cln_array]]</c> pointing at the NLightning LN backend with the certificate
     /// files the workload wrote.
     /// </summary>
     public static string BuildConfig(CaptaindNodeOptions options)
@@ -210,11 +210,18 @@ public sealed class CaptaindNode
                                       "htlc_settlement_poll_interval = \"1s\"")
                              .Replace("invoice_check_interval = \"3s\"", "invoice_check_interval = \"1s\"")
                              .Replace("cln_reconnect_interval = \"10s\"", "cln_reconnect_interval = \"2s\"")
+                             // The xpay reconciliation of a payment still in flight after its retry window (first
+                             // check after retry_for + 15 s, then backing off) and a waiting CheckLightningPayment's
+                             // poll: seconds, not the template's 10 s doubling to 10 min (NL-1148 wave C)
+                             .Replace("invoice_check_base_delay = \"10s\"", "invoice_check_base_delay = \"1s\"")
+                             .Replace("max_invoice_check_delay = \"10m\"", "max_invoice_check_delay = \"5s\"")
+                             .Replace("invoice_poll_interval = \"30s\"", "invoice_poll_interval = \"2s\"")
                              .Replace("vtxo_targets = [ \"1000sat:10\", \"10000sat:10\" ]", options.VtxoPoolTargets);
         foreach (var replaced in new[]
                  {
                      $"data_dir = \"{DataPath}/captaind\"", $"public_address = \"0.0.0.0:{Format(PublicPort)}\"",
-                     $"name = \"{options.PostgresDatabase}\"", options.VtxoPoolTargets
+                     $"name = \"{options.PostgresDatabase}\"", options.VtxoPoolTargets,
+                     "invoice_check_base_delay = \"1s\"", "invoice_poll_interval = \"2s\""
                  })
             if (!config.Contains(replaced))
                 throw new InvalidOperationException(

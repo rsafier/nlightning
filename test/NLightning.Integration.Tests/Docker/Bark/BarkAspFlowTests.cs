@@ -1,7 +1,5 @@
 using Grpc.Core;
-using Grpc.Net.Client;
 using NBitcoin;
-using NBitcoin.RPC;
 using NLightning.Testing.Lnd;
 using NLightning.Testing.Lnd.Lnrpc;
 using NLightning.Tests.Utils;
@@ -22,14 +20,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using NLightning.LnBackend;
 using TestCollections;
-using Testing.Cluster.Images;
-using Testing.Cluster.Kube;
-using Testing.Cluster.Nodes.Bark;
-using Testing.Cluster.Nodes.BitcoinCore;
 using Testing.Cluster.Nodes.Postgres;
 using Utils;
 using BarkProto = BarkServer;
-using CoreProto = Core;
 
 /// <summary>
 /// NL-1148 wave B proof of the Bark/ASP seam: an unmodified captaind (Second's Bark ASP server, the
@@ -51,11 +44,11 @@ using CoreProto = Core;
 /// OrbStack's cluster reach that loopback listener at the same host the LND peers dial.
 /// </para>
 /// <para>
-/// Deferred, honestly: the claim itself (<c>ClaimLightningReceive</c>'s arkoor package with musig nonces and taproot
-/// trees) needs a full bark wallet, so the test writes the settlement row a claiming wallet's process would leave in
-/// captaind's <c>htlc_settlements</c> WAL — the designed entry point for preimages learned outside captaind — and
-/// everything from there is captaind's own code: the settler settles the hold invoice on our backend, marks the
-/// subscription <c>SETTLED</c>, and LND completes.
+/// The claim here is the settlement-WAL seam: the test writes the row a claiming process would leave in captaind's
+/// <c>htlc_settlements</c> WAL — the designed entry point for preimages learned outside captaind — and everything from
+/// there is captaind's own code: the settler settles the hold invoice on our backend, marks the subscription
+/// <c>SETTLED</c>, and LND completes. The real wallet's claim (<c>ClaimLightningReceive</c>'s arkoor package with musig
+/// nonces) is <see cref="BarkWalletFlowTests"/> (wave C).
 /// </para>
 /// </remarks>
 [Collection(LightningRegtestNetworkFixtureCollection.Name)]
@@ -72,9 +65,6 @@ public class BarkAspFlowTests : IAsyncLifetime
     /// <summary>The VTXO pool captaind keeps for lightning receive grants (the template's 1000/10000 sat targets are too
     /// small for one 60,000 sat grant).</summary>
     private const string VtxoPoolTargets = "vtxo_targets = [ \"60000sat:6\" ]";
-
-    /// <summary>The gRPC protocol version header a current bark client sends (<c>server_rpc::pver</c>, hashlock clauses).</summary>
-    private const string ProtocolVersion = "5";
 
     private readonly LightningRegtestNetworkFixture _fixture;
     private NLightningTestNode? _node;
@@ -118,57 +108,11 @@ public class BarkAspFlowTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
 
         // Arrange: captaind beside its own bitcoind and PostgreSQL, its Lightning rail our node's LN backend
-        var run = _fixture.Cluster.Run;
-        var postgres = await PostgresNode.DeployAsync(run, new PostgresNodeOptions { Name = "bark-postgres" },
-                                                      s_bringUpTimeout, ct);
-        var bitcoin = await BitcoinCoreNode.DeployAsync(run, new BitcoinCoreOptions
-        {
-            Name = "bark-bitcoind",
-            Image = ImageVersions.BitcoinCore31,
-            Storage = NodeStorage.Ephemeral
-        }, s_bringUpTimeout, ct);
         var lightningUri = $"https://{_fixture.HostAddressForLnd}:{_lnBackendPort}";
-        var captaind = await CaptaindNode.DeployAsync(run, new CaptaindNodeOptions
-        {
-            LightningUri = lightningUri,
-            HoldInvoiceUri = lightningUri,
-            CaCertificatePem = _tls!.CaCertificatePem,
-            ClientCertificatePem = _tls.ClientCertificatePem,
-            ClientKeyPem = _tls.ClientKeyPem,
-            BitcoindUrl = bitcoin.ClusterRpcUrl,
-            BitcoindUser = bitcoin.Options.RpcUser,
-            BitcoindPassword = bitcoin.Options.RpcPassword,
-            PostgresHost = postgres.Host,
-            PostgresPort = PostgresNode.Port,
-            PostgresUser = postgres.Options.User,
-            PostgresPassword = postgres.Options.Password,
-            VtxoPoolTargets = VtxoPoolTargets
-        }, s_bringUpTimeout, ct);
-        Console.WriteLine($"captaind public gRPC at {captaind.PublicEndpoint} (LN backend {lightningUri})");
-
-        using var channel = GrpcChannel.ForAddress($"http://{captaind.PublicEndpoint}");
-        var ark = new BarkProto.ArkService.ArkServiceClient(channel);
-        // The admin services (wallet status, the nursery report) bind their own socket, next to the public one
-        using var adminChannel = GrpcChannel.ForAddress($"http://{captaind.AdminEndpoint}");
-        var admin = new BarkProto.WalletAdminService.WalletAdminServiceClient(adminChannel);
-        var nurseryAdmin = new BarkProto.NurseryAdminService.NurseryAdminServiceClient(adminChannel);
-        var headers = new Metadata { { "pver", ProtocolVersion } };
-
-        // The ASP answers once its Lightning rail is up: connecting to our backend is captaind's startup handshake
-        // (our cln.Node Getinfo for the network check, then the hold client and its TrackAll monitor)
-        var info = await Poll.ForAsync(async () =>
-        {
-            try
-            {
-                return await ark.GetArkInfoAsync(new CoreProto.Empty(), headers, deadline: DateTime.UtcNow.AddSeconds(5),
-                                                 ct);
-            }
-            catch (RpcException)
-            {
-                return null;
-            }
-        }, s_timeout, "captaind's GetArkInfo answers", ct);
-        Assert.Equal("regtest", info.Network);
+        using var stack = await BarkAspStack.DeployAsync(_fixture, "bark-", lightningUri, _tls!, VtxoPoolTargets,
+                                                         s_bringUpTimeout, s_timeout, ct);
+        var ark = stack.Ark;
+        var headers = stack.Headers;
 
         // One channel with alice, who pays the invoice from her pushed balance
         var alice = _fixture.GetLndNode("alice");
@@ -176,25 +120,8 @@ public class BarkAspFlowTests : IAsyncLifetime
         var channelOpened = await OpenUsableChannelAsync(alice, peerAddress, ct);
 
         // captaind's on-chain wallet funded and its VTXO pool stocked: what it grants lightning receives from
-        var captainBitcoin = bitcoin.CreateNBitcoinClient(RpcRoute.PodIp, "miner");
-        await MineMaturedCoinsAsync(captainBitcoin, 101, ct);
-        var wallet = await Poll.ForAsync(async () => await admin.WalletStatusAsync(new CoreProto.Empty(), headers,
-                                                                      deadline: DateTime.UtcNow.AddSeconds(5), ct),
-                                         s_timeout, "captaind's wallet status", ct);
-        var fundingAddress = BitcoinAddress.Create(wallet.Rounds.Address, Network.RegTest);
-        await captainBitcoin.SendToAddressAsync(fundingAddress, Money.Coins(10m), ct);
-        await MineMaturedCoinsAsync(captainBitcoin, 6, ct);
-        Console.WriteLine($"captaind funded at {fundingAddress}, waiting for its VTXO pool");
-
-        // The pool issues on chain-tip changes and its transactions run through the nursery: wait for one
-        await Poll.ForAsync(async () =>
-        {
-            var nursery = await nurseryAdmin.ListNurseryTxsAsync(new BarkProto.ListNurseryTxsRequest
-            {
-                IncludeConfirmed = true
-            }, headers, DateTime.UtcNow.AddSeconds(5), ct);
-            return nursery.Txs.Any(t => t.Kind == "vtxopool") ? nursery : null;
-        }, s_bringUpTimeout, "captaind's VTXO pool issued", ct);
+        await stack.MineAsync(101, ct);
+        await stack.FundAndStockPoolAsync(s_bringUpTimeout, ct);
 
         // Act: the receiving "wallet" (this test) asks captaind for an invoice — captaind calls our hold.Invoice
         var (preimage, paymentHash) = LndTestHelpers.NewPreimage();
@@ -256,7 +183,7 @@ public class BarkAspFlowTests : IAsyncLifetime
         Assert.NotEmpty(prepared.HtlcVtxos);
 
         // …and reveals the preimage — the settlement WAL row its claiming process would leave in PostgreSQL
-        await InsertSettlementAsync(postgres, paymentHash, preimage, ct);
+        await InsertSettlementAsync(stack.Postgres, paymentHash, preimage, ct);
 
         // Assert: captaind itself settles the hold invoice on our backend and LND's payment completes with the preimage
         var settled = await Poll.ForAsync(async () =>
@@ -313,12 +240,6 @@ public class BarkAspFlowTests : IAsyncLifetime
     {
         using var key = new Key();
         return key.PubKey.ToBytes();
-    }
-
-    private async Task MineMaturedCoinsAsync(RPCClient bitcoin, int blocks, CancellationToken ct)
-    {
-        var address = await bitcoin.GetNewAddressAsync(ct);
-        await bitcoin.GenerateToAddressAsync(blocks, address, ct);
     }
 
     private static async Task<Payment> GetLndPaymentAsync(LndNodeConnection alice, byte[] paymentHash,

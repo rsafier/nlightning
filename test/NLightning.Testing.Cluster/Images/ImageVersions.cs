@@ -86,7 +86,8 @@ public static class ImageVersions
     /// Second's captaind (the Bark ASP server), built locally from the bark repo (<c>github.com/ark-bitcoin/bark</c>,
     /// the mirror of <c>gitlab.com/ark-bitcoin/bark</c>, master pinned by the Bark node's vendored default config; a
     /// cold Rust build takes 10-20 min): <c>docker build -t nltg-captaind:latest test/Docker/captaind</c>. Reused as it
-    /// is.
+    /// is. It also carries the <c>bark</c> wallet CLI of the same commit (<c>Nodes/Bark/BarkWalletNode</c>, NL-1148 wave
+    /// C): an image built before wave C lacks it, so rebuild it once.
     /// </summary>
     public static readonly ImageRef Captaind = new("nltg-captaind", "latest", PullPolicy: ImagePullPolicy.Never);
 
