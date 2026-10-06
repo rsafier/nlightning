@@ -179,11 +179,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 0 | 97 | 97 |
+| open | 0 | 0 | 0 | 96 | 96 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
 | fixed | 15 | 69 | 234 | 495 | 813 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
-| duplicate | 0 | 0 | 3 | 6 | 9 |
+| duplicate | 0 | 0 | 3 | 7 | 10 |
 | **Total** | **15** | **69** | **250** | **614** | **948** |
 
 ### Epics
@@ -9938,7 +9938,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** related NL-445, NL-1202
 
 ### NL-1207 FAFO books show small clearing and channel drift on reconcile
-- **Status:** open
+- **Status:** duplicate of NL-611 (with NL-748 and NL-1007): every amount is a known historical residue of an already-fixed bug, kept because the accounting feed is append-only (a rebuild does not rewrite old events): FAFO/FAFO2 channels +5/−5 msat = NL-1007 (`b37114e3`, the sub-satoshi part of an HTLC resolved on chain); FAFO clearing −514,000 msat = NL-611 (old-binary anchor sweep #178, tx 85c2a202); FAFO2 clearing −246,000 msat = NL-748 (+268,000, the unbooked HTLC wallet fee of #162) − 514,000 (NL-611, #154). No new drift; a correction of historical events would be separate work
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `Application/Accounting/Books/AccountingBooksService` reconcile; FAFO/FAFO2 Mutinynet books
