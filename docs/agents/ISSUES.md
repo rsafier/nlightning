@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 83 | 84 |
+| open | 0 | 0 | 1 | 84 | 85 |
 | in-progress | 0 | 0 | 4 | 1 | 5 |
 | fixed | 15 | 68 | 227 | 464 | 774 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **241** | **568** | **892** |
+| **Total** | **15** | **68** | **241** | **569** | **893** |
 
 ### Epics
 
@@ -9458,3 +9458,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** the post-merge `lnd` cluster run of `wip/fafo` at `18e4aec2` failed `BarkWalletFlowTests` (2/2 green on a rerun): our node's `fetchinvoice` for a second NLightning node's offer got "No reply from offer path 0 within 30 s" three times, while the payee answered every `invoice_request` within 40 ms with `NoPath`. The reply path's introduction node was `ListOnionMessagePeers()[0]` (channel peers first, otherwise in listing order): with two channel peers (LND alice and the payee) it was alice whenever she listed first, and the payee, connected only to us, had no route to her. Any `fetchinvoice`/reply-awaiting send from a node with several onion-message peers could lose its replies the same way.
 - **Fix sketch:** done: the route is resolved before the reply path, and the peer the message leaves through introduces the reply path when it is as good a kept peer as the first listed one (it has an open channel, or the first listed has none) — the recipient's side reached that peer. The channel-peer preference (plan D7: we reconnect only to channel peers) stays first, pinned by `OnionMessageChannelTests.Given_TwoPeersOneWithAChannel_*`. Test `OnionMessageComponentsTests.Given_TwoPeers_When_CreatingAReplyPathThroughOne_Then_ThatPeerIntroducesIt` (4 cases).
 - **Blocks/Blocked-by:** found by NL-1148 wave C; plan `BOLT12_PLAN.md` D7
+
+### NL-1156 `GossipSyncManagerTests.Given_ASyncPeerWhoseQueryTimedOut_When_ANewPeerConnects_*` failed once under a loaded full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Gossip/Sync/GossipSyncManagerTests.cs` (`Given_ASyncPeerWhoseQueryTimedOut_When_ANewPeerConnects_Then_TheNewPeerTakesTheSlot`)
+- **Evidence:** in the NL-1155 full net10.0 run (2026-10-06, `wip/fafo` at `58d65f2c`, while `run-cluster.sh --suite lnd` built and ran on the same host) it failed after 10 s; the class passed 50/50 three times alone right after. Unrelated to the change under test (onion message reply paths).
+- **Fix sketch:** check whether the query timeout and the slot hand-over run on a real clock (move them to a stepped `TimeProvider` as the de-timing pass did), else put the class in the `timing-serial` collection.
+- **Blocks/Blocked-by:** found by NL-1155
