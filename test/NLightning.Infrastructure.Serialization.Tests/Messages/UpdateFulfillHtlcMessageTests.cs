@@ -1,6 +1,5 @@
 using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Infrastructure.Exceptions;
-using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 

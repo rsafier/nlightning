@@ -8,7 +8,6 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Exceptions;
-using Helpers;
 using Serialization.Messages;
 using static ChannelAnnouncementMessageTests;
 

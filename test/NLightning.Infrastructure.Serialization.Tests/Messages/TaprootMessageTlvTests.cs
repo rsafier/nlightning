@@ -9,7 +9,6 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Exceptions;
-using Helpers;
 
 /// <summary>
 /// The simple taproot channels TLVs (and BOLTs PR #1324's interactive-tx ones) on the wire, from hand-written bytes

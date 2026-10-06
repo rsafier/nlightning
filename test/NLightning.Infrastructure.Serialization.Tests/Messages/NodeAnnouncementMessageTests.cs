@@ -7,7 +7,6 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Exceptions;
-using Helpers;
 using Serialization.Messages;
 using static ChannelAnnouncementMessageTests;
 

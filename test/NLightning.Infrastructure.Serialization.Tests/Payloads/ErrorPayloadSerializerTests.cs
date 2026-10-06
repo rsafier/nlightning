@@ -1,5 +1,4 @@
 using NLightning.Domain.Channels.ValueObjects;
-using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Payloads;
 

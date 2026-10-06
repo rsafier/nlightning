@@ -34,8 +34,7 @@ public sealed class HtlcInterceptorHub : IHtlcForwardInterceptor, IDisposable
     {
         _logger = logger;
         _blockchainMonitor = blockchainMonitor;
-        if (_blockchainMonitor is not null)
-            _blockchainMonitor.OnNewBlockDetected += OnNewBlock;
+        _blockchainMonitor?.OnNewBlockDetected += OnNewBlock;
     }
 
     /// <inheritdoc />
@@ -162,8 +161,7 @@ public sealed class HtlcInterceptorHub : IHtlcForwardInterceptor, IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_blockchainMonitor is not null)
-            _blockchainMonitor.OnNewBlockDetected -= OnNewBlock;
+        _blockchainMonitor?.OnNewBlockDetected -= OnNewBlock;
     }
 
     private void Disconnect(IHtlcInterceptorClient client)

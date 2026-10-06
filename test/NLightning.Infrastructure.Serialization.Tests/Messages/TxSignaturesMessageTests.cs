@@ -1,6 +1,5 @@
 using NLightning.Domain.Bitcoin.ValueObjects;
 using NLightning.Domain.Channels.ValueObjects;
-using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 

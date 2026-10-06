@@ -30,7 +30,6 @@ using Domain.Payments.Enums;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
-using Domain.Serialization.Interfaces;
 using Gossip;
 using Infrastructure.Serialization.Messages;
 using Utils;

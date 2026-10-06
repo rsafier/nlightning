@@ -1,6 +1,5 @@
 using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Domain.Money;
-using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 

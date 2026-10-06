@@ -179,10 +179,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 94 | 95 |
 | in-progress | 0 | 0 | 5 | 1 | 6 |
-| fixed | 15 | 68 | 229 | 476 | 788 |
+| fixed | 15 | 68 | 229 | 477 | 789 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **244** | **591** | **918** |
+| **Total** | **15** | **68** | **244** | **592** | **919** |
 
 ### Epics
 
@@ -9695,3 +9695,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** in the LND gRPC waves 2+3 integration's full net10.0 run (2026-10-06, `wip/fafo` at `28d7bdd2`, while `run-cluster.sh --matrix lnd,postgres` built and ran on the same host) it failed after 1 m 36 s; the class passed 25/25 three times alone right after.
 - **Fix sketch:** find the real-clock wait in the test (or the ingress worker it waits on) and move it to a stepped `TimeProvider` or a bounded event-driven wait, as the de-timing pass did; else the `timing-serial` collection.
 - **Blocks/Blocked-by:** none
+
+
+### NL-1225 Existing HtlcInterceptorHub null checks fail the formatting gate
+- **Status:** fixed (this commit; SHA recorded in NL-1100 closeout)
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Application/Payments/Interception/HtlcInterceptorHub.cs` (constructor and Dispose)
+- **Evidence:** The base branch's `dotnet format --verify-no-changes` reports IDE0031 for the two explicit null checks around block-event subscription/unsubscription (also recorded by cloud onboarding). This prevents the NL-1100 cleanup's required format gate from passing.
+- **Fix sketch:** Use C# 14 null-conditional event assignment for both operations, preserving behavior; the full Release unit run covers the interceptor.
+- **Blocks/Blocked-by:** NL-1100 verification gate

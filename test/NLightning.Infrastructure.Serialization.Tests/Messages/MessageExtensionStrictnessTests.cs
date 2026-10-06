@@ -1,5 +1,3 @@
-using NLightning.Infrastructure.Serialization.Wire;
-
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Protocol.Messages;
