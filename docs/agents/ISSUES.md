@@ -2,6 +2,8 @@
 
 The single durable issue ledger for this repo. GitHub issues are disabled on the fork, so this file replaces them. Every known bug, gap, spec violation, missing feature, test/CI hygiene problem and tech-debt item lives here, so nothing is lost between agent sessions.
 
+Updated 2026-10-06 by `wip/lnd-p2` from `wip/fafo` d074fe01: NL-1170, NL-1171 and NL-1172 fixed; NL-1190/NL-1196 regtest matrix complete (`lnd-p2-proof6`, 1/1), Mutinynet trial prepared but pending access/server confirmation/owner approval. New and fixed NL-1205 (onion reply metric assertion race) and NL-1207 (same-height chain-sync barrier); new open NL-1206 (unchanged accounting adjustment assertion failed once under load, passed on both frameworks in isolation). NL-1198 reproduced under load, passed alone on both frameworks. Summary recounted: 942 entries, no duplicate IDs; no schema change.
+
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
 Updated 2026-10-04 by the zc-int integrator (branch `zc-int` from `wip/fafo` at `cd5c2c5d`, `origin/wip/zcleanup1` merged with `--no-ff`; the migration `AddTrampolineRelayBlindedDelta` regenerated after `AddDualFundTaprootAttempts`): NL-1006 and NL-1007 (low) new and fixed. Summary recounted from the entries (856), no duplicate IDs.
@@ -177,12 +179,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 101 | 102 |
+| open | 0 | 0 | 1 | 99 | 100 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 233 | 483 | 800 |
+| fixed | 15 | 69 | 233 | 488 | 805 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **69** | **250** | **605** | **939** |
+| **Total** | **15** | **69** | **250** | **608** | **942** |
 
 ### Epics
 
@@ -9573,30 +9575,30 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1161
 
 ### NL-1170 LND gRPC: SendPaymentV2 without an invoice (keysend) is refused
-- **Status:** open
+- **Status:** fixed (wip/lnd-p2)
 - **Severity:** low
 - **Kind:** gap
-- **Location:** `src/NLightning.LndGrpc/Services/RouterService.cs` (`SendPaymentV2`)
-- **Evidence:** LND clients send keysend as `dest` + `amt` + `dest_custom_records[5482373484]` = their own preimage with `payment_hash` = its hash, and then track that hash. Our `IPaymentService.PayKeysendAsync` draws the preimage itself, so the payment hash would not be the client's; the request is answered UNIMPLEMENTED instead.
-- **Fix sketch:** a keysend send that takes the caller's preimage (and custom records) and pays under its hash.
+- **Location:** `src/NLightning.LndGrpc/Services/RouterService.Payments.cs; Application Payments/Send/PaymentService.cs`
+- **Evidence:** SendPaymentV2 now validates and preserves the caller's 32-byte keysend preimage, its SHA256 hash, destination, amount and final custom records. It uses the existing persisted payment/routing path and streams the outcome under that exact hash. Focused gRPC validation/stream tests, a real SQLite two-node payment harness and the owned Loop cluster's keysend to LND cover it.
+- **Fix sketch:** done; see the client follow-up record in `LND_GRPC_PLAN.md`.
 - **Blocks/Blocked-by:** follow-up of NL-1164
 
 ### NL-1171 LND gRPC: TrackPayments streams outcomes only
-- **Status:** open
+- **Status:** fixed (wip/lnd-p2)
 - **Severity:** low
 - **Kind:** gap
-- **Location:** `src/NLightning.LndGrpc/Services/RouterService.cs` (`TrackPayments`), `IPaymentEventSource`
-- **Evidence:** the payment event bus publishes succeeded/failed outcomes only (Cashu plan C0), so `TrackPayments` sends no IN_FLIGHT update for a payment that starts (LND sends one per state change); `no_inflight_updates` is therefore always in effect.
-- **Fix sketch:** a `PaymentStartedEvent` on the bus when the payment row is first saved.
+- **Location:** `Application Payments/Send/PaymentService.cs; Domain Payments/Events; RouterService.Payments.cs`
+- **Evidence:** A start event is published once after the first committed wallet payment row, carrying its allocated payment index and initial amount/time. TrackPayments maps the captured state to IN_FLIGHT even if the row is already terminal; no_inflight_updates suppresses it. Trampoline relay legs remain excluded. Both option values, fast completion, persisted index and real LND keysend start/terminal updates are covered.
+- **Fix sketch:** done; see the client follow-up record in `LND_GRPC_PLAN.md`.
 - **Blocks/Blocked-by:** follow-up of NL-1164
 
 ### NL-1172 LND gRPC: UpdateChannelPolicy global does not change the default for future channels
-- **Status:** open
+- **Status:** fixed (wip/lnd-p2)
 - **Severity:** low
 - **Kind:** gap
-- **Location:** `src/NLightning.LndGrpc/Services/LightningService.Operations.cs` (`UpdateChannelPolicy`)
-- **Evidence:** LND's `global` sets the policy of every channel and the default of channels opened later. Ours sets it on every Open channel through `setchannelpolicy`; the node's default (`Node:Routing`) is configuration and is not changed at run time, so a channel opened later starts with the configured policy.
-- **Fix sketch:** a stored node-wide policy override read by `ChannelPolicyRules.Resolve`, or document the difference for clients.
+- **Location:** `Application Channels/RoutingPolicies/{ChannelPolicyService,ChannelPolicyStore}.cs; LightningService.Operations.cs`
+- **Evidence:** Global updates persist fee/base/CLTV defaults under the reserved all-zero ID in the existing policy table, including when no channels are open. Future channels and a fresh store after restart inherit them, merged beneath channel overrides and bounded by peer HTLC limits. SQLite round-trip and policy/gRPC regressions cover this; no schema change. HTLC amount bounds remain per-channel, as in LND.
+- **Fix sketch:** done; see the client follow-up record in `LND_GRPC_PLAN.md`.
 - **Blocks/Blocked-by:** follow-up of NL-1164
 
 ### NL-1180 LND gRPC: ChannelAcceptor and the inbound open decision gate
@@ -9704,8 +9706,8 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Severity:** medium
 - **Kind:** epic
 - **Location:** `docs/agents/LOOP_GRPC_PLAN.md`
-- **Evidence:** Implemented from PR #14 at 525347f6: startup, chain streams, isolated durable ring/signrpc, tapscript watch history, supplied preimages, multiple output sends and outgoing-channel sets. Focused crypto/reorg/persistence tests pass; complete real Loop failure/restart and parity proofs are NL-1196.
-- **Fix sketch:** Finish the verification matrix and preserve the explicit signer opt-in.
+- **Evidence:** Implemented from PR #14 at 525347f6 and continued from wip/fafo d074fe01. The complete owned regtest recovery matrix passed in lnd-p2-proof6 (1/1, 756.866 seconds), including server/signer failure refund, retained-state restarts, static cooperative withdrawal, deposit/spend reorgs and CSV sweep. LND client gaps NL-1170..NL-1172 are fixed. The one-node Mutinynet static Loop In trial is prepared but remains pending node access, a confirmed Mutinynet-compatible Loop server and explicit owner approval. No FAFO node was changed or funded.
+- **Fix sketch:** Run the approved one-node Mutinynet trial and record its terminal state/on-chain evidence; keep the signer opt-in explicit.
 - **Blocks/Blocked-by:** NL-1196
 
 
@@ -9764,8 +9766,8 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Severity:** medium
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Cluster/Live/LoopClusterTests.cs`
-- **Evidence:** Pinned source-built Loop PR 1222, Aperture 0.4.0, LND 0.21.4 and Core 29 cluster run `loop-proof25` passed (1/1, 636 seconds): real L402 and our TLS/macaroon listener, classic out/in and static in, outstanding Loop Out resumed after restarting both node and loopd, historical notifier parity against LND, ECDH and six raw-signature shapes, four mixed MuSig2 rounds with either combiner, live deposit reorg removal/reinstatement in both UTXOs and transaction history, and confirmed unilateral CSV timeout sweep after 4,321 blocks. Logs: `TestResults/cluster/loop-proof25/loop-proof25-1/output.log.gz`. Static cooperative withdrawal cannot be proved with the pinned regtest server because it has no withdrawal implementation. Additional adversarial external failure/restart cases remain; unit coverage alone does not prove them.
-- **Fix sketch:** Extend the owned loop cluster suite to the remaining cases; do not claim their end-to-end proof from unit tests.
+- **Evidence:** Owned pinned Loop PR 1222/Aperture 0.4.0/LND 0.21.4/Core 29 run lnd-p2-proof6 passed 1/1 in 756.866 seconds: real keysend and TrackPayments starts, classic out/in resumed across both restarts, server loss plus refused refund signature recovered through confirmed timeout refund and terminal restart, confirmed static deposits survived both/loopd-only restarts, real static in and cooperative withdrawal, disconnected/reconfirmed withdrawal spend and deposit UTXO/history, 4,321-block CSV expiry sweep, historical notifier and six raw/four mixed MuSig2 parity cases. A staged test-owned server extension supplies cooperative withdrawal; the upstream client is unchanged. Logs: TestResults/cluster/lnd-p2-proof6/lnd-p2-proof6-1/output.log.gz. The static restart uses the confirmed-deposit checkpoint because upstream pre-signing recovery deliberately aborts instead of reusing nonces. The regtest matrix is complete; the requested Mutinynet canary is prepared, unrun and gated on access/server confirmation/owner approval.
+- **Fix sketch:** Execute the authorized one-node Mutinynet trial from LOOP_MUTINYNET_TRIAL.md; never substitute regtest results for its proof.
 - **Blocks/Blocked-by:** NL-1190
 
 
@@ -9784,7 +9786,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Severity:** low
 - **Kind:** flake
 - **Location:** `test/NLightning.Domain.Tests/Routing/GraphPathfinderTests.cs`
-- **Evidence:** Full Loop non-Docker gate under concurrent formatting/build load: 3344 ms for 20 queries exceeded the existing bound. The unchanged method passed alone immediately afterward. No routing implementation changed in this work.
+- **Evidence:** Full Loop non-Docker gate under concurrent formatting/build load: 3344 ms for 20 queries exceeded the existing bound. The unchanged method passed alone immediately afterward. No routing implementation changed in this work. The wip/lnd-p2 parallel two-framework gate reproduced this bound failure on both frameworks; isolated reruns then passed 1/1 on each (608/646 ms test duration).
 - **Fix sketch:** Reproduce the timing dependency with a controlled clock or separate performance measurements from correctness assertions.
 - **Blocks/Blocked-by:** none
 
@@ -9900,3 +9902,32 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** the merged `wip/fafo` run at `be840cb9` (2026-10-06) with `NLTG_CHAIN_NOTIFICATIONS=Poll scripts/run-cluster.sh --matrix onchain,anchors`: `anchors` rerun-green (17/18, the class green alone on the flake rerun); the same test passed in the poll-monitor lane's own Poll runs and in every Zmq run so far. Poll mode delivers blocks up to one `Bitcoin:PollInterval` (2 s on regtest) later than ZMQ, so a test wait sized for ZMQ delivery may be tight.
 - **Fix sketch:** read the diagnostics of the failed attempt (`TestResults/cluster/mx-20261006181511/anchors`), then make the wait follow the node's processed height rather than wall time, or size it for Poll mode.
 - **Blocks/Blocked-by:** related NL-1094
+
+
+### NL-1205 Onion reply-path test reads metrics before forwarding completes
+- **Status:** fixed (wip/lnd-p2)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/OnionMessages/OnionMessageHarnessTests.cs` (`Given_ARequestWithAReplyPath_When_CarolReplies_Then_AliceGetsTheReplyThroughBob`)
+- **Evidence:** The loaded two-framework non-Docker run completed Alice's reply waiter while Bob's Forwarded count was still 1 instead of 2. The in-memory transport can deliver before the forwarding callback records its metric. The reply content was correct. The assertion now waits for Bob's two forwards and Alice's delivered-reply metric before checking their exact counts.
+- **Fix sketch:** done: bounded synchronization with the existing OnionMessageTestWaits helper, without a fixed sleep or production change. The focused class/rule checks pass 18/18 on each framework.
+- **Blocks/Blocked-by:** none
+
+### NL-1206 Financial rule-change adjustment assertion failed in a loaded run
+- **Status:** open
+- **Severity:** low
+- **Kind:** flake
+- **Location:** `test/NLightning.Application.Tests/Accounting/Financial/FinancialBooksProjectorTests.cs` (`Given_ARuleAddedAfterAClose_When_Projected_Then_OnlyTheOpenPeriodIsReclassified`)
+- **Evidence:** The wip/lnd-p2 loaded two-framework non-Docker run found no January RuleChange adjustment (Single failed at line 558). This test and its accounting implementation are unchanged in this branch. The unchanged method passed in isolation on both net10/net11 (included in the 18/18 focused checks per framework); all 4,370 Application tests passed in the concurrent net10 run. Do not infer a production root cause from the loaded net11 failure.
+- **Fix sketch:** Reproduce the missing adjustment under controlled load, including the classification regex timeout path, before changing accounting behavior or timing assertions.
+- **Blocks/Blocked-by:** none
+
+
+### NL-1207 ChainSync accepts the old tip height during a same-height reorg
+- **Status:** fixed (wip/lnd-p2)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Utils/ChainSync.cs` (`WaitAllAtTipAsync`)
+- **Evidence:** Real cooperative withdrawal runs lnd-p2-proof4/5 checked history before the replacement branch's wallet/accounting rewind committed. The imported scan already saw Core's replacement blocks, but the old monitor height equaled the new tip. In proof5 GetTransactions returned at 20:17:02.124; the rewind/reversals were logged at 20:17:02.258–.281. The barrier now requires LND's block hash and NLightning's persisted blockchain-state hash/height to equal Core's tip, using a fresh UOW scope per poll.
+- **Fix sketch:** done: compare committed hashes as well as heights; real lnd-p2-proof6 passed both spend/deposit reorgs and the full Loop recovery matrix (1/1).
+- **Blocks/Blocked-by:** NL-1196

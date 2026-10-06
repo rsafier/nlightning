@@ -42,6 +42,36 @@ public partial class LoopClusterTests
         Log("Live imported deposit reorg removed and reinstated both UTXO and transaction history");
     }
 
+    private static async Task AssertImportedSpendReorgAsync(LightningRegtestNetworkFixture fixture, LndNodeConnection alice,
+        NLightningTestNode node, LndGrpcHost host, string grpc, uint256 deposit, uint256 spend, CancellationToken ct)
+    {
+        using var channel = LndGrpcChannelFactory.Create(LndSettings.FromFiles($"https://127.0.0.1:{host.BoundPort}",
+            Path.Combine(grpc, "tls.cert"), Path.Combine(grpc, "admin.macaroon")));
+        var wallet = new NLightning.Testing.Lnd.Walletrpc.WalletKit.WalletKitClient(channel);
+        var lightning = new NLightning.Testing.Lnd.Lnrpc.Lightning.LightningClient(channel);
+        var spendHeight = node.BlockchainMonitor.LastProcessedBlockHeight - 2;
+        async Task AssertSpent(bool spent)
+        {
+            var unspent = await wallet.ListUnspentAsync(new NLightning.Testing.Lnd.Walletrpc.ListUnspentRequest
+            { MinConfs = 1, MaxConfs = int.MaxValue }, cancellationToken: ct);
+            Assert.Equal(!spent, unspent.Utxos.Any(u => u.Outpoint.TxidStr == deposit.ToString()));
+            var history = await lightning.GetTransactionsAsync(new NLightning.Testing.Lnd.Lnrpc.GetTransactionsRequest
+            { StartHeight = (int)spendHeight, EndHeight = -1 }, cancellationToken: ct);
+            // A withdrawal to our ordinary wallet may remain in history as an unconfirmed deposit.
+            // The disconnected spend must lose its confirmations while the imported input is unspent again.
+            Assert.Equal(spent, history.Transactions.Any(t => t.TxHash == spend.ToString() && t.NumConfirmations > 0));
+        }
+        await AssertSpent(true);
+        await fixture.Bitcoin.InvalidateBlockAsync(await fixture.Bitcoin.GetBlockHashAsync((int)spendHeight, ct), ct);
+        var address = await fixture.Bitcoin.GetNewAddressAsync(ct);
+        for (var i = 0; i < 3; i++)
+            await fixture.Bitcoin.SendCommandAsync("generateblock", ct, address.ToString(), Array.Empty<string>());
+        await ChainSync.WaitAllAtTipAsync(fixture, [alice], [node], ct, s_timeout);
+        await AssertSpent(false);
+        await ChainSync.MineAndWaitAsync(fixture, 6, [alice], [node], ct);
+        await AssertSpent(true);
+    }
+
     private static async Task AssertNotifierParityAsync(LightningRegtestNetworkFixture fixture, LndNodeConnection alice,
         LndGrpcHost host, string grpc, uint256 txid, uint height, string address, CancellationToken ct)
     {

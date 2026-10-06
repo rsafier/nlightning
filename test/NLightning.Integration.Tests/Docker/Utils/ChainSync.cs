@@ -1,4 +1,5 @@
 using System.Text;
+using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
 using NLightning.Testing.Lnd;
 using NLightning.Testing.Lnd.Lnrpc;
@@ -6,6 +7,7 @@ using NLightning.Testing.Lnd.Walletrpc;
 
 namespace NLightning.Integration.Tests.Docker.Utils;
 
+using Domain.Persistence.Interfaces;
 using Fixtures;
 
 /// <summary>
@@ -38,8 +40,9 @@ public static class ChainSync
         while (true)
         {
             var tip = (uint)await fixture.Bitcoin.GetBlockCountAsync(cancellationToken);
+            var tipHash = await fixture.Bitcoin.GetBlockHashAsync((int)tip, cancellationToken);
             var allAtTip = true;
-            status.Clear().Append("tip ").Append(tip);
+            status.Clear().Append("tip ").Append(tip).Append(' ').Append(tipHash);
 
             foreach (var lnd in lndList)
             {
@@ -48,7 +51,8 @@ public static class ChainSync
                 {
                     var info = await lnd.LightningClient.GetInfoAsync(new GetInfoRequest(),
                                                                       cancellationToken: cancellationToken);
-                    allAtTip &= info.SyncedToChain && info.BlockHeight == tip;
+                    allAtTip &= info.SyncedToChain && info.BlockHeight == tip
+                             && string.Equals(info.BlockHash, tipHash.ToString(), StringComparison.OrdinalIgnoreCase);
                     state = $"{info.BlockHeight}{(info.SyncedToChain ? string.Empty : " (not synced)")}";
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
@@ -71,8 +75,14 @@ public static class ChainSync
                 }
 
                 var height = node.BlockchainMonitor.LastProcessedBlockHeight;
-                allAtTip &= height == tip;
-                status.Append(", ").Append(node.Name).Append(' ').Append(height);
+                // NL-1207: a same-height replacement branch is not processed until its hash is committed.
+                using var scope = node.Services.CreateScope();
+                var committed = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>()
+                                           .BlockchainStateDbRepository.GetStateAsync();
+                allAtTip &= height == tip && committed?.LastProcessedHeight == tip
+                         && new uint256((byte[])committed.LastProcessedBlockHash) == tipHash;
+                status.Append(", ").Append(node.Name).Append(' ').Append(height)
+                      .Append(' ').Append(committed?.LastProcessedBlockHash);
             }
 
             if (allAtTip)

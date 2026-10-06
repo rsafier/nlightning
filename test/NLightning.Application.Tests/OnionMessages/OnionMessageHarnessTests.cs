@@ -101,6 +101,9 @@ public sealed class OnionMessageHarnessTests
         var replyPath = Assert.Single(handler.Received).ReplyPath!;
         Assert.Equal(bob.NodeId, replyPath.FirstNode.NodeId);
         Assert.Equal(3, replyPath.Hops.Count);
+        // NL-1205: delivery can complete Alice's waiter before Bob/Alice finish recording their metrics.
+        await OnionMessageTestWaits.UntilAsync(() => bob.Metrics.Forwarded == 2
+                                                  && alice.Metrics.GetDelivered("reply") == 1, ct);
         Assert.Equal(2, bob.Metrics.Forwarded);
         Assert.Equal(1, alice.Metrics.GetDelivered("reply"));
         Assert.Equal(0, alice.Service.PendingReplies);

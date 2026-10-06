@@ -28,4 +28,7 @@ public interface IChannelPolicyService
     /// <summary>Removes the channel's override: the node-wide values apply again (and are announced).</summary>
     /// <exception cref="KeyNotFoundException">Unknown channel.</exception>
     Task ResetAsync(ChannelId channelId, CancellationToken cancellationToken = default);
+    /// <summary>Persists the fee and CLTV defaults used by channels opened later.</summary>
+    Task SetDefaultAsync(uint feeBaseMsat, uint feeProportionalMillionths, ushort cltvExpiryDelta,
+                         CancellationToken cancellationToken = default);
 }

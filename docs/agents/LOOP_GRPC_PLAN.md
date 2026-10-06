@@ -87,8 +87,52 @@ confirmation/spend/epoch parity against LND, six raw-signature descriptor shapes
 rounds with either side combining signatures. It also removed and reinstated a deposit through a live
 reorg and confirmed its unilateral CSV timeout sweep after 4,321 expiry blocks. Logs are retained under
 `TestResults/cluster/loop-proof25/loop-proof25-1/output.log.gz`. Remaining proof cases are tracked in NL-1196.
-Static withdrawal is not implemented by the pinned source-built regtest server; its absence is a proof limitation,
-not an additional NLightning RPC requirement.
+The pinned source-built regtest server does not implement cooperative withdrawal. The `wip/lnd-p2`
+follow-up adds a test-owned `Cluster/Loop/server/withdraw.go` in a staged copy, leaving the pinned Loop
+checkout and real Loop client unchanged. The extension validates confirmed Core prevouts and uses real
+LND MuSig2 partial signatures; its image is labeled `nltg.loop-fixture=withdraw-v1`. This is regtest
+fixture support, not a claim about a public Loop server.
+
+
+## Recovery proof follow-up (wip/lnd-p2, NL-1190 / NL-1196)
+
+The final owned run `lnd-p2-proof6` passed **1/1** (756.866 seconds in the runner; 764 seconds
+including harness orchestration). All regtest cases below passed together. Logs are retained at
+`TestResults/cluster/lnd-p2-proof6/lnd-p2-proof6-1/output.log.gz`; the runner image is
+`nltg-loop-runner:lnd-p2-proof6`, with Loop pinned to `3d10930491713c1ee2f9957316747da9a3813072`
+and the staged `withdraw-v1` server fixture. Mutinynet has not been run.
+
+Verification on net10/net11: Release solution build has zero warnings/errors; all 191 gRPC tests and
+1,201 integration tests pass per framework. The full non-Docker run completed with 34,264 passed and
+four failures under concurrent load. Both unchanged graph timing failures (NL-1198) passed in isolation;
+the onion metric race is repaired (NL-1205), and all 18 focused onion/accounting checks pass on each
+framework. The unchanged accounting adjustment test's loaded net11 failure remains recorded as NL-1206.
+All 4,370 Application tests passed on net10. Full formatting and the final edited-file checks pass;
+solution mappings and all-provider compiled-model checks pass. No database schema changed.
+
+The owned suite proved:
+
+| Case | Required proof |
+|---|---|
+| LND client payment | Caller keysend hash/preimage reaches real LND; TrackPayments reports committed IN_FLIGHT then SUCCEEDED. |
+| Classic Loop Out restart | Restart NLightning and loopd with an outstanding swap; its retained state reaches SUCCESS. |
+| Classic Loop In restart | Wait for the HTLC funding broadcast, restart both daemons, then confirm the swap and SUCCESS. |
+| Server loss and signer refusal | Stop the swap server after funding, restart both local daemons, refuse the first refund signature, restore opt-in, restart loopd, and confirm the timeout refund. |
+| Terminal failure restart | Restart both daemons after the refund confirms; FAILED/TIMEOUT stays terminal. |
+| Static deposit restart | Retain the confirmed imported deposit across both restarts, then complete static Loop In and confirm its spend. |
+| Cooperative withdrawal restart | Retain another imported deposit across both restarts and a loopd-only restart, then use real two-party signing to confirm a withdrawal. |
+| Spend reorg | Disconnect the withdrawal block; imported input becomes unspent and the withdrawal loses confirmation. Reconfirm and observe it spent again. A wallet destination can retain an unconfirmed transaction-history entry. |
+| Deposit reorg | Remove and reinstate the confirmed deposit in both imported UTXOs and transaction history; Loop reconciles its replacement height. |
+| CSV timeout | Mine the 4,320-block static lifetime plus expiry, then confirm Loop's unilateral signed sweep. |
+| Notifier and signer parity | Historical conf/spend/epoch events versus LND, six raw-signature descriptor shapes, four mixed MuSig2 rounds with either combiner. |
+| Mutinynet one-node trial | Pending node access, a confirmed Mutinynet-compatible server and explicit owner approval; see `LOOP_MUTINYNET_TRIAL.md`. |
+
+The restart checkpoints matter. Loop's pre-signing static FSM deliberately aborts/relinquishes deposits
+on recovery instead of reusing memory-only MuSig nonces. The static proof restarts with a confirmed
+available deposit and initiates a fresh signing round; it does not claim that an interrupted pre-signing
+attempt resumes. Pinned loopd also exits when its LND chain streams close, so node-restart recovery
+includes a supervised restart of loopd from its retained database. Existing streams do not survive
+process death.
 
 ---
 

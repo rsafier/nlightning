@@ -86,6 +86,8 @@ public class PaymentHarnessTests : IDisposable
         await _harness.RunAsync(_harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert: the event carries the proof, and the row it announces is already Succeeded
+        var started = Assert.IsType<PaymentStartedEvent>(await PaymentEventHubTests.ReadOneAsync(subscription));
+        Assert.Equal(invoice.PaymentHash, started.PaymentHash);
         var succeeded = Assert.IsType<PaymentSucceededEvent>(await PaymentEventHubTests.ReadOneAsync(subscription));
         Assert.Equal(invoice.PaymentHash, succeeded.PaymentHash);
         Assert.Equal(invoice.Preimage!.Value, succeeded.Preimage);
@@ -109,6 +111,8 @@ public class PaymentHarnessTests : IDisposable
                                     invoice.Bolt11!, null, new PayInvoiceOptions { Timeout = s_timeout }, ct));
 
         // Assert
+        var started = Assert.IsType<PaymentStartedEvent>(await PaymentEventHubTests.ReadOneAsync(subscription));
+        Assert.Equal(invoice.PaymentHash, started.PaymentHash);
         var failed = Assert.IsType<PaymentFailedEvent>(await PaymentEventHubTests.ReadOneAsync(subscription));
         Assert.Equal(invoice.PaymentHash, failed.PaymentHash);
         Assert.False(string.IsNullOrEmpty(failed.Reason));

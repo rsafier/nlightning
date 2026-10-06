@@ -12,6 +12,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Reestablish;
+using Domain.Channels.RoutingPolicies;
 using Domain.Channels.ValueObjects;
 using Domain.Gossip.Graph;
 using Domain.Node.Interfaces;
@@ -60,6 +61,8 @@ public sealed partial class LightningService : Lnrpc.Lightning.LightningBase
     private readonly INodeCommandDispatcher? _dispatcher;
     private readonly LndRootKeyStore? _rootKeys;
     private readonly IPaymentEventSource? _paymentEvents;
+    private readonly IChannelPolicyService? _channelPolicyService;
+    private readonly SemaphoreSlim _globalPolicyGate = new(1, 1);
 
     public LightningService(ILightningSigner signer, IOptions<NodeOptions> nodeOptions,
                             IServiceScopeFactory scopeFactory, IChannelMemoryRepository channels,
@@ -70,8 +73,9 @@ public sealed partial class LightningService : Lnrpc.Lightning.LightningBase
                             IReestablishTracker? reestablish = null, IGraphStore? graphStore = null,
                             IOptions<GossipGraphOptions>? graphOptions = null, ITcpService? tcpService = null,
                             INodeCommandDispatcher? dispatcher = null, LndRootKeyStore? rootKeys = null,
-                            IPaymentEventSource? paymentEvents = null)
+                            IPaymentEventSource? paymentEvents = null, IChannelPolicyService? channelPolicyService = null)
     {
+        _channelPolicyService = channelPolicyService;
         _paymentEvents = paymentEvents;
         _dispatcher = dispatcher;
         _rootKeys = rootKeys;

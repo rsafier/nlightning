@@ -72,6 +72,7 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
     private readonly Mock<IWalletSpendService> _walletSpend = new();
     private readonly Mock<IFeeService> _fees = new();
     private readonly PaymentEventHub _events = new();
+    private readonly Mock<Domain.Channels.RoutingPolicies.IChannelPolicyService> _policies = new();
     private readonly FakeDispatcher _dispatcher = new();
     private readonly List<ChannelModel> _closedChannels = [];
     private readonly List<OutputResolutionModel> _outputs = [];
@@ -544,6 +545,7 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
         services.AddSingleton(_paymentService.Object);
         services.AddSingleton(_holdInvoices.Object);
         services.AddSingleton<IPaymentEventSource>(_events);
+        services.AddSingleton(_policies.Object);
         services.AddSingleton<INodeCommandDispatcher>(_dispatcher);
         services.AddSingleton(new LndRootKeyStore(_directory));
         services.AddSingleton<LightningService>();

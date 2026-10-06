@@ -77,10 +77,10 @@ public sealed class ChannelPolicyService : IChannelPolicyService
             var channel = GetChannel(channelId);
             var routing = _nodeOptions.Value.Routing;
             var current = _store.GetOverride(channelId);
-            var before = ChannelPolicyRules.Resolve(channel, routing, current);
+            var before = _store.GetEffectivePolicy(channel);
             var merged = ChannelPolicyRules.Merge(current, patch, _timeProvider.GetUtcNow());
 
-            var errors = ChannelPolicyRules.GetValidationErrors(channel, routing, merged);
+            var errors = ChannelPolicyRules.GetValidationErrors(channel, routing, _store.WithDefault(merged, channelId)!);
             if (errors.Count > 0)
                 throw new ArgumentException(string.Join(" ", errors), nameof(patch));
 
@@ -93,7 +93,7 @@ public sealed class ChannelPolicyService : IChannelPolicyService
                     await _store.SaveAsync(merged, cancellationToken);
             }
 
-            effective = ChannelPolicyRules.Resolve(channel, routing, _store.GetOverride(channelId));
+            effective = _store.GetEffectivePolicy(channel);
             announced = !HasSameAnnouncedValues(before, effective);
         }
 
@@ -108,6 +108,20 @@ public sealed class ChannelPolicyService : IChannelPolicyService
         }
 
         return effective;
+    }
+
+    /// <inheritdoc/>
+    public async Task SetDefaultAsync(uint feeBaseMsat, uint feeProportionalMillionths, ushort cltvExpiryDelta,
+                                      CancellationToken cancellationToken = default)
+    {
+        var routing = _nodeOptions.Value.Routing;
+        if (cltvExpiryDelta < RoutingOptions.MinimumCltvExpiryDelta
+         || cltvExpiryDelta <= routing.ExpiryTooSoonBlocks || cltvExpiryDelta > routing.MaxCltvExpiryDistance)
+            throw new ArgumentException("The default CLTV delta is outside the node's routing limits.");
+        using (await _channelLockProvider.AcquireAsync(ChannelId.Zero, cancellationToken))
+            await _store.SaveAsync(new ChannelPolicyOverride(ChannelId.Zero, feeBaseMsat,
+                                                             feeProportionalMillionths, cltvExpiryDelta,
+                                                             UpdatedAt: _timeProvider.GetUtcNow()), cancellationToken);
     }
 
     /// <inheritdoc/>
