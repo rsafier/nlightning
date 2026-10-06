@@ -55,6 +55,40 @@ public class LoopPersistenceTests
     }
 
     [Fact]
+    public async Task Given_ACachedWatchSnapshot_When_AnotherScriptIsImported_Then_ItRebuildsAndRejectsUnavailableTips()
+    {
+        using var database = new SqliteTestDatabase();
+        using var services = Provider(database);
+        using var firstKey = new Key();
+        using var secondKey = new Key();
+        var first = firstKey.PubKey.GetTaprootFullPubKey().ScriptPubKey;
+        var second = secondKey.PubKey.GetTaprootFullPubKey().ScriptPubKey;
+        var transaction = Network.RegTest.CreateTransaction();
+        transaction.Inputs.Add(new TxIn(new OutPoint(uint256.One, 0)));
+        transaction.Outputs.Add(Money.Satoshis(500_000), first);
+        transaction.Outputs.Add(Money.Satoshis(500_000), second);
+        var block = Network.RegTest.Consensus.ConsensusFactory.CreateBlock();
+        block.Transactions.Add(transaction);
+        block.UpdateMerkleRoot();
+        var chain = new Mock<IBitcoinChainService>();
+        chain.Setup(c => c.GetBlockAsync(1U)).ReturnsAsync(block);
+        chain.Setup(c => c.GetBlockHashAsync(1U)).ReturnsAsync(block.GetHash());
+        var monitor = new Mock<IBlockchainMonitor>();
+        monitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(1U);
+        using var tracker = new ImportedTapscriptTracker(services.GetRequiredService<IServiceScopeFactory>(), chain.Object, monitor.Object);
+        await tracker.ImportAsync(new ImportedTapscript(first.ToBytes(), firstKey.PubKey.ToBytes()[1..], [1], 1), Ct);
+        Assert.Single((await tracker.SnapshotAsync(Ct)).Outputs);
+        Assert.Single((await tracker.SnapshotAsync(Ct)).Outputs);
+        chain.Verify(c => c.GetBlockAsync(1U), Times.Once());
+        await tracker.ImportAsync(new ImportedTapscript(second.ToBytes(), secondKey.PubKey.ToBytes()[1..], [2], 1), Ct);
+        Assert.Equal(2, (await tracker.SnapshotAsync(Ct)).Outputs.Count);
+        chain.Verify(c => c.GetBlockAsync(1U), Times.Exactly(2));
+        chain.Setup(c => c.GetBlockHashAsync(1U)).ThrowsAsync(new NBitcoin.RPC.RPCException(
+            NBitcoin.RPC.RPCErrorCode.RPC_INVALID_PARAMETER, "Block height out of range", null!));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => tracker.SnapshotAsync(Ct));
+    }
+
+    [Fact]
     public async Task Given_AnImportedDeposit_When_SpentRestartedAndReorged_Then_HistoryIsRecoveredWithoutSpendableUtxos()
     {
         // Arrange
@@ -90,6 +124,10 @@ public class LoopPersistenceTests
             await tracker.ImportAsync(imported, Ct);
             await tracker.ImportAsync(imported, Ct);
             Assert.Single((await tracker.SnapshotAsync(Ct)).Outputs);
+            var cached = await tracker.SnapshotAsync(Ct);
+            Assert.Single(cached.Outputs).Output.Value = Money.Satoshis(1);
+            Assert.Equal(500_000, Assert.Single((await tracker.SnapshotAsync(Ct)).Outputs).Output.Value.Satoshi);
+            chain.Verify(c => c.GetBlockAsync(It.IsAny<uint>()), Times.Exactly(2));
         }
         var spend = Network.RegTest.CreateTransaction();
         spend.Inputs.Add(new TxIn(new OutPoint(funding.GetHash(), 0)));

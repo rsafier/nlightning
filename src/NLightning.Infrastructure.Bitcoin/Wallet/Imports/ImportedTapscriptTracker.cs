@@ -15,8 +15,9 @@ using Interfaces;
 public sealed class ImportedTapscriptTracker(IServiceScopeFactory scopes, IBitcoinChainService chain, IBlockchainMonitor monitor) : IDisposable
 {
     private readonly SemaphoreSlim _gate = new(1);
+    private CachedWatch? _cached;
 
-    public void Dispose() => _gate.Dispose();
+    public void Dispose() { _cached = null; _gate.Dispose(); }
 
     public async Task ImportAsync(ImportedTapscript script, CancellationToken ct)
     {
@@ -32,16 +33,19 @@ public sealed class ImportedTapscriptTracker(IServiceScopeFactory scopes, IBitco
             uow.ImportedTapscriptDbRepository.Add(script);
             ct.ThrowIfCancellationRequested();
             await uow.SaveChangesAsync();
+            _cached = null;
         }
         finally { _gate.Release(); }
     }
 
     public async Task<ImportedWatchSnapshot> SnapshotAsync(CancellationToken ct)
     {
+        await _gate.WaitAsync(ct);
         try { return await SnapshotCoreAsync(ct); }
         catch (NBitcoin.RPC.RPCException e) when (e.RPCCode == NBitcoin.RPC.RPCErrorCode.RPC_INVALID_PARAMETER
             || e.Message.Contains("pruned", StringComparison.OrdinalIgnoreCase))
         { throw new InvalidOperationException("Imported history is unavailable while the chain changes or historical blocks are pruned; retry.", e); }
+        finally { _gate.Release(); }
     }
 
     private async Task<ImportedWatchSnapshot> SnapshotCoreAsync(CancellationToken ct)
@@ -54,7 +58,16 @@ public sealed class ImportedTapscriptTracker(IServiceScopeFactory scopes, IBitco
         var outputs = new Dictionary<OutPoint, ImportedWatchOutput>();
         var history = new List<ImportedWatchTransaction>();
         if (scripts.Count == 0)
+        {
+            _cached = null;
             return new ImportedWatchSnapshot(tip, outputs.Values.ToList(), history);
+        }
+        ct.ThrowIfCancellationRequested();
+        var anchor = await chain.GetBlockHashAsync(tip).WaitAsync(ct);
+        var scriptSet = string.Join("|", scripts.OrderBy(s => Convert.ToHexString(s.Script), StringComparer.Ordinal)
+            .Select(s => Convert.ToHexString(s.Script) + ":" + s.CreatedHeight.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        if (_cached is { } cached && cached.Snapshot.Tip == tip && cached.Hash == anchor && cached.ScriptSet == scriptSet)
+            return Copy(cached.Snapshot);
         var start = scripts.Min(s => s.CreatedHeight);
         if ((ulong)tip - Math.Min(start, tip) > 1_000_000)
             throw new InvalidOperationException("imported tapscript scan exceeds one million blocks");
@@ -92,10 +105,27 @@ public sealed class ImportedTapscriptTracker(IServiceScopeFactory scopes, IBitco
                     history.Add(new ImportedWatchTransaction(tx, height, block.GetHash(), block.Header.BlockTime, amount, ours, spent));
             }
         }
-        if (previous is not null && await chain.GetBlockHashAsync(tip).WaitAsync(ct) != previous)
+        if (previous is not null && (previous != anchor || await chain.GetBlockHashAsync(tip).WaitAsync(ct) != previous))
             throw new InvalidOperationException("chain changed during imported tapscript scan; retry");
-        return new ImportedWatchSnapshot(tip, outputs.Values.ToList(), history);
+        var snapshot = new ImportedWatchSnapshot(tip, outputs.Values.ToList(), history);
+        _cached = new CachedWatch(anchor, scriptSet, Copy(snapshot));
+        return snapshot;
     }
+    // RPC mappers receive their own mutable NBitcoin objects; a caller cannot poison a later cache hit.
+    private static ImportedWatchSnapshot Copy(ImportedWatchSnapshot snapshot) => new(snapshot.Tip,
+        snapshot.Outputs.Select(o => o with
+        {
+            Outpoint = new OutPoint(new uint256(o.Outpoint.Hash.ToBytes()), o.Outpoint.N),
+            Output = new TxOut(o.Output.Value, new Script(o.Output.ScriptPubKey.ToBytes()))
+        }).ToArray(), snapshot.Transactions.Select(t => t with
+        {
+            Transaction = t.Transaction.Clone(),
+            BlockHash = new uint256(t.BlockHash.ToBytes()),
+            OurOutputs = t.OurOutputs.ToArray(),
+            SpentOutputs = t.SpentOutputs.Select(o => new OutPoint(new uint256(o.Hash.ToBytes()), o.N)).ToArray()
+        }).ToArray());
+
+    private sealed record CachedWatch(uint256 Hash, string ScriptSet, ImportedWatchSnapshot Snapshot);
 }
 
 public sealed record ImportedWatchOutput(OutPoint Outpoint, TxOut Output, uint Height);
