@@ -329,7 +329,8 @@ public sealed class LnBackendHostTests
         }
 
         public Task<InvoiceModel> CreateHoldInvoiceAsync(Hash paymentHash, LightningMoney? amount, string description,
-                                                         uint? expirySeconds, SourceLabels labels,
+                                                         uint? expirySeconds, ushort? minFinalCltvExpiry,
+                                                         SourceLabels labels,
                                                          CancellationToken cancellationToken = default)
         {
             // The wire contract of proto3's `optional uint64 expiry`: unset arrives as 0, not null (the service
@@ -337,7 +338,8 @@ public sealed class LnBackendHostTests
             // row, 0 means "not set", like null
             var expiry = expirySeconds is 0 ? 600 : expirySeconds;
             var row = new InvoiceModel(paymentHash, null, new Secret(RandomNumberGenerator.GetBytes(32)), amount,
-                                       description, "lnbcrt1hold", DateTimeOffset.UtcNow, expiry ?? 600, 40)
+                                       description, "lnbcrt1hold", DateTimeOffset.UtcNow, expiry ?? 600,
+                                       minFinalCltvExpiry ?? 40)
             {
                 // The backend's own label: List and the TrackAll snapshot serve exactly these rows
                 Label = "ln-backend"

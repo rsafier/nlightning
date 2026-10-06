@@ -190,6 +190,41 @@ public class InvoiceServiceTests : IDisposable
         Assert.NotEqual(first.PaymentHash, second.PaymentHash);
     }
 
+    [Theory]
+    [InlineData(null, 40)]
+    [InlineData((ushort)18, 40)]
+    [InlineData((ushort)256, 256)]
+    public async Task Given_AFinalCltvDelta_When_AHoldInvoiceIsCreated_Then_ItsCIsTheLargerOfItAndOurs(
+        ushort? requested, ushort expected)
+    {
+        // Arrange: a hold invoice's caller (captaind, NL-1149) needs time before it settles
+        var ct = TestContext.Current.CancellationToken;
+        var hash = new Hash(RandomNumberGenerator.GetBytes(32));
+
+        // Act
+        var invoice = await _node.InvoiceService.CreateHoldInvoiceAsync(hash, LightningMoney.Satoshis(1_000), "hold",
+                                                                        null, requested, SourceLabels.None, ct);
+
+        // Assert: the encoded c and the stored one (which our final hop enforces) agree; never below our own 40
+        Assert.Equal(40, _node.Options.Routing.InvoiceMinFinalCltvExpiry);
+        Assert.Equal(expected, Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).MinFinalCltvExpiry);
+        Assert.Equal(expected, invoice.MinFinalCltvExpiry);
+    }
+
+    [Fact]
+    public async Task Given_AFinalCltvDeltaBeyondTheMaximumDistance_When_AHoldInvoiceIsCreated_Then_NothingPersisted()
+    {
+        // Act / Assert
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => _node.InvoiceService.CreateHoldInvoiceAsync(
+                                                                  new Hash(RandomNumberGenerator.GetBytes(32)),
+                                                                  LightningMoney.Satoshis(1_000), "hold", null,
+                                                                  (ushort)(_node.Options.Routing.MaxCltvExpiryDistance
+                                                                         + 1),
+                                                                  SourceLabels.None,
+                                                                  TestContext.Current.CancellationToken));
+        Assert.Equal(0, _node.Invoices.AddCalls);
+    }
+
     [Fact]
     public async Task Given_ZeroAmount_When_Created_Then_ArgumentOutOfRangeAndNothingPersisted()
     {

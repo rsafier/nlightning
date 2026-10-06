@@ -538,7 +538,7 @@ public class HoldInvoiceTests
 
     private static Task<InvoiceModel> CreateHoldInvoiceAsync(ThreeNodeHarness harness, Secret preimage) =>
         harness.Carol.Invoices.CreateHoldInvoiceAsync(ThreeNodeHarness.Sha256Of(preimage), s_amount, "hold", null,
-                                                      SourceLabels.None, TestContext.Current.CancellationToken);
+                                                      null, SourceLabels.None, TestContext.Current.CancellationToken);
 
     private static HtlcSwitch CarolSwitch(ThreeNodeHarness harness) =>
         harness.Carol.Services.GetRequiredService<HtlcSwitch>();
