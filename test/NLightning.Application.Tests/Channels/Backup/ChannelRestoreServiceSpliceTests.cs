@@ -13,6 +13,7 @@ using Domain.Channels.Models;
 using Domain.Channels.Splicing;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -271,7 +272,7 @@ public partial class ChannelRestoreServiceTests
             _chainBlocks[CommitmentHeight] = SpliceBackupKit.BlockWith(CommitmentHeight, kit.Commitment);
     }
 
-    private ChainFundingSpendLocator CreateChainLocator(uint depth = 4032)
+    private ChainFundingSpendLocator CreateChainLocator(uint depth = 4032, IMusig2Service? musig2 = null)
     {
         var chain = new Mock<IBitcoinChainService>();
         chain.Setup(c => c.GetCurrentBlockHeightAsync()).ReturnsAsync(SpliceTip);
@@ -284,7 +285,8 @@ public partial class ChannelRestoreServiceTests
                                                       ? (new TxOut(Money.Satoshis(1), new Script()), 1u)
                                                       : null);
         return new ChainFundingSpendLocator(chain.Object,
-                                            Options.Create(new ChannelBackupOptions { RestoreSpendSearchDepth = depth }));
+                                            Options.Create(new ChannelBackupOptions { RestoreSpendSearchDepth = depth }),
+                                            null, musig2);
     }
 
     private static (Mock<IOnchainChannelWatcher> Watcher, List<OutpointSpentEventArgs> Handed) RecordingWatcher()

@@ -21,6 +21,7 @@ using Domain.Gossip.Addresses;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
+using Domain.Node.PeerStorage;
 using Domain.Node.ValueObjects;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
@@ -734,7 +735,8 @@ public partial class ChannelRestoreServiceTests : IDisposable
                                                 IChannelMemoryRepository? channelMemory = null,
                                                 TimeSpan? connectBudget = null, TimeSpan? resumeTimeout = null,
                                                 IChannelFundingKeySource? fundingKeySource = null,
-                                                bool asChainMonitor = false)
+                                                bool asChainMonitor = false,
+                                                IPeerStorageService? peerStorage = null)
     {
         var channelRepository = new Mock<IChannelDbRepository>();
         channelRepository.Setup(r => r.GetByIdAsync(It.IsAny<ChannelId>()))
@@ -818,7 +820,7 @@ public partial class ChannelRestoreServiceTests : IDisposable
                                          provider.GetRequiredService<IServiceScopeFactory>(), _sha256,
                                          _node.Signer.Object, NullLogger<ChannelRestoreService>.Instance,
                                          spendLocator, onchainWatcher, keyIndexReserver, graphStore, channelMemory,
-                                         fundingKeySource, timeProvider: _clock)
+                                         fundingKeySource, timeProvider: _clock, peerStorage: () => peerStorage)
         {
             DisconnectTimeout = TimeSpan.FromSeconds(1),
             ConnectBudget = connectBudget ?? TimeSpan.FromSeconds(20),
