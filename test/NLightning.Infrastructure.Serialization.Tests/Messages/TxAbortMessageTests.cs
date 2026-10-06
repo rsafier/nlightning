@@ -1,4 +1,5 @@
 using NLightning.Domain.Channels.ValueObjects;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -13,7 +14,7 @@ public class TxAbortMessageTests
 
     public TxAbortMessageTests()
     {
-        _txAbortMessageTypeSerializer = SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxAbortMessage>()!;
+        _txAbortMessageTypeSerializer = SerializerHelper.WireRegistry.Get<TxAbortMessage>()!;
     }
 
     [Fact]

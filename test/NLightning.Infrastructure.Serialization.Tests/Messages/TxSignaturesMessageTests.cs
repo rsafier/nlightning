@@ -1,5 +1,6 @@
 using NLightning.Domain.Bitcoin.ValueObjects;
 using NLightning.Domain.Channels.ValueObjects;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -23,7 +24,7 @@ public class TxSignaturesMessageTests
     public TxSignaturesMessageTests()
     {
         _txSignaturesMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxSignaturesMessage>()!;
+            SerializerHelper.WireRegistry.Get<TxSignaturesMessage>()!;
     }
 
     [Fact]

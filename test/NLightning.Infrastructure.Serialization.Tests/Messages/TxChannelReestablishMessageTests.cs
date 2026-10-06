@@ -1,4 +1,5 @@
 using NLightning.Domain.Channels.ValueObjects;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -16,7 +17,7 @@ public class ChannelReestablishMessageTests
     public ChannelReestablishMessageTests()
     {
         _channelReestablishMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ChannelReestablishMessage>()!;
+            SerializerHelper.WireRegistry.Get<ChannelReestablishMessage>()!;
     }
 
     #region Deserialize

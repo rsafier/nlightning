@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Bitcoin.ValueObjects;
@@ -7,7 +9,6 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Exceptions;
-using Factories;
 using Helpers;
 
 /// <summary>
@@ -40,9 +41,7 @@ public class TaprootMessageTlvTests
     private static readonly string s_acceptChannelPayloadHex =
         Zero32 + new string('0', 4 * 16) + "00000003" + "0090" + "01E3" + string.Concat(Enumerable.Repeat(Point, 6));
 
-    private readonly MessageTypeSerializerFactory _factory = new(SerializerHelper.PayloadSerializerFactory,
-
-                                                                 SerializerHelper.TlvStreamSerializer);
+    private readonly WireRegistry _factory = new();
 
     [Fact]
     public async Task Given_OpenChannelWithNextLocalNonce_When_RoundTrip_Then_NonceReadAndBytesKept()
@@ -362,7 +361,7 @@ public class TaprootMessageTlvTests
     }
 
     private Domain.Serialization.Interfaces.IMessageTypeSerializer Serializer(MessageTypes type) =>
-        _factory.GetSerializer(type) ?? throw new InvalidOperationException($"No serializer for {type}");
+        _factory.Get(type) ?? throw new InvalidOperationException($"No serializer for {type}");
 
     private async Task<TMessage> RoundTripAsync<TMessage>(MessageTypes type, string hex) where TMessage : IMessage
     {

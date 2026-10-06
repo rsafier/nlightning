@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Wire;
 
 using Domain.Bitcoin.ValueObjects;
@@ -55,7 +57,7 @@ public class GossipV2WireTests
 
     private readonly NLightning.Infrastructure.Serialization.Messages.MessageSerializer _serializer =
         new(NullLogger<NLightning.Infrastructure.Serialization.Messages.MessageSerializer>.Instance,
-            SerializerHelper.MessageTypeSerializerFactory);
+            SerializerHelper.WireRegistry);
 
     private static readonly CompactPubKey s_node1 =
         new(Convert.FromHexString("0228f2af0abe322403480fb3ee172f7f1601e67d1da6cad40b54c4468d48236c39"));

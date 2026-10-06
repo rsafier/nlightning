@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -7,7 +8,6 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Exceptions;
-using Factories;
 using Helpers;
 using Serialization.Messages;
 
@@ -28,8 +28,7 @@ public class ChannelUpdateMessageTests
     public ChannelUpdateMessageTests()
     {
         var messageTypeSerializerFactory =
-            new MessageTypeSerializerFactory(SerializerHelper.PayloadSerializerFactory,
-                                             SerializerHelper.TlvStreamSerializer);
+            new WireRegistry();
         _messageSerializer = new MessageSerializer(NullLogger<MessageSerializer>.Instance,
                                                    messageTypeSerializerFactory);
     }

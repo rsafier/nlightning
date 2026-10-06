@@ -1,4 +1,5 @@
 using NLightning.Domain.Channels.ValueObjects;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -14,7 +15,7 @@ public class TxCompleteMessageTests
     public TxCompleteMessageTests()
     {
         _txCompleteMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxCompleteMessage>()!;
+            SerializerHelper.WireRegistry.Get<TxCompleteMessage>()!;
     }
 
     [Fact]

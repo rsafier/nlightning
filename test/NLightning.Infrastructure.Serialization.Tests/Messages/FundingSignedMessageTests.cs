@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Channels.ValueObjects;
@@ -22,7 +24,7 @@ public class FundingSignedMessageTests
     private const string MessageHex = ChannelIdHex + SignatureHex;
 
     private readonly IMessageTypeSerializer<FundingSignedMessage> _serializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<FundingSignedMessage>()!;
+        SerializerHelper.WireRegistry.Get<FundingSignedMessage>()!;
 
     [Fact]
     public async Task Given_SpecShapedBytes_When_DeserializeAsync_Then_AllFieldsAreDecoded()

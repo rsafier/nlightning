@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Channels.ValueObjects;
@@ -44,7 +46,7 @@ public class AcceptChannel1MessageTests
                                     + HtlcBasepointHex + FirstPerCommitmentPointHex;
 
     private readonly IMessageTypeSerializer<AcceptChannel1Message> _serializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<AcceptChannel1Message>()!;
+        SerializerHelper.WireRegistry.Get<AcceptChannel1Message>()!;
 
     [Fact]
     public async Task Given_SpecShapedBytes_When_DeserializeAsync_Then_AllFieldsAreDecoded()

@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Node;
@@ -17,7 +19,7 @@ public class InitMessageTests
     public InitMessageTests()
     {
         _initMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<InitMessage>()!;
+            SerializerHelper.WireRegistry.Get<InitMessage>()!;
     }
 
     [Fact]

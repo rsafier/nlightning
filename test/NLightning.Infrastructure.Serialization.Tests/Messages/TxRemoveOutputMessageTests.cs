@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Channels.ValueObjects;
@@ -13,7 +15,7 @@ public class TxRemoveOutputMessageTests
     public TxRemoveOutputMessageTests()
     {
         _txRemoveOutputMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxRemoveOutputMessage>()!;
+            SerializerHelper.WireRegistry.Get<TxRemoveOutputMessage>()!;
     }
 
     [Fact]

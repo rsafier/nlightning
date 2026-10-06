@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using NLightning.Domain.Channels.ValueObjects;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -8,14 +9,13 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Serialization.Interfaces;
-using Factories;
 using Helpers;
 using Serialization.Messages;
 
 public class StfuMessageTests
 {
     private readonly IMessageTypeSerializer<StfuMessage> _stfuMessageTypeSerializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<StfuMessage>()!;
+        SerializerHelper.WireRegistry.Get<StfuMessage>()!;
 
     [Fact]
     public async Task Given_ValidStream_When_DeserializeAsync_Then_ReturnsStfuMessage()
@@ -62,8 +62,7 @@ public class StfuMessageTests
         // Arrange: BOLT 2 "Channel Quiescence": type 2 (stfu) = channel_id || u8 initiator; a channel message
         // (splicing plan Q-W-01), so the factory must map type 2 or the even type would kill the connection
         var messageTypeSerializerFactory =
-            new MessageTypeSerializerFactory(SerializerHelper.PayloadSerializerFactory,
-                                             SerializerHelper.TlvStreamSerializer);
+            new WireRegistry();
         var messageSerializer = new MessageSerializer(NullLogger<MessageSerializer>.Instance,
                                                       messageTypeSerializerFactory);
         var wire = Convert.FromHexString("0002" + new string('4', 62) + "4200");

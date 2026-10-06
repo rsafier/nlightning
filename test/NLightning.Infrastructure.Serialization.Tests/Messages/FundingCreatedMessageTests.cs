@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Bitcoin.ValueObjects;
@@ -26,7 +28,7 @@ public class FundingCreatedMessageTests
     private const string MessageHex = TemporaryChannelIdHex + FundingTxIdHex + FundingOutputIndexHex + SignatureHex;
 
     private readonly IMessageTypeSerializer<FundingCreatedMessage> _serializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<FundingCreatedMessage>()!;
+        SerializerHelper.WireRegistry.Get<FundingCreatedMessage>()!;
 
     [Fact]
     public async Task Given_SpecShapedBytes_When_DeserializeAsync_Then_AllFieldsAreDecoded()

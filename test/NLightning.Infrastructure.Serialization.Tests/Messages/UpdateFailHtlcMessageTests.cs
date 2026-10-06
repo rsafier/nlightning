@@ -1,5 +1,6 @@
 using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Infrastructure.Exceptions;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -19,7 +20,7 @@ public class UpdateFailHtlcMessageTests
     public UpdateFailHtlcMessageTests()
     {
         _updateFailHtlcMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<UpdateFailHtlcMessage>()!;
+            SerializerHelper.WireRegistry.Get<UpdateFailHtlcMessage>()!;
     }
 
     #region Deserialize

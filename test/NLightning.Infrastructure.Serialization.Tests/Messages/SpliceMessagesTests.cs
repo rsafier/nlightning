@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -12,7 +13,6 @@ using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Domain.Serialization.Interfaces;
 using Exceptions;
-using Factories;
 using Helpers;
 using Serialization.Messages;
 
@@ -34,17 +34,16 @@ public class SpliceMessagesTests
 
     private readonly MessageSerializer _messageSerializer =
         new(NullLogger<MessageSerializer>.Instance,
-            new MessageTypeSerializerFactory(SerializerHelper.PayloadSerializerFactory,
-                                             SerializerHelper.TlvStreamSerializer));
+            new WireRegistry());
 
     private readonly IMessageTypeSerializer<SpliceInitMessage> _spliceInitSerializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<SpliceInitMessage>()!;
+        SerializerHelper.WireRegistry.Get<SpliceInitMessage>()!;
 
     private readonly IMessageTypeSerializer<SpliceAckMessage> _spliceAckSerializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<SpliceAckMessage>()!;
+        SerializerHelper.WireRegistry.Get<SpliceAckMessage>()!;
 
     private readonly IMessageTypeSerializer<SpliceLockedMessage> _spliceLockedSerializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<SpliceLockedMessage>()!;
+        SerializerHelper.WireRegistry.Get<SpliceLockedMessage>()!;
 
     #region splice_init
 
@@ -270,7 +269,7 @@ public class SpliceMessagesTests
         // Arrange (regression: the payload serializer passed locktime and feerate to the (channel_id, feerate,
         // locktime) constructor in the wrong order; the wire order is locktime then feerate)
         var stream = new MemoryStream(Convert.FromHexString(ChannelIdHex + "000C357B" + "00000A28"));
-        var serializer = SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxInitRbfMessage>()!;
+        var serializer = SerializerHelper.WireRegistry.Get<TxInitRbfMessage>()!;
 
         // Act
         var message = await serializer.DeserializeAsync(stream);
@@ -287,7 +286,7 @@ public class SpliceMessagesTests
         // Arrange (regression: the contribution is satoshis on the wire, 10 means 10 sat)
         var stream = new MemoryStream(Convert.FromHexString(ChannelIdHex + "00000001" + "00000001"
                                                           + "0008000000000000000A"));
-        var serializer = SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxInitRbfMessage>()!;
+        var serializer = SerializerHelper.WireRegistry.Get<TxInitRbfMessage>()!;
 
         // Act
         var message = await serializer.DeserializeAsync(stream);

@@ -1,5 +1,6 @@
 using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Domain.Money;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -17,7 +18,7 @@ public class TxAckRbfMessageTests
     public TxAckRbfMessageTests()
     {
         _txAckRbfMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxAckRbfMessage>()!;
+            SerializerHelper.WireRegistry.Get<TxAckRbfMessage>()!;
     }
 
     #region Deserialize

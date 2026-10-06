@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -6,7 +7,6 @@ using Domain.Node.PeerStorage;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Exceptions;
-using Factories;
 using Helpers;
 using Serialization.Messages;
 
@@ -17,8 +17,7 @@ public class PeerStorageMessageTests
 {
     private readonly MessageSerializer _messageSerializer =
         new(NullLogger<MessageSerializer>.Instance,
-            new MessageTypeSerializerFactory(SerializerHelper.PayloadSerializerFactory,
-                                             SerializerHelper.TlvStreamSerializer));
+            new WireRegistry());
 
     [Fact]
     public async Task Given_PeerStorage_When_Serialized_Then_WireIsTypeLengthAndBlob()

@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Bitcoin.ValueObjects;
@@ -17,7 +19,7 @@ public class CommitmentSignedMessageTests
     public CommitmentSignedMessageTests()
     {
         _commitmentSignedMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<CommitmentSignedMessage>()!;
+            SerializerHelper.WireRegistry.Get<CommitmentSignedMessage>()!;
     }
 
     [Fact]

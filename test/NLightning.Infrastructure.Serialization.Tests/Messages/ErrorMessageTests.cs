@@ -1,5 +1,6 @@
 using System.Text;
 using NLightning.Domain.Channels.ValueObjects;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -15,7 +16,7 @@ public class ErrorMessageTests
     public ErrorMessageTests()
     {
         _errorMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ErrorMessage>()!;
+            SerializerHelper.WireRegistry.Get<ErrorMessage>()!;
     }
 
     [Fact]

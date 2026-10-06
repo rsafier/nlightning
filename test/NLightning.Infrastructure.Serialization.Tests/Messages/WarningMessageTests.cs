@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Protocol.Messages;
@@ -12,7 +14,7 @@ public class WarningMessageTests
     public WarningMessageTests()
     {
         _warningMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<WarningMessage>()!;
+            SerializerHelper.WireRegistry.Get<WarningMessage>()!;
     }
 
     [Fact]

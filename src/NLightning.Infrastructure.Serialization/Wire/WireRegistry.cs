@@ -110,8 +110,8 @@ public sealed class WireRegistry
 
     public IMessageTypeSerializer? Get(MessageTypes type) => _byType.GetValueOrDefault(type);
 
-    public IMessageTypeSerializer? Get<TMessage>() where TMessage : IMessage
-        => _byMessageType.GetValueOrDefault(typeof(TMessage));
+    public IMessageTypeSerializer<TMessage>? Get<TMessage>() where TMessage : IMessage
+        => _byMessageType.GetValueOrDefault(typeof(TMessage)) as IMessageTypeSerializer<TMessage>;
 
     /// <summary>Typed value definitions composed by peer messages and the dedicated hop codec.</summary>
     public IReadOnlyCollection<Type> TlvTypes => _tlvDefinitions.Keys;

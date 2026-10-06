@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Wire;
 
 using Domain.Bitcoin.ValueObjects;
@@ -87,16 +89,9 @@ public class WirePerfBenchmark(ITestOutputHelper output)
         return await serializer.DeserializeMessageAsync(stream);
     }
 
-    private static IMessageTypeSerializerFactory SerializerHelperMessageFactory()
+    private static WireRegistry SerializerHelperMessageFactory()
     {
-        return new NLightning.Infrastructure.Serialization.Factories.MessageTypeSerializerFactory(
-            new NLightning.Infrastructure.Serialization.Factories.PayloadSerializerFactory(
-                new NLightning.Infrastructure.Serialization.Node.FeatureSetSerializer(),
-                new NLightning.Infrastructure.Serialization.Factories.ValueObjectSerializerFactory()),
-            new NLightning.Infrastructure.Serialization.Tlv.TlvStreamSerializer(
-                new NLightning.Infrastructure.Serialization.Wire.WireRegistry(),
-                    new NLightning.Infrastructure.Serialization.Tlv.TlvSerializer(
-                    new NLightning.Infrastructure.Serialization.Factories.ValueObjectSerializerFactory())));
+        return new WireRegistry();
     }
 
     private static readonly Random s_random = new(20261004);

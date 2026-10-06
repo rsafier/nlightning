@@ -26,8 +26,6 @@ public static class DependencyInjection
         services.AddSingleton<IFeatureSetSerializer, FeatureSetSerializer>();
         services.AddSingleton<IHopPayloadSerializer, HopPayloadSerializer>();
         services.AddSingleton<IMessageSerializer, MessageSerializer>();
-        services.AddSingleton<IMessageTypeSerializerFactory, MessageTypeSerializerFactory>();
-        services.AddSingleton<IPayloadSerializerFactory, PayloadSerializerFactory>();
         services.AddSingleton<Wire.WireRegistry>();
         services.AddSingleton<ITlvSerializer, TlvSerializer>();
         services.AddSingleton<ITlvStreamSerializer, TlvStreamSerializer>();

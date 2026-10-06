@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Channels.ValueObjects;
@@ -19,7 +21,7 @@ public class OpenChannel2MessageTests
     private readonly ushort _expectedMaxAcceptedHtlcs = 2;
     private readonly ushort _expectedLocktime = 1;
     private readonly IMessageTypeSerializer<OpenChannel2Message> _openChannel2TypeSerializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<OpenChannel2Message>()!;
+        SerializerHelper.WireRegistry.Get<OpenChannel2Message>()!;
 
     #region Deserialize
 

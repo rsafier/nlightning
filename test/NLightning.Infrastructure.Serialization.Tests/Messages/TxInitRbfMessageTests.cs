@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Channels.ValueObjects;
@@ -16,7 +18,7 @@ public class TxInitRbfMessageTests
     public TxInitRbfMessageTests()
     {
         _txInitRbfMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxInitRbfMessage>()!;
+            SerializerHelper.WireRegistry.Get<TxInitRbfMessage>()!;
     }
 
     #region Deserialize

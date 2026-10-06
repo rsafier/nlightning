@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Channels.ValueObjects;
@@ -13,7 +15,7 @@ public class RevokeAndAckMessageTests
     public RevokeAndAckMessageTests()
     {
         _revokeAndAckMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<RevokeAndAckMessage>()!;
+            SerializerHelper.WireRegistry.Get<RevokeAndAckMessage>()!;
     }
 
     [Fact]

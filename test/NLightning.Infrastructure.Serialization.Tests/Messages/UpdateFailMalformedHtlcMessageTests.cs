@@ -1,4 +1,5 @@
 using NLightning.Domain.Channels.ValueObjects;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -14,7 +15,7 @@ public class UpdateFailMalformedHtlcMessageTests
     public UpdateFailMalformedHtlcMessageTests()
     {
         _updateFailMalformedHtlcMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<UpdateFailMalformedHtlcMessage>()!;
+            SerializerHelper.WireRegistry.Get<UpdateFailMalformedHtlcMessage>()!;
     }
 
     #region Deserialize

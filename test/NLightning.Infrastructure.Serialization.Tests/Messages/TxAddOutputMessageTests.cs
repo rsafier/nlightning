@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Channels.ValueObjects;
@@ -14,7 +16,7 @@ public class TxAddOutputMessageTests
     public TxAddOutputMessageTests()
     {
         _txAddOutputMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxAddOutputMessage>()!;
+            SerializerHelper.WireRegistry.Get<TxAddOutputMessage>()!;
     }
 
     [Fact]

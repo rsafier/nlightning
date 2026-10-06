@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Protocol.Messages;
@@ -12,7 +14,7 @@ public class PingMessageTests
     public PingMessageTests()
     {
         _pingMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<PingMessage>()!;
+            SerializerHelper.WireRegistry.Get<PingMessage>()!;
     }
 
     [Fact]

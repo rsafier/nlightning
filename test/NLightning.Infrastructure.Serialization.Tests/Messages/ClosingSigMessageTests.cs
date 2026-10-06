@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -8,7 +9,6 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Serialization.Interfaces;
 using Exceptions;
-using Factories;
 using Helpers;
 using Serialization.Messages;
 
@@ -20,12 +20,11 @@ public class ClosingSigMessageTests
                                                                               + ClosingCompleteMessageTests.Sig1Hex;
 
     private readonly IMessageTypeSerializer<ClosingSigMessage> _serializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ClosingSigMessage>()!;
+        SerializerHelper.WireRegistry.Get<ClosingSigMessage>()!;
 
     private readonly MessageSerializer _messageSerializer =
         new(NullLogger<MessageSerializer>.Instance,
-            new MessageTypeSerializerFactory(SerializerHelper.PayloadSerializerFactory,
-                                             SerializerHelper.TlvStreamSerializer));
+            new WireRegistry());
 
     [Fact]
     public async Task Given_ClosingSig_When_SerializeAsync_Then_BoltLayout()

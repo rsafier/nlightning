@@ -1,12 +1,12 @@
 using System.Security.Cryptography;
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Exceptions;
-using Factories;
 using Helpers;
 using Serialization.Messages;
 using static ChannelAnnouncementMessageTests;
@@ -22,9 +22,7 @@ public class NodeAnnouncementMessageTests
         Concat([0x01, 127, 0, 0, 1, 0x26, 0x07], [0x04], Enumerable.Repeat((byte)0xab, 35).ToArray(), [0x26, 0x07]);
 
     private readonly MessageSerializer _messageSerializer = new(NullLogger<MessageSerializer>.Instance,
-                                                                new MessageTypeSerializerFactory(
-                                                                    SerializerHelper.PayloadSerializerFactory,
-                                                                    SerializerHelper.TlvStreamSerializer));
+                                                                new WireRegistry());
 
     [Fact]
     public async Task Given_NodeAnnouncement_When_Serialized_Then_WireLayoutMatchesBolt7()

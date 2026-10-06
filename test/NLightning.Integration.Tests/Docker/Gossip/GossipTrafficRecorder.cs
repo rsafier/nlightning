@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
@@ -69,7 +70,7 @@ public sealed class GossipTrafficRecorder
                                                       new RecordingMessageSerializer(
                                                           new MessageSerializer(
                                                               sp.GetRequiredService<ILogger<MessageSerializer>>(),
-                                                              sp.GetRequiredService<IMessageTypeSerializerFactory>()),
+                                                              sp.GetRequiredService<WireRegistry>()),
                                                           this));
     }
 

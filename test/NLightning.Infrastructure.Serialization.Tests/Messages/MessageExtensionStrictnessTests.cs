@@ -1,3 +1,5 @@
+using NLightning.Infrastructure.Serialization.Wire;
+
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Protocol.Messages;
@@ -66,90 +68,90 @@ public class MessageExtensionStrictnessTests
 
         return messageName switch
         {
-            "init" => (SerializerHelper.MessageTypeSerializerFactory.GetSerializer<InitMessage>()!,
+            "init" => (SerializerHelper.WireRegistry.Get<InitMessage>()!,
                        "00000000"),
             "open_channel" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<OpenChannel1Message>()!,
+                SerializerHelper.WireRegistry.Get<OpenChannel1Message>()!,
                 // chain_hash, temporary_channel_id, 6 x u64, u32, 2 x u16, 6 points, channel_flags
                 Zero32 + Zero32 + new string('0', 6 * 16) + "000003E8" + "0090" + "01E3" + points6 + "00"
               + ChannelTypeTlvHex),
             "accept_channel" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<AcceptChannel1Message>()!,
+                SerializerHelper.WireRegistry.Get<AcceptChannel1Message>()!,
                 // temporary_channel_id, 4 x u64, u32, 2 x u16, 6 points
                 Zero32 + new string('0', 4 * 16) + "00000003" + "0090" + "01E3" + points6 + ChannelTypeTlvHex),
             "open_channel2" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<OpenChannel2Message>()!,
+                SerializerHelper.WireRegistry.Get<OpenChannel2Message>()!,
                 // chain_hash, temporary_channel_id, 2 x u32, 4 x u64, 2 x u16, u32, 7 points, channel_flags
                 Zero32 + Zero32 + "000003E8" + "000007D0" + new string('0', 4 * 16) + "0090" + "01E3" + "00000000"
               + points7 + "00"),
             "accept_channel2" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<AcceptChannel2Message>()!,
+                SerializerHelper.WireRegistry.Get<AcceptChannel2Message>()!,
                 // temporary_channel_id, 4 x u64, u32, 2 x u16, 7 points (BOLT 2: second_per_commitment_point too)
                 Zero32 + new string('0', 4 * 16) + "00000003" + "0090" + "01E3" + points7),
             "tx_init_rbf" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxInitRbfMessage>()!,
+                SerializerHelper.WireRegistry.Get<TxInitRbfMessage>()!,
                 Zero32 + "00000001" + "00000001"),
             "tx_ack_rbf" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxAckRbfMessage>()!, Zero32),
+                SerializerHelper.WireRegistry.Get<TxAckRbfMessage>()!, Zero32),
             "channel_ready" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ChannelReadyMessage>()!,
+                SerializerHelper.WireRegistry.Get<ChannelReadyMessage>()!,
                 Zero32 + Point),
             "channel_reestablish" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ChannelReestablishMessage>()!,
+                SerializerHelper.WireRegistry.Get<ChannelReestablishMessage>()!,
                 Zero32 + "0000000000000001" + "0000000000000002" + Zero32 + Point),
             "closing_signed" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ClosingSignedMessage>()!,
+                SerializerHelper.WireRegistry.Get<ClosingSignedMessage>()!,
                 // channel_id, fee_satoshis, signature, fee_range
                 Zero32 + "0000000000000002"
               + "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320"
               + "011000000000000000010000000000000003"),
             "closing_signed_no_fee_range" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ClosingSignedMessage>()!,
+                SerializerHelper.WireRegistry.Get<ClosingSignedMessage>()!,
                 // channel_id, fee_satoshis, signature
                 Zero32 + "0000000000000002"
               + "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320"),
             "commitment_signed" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<CommitmentSignedMessage>()!,
+                SerializerHelper.WireRegistry.Get<CommitmentSignedMessage>()!,
                 // channel_id, signature, num_htlcs = 0, funding_txid
                 Zero32
               + "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320"
               + "0000" + "0120" + Zero32),
             "tx_add_input" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxAddInputMessage>()!,
+                SerializerHelper.WireRegistry.Get<TxAddInputMessage>()!,
                 // channel_id, serial_id, prevtx_len = 4, prevtx, prevtx_vout, sequence
                 Zero32 + "0000000000000002" + "0004" + "00010203" + "00000000" + "FFFFFFFD"),
             "tx_add_input_shared" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxAddInputMessage>()!,
+                SerializerHelper.WireRegistry.Get<TxAddInputMessage>()!,
                 // channel_id, serial_id, prevtx_len = 0, prevtx_vout, sequence, shared_input_txid
                 Zero32 + "0000000000000002" + "0000" + "00000000" + "FFFFFFFD" + "0020" + Zero32),
             "tx_signatures" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxSignaturesMessage>()!,
+                SerializerHelper.WireRegistry.Get<TxSignaturesMessage>()!,
                 // channel_id, txid, num_witnesses = 0
                 Zero32 + Zero32 + "0000"),
             "tx_signatures_shared" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxSignaturesMessage>()!,
+                SerializerHelper.WireRegistry.Get<TxSignaturesMessage>()!,
                 // channel_id, txid, num_witnesses = 0, shared_input_signature
                 Zero32 + Zero32 + "0000" + "0040"
               + "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320"),
             // Read strictly since the simple taproot TLVs (NL-877); their extension was ignored before
             "funding_created" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<FundingCreatedMessage>()!,
+                SerializerHelper.WireRegistry.Get<FundingCreatedMessage>()!,
                 // temporary_channel_id, funding_txid, funding_output_index, signature
                 Zero32 + Zero32 + "0000" + new string('0', 128)),
             "funding_signed" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<FundingSignedMessage>()!,
+                SerializerHelper.WireRegistry.Get<FundingSignedMessage>()!,
                 // channel_id, signature
                 Zero32 + new string('0', 128)),
             "revoke_and_ack" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<RevokeAndAckMessage>()!,
+                SerializerHelper.WireRegistry.Get<RevokeAndAckMessage>()!,
                 // channel_id, per_commitment_secret, next_per_commitment_point
                 Zero32 + Zero32 + Point),
             "shutdown" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ShutdownMessage>()!,
+                SerializerHelper.WireRegistry.Get<ShutdownMessage>()!,
                 // channel_id, len = 22, scriptpubkey (P2WPKH)
                 Zero32 + "0016" + "0014" + new string('0', 40)),
             "tx_complete" => (
-                SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxCompleteMessage>()!,
+                SerializerHelper.WireRegistry.Get<TxCompleteMessage>()!,
                 Zero32),
             _ => throw new ArgumentOutOfRangeException(nameof(messageName), messageName, null)
         };

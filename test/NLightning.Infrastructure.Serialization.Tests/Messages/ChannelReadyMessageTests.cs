@@ -1,4 +1,5 @@
 using NLightning.Domain.Channels.ValueObjects;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -12,7 +13,7 @@ using Helpers;
 public class ChannelReadyMessageTests
 {
     private readonly IMessageTypeSerializer<ChannelReadyMessage> _channelReadyMessageTypeSerializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ChannelReadyMessage>()!;
+        SerializerHelper.WireRegistry.Get<ChannelReadyMessage>()!;
 
     #region Deserialize
 

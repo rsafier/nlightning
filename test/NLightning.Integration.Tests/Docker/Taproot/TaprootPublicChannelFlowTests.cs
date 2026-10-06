@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NBitcoin;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Integration.Tests.Docker.Taproot;
 
@@ -262,7 +263,7 @@ public sealed class TaprootPublicChannelFlowTests : IAsyncLifetime
         // Assert: both reestablishes of the new connection carried the announcement nonces (TLV 7)
         var afterRestart = bobTraffic.Traffic.Skip(beforeRestart).ToList();
         var serializer = new MessageSerializer(NullLogger<MessageSerializer>.Instance,
-                                               bob.Services.GetRequiredService<IMessageTypeSerializerFactory>());
+                                               bob.Services.GetRequiredService<WireRegistry>());
         foreach (var outbound in new[] { true, false })
         {
             var reestablishes = new List<ChannelReestablishMessage>();
