@@ -9575,7 +9575,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1161
 
 ### NL-1170 LND gRPC: SendPaymentV2 without an invoice (keysend) is refused
-- **Status:** fixed (wip/lnd-p2)
+- **Status:** fixed (aa4601ee)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.LndGrpc/Services/RouterService.Payments.cs; Application Payments/Send/PaymentService.cs`
@@ -9584,7 +9584,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1164
 
 ### NL-1171 LND gRPC: TrackPayments streams outcomes only
-- **Status:** fixed (wip/lnd-p2)
+- **Status:** fixed (aa4601ee)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `Application Payments/Send/PaymentService.cs; Domain Payments/Events; RouterService.Payments.cs`
@@ -9593,7 +9593,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1164
 
 ### NL-1172 LND gRPC: UpdateChannelPolicy global does not change the default for future channels
-- **Status:** fixed (wip/lnd-p2)
+- **Status:** fixed (aa4601ee)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `Application Channels/RoutingPolicies/{ChannelPolicyService,ChannelPolicyStore}.cs; LightningService.Operations.cs`
@@ -9905,7 +9905,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1205 Onion reply-path test reads metrics before forwarding completes
-- **Status:** fixed (wip/lnd-p2)
+- **Status:** fixed (aa4601ee)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/OnionMessages/OnionMessageHarnessTests.cs` (`Given_ARequestWithAReplyPath_When_CarolReplies_Then_AliceGetsTheReplyThroughBob`)
@@ -9924,7 +9924,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1207 ChainSync accepts the old tip height during a same-height reorg
-- **Status:** fixed (wip/lnd-p2)
+- **Status:** fixed (aa4601ee)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Utils/ChainSync.cs` (`WaitAllAtTipAsync`)
