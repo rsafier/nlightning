@@ -179,12 +179,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 0 | 96 | 96 |
+| open | 0 | 0 | 0 | 97 | 97 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
 | fixed | 15 | 69 | 234 | 495 | 813 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 6 | 9 |
-| **Total** | **15** | **69** | **250** | **613** | **947** |
+| **Total** | **15** | **69** | **250** | **614** | **948** |
 
 ### Epics
 
@@ -9982,3 +9982,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** Real cooperative withdrawal runs lnd-p2-proof4/5 checked history before the replacement branch's wallet/accounting rewind committed. The imported scan already saw Core's replacement blocks, but the old monitor height equaled the new tip. In proof5 GetTransactions returned at 20:17:02.124; the rewind/reversals were logged at 20:17:02.258–.281. The barrier now requires LND's block hash and NLightning's persisted blockchain-state hash/height to equal Core's tip, using a fresh UOW scope per poll.
 - **Fix sketch:** done: compare committed hashes as well as heights; real lnd-p2-proof6 passed both spend/deposit reorgs and the full Loop recovery matrix (1/1).
 - **Blocks/Blocked-by:** NL-1196
+
+### NL-1229 `Announcement2HarnessTests.Given_APublicTaprootChannel_When_BothReachTheDepth_*` failed once under a loaded full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Gossip/Announcements/Announcement2HarnessTests.cs` (`Given_APublicTaprootChannel_When_BothReachTheDepth_Then_BothPublishTheSameValidAnnouncement2`)
+- **Evidence:** the codec-cleanup integration's full net10.0 run (2026-10-06, `wip/fafo` at `963e48e9`, beside a cluster build) failed it after 325 ms; the class passed 11/11 three times alone and the next full run (at `e9595727`) passed it. Not a codec regression: the interop matrix (lnd, cln, eclair, ldk, gossip, eclair2, taproot) was green on the same code.
+- **Fix sketch:** find the harness wait that races the two announcements (both nodes reaching the depth and exchanging `announcement_signatures_2` nonces) and make it event-driven.
+- **Blocks/Blocked-by:** none
