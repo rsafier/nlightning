@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 100 | 101 |
+| open | 0 | 0 | 1 | 101 | 102 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
 | fixed | 15 | 69 | 233 | 483 | 800 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **69** | **250** | **604** | **938** |
+| **Total** | **15** | **69** | **250** | **605** | **939** |
 
 ### Epics
 
@@ -9891,3 +9891,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** NL-1095 proves the RPC contract and one open/pay/close with our node on rbitcoin; not proven: the on-chain suites with rbitcoin as our backend, package propagation from rbitcoin to Core peers (no BIP331; a parent below a Core peer's dynamic floor relies on Core's orphan 1p1c), rbitcoin's own fee estimator under load, Mutinynet (custom signet, 30 s blocks), and the poll-mode mempool poll's cost with many watched outpoints (one `gettxspendingprevout` per 500 outpoints per poll).
 - **Fix sketch:** a chain-backend switch `NLTG_CHAIN_BACKEND=core|rbitcoin`: the topology builders (and `LightningRegtestNetworkFixture`) deploy `RbitcoinNode` next to the bitcoind with `--connect <bitcoind>:18444`, `NLightningTestNode` takes the backend's RPC endpoint and forces `Notifications=Poll`; helpers that wait for "our node at height N" already wait on our node, but reorg helpers (`invalidateblock` on Core) and mempool checks on Core must wait for rbitcoin to follow / for relay; then `--matrix lnd,onchain,anchors`, `taproot`, `day0`. A Mutinynet trial next to `mutinynet-bitcoind` (`--network signet --signet-challenge ... --signet-block-time 30 --milestone 0`). rbitcoin stays off mainnet funds until its own `docs/lightning.md` says so.
 - **Blocks/Blocked-by:** NL-1094, NL-1095
+
+### NL-1204 `Given_ForwardSettledAfterWeForceClosedUpstream_*` failed once in the anchors suite in Poll mode
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Onchain/Anchors/AnchorsO3Tests.cs` (`Given_ForwardSettledAfterWeForceClosedUpstream_When_Resolved_Then_HtlcSuccessWithFeeInputsBeforeE...`)
+- **Evidence:** the merged `wip/fafo` run at `be840cb9` (2026-10-06) with `NLTG_CHAIN_NOTIFICATIONS=Poll scripts/run-cluster.sh --matrix onchain,anchors`: `anchors` rerun-green (17/18, the class green alone on the flake rerun); the same test passed in the poll-monitor lane's own Poll runs and in every Zmq run so far. Poll mode delivers blocks up to one `Bitcoin:PollInterval` (2 s on regtest) later than ZMQ, so a test wait sized for ZMQ delivery may be tight.
+- **Fix sketch:** read the diagnostics of the failed attempt (`TestResults/cluster/mx-20261006181511/anchors`), then make the wait follow the node's processed height rather than wall time, or size it for Poll mode.
+- **Blocks/Blocked-by:** related NL-1094
