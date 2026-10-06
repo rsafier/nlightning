@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Tests.Offers;
 
@@ -25,10 +27,13 @@ using Domain.Node.Events;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
+using Domain.Offers.Constants;
+using Domain.Offers.Encoding;
 using Domain.Offers.Enums;
 using Domain.Offers.Interfaces;
 using Domain.Offers.Models;
 using Domain.Payments.Enums;
+using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -238,6 +243,66 @@ public class OfferHarnessTests
     }
 
     [Fact]
+    public async Task Given_AFetchedInvoiceHandedOut_When_AlicePaysItByItsString_Then_CarolSettlesIt()
+    {
+        // Arrange: CLN's fetchinvoice + xpay shape (captaind, NL-1151): the invoice string leaves the node in between
+        var ct = TestContext.Current.CancellationToken;
+        var links = new OnionMessageLinks();
+        await using var harness = await CreateAsync(links, payers: ["Alice"]);
+        var offer = await CreateOfferAsync(harness, LightningMoney.MilliSatoshis(AmountMsat));
+        var service = harness.Alice.Services.GetRequiredService<IOfferPaymentService>();
+        var fetching = service.FetchInvoiceAsync(new PayOfferRequest(offer.Bolt12, PayerNote: "for the ark"),
+                                                 new PayOfferOptions(), ct);
+        var fetched = await PumpUntilDoneAsync(harness, fetching);
+        Assert.Equal(FetchInvoiceStatus.Received, fetched.Status);
+        var invoiceString = Bolt12Bech32.Encode(Bolt12Constants.InvoiceHrp, fetched.Invoice!.InvoiceBytes.Span);
+
+        // Act
+        var result = await PumpUntilDoneAsync(harness,
+                                              service.PayFetchedInvoiceAsync(invoiceString, new PayInvoiceOptions(),
+                                                                             ct));
+
+        // Assert: paid over the fetch's verified paths, recorded as a BOLT 12 payment of that offer and invoice
+        Assert.True(result.Payment.Status == PaymentStatus.Succeeded, result.Payment.FailureReason);
+        Assert.Equal(fetched.Invoice.PaymentHash, result.Payment.PaymentHash);
+        Assert.Equal(offer.Bolt12, result.Payment.Bolt12!.Offer);
+        Assert.Equal("for the ark", result.Payment.Bolt12.PayerNote);
+        Assert.True(fetched.Invoice.InvoiceBytes.Span.SequenceEqual(result.Payment.Bolt12.InvoiceBytes.Span));
+        var invoice = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
+                                                              .GetByPaymentHashAsync(fetched.Invoice.PaymentHash));
+        Assert.Equal(InvoiceStatus.Settled, invoice!.Status);
+    }
+
+    [Fact]
+    public async Task Given_InvoicesThisNodeDidNotFetch_When_PaidByString_Then_RefusedAndNothingSent()
+    {
+        // Arrange: an invoice fetched by Alice is not Alice's to pay after a restart's worth of memory loss, nor is
+        // anything that is not an lni string
+        var ct = TestContext.Current.CancellationToken;
+        var links = new OnionMessageLinks();
+        await using var harness = await CreateAsync(links, payers: ["Alice"]);
+        var offer = await CreateOfferAsync(harness, LightningMoney.MilliSatoshis(AmountMsat));
+        var fetched = await PumpUntilDoneAsync(harness, harness.Alice.Services
+                                                              .GetRequiredService<IOfferPaymentService>()
+                                                              .FetchInvoiceAsync(new PayOfferRequest(offer.Bolt12),
+                                                                                 new PayOfferOptions(), ct));
+        var invoiceString = Bolt12Bech32.Encode(Bolt12Constants.InvoiceHrp, fetched.Invoice!.InvoiceBytes.Span);
+        var stranger = new OfferPaymentService(harness.Alice.Services.GetRequiredService<IOnionMessageService>(),
+                                               harness.Alice.Services.GetRequiredService<IPaymentService>(),
+                                               harness.Alice.Services.GetRequiredService<IOptions<NodeOptions>>(),
+                                               NullLogger<OfferPaymentService>.Instance, TimeProvider.System,
+                                               harness.Alice.Services.GetRequiredService<IBolt12Signer>());
+
+        // Act / Assert
+        var notFetched = await Assert.ThrowsAsync<ArgumentException>(
+                             () => stranger.PayFetchedInvoiceAsync(invoiceString, new PayInvoiceOptions(), ct));
+        Assert.Contains("not an invoice this node fetched", notFetched.Message, StringComparison.OrdinalIgnoreCase);
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => stranger.PayFetchedInvoiceAsync(offer.Bolt12, new PayInvoiceOptions(), ct));
+        Assert.DoesNotContain(harness.Bob.Received, m => m is UpdateAddHtlcMessage);
+    }
+
+    [Fact]
     public async Task Given_CarolDisabledTheOffer_When_AlicePays_Then_TheInvoiceErrorIsReportedAndNothingPaid()
     {
         // Arrange
@@ -307,7 +372,7 @@ public class OfferHarnessTests
     /// Pumps the harness until <paramref name="paying"/> completes: the fetch runs over onion messages before the first
     /// HTLC is offered, so one pump may come before there is anything to deliver.
     /// </summary>
-    private static async Task<PayOfferResult> PumpUntilDoneAsync(ThreeNodeHarness harness, Task<PayOfferResult> paying)
+    private static async Task<T> PumpUntilDoneAsync<T>(ThreeNodeHarness harness, Task<T> paying)
     {
         var deadline = DateTime.UtcNow.AddSeconds(60);
         while (!paying.IsCompleted && DateTime.UtcNow < deadline)

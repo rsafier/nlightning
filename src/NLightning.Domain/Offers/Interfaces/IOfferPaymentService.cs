@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Offers.Interfaces;
 
 using Models;
+using Payments.Models;
 
 /// <summary>
 /// Pays BOLT 12 offers (<c>payoffer</c>, <c>fetchinvoice</c>; lane B12-E).
@@ -43,4 +44,17 @@ public interface IOfferPaymentService
     /// succeeded.</exception>
     Task<PayOfferResult> PayOfferAsync(PayOfferRequest request, PayOfferOptions options,
                                        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Pays a BOLT 12 invoice (<c>lni…</c>) this node fetched with <see cref="FetchInvoiceAsync"/> and that has not
+    /// expired, over the paths that fetch verified, then waits for the outcome as
+    /// <c>IPaymentService.PayInvoiceAsync</c> does: the fetch-then-pay shape of a caller that hands the invoice to
+    /// someone else between the two (CLN's <c>fetchinvoice</c> + <c>xpay</c>, as Second's captaind drives them, NL-1151).
+    /// </summary>
+    /// <exception cref="ArgumentException">Not a BOLT 12 invoice string, or not one this node fetched (since its last
+    /// start), or expired. Nothing is sent or stored.</exception>
+    /// <exception cref="InvalidOperationException">A payment for the invoice's hash is already in flight or
+    /// succeeded.</exception>
+    Task<PayInvoiceResult> PayFetchedInvoiceAsync(string invoice, PayInvoiceOptions options,
+                                                  CancellationToken cancellationToken = default);
 }

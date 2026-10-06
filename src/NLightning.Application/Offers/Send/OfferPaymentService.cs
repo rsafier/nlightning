@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -8,6 +9,7 @@ using Domain.Node;
 using Domain.Node.Options;
 using Domain.Offers;
 using Domain.Offers.Constants;
+using Domain.Offers.Encoding;
 using Domain.Offers.Enums;
 using Domain.Offers.Interfaces;
 using Domain.Offers.Models;
@@ -35,14 +37,25 @@ using OnionMessages;
 /// <para>Pay: <see cref="IPaymentService.PayBlindedAsync"/> over the invoice's usable paths with
 /// <c>invoice_node_id</c> as the payee, a split allowed when <c>invoice_features</c> sets <c>basic_mpp</c>
 /// (B12-INV-05) and the BOLT 12 details stored with the payment.</para>
-/// <para>Singleton; thread-safe (no state between calls).</para>
+/// <para>Pay a fetched invoice later (<see cref="PayFetchedInvoiceAsync"/>, NL-1151): every verified fetch is kept in
+/// memory until its invoice expires (at most <see cref="MaxRememberedInvoices"/>, the soonest to expire dropped first),
+/// with the request it answers and the paths it verified, so the invoice string can be handed out (CLN's
+/// <c>fetchinvoice</c>) and paid by it afterwards exactly as <see cref="PayOfferAsync"/> pays; an invoice this process
+/// did not fetch is refused, never paid unverified.</para>
+/// <para>Singleton; thread-safe.</para>
 /// </remarks>
 public sealed class OfferPaymentService : IOfferPaymentService
 {
     /// <summary>The most invoice_requests one call may send.</summary>
     public const int MaxFetchAttemptsLimit = 10;
 
+    /// <summary>The most fetched invoices kept for <see cref="PayFetchedInvoiceAsync"/>.</summary>
+    public const int MaxRememberedInvoices = 1_024;
+
     private static readonly ulong[] s_replyTypes = [OnionMessageConstants.InvoiceType, OnionMessageConstants.InvoiceErrorType];
+
+    /// <summary>Verified fetches by the invoice's bytes (hex), for <see cref="PayFetchedInvoiceAsync"/>.</summary>
+    private readonly ConcurrentDictionary<string, RememberedInvoice> _fetched = new(StringComparer.Ordinal);
 
     private readonly ILogger<OfferPaymentService> _logger;
     private readonly IOptions<NodeOptions> _nodeOptions;
@@ -75,7 +88,28 @@ public sealed class OfferPaymentService : IOfferPaymentService
                                                             CancellationToken cancellationToken = default)
     {
         var fetched = await FetchAsync(request, options, cancellationToken);
+        if (fetched is { Verified: { } verified, InvoiceRequest: { } invoiceRequest })
+            Remember(new RememberedInvoice(verified, invoiceRequest, request.Offer.Trim(), request.PayerNote));
         return fetched.Result;
+    }
+
+    /// <inheritdoc />
+    public async Task<PayInvoiceResult> PayFetchedInvoiceAsync(string invoice, PayInvoiceOptions options,
+                                                               CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(invoice);
+        ArgumentNullException.ThrowIfNull(options);
+        if (!Bolt12Bech32.TryDecode(invoice.Trim(), out var hrp, out var bytes, out var reason, out _))
+            throw new ArgumentException($"Not a BOLT 12 invoice: {reason}", nameof(invoice));
+        if (!string.Equals(hrp, Bolt12Constants.InvoiceHrp, StringComparison.Ordinal))
+            throw new ArgumentException($"Not a BOLT 12 invoice (prefix {hrp}).", nameof(invoice));
+        if (!_fetched.TryGetValue(Convert.ToHexString(bytes), out var remembered))
+            throw new ArgumentException("Not an invoice this node fetched (fetch it again).", nameof(invoice));
+        if (remembered.Verified.Invoice.ExpiresAt <= _timeProvider.GetUtcNow())
+            throw new ArgumentException("The invoice has expired.", nameof(invoice));
+
+        return await PayVerifiedAsync(remembered.Verified, remembered.InvoiceRequest, remembered.Offer,
+                                      remembered.PayerNote, options, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -86,6 +120,17 @@ public sealed class OfferPaymentService : IOfferPaymentService
         if (fetched is not { Verified: { } verified, InvoiceRequest: { } invoiceRequest })
             return new PayOfferResult(fetched.Result, null);
 
+        var payment = await PayVerifiedAsync(verified, invoiceRequest, request.Offer.Trim(), request.PayerNote,
+                                             options.Payment, cancellationToken);
+        return new PayOfferResult(fetched.Result, payment);
+    }
+
+    /// <summary>Pays a verified invoice over its verified paths (see the class remarks).</summary>
+    private async Task<PayInvoiceResult> PayVerifiedAsync(VerifiedInvoice verified,
+                                                          BuiltInvoiceRequest invoiceRequest, string offer,
+                                                          string? payerNote, PayInvoiceOptions options,
+                                                          CancellationToken cancellationToken)
+    {
         var invoice = verified.Invoice;
         var payRequest = new PayBlindedRequest(invoice.PaymentHash, invoice.Amount, verified.Paths)
         {
@@ -94,8 +139,7 @@ public sealed class OfferPaymentService : IOfferPaymentService
             RecipientFeatures = verified.Features.IsEmpty
                                     ? null
                                     : FeatureSet.DeserializeFromBytes(verified.Features.ToArray()),
-            Bolt12 = new Bolt12PaymentDetails(request.Offer.Trim(), invoice.InvoiceBytes, invoiceRequest.Metadata,
-                                              request.PayerNote)
+            Bolt12 = new Bolt12PaymentDetails(offer, invoice.InvoiceBytes, invoiceRequest.Metadata, payerNote)
         };
 
         if (_logger.IsEnabled(LogLevel.Information))
@@ -103,8 +147,25 @@ public sealed class OfferPaymentService : IOfferPaymentService
                                  + "path(s){Mpp}", invoice.Amount.MilliSatoshi, invoice.NodeId, invoice.PaymentHash,
                                    verified.Paths.Count, verified.AllowsMpp ? ", split allowed" : string.Empty);
 
-        var payment = await _paymentService.PayBlindedAsync(payRequest, options.Payment, cancellationToken);
-        return new PayOfferResult(fetched.Result, payment);
+        return await _paymentService.PayBlindedAsync(payRequest, options, cancellationToken);
+    }
+
+    /// <summary>
+    /// Keeps a verified fetch for <see cref="PayFetchedInvoiceAsync"/>: expired entries go first, then, over the cap,
+    /// the soonest to expire.
+    /// </summary>
+    private void Remember(RememberedInvoice remembered)
+    {
+        var now = _timeProvider.GetUtcNow();
+        foreach (var (key, entry) in _fetched)
+            if (entry.Verified.Invoice.ExpiresAt <= now)
+                _fetched.TryRemove(key, out _);
+        _fetched[Convert.ToHexString(remembered.Verified.Invoice.InvoiceBytes.Span)] = remembered;
+        while (_fetched.Count > MaxRememberedInvoices)
+        {
+            var soonest = _fetched.MinBy(e => e.Value.Verified.Invoice.ExpiresAt);
+            _fetched.TryRemove(soonest.Key, out _);
+        }
     }
 
     private async Task<FetchOutcome> FetchAsync(PayOfferRequest request, PayOfferOptions options,
@@ -242,4 +303,7 @@ public sealed class OfferPaymentService : IOfferPaymentService
 
     private sealed record FetchOutcome(FetchInvoiceResult Result, VerifiedInvoice? Verified = null,
                                        BuiltInvoiceRequest? InvoiceRequest = null);
+
+    private sealed record RememberedInvoice(VerifiedInvoice Verified, BuiltInvoiceRequest InvoiceRequest, string Offer,
+                                            string? PayerNote);
 }

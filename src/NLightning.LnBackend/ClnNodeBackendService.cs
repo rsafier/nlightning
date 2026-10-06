@@ -9,6 +9,11 @@ using Domain.Accounting.Labels;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Offers.Constants;
+using Domain.Offers.Encoding;
+using Domain.Offers.Enums;
+using Domain.Offers.Interfaces;
+using Domain.Offers.Models;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
@@ -20,8 +25,9 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// <summary>
 /// The <c>cln.Node</c> subset of the vendored CLN gRPC proxy proto that an unmodified ASP (Second's captaind, the
 /// Bark server) drives this node's pay side and lifecycle through: <c>Getinfo</c> (node liveness, network and height),
-/// <c>Xpay</c> (pay a BOLT 11 invoice and return its preimage) and <c>Listpays</c> (reconcile a payment attempt's
-/// status). The gRPC field numbers are the wire contract with the full proto's Rust client.
+/// <c>Xpay</c> (pay a BOLT 11 invoice, or a BOLT 12 invoice this node fetched, and return its preimage),
+/// <c>ListPays</c> (reconcile a payment attempt's status) and <c>FetchInvoice</c> (a BOLT 12 offer's invoice). The gRPC
+/// method names and field numbers are the wire contract with the full proto's Rust client.
 /// </summary>
 /// <remarks>
 /// <para><c>Xpay</c> maps onto <see cref="IPaymentService.PayInvoiceAsync(string, LightningMoney?,
@@ -30,23 +36,23 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// to 1..300, 60 when unset) the <see cref="PayInvoiceOptions.Timeout"/>. The outcome maps by the returned
 /// <see cref="PaymentModel.Status"/>: <see cref="PaymentStatus.Succeeded"/> answers with the
 /// <c>payment_preimage</c>; <see cref="PaymentStatus.InFlight"/> (the wait ended while an HTLC was still pending)
-/// answers <c>DEADLINE_EXCEEDED</c> — the caller keeps waiting on <c>Listpays</c>, where the row reports
+/// answers <c>DEADLINE_EXCEEDED</c> — the caller keeps waiting on <c>ListPays</c>, where the row reports
 /// <c>PENDING</c> until it resolves; <see cref="PaymentStatus.Failed"/> answers <c>FAILED_PRECONDITION</c> with the
 /// row's <see cref="PaymentModel.FailureReason"/>. A bad invoice is an <see cref="StatusCode.InvalidArgument"/>, a
 /// payment already in flight or succeeded a <see cref="StatusCode.FailedPrecondition"/>. The payment does not take the
 /// call's cancellation (CLN's xpay keeps running in lightningd when its gRPC caller leaves): a caller that goes away
 /// ends only its own wait (<c>CANCELLED</c>), the payment retries for its window and its outcome reaches
-/// <c>Listpays</c>.</para>
+/// <c>ListPays</c>.</para>
 /// <para>Why <c>DEADLINE_EXCEEDED</c> and not a failure for a payment still in flight (NL-1148 wave C): captaind
 /// (<c>server/src/ln/cln/xpay.rs</c>) ignores how its xpay call ended — success or any error — and reconciles the
-/// attempt by <c>Listpays</c> on the payment hash right after the call and then periodically (first after
+/// attempt by <c>ListPays</c> on the payment hash right after the call and then periodically (first after
 /// <c>retry_for</c> + 15 s, backing off): no row fails the attempt (the user's HTLC VTXOs become revocable),
 /// <c>PENDING</c> keeps it open, <c>COMPLETE</c> with the preimage succeeds it and <c>FAILED</c> fails it. So a payment
 /// with an HTLC out must always be listed, and <c>FAILED</c> only once no part is in flight — which is
 /// <see cref="PaymentStatus.Failed"/>'s own rule.</para>
 /// <para><c>maxdelay</c> (the payer's CLTV cap) and <c>partial_msat</c> are accepted but not enforced: the route
 /// planner already clamps the final CLTV expiry, and no partial (MPP-target) payment is driven through this seam.
-/// <c>Listpays</c> filters by <c>payment_hash</c> (a lookup captaind makes with every reconciliation) or serves the
+/// <c>ListPays</c> filters by <c>payment_hash</c> (a lookup captaind makes with every reconciliation) or serves the
 /// stored rows paged newest first, with <see cref="PaymentStatus.InFlight"/> reported <c>PENDING</c>,
 /// <see cref="PaymentStatus.Failed"/> <c>FAILED</c> and <see cref="PaymentStatus.Succeeded"/> <c>COMPLETE</c> with
 /// the preimage. <c>created_index</c>/<c>updated_index</c> (their client unwraps them to pick the latest attempt of
@@ -67,11 +73,14 @@ public sealed class ClnNodeBackendService : Cln.Node.NodeBase
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly IPaymentService _paymentService;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IOfferPaymentService? _offerPaymentService;
 
     public ClnNodeBackendService(ILogger<ClnNodeBackendService> logger, ISecureKeyManager keyManager,
                                  IOptions<NodeOptions> nodeOptions, IBlockchainMonitor blockchainMonitor,
-                                 IPaymentService paymentService, IServiceScopeFactory scopeFactory)
+                                 IPaymentService paymentService, IServiceScopeFactory scopeFactory,
+                                 IOfferPaymentService? offerPaymentService = null)
     {
+        _offerPaymentService = offerPaymentService;
         _logger = logger;
         _keyManager = keyManager;
         _nodeOptions = nodeOptions.Value;
@@ -112,13 +121,15 @@ public sealed class ClnNodeBackendService : Cln.Node.NodeBase
         };
 
         // The payment never takes the caller's cancellation: as CLN's xpay command keeps running in lightningd when its
-        // gRPC caller goes away, the payment retries for its whole window and its outcome reaches Listpays, which is
+        // gRPC caller goes away, the payment retries for its whole window and its outcome reaches ListPays, which is
         // what the caller (captaind) reconciles by; only this call's wait ends
-        var payment = _paymentService.PayInvoiceAsync(request.Invstring,
-                                                      request.AmountMsat is { } amount
-                                                          ? LightningMoney.MilliSatoshis(amount.Msat)
-                                                          : null,
-                                                      options, CancellationToken.None);
+        var payment = IsBolt12Invoice(request.Invstring)
+                          ? PayBolt12Async(request.Invstring, options)
+                          : _paymentService.PayInvoiceAsync(request.Invstring,
+                                                            request.AmountMsat is { } amount
+                                                                ? LightningMoney.MilliSatoshis(amount.Msat)
+                                                                : null,
+                                                            options, CancellationToken.None);
         PayInvoiceResult result;
         try
         {
@@ -131,7 +142,7 @@ public sealed class ClnNodeBackendService : Cln.Node.NodeBase
                                      TaskScheduler.Default);
             throw new RpcException(new Status(StatusCode.Cancelled,
                                               "the caller left; the payment continues and its outcome arrives over "
-                                            + "Listpays"));
+                                            + "ListPays"));
         }
         catch (ArgumentException e)
         {
@@ -151,10 +162,85 @@ public sealed class ClnNodeBackendService : Cln.Node.NodeBase
         {
             PaymentStatus.Succeeded => Succeeded(result),
             PaymentStatus.InFlight => throw new RpcException(new Status(StatusCode.DeadlineExceeded,
-                $"the payment is still in flight after {seconds}s; its outcome arrives over Listpays")),
+                $"the payment is still in flight after {seconds}s; its outcome arrives over ListPays")),
             _ => throw new RpcException(new Status(StatusCode.FailedPrecondition,
                 result.Payment.FailureReason ?? "the payment failed"))
         };
+    }
+
+    /// <summary>A BOLT 12 invoice string (<c>lni…</c>), which CLN's xpay takes like a BOLT 11 one.</summary>
+    private static bool IsBolt12Invoice(string invstring) =>
+        invstring.TrimStart().StartsWith(Bolt12Constants.InvoiceHrp + "1", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>A BOLT 12 invoice this node fetched (<see cref="FetchInvoice"/>), paid over the paths that fetch
+    /// verified; without offer payments it is not a payable invoice here.</summary>
+    private Task<PayInvoiceResult> PayBolt12Async(string invoice, PayInvoiceOptions options) =>
+        _offerPaymentService is { IsAvailable: true } offers
+            ? offers.PayFetchedInvoiceAsync(invoice, options, CancellationToken.None)
+            : Task.FromException<PayInvoiceResult>(
+                new InvalidOperationException("BOLT 12 payments are not available on this node (onion messages off)"));
+
+    /// <summary>
+    /// CLN's <c>fetchinvoice</c> (NL-1151): asks the offer's issuer for an invoice over onion messages and answers
+    /// with it (<c>lni…</c>) once verified; Second's captaind hands it to the paying Bark wallet, which then has it paid
+    /// through <see cref="Xpay"/>. Recurrence, <c>payer_metadata</c> and <c>bip353</c> are refused; <c>timeout</c>
+    /// (seconds) bounds each invoice_request's wait.
+    /// </summary>
+    public override async Task<Cln.FetchinvoiceResponse> FetchInvoice(Cln.FetchinvoiceRequest request,
+                                                                      ServerCallContext context)
+    {
+        if (string.IsNullOrWhiteSpace(request.Offer))
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "offer must be the BOLT 12 offer"));
+        if (request.HasRecurrenceCounter || request.HasRecurrenceStart || request.HasRecurrenceLabel)
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "recurring offers are not supported"));
+        if (request.HasPayerMetadata || request.HasBip353)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                                              "payer_metadata and bip353 are not supported"));
+        if (_offerPaymentService is not { IsAvailable: true } offers)
+            throw new RpcException(new Status(StatusCode.Unavailable,
+                                              "BOLT 12 payments are not available on this node (onion messages off)"));
+
+        var options = new PayOfferOptions();
+        if (request.HasTimeout && request.Timeout > 0)
+            options = options with { FetchTimeout = TimeSpan.FromSeconds(Math.Min(request.Timeout, 300)) };
+
+        FetchInvoiceResult result;
+        try
+        {
+            result = await offers.FetchInvoiceAsync(
+                         new PayOfferRequest(request.Offer,
+                                             request.AmountMsat is { } amount
+                                                 ? LightningMoney.MilliSatoshis(amount.Msat)
+                                                 : null,
+                                             request.HasQuantity ? request.Quantity : null,
+                                             request.HasPayerNote ? request.PayerNote : null),
+                         options, context.CancellationToken);
+        }
+        catch (ArgumentException e)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, e.Message));
+        }
+
+        if (result is not { Status: FetchInvoiceStatus.Received, Invoice: { } invoice })
+            throw new RpcException(new Status(result.Status switch
+            {
+                FetchInvoiceStatus.TimedOut => StatusCode.DeadlineExceeded,
+                FetchInvoiceStatus.Unreachable => StatusCode.Unavailable,
+                _ => StatusCode.FailedPrecondition
+            }, result.Error ?? result.Status.ToString()));
+
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Backend fetchinvoice {PaymentHash} for {AmountMsat} msat from {NodeId}",
+                                   invoice.PaymentHash, invoice.Amount.MilliSatoshi, invoice.NodeId);
+        var response = new Cln.FetchinvoiceResponse
+        {
+            Invoice = Bolt12Bech32.Encode(Bolt12Constants.InvoiceHrp, invoice.InvoiceBytes.Span),
+            Changes = new Cln.FetchinvoiceChanges()
+        };
+        // CLN reports the amount the issuer chose when the request named none (an offer without an amount)
+        if (request.AmountMsat is null)
+            response.Changes.AmountMsat = new Cln.Amount { Msat = invoice.Amount.MilliSatoshi };
+        return response;
     }
 
     private static Cln.XpayResponse Succeeded(PayInvoiceResult result)
@@ -170,7 +256,7 @@ public sealed class ClnNodeBackendService : Cln.Node.NodeBase
         };
     }
 
-    public override async Task<Cln.ListpaysResponse> Listpays(Cln.ListpaysRequest request,
+    public override async Task<Cln.ListpaysResponse> ListPays(Cln.ListpaysRequest request,
                                                               ServerCallContext context)
     {
         var payments = new List<PaymentModel>();
@@ -256,6 +342,8 @@ public sealed class ClnNodeBackendService : Cln.Node.NodeBase
                                ? (ulong)((DateTimeOffset)completedAt).ToUnixTimeMilliseconds()
                                : createdIndex
         };
+        if (model.Bolt12 is { } bolt12)
+            pays.Bolt12 = Bolt12Bech32.Encode(Bolt12Constants.InvoiceHrp, bolt12.InvoiceBytes.Span);
         if (model.Label is { } label)
             pays.Label = label;
         if (model.CompletedAt is { } at)

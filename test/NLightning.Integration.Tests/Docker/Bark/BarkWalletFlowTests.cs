@@ -13,9 +13,14 @@ using Bark;
 using Domain.Bitcoin.Enums;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
+using Domain.Offers.Interfaces;
+using Domain.Offers.Models;
 using Domain.Payments.Enums;
+using Domain.Payments.Interfaces;
+using Domain.Payments.Models;
 using Fixtures;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -30,11 +35,14 @@ using Utils;
 /// <list type="bullet">
 ///   <item>Pay: the wallet boards, then pays an LND invoice through captaind; captaind calls our <c>cln.Node</c>
 ///   <c>Xpay</c>, our node pays LND over a channel, the wallet's payment completes with LND's preimage and our
-///   <c>Listpays</c> reports it <c>COMPLETE</c>.</item>
+///   <c>ListPays</c> reports it <c>COMPLETE</c>.</item>
 ///   <item>Pay, still in flight past the retry window: LND holds the HTLC (a hold invoice) after captaind's
-///   <c>retry_for</c>; our <c>Xpay</c> answers <c>DEADLINE_EXCEEDED</c>, captaind reconciles through <c>Listpays</c>
+///   <c>retry_for</c>; our <c>Xpay</c> answers <c>DEADLINE_EXCEEDED</c>, captaind reconciles through <c>ListPays</c>
 ///   (<c>PENDING</c>) and keeps the wallet's HTLCs locked — never failing them while our HTLC is out — and once LND
 ///   settles, the wallet's payment completes with that preimage.</item>
+///   <item>Pay a BOLT 12 offer of a second NLightning node: captaind fetches the invoice through our <c>FetchInvoice</c>
+///   (an invoice_request over onion messages), the wallet pays it, captaind's xpay of the <c>lni</c> string pays it
+///   over the paths our fetch verified, and our <c>ListPays</c> reports it <c>COMPLETE</c> with its BOLT 12 invoice.</item>
 ///   <item>Receive: the wallet's invoice (captaind's <c>hold.Invoice</c> on our node), LND pays it, and the wallet's own
 ///   claim (<c>PrepareLightningReceiveClaim</c> + <c>ClaimLightningReceive</c>, the arkoor package with its musig2
 ///   nonces) makes captaind settle our hold invoice — LND completes with the wallet's preimage.</item>
@@ -60,6 +68,7 @@ public class BarkWalletFlowTests : IAsyncLifetime
     private const long PaySat = 50_000;
     private const long HeldPaySat = 30_000;
     private const long ReceiveSat = 60_000;
+    private const long OfferSat = 20_000;
 
     /// <summary>The retry window the wallet asks captaind to give our xpay for the held payment (seconds).</summary>
     private const int HeldRetryForSeconds = 3;
@@ -74,6 +83,7 @@ public class BarkWalletFlowTests : IAsyncLifetime
     private BarkLnBackendTls? _tls;
     private BarkAspStack? _stack;
     private BarkWalletNode? _wallet;
+    private NLightningTestNode? _payee;
 
     public BarkWalletFlowTests(LightningRegtestNetworkFixture fixture, ITestOutputHelper output)
     {
@@ -120,6 +130,10 @@ public class BarkWalletFlowTests : IAsyncLifetime
         var channelOpened = await OpenUsableChannelAsync(alice, peerAddress, ct);
         var lndChannel = await LndTestHelpers.GetChannelByPointAsync(alice, channelOpened.ChannelPoint(), ct);
         Assert.NotNull(lndChannel);
+        // A second NLightning node with an offer: the BOLT 12 payee (onion messages and blinded paths through us)
+        _payee = await NLightningTestNode.CreateAsync(_fixture, "barkpayee");
+        await _payee.StartAsync(ct);
+        var payeeChannel = await OpenPayeeChannelAsync(alice, _payee, ct);
 
         // captaind's chain at our height (mature coins included), its wallet funded and its VTXO pool stocked
         await AlignCaptaindChainAsync(101, ct);
@@ -133,14 +147,73 @@ public class BarkWalletFlowTests : IAsyncLifetime
 
         await PayAsync(alice, ct);
         await PayHeldPastTheRetryWindowAsync(alice, ct);
+        await PayOfferAsync(_payee, ct);
         await ReceiveAsync(alice, lndChannel.ChanId, ct);
 
         // Our channel carries nothing in flight after the three legs
         await Poll.UntilAsync(async () =>
         {
             var state = await Node.GetChannelAsync(channelOpened.ChannelId, ct);
-            return state.OfferedHtlcCount + state.ReceivedHtlcCount == 0;
-        }, s_timeout, "no HTLC pending on our channel", ct);
+            var payeeState = await Node.GetChannelAsync(payeeChannel, ct);
+            return state.OfferedHtlcCount + state.ReceivedHtlcCount
+                 + payeeState.OfferedHtlcCount + payeeState.ReceivedHtlcCount == 0;
+        }, s_timeout, "no HTLC pending on our channels", ct);
+    }
+
+    /// <summary>
+    /// Act/assert, pay a BOLT 12 offer: the wallet asks captaind for the offer's invoice (captaind calls our
+    /// <c>cln.Node</c> <c>FetchInvoice</c>: an invoice_request over onion messages), then pays that invoice through
+    /// captaind's xpay of the <c>lni</c> string; we pay it over the paths our fetch verified.
+    /// </summary>
+    private async Task PayOfferAsync(NLightningTestNode payee, CancellationToken ct)
+    {
+        var offers = payee.Services.GetRequiredService<IOfferService>();
+        var offer = (await offers.CreateOfferAsync(new CreateOfferRequest(LightningMoney.Satoshis(OfferSat),
+                                                                          "bark wallet pays an offer"), ct)).Offer;
+
+        await Wallet.RunAsync(["lightning", "pay", "invoice", offer.Bolt12, "--wait"], s_walletTimeout, ct);
+
+        // The payee was paid once for its offer, and our node paid it as a BOLT 12 payment of that offer
+        Assert.Equal(1, (await offers.GetInvoiceCountsAsync(offer.OfferId, ct)).Paid);
+        PaymentModel ours;
+        using (var scope = Node.Services.CreateScope())
+        {
+            var payments = await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().ListAsync(0, 50);
+            ours = Assert.Single(payments, p => p.Bolt12?.Offer == offer.Bolt12);
+        }
+
+        Assert.Equal(PaymentStatus.Succeeded, ours.Status);
+        Assert.Equal("ln-backend", ours.Label);
+        var status = await SendStatusAsync((byte[])ours.PaymentHash, ct);
+        Assert.Equal("paid", (string?)status["state"]);
+        Assert.Equal(Convert.ToHexString((byte[])ours.Preimage!), (string?)status["preimage"], ignoreCase: true);
+        var pay = Assert.Single((await ListPaysAsync((byte[])ours.PaymentHash, ct)).Pays);
+        Assert.Equal(Cln.ListpaysPays.Types.ListpaysPaysStatus.Complete, pay.Status);
+        Assert.StartsWith("lni1", pay.Bolt12, StringComparison.Ordinal);
+        Console.WriteLine($"bark wallet paid the payee's {OfferSat} sat offer through captaind's FetchInvoice + xpay");
+    }
+
+    /// <summary>Our channel to the BOLT 12 payee (it holds the anchors reserve as the fundee, NL-379).</summary>
+    private async Task<ChannelId> OpenPayeeChannelAsync(LndNodeConnection alice, NLightningTestNode payee,
+                                                        CancellationToken ct)
+    {
+        await payee.FundWalletAsync(LightningMoney.Satoshis(100_000), AddressType.P2Wpkh, ct);
+        await Node.ConnectToAsync(payee, ct);
+        var opened = await Node.OpenChannelAsync(
+                         new OpenChannelClientRequest($"{payee.NodeIdHex}@127.0.0.1:{payee.Port}",
+                                                      LightningMoney.Satoshis(300_000)), ct);
+        await Poll.UntilAsync(async () =>
+        {
+            var ours = await Node.GetChannelAsync(opened.ChannelId, ct);
+            var theirs = await payee.GetChannelAsync(opened.ChannelId, ct);
+            if (ours.IsUsable() && ours.ShortChannelId is not null && theirs.IsUsable())
+                return true;
+
+            await ChainSync.MineAndWaitAsync(_fixture, 1, [alice], [Node, payee], ct);
+            return false;
+        }, s_timeout, $"channel {opened.ChannelId} to the payee usable on both sides", ct);
+        Console.WriteLine($"Opened channel {opened.ChannelId} to the BOLT 12 payee");
+        return opened.ChannelId;
     }
 
     /// <summary>Act/assert, pay: the wallet pays alice's invoice through captaind and our node.</summary>
@@ -160,12 +233,12 @@ public class BarkWalletFlowTests : IAsyncLifetime
                      ignoreCase: true);
         Console.WriteLine($"bark wallet paid {PaySat} sat to alice through captaind and our node");
 
-        // Our node paid it, and Listpays (captaind's reconciliation) reports it complete with the preimage
+        // Our node paid it, and ListPays (captaind's reconciliation) reports it complete with the preimage
         var ours = await Node.GetPaymentAsync(new Hash(hash), ct);
         Assert.NotNull(ours);
         Assert.Equal(PaymentStatus.Succeeded, ours.Status);
         Assert.Equal("ln-backend", ours.Label);
-        var pays = await ListpaysAsync(hash, ct);
+        var pays = await ListPaysAsync(hash, ct);
         var pay = Assert.Single(pays.Pays);
         Assert.Equal(Cln.ListpaysPays.Types.ListpaysPaysStatus.Complete, pay.Status);
         Assert.Equal(lndInvoice.RPreimage.ToByteArray(), pay.Preimage.ToByteArray());
@@ -174,7 +247,7 @@ public class BarkWalletFlowTests : IAsyncLifetime
 
     /// <summary>
     /// Act/assert, a payment still in flight after captaind's retry window: alice holds the HTLC. Our xpay answers
-    /// DEADLINE_EXCEEDED after the window, captaind's Listpays reconciliation sees PENDING and keeps the attempt open
+    /// DEADLINE_EXCEEDED after the window, captaind's ListPays reconciliation sees PENDING and keeps the attempt open
     /// (the wallet's send is neither paid nor revocable) through several reconciliation rounds; alice settles and the
     /// wallet's payment completes with her preimage.
     /// </summary>
@@ -198,13 +271,13 @@ public class BarkWalletFlowTests : IAsyncLifetime
         var ours = await Node.GetPaymentAsync(new Hash(paymentHash), ct);
         Assert.NotNull(ours);
         Assert.Equal(PaymentStatus.InFlight, ours.Status);
-        var pay = Assert.Single((await ListpaysAsync(paymentHash, ct)).Pays);
+        var pay = Assert.Single((await ListPaysAsync(paymentHash, ct)).Pays);
         Assert.Equal(Cln.ListpaysPays.Types.ListpaysPaysStatus.Pending, pay.Status);
         var pending = await SendStatusAsync(paymentHash, ct);
         Assert.Equal("payment-initiated", (string?)pending["state"]);
         Assert.Equal(Invoice.Types.InvoiceState.Accepted,
                      (await LndTestHelpers.LookupInvoiceAsync(alice, paymentHash, ct)).State);
-        Console.WriteLine("past the retry window: our payment InFlight, Listpays PENDING, the wallet's send "
+        Console.WriteLine("past the retry window: our payment InFlight, ListPays PENDING, the wallet's send "
                         + "payment-initiated");
 
         // alice settles: our payment succeeds and captaind's next reconciliation completes the wallet's send
@@ -298,12 +371,13 @@ public class BarkWalletFlowTests : IAsyncLifetime
         if (ours > theirs)
             await Stack.MineAsync(ours - theirs, ct);
         else if (theirs > ours)
-            await ChainSync.MineAndWaitAsync(_fixture, theirs - ours, [_fixture.GetLndNode("alice")], [Node], ct);
+            await ChainSync.MineAndWaitAsync(_fixture, theirs - ours, [_fixture.GetLndNode("alice")],
+                                             _payee is null ? [Node] : [Node, _payee], ct);
         Console.WriteLine($"both chains at {Math.Max(ours, theirs)} (ours was {ours}, captaind's {theirs})");
     }
 
-    /// <summary><c>Listpays</c> by payment hash over the backend's mTLS listener, as captaind calls it.</summary>
-    private async Task<Cln.ListpaysResponse> ListpaysAsync(byte[] paymentHash, CancellationToken ct)
+    /// <summary><c>ListPays</c> by payment hash over the backend's mTLS listener, as captaind calls it.</summary>
+    private async Task<Cln.ListpaysResponse> ListPaysAsync(byte[] paymentHash, CancellationToken ct)
     {
         using var client = X509Certificate2.CreateFromPem(_tls!.ClientCertificatePem, _tls.ClientKeyPem);
         // An ephemeral PEM key cannot authenticate a TLS client on every platform: round-trip it through PKCS 12
@@ -313,7 +387,7 @@ public class BarkWalletFlowTests : IAsyncLifetime
         handler.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
         using var channel = GrpcChannel.ForAddress($"https://127.0.0.1:{_lnBackendPort}",
                                                    new GrpcChannelOptions { HttpHandler = handler });
-        return await new Cln.Node.NodeClient(channel).ListpaysAsync(new Cln.ListpaysRequest
+        return await new Cln.Node.NodeClient(channel).ListPaysAsync(new Cln.ListpaysRequest
         {
             PaymentHash = Google.Protobuf.ByteString.CopyFrom(paymentHash)
         }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: ct);
@@ -416,6 +490,8 @@ public class BarkWalletFlowTests : IAsyncLifetime
         _stack?.Dispose();
         if (_lnBackend is not null)
             await _lnBackend.StopAsync(CancellationToken.None);
+        if (_payee is not null)
+            await _payee.DisposeAsync();
         if (_node is not null)
             await _node.DisposeAsync();
         _tls?.Dispose();
