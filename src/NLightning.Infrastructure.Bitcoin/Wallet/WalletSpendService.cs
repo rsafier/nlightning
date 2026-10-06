@@ -60,6 +60,7 @@ public sealed class WalletSpendService : IWalletSpendService
     /// </summary>
     internal const int BaseWeight = (4 + 4 + 1 + 1) * 4 + 2;
 
+    private readonly IWalletPsbtService? _psbt;
     private readonly IAnchorReserveService _anchorReserveService;
     private readonly IBitcoinChainService? _bitcoinChainService;
     private readonly IBlockchainMonitor _blockchainMonitor;
@@ -76,8 +77,10 @@ public sealed class WalletSpendService : IWalletSpendService
                               IUtxoMemoryRepository utxoMemoryRepository, ILightningSigner lightningSigner,
                               IBlockchainMonitor blockchainMonitor, IFeeService feeService,
                               IServiceScopeFactory scopeFactory, IOptions<NodeOptions> nodeOptions,
-                              ILogger<WalletSpendService> logger, IBitcoinChainService? bitcoinChainService = null)
+                              ILogger<WalletSpendService> logger, IBitcoinChainService? bitcoinChainService = null,
+                              IWalletPsbtService? psbt = null)
     {
+        _psbt = psbt;
         _feeInputSelector = feeInputSelector;
         _anchorReserveService = anchorReserveService;
         _utxoMemoryRepository = utxoMemoryRepository;
@@ -88,6 +91,36 @@ public sealed class WalletSpendService : IWalletSpendService
         _logger = logger;
         _bitcoinChainService = bitcoinChainService;
         _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
+    }
+
+    /// <inheritdoc />
+    public async Task<byte[]> SendOutputsAsync(IReadOnlyList<(BitcoinScript Script, LightningMoney Amount)> outputs,
+                                               long feeRatePerKw, int minConfirmations, string label,
+                                               CancellationToken cancellationToken = default)
+    {
+        var psbt = _psbt ?? throw new NotSupportedException("No wallet PSBT service.");
+        if (outputs.Count is 0 or > 100 || minConfirmations < 1 || label.Length > 500)
+            throw new ArgumentException("Invalid output count, confirmations or label.");
+        var rate = await GetFeeRatePerKwAsync(LightningMoney.Satoshis(feeRatePerKw), cancellationToken);
+        var lockId = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+        var funded = await psbt.FundPsbtAsync(new PsbtFundRequest(outputs, [], rate, minConfirmations, lockId,
+            TimeSpan.FromMinutes(10)), cancellationToken);
+        PsbtFinalizeResult final;
+        try
+        {
+            final = await psbt.FinalizePsbtAsync(funded.Psbt, cancellationToken);
+        }
+        catch
+        {
+            foreach (var lease in funded.Leases)
+                await psbt.ReleaseAsync(lockId, lease.TxId, lease.Index, CancellationToken.None);
+            throw;
+        }
+        // PublishAsync persists the accepted wallet transaction and keeps the leases until its inputs are spent.
+        // On an ambiguous publish failure retain the leases: releasing could enable a conflicting wallet spend.
+        if (!await psbt.PublishAsync(final.RawFinalTx, label, cancellationToken))
+            throw new InvalidOperationException("Wallet transaction publication was rejected.");
+        return final.RawFinalTx;
     }
 
     /// <inheritdoc />
@@ -119,7 +152,7 @@ public sealed class WalletSpendService : IWalletSpendService
     }
 
     /// <inheritdoc />
-    public async Task<WalletWithdrawEstimate> EstimateWithdrawFeeAsync(WalletWithdrawRequest request,
+    public Task<WalletWithdrawEstimate> EstimateWithdrawFeeAsync(WalletWithdrawRequest request,
                                                                        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -127,13 +160,23 @@ public sealed class WalletSpendService : IWalletSpendService
             throw new ArgumentException("An estimate needs an amount.", nameof(request));
 
         var destination = ParseAddress(request.Address, _network).ScriptPubKey;
+        return EstimateOutputFeeAsync(destination.ToBytes(), requested, request.FeeRatePerKw, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<WalletWithdrawEstimate> EstimateOutputFeeAsync(BitcoinScript script, LightningMoney requested,
+        LightningMoney? requestedFeeRate, CancellationToken cancellationToken = default)
+    {
+        var destination = new Script((byte[])script);
+        if (script.Length is 0 or > 10_000)
+            throw new ArgumentException("Invalid quote script size.");
         var dustLimit = GetDustThreshold(destination);
         if (requested.MilliSatoshi % 1_000 != 0 || requested.Satoshi < dustLimit)
             throw new WalletSpendException(WalletSpendError.DustAmount,
                                            $"{requested.MilliSatoshi / 1_000.0:0.###} sat is not a whole amount at or "
                                          + $"above the dust limit of the destination ({dustLimit} sat).");
 
-        var feeRatePerKw = await GetFeeRatePerKwAsync(request.FeeRatePerKw, cancellationToken);
+        var feeRatePerKw = await GetFeeRatePerKwAsync(requestedFeeRate, cancellationToken);
         var amountSat = requested.Satoshi;
         var weight = BaseWeight + GetOutputWeight(destination) + WalletWeights.P2WpkhOutputWeight;
         long totalSat = 0;

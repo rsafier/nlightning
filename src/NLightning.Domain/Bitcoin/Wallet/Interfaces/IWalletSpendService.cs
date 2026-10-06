@@ -16,6 +16,17 @@ using Models;
 /// </remarks>
 public interface IWalletSpendService
 {
+    /// <summary>Quotes a script output without key validation, reservation or publication (including dummy witness programs).</summary>
+    Task<WalletWithdrawEstimate> EstimateOutputFeeAsync(ValueObjects.BitcoinScript script, Money.LightningMoney amount,
+        Money.LightningMoney? feeRatePerKw, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This wallet does not quote script outputs.");
+
+    /// <summary>Funds, signs and publishes several outputs through the wallet's leased-input PSBT path.</summary>
+    Task<byte[]> SendOutputsAsync(IReadOnlyList<(ValueObjects.BitcoinScript Script, Money.LightningMoney Amount)> outputs,
+                                  long feeRatePerKw, int minConfirmations, string label,
+                                  CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This wallet does not send multiple outputs.");
+
     /// <summary>
     /// Builds, signs, stores and publishes a payment to <see cref="WalletWithdrawRequest.Address"/>.
     /// </summary>

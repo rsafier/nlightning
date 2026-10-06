@@ -62,6 +62,9 @@ public class NLightningDbContext : DbContext
     public DbSet<ChannelCloseEntity> ChannelCloses { get; set; }
     public DbSet<OutputResolutionEntity> OutputResolutions { get; set; }
 
+    public DbSet<ImportedTapscriptEntity> ImportedTapscripts { get; set; }
+    public DbSet<KeyRingKeyEntity> KeyRingKeys { get; set; }
+
     // Node DbSets
     public DbSet<PeerEntity> Peers { get; set; }
     public DbSet<PeerStorageBlobEntity> PeerStorageBlobs { get; set; }
@@ -145,6 +148,8 @@ public class NLightningDbContext : DbContext
 
         // Node entities
         modelBuilder.ConfigurePeerEntity(_databaseType);
+        modelBuilder.ConfigureImportedTapscriptEntity(_databaseType);
+        modelBuilder.ConfigureKeyRingKeyEntity(_databaseType);
         modelBuilder.ConfigurePeerStorageBlobEntity(_databaseType);
         modelBuilder.ConfigurePeerStorageRetrievalEntity(_databaseType);
 

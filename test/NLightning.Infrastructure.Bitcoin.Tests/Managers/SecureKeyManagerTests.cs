@@ -57,6 +57,33 @@ public sealed class SecureKeyManagerTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(1, "027ad02022a45dce6502320b0d7953eebaecff755e7174457bc6d513326f7929e6")]
+    [InlineData(2, "027ad02022a45dce6502320b0d7953eebaecff755e7174457bc6d513326f7929e6")]
+    [InlineData(3, "0211042c77e4751f35b196f75cede0efe01020f103a6b09a8b3e345b289bdd641f")]
+    public void Given_AKeyFileVersion_When_DerivingASwapKeyAcrossReload_Then_TheFrozenVectorIsPreserved(int version, string expected)
+    {
+        // Arrange: vectors computed independently with BIP32 HMAC-SHA512 and secp256k1 arithmetic.
+        if (version == 1) File.WriteAllText(_filePath, LegacyKeyFileFixture);
+        else
+        {
+            using var initial = version == 2 ? NewKeyManager() : SecureKeyManager.FromMnemonic(
+                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+                "", BitcoinNetwork.Regtest, _filePath, 123);
+            initial.SaveToFile(Password);
+        }
+        // Act
+        using var loaded = SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password);
+        var derived = ExtKey.CreateFromBytes((byte[])loaded.GetKeyRingKeyAtIndex(42060, 7));
+        using var reloaded = SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password);
+        var again = ExtKey.CreateFromBytes((byte[])reloaded.GetKeyRingKeyAtIndex(42060, 7));
+        // Assert: v1 upgrades only encryption; v2 keeps the genesis chain code; v3 uses its stored BIP32 chain code.
+        Assert.Equal(expected, derived.PrivateKey.PubKey.ToHex());
+        Assert.Equal(derived.PrivateKey.PubKey, again.PrivateKey.PubKey);
+        Assert.NotEqual((byte[])loaded.GetNodePubKey(), derived.PrivateKey.PubKey.ToBytes());
+        Assert.Throws<ArgumentOutOfRangeException>(() => loaded.GetKeyRingKeyAtIndex(6, 0));
+    }
+
     [Fact]
     public void Given_PublicKey_When_ComputingNodeSharedSecret_Then_MatchesEcdhWithNodeKey()
     {

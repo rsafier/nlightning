@@ -177,14 +177,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 94 | 95 |
-| in-progress | 0 | 0 | 5 | 1 | 6 |
-| fixed | 15 | 68 | 229 | 476 | 788 |
+| open | 0 | 0 | 1 | 99 | 100 |
+| in-progress | 0 | 0 | 8 | 1 | 9 |
+| fixed | 15 | 69 | 231 | 479 | 794 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **244** | **591** | **918** |
+| **Total** | **15** | **69** | **249** | **599** | **932** |
 
 ### Epics
+
+- NL-1190: Loop gRPC L0–L4 (in-progress, medium; service implementation NL-1191..NL-1195 fixed, external interoperability/failure proofs NL-1196, scanner indexing NL-1197)
 
 - NL-1160: LND gRPC compatibility (in-progress, medium; plan `docs/agents/LND_GRPC_PLAN.md`: wave 1 read/invoice/message surface with real macaroons NL-1161..NL-1163 fixed, wave 2 pay/channels/hold invoices/streams NL-1164..NL-1167, NL-1169 fixed, wave 3 acceptor/interceptor/walletrpc/history NL-1168 fixed (NL-1180, NL-1183..NL-1185); follow-ups NL-1170..NL-1172, NL-1181, NL-1182, NL-1186, NL-1187)
 - NL-990: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-991 (fixed), C1 CDK gRPC payment processor NL-992 (fixed, BOLT 11; follow-ups NL-997), C2 proof NL-993 (fixed, on the cluster harness), C3 native wallet NL-994, C4 hold invoices NL-995; integration review NL-998, NL-999, NL-1001..NL-1004 fixed, NL-1000 fixed, NL-1010 and NL-1011 open; BOLT 12 and on-chain NL-997 fixed)
@@ -9695,3 +9697,143 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** in the LND gRPC waves 2+3 integration's full net10.0 run (2026-10-06, `wip/fafo` at `28d7bdd2`, while `run-cluster.sh --matrix lnd,postgres` built and ran on the same host) it failed after 1 m 36 s; the class passed 25/25 three times alone right after.
 - **Fix sketch:** find the real-clock wait in the test (or the ingress worker it waits on) and move it to a stepped `TimeProvider` or a bounded event-driven wait, as the de-timing pass did; else the `timing-serial` collection.
 - **Blocks/Blocked-by:** none
+
+
+### NL-1190 Loop gRPC compatibility L0–L4
+- **Status:** in-progress
+- **Severity:** medium
+- **Kind:** epic
+- **Location:** `docs/agents/LOOP_GRPC_PLAN.md`
+- **Evidence:** Implemented from PR #14 at 525347f6: startup, chain streams, isolated durable ring/signrpc, tapscript watch history, supplied preimages, multiple output sends and outgoing-channel sets. Focused crypto/reorg/persistence tests pass; complete real Loop failure/restart and parity proofs are NL-1196.
+- **Fix sketch:** Finish the verification matrix and preserve the explicit signer opt-in.
+- **Blocks/Blocked-by:** NL-1196
+
+
+### NL-1191 Loop startup RPCs and invoice preimages
+- **Status:** fixed
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `src/NLightning.LndGrpc/Services/{StateService,VersionerService,LightningService.Invoices}.cs`
+- **Evidence:** State startup is unauthenticated as LND; Versioner advertises API 0.21.4 and the four lndclient build tags. GetInfo always carries a syntactically valid hash; an absent stored tip is unsynced. Supplied 32-byte invoice preimages reach InvoiceService. Startup TLS/macaroon and invoice regression tests pass.
+- **Fix sketch:** none
+- **Blocks/Blocked-by:** NL-1190
+
+
+### NL-1192 Historical reorg-aware ChainNotifier streams
+- **Status:** fixed
+- **Severity:** medium
+- **Kind:** feature
+- **Location:** `src/NLightning.LndGrpc/Services/ChainNotifierService.cs`
+- **Evidence:** Epoch, confirmation and spend streams reconcile active block hashes over the monitor committed tip; historical scans work without txindex, script-only legacy/v0 spends work, same-height forks rearm matches, halts/pruned blocks/limit exhaustion error, cancellation releases registrations. Fake-chain tests pass.
+- **Fix sketch:** none
+- **Blocks/Blocked-by:** NL-1190
+
+
+### NL-1193 Isolated durable swap key ring and raw signer
+- **Status:** fixed
+- **Severity:** high
+- **Kind:** feature
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/KeyRing/; src/NLightning.LndGrpc/Services/SignerService.cs`
+- **Evidence:** Families 0–9 always refused; allowed swap families are explicit. BIP32 allocation is persisted before issuance and key-file v1/v2/v3 derivation pinned with independent vectors. ECDH, DER and raw Schnorr descriptors, full-prevout taproot hashes, tweaks and MuSig2 lifecycle/nonce reuse checked with cryptographic verification. Opt-in, mainnet extra gate, remote mutual TLS and SR-37 cover raw signer authority. SQLite recovery/public lookup and both crypto backend gates recorded in the plan.
+- **Fix sketch:** none
+- **Blocks/Blocked-by:** NL-1190
+
+
+### NL-1194 Persisted tapscript imports and confirmed watch history
+- **Status:** fixed
+- **Severity:** medium
+- **Kind:** feature
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/Imports/; src/NLightning.LndGrpc/Services/WalletKitService.Imports.cs`
+- **Evidence:** All four import shapes derive BIP341 scripts and persist definitions. Confirmed outputs/raw deposit and spend history recover from active blocks after restart/reorg. SQLite tests assert no imported output becomes a wallet UTXO; selection, reserves, normal signing and accounting remain isolated. No mempool deposits in this first version.
+- **Fix sketch:** none
+- **Blocks/Blocked-by:** NL-1190
+
+
+### NL-1195 Loop SendOutputs and outgoing channel sets
+- **Status:** fixed
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/WalletSpendService.cs; src/NLightning.Application/Payments/Send/PaymentService.cs`
+- **Evidence:** Multiple outputs use existing PSBT funding/leases/signing/publication. Outgoing channel sets restrict every planning round, with explicit refusal for blinded payments and conflicting single/set selections. Rebalance harness coverage exercises the accepted set.
+- **Fix sketch:** none
+- **Blocks/Blocked-by:** NL-1190
+
+
+### NL-1196 Complete Loop interoperability and failure-recovery proof matrix
+- **Status:** in-progress
+- **Severity:** medium
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Cluster/Live/LoopClusterTests.cs`
+- **Evidence:** Pinned source-built Loop PR 1222 and Aperture 0.4.0 cluster runner tests classic out/in and static in through real L402 and our TLS/macaroon listener. Real classic out/in and static in passed in loop-proof20 (including on-chain MuSig2 signatures combined by each side). loop-proof21 also resumed an outstanding Loop Out after restarting both NLightning and loopd, then timed out processing a 4321-block CSV jump; the suite now mines in 64-block batches. Direct notifier parity and CSV rerun are pending. The pinned regtest server has no static withdrawal implementation. Live deposit reorg and direct raw-signature descriptor parity remain outstanding; in-process reorg/nonce tests do not prove these external state machines.
+- **Fix sketch:** Extend the owned loop cluster suite to the remaining cases; do not claim their end-to-end proof from unit tests.
+- **Blocks/Blocked-by:** NL-1190
+
+
+### NL-1197 Imported watch history rescans blocks per RPC
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/Imports/ImportedTapscriptTracker.cs`
+- **Evidence:** Correct confirmed-only reconstruction from active blocks, bounded to 1000 scripts and one million blocks, but ListUnspent/GetTransactions each scan from the earliest import. Long-lived imports increase RPC latency and chain reads. Pruned data fails explicitly.
+- **Fix sketch:** Persist indexed raw imported history and update/reverse it with monitor block events while retaining fresh-scope and reorg guarantees.
+- **Blocks/Blocked-by:** NL-1190
+
+
+### NL-1198 GraphPathfinder timing assertion failed under build load
+- **Status:** open
+- **Severity:** low
+- **Kind:** flake
+- **Location:** `test/NLightning.Domain.Tests/Routing/GraphPathfinderTests.cs`
+- **Evidence:** Full Loop non-Docker gate under concurrent formatting/build load: 3344 ms for 20 queries exceeded the existing bound. The unchanged method passed alone immediately afterward. No routing implementation changed in this work.
+- **Fix sketch:** Reproduce the timing dependency with a controlled clock or separate performance measurements from correctness assertions.
+- **Blocks/Blocked-by:** none
+
+
+### NL-1199 TorOnionService creation assertion failed once under build load
+- **Status:** open
+- **Severity:** low
+- **Kind:** flake
+- **Location:** `test/NLightning.Infrastructure.Tests/Transport/Tor/TorOnionServiceTests.cs`
+- **Evidence:** The same loaded gate failed Given_NoKeyYet_When_Started_Then_ANewServiceIsCreatedItsKeySavedAndItsAddressAnnounced: Expected 1, Actual 0. The unchanged TorOnionServiceTests class passed 13/13 alone afterward.
+- **Fix sketch:** Reproduce the timing dependency with a controlled clock or separate performance measurements from correctness assertions.
+- **Blocks/Blocked-by:** none
+
+
+### NL-1200 Pre-existing interceptor null checks fail IDE0031
+- **Status:** fixed
+- **Severity:** low
+- **Kind:** test
+- **Location:** `src/NLightning.Application/Payments/Interception/HtlcInterceptorHub.cs`
+- **Evidence:** Onboarding already recorded the two IDE0031 failures in HtlcInterceptorHub subscription and disposal. Replaced the guarded event assignments with equivalent C#14 null-conditional event assignments so the required formatting gate can pass.
+- **Fix sketch:** none
+- **Blocks/Blocked-by:** none
+
+
+### NL-1201 Native Sphinx allocation guards fail on PR 14 baseline
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Infrastructure.Bitcoin.Tests/Onion/SphinxHotPathTests.cs`
+- **Evidence:** Release.Native full Bitcoin tests passed 2068 and failed two unchanged allocation guards (13712 bytes per peel, 58039 per five-hop build). An isolated archive of exact PR 14 head 525347f reproduces both (13680 and 57704 bytes). The implementation directly constructs SphinxService/Secp256k1Math and does not use the new key ring.
+- **Fix sketch:** Investigate baseline native allocations and update bounds only with measured evidence.
+- **Blocks/Blocked-by:** none
+
+
+### NL-1202 Payment recovery timing assertion fails under load
+- **Status:** open
+- **Severity:** low
+- **Kind:** flake
+- **Location:** `test/NLightning.Application.Tests/Payments/Send/PaymentHarnessTests.cs:524`
+- **Evidence:** Given_ALiveHtlcWhoseIdWasNotRecorded_When_ReconcilingAtStartup_Then_ItIsAttached returned 0 reconciliations instead of 1 in the loaded regression run and its first isolated rerun. The same unchanged test passed on exact PR 14 and passed again on the implementation after compiler load fell. It advances a stepped 50 ms timeout before reconciliation; no default route or reconciliation implementation changed.
+- **Fix sketch:** Synchronize with the HTLC offer before driving the timeout clock.
+- **Blocks/Blocked-by:** none
+
+
+### NL-1203 ChainNotifier streams fail while Core disconnects ahead of the monitor
+- **Status:** in-progress
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.LndGrpc/Services/ChainNotifierService.cs`
+- **Evidence:** Real loop-proof23 passed notifier/signer parity but a six-block deposit disconnect caused getblockhash(old-tip) RPC -8 errors before monitor rewind; the epoch error stopped loopd. The monitor rewinds after a replacement block, so the test now mines an empty replacement branch before waiting.
+- **Fix sketch:** Wait for a committed height available in Core, retry height lookups raced by disconnects, preserve registrations/rearm notifications, and map real pruned-data errors explicitly. Add lagging-tip tests for all three streams and rerun the real reorg/CSV proof.
+- **Blocks/Blocked-by:** NL-1196

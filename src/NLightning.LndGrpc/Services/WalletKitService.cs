@@ -33,7 +33,7 @@ using WalletAddressType = Walletrpc.AddressType;
 /// inputs it leaves unsigned; we refuse those). <c>coin_select</c> templates, <c>spend_unconfirmed</c>, a P2TR change and
 /// the coin selection strategy and fee ratio limits are refused.
 /// </remarks>
-public sealed class WalletKitService : WalletKit.WalletKitBase
+public sealed partial class WalletKitService : WalletKit.WalletKitBase
 {
     private const string DefaultAccount = "default";
 
@@ -77,6 +77,24 @@ public sealed class WalletKitService : WalletKit.WalletKitBase
                 Outpoint = ToOutPoint(utxo.TxId, utxo.Index),
                 Confirmations = utxo.Confirmations
             });
+        if (_serviceProvider.GetService<Infrastructure.Bitcoin.Wallet.Imports.ImportedTapscriptTracker>() is { } imported)
+        {
+            var snapshot = await Run(() => imported.SnapshotAsync(context.CancellationToken));
+            foreach (var output in snapshot.Outputs)
+            {
+                var confirmations = snapshot.Tip - output.Height + 1;
+                if (confirmations < min || confirmations > max) continue;
+                response.Utxos.Add(new Lnrpc.Utxo
+                {
+                    AddressType = LnrpcAddressType.TaprootPubkey,
+                    Address = output.Output.ScriptPubKey.GetDestinationAddress(_network)!.ToString(),
+                    AmountSat = output.Output.Value.Satoshi,
+                    PkScript = Convert.ToHexStringLower(output.Output.ScriptPubKey.ToBytes()),
+                    Outpoint = ToOutPoint(new TxId(output.Outpoint.Hash.ToBytes()), output.Outpoint.N),
+                    Confirmations = confirmations
+                });
+            }
+        }
         return response;
     }
 
@@ -312,6 +330,18 @@ public sealed class WalletKitService : WalletKit.WalletKitBase
         try
         {
             return await call();
+        }
+        catch (ArgumentException e)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, e.Message));
+        }
+        catch (WalletSpendException e)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, e.Message));
+        }
+        catch (InvalidOperationException e)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, e.Message));
         }
         catch (WalletPsbtException e)
         {

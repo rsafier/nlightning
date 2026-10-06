@@ -124,6 +124,9 @@ internal sealed class PaymentSession
     /// <summary>The only channel of ours the parts may leave through (<c>payinvoice --out</c>); null: any.</summary>
     public ChannelId? OutgoingChannelId { get; init; }
 
+    /// <summary>Restricts every first hop to this set (LND outgoing_chan_ids); null allows any channel.</summary>
+    public IReadOnlySet<ChannelId>? OutgoingChannelIds { get; init; }
+
     /// <summary>For a circular payment, the only channel of ours the parts may come back in through
     /// (<c>payinvoice --in</c>); null: any.</summary>
     public ChannelId? IncomingChannelId { get; init; }

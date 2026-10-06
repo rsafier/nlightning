@@ -168,8 +168,13 @@ public sealed class InvoiceService : IInvoiceService
     /// bytes).</exception>
     /// <exception cref="Bolt11.Exceptions.InvoiceSerializationException">If the invoice fails the BOLT 11 writer
     /// rules. Nothing is persisted in any of these cases.</exception>
+    public Task<InvoiceModel> CreateInvoiceAsync(LightningMoney? amount, string description, uint? expirySeconds,
+                                                SourceLabels labels, CancellationToken cancellationToken = default) =>
+        CreateInvoiceAsync(amount, description, expirySeconds, labels, null, cancellationToken);
+
+    /// <inheritdoc />
     public async Task<InvoiceModel> CreateInvoiceAsync(LightningMoney? amount, string description, uint? expirySeconds,
-                                                       SourceLabels labels,
+                                                       SourceLabels labels, Secret? suppliedPreimage,
                                                        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(description);
@@ -184,7 +189,8 @@ public sealed class InvoiceService : IInvoiceService
         if (expiry == 0)
             throw new ArgumentOutOfRangeException(nameof(expirySeconds), "The expiry must be positive.");
 
-        var preimage = RandomNumberGenerator.GetBytes(CryptoConstants.SecretLen);
+        var preimage = suppliedPreimage is { } supplied ? ((byte[])supplied).ToArray()
+                                                          : RandomNumberGenerator.GetBytes(CryptoConstants.SecretLen);
         var paymentHash = SHA256.HashData(preimage);
         var paymentSecret = RandomNumberGenerator.GetBytes(CryptoConstants.SecretLen);
 
@@ -239,6 +245,8 @@ public sealed class InvoiceService : IInvoiceService
             var invoiceDbRepository = scope.ServiceProvider.GetRequiredService<IInvoiceDbRepository>();
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
+            if (suppliedPreimage is not null && await invoiceDbRepository.GetByPaymentHashAsync(model.PaymentHash) is not null)
+                throw new ArgumentException("An invoice already exists for this preimage.", nameof(suppliedPreimage));
             await invoiceDbRepository.AddAsync(model);
             await unitOfWork.SaveChangesAsync();
         }

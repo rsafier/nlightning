@@ -68,6 +68,28 @@ public class LndGrpcOptionsTests
         Assert.Equal(valid, result.Succeeded);
     }
 
+    [Theory]
+    [InlineData("regtest", "127.0.0.1", false, true)]
+    [InlineData("regtest", "0.0.0.0", false, false)]
+    [InlineData("mainnet", "127.0.0.1", false, false)]
+    [InlineData("mainnet", "127.0.0.1", true, true)]
+    public void Given_AnEnabledSigner_When_Validated_Then_RemoteTlsAndMainnetOptInAreRequired(string network, string address, bool mainnet, bool valid)
+    {
+        // Arrange
+        var validator = new LndGrpcOptionsValidator(Options.Create(new NodeOptions { BitcoinNetwork = new BitcoinNetwork(network) }));
+        // Act
+        var result = validator.Validate(null, new LndGrpcOptions
+        {
+            Enabled = true,
+            EnableSigner = true,
+            AllowMainnet = true,
+            AllowSignerOnMainnet = mainnet,
+            ListenAddress = address
+        });
+        // Assert
+        Assert.Equal(valid, result.Succeeded);
+    }
+
     [Fact]
     public void Given_ADisabledServer_When_Validated_Then_NothingIsChecked()
     {

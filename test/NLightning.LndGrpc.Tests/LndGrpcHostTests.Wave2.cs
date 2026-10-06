@@ -298,8 +298,10 @@ public sealed partial class LndGrpcHostTests
         Assert.Equal(StatusCode.Unimplemented, nested.StatusCode);
     }
 
-    [Fact]
-    public async Task Given_AnInvoice_When_SendPaymentV2_Then_InFlightThenSucceededAreStreamedAndTrackPaymentAgrees()
+    [Theory]
+    [InlineData(30, 30)]
+    [InlineData(0, 60)]
+    public async Task Given_AnInvoice_When_SendPaymentV2_Then_InFlightThenSucceededAreStreamedAndTrackPaymentAgrees(int timeout, int expectedTimeout)
     {
         // Arrange
         var (bolt11, hash) = CreateBolt11(0x91, 12_000);
@@ -330,7 +332,7 @@ public sealed partial class LndGrpcHostTests
         using var call = connection.RouterClient.SendPaymentV2(new SendPaymentRequest
         {
             PaymentRequest = bolt11,
-            TimeoutSeconds = 30,
+            TimeoutSeconds = timeout,
             FeeLimitMsat = 5_000,
             MaxParts = 3
         }, cancellationToken: Bounded);
@@ -356,7 +358,7 @@ public sealed partial class LndGrpcHostTests
         Assert.Equal(7ul, succeeded.PaymentIndex);
         Assert.Equal(LightningMoney.MilliSatoshis(5_000), options!.MaxFee);
         Assert.Equal(3, options.MaxParts);
-        Assert.Equal(TimeSpan.FromSeconds(30), options.Timeout);
+        Assert.Equal(TimeSpan.FromSeconds(expectedTimeout), options.Timeout);
         Assert.Equal(Payment.Types.PaymentStatus.Succeeded, Assert.Single(tracked).Status);
         Assert.Equal(StatusCode.AlreadyExists, paidAgain.StatusCode);
     }

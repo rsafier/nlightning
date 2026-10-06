@@ -67,6 +67,14 @@ public sealed partial class LightningService
             _logger.LogDebug(e, "GetInfo could not read the chain state");
         }
 
+        // lndclient parses block_hash even while waiting for sync. Never return an empty hash.
+        if (string.IsNullOrEmpty(response.BlockHash))
+        {
+            response.BlockHash = new string('0', 64);
+            response.SyncedToChain = false;
+            response.WalletSynced = false;
+        }
+
         return response;
     }
 

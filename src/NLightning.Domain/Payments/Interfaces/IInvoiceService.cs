@@ -42,6 +42,13 @@ public interface IInvoiceService
     Task<InvoiceModel> CreateInvoiceAsync(LightningMoney? amount, string description, uint? expirySeconds,
                                           SourceLabels labels, CancellationToken cancellationToken = default);
 
+    /// <summary>Creates an ordinary invoice with a caller-chosen preimage (Loop swaps), persisted before return.</summary>
+    Task<InvoiceModel> CreateInvoiceAsync(LightningMoney? amount, string description, uint? expirySeconds,
+                                          SourceLabels labels, Secret? suppliedPreimage,
+                                          CancellationToken cancellationToken = default) =>
+        suppliedPreimage is null ? CreateInvoiceAsync(amount, description, expirySeconds, labels, cancellationToken)
+                                : throw new NotSupportedException("Caller preimages are not supported by this invoice service.");
+
     /// <summary>
     /// Creates a hold invoice (NL-995) for a caller-supplied payment hash: its paying HTLC set is held when complete
     /// (locked in, nothing fulfilled or failed) until the operator settles with the preimage

@@ -14,6 +14,7 @@ using Domain.Accounting.Labels;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -68,6 +69,8 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
     private readonly Mock<IPaymentService> _paymentService = new();
     private readonly Mock<IHoldInvoiceService> _holdInvoices = new();
     private readonly Mock<IBitcoinWalletService> _wallet = new();
+    private readonly Mock<IWalletSpendService> _walletSpend = new();
+    private readonly Mock<IFeeService> _fees = new();
     private readonly PaymentEventHub _events = new();
     private readonly FakeDispatcher _dispatcher = new();
     private readonly List<ChannelModel> _closedChannels = [];
@@ -158,7 +161,8 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
         Assert.Equal("nltg-test", info.Alias);
         Assert.Equal("#3399ff", info.Color);
         Assert.Equal(150u, info.BlockHeight);
-        Assert.True(info.SyncedToChain);
+        Assert.False(info.SyncedToChain);
+        Assert.Equal(new string('0', 64), info.BlockHash);
         Assert.StartsWith("0.21.4-beta nlightning-", info.Version);
         Assert.Equal("regtest", Assert.Single(info.Chains).Network);
         Assert.Equal(1u, info.NumInactiveChannels);
@@ -246,14 +250,14 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
 
         // Act
         var preimage = await Assert.ThrowsAsync<RpcException>(
-            () => connection.LightningClient.AddInvoiceAsync(new Invoice { RPreimage = ByteString.CopyFrom(new byte[32]) },
+            () => connection.LightningClient.AddInvoiceAsync(new Invoice { RPreimage = ByteString.CopyFrom(new byte[31]) },
                                                              cancellationToken: Ct).ResponseAsync);
         var both = await Assert.ThrowsAsync<RpcException>(
             () => connection.LightningClient.AddInvoiceAsync(new Invoice { Value = 1, ValueMsat = 2 },
                                                              cancellationToken: Ct).ResponseAsync);
 
         // Assert
-        Assert.Equal(StatusCode.Unimplemented, preimage.StatusCode);
+        Assert.Equal(StatusCode.InvalidArgument, preimage.StatusCode);
         Assert.Equal(StatusCode.InvalidArgument, both.StatusCode);
     }
 
@@ -535,12 +539,16 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
 
         services.AddScoped(_ => CreateUnitOfWork());
         services.AddScoped(_ => _wallet.Object);
+        services.AddSingleton(_walletSpend.Object);
+        services.AddSingleton(_fees.Object);
         services.AddSingleton(_paymentService.Object);
         services.AddSingleton(_holdInvoices.Object);
         services.AddSingleton<IPaymentEventSource>(_events);
         services.AddSingleton<INodeCommandDispatcher>(_dispatcher);
         services.AddSingleton(new LndRootKeyStore(_directory));
         services.AddSingleton<LightningService>();
+        services.AddSingleton<StateService>();
+        services.AddSingleton<VersionerService>();
         services.AddSingleton(new HtlcInterceptorHub(NullLogger<HtlcInterceptorHub>.Instance));
         services.AddSingleton<RouterService>();
         services.AddSingleton<InvoicesService>();

@@ -11,6 +11,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
 using Infrastructure.Bitcoin.Networks;
+using Infrastructure.Bitcoin.Wallet.Imports;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Lnrpc;
 using Transaction = Lnrpc.Transaction;
@@ -122,6 +123,30 @@ public sealed partial class LightningService
 
             entry.AmountSat += utxo.Amount.Satoshi;
             entry.OurOutputs.Add((utxo.Index, utxo.Amount.Satoshi, utxo.WalletAddress?.Address));
+        }
+
+        if (scope.ServiceProvider.GetService<ImportedTapscriptTracker>() is { } imported)
+        {
+            ImportedWatchSnapshot snapshot;
+            try { snapshot = await imported.SnapshotAsync(context.CancellationToken); }
+            catch (InvalidOperationException e)
+            {
+                throw new RpcException(new Status(StatusCode.FailedPrecondition, e.Message));
+            }
+            foreach (var watched in snapshot.Transactions)
+            {
+                var txid = new TxId(watched.Transaction.GetHash().ToBytes());
+                if (!entries.TryGetValue(txid, out var entry))
+                    entries[txid] = entry = new HistoryEntry(txid) { Height = watched.Height, Time = watched.Time };
+                entry.AmountSat += watched.Amount;
+                foreach (var index in watched.OurOutputs)
+                {
+                    var output = watched.Transaction.Outputs[(int)index];
+                    entry.OurOutputs.Add((index, output.Value.Satoshi, output.ScriptPubKey.GetDestinationAddress(_nodeOptions.BitcoinNetwork.ToNBitcoinNetwork())!.ToString()));
+                }
+                foreach (var spent in watched.SpentOutputs)
+                    entry.PreviousOutpoints.Add($"{spent.Hash}:{spent.N}");
+            }
         }
 
         var selected = entries.Values

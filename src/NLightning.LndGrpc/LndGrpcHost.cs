@@ -110,6 +110,18 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
         var walletKit = _serviceProvider.GetService<WalletKitService>();
         if (walletKit is not null)
             builder.Services.AddSingleton(walletKit);
+        var swapSigner = _serviceProvider.GetService<SignerService>();
+        if (swapSigner is not null)
+            builder.Services.AddSingleton(swapSigner);
+        var state = _serviceProvider.GetService<StateService>();
+        if (state is not null)
+            builder.Services.AddSingleton(state);
+        var versioner = _serviceProvider.GetService<VersionerService>();
+        if (versioner is not null)
+            builder.Services.AddSingleton(versioner);
+        var chainNotifier = _serviceProvider.GetService<ChainNotifierService>();
+        if (chainNotifier is not null)
+            builder.Services.AddSingleton(chainNotifier);
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
             kestrel.Limits.MaxConcurrentConnections = _options.MaxConnections;
@@ -125,6 +137,14 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
             app.MapGrpcService<RouterService>();
         if (walletKit is not null)
             app.MapGrpcService<WalletKitService>();
+        if (swapSigner is not null)
+            app.MapGrpcService<SignerService>();
+        if (state is not null)
+            app.MapGrpcService<StateService>();
+        if (versioner is not null)
+            app.MapGrpcService<VersionerService>();
+        if (chainNotifier is not null)
+            app.MapGrpcService<ChainNotifierService>();
         app.StartAsync(cancellationToken).GetAwaiter().GetResult();
         _app = app;
 
