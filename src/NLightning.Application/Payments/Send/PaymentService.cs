@@ -475,12 +475,26 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         if (request.Destination == _secureKeyManager.GetNodePubKey())
             throw new ArgumentException("The destination is this node; a node cannot pay itself.", nameof(request));
 
+        if (options.OutgoingChannelIds is { } allowed)
+        {
+            if (allowed.Count == 0 || options.OutgoingChannelId is not null)
+                throw new ArgumentException("Specify a nonempty outgoing channel set or a single channel, not both.");
+            foreach (var channelId in allowed) ThrowUnlessOurChannel(channelId, "outgoing");
+        }
+        ThrowUnlessOurChannel(options.OutgoingChannelId, "outgoing");
+        if (options.IncomingChannelId is not null || options.TrampolineNode is not null)
+            throw new ArgumentException("Keysend does not support an incoming channel or trampoline node.");
+
         var customRecords = CustomRecordCodec.Validate(request.CustomRecords);
         if (_blockchainMonitor.LastProcessedBlockHeight == 0)
             throw new InvalidOperationException("No block has been processed yet; cannot set the HTLC expiry.");
 
         // Our preimage (CSPRNG) and its hash; the payee learns the preimage from the onion and reveals it to settle
-        var preimageBytes = RandomNumberGenerator.GetBytes(32);
+        var preimageBytes = request.Preimage is { } supplied
+                                ? ((ReadOnlySpan<byte>)supplied).ToArray()
+                                : RandomNumberGenerator.GetBytes(32);
+        if (preimageBytes.Length != 32)
+            throw new ArgumentException("The keysend preimage must be 32 bytes.", nameof(request));
         var preimage = new Secret(preimageBytes);
         var paymentHash = new Hash(SHA256.HashData(preimageBytes));
 
@@ -506,6 +520,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                                          Math.Max(1, sendOptions.MaxAttempts), deadline, now)
         {
             Keysend = keysend,
+            OutgoingChannelId = options.OutgoingChannelId,
+            OutgoingChannelIds = options.OutgoingChannelIds?.ToHashSet(),
             Labels = options.Labels
         };
 
@@ -1591,7 +1607,15 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                    .DeleteForPaymentAsync(session.PaymentHash);
         await repository.AddAsync(row);
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
+        var firstSave = !session.RowCreated;
         session.RowCreated = true;
+        if (firstSave && !session.IsTrampolineRelay)
+        {
+            var recorded = await repository.GetByPaymentHashAsync(session.PaymentHash) ?? row;
+            _paymentEventPublisher?.Publish(new PaymentStartedEvent(recorded.PaymentHash, recorded.Amount,
+                                                                    recorded.Bolt11, recorded.PaymentIndex ?? 0,
+                                                                    recorded.CreatedAt));
+        }
         session.NextPartIndex = 0;
         session.PrimaryPart = first;
     }

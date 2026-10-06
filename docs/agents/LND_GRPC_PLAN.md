@@ -214,6 +214,27 @@ Commits `feda8ce7` (this plan, NL-1160) and `34821ac0` (server, signer, reposito
   amount, alice's VerifyMessage recovers our key from our SignMessage (and reports it valid: LND's graph holds our node
   as a channel end), ours recovers alice's, the read-only macaroon is refused on AddInvoice.
 
+## Client follow-up (2026-10-06, wip/lnd-p2)
+
+NL-1170: SendPaymentV2 accepts keysend with a 32-byte caller preimage in record 5482373484,
+a matching SHA256 payment_hash, compressed destination and positive amount. It forwards other valid
+final custom records and uses the same payment persistence, routing restrictions and result stream as
+invoice sends. A missing preimage, malformed key or mismatched hash is refused explicitly; AMP remains
+unsupported. Application callers can still omit the preimage to draw a fresh one.
+
+NL-1171: TrackPayments sends IN_FLIGHT when a wallet payment is first committed, followed by its
+terminal update. The start event captures the committed index, amount and time so even a fast payment
+cannot turn the start update into a duplicate terminal state. no_inflight_updates suppresses starts;
+trampoline relay legs remain outside the wallet payment stream.
+
+NL-1172: UpdateChannelPolicy global persists base fee, proportional fee and CLTV defaults even with
+no open channels. The existing ChannelPolicies table reserves ChannelId.Zero for this node default;
+no schema change is required. Future channels and a fresh policy store after restart inherit it, while
+per-channel overrides and peer HTLC limits continue to apply. HTLC minimum/maximum remain specific
+to existing channels, as in LND.
+
+The wave records below describe their original snapshots; the three gaps above are now implemented.
+
 ## Wave 2 record (2026-10-06)
 
 Commit `a1bb2bbe` (NL-1164..NL-1167, NL-1169; findings NL-1170..NL-1172).

@@ -10,9 +10,12 @@ loop_commit=3d10930491713c1ee2f9957316747da9a3813072
 tag="${NLTG_LOOP_RUNNER_TAG:-latest}"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
-mkdir "$stage/loop-bin" "$stage/runner"
+mkdir "$stage/loop-bin" "$stage/runner" "$stage/loop-source"
+# Test-only cooperative withdrawal support; all other Loop code comes from the pinned tree.
+git -C "$loop_source" archive HEAD | tar -x -C "$stage/loop-source"
+cp "$here/../server/withdraw.go" "$stage/loop-source/regtest/server/nlightning_withdraw.go"
 (
-  cd "$loop_source"
+  cd "$stage/loop-source"
   go mod download
   go mod verify
   CGO_ENABLED=0 go build -mod=readonly -trimpath -p 3 -o "$stage/loop-bin/" ./cmd/loop ./cmd/loopd ./cmd/loopserver-regtest
@@ -30,5 +33,5 @@ cp -R "$repo/test/NLightning.Integration.Tests/bin/Release/net10.0/." "$stage/ru
 rm -f "$stage/runner/NLightning.Integration.Tests" "$stage/runner/NLightning.Integration.Tests.exe"
 cp "$here/Dockerfile" "$stage/Dockerfile"
 docker build --label nltg.spike=true --label app.kubernetes.io/managed-by=nltg-test-harness \
-  --label "nltg.loop-commit=$loop_commit" --label nltg.aperture-version=0.4.0 -t "nltg-loop-runner:$tag" "$stage"
+  --label "nltg.loop-commit=$loop_commit" --label nltg.loop-fixture=withdraw-v1 --label nltg.aperture-version=0.4.0 -t "nltg-loop-runner:$tag" "$stage"
 echo "built nltg-loop-runner:$tag (Loop $loop_commit, Aperture 0.4.0)"

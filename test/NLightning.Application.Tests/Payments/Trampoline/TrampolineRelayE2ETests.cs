@@ -243,6 +243,8 @@ public class TrampolineRelayE2ETests
         await WhenRelayIdleAsync(harness);
 
         // Assert: A (the trampoline client) published its success with the trampoline fee, after its save
+        var started = Assert.IsType<PaymentStartedEvent>(await PaymentEventHubTests.ReadOneAsync(aEvents));
+        Assert.Equal(invoice.PaymentHash, started.PaymentHash);
         var succeeded = Assert.IsType<PaymentSucceededEvent>(await PaymentEventHubTests.ReadOneAsync(aEvents));
         Assert.Equal(invoice.PaymentHash, succeeded.PaymentHash);
         Assert.Equal(invoice.Preimage!.Value, succeeded.Preimage);
@@ -282,6 +284,8 @@ public class TrampolineRelayE2ETests
 
         // Assert: A published one failure; T's failed relay leg published nothing
         Assert.Equal(PaymentStatus.Failed, result.Payment.Status);
+        var started = Assert.IsType<PaymentStartedEvent>(await PaymentEventHubTests.ReadOneAsync(aEvents));
+        Assert.Equal(invoice.PaymentHash, started.PaymentHash);
         var failed = Assert.IsType<PaymentFailedEvent>(await PaymentEventHubTests.ReadOneAsync(aEvents));
         Assert.Equal(invoice.PaymentHash, failed.PaymentHash);
         Assert.Equal(PaymentStatus.Failed,
@@ -310,6 +314,8 @@ public class TrampolineRelayE2ETests
 
         // Assert: the refused first attempt published no failure; the one success carries T's policy fee
         Assert.Equal(2, result.Attempts);
+        var started = Assert.IsType<PaymentStartedEvent>(await PaymentEventHubTests.ReadOneAsync(aEvents));
+        Assert.Equal(invoice.PaymentHash, started.PaymentHash);
         var succeeded = Assert.IsType<PaymentSucceededEvent>(await PaymentEventHubTests.ReadOneAsync(aEvents));
         Assert.Equal(invoice.PaymentHash, succeeded.PaymentHash);
         Assert.Equal(LightningMoney.MilliSatoshis(5_000 + 100_000), succeeded.Fee);

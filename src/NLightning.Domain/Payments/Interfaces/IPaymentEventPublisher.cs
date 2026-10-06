@@ -3,7 +3,7 @@ namespace NLightning.Domain.Payments.Interfaces;
 using Events;
 
 /// <summary>
-/// Raises payment outcomes to the subscribers of <see cref="IPaymentEventSource"/> (Cashu plan C0, NL-991).
+/// Raises payment state changes to the subscribers of <see cref="IPaymentEventSource"/> (Cashu plan C0, NL-991).
 /// </summary>
 /// <remarks>
 /// Call it only after the save that recorded the outcome has committed, and never inside a lock a subscriber could

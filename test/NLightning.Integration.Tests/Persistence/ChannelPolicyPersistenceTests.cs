@@ -18,6 +18,19 @@ public class ChannelPolicyPersistenceTests
     private static readonly ChannelId s_channelB = new(Enumerable.Repeat((byte)0xB2, 32).ToArray());
 
     [Fact]
+    public async Task Given_NodeDefaultPolicy_When_SavedWithoutAChannel_Then_AFreshScopeRestoresIt()
+    {
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var defaults = new ChannelPolicyOverride(ChannelId.Zero, 2_500, 300, 72,
+                                                 UpdatedAt: DateTimeOffset.UtcNow);
+        await SaveAsync(db, uow => uow.ChannelPolicyDbRepository.UpsertAsync(defaults));
+        using var restarted = CreateUnitOfWork(db);
+        var restored = await restarted.ChannelPolicyDbRepository.GetAsync(ChannelId.Zero);
+        Assert.Equal(defaults, restored);
+        Assert.Equal(defaults, Assert.Single(await restarted.ChannelPolicyDbRepository.GetAllAsync()));
+    }
+
+    [Fact]
     public async Task Given_OverridesAtTheirMaximumWidths_When_SavedAndReloaded_Then_EveryValueIsEqual()
     {
         // Arrange

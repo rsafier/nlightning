@@ -97,7 +97,7 @@ public interface IPaymentService
     /// Sends a spontaneous (keysend) payment and waits for the outcome.
     /// </summary>
     /// <remarks>
-    /// A fresh CSPRNG preimage, payment hash = SHA256(preimage); the payee's hop payload carries <c>amt_to_forward</c>,
+    /// The supplied preimage or a fresh CSPRNG preimage, payment hash = SHA256(preimage); the payee's hop payload carries <c>amt_to_forward</c>,
     /// <c>outgoing_cltv_value</c>, <c>keysend_preimage</c> (5482373484) and the request's custom records, and no
     /// <c>payment_data</c> (there is no invoice, so no <c>payment_secret</c>). The route is planned like an invoice
     /// payment without route hints (a direct channel, or the graph), with <c>Node:Keysend:FinalCltvExpiryDelta</c> as

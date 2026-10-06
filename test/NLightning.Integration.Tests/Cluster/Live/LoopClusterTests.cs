@@ -95,6 +95,8 @@ public partial class LoopClusterTests
             await ClusterPoll.UntilAsync(async c => (await alice.LightningClient.ListChannelsAsync(new ListChannelsRequest(), cancellationToken: c))
                 .Channels.Any(ch => ch.Active && ch.RemotePubkey == node.NodeIdHex), s_timeout, ClusterPoll.DefaultInterval, "Loop channel active", ct);
 
+            await AssertClientPaymentGapsAsync(alice, node, host, grpc, ct);
+
             var lnd = Path.Combine(directory, "lnd");
             Directory.CreateDirectory(lnd);
             await File.WriteAllBytesAsync(Path.Combine(lnd, "tls.cert"), alice.Settings.TlsCert!, ct);
@@ -171,7 +173,7 @@ public partial class LoopClusterTests
                     s_timeout, ClusterPoll.DefaultInterval, "swap publication", ct);
                 await ChainSync.MineAndWaitAsync(fixture, 3, [alice], [node], ct);
             }
-            async Task RestartBothDuringSwap()
+            async Task RestartBothDuringSwap(string phase)
             {
                 // Preserve the node database/key manager and Loop's database, TLS and macaroons.
                 await host.StopAsync(ct);
@@ -187,14 +189,17 @@ public partial class LoopClusterTests
                 await ClusterPoll.UntilAsync(async c => (await alice.LightningClient.ListChannelsAsync(new ListChannelsRequest(), cancellationToken: c))
                     .Channels.Any(ch => ch.Active && ch.RemotePubkey == node.NodeIdHex), s_timeout, ClusterPoll.DefaultInterval,
                     "Loop channel reestablished", ct);
-                Log("NLightning and real loopd restarted during an outstanding Loop Out");
+                Log($"NLightning and real loopd restarted during {phase}");
             }
             async Task Traditional(string command)
             {
                 var output = await Cli([command, "--amt", "500000", "--force", .. command == "out" ? new[] { "--fast" } : []]);
                 var hash = IdPattern().Match(output).Groups[1].Value;
                 Assert.NotEmpty(hash);
-                if (command == "out") await RestartBothDuringSwap();
+                if (command == "in")
+                    await ClusterPoll.UntilAsync(async c => (await fixture.Bitcoin.GetRawMempoolAsync(c)).Length > 0,
+                        s_timeout, ClusterPoll.DefaultInterval, "Loop In funding published before restart", ct);
+                await RestartBothDuringSwap($"outstanding Loop {command}");
                 await MineWhenPublished();
                 await MineWhenPublished();
                 await ClusterPoll.UntilAsync(async _ =>
@@ -208,6 +213,90 @@ public partial class LoopClusterTests
             }
             await Traditional("out");
             await Traditional("in");
+            // Lose the real server after it accepted a Loop In, before its HTLC confirms.
+            // The client must recover its own on-chain funds, even across both local restarts.
+            var failedOutput = await Cli("in", "--amt", "500000", "--force");
+            var failedHash = IdPattern().Match(failedOutput).Groups[1].Value;
+            Assert.NotEmpty(failedHash);
+            using var failedInfo = JsonDocument.Parse(await Cli("swapinfo", failedHash));
+            var refundAddress = failedInfo.RootElement.GetProperty("htlc_address_p2tr").GetString();
+            if (string.IsNullOrEmpty(refundAddress))
+                refundAddress = failedInfo.RootElement.GetProperty("htlc_address_p2wsh").GetString();
+            Assert.NotNull(refundAddress);
+            Assert.NotEmpty(refundAddress);
+            var refundScript = NBitcoin.BitcoinAddress.Create(refundAddress, NBitcoin.Network.RegTest).ScriptPubKey;
+            NBitcoin.uint256? fundingId = null;
+            await ClusterPoll.UntilAsync(async c =>
+            {
+                foreach (var id in await fixture.Bitcoin.GetRawMempoolAsync(c))
+                {
+                    var tx = await fixture.Bitcoin.GetRawTransactionAsync(id, cancellationToken: c);
+                    if (tx.Outputs.Any(o => o.ScriptPubKey == refundScript)) { fundingId = id; return true; }
+                }
+                return false;
+            }, s_timeout, ClusterPoll.DefaultInterval, "failed Loop In HTLC published", ct);
+            var failedServer = processes[0];
+            processes.RemoveAt(0);
+            failedServer.Stop();
+            try
+            {
+                await ChainSync.MineAndWaitAsync(fixture, 3, [alice], [node], ct);
+                await RestartBothDuringSwap("server-unavailable Loop In");
+                // Refuse the first refund signature, then recover from the persisted funded swap.
+                var signerOptions = node.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<LndGrpcOptions>>().Value;
+                signerOptions.EnableSigner = false;
+                // The fixture's classic Loop In deadline is 100 blocks from initiation.
+                for (var remaining = 105; remaining > 0; remaining -= Math.Min(remaining, 32))
+                    await ChainSync.MineAndWaitAsync(fixture, Math.Min(remaining, 32), [alice], [node], ct, s_timeout);
+                await ClusterPoll.UntilAsync(async _ =>
+                {
+                    using var info = JsonDocument.Parse(await Cli("swapinfo", failedHash));
+                    return info.RootElement.GetProperty("state").GetString() == "FAILED"
+                        && info.RootElement.GetProperty("failure_reason").GetString() == "FAILURE_REASON_TEMPORARY";
+                }, s_timeout, ClusterPoll.DefaultInterval, "refund signer refusal surfaced by real Loop", ct);
+                Assert.Empty(await fixture.Bitcoin.GetRawMempoolAsync(ct));
+                signerOptions.EnableSigner = true;
+                var interruptedLoop = processes[^1];
+                processes.RemoveAt(processes.Count - 1);
+                processes.Add(interruptedLoop.Restart(bin, directory));
+                Log(interruptedLoop.Tail());
+                await ClusterPoll.UntilAsync(Ready, s_timeout, ClusterPoll.DefaultInterval,
+                    "loopd recovered after signer opt-in restored", ct);
+                NBitcoin.uint256? refundId = null;
+                await ClusterPoll.UntilAsync(async c =>
+                {
+                    foreach (var id in await fixture.Bitcoin.GetRawMempoolAsync(c))
+                    {
+                        var tx = await fixture.Bitcoin.GetRawTransactionAsync(id, cancellationToken: c);
+                        if (tx.Inputs.Any(input => input.PrevOut.Hash == fundingId)) { refundId = id; return true; }
+                    }
+                    return false;
+                }, s_timeout, ClusterPoll.DefaultInterval, "real Loop In timeout refund published", ct);
+                await ChainSync.MineAndWaitAsync(fixture, 3, [alice], [node], ct);
+                Assert.NotNull(refundId);
+                await ClusterPoll.UntilAsync(async _ =>
+                {
+                    using var info = JsonDocument.Parse(await Cli("swapinfo", failedHash));
+                    return info.RootElement.GetProperty("state").GetString() == "FAILED"
+                        && info.RootElement.GetProperty("failure_reason").GetString() == "FAILURE_REASON_TIMEOUT";
+                }, s_timeout, ClusterPoll.DefaultInterval, "confirmed failed Loop In refund", ct);
+                await RestartBothDuringSwap("confirmed failed Loop In refund");
+                using var recoveredFailure = JsonDocument.Parse(await Cli("swapinfo", failedHash));
+                Assert.Equal("FAILED", recoveredFailure.RootElement.GetProperty("state").GetString());
+                Assert.Equal("FAILURE_REASON_TIMEOUT", recoveredFailure.RootElement.GetProperty("failure_reason").GetString());
+                Log("Server loss, signer refusal and daemon restarts recovered a failed Loop In with a confirmed timeout refund");
+            }
+            finally
+            {
+                processes.Insert(0, failedServer.Restart(bin, directory));
+                Log(failedServer.Tail());
+            }
+            await ClusterPoll.UntilAsync(async _ =>
+            {
+                foreach (var child in processes) child.CheckRunning();
+                try { await Cli("terms"); return true; }
+                catch (InvalidOperationException) { return false; }
+            }, s_timeout, ClusterPoll.DefaultInterval, "restarted swap server serves terms through Aperture", ct);
             var addressOutput = await Child.Run(bin, "loop", directory, [.. cliArgs, "static", "new"], ct, "y\n");
             var address = AddressPattern().Match(addressOutput).Groups[1].Value;
             Assert.NotEmpty(address);
@@ -220,6 +309,9 @@ public partial class LoopClusterTests
                 using var deposits = JsonDocument.Parse(await Cli("static", "listdeposits", "--filter", "deposited"));
                 return deposits.RootElement.GetProperty("filtered_deposits").GetArrayLength() > 0;
             }, s_timeout, ClusterPoll.DefaultInterval, "imported static deposit", ct);
+            // Loop's pre-signing FSM intentionally aborts on recovery (its MuSig nonces are ephemeral).
+            // Restart at the confirmed deposit checkpoint, then initiate a fresh signing round.
+            await RestartBothDuringSwap("confirmed static deposit awaiting Loop In");
             using var staticSwap = JsonDocument.Parse(await Cli("static", "in", "--all", "--fast", "--force"));
             var staticHash = staticSwap.RootElement.GetProperty("swap_hash").GetString();
             await ClusterPoll.UntilAsync(async _ =>
@@ -235,6 +327,38 @@ public partial class LoopClusterTests
             await MineWhenPublished();
             await AssertNotifierParityAsync(fixture, alice, host, grpc, staticDeposit, depositHeight, address, ct);
             await AssertSignerParityAsync(alice, node, host, grpc, ct);
+            var withdrawalDeposit = await fixture.Bitcoin.SendToAddressAsync(
+                NBitcoin.BitcoinAddress.Create(address, NBitcoin.Network.RegTest), NBitcoin.Money.Satoshis(250_000),
+                cancellationToken: ct);
+            await ChainSync.MineAndWaitAsync(fixture, 6, [alice], [node], ct);
+            await ClusterPoll.UntilAsync(async _ =>
+            {
+                using var deposits = JsonDocument.Parse(await Cli("static", "listdeposits", "--filter", "deposited"));
+                return deposits.RootElement.GetProperty("filtered_deposits").EnumerateArray().Any(d =>
+                    d.GetProperty("outpoint").GetString()?.StartsWith(withdrawalDeposit + ":", StringComparison.Ordinal) == true);
+            }, s_timeout, ClusterPoll.DefaultInterval, "cooperative withdrawal deposit", ct);
+            await RestartBothDuringSwap("imported deposit awaiting cooperative withdrawal");
+            var previousLoop = processes[^1];
+            processes.RemoveAt(processes.Count - 1);
+            processes.Add(previousLoop.Restart(bin, directory));
+            Log(previousLoop.Tail());
+            await ClusterPoll.UntilAsync(Ready, s_timeout, ClusterPoll.DefaultInterval,
+                "loopd-only restart with a persisted static deposit", ct);
+            Log("Loopd-only restart restored the confirmed imported static deposit");
+            await Cli("static", "withdraw", "--all", "--sat_per_vbyte", "2");
+            NBitcoin.uint256? withdrawalId = null;
+            await ClusterPoll.UntilAsync(async c =>
+            {
+                foreach (var id in await fixture.Bitcoin.GetRawMempoolAsync(c))
+                {
+                    var tx = await fixture.Bitcoin.GetRawTransactionAsync(id, cancellationToken: c);
+                    if (tx.Inputs.Any(input => input.PrevOut.Hash == withdrawalDeposit)) { withdrawalId = id; return true; }
+                }
+                return false;
+            }, s_timeout, ClusterPoll.DefaultInterval, "cooperative withdrawal publication", ct);
+            await ChainSync.MineAndWaitAsync(fixture, 3, [alice], [node], ct);
+            await AssertImportedSpendReorgAsync(fixture, alice, node, host, grpc, withdrawalDeposit, withdrawalId!, ct);
+            Log("Cooperative static withdrawal confirmed after daemon restarts and spend reorg");
             // A second confirmed deposit exercises unilateral signing when its CSV lifetime expires.
             var csvDeposit = await fixture.Bitcoin.SendToAddressAsync(NBitcoin.BitcoinAddress.Create(address, NBitcoin.Network.RegTest),
                 NBitcoin.Money.Satoshis(500_000), cancellationToken: ct);
@@ -315,6 +439,11 @@ public partial class LoopClusterTests
             _process = Process.Start(start) ?? throw new InvalidOperationException($"could not start {name}");
             _stdout = _process.StandardOutput.ReadToEndAsync();
             _stderr = _process.StandardError.ReadToEndAsync();
+        }
+        public void Stop()
+        {
+            if (!_process.HasExited) _process.Kill(entireProcessTree: true);
+            _process.WaitForExit(10_000);
         }
         public Child Restart(string bin, string directory)
         {

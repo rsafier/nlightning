@@ -245,6 +245,7 @@ public sealed partial class LndGrpcHostTests
         }, cancellationToken: Ct);
 
         // Assert
+        _policies.Verify(p => p.SetDefaultAsync(1_500, 250, 80, It.IsAny<CancellationToken>()), Times.Once);
         var updates = _dispatcher.Requests.Cast<SetChannelPolicyClientRequest>().ToList();
         Assert.Equal(2, updates.Count);
         Assert.All(updates, u =>

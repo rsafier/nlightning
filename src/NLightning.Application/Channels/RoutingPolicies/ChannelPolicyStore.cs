@@ -122,13 +122,26 @@ public sealed class ChannelPolicyStore : IChannelPolicyProvider
 
     /// <inheritdoc/>
     public ConfiguredChannelPolicy GetConfiguredPolicy(ChannelId channelId) =>
-        ConfiguredChannelPolicy.From(_nodeOptions.Value.Routing, GetOverride(channelId));
+        ConfiguredChannelPolicy.From(_nodeOptions.Value.Routing, WithDefault(GetOverride(channelId), channelId));
 
     /// <inheritdoc/>
     public EffectiveChannelPolicy GetEffectivePolicy(ChannelModel channel)
     {
         ArgumentNullException.ThrowIfNull(channel);
-        return ChannelPolicyRules.Resolve(channel, _nodeOptions.Value.Routing, GetOverride(channel.ChannelId));
+        var own = GetOverride(channel.ChannelId);
+        return ChannelPolicyRules.Resolve(channel, _nodeOptions.Value.Routing, WithDefault(own, channel.ChannelId))
+               with
+        { Override = own };
+    }
+
+    /// <summary>The all-zero key is reserved for node defaults in the existing policy table (which has no channel FK).</summary>
+    public ChannelPolicyOverride? WithDefault(ChannelPolicyOverride? own, ChannelId channelId)
+    {
+        var defaults = GetOverride(ChannelId.Zero);
+        if (defaults is null)
+            return own;
+        var basis = defaults with { ChannelId = channelId };
+        return own is null ? basis : ChannelPolicyRules.Merge(basis, own, own.UpdatedAt);
     }
 
     /// <inheritdoc/>
