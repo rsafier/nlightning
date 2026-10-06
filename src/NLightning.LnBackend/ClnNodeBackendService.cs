@@ -33,7 +33,17 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// answers <c>DEADLINE_EXCEEDED</c> — the caller keeps waiting on <c>Listpays</c>, where the row reports
 /// <c>PENDING</c> until it resolves; <see cref="PaymentStatus.Failed"/> answers <c>FAILED_PRECONDITION</c> with the
 /// row's <see cref="PaymentModel.FailureReason"/>. A bad invoice is an <see cref="StatusCode.InvalidArgument"/>, a
-/// payment already in flight or succeeded a <see cref="StatusCode.FailedPrecondition"/>.</para>
+/// payment already in flight or succeeded a <see cref="StatusCode.FailedPrecondition"/>. The payment does not take the
+/// call's cancellation (CLN's xpay keeps running in lightningd when its gRPC caller leaves): a caller that goes away
+/// ends only its own wait (<c>CANCELLED</c>), the payment retries for its window and its outcome reaches
+/// <c>Listpays</c>.</para>
+/// <para>Why <c>DEADLINE_EXCEEDED</c> and not a failure for a payment still in flight (NL-1148 wave C): captaind
+/// (<c>server/src/ln/cln/xpay.rs</c>) ignores how its xpay call ended — success or any error — and reconciles the
+/// attempt by <c>Listpays</c> on the payment hash right after the call and then periodically (first after
+/// <c>retry_for</c> + 15 s, backing off): no row fails the attempt (the user's HTLC VTXOs become revocable),
+/// <c>PENDING</c> keeps it open, <c>COMPLETE</c> with the preimage succeeds it and <c>FAILED</c> fails it. So a payment
+/// with an HTLC out must always be listed, and <c>FAILED</c> only once no part is in flight — which is
+/// <see cref="PaymentStatus.Failed"/>'s own rule.</para>
 /// <para><c>maxdelay</c> (the payer's CLTV cap) and <c>partial_msat</c> are accepted but not enforced: the route
 /// planner already clamps the final CLTV expiry, and no partial (MPP-target) payment is driven through this seam.
 /// <c>Listpays</c> filters by <c>payment_hash</c> (a lookup captaind makes with every reconciliation) or serves the
@@ -101,14 +111,27 @@ public sealed class ClnNodeBackendService : Cln.Node.NodeBase
             Labels = s_labelled
         };
 
+        // The payment never takes the caller's cancellation: as CLN's xpay command keeps running in lightningd when its
+        // gRPC caller goes away, the payment retries for its whole window and its outcome reaches Listpays, which is
+        // what the caller (captaind) reconciles by; only this call's wait ends
+        var payment = _paymentService.PayInvoiceAsync(request.Invstring,
+                                                      request.AmountMsat is { } amount
+                                                          ? LightningMoney.MilliSatoshis(amount.Msat)
+                                                          : null,
+                                                      options, CancellationToken.None);
         PayInvoiceResult result;
         try
         {
-            result = await _paymentService.PayInvoiceAsync(request.Invstring,
-                                                           request.AmountMsat is { } amount
-                                                               ? LightningMoney.MilliSatoshis(amount.Msat)
-                                                               : null,
-                                                           options, context.CancellationToken);
+            result = await payment.WaitAsync(context.CancellationToken);
+        }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+        {
+            _ = payment.ContinueWith(t => _logger.LogWarning(t.Exception, "Backend xpay ended after its caller left"),
+                                     CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted,
+                                     TaskScheduler.Default);
+            throw new RpcException(new Status(StatusCode.Cancelled,
+                                              "the caller left; the payment continues and its outcome arrives over "
+                                            + "Listpays"));
         }
         catch (ArgumentException e)
         {

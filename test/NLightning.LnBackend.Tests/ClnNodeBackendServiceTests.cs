@@ -62,7 +62,7 @@ public sealed class ClnNodeBackendServiceTests
 
     /// <summary>A call context with every abstract member defaulted; the service reads only the cancellation
     /// token, never the metadata.</summary>
-    private sealed class TestServerCallContext : ServerCallContext
+    private sealed class TestServerCallContext(CancellationToken cancellationToken = default) : ServerCallContext
     {
         protected override string MethodCore => "cln.Node/Method";
         protected override string HostCore => "localhost";
@@ -77,7 +77,7 @@ public sealed class ClnNodeBackendServiceTests
             null!;
 
         protected override Task WriteResponseHeadersAsyncCore(Metadata headers) => Task.CompletedTask;
-        protected override CancellationToken CancellationTokenCore => CancellationToken.None;
+        protected override CancellationToken CancellationTokenCore => cancellationToken;
     }
 
     [Fact]
@@ -308,6 +308,58 @@ public sealed class ClnNodeBackendServiceTests
         // Assert: their caller keeps waiting on Listpays, where the row reports PENDING
         Assert.Equal(StatusCode.DeadlineExceeded, error.StatusCode);
         Assert.Contains("still in flight", error.Status.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Given_TheCallerLeaves_When_Xpay_Then_CancelledWhileThePaymentKeepsGoing()
+    {
+        // Arrange: a payment still running when the gRPC caller goes away (captaind restarting mid-call)
+        using var harness = new Harness();
+        var outcome = new TaskCompletionSource<PayInvoiceResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken paymentToken = default;
+        harness.PaymentService
+               .Setup(s => s.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
+                                             It.IsAny<PayInvoiceOptions>(), It.IsAny<CancellationToken>()))
+               .Callback<string, LightningMoney?, PayInvoiceOptions, CancellationToken>((_, _, _, t) => paymentToken = t)
+               .Returns(outcome.Task);
+        using var caller = new CancellationTokenSource();
+
+        // Act
+        var call = harness.Build().Xpay(new Cln.XpayRequest { Invstring = "lnbcrt1leaving", RetryFor = 60 },
+                                        new TestServerCallContext(caller.Token));
+        await caller.CancelAsync();
+        var error = await Assert.ThrowsAsync<RpcException>(() => call);
+
+        // Assert: only the call ended — the payment never saw the caller's token (CLN's xpay keeps running in
+        // lightningd), so it retries for its window and its outcome reaches Listpays
+        Assert.Equal(StatusCode.Cancelled, error.StatusCode);
+        Assert.False(paymentToken.CanBeCanceled);
+        Assert.False(outcome.Task.IsCompleted);
+        outcome.SetResult(new PayInvoiceResult(Pending("lnbcrt1leaving"), 1, 1));
+    }
+
+    [Fact]
+    public async Task Given_APaymentThatXpayLeftInFlight_When_CaptaindReconcilesByHash_Then_ExactlyOnePendingRowWithItsIndex()
+    {
+        // Arrange: captaind's reconciliation after an xpay that ended DEADLINE_EXCEEDED — Listpays by the hash; an
+        // empty answer would fail its attempt (releasing the user's HTLC VTXOs) while our HTLC is still out
+        using var harness = new Harness();
+        var row = Pending("lnbcrt1held");
+        harness.Repository.Setup(r => r.GetByPaymentHashAsync(row.PaymentHash)).ReturnsAsync(row);
+
+        // Act
+        var response = await harness.Build().Listpays(new Cln.ListpaysRequest
+        {
+            PaymentHash = ByteString.CopyFrom((byte[])row.PaymentHash)
+        }, new TestServerCallContext());
+
+        // Assert: one PENDING row (their status() maps it to Submitted, the attempt stays open), created_index set
+        // (their client unwraps it with expect), no preimage and nothing reported sent
+        var pay = Assert.Single(response.Pays);
+        Assert.Equal(Cln.ListpaysPays.Types.ListpaysPaysStatus.Pending, pay.Status);
+        Assert.True(pay.HasCreatedIndex);
+        Assert.False(pay.HasPreimage);
+        Assert.Equal(0ul, pay.AmountSentMsat.Msat);
     }
 
     [Fact]
