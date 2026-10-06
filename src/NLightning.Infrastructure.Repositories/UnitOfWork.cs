@@ -166,6 +166,14 @@ public class UnitOfWork : IUnitOfWork
     public IPeerDbRepository PeerDbRepository =>
         _peerDbRepository ??= new PeerDbRepository(_context);
 
+    private ImportedTapscriptDbRepository? _importedTapscriptDbRepository;
+    public Domain.Bitcoin.Wallet.Interfaces.IImportedTapscriptDbRepository ImportedTapscriptDbRepository =>
+        _importedTapscriptDbRepository ??= new ImportedTapscriptDbRepository(_context);
+
+    private KeyRingDbRepository? _keyRingDbRepository;
+    public Domain.Crypto.KeyRing.IKeyRingDbRepository KeyRingDbRepository =>
+        _keyRingDbRepository ??= new KeyRingDbRepository(_context);
+
     public IPeerStorageDbRepository PeerStorageDbRepository =>
         _peerStorageDbRepository ??= new PeerStorageDbRepository(_context);
 

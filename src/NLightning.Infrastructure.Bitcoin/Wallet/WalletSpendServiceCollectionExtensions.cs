@@ -29,7 +29,8 @@ public static class WalletSpendServiceCollectionExtensions
                                                           sp.GetRequiredService<IServiceScopeFactory>(),
                                                           sp.GetRequiredService<IOptions<NodeOptions>>(),
                                                           sp.GetRequiredService<ILogger<WalletSpendService>>(),
-                                                          sp.GetService<IBitcoinChainService>()));
+                                                          sp.GetService<IBitcoinChainService>(),
+                                                          sp.GetRequiredService<IWalletPsbtService>()));
         // The walletrpc PSBT and lease surface (LND gRPC wave 3, NL-1184) goes with withdraw
         services.TryAddSingleton<IWalletPsbtService>(sp => new WalletPsbtService(
                                                          sp.GetRequiredService<IFeeInputSelector>(),

@@ -181,3 +181,10 @@ wallet key: that needs a new node (close channels, sweep, start fresh), not a fi
 8. Not reviewed here: Windows named-pipe ACL behaviour end to end (only `CurrentUserOnly` is set), the database file's
    own mode when its path is outside the config directory (`Database:ConnectionString` can point anywhere), and
    Serilog sinks configured by the operator outside the config directory.
+
+
+## Loop raw signer (NL-1190, 2026-10-06)
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| SR-37 | High | **An authorized signer client can sign arbitrary digests/transactions with allowed swap-ring keys.** This is LND's raw signer trust model: a stolen Loop/admin macaroon can steal funds controlled by those keys, including static deposits. `EnableSigner` defaults false; mainnet requires another opt-in; remote listeners require client certificates. Families 0–9 are refused regardless of configuration, public-key lookup is ring-only, and ECDH requires an explicit family 21/99 key. No identity/channel/wallet key or secret nonce leaves Infrastructure.Bitcoin. Key issuance is persisted before return. MuSig sessions are bounded, expiring and memory-only; secret nonces are consumed exactly once and disposed after signing/cleanup/expiry/shutdown. Raw-sign audit logs contain public family/index/txid/input/sighash and MuSig session ids, never private keys, secret nonces, signatures, invoice preimages or ECDH output. A least-privilege baked macaroon is recommended. Watch-only imports never enter spendable wallet/accounting state. Historical scans fail on pruned data and are bounded; scanner indexing and live Loop failure/restart proofs remain NL-1196/NL-1197. | mitigated; raw signer authority is an explicit operator opt-in |

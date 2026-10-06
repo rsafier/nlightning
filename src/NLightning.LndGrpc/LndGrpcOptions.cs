@@ -59,6 +59,18 @@ public sealed class LndGrpcOptions
     /// <summary>Allow the server on mainnet: an admin macaroon moves real funds. Off by default.</summary>
     public bool AllowMainnet { get; set; }
 
+    /// <summary>Expose isolated swap signing, key-ring derivation and tapscript imports. Off by default.</summary>
+    public bool EnableSigner { get; set; }
+
+    /// <summary>Additional opt-in for raw swap signing on mainnet.</summary>
+    public bool AllowSignerOnMainnet { get; set; }
+
+    /// <summary>The most concurrent in-memory chain notification streams.</summary>
+    public int MaxChainNotifierRegistrations { get; set; } = 128;
+
+    /// <summary>The most blocks a registration may scan from its height hint (pruned blocks fail explicitly).</summary>
+    public int MaxChainNotifierScanBlocks { get; set; } = 1_000_000;
+
     /// <summary>The most concurrent connections.</summary>
     public int MaxConnections { get; set; } = 16;
 
@@ -96,6 +108,8 @@ public sealed class LndGrpcOptions
     public IReadOnlyList<string> GetValidationErrors()
     {
         var errors = new List<string>();
+        if (MaxChainNotifierRegistrations is < 1 or > 4096 || MaxChainNotifierScanBlocks < 1)
+            errors.Add($"{SectionName}: invalid chain notifier limits.");
         if (Port is < 0 or > 65535)
             errors.Add($"{SectionName}:{nameof(Port)} must be a TCP port.");
         if (MaxConnections is < 1 or > 1024)

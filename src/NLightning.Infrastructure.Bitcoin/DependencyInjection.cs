@@ -43,6 +43,12 @@ public static class DependencyInjection
     /// <returns>The same service collection so that multiple calls can be chained.</returns>
     public static IServiceCollection AddBitcoinInfrastructure(this IServiceCollection services)
     {
+        services.AddOptions<KeyRing.KeyRingOptions>();
+        services.AddSingleton<KeyRing.KeyRingService>();
+        services.AddSingleton<KeyRing.SwapSigner>();
+        services.AddSingleton<Wallet.Imports.ImportedTapscriptTracker>();
+        services.AddSingleton<Domain.Crypto.KeyRing.IKeyRing>(sp => sp.GetRequiredService<KeyRing.KeyRingService>());
+
         // Register Singletons
         services.AddSingleton<IBitcoinChainService, BitcoinChainService>();
         services.AddSingleton<IBlockchainMonitor, BlockchainMonitorService>();

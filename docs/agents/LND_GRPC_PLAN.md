@@ -1,5 +1,7 @@
 # LND_GRPC_PLAN — LND gRPC compatibility (NL-1160)
 
+Loop follow-up: L0–L4 implemented from PR #14; see `LOOP_GRPC_PLAN.md` implementation record and NL-1190..NL-1197.
+
 Status: wave 0 (this plan) and wave 1 done on `wip/lnd-grpc-compat` (from `wip/fafo` 7bf72c20), 2026-10-05;
 see "Wave 1 record"; wave 2 done 2026-10-06, see "Wave 2 record". Wave 3 (NL-1168) on `wip/lnd-grpc-wave3`.
 

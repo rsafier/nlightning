@@ -870,6 +870,34 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.ToTable("fee_input_reservation_inputs", (string)null);
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.ImportedTapscriptEntity", b =>
+                {
+                    b.Property<byte[]>("Script")
+                        .HasMaxLength(34)
+                        .HasColumnType("bytea")
+                        .HasColumnName("script");
+
+                    b.Property<long>("CreatedHeight")
+                        .HasColumnType("bigint")
+                        .HasColumnName("created_height");
+
+                    b.Property<byte[]>("Definition")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("definition");
+
+                    b.Property<byte[]>("InternalKey")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("bytea")
+                        .HasColumnName("internal_key");
+
+                    b.HasKey("Script")
+                        .HasName("pk_imported_tapscripts");
+
+                    b.ToTable("ImportedTapscripts", (string)null);
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity", b =>
                 {
                     b.Property<byte[]>("TransactionId")
@@ -2395,6 +2423,36 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasDatabaseName("ix_liquidity_purchases_channel_id_funding_tx_id");
 
                     b.ToTable("liquidity_purchases", (string)null);
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.KeyRingKeyEntity", b =>
+                {
+                    b.Property<int>("Family")
+                        .HasColumnType("integer")
+                        .HasColumnName("family");
+
+                    b.Property<int>("Index")
+                        .HasColumnType("integer")
+                        .HasColumnName("index");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("created_at");
+
+                    b.Property<byte[]>("PublicKey")
+                        .IsRequired()
+                        .HasMaxLength(33)
+                        .HasColumnType("bytea")
+                        .HasColumnName("public_key");
+
+                    b.HasKey("Family", "Index")
+                        .HasName("pk_key_ring_keys");
+
+                    b.HasIndex("PublicKey")
+                        .IsUnique()
+                        .HasDatabaseName("ix_key_ring_keys_public_key");
+
+                    b.ToTable("KeyRingKeys", (string)null);
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", b =>

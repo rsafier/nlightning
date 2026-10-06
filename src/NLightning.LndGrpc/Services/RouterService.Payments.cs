@@ -17,12 +17,12 @@ public sealed partial class RouterService
 {
     /// <summary>
     /// <c>SendPaymentV2</c>: pays <c>payment_request</c> (BOLT 11) with the node's payment service — retries and MPP
-    /// within <c>timeout_seconds</c> (required, as LND), <c>fee_limit_msat</c>/<c>fee_limit_sat</c> (unset: the node's
+    /// within <c>timeout_seconds</c> (defaults to 60, as LND), <c>fee_limit_msat</c>/<c>fee_limit_sat</c> (unset: the node's
     /// default limit, where LND would refuse every route that costs a fee), <c>max_parts</c>, <c>amt</c>/<c>amt_msat</c>
-    /// for an amountless invoice and one <c>outgoing_chan_ids</c> entry — and streams the payment: <c>IN_FLIGHT</c>
+    /// for an amountless invoice and an <c>outgoing_chan_ids</c> allowlist — and streams the payment: <c>IN_FLIGHT</c>
     /// once it is recorded (not with <c>no_inflight_updates</c>), then <c>SUCCEEDED</c> or <c>FAILED</c> with its
     /// route. The payment goes on when the caller leaves. Refused: payments without an invoice (keysend: our keysend
-    /// draws its own preimage), AMP, several outgoing channels, <c>last_hop_pubkey</c>, route hints and custom records
+    /// draws its own preimage), AMP, <c>last_hop_pubkey</c>, route hints and custom records
     /// beside the invoice, <c>max_shard_size_msat</c>. A paid or in-flight payment hash is <c>ALREADY_EXISTS</c>.
     /// </summary>
     public override async Task SendPaymentV2(SendPaymentRequest request, IServerStreamWriter<Payment> responseStream,
@@ -34,10 +34,8 @@ public sealed partial class RouterService
          || request.LastHopPubkey.Length > 0 || request.MaxShardSizeMsat != 0 || request.FirstHopCustomRecords.Count > 0)
             throw Unimplemented("amp, dest_custom_records, route_hints, last_hop_pubkey, max_shard_size_msat and "
                               + "first_hop_custom_records are not supported");
-        if (request.OutgoingChanIds.Count > 1)
-            throw Unimplemented("one outgoing channel at most");
-        if (request.TimeoutSeconds <= 0)
-            throw InvalidArgument("timeout_seconds must be specified");
+        if (request.TimeoutSeconds < 0)
+            throw InvalidArgument("timeout_seconds cannot be negative");
         if (request.FeeLimitSat != 0 && request.FeeLimitMsat != 0)
             throw InvalidArgument("fee_limit_sat and fee_limit_msat are mutually exclusive");
         if (request.Amt != 0 && request.AmtMsat != 0)
@@ -67,11 +65,13 @@ public sealed partial class RouterService
 
         var options = new PayInvoiceOptions
         {
-            Timeout = TimeSpan.FromSeconds(request.TimeoutSeconds),
+            Timeout = TimeSpan.FromSeconds(request.TimeoutSeconds == 0 ? 60 : request.TimeoutSeconds),
             MaxFee = request.FeeLimitMsat != 0 ? LightningMoney.MilliSatoshis((ulong)request.FeeLimitMsat)
                      : request.FeeLimitSat != 0 ? LightningMoney.Satoshis(request.FeeLimitSat)
                      : null,
             MaxParts = request.MaxParts > 0 ? (int)Math.Min(request.MaxParts, int.MaxValue) : null,
+            OutgoingChannelIds = request.OutgoingChanIds.Count > 1
+                                     ? request.OutgoingChanIds.Select(OutgoingChannel).ToHashSet() : null,
             OutgoingChannelId = request.OutgoingChanIds.Count == 1
                                     ? OutgoingChannel(request.OutgoingChanIds[0])
                                     : (ChannelId?)null

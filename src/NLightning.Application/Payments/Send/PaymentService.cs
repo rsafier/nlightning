@@ -284,7 +284,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         // ephemeral key and carries no payment secret), so it is paid over the paths
         if (invoice.BlindedPaymentPaths.Count > 0)
         {
-            if (options.OutgoingChannelId is not null || options.IncomingChannelId is not null)
+            if (options.OutgoingChannelId is not null || options.OutgoingChannelIds is not null || options.IncomingChannelId is not null)
                 throw new ArgumentException("Channel pins are not supported for an invoice with blinded paths.",
                                             nameof(options));
             return await PayBlindedInvoiceAsync(invoice, bolt11, amount, options, cancellationToken);
@@ -310,6 +310,12 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         if (circular && options.TrampolineNode is not null)
             throw new ArgumentException("A rebalance is not sent through a trampoline node.", nameof(options));
 
+        if (options.OutgoingChannelIds is { } allowed)
+        {
+            if (allowed.Count == 0 || options.OutgoingChannelId is not null)
+                throw new ArgumentException("Specify a nonempty outgoing channel set or a single channel, not both.");
+            foreach (var channelId in allowed) ThrowUnlessOurChannel(channelId, "outgoing");
+        }
         ThrowUnlessOurChannel(options.OutgoingChannelId, "outgoing");
         ThrowUnlessOurChannel(options.IncomingChannelId, "incoming");
         if (_blockchainMonitor.LastProcessedBlockHeight == 0)
@@ -345,6 +351,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         {
             IsCircular = circular,
             OutgoingChannelId = options.OutgoingChannelId,
+            OutgoingChannelIds = options.OutgoingChannelIds is null ? null : new HashSet<ChannelId>(options.OutgoingChannelIds),
             IncomingChannelId = options.IncomingChannelId,
             Labels = options.Labels
         };
@@ -1090,7 +1097,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                                        : null;
             var outgoingChannels = session.OutgoingChannelId is { } outPin
                                        ? channels.Where(c => c.ChannelId == outPin).ToList()
-                                       : channels;
+                                       : session.OutgoingChannelIds is { } allowed
+                                           ? channels.Where(c => allowed.Contains(c.ChannelId)).ToList() : channels;
             GraphRoutingContext? graph = null;
             if (_graphPathSource is { IsAvailable: true })
             {

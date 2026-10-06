@@ -670,6 +670,29 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.ToTable("FeeInputReservationInputs");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.ImportedTapscriptEntity", b =>
+                {
+                    b.Property<byte[]>("Script")
+                        .HasMaxLength(34)
+                        .HasColumnType("BLOB");
+
+                    b.Property<uint>("CreatedHeight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("Definition")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("InternalKey")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("Script");
+
+                    b.ToTable("ImportedTapscripts", (string)null);
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity", b =>
                 {
                     b.Property<byte[]>("TransactionId")
@@ -1838,6 +1861,30 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .IsUnique();
 
                     b.ToTable("LiquidityPurchases");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.KeyRingKeyEntity", b =>
+                {
+                    b.Property<int>("Family")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Index")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("PublicKey")
+                        .IsRequired()
+                        .HasMaxLength(33)
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("Family", "Index");
+
+                    b.HasIndex("PublicKey")
+                        .IsUnique();
+
+                    b.ToTable("KeyRingKeys", (string)null);
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", b =>

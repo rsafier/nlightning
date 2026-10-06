@@ -224,6 +224,14 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         return derivedKey.ToBytes();
     }
 
+    /// <inheritdoc />
+    public ExtPrivKey GetKeyRingKeyAtIndex(int family, int index)
+    {
+        if (family < 10 || index < 0)
+            throw new ArgumentOutOfRangeException(nameof(family), "Reserved family or negative index.");
+        return GetMasterKey().Derive(new KeyPath($"1017'/0'/{family}'/0/{index}")).ToBytes();
+    }
+
     public ExtPrivKey GetChannelKeyAtIndex(uint index)
     {
         var masterKey = GetMasterKey();

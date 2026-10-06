@@ -34,6 +34,11 @@ public static class LndGrpcServiceCollectionExtensions
         services.AddSingleton<RouterService>();
         services.AddSingleton<InvoicesService>();
         services.AddSingleton<WalletKitService>();
+        services.Configure<Infrastructure.Bitcoin.KeyRing.KeyRingOptions>(configuration.GetSection("LndGrpc:Signer"));
+        services.AddSingleton<SignerService>();
+        services.AddSingleton<StateService>();
+        services.AddSingleton<VersionerService>();
+        services.AddSingleton<ChainNotifierService>();
         return services;
     }
 
@@ -74,6 +79,13 @@ internal sealed class LndGrpcOptionsValidator : IValidateOptions<LndGrpcOptions>
         if (_nodeOptions.BitcoinNetwork == BitcoinNetwork.Mainnet && !options.AllowMainnet)
             failures.Add($"{LndGrpcOptions.SectionName} is refused on mainnet unless "
                        + $"{LndGrpcOptions.SectionName}:AllowMainnet.");
+
+        if (options.EnableSigner && _nodeOptions.BitcoinNetwork == BitcoinNetwork.Mainnet && !options.AllowSignerOnMainnet)
+            failures.Add("LndGrpc:EnableSigner is refused on mainnet unless LndGrpc:AllowSignerOnMainnet.");
+        if (options.EnableSigner && System.Net.IPAddress.TryParse(options.ListenAddress, out var address)
+                                 && !System.Net.IPAddress.IsLoopback(address)
+                                 && string.IsNullOrWhiteSpace(options.ClientCaPath))
+            failures.Add("Remote swap signing requires LndGrpc:ClientCaPath (mutual TLS).");
 
         return failures.Count > 0 ? ValidateOptionsResult.Fail(failures) : ValidateOptionsResult.Success;
     }

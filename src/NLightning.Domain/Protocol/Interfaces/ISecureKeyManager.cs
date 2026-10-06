@@ -5,6 +5,11 @@ using Crypto.ValueObjects;
 
 public interface ISecureKeyManager
 {
+    /// <summary>Derives an isolated swap key, preserving the key file's master derivation version.</summary>
+    /// <remarks>Only Infrastructure.Bitcoin consumers may use this private material; RPCs expose public keys only.</remarks>
+    ExtPrivKey GetKeyRingKeyAtIndex(int family, int index) =>
+        throw new NotSupportedException("This key manager has no isolated key ring.");
+
     BitcoinKeyPath ChannelKeyPath { get; }
     uint HeightOfBirth { get; }
 

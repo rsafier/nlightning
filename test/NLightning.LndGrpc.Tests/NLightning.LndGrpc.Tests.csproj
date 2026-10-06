@@ -44,6 +44,7 @@
     <ProjectReference Include="..\..\src\NLightning.Domain\NLightning.Domain.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.LndGrpc\NLightning.LndGrpc.csproj"/>
     <ProjectReference Include="..\NLightning.Testing.Lnd\NLightning.Testing.Lnd.csproj"/>
+    <ProjectReference Include="..\NLightning.Tests.Utils\NLightning.Tests.Utils.csproj"/>
   </ItemGroup>
 
 </Project>

@@ -101,6 +101,9 @@ public static class SuiteCatalog
         // Cashu plan C2 (NL-993): CDK's cdk-mintd on our CDK payment processor, with cdk-cli as the wallet (pods)
         new("cashu", "the Cashu mint proof (Category=Interop.Cashu)", "integration",
             [], ["-trait", "Category=Interop.Cashu"], "off", 1, 1, TimeSpan.FromMinutes(20)),
+        new("loop", "real Loop PR 1222 swap out/in/static in through Aperture L402 against NLightning gRPC",
+            "integration", ["-class", $"{Cluster}.LoopClusterTests"], ["-trait", "Category=Cluster"],
+            "only", 1, 1, TimeSpan.FromMinutes(30), ClusterProofPending: "requires pinned nltg-loop-runner image"),
         new("tor", "the Tor interop suite (Category=Interop.Tor)", "integration",
             [], ["-trait", "Category=Interop.Tor"], "off", 1, 1, TimeSpan.FromMinutes(30),
             DockerOnlyReason: "Tor interop stays on Docker (owner decision); run scripts/run-interop.sh tor")

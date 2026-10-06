@@ -55,6 +55,12 @@ public interface IUnitOfWork : IDisposable
     // Node repositories
     IPeerDbRepository PeerDbRepository { get; }
 
+    Bitcoin.Wallet.Interfaces.IImportedTapscriptDbRepository ImportedTapscriptDbRepository =>
+        throw new NotSupportedException("This unit of work does not store imported tapscripts.");
+
+    Crypto.KeyRing.IKeyRingDbRepository KeyRingDbRepository =>
+        throw new NotSupportedException("This unit of work does not store key ring keys.");
+
     // BOLT 1 peer storage (migration AddPeerStorage)
     IPeerStorageDbRepository PeerStorageDbRepository { get; }
 
