@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 94 | 95 |
+| open | 0 | 0 | 1 | 95 | 96 |
 | in-progress | 0 | 0 | 5 | 1 | 6 |
-| fixed | 15 | 68 | 229 | 476 | 788 |
+| fixed | 15 | 68 | 230 | 480 | 793 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **244** | **591** | **918** |
+| **Total** | **15** | **68** | **245** | **596** | **924** |
 
 ### Epics
 
@@ -9695,3 +9695,57 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** in the LND gRPC waves 2+3 integration's full net10.0 run (2026-10-06, `wip/fafo` at `28d7bdd2`, while `run-cluster.sh --matrix lnd,postgres` built and ran on the same host) it failed after 1 m 36 s; the class passed 25/25 three times alone right after.
 - **Fix sketch:** find the real-clock wait in the test (or the ingress worker it waits on) and move it to a stepped `TimeProvider` or a bounded event-driven wait, as the de-timing pass did; else the `timing-serial` collection.
 - **Blocks/Blocked-by:** none
+
+### NL-1094 Chain monitor without ZMQ: a poll-only notification mode
+- **Status:** fixed (6ef388df)
+- **Severity:** medium
+- **Kind:** feature
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Options/BitcoinOptions.cs`, `Options/ChainNotificationMode.cs`, `Wallet/BlockchainMonitorService.cs` (`PollChainAsync`, `PollMempoolAsync`), `Wallet/BitcoinChainService.cs` (`GetMempoolSpendersAsync`), `src/NLightning.Daemon/Handlers/ChainStatusClientHandler.cs`
+- **Evidence:** `ZmqHost`/`ZmqBlockPort` were required and blocks came from ZMQ `rawblock`; a node without ZMQ (rbitcoin, which says "ZMQ stays out") only got blocks from the tip poll, two polls late (60 s at the default) with a "ZMQ announced no block" warning each time, and lost the O8 mempool reaction.
+- **Fix (6ef388df):** `Bitcoin:Notifications` = `Zmq` (default, unchanged) | `Poll`. In poll mode no ZMQ setting is needed and no socket is opened; every `Bitcoin:PollInterval` (unset: 2 s regtest, 5 s test networks, 10 s mainnet; 250 ms..1 min) the tip goes to the ZMQ block path unless it is the block processed at its height (missed blocks in order, reorgs through the header ring including a same-height replacement, no warning; while halted only a new tip retries). `Bitcoin:WatchMempool` is now `bool?` (unset = on with ZMQ, off with polling); with polling it asks `gettxspendingprevout` (Core 24+, rbitcoin) for the watched outpoints and the outputs of spenders it reported and feeds new spenders to the `rawtx` path (a spender replaced or mined between polls can be missed; blocks still see it). `chainstatus` shows the mode and the mempool watch (IPC keys 5/6); the template writes `Notifications: Zmq`; `--check-config` validates it; `NLTG_CHAIN_NOTIFICATIONS=Poll` starts every `NLightningTestNode` in poll mode. Proof (`NLTG_CHAIN_NOTIFICATIONS=Poll scripts/run-cluster.sh --matrix onchain,anchors`): `onchain` 33/33 (+2 Explicit not run) and `anchors` 18/18 green with every test node polling (run `mx-20261006165955`), the mempool tests (`OnchainMempoolTests`, `AnchorsMempoolPenaltyTests`) included through the mempool poll; on the final code (`mx-20261006172846`, after NL-1097/NL-1098) `anchors` 18/18 and `onchain` rerun-green: `OnchainSpliceTests.Given_ALockedSpliceReorgedOut_*` read a penalty txid that the sweep scheduler then replaced by RBF and `getrawtransaction` threw for it (a test race, not poll-specific); the test now follows the rows' current resolving transactions and reads a replaced one as unconfirmed (`OnchainSpliceTests` 3 x 5/5 green in poll mode). `lnd` suite 67/67 green in Zmq mode (`mx-20261006171656`).
+- **Blocks/Blocked-by:** none; follow-ups NL-1099
+
+### NL-1095 rbitcoin contract test and image
+- **Status:** fixed (2ccc7fe3)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/Docker/rbitcoin/Dockerfile`, `test/NLightning.Testing.Cluster/Images/ImageVersions.cs` (`Rbitcoin`), `test/NLightning.Testing.Cluster/Nodes/Rbitcoin/RbitcoinNode.cs`, `test/NLightning.Integration.Tests/Cluster/Live/RbitcoinContractClusterTests.cs`
+- **Evidence:** research `RBITCOIN_GAPS.md` (2026-10-06): rbitcoin (Rust full node, Core-compatible JSON-RPC subset, no ZMQ, no wallet) had no linux/arm64 binary or image, and NBitcoin's parsing of its answers was unverified.
+- **Fix (2ccc7fe3):** image `nltg-spike-rbitcoin:9dd7ef99` (master: v0.7.0 has no `--rpc-cookie-file`, so its TCP RPC takes only a Bearer token); an Explicit cluster contract test with rbitcoin following Core 31.1 over P2P (both at a 5 sat/vB floor) through our `BitcoinChainService`/`FeeService`. Matched Core: getblockcount/getblockhash (-8 above the tip)/getblock 0 and 1/getblockheader, gettxout with and without the mempool (after NL-1097), getrawtransaction raw and verbose (after NL-1098; rbitcoin finds confirmed transactions without a txindex), getmempoolinfo `mempoolminfee` (1250 sat/kw), sendrawtransaction refusals all -26 with Core's texts (`min relay fee not met`, `insufficient fee`, `missing-inputs`, `mempool-script-verify-flag-failed (...)` (NL-1096)), a duplicate in the mempool accepted, submitpackage of a below-floor parent accepted (also after the parent was refused alone; Core 31.1 the same), gettxspendingprevout. Differed but handled: a confirmed transaction sent again answers `missing-inputs` (Core: already in the UTXO set), which `MayBeConfirmed` covers; estimatesmartfee answered no estimate on a fresh regtest, so `FeeService` used its fallback. End to end: our node on rbitcoin in poll mode (Core mining and backing CLN) opened, paid and cooperatively closed with CLN (2/2 green, run `rc-20261006171531`).
+- **Blocks/Blocked-by:** none
+
+### NL-1096 `BroadcastRefusalRules` missed Core 31's `mempool-script-verify-flag-failed`
+- **Status:** fixed (13141a76)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BroadcastRefusalRules.cs` (`s_invalid`)
+- **Evidence:** the Core 31.1 `bitcoind` binary holds only `mempool-script-verify-flag-failed` (the 29.0 one only `mandatory-script-verify-flag-failed`/`non-mandatory-script-verify-flag`), and rbitcoin answers it too (contract test: `-26 mempool-script-verify-flag-failed (p2wpkh witness len)`), so a script-invalid funding or wallet send was never abandoned as permanently refused.
+- **Fix (13141a76):** added to `s_invalid`, with a test case.
+- **Blocks/Blocked-by:** none
+
+### NL-1097 `gettxout` parsed through NBitcoin's asm reader: fails on rbitcoin
+- **Status:** fixed (6ef388df)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinChainService.cs` (`GetUnspentOutputAsync`, `ParseTxOutResponse`)
+- **Evidence:** NBitcoin's `RPCClient.GetTxOutAsync` builds the script from `scriptPubKey.asm`; rbitcoin writes rust-bitcoin's notation (`OP_0 OP_PUSHBYTES_20 ...`) and the parse threw `FormatException` (rbitcoin contract test, first run).
+- **Fix (6ef388df):** our own `gettxout` call, the script read from `scriptPubKey.hex` (Core writes it too), value through `ReadDecimal`.
+- **Blocks/Blocked-by:** found by NL-1095
+
+### NL-1098 rbitcoin's getrawtransaction "not found" is -1, not -5
+- **Status:** fixed (6ef388df)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinChainService.cs` (`GetTransactionAsync`, `GetTransactionConfirmationsAsync`, `IsTransactionNotFound`)
+- **Evidence:** rbitcoin answers an unknown txid with `RPC_MISC_ERROR` (-1) "No such mempool or blockchain transaction" (Core: -5, same text), so `GetTransactionAsync` threw instead of answering null (and the confirmation count threw instead of 0).
+- **Fix (6ef388df):** -5, or -1 with that text, is "not found".
+- **Blocks/Blocked-by:** found by NL-1095
+
+### NL-1099 rbitcoin as a chain backend: what is left
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs`, `test/NLightning.Testing.Cluster/Topology/`, product poll mode (NL-1094)
+- **Evidence:** NL-1095 proves the RPC contract and one open/pay/close with our node on rbitcoin; not proven: the on-chain suites with rbitcoin as our backend, package propagation from rbitcoin to Core peers (no BIP331; a parent below a Core peer's dynamic floor relies on Core's orphan 1p1c), rbitcoin's own fee estimator under load, Mutinynet (custom signet, 30 s blocks), and the poll-mode mempool poll's cost with many watched outpoints (one `gettxspendingprevout` per 500 outpoints per poll).
+- **Fix sketch:** a chain-backend switch `NLTG_CHAIN_BACKEND=core|rbitcoin`: the topology builders (and `LightningRegtestNetworkFixture`) deploy `RbitcoinNode` next to the bitcoind with `--connect <bitcoind>:18444`, `NLightningTestNode` takes the backend's RPC endpoint and forces `Notifications=Poll`; helpers that wait for "our node at height N" already wait on our node, but reorg helpers (`invalidateblock` on Core) and mempool checks on Core must wait for rbitcoin to follow / for relay; then `--matrix lnd,onchain,anchors`, `taproot`, `day0`. A Mutinynet trial next to `mutinynet-bitcoind` (`--network signet --signet-challenge ... --signet-block-time 30 --milestone 0`). rbitcoin stays off mainnet funds until its own `docs/lightning.md` says so.
+- **Blocks/Blocked-by:** NL-1094, NL-1095
