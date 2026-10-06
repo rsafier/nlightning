@@ -97,6 +97,53 @@ public sealed class AccountingReconcileHtlcSettleTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Given_AnHtlcTheInterceptorSettledNotCommittedYet_When_Reconciled_Then_ItIsOutstandingUntilFolded()
+    {
+        // Arrange (NL-1182): a held forward of 20,001,000 msat on channel 1 settled by the HTLC interceptor: our
+        // fulfill sent with its InterceptedHtlcSettled in the same save, no outgoing leg, no invoice of ours
+        var channel = await AddChannelAsync(1, Incoming(4, 20_001_000));
+        await AddEventsAsync(Opening(channel),
+                             Settle(AccountingEventKind.InterceptedHtlcSettled,
+                                    AccountingEventKeys.InterceptedHtlcSettled(channel.ChannelId, 4), 20_001_000));
+        Load(channel, OpeningMsat, Incoming(4, 20_001_000, HtlcState.SentRemoveHtlc, HtlcRemoval.Fulfill(s_preimage)));
+        await using var harness = await CreateBooksAsync();
+
+        // Act: the fulfill in flight
+        var inFlight = await harness.Books.ReconcileAsync(TestContext.Current.CancellationToken);
+
+        // Assert: the books hold the HTLC as received, the node not yet: outstanding, no drift
+        Assert.True(inFlight.IsClean);
+        Assert.Equal((620_001_000L, 600_000_000L, 20_001_000L, 0L), Channels(inFlight));
+        Assert.Empty(_logger.Warnings);
+
+        // Act: the dance folds the HTLC into our balance
+        Load(channel, OpeningMsat + 20_001_000);
+        var folded = await harness.Books.ReconcileAsync(TestContext.Current.CancellationToken);
+
+        // Assert: the books and the node agree, nothing outstanding
+        Assert.True(folded.IsClean);
+        Assert.Equal((620_001_000L, 620_001_000L, 0L, 0L), Channels(folded));
+        Assert.Empty(_logger.Warnings);
+    }
+
+    [Fact]
+    public async Task Given_AnInterceptedSettleWithoutItsEvent_When_Folded_Then_TheReconcileReportsTheDrift()
+    {
+        // Arrange (NL-1182, the gap before the fix): the interceptor's fulfill folded with no event in the feed
+        var channel = await AddChannelAsync(1, Incoming(4, 20_001_000));
+        await AddEventsAsync(Opening(channel));
+        Load(channel, OpeningMsat + 20_001_000);
+        await using var harness = await CreateBooksAsync();
+
+        // Act
+        var result = await harness.Books.ReconcileAsync(TestContext.Current.CancellationToken);
+
+        // Assert: the unexplained balance move is drift
+        Assert.False(result.IsClean);
+        Assert.Equal((600_000_000L, 620_001_000L, 0L, -20_001_000L), Channels(result));
+    }
+
+    [Fact]
     public async Task Given_TheSettleFoldedAfterItsEventCommittedButBeforeItWasSealed_When_Reconciled_Then_NothingDrifts()
     {
         // Arrange: the settle's save and the whole commitment dance land while the reconcile runs, before its snapshot

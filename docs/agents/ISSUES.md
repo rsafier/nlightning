@@ -177,18 +177,18 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 99 | 100 |
+| open | 0 | 0 | 1 | 100 | 101 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 233 | 485 | 802 |
+| fixed | 15 | 69 | 233 | 486 | 803 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **69** | **250** | **605** | **939** |
+| **Total** | **15** | **69** | **250** | **607** | **941** |
 
 ### Epics
 
 - NL-1190: Loop gRPC L0–L4 (in-progress, medium; service implementation NL-1191..NL-1195 fixed, external interoperability/failure proofs NL-1196, scanner indexing NL-1197)
 
-- NL-1160: LND gRPC compatibility (in-progress, medium; plan `docs/agents/LND_GRPC_PLAN.md`: wave 1 read/invoice/message surface with real macaroons NL-1161..NL-1163 fixed, wave 2 pay/channels/hold invoices/streams NL-1164..NL-1167, NL-1169 fixed, wave 3 acceptor/interceptor/walletrpc/history NL-1168 fixed (NL-1180, NL-1183..NL-1185); follow-ups NL-1170..NL-1172, NL-1181, NL-1182, NL-1186, NL-1187)
+- NL-1160: LND gRPC compatibility (in-progress, medium; plan `docs/agents/LND_GRPC_PLAN.md`: wave 1 read/invoice/message surface with real macaroons NL-1161..NL-1163 fixed, wave 2 pay/channels/hold invoices/streams NL-1164..NL-1167, NL-1169 fixed, wave 3 acceptor/interceptor/walletrpc/history NL-1168 fixed (NL-1180, NL-1183..NL-1185); follow-ups NL-1170..NL-1172, NL-1181, NL-1182, NL-1186, NL-1187; NL-1205 fixed)
 - NL-990: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-991 (fixed), C1 CDK gRPC payment processor NL-992 (fixed, BOLT 11; follow-ups NL-997), C2 proof NL-993 (fixed, on the cluster harness), C3 native wallet NL-994, C4 hold invoices NL-995; integration review NL-998, NL-999, NL-1001..NL-1004 fixed, NL-1000 fixed, NL-1010 and NL-1011 open; BOLT 12 and on-chain NL-997 fixed)
 - NL-877: Simple taproot channels (`option_simple_taproot`) (open, medium; plan `docs/agents/TAPROOT_CHANNELS_PLAN.md` T0-T6; spec merged 2026-05-04, LND 0.21 and Eclair 0.14 run it as private channels; taproot gossip NL-878 waits for BOLTs #1059)
 - NL-875: Trampoline routing (BOLTs PR #836): client, relay and target (in-progress, medium; plan `docs/agents/TRAMPOLINE_PLAN.md`, TR0-TR5 built on `wip/fafo` 2026-10-03, merges `7f5c5d85` TR0, `e958b8eb` TR1, `9f0d1050` TR3-P, `165acd77` TR2, `fb2b07ca` TR5 phase 1, `1c09e718` TR4, `dd48b26d` TR3, `c1811bbf` TR5 phase 2; experimental until an owner decision; follow-ups NL-895..NL-899)
@@ -9483,7 +9483,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1151
 
 ### NL-1160 LND gRPC compatibility: serve a subset of LND's gRPC API (epic)
-- **Status:** in-progress (wave 0 plan done; wave 1 NL-1161..NL-1163, wave 2 NL-1164..NL-1167, NL-1169 and wave 3 NL-1168 (NL-1180, NL-1183..NL-1185) fixed; open: follow-ups NL-1170..NL-1172, NL-1181, NL-1182, NL-1186, NL-1187)
+- **Status:** in-progress (wave 0 plan done; wave 1 NL-1161..NL-1163, wave 2 NL-1164..NL-1167, NL-1169 and wave 3 NL-1168 (NL-1180, NL-1183..NL-1185) fixed; open: follow-ups NL-1170..NL-1172, NL-1181, NL-1182, NL-1186, NL-1187; NL-1205 fixed)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `docs/agents/LND_GRPC_PLAN.md`; branch `wip/lnd-grpc-compat`
@@ -9620,12 +9620,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1180
 
 ### NL-1182 LND gRPC HtlcInterceptor: gaps against LND
-- **Status:** open
+- **Status:** open (the accounting of a SETTLE fixed in 56595f0d, NL-1205)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `Application/Payments/Interception/HtlcInterceptorHub`, `HtlcSwitch.Interception.cs`, `RouterService.Interceptor.cs`
-- **Evidence:** `RESUME_MODIFIED` answers UNIMPLEMENTED (custom-channel amounts and wire records); there is no `requireinterceptor` mode (held forwards resume when the client leaves, and a forward replayed before a client connects after a restart is forwarded normally, LND's default); forwards held while their incoming channel goes on chain are not offered (LND's on-chain interception); a SETTLE fulfills the incoming HTLC with no forward circuit or invoice, so no accounting event records the amount received (the books would show the channel balance move without a matching entry; not checked against the reconcile).
-- **Fix sketch:** RESUME_MODIFIED over the offer path's amount/records; a persisted hold for `requireinterceptor`; an accounting event (e.g. `ForwardSettled` with no outgoing leg or a dedicated kind) staged in the settle's fulfill save.
+- **Evidence:** `RESUME_MODIFIED` answers UNIMPLEMENTED (custom-channel amounts and wire records); there is no `requireinterceptor` mode (held forwards resume when the client leaves, and a forward replayed before a client connects after a restart is forwarded normally, LND's default); forwards held while their incoming channel goes on chain are not offered (LND's on-chain interception). (A SETTLE booked no accounting event: fixed as NL-1205.)
+- **Fix sketch:** RESUME_MODIFIED over the offer path's amount/records; a persisted hold for `requireinterceptor`; on-chain interception.
 - **Blocks/Blocked-by:** follow-up of NL-1183
 
 ### NL-1183 LND gRPC: routerrpc HtlcInterceptor and the switch's forward interception point
@@ -9902,3 +9902,21 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** the merged `wip/fafo` run at `be840cb9` (2026-10-06) with `NLTG_CHAIN_NOTIFICATIONS=Poll scripts/run-cluster.sh --matrix onchain,anchors`: `anchors` rerun-green (17/18, the class green alone on the flake rerun); the same test passed in the poll-monitor lane's own Poll runs and in every Zmq run so far. Poll mode delivers blocks up to one `Bitcoin:PollInterval` (2 s on regtest) later than ZMQ, so a test wait sized for ZMQ delivery may be tight.
 - **Fix sketch:** read the diagnostics of the failed attempt (`TestResults/cluster/mx-20261006181511/anchors`), then make the wait follow the node's processed height rather than wall time, or size it for Poll mode.
 - **Blocks/Blocked-by:** related NL-1094
+
+### NL-1205 HTLC interceptor SETTLE: no accounting event, the books drift by the HTLC
+- **Status:** fixed (56595f0d)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.Interception.cs`, `Payments/PaymentAccountingEvents.cs`, `Accounting/Books/HtlcOutstandingReader.cs`, `Onchain/OnchainResolutionExecutor.cs`, Domain `Accounting/` (kind, key, posting rule)
+- **Evidence:** split out of NL-1182: an interceptor SETTLE fulfilled the held forward's incoming HTLC with no circuit, invoice or event, so once the fulfill folded the channels line of the reconcile drifted by the HTLC's amount (proven by `AccountingReconcileHtlcSettleTests.Given_AnInterceptedSettleWithoutItsEvent_*`), and an intercepted HTLC lost on chain afterwards had no loss either.
+- **Fix:** `AccountingEventKind.InterceptedHtlcSettled` (8, key `icpt:{channel}:{htlc}:settled`, AmountMsat = the HTLC's amount) staged in the interceptor fulfill's own save, once per HTLC; posted Dr Channels / Cr Received like an invoice (the node received the whole HTLC for whoever runs the interceptor; LND has no forwarding event for it either), a payment received in the channels report, a Received lot in the financial profile. The reconcile counts a not-yet-folded settle as outstanding; on chain a claim is `valueBookedBy=interceptor` and a timeout, give-up or trimmed HTLC a `ForwardLostOnchain` (cause `upstreamOnchain`), reversed by a reorg. FAIL and RESUME book nothing new. Tests: `HtlcInterceptionSwitchTests` (settle/fail/resume on the three-node harness), `InterceptedHtlcAccountingEventsTests`, `OnchainAccountingTests.Given_AnHtlcTheInterceptorSettled_*`, Integration `AccountingReconcileHtlcSettleTests` (SQLite, production books).
+- **Blocks/Blocked-by:** split from NL-1182; part of NL-1160
+
+### NL-1206 Two Application.Tests load flakes in a full run beside a net11 build
+- **Status:** open
+- **Severity:** low
+- **Kind:** flake
+- **Location:** `test/NLightning.Application.Tests/Gossip/Graph/GossipIngressTests.cs` (`Given_AnAnnouncementGivenUpAfterItsRetries_When_ItsUpdateArrivesAgainLater_Then_ItIsMissedUntilStored`, NL-445's case), `test/NLightning.Application.Tests/Payments/Send/PaymentHarnessTests.cs:552` (`Given_ALiveUnrecordedRetry_When_AnEarlierAttemptsFailureIsReplayed_Then_TheRetryIsNotFailed`: `InFlight` expected, `Failed`)
+- **Evidence:** the full non-Docker net10.0 run of `wip/acct1182` (2026-10-06, a net11 daemon build running at the same time) failed these two; both classes green alone right after (38/38, 18/18). Neither touches the NL-1205 change. The second is a neighbour of NL-1202's timing case.
+- **Fix sketch:** as NL-445 and NL-1202: drive the retry and replay on stepped clocks or bounded event waits instead of wall time.
+- **Blocks/Blocked-by:** related NL-445, NL-1202

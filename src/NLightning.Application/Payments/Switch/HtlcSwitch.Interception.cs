@@ -102,7 +102,13 @@ public sealed partial class HtlcSwitch
                         return;
                     }
 
-                    await _channelOperations.FulfillHtlcAsync(incomingChannelId, htlcId, preimage, cancellationToken);
+                    // NL-1182: no outgoing leg took anything out of the channels, so the whole amount is ours; its
+                    // event commits with the fulfill or not at all
+                    await _channelOperations.FulfillHtlcAsync(
+                        incomingChannelId, htlcId, preimage,
+                        unitOfWork => StageInterceptedSettleAsync(unitOfWork, incomingChannelId, htlc, forward,
+                                                                  cancellationToken),
+                        cancellationToken);
                     _logger.LogInformation("Settled intercepted HTLC {HtlcId} of channel {ChannelId} with the "
                                          + "interceptor's preimage", htlcId, incomingChannelId);
                     return;
@@ -128,6 +134,23 @@ public sealed partial class HtlcSwitch
                              + "{Reason}", resolution.Action, htlcId, incomingChannelId, e.Message);
         }
     }
+
+    /// <summary>
+    /// Stages the <c>InterceptedHtlcSettled</c> accounting event of an interceptor's settle on the fulfill's unit of
+    /// work (NL-1182). Never throws.
+    /// </summary>
+    private Task StageInterceptedSettleAsync(IUnitOfWork unitOfWork, ChannelId incomingChannelId, HtlcRecord htlc,
+                                             IncomingOnionForward forward, CancellationToken cancellationToken) =>
+        PaymentAccountingEvents.StageInterceptedHtlcSettledAsync(
+            unitOfWork, incomingChannelId, htlc.Id, () =>
+            {
+                _channelMemoryRepository.TryGetChannel(incomingChannelId, out var incoming);
+                return PaymentAccountingEvents.InterceptedHtlcSettled(
+                    incomingChannelId, htlc.Id, htlc.PaymentHash, LightningMoneyOf(htlc), incoming,
+                    forward.HasOutgoingShortChannelId ? forward.OutgoingShortChannelId : (ShortChannelId?)null,
+                    forward.NextNodeId,
+                    forward.AmountToForward, _timeProvider.GetUtcNow(), CurrentHeight);
+            }, _logger, cancellationToken);
 
     /// <summary>The failure an interceptor's code stands for (LND: the three BADONION codes or
     /// <c>temporary_channel_failure</c> with the incoming channel's update).</summary>

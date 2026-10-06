@@ -1,10 +1,15 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Tests.Utils.Accounting;
 
 namespace NLightning.Application.Tests.Payments.Switch;
 
 using Application.Payments.Interception;
 using Channels.Harness;
+using Domain.Accounting.Books;
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
+using Domain.Accounting.Models;
 using Domain.Money;
 using Domain.Payments.Enums;
 using Domain.Payments.Interception;
@@ -55,6 +60,9 @@ public class HtlcInterceptionSwitchTests
         Assert.Equal(0, decrypted.ErringHopIndex);
         Assert.Equal(FailureCode.TemporaryChannelFailure, decrypted.Code);
         Assert.Equal(0, hub.HeldCount);
+
+        // NL-1182: a failed held forward moves no money, so Bob books nothing
+        Assert.Empty(await AccountingEventsAsync(harness.Bob));
     }
 
     [Fact]
@@ -80,6 +88,11 @@ public class HtlcInterceptionSwitchTests
         var stored = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
                                                            .GetByPaymentHashAsync(invoice.PaymentHash));
         Assert.Equal(InvoiceStatus.Settled, stored!.Status);
+
+        // NL-1182: a resumed forward is an ordinary forward: Bob books its fee, nothing for the interception
+        var forward = Assert.Single(await AccountingEventsAsync(harness.Bob));
+        Assert.Equal(AccountingEventKind.ForwardSettled, forward.Kind);
+        Assert.Equal((long)(offered.IncomingAmount - offered.OutgoingAmount).MilliSatoshi, forward.AmountMsat);
     }
 
     [Fact]
@@ -94,6 +107,8 @@ public class HtlcInterceptionSwitchTests
         await harness.AlicePaysAsync(harness.RouteToCarol(s_amount, invoice.PaymentHash, invoice.PaymentSecret));
         await harness.PumpAsync();
         var offered = Assert.Single(client.Offered);
+        var bobAliceBefore = BobBalance(harness, ThreeNodeHarness.AliceBobChannelId);
+        var bobCarolBefore = BobBalance(harness, ThreeNodeHarness.BobCarolChannelId);
 
         // Act: a wrong preimage first (refused, still held), then the right one
         var wrong = await hub.ResolveAsync(offered.IncomingShortChannelId, offered.IncomingHtlcId,
@@ -112,6 +127,29 @@ public class HtlcInterceptionSwitchTests
         var stored = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
                                                            .GetByPaymentHashAsync(invoice.PaymentHash));
         Assert.Equal(InvoiceStatus.Open, stored!.Status);
+
+        // NL-1182: Bob received the whole incoming HTLC (no outgoing leg), booked in the fulfill's save
+        var settled = Assert.Single(await AccountingEventsAsync(harness.Bob));
+        Assert.Equal(AccountingEventKind.InterceptedHtlcSettled, settled.Kind);
+        Assert.Equal(AccountingEventKeys.InterceptedHtlcSettled(ThreeNodeHarness.AliceBobChannelId,
+                                                                offered.IncomingHtlcId), settled.EventKey);
+        Assert.Equal(ThreeNodeHarness.AliceBobChannelId, settled.ChannelId);
+        Assert.Equal(invoice.PaymentHash, settled.PaymentHash);
+        Assert.Equal((long)offered.IncomingAmount.MilliSatoshi, settled.AmountMsat);
+        Assert.Equal(0, settled.FeeMsat);
+        Assert.Equal(AccountingFinality.Final, settled.Finality);
+        Assert.Equal("intercepted", settled.Details[AccountingDetailKeys.Kind]);
+        Assert.Equal(ThreeNodeHarness.BobCarolScid.ToString(), settled.Details[AccountingDetailKeys.OutgoingScid]);
+        Assert.Equal(offered.OutgoingAmount.MilliSatoshi.ToString(), settled.Details["amountToForwardMsat"]);
+
+        // ... and his books move exactly as his channels: the Alice-Bob balance up by the HTLC, Bob-Carol untouched
+        var books = BooksSimulator.Of([settled]);
+        Assert.Equal(BobBalance(harness, ThreeNodeHarness.AliceBobChannelId) - bobAliceBefore
+                   + (BobBalance(harness, ThreeNodeHarness.BobCarolChannelId) - bobCarolBefore),
+                     books[AccountRole.Channels]);
+        Assert.Equal((long)offered.IncomingAmount.MilliSatoshi, books[AccountRole.Channels]);
+        Assert.Equal(-(long)offered.IncomingAmount.MilliSatoshi, books[AccountRole.Received]);
+        Assert.Equal(bobCarolBefore, BobBalance(harness, ThreeNodeHarness.BobCarolChannelId));
     }
 
     [Fact]
@@ -195,6 +233,12 @@ public class HtlcInterceptionSwitchTests
         var client = new RecordingClient();
         return (hub, client, hub.Connect(client));
     }
+
+    private static Task<IReadOnlyList<AccountingEventModel>> AccountingEventsAsync(SwitchNode node) =>
+        node.InScopeAsync(u => u.AccountingEventDbRepository.GetUnsealedAsync(1_000));
+
+    private static long BobBalance(ThreeNodeHarness harness, Domain.Channels.ValueObjects.ChannelId channelId) =>
+        (long)harness.Bob.Channel(channelId).Commitments!.LocalBalanceMsat;
 
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
