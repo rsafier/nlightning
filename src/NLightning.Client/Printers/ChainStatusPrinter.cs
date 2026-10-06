@@ -20,6 +20,10 @@ public sealed class ChainStatusPrinter : IPrinter<ChainStatusIpcResponse>
             _output.WriteLine($"  Halt reason: {item.HaltReason}");
         _output.WriteLine($"  Last processed block: {item.LastProcessedBlockHeight}");
         _output.WriteLine($"  bitcoind tip: {(item.ChainTipHeight is { } tip ? tip.ToString() : "unknown")}");
+        if (item.Notifications is not null)
+            _output.WriteLine($"  Block notifications: {item.Notifications}");
+        if (item.MempoolWatch is not null)
+            _output.WriteLine($"  Mempool watch: {item.MempoolWatch}");
         if (item.RefusedOperations.Count == 0)
             return;
 

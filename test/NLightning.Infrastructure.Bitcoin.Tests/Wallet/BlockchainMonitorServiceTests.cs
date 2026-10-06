@@ -36,7 +36,7 @@ using Options;
 /// semantics (one save per block, reorg rollback, rebroadcast after a restart) are proven on SQLite in
 /// <c>Integration.Tests/Persistence/ChainMonitorPersistenceTests</c>.
 /// </summary>
-public class BlockchainMonitorServiceTests
+public partial class BlockchainMonitorServiceTests
 {
     // Never 28332: a local signet bitcoind publishes real blocks there (NL-310)
     private static readonly SilentZmqEndpoint s_zmq = new();
@@ -1534,10 +1534,10 @@ public class BlockchainMonitorServiceTests
 
     private BlockchainMonitorService CreateService(FakeBitcoinChain chain, string network = "regtest",
                                                    ILogger<BlockchainMonitorService>? logger = null,
-                                                   TimeSpan? tipPollInterval = null)
+                                                   TimeSpan? tipPollInterval = null,
+                                                   Action<BitcoinOptions>? configure = null)
     {
-        var bitcoinOptions = new Mock<IOptions<BitcoinOptions>>();
-        bitcoinOptions.Setup(x => x.Value).Returns(new BitcoinOptions
+        var options = new BitcoinOptions
         {
             RpcEndpoint = "",
             RpcUser = "",
@@ -1547,7 +1547,10 @@ public class BlockchainMonitorServiceTests
             ZmqTxPort = s_zmq.TxPort,
             // Off unless a test asks: the tests drive PollTipAsync themselves
             TipPollInterval = tipPollInterval ?? TimeSpan.Zero
-        });
+        };
+        configure?.Invoke(options);
+        var bitcoinOptions = new Mock<IOptions<BitcoinOptions>>();
+        bitcoinOptions.Setup(x => x.Value).Returns(options);
         var nodeOptions = new Mock<IOptions<NodeOptions>>();
         nodeOptions.Setup(x => x.Value).Returns(new NodeOptions { BitcoinNetwork = network });
         return new BlockchainMonitorService(bitcoinOptions.Object, chain,

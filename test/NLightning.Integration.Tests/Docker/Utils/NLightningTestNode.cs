@@ -146,6 +146,27 @@ public sealed class NLightningTestNode : IAsyncDisposable
     public bool WatchMempool { get; set; } = true;
 
     /// <summary>
+    /// <c>Bitcoin:Notifications</c> (NL-1094): <c>Zmq</c> (default) or <c>Poll</c> (RPC only, the ZMQ settings are not
+    /// written; <see cref="WatchMempool"/> then polls <c>gettxspendingprevout</c>). The default comes from the
+    /// environment variable <see cref="ChainNotificationsVariable"/>, so a whole suite runs in poll mode
+    /// (<c>NLTG_CHAIN_NOTIFICATIONS=Poll scripts/run-cluster.sh ...</c>). Applied on every <see cref="StartAsync"/>.
+    /// </summary>
+    public string ChainNotifications { get; set; } = DefaultChainNotifications;
+
+    /// <summary>The environment variable that sets <see cref="ChainNotifications"/> for every test node.</summary>
+    public const string ChainNotificationsVariable = "NLTG_CHAIN_NOTIFICATIONS";
+
+    /// <summary><c>Poll</c> when <see cref="ChainNotificationsVariable"/> says so (any case), <c>Zmq</c> otherwise.</summary>
+    public static string DefaultChainNotifications =>
+        string.Equals(Environment.GetEnvironmentVariable(ChainNotificationsVariable), "Poll",
+                      StringComparison.OrdinalIgnoreCase)
+            ? "Poll"
+            : "Zmq";
+
+    /// <summary>True when the node follows the chain by RPC polling only (<see cref="ChainNotifications"/>).</summary>
+    public bool IsPollMode => string.Equals(ChainNotifications, "Poll", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Last changes to the node's services, applied on every <see cref="StartAsync"/> after the daemon's composition and
     /// the test overrides (e.g. a test-only decorator of the HTLC switch). Set it before starting.
     /// </summary>
@@ -794,9 +815,6 @@ public sealed class NLightningTestNode : IAsyncDisposable
             new("Bitcoin:RpcEndpoint", bitcoin.Address.ToString()),
             new("Bitcoin:RpcUser", bitcoin.CredentialString.UserPassword.UserName),
             new("Bitcoin:RpcPassword", bitcoin.CredentialString.UserPassword.Password),
-            new("Bitcoin:ZmqHost", endpoint.ZmqHost),
-            new("Bitcoin:ZmqBlockPort", endpoint.ZmqBlockPort.ToString()),
-            new("Bitcoin:ZmqTxPort", endpoint.ZmqTxPort.ToString()),
             // A block ZMQ never announced (mined before the subscription reached bitcoind, which takes longer to a
             // cluster pod than to Docker's 127.0.0.1 port) is caught up within about 2 s instead of 60 s; the monitor
             // logs a warning each time
@@ -815,6 +833,20 @@ public sealed class NLightningTestNode : IAsyncDisposable
             new("Gossip:MaxMemoryMb", "0"),
             new("Bitcoin:WatchMempool", WatchMempool ? "true" : "false")
         ];
+        if (IsPollMode)
+        {
+            // NL-1094: RPC only, no ZMQ settings at all; polled every second (blocks and, with WatchMempool, the
+            // mempool spends of the watched outputs)
+            inMemoryConfiguration.Add(new("Bitcoin:Notifications", "Poll"));
+            inMemoryConfiguration.Add(new("Bitcoin:PollInterval", "00:00:01"));
+        }
+        else
+        {
+            inMemoryConfiguration.Add(new("Bitcoin:ZmqHost", endpoint.ZmqHost));
+            inMemoryConfiguration.Add(new("Bitcoin:ZmqBlockPort", endpoint.ZmqBlockPort.ToString()));
+            inMemoryConfiguration.Add(new("Bitcoin:ZmqTxPort", endpoint.ZmqTxPort.ToString()));
+        }
+
         // A later source overrides an earlier one, so ExtraConfiguration wins over the defaults above
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(inMemoryConfiguration)
                                                       .AddInMemoryCollection(ExtraConfiguration)

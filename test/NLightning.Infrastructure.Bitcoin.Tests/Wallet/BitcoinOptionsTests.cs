@@ -1,5 +1,6 @@
 namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
 
+using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Options;
 
 /// <summary>
@@ -126,5 +127,100 @@ public class BitcoinOptionsTests
 
         // Assert
         Assert.Single(errors);
+    }
+
+    [Fact]
+    public void Given_PollModeWithoutZmq_When_Validated_Then_ThereIsNoError()
+    {
+        // Arrange (NL-1094): a node without ZMQ (rbitcoin)
+        var options = Valid();
+        options.Notifications = ChainNotificationMode.Poll;
+        options.ZmqHost = null;
+        options.ZmqBlockPort = 0;
+        options.ZmqTxPort = 0;
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void Given_ZmqModeWithoutZmq_When_Validated_Then_TheErrorPointsAtPollMode()
+    {
+        // Arrange
+        var options = Valid();
+        options.ZmqHost = null;
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains("Notifications", Assert.Single(errors), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(249)]
+    [InlineData(60_001)]
+    public void Given_APollIntervalOutOfRange_When_Validated_Then_ItIsReported(int milliseconds)
+    {
+        // Arrange
+        var options = Valid();
+        options.Notifications = ChainNotificationMode.Poll;
+        options.PollInterval = TimeSpan.FromMilliseconds(milliseconds);
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.StartsWith("Bitcoin:PollInterval", Assert.Single(errors), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Given_AnUnknownNotificationMode_When_Validated_Then_ItIsReported()
+    {
+        // Arrange
+        var options = Valid();
+        options.Notifications = (ChainNotificationMode)7;
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.StartsWith("Bitcoin:Notifications", Assert.Single(errors), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Given_NoPollInterval_When_Read_Then_TheNetworkDefaultIsUsed()
+    {
+        // Arrange
+        var options = Valid();
+
+        // Act / Assert
+        Assert.Equal(TimeSpan.FromSeconds(2), options.GetPollInterval(BitcoinNetwork.Regtest));
+        Assert.Equal(TimeSpan.FromSeconds(5), options.GetPollInterval(BitcoinNetwork.Signet));
+        Assert.Equal(TimeSpan.FromSeconds(5), options.GetPollInterval(BitcoinNetwork.Testnet4));
+        Assert.Equal(TimeSpan.FromSeconds(10), options.GetPollInterval(BitcoinNetwork.Mainnet));
+        options.PollInterval = TimeSpan.FromSeconds(3);
+        Assert.Equal(TimeSpan.FromSeconds(3), options.GetPollInterval(BitcoinNetwork.Mainnet));
+    }
+
+    [Theory]
+    [InlineData(ChainNotificationMode.Zmq, null, true)]
+    [InlineData(ChainNotificationMode.Poll, null, false)]
+    [InlineData(ChainNotificationMode.Poll, true, true)]
+    [InlineData(ChainNotificationMode.Zmq, false, false)]
+    public void Given_WatchMempool_When_Read_Then_UnsetFollowsTheMode(ChainNotificationMode mode, bool? watch,
+                                                                      bool expected)
+    {
+        // Arrange
+        var options = Valid();
+        options.Notifications = mode;
+        options.WatchMempool = watch;
+
+        // Act / Assert
+        Assert.Equal(expected, options.IsMempoolWatched);
     }
 }

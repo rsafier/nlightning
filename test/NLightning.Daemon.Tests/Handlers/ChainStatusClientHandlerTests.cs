@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Tests.Handlers;
 
@@ -21,9 +22,11 @@ using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Money;
 using Domain.Node.Interfaces;
+using Domain.Node.Options;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Protocol.Interfaces;
+using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using NLightning.Client;
 using NLightning.Client.Printers;
@@ -104,7 +107,8 @@ public class ChainStatusClientHandlerTests
         var options = NLightningMessagePackOptions.Options;
         var ct = TestContext.Current.CancellationToken;
         var response = ChainStatusIpcResponse.FromClientResponse(
-            new ChainStatusClientResponse(true, "a reorg", 700, null, ChainProcessingHalt.RefusedOperations));
+            new ChainStatusClientResponse(true, "a reorg", 700, null, ChainProcessingHalt.RefusedOperations,
+                                          "poll every 00:00:02", "off"));
 
         // Act
         var request2 = MessagePackSerializer.Deserialize<ChainStatusIpcRequest>(
@@ -119,6 +123,34 @@ public class ChainStatusClientHandlerTests
         Assert.Equal(700u, response2.LastProcessedBlockHeight);
         Assert.Null(response2.ChainTipHeight);
         Assert.Equal(ChainProcessingHalt.RefusedOperations, response2.RefusedOperations);
+        Assert.Equal("poll every 00:00:02", response2.Notifications);
+        Assert.Equal("off", response2.MempoolWatch);
+    }
+
+    [Theory]
+    [InlineData(ChainNotificationMode.Zmq, null, "zmq", "zmq rawtx")]
+    [InlineData(ChainNotificationMode.Poll, null, "poll every 00:00:02", "off")]
+    [InlineData(ChainNotificationMode.Poll, true, "poll every 00:00:02", "gettxspendingprevout poll")]
+    public async Task Given_ANotificationMode_When_ChainStatus_Then_ItAndTheMempoolWatchAreReported(
+        ChainNotificationMode mode, bool? watchMempool, string notifications, string mempoolWatch)
+    {
+        // Arrange (NL-1094)
+        var bitcoin = new BitcoinOptions { Notifications = mode, WatchMempool = watchMempool };
+        var handler = new ChainStatusClientHandler(_chain.Object, _monitor.Object,
+                                                   NullLogger<ChainStatusClientHandler>.Instance,
+                                                   Options.Create(bitcoin),
+                                                   Options.Create(new NodeOptions { BitcoinNetwork = "regtest" }));
+
+        // Act
+        var response = await handler.HandleAsync(new ChainStatusClientRequest(), TestContext.Current.CancellationToken);
+        using var output = new StringWriter();
+        new ChainStatusPrinter(output).Print(ChainStatusIpcResponse.FromClientResponse(response));
+
+        // Assert
+        Assert.Equal(notifications, response.Notifications);
+        Assert.Equal(mempoolWatch, response.MempoolWatch);
+        Assert.Contains($"Block notifications: {notifications}", output.ToString());
+        Assert.Contains($"Mempool watch: {mempoolWatch}", output.ToString());
     }
 
     [Fact]

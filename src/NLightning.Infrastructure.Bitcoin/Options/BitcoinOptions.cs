@@ -1,5 +1,7 @@
 namespace NLightning.Infrastructure.Bitcoin.Options;
 
+using Domain.Protocol.ValueObjects;
+
 /// <summary>
 /// The bitcoind connection (configuration section <c>Bitcoin</c>).
 /// </summary>
@@ -16,7 +18,17 @@ public class BitcoinOptions
     public string? RpcEndpoint { get; set; }
     public string? RpcUser { get; set; }
     public string? RpcPassword { get; set; }
+
+    /// <summary>
+    /// How the chain monitor learns about new blocks (NL-1094): <see cref="ChainNotificationMode.Zmq"/> (default) or
+    /// <see cref="ChainNotificationMode.Poll"/> (RPC only; <see cref="ZmqHost"/> and the ZMQ ports are not needed).
+    /// </summary>
+    public ChainNotificationMode Notifications { get; set; } = ChainNotificationMode.Zmq;
+
+    /// <summary>Required with <see cref="ChainNotificationMode.Zmq"/>, ignored with <see cref="ChainNotificationMode.Poll"/>.</summary>
     public string? ZmqHost { get; set; }
+
+    /// <summary>Required with <see cref="ChainNotificationMode.Zmq"/>, ignored with <see cref="ChainNotificationMode.Poll"/>.</summary>
     public int ZmqBlockPort { get; set; }
 
     /// <summary>
@@ -26,11 +38,28 @@ public class BitcoinOptions
     public int ZmqTxPort { get; set; }
 
     /// <summary>
-    /// Subscribes to bitcoind's ZMQ <c>rawtx</c> on <see cref="ZmqTxPort"/> to react to unconfirmed spends of watched
-    /// outputs (BOLT 5 plan O8: preimages and revoked commitments seen in the mempool). Blocks alone are enough for
-    /// correctness, so this only lowers latency. Default true.
+    /// Watches the mempool for unconfirmed spends of watched outputs (BOLT 5 plan O8: preimages and revoked commitments
+    /// seen in the mempool). Blocks alone are enough for correctness, so this only lowers latency. With
+    /// <see cref="ChainNotificationMode.Zmq"/> it subscribes to bitcoind's ZMQ <c>rawtx</c> on <see cref="ZmqTxPort"/>;
+    /// with <see cref="ChainNotificationMode.Poll"/> it asks <c>gettxspendingprevout</c> (Bitcoin Core 24+, rbitcoin)
+    /// for the watched outputs on every poll (NL-1094). Unset (null) means on with ZMQ and off with polling
+    /// (<see cref="IsMempoolWatched"/>).
     /// </summary>
-    public bool WatchMempool { get; set; } = true;
+    public bool? WatchMempool { get; set; }
+
+    /// <summary>
+    /// How often <see cref="ChainNotificationMode.Poll"/> reads bitcoind's tip (and, with <see cref="WatchMempool"/>,
+    /// the mempool spends of the watched outputs). Unset (null) means <see cref="DefaultPollInterval"/> for the network:
+    /// 2 s on regtest, 5 s on the test networks (Mutinynet mines every 30 s), 10 s on mainnet. Between
+    /// <see cref="MinPollInterval"/> and <see cref="MaxPollInterval"/>. Ignored with <see cref="ChainNotificationMode.Zmq"/>.
+    /// </summary>
+    public TimeSpan? PollInterval { get; set; }
+
+    /// <summary>The shortest <see cref="PollInterval"/> accepted.</summary>
+    public static readonly TimeSpan MinPollInterval = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>The longest <see cref="PollInterval"/> accepted (a tenth of a mainnet block interval).</summary>
+    public static readonly TimeSpan MaxPollInterval = TimeSpan.FromMinutes(1);
 
     /// <summary>
     /// How often the chain monitor asks bitcoind for its tip over RPC, besides following ZMQ <c>rawblock</c>. A ZMQ
@@ -41,9 +70,26 @@ public class BitcoinOptions
     /// </summary>
     public TimeSpan TipPollInterval { get; set; } = TimeSpan.FromSeconds(30);
 
+    /// <summary>True when the mempool is watched: <see cref="WatchMempool"/>, or by default with ZMQ only.</summary>
+    public bool IsMempoolWatched => WatchMempool ?? Notifications == ChainNotificationMode.Zmq;
+
+    /// <summary>
+    /// The poll interval <see cref="ChainNotificationMode.Poll"/> uses on <paramref name="network"/>:
+    /// <see cref="PollInterval"/>, or <see cref="DefaultPollInterval"/>.
+    /// </summary>
+    public TimeSpan GetPollInterval(BitcoinNetwork network) => PollInterval ?? DefaultPollInterval(network);
+
+    /// <summary>The poll interval when <see cref="PollInterval"/> is unset: 2 s regtest, 10 s mainnet, 5 s otherwise.</summary>
+    public static TimeSpan DefaultPollInterval(BitcoinNetwork network) =>
+        network == BitcoinNetwork.Regtest ? TimeSpan.FromSeconds(2)
+        : network == BitcoinNetwork.Mainnet ? TimeSpan.FromSeconds(10)
+        : TimeSpan.FromSeconds(5);
+
     /// <summary>
     /// The settings the node cannot run without: a usable RPC endpoint (<see cref="IsUsableRpcEndpoint"/>), the RPC user
-    /// and password, the ZMQ host and block port, a ZMQ tx port in range and a tip poll interval that is not negative.
+    /// and password, a known notification mode, with ZMQ the ZMQ host and block port, a ZMQ tx port in range, a tip poll
+    /// interval that is not negative and, when set, a poll interval between <see cref="MinPollInterval"/> and
+    /// <see cref="MaxPollInterval"/>.
     /// </summary>
     /// <returns>One message per problem, empty when the section is usable.</returns>
     public IReadOnlyList<string> GetValidationErrors()
@@ -59,17 +105,32 @@ public class BitcoinOptions
         if (string.IsNullOrEmpty(RpcPassword))
             errors.Add($"{SectionName}:{nameof(RpcPassword)} is required.");
 
-        if (string.IsNullOrWhiteSpace(ZmqHost))
-            errors.Add($"{SectionName}:{nameof(ZmqHost)} is required.");
+        if (!Enum.IsDefined(Notifications))
+            errors.Add($"{SectionName}:{nameof(Notifications)} must be Zmq or Poll.");
 
-        if (ZmqBlockPort is < 1 or > 65535)
-            errors.Add($"{SectionName}:{nameof(ZmqBlockPort)} must be a port between 1 and 65535.");
+        if (Notifications == ChainNotificationMode.Zmq)
+        {
+            if (string.IsNullOrWhiteSpace(ZmqHost))
+                errors.Add($"{SectionName}:{nameof(ZmqHost)} is required (or set {SectionName}:{nameof(Notifications)} "
+                         + "to Poll for a node without ZMQ).");
+
+            if (ZmqBlockPort is < 1 or > 65535)
+                errors.Add($"{SectionName}:{nameof(ZmqBlockPort)} must be a port between 1 and 65535.");
+        }
+        else if (ZmqBlockPort is < 0 or > 65535)
+        {
+            errors.Add($"{SectionName}:{nameof(ZmqBlockPort)} must be a port between 1 and 65535 (0 = unset).");
+        }
 
         if (ZmqTxPort is < 0 or > 65535)
             errors.Add($"{SectionName}:{nameof(ZmqTxPort)} must be a port between 1 and 65535 (0 = unset).");
 
         if (TipPollInterval < TimeSpan.Zero)
             errors.Add($"{SectionName}:{nameof(TipPollInterval)} must not be negative (0 turns the tip poll off).");
+
+        if (PollInterval is { } poll && (poll < MinPollInterval || poll > MaxPollInterval))
+            errors.Add($"{SectionName}:{nameof(PollInterval)} must be between {MinPollInterval:c} and "
+                     + $"{MaxPollInterval:c} (unset = the network's default).");
 
         return errors;
     }

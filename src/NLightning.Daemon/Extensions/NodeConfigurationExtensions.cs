@@ -642,6 +642,7 @@ public static class NodeConfigurationExtensions
                    "RpcEndpoint": "http://localhost:{{RPC_PORT}}",
                    "RpcUser": "bitcoinrpc",
                    "RpcPassword": "your_rpc_password",
+                   "Notifications": "Zmq",
                    "ZmqHost": "{{ZMQ_HOST}}",
                    "ZmqBlockPort": {{ZMQ_BLOCK_PORT}},
                    "ZmqTxPort": {{ZMQ_TX_PORT}}

@@ -82,6 +82,39 @@ public class ConfigurationCheckTests
     }
 
     [Fact]
+    public void Given_PollModeWithoutZmq_When_Checked_Then_ItIsValid()
+    {
+        // Arrange (NL-1094): a node without ZMQ (rbitcoin)
+        var configuration = BuildTemplateConfiguration("regtest", ("Bitcoin:Notifications", "Poll"),
+                                                       ("Bitcoin:ZmqHost", ""), ("Bitcoin:ZmqBlockPort", "0"),
+                                                       ("Bitcoin:PollInterval", "00:00:03"));
+
+        // Act
+        var failures = ConfigurationCheck.Run(configuration, "regtest");
+
+        // Assert
+        Assert.Empty(failures);
+    }
+
+    [Theory]
+    [InlineData("Bitcoin:Notifications", "Push")]
+    [InlineData("Bitcoin:PollInterval", "00:00:00.100")]
+    public void Given_ABadNotificationSetting_When_Checked_Then_ItIsReported(string key, string value)
+    {
+        // Arrange
+        var configuration = key == "Bitcoin:Notifications"
+                                ? BuildTemplateConfiguration("regtest", (key, value))
+                                : BuildTemplateConfiguration("regtest", ("Bitcoin:Notifications", "Poll"), (key, value));
+
+        // Act
+        var failures = ConfigurationCheck.Run(configuration, "regtest");
+
+        // Assert
+        Assert.Contains(failures, f => f.Contains(key.Split(':')[^1], StringComparison.Ordinal)
+                                    || f.Contains(value, StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Given_AMissingBitcoinSection_When_Checked_Then_EveryRequiredSettingIsReported()
     {
         // Arrange: no Bitcoin section at all (the members used to be C# required, NL-338)

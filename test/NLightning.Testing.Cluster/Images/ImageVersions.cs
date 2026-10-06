@@ -91,6 +91,16 @@ public static class ImageVersions
     /// </summary>
     public static readonly ImageRef Captaind = new("nltg-captaind", "latest", PullPolicy: ImagePullPolicy.Never);
 
+    /// <summary>
+    /// rbitcoin (<c>github.com/reardencode/rbitcoin</c>, a Rust full node with a Core-compatible JSON-RPC subset and no
+    /// ZMQ) at master 9dd7ef99, built locally from <c>test/Docker/rbitcoin</c>
+    /// (<c>docker build -t nltg-spike-rbitcoin:9dd7ef99 test/Docker/rbitcoin</c>, a few minutes; upstream has no
+    /// linux/arm64 binary or image, and v0.7.0 lacks the Basic-auth cookie file our RPC client needs). Only the rbitcoin
+    /// contract test uses it (NL-1095).
+    /// </summary>
+    public static readonly ImageRef Rbitcoin =
+        new("nltg-spike-rbitcoin", "9dd7ef99", PullPolicy: ImagePullPolicy.Never);
+
     /// <summary>A tiny image for the harness's own smoke tests.</summary>
     public static readonly ImageRef Busybox = new("busybox", "1.37");
 

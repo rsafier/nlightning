@@ -34,6 +34,14 @@ public interface IBitcoinChainService
     Task<uint?> GetMempoolMinFeeRatePerKwAsync() => Task.FromResult<uint?>(null);
 
     /// <summary>
+    /// The mempool transactions spending each of <paramref name="outPoints"/> (<c>gettxspendingprevout</c>, Bitcoin
+    /// Core 24+ and rbitcoin; NL-1094): an entry per outpoint a mempool transaction spends, none for an unspent one or
+    /// one spent only on chain. Null when the node has no such call; the default knows none.
+    /// </summary>
+    Task<IReadOnlyDictionary<OutPoint, uint256>?> GetMempoolSpendersAsync(IReadOnlyCollection<OutPoint> outPoints) =>
+        Task.FromResult<IReadOnlyDictionary<OutPoint, uint256>?>(null);
+
+    /// <summary>
     /// The block with <paramref name="blockHash"/>, also when it is no longer in the active chain (a disconnected
     /// block, whose wallet effects a reorg rolls back, NL-293); null when unknown. The default knows no block.
     /// </summary>

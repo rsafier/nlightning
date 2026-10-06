@@ -26,6 +26,7 @@ using Domain.Onchain.Enums;
 using Domain.Onchain.Events;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.ValueObjects;
 using Interfaces;
 using Networks;
 using Options;
@@ -61,6 +62,11 @@ using Options;
 /// <c>rawtx</c> and raises <see cref="OnWatchedOutpointSpentInMempool"/> for a transaction that spends a watched
 /// outpoint, or an output of a transaction it reported before. Nothing is saved or marked spent for it: only a
 /// processed block confirms a spend.</para>
+/// <para>Poll mode (<see cref="ChainNotificationMode.Poll"/>, NL-1094): no ZMQ socket is opened. Every
+/// <see cref="BitcoinOptions.GetPollInterval"/> the monitor reads bitcoind's tip and hands a tip it has not processed to
+/// <see cref="ProcessNewBlockAsync"/>, exactly as a ZMQ <c>rawblock</c> would arrive (<see cref="PollChainAsync"/>), and,
+/// when the mempool is watched, asks <c>gettxspendingprevout</c> for the watched outputs and feeds each new spender to
+/// the same mempool path (<see cref="PollMempoolAsync"/>).</para>
 /// </remarks>
 public partial class BlockchainMonitorService : IBlockchainMonitor
 {
@@ -112,6 +118,13 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     // The tip poll: our last processed height when a poll first found bitcoind's tip above it, null otherwise
     private uint? _tipPollBehindAt;
     private long _tipPollCatchUps;
+
+    // Poll mode (NL-1094): the last tip the poll handed to block processing, and the outputs of transactions the
+    // mempool poll reported (a spend of one is reported too, as ZMQ rawtx reports it), oldest first
+    private uint256? _polledTipHash;
+    private readonly Dictionary<uint256, int> _polledMempoolParents = [];
+    private readonly Queue<uint256> _polledMempoolParentOrder = new();
+    private readonly BitcoinNetwork _bitcoinNetwork;
 
     public event EventHandler<NewBlockEventArgs>? OnNewBlockDetected;
     public event EventHandler<BlockInputsEventArgs>? OnBlockInputs;
@@ -186,7 +199,11 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         _serviceProvider = serviceProvider;
         // Fails on an unknown network; signet and custom signets (Mutinynet) map to NBitcoin's signet (W4-D)
         _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
+        _bitcoinNetwork = nodeOptions.Value.BitcoinNetwork;
     }
+
+    /// <summary>True when blocks come from the RPC poll only (<see cref="ChainNotificationMode.Poll"/>, NL-1094).</summary>
+    public bool IsPollMode => _bitcoinOptions.Notifications == ChainNotificationMode.Poll;
 
     /// <inheritdoc />
     public async Task LoadWalletAsync(CancellationToken cancellationToken = default)
@@ -314,8 +331,19 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         else
             await RebroadcastPendingAsync(); // A halt must not keep our pending transactions off the chain
 
-        // Initialize ZMQ sockets
-        InitializeZmqSockets();
+        // ZMQ sockets, unless blocks come from the RPC poll only (NL-1094)
+        if (IsPollMode)
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+                _logger.LogInformation(
+                    "Chain notifications: RPC poll every {Interval} (no ZMQ); mempool {Mempool}",
+                    _bitcoinOptions.GetPollInterval(_bitcoinNetwork),
+                    _bitcoinOptions.IsMempoolWatched ? "polled with gettxspendingprevout" : "not watched");
+        }
+        else
+        {
+            InitializeZmqSockets();
+        }
 
         // Start monitoring task
         _monitoringTask = MonitorBlockchainAsync(_cts.Token);
@@ -588,7 +616,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Starting blockchain monitoring loop");
 
-        var tipPollInterval = _bitcoinOptions.TipPollInterval;
+        // Poll mode (NL-1094): the poll is the block source, at its own interval
+        var tipPollInterval = IsPollMode ? _bitcoinOptions.GetPollInterval(_bitcoinNetwork) : _bitcoinOptions.TipPollInterval;
         var nextTipPoll = _timeProvider.GetUtcNow() + tipPollInterval;
         try
         {
@@ -600,7 +629,16 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                     if (tipPollInterval > TimeSpan.Zero && _timeProvider.GetUtcNow() >= nextTipPoll)
                     {
                         nextTipPoll = _timeProvider.GetUtcNow() + tipPollInterval;
-                        await PollTipAsync();
+                        if (IsPollMode)
+                        {
+                            await PollChainAsync();
+                            if (_bitcoinOptions.IsMempoolWatched)
+                                await PollMempoolAsync();
+                        }
+                        else
+                        {
+                            await PollTipAsync();
+                        }
                     }
 
                     // Check for new blocks
@@ -713,6 +751,118 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         }
     }
 
+    /// <summary>
+    /// One poll of <see cref="ChainNotificationMode.Poll"/> (NL-1094): reads bitcoind's tip and, when it is not the block
+    /// we processed at its height, hands it to <see cref="ProcessNewBlockAsync"/> as a ZMQ <c>rawblock</c> would, so
+    /// the same path queues every missed block below it in order, detects a reorg against the header ring (a tip at our
+    /// height with another hash included) and processes one unit of work per block. Returns true when a block was
+    /// handed over.
+    /// </summary>
+    /// <remarks>
+    /// Several blocks mined between two polls are the normal case here, so nothing is logged as a lost notification.
+    /// While processing is halted the queue is retried only when the tip changes, as a halted ZMQ monitor waits for the
+    /// next block. A tip below our last processed block that is still a block we processed (an
+    /// <c>invalidateblock</c> with nothing mined since) is left until the next block, as with ZMQ. An RPC failure is
+    /// logged and the next poll tries again.
+    /// </remarks>
+    internal async Task<bool> PollChainAsync()
+    {
+        try
+        {
+            var tip = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+            var tipHash = await _bitcoinChainService.GetBlockHashAsync(tip);
+            if (TryGetKnownHash(tip, out var known) && known.Equals(new Hash(tipHash.ToBytes())))
+            {
+                _polledTipHash = tipHash;
+                return false;
+            }
+
+            if (IsChainProcessingHalted && tipHash == _polledTipHash)
+                return false;
+
+            var block = await _bitcoinChainService.GetBlockAsync(tipHash);
+            if (block is null)
+                return false;
+
+            _polledTipHash = tipHash;
+            await ProcessNewBlockAsync(block, tip);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "The chain poll failed; the next poll tries again");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The mempool poll of <see cref="ChainNotificationMode.Poll"/> (BOLT 5 plan O8 without ZMQ, NL-1094): asks
+    /// <c>gettxspendingprevout</c> which mempool transactions spend the watched outpoints and the outputs of
+    /// transactions it reported before, fetches each spender not seen yet and hands it to
+    /// <see cref="ProcessMempoolTransaction"/>, the path of a ZMQ <c>rawtx</c>. Returns the number of events raised.
+    /// </summary>
+    /// <remarks>
+    /// A spender that is replaced or mined between two polls may be missed (blocks still see the spend); this only
+    /// lowers latency. A node without the call is reported once by the chain service and the poll then does nothing.
+    /// An RPC failure is logged and the next poll tries again.
+    /// </remarks>
+    internal async Task<int> PollMempoolAsync()
+    {
+        try
+        {
+            var outPoints = _watchedOutpoints.Keys.ToList();
+            lock (_mempoolLock)
+            {
+                foreach (var (parent, outputs) in _polledMempoolParents)
+                    for (var index = 0u; index < outputs; index++)
+                        outPoints.Add(new OutPoint(parent, index));
+            }
+
+            if (outPoints.Count == 0)
+                return 0;
+
+            var spenders = await _bitcoinChainService.GetMempoolSpendersAsync(outPoints);
+            if (spenders is null || spenders.Count == 0)
+                return 0;
+
+            var raised = 0;
+            foreach (var spender in spenders.Values.Distinct())
+            {
+                lock (_mempoolLock)
+                {
+                    if (_seenMempoolTransactions.Contains(spender))
+                        continue;
+                }
+
+                var transaction = await _bitcoinChainService.GetTransactionAsync(spender);
+                if (transaction is null)
+                    continue; // mined or evicted since; a block will tell
+
+                var events = ProcessMempoolTransaction(transaction);
+                if (events == 0)
+                    continue;
+
+                raised += events;
+                lock (_mempoolLock)
+                {
+                    if (_polledMempoolParents.TryAdd(spender, transaction.Outputs.Count))
+                    {
+                        _polledMempoolParentOrder.Enqueue(spender);
+                        while (_polledMempoolParentOrder.Count > MaxRememberedMempoolTransactions)
+                            _polledMempoolParents.Remove(_polledMempoolParentOrder.Dequeue());
+                    }
+                }
+            }
+
+            return raised;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "The mempool poll failed; the next poll tries again");
+            return 0;
+        }
+    }
+
     private void InitializeZmqSockets()
     {
         try
@@ -723,7 +873,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             _blockSocket.Subscribe("rawblock");
 
             // BOLT 5 plan O8: unconfirmed spends of watched outputs (optional; blocks alone are enough)
-            if (_bitcoinOptions.WatchMempool)
+            if (_bitcoinOptions.IsMempoolWatched)
             {
                 _txSocket = new SubscriberSocket();
                 _txSocket.Connect($"tcp://{_bitcoinOptions.ZmqHost}:{_bitcoinOptions.ZmqTxPort}");
@@ -733,7 +883,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             if (_logger.IsEnabled(LogLevel.Information))
                 _logger.LogInformation("ZMQ sockets initialized - Block: {BlockPort}, Tx: {TxPort} (mempool {Mempool})",
                                        _bitcoinOptions.ZmqBlockPort, _bitcoinOptions.ZmqTxPort,
-                                       _bitcoinOptions.WatchMempool ? "watched" : "not watched");
+                                       _bitcoinOptions.IsMempoolWatched ? "watched" : "not watched");
         }
         catch (Exception ex)
         {

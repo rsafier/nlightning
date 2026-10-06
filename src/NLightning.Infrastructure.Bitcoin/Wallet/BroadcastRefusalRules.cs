@@ -12,8 +12,9 @@ using Domain.Onchain.Enums;
 /// <para>A refusal is permanent when resending the same bytes can never succeed: the inputs are missing or already
 /// spent (<c>bad-txns-inputs-missingorspent</c>, <c>missing-inputs</c>), or the transaction is invalid by consensus
 /// or by script (<c>bad-txns-*</c> other than the premature coinbase spend, <c>mandatory-script-verify-flag-failed</c>,
-/// <c>non-mandatory-script-verify-flag</c>). Everything else (fees, <c>non-final</c>, <c>non-BIP68-final</c>, mempool
-/// limits or conflicts, a node that is down) is temporary and resets the count.</para>
+/// <c>non-mandatory-script-verify-flag</c>, and Core 31's <c>mempool-script-verify-flag-failed</c>, NL-1096).
+/// Everything else (fees, <c>non-final</c>, <c>non-BIP68-final</c>, mempool limits or conflicts, a node that is down)
+/// is temporary and resets the count.</para>
 /// <para>The chain monitor abandons only a transaction that spends wallet outputs alone: a channel funding
 /// (<see cref="BroadcastPurpose.Funding"/>, and <see cref="BroadcastPurpose.Unspecified"/>, the legacy funding path)
 /// and a <see cref="BroadcastPurpose.WalletSend"/>, plus our anchor sweep (<see cref="BroadcastPurpose.AnchorSweep"/>,
@@ -33,8 +34,11 @@ internal static class BroadcastRefusalRules
     // bitcoind's answers for a transaction whose outputs are already in its UTXO set: a confirmed transaction
     private static readonly string[] s_inChain = ["already in block chain", "already in utxo set", "txn-already-known"];
 
+    // Core 29 and older: mandatory-/non-mandatory-script-verify-flag; Core 31.1 (and rbitcoin) only
+    // mempool-script-verify-flag-failed (NL-1096: the 31.1 binary holds only the new text, the 29.0 one only the old)
     private static readonly string[] s_invalid = ["mandatory-script-verify-flag-failed",
-                                                  "non-mandatory-script-verify-flag"];
+                                                  "non-mandatory-script-verify-flag",
+                                                  "mempool-script-verify-flag-failed"];
 
     private static readonly string[] s_temporaryBadTxns = ["bad-txns-premature-spend-of-coinbase",
                                                            "bad-txns-nonfinal"];
