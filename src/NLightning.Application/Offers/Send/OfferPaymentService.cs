@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Offers.Send;
 
 using Domain.Crypto.ValueObjects;
+using Domain.Money;
 using Domain.Node;
 using Domain.Node.Options;
 using Domain.Offers;
@@ -103,10 +105,17 @@ public sealed class OfferPaymentService : IOfferPaymentService
             throw new ArgumentException($"Not a BOLT 12 invoice: {reason}", nameof(invoice));
         if (!string.Equals(hrp, Bolt12Constants.InvoiceHrp, StringComparison.Ordinal))
             throw new ArgumentException($"Not a BOLT 12 invoice (prefix {hrp}).", nameof(invoice));
-        if (!_fetched.TryGetValue(Convert.ToHexString(bytes), out var remembered))
-            throw new ArgumentException("Not an invoice this node fetched (fetch it again).", nameof(invoice));
-        if (remembered.Verified.Invoice.ExpiresAt <= _timeProvider.GetUtcNow())
-            throw new ArgumentException("The invoice has expired.", nameof(invoice));
+        if (_fetched.TryGetValue(Convert.ToHexString(bytes), out var remembered))
+        {
+            if (remembered.Verified.Invoice.ExpiresAt <= _timeProvider.GetUtcNow())
+                throw new ArgumentException("The invoice has expired.", nameof(invoice));
+        }
+        else if (!TryVerifyStateless(bytes, out remembered, out var notOurs))
+        {
+            // Not in memory (a restart since the fetch, or one dropped over the cap): checked from the invoice alone
+            throw new ArgumentException($"Not an invoice this node fetched ({notOurs}); fetch it again.",
+                                        nameof(invoice));
+        }
 
         return await PayVerifiedAsync(remembered.Verified, remembered.InvoiceRequest, remembered.Offer,
                                       remembered.PayerNote, options, cancellationToken);
@@ -264,6 +273,85 @@ public sealed class OfferPaymentService : IOfferPaymentService
     }
 
     private CompactPubKey? ResolveNode(SciddirOrPubkey node) => node.NodeId ?? _pathFinder?.Resolve(node);
+
+    /// <summary>
+    /// Verifies a BOLT 12 invoice this process has no memory of (NL-1157): its <c>invreq_metadata</c> must commit to
+    /// its request fields and derive its <c>invreq_payer_id</c> with our key — so it answers a request this node made,
+    /// unchanged (<see cref="InvoiceRequestFactory.IsCommittedMetadata"/>) — and then it passes the same
+    /// <see cref="InvoiceVerifier"/> checks as a fresh fetch, against the request rebuilt from those fields, through
+    /// whichever of the offer's paths names its node.
+    /// </summary>
+    private bool TryVerifyStateless(byte[] invoiceBytes, [NotNullWhen(true)] out RememberedInvoice? remembered,
+                                    [NotNullWhen(false)] out string? reason)
+    {
+        remembered = null;
+        if (_signer is null)
+        {
+            reason = "BOLT 12 signing is not available on this node";
+            return false;
+        }
+
+        try
+        {
+            var stream = Bolt12TlvStream.Parse(invoiceBytes);
+            if (!stream.TryGetValue(Bolt12TlvTypes.InvreqMetadata, out var metadata)
+             || !stream.TryGetValue(Bolt12TlvTypes.InvreqPayerId, out var payerId))
+            {
+                reason = "no invreq_metadata or invreq_payer_id";
+                return false;
+            }
+
+            var fields = stream.Records.Where(r => InvoiceVerifier.IsMirroredType(r.Type)
+                                                && r.Type is not (Bolt12TlvTypes.InvreqMetadata
+                                                                  or Bolt12TlvTypes.InvreqPayerId)).ToList();
+            if (!InvoiceRequestFactory.IsCommittedMetadata(metadata.Span, fields)
+             || !payerId.Span.SequenceEqual((byte[])_signer.DerivePayerId(metadata)))
+            {
+                reason = "it does not answer an invoice_request of this node";
+                return false;
+            }
+
+            // The offer as we requested it (its records are mirrored verbatim), and what we asked for
+            var offerRecords = fields.Where(r => r.Type is >= 1 and <= 79 or >= 1_000_000_000 and <= 1_999_999_999)
+                                     .ToList();
+            var offerText = Bolt12Bech32.Encode(Bolt12Constants.OfferHrp, new Bolt12TlvStream(offerRecords).Encode());
+            var chain = _nodeOptions.Value.BitcoinNetwork.ChainHash;
+            var now = _timeProvider.GetUtcNow();
+            var offer = OfferToPay.Parse(offerText, chain, now);
+            LightningMoney? amount = null;
+            if (stream.TryGetValue(Bolt12TlvTypes.InvreqAmount, out var amountValue))
+                amount = TruncatedInt.TryDecodeTu64(amountValue.Span, out var msat)
+                             ? LightningMoney.MilliSatoshis(msat)
+                             : throw new FormatException("invreq_amount is not a minimal tu64");
+            ulong? quantity = null;
+            if (stream.TryGetValue(Bolt12TlvTypes.InvreqQuantity, out var quantityValue))
+                quantity = TruncatedInt.TryDecodeTu64(quantityValue.Span, out var q)
+                               ? q
+                               : throw new FormatException("invreq_quantity is not a minimal tu64");
+            var payerNote = OfferToPay.ReadUtf8(stream, Bolt12TlvTypes.InvreqPayerNote);
+            var request = InvoiceRequestFactory.Create(offer, new PayOfferRequest(offerText, amount, quantity, payerNote),
+                                                       chain, _signer, metadata.ToArray());
+
+            reason = "no offer path names the invoice's node";
+            IReadOnlyList<WireBlindedPath?> sentTo = offer.Paths.Count > 0 ? [.. offer.Paths] : [null];
+            foreach (var path in sentTo)
+            {
+                if (!InvoiceVerifier.TryVerify(invoiceBytes, request, offer, path, chain, now, _signer, ResolveNode,
+                                               out var verified, out reason))
+                    continue;
+
+                remembered = new RememberedInvoice(verified, request, offerText, payerNote);
+                return true;
+            }
+
+            return false;
+        }
+        catch (Exception e) when (e is FormatException or ArgumentException)
+        {
+            reason = e.Message;
+            return false;
+        }
+    }
 
     private static bool TryGetRecord(ReceivedOnionMessage reply, ulong type, out ReadOnlyMemory<byte> value)
     {

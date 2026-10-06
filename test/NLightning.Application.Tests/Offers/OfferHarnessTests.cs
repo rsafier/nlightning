@@ -274,10 +274,42 @@ public class OfferHarnessTests
     }
 
     [Fact]
-    public async Task Given_InvoicesThisNodeDidNotFetch_When_PaidByString_Then_RefusedAndNothingSent()
+    public async Task Given_AFetchForgottenByARestart_When_PaidByString_Then_ItIsVerifiedFromTheInvoiceAndPaid()
     {
-        // Arrange: an invoice fetched by Alice is not Alice's to pay after a restart's worth of memory loss, nor is
-        // anything that is not an lni string
+        // Arrange: Alice fetched the invoice, then lost her memory of it (a restart between captaind's FetchInvoice and
+        // its xpay): the same node's keys, an empty cache (NL-1157)
+        var ct = TestContext.Current.CancellationToken;
+        var links = new OnionMessageLinks();
+        await using var harness = await CreateAsync(links, payers: ["Alice"]);
+        var offer = await CreateOfferAsync(harness, LightningMoney.MilliSatoshis(AmountMsat));
+        var fetched = await PumpUntilDoneAsync(harness, harness.Alice.Services
+                                                              .GetRequiredService<IOfferPaymentService>()
+                                                              .FetchInvoiceAsync(new PayOfferRequest(offer.Bolt12,
+                                                                                     PayerNote: "after a restart"),
+                                                                                 new PayOfferOptions(), ct));
+        var invoiceString = Bolt12Bech32.Encode(Bolt12Constants.InvoiceHrp, fetched.Invoice!.InvoiceBytes.Span);
+        var restarted = NewOfferPaymentService(harness, harness.Alice.Services.GetRequiredService<IBolt12Signer>());
+
+        // Act
+        var result = await PumpUntilDoneAsync(harness,
+                                              restarted.PayFetchedInvoiceAsync(invoiceString, new PayInvoiceOptions(),
+                                                                               ct));
+
+        // Assert: paid over the invoice's verified paths as a BOLT 12 payment of the same offer and note
+        Assert.True(result.Payment.Status == PaymentStatus.Succeeded, result.Payment.FailureReason);
+        Assert.Equal(fetched.Invoice.PaymentHash, result.Payment.PaymentHash);
+        Assert.Equal("after a restart", result.Payment.Bolt12!.PayerNote);
+        Assert.Equal(offer.Bolt12, result.Payment.Bolt12.Offer); // re-encoded from the mirrored offer records
+        var invoice = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
+                                                              .GetByPaymentHashAsync(fetched.Invoice.PaymentHash));
+        Assert.Equal(InvoiceStatus.Settled, invoice!.Status);
+    }
+
+    [Fact]
+    public async Task Given_InvoicesThisNodeDidNotRequest_When_PaidByString_Then_RefusedAndNothingSent()
+    {
+        // Arrange: an invoice answering Alice's request is not another node's to pay (its invreq_payer_id is derived
+        // with Alice's key), nor is anything that is not an lni string
         var ct = TestContext.Current.CancellationToken;
         var links = new OnionMessageLinks();
         await using var harness = await CreateAsync(links, payers: ["Alice"]);
@@ -287,20 +319,23 @@ public class OfferHarnessTests
                                                               .FetchInvoiceAsync(new PayOfferRequest(offer.Bolt12),
                                                                                  new PayOfferOptions(), ct));
         var invoiceString = Bolt12Bech32.Encode(Bolt12Constants.InvoiceHrp, fetched.Invoice!.InvoiceBytes.Span);
-        var stranger = new OfferPaymentService(harness.Alice.Services.GetRequiredService<IOnionMessageService>(),
-                                               harness.Alice.Services.GetRequiredService<IPaymentService>(),
-                                               harness.Alice.Services.GetRequiredService<IOptions<NodeOptions>>(),
-                                               NullLogger<OfferPaymentService>.Instance, TimeProvider.System,
-                                               harness.Alice.Services.GetRequiredService<IBolt12Signer>());
+        var stranger = NewOfferPaymentService(harness, harness.Carol.Services.GetRequiredService<IBolt12Signer>());
 
         // Act / Assert
-        var notFetched = await Assert.ThrowsAsync<ArgumentException>(
-                             () => stranger.PayFetchedInvoiceAsync(invoiceString, new PayInvoiceOptions(), ct));
-        Assert.Contains("not an invoice this node fetched", notFetched.Message, StringComparison.OrdinalIgnoreCase);
+        var notOurs = await Assert.ThrowsAsync<ArgumentException>(
+                          () => stranger.PayFetchedInvoiceAsync(invoiceString, new PayInvoiceOptions(), ct));
+        Assert.Contains("does not answer an invoice_request of this node", notOurs.Message, StringComparison.Ordinal);
         await Assert.ThrowsAsync<ArgumentException>(
             () => stranger.PayFetchedInvoiceAsync(offer.Bolt12, new PayInvoiceOptions(), ct));
         Assert.DoesNotContain(harness.Bob.Received, m => m is UpdateAddHtlcMessage);
     }
+
+    /// <summary>An offer payment service on Alice's node with an empty fetch cache and the given BOLT 12 keys.</summary>
+    private static OfferPaymentService NewOfferPaymentService(ThreeNodeHarness harness, IBolt12Signer signer) =>
+        new(harness.Alice.Services.GetRequiredService<IOnionMessageService>(),
+            harness.Alice.Services.GetRequiredService<IPaymentService>(),
+            harness.Alice.Services.GetRequiredService<IOptions<NodeOptions>>(),
+            NullLogger<OfferPaymentService>.Instance, TimeProvider.System, signer);
 
     [Fact]
     public async Task Given_CarolDisabledTheOffer_When_AlicePays_Then_TheInvoiceErrorIsReportedAndNothingPaid()

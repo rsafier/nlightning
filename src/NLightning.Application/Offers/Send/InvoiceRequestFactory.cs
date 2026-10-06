@@ -18,8 +18,9 @@ using Domain.Protocol.ValueObjects;
 /// BOLT 12 plan B4-T2).
 /// </summary>
 /// <remarks>
-/// <para>Every offer record is copied as it was encoded, unknown ones included; then 32 random bytes of
-/// <c>invreq_metadata</c> (unpredictable, plan D3), <c>invreq_chain</c> only for a chain other than bitcoin,
+/// <para>Every offer record is copied as it was encoded, unknown ones included; then 32 bytes of
+/// <c>invreq_metadata</c>: 16 random bytes (unpredictable, plan D3) and a commitment to every other request field
+/// (<see cref="IsCommittedMetadata"/>, NL-1157), <c>invreq_chain</c> only for a chain other than bitcoin,
 /// <c>invreq_amount</c> when the caller gives one (required without <c>offer_amount</c> and for another
 /// <c>offer_currency</c>, which we never convert), <c>invreq_quantity</c> exactly when the offer has
 /// <c>offer_quantity_max</c>, the transient <c>invreq_payer_id</c> derived from the metadata
@@ -28,6 +29,35 @@ using Domain.Protocol.ValueObjects;
 /// </remarks>
 public static class InvoiceRequestFactory
 {
+    /// <summary>The random part of our <c>invreq_metadata</c>; the rest is the commitment.</summary>
+    private const int MetadataNonceLength = 16;
+
+    /// <summary>
+    /// Whether <paramref name="metadata"/> is our <c>invreq_metadata</c> for exactly these request
+    /// <paramref name="fields"/> (every mirrored field but the metadata and <c>invreq_payer_id</c>): its last 16 bytes
+    /// are SHA-256(nonce || fields) of its first 16 (NL-1157).
+    /// </summary>
+    /// <remarks>
+    /// Anyone can compute the commitment, but <c>invreq_payer_id</c> is derived from the whole metadata with our node's
+    /// secret (<see cref="IBolt12Signer.DerivePayerId"/>): a field changed after our request needs another metadata,
+    /// whose payer id only this node can produce. So metadata that commits to the fields plus the payer id we derive from
+    /// it prove an invoice answers a request this node made, with no state kept.
+    /// </remarks>
+    public static bool IsCommittedMetadata(ReadOnlySpan<byte> metadata, IEnumerable<Bolt12TlvRecord> fields)
+    {
+        ArgumentNullException.ThrowIfNull(fields);
+        return metadata.Length == Bolt12Constants.OurInvoiceRequestMetadataLength
+            && CryptographicOperations.FixedTimeEquals(metadata[MetadataNonceLength..],
+                                                       Commit(metadata[..MetadataNonceLength], fields));
+    }
+
+    private static byte[] Commit(ReadOnlySpan<byte> nonce, IEnumerable<Bolt12TlvRecord> fields)
+    {
+        var encoded = new Bolt12TlvStream(fields.OrderBy(r => r.Type).ToList()).Encode();
+        var digest = SHA256.HashData([.. nonce, .. encoded]);
+        return digest[..(Bolt12Constants.OurInvoiceRequestMetadataLength - MetadataNonceLength)];
+    }
+
     /// <summary>
     /// The request for <paramref name="offer"/>.
     /// </summary>
@@ -35,7 +65,8 @@ public static class InvoiceRequestFactory
     /// <param name="request">What to ask for.</param>
     /// <param name="chain">Our chain.</param>
     /// <param name="signer">Derives the payer key and signs.</param>
-    /// <param name="metadata">The <c>invreq_metadata</c> (tests); null draws 32 bytes from the CSPRNG.</param>
+    /// <param name="metadata">The <c>invreq_metadata</c> (tests, and the stateless re-check of NL-1157); null draws a
+    /// nonce from the CSPRNG and commits it to the request's fields.</param>
     /// <exception cref="ArgumentException">The amount or quantity breaks a BOLT 12 rule. Nothing is signed.</exception>
     public static BuiltInvoiceRequest Create(OfferToPay offer, PayOfferRequest request, ChainHash chain,
                                              IBolt12Signer signer, byte[]? metadata = null)
@@ -49,11 +80,8 @@ public static class InvoiceRequestFactory
         if (request.PayerNote is { } note && note.Length == 0)
             throw new ArgumentException("B12-IRQ-01: an empty payer note; leave it out instead.", nameof(request));
 
-        metadata ??= RandomNumberGenerator.GetBytes(Bolt12Constants.OurInvoiceRequestMetadataLength);
-        var records = new List<Bolt12TlvRecord>(offer.Stream.Records)
-        {
-            new(Bolt12TlvTypes.InvreqMetadata, metadata)
-        };
+        // Every field but the metadata and the payer id: what the metadata commits to
+        var records = new List<Bolt12TlvRecord>(offer.Stream.Records);
         if (offer.Chains is not null && chain != ChainConstants.Main)
             records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvreqChain, (byte[])chain));
         if (request.Amount is { } amount)
@@ -61,11 +89,18 @@ public static class InvoiceRequestFactory
                                             TruncatedInt.EncodeTu64(amount.MilliSatoshi)));
         if (quantity is { } q)
             records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvreqQuantity, TruncatedInt.EncodeTu64(q)));
-
-        var payerId = signer.DerivePayerId(metadata);
-        records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvreqPayerId, (byte[])payerId));
         if (request.PayerNote is { } payerNote)
             records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvreqPayerNote, Encoding.UTF8.GetBytes(payerNote)));
+
+        if (metadata is null)
+        {
+            var nonce = RandomNumberGenerator.GetBytes(MetadataNonceLength);
+            metadata = [.. nonce, .. Commit(nonce, records)];
+        }
+
+        var payerId = signer.DerivePayerId(metadata);
+        records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvreqMetadata, metadata));
+        records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvreqPayerId, (byte[])payerId));
 
         var unsigned = new Bolt12TlvStream(records.OrderBy(r => r.Type).ToList());
         var signature = signer.SignAsPayer(metadata, Bolt12Constants.InvoiceRequestSignatureTag,

@@ -69,6 +69,35 @@ public class InvoiceRequestFactoryTests
     }
 
     [Fact]
+    public void Given_ARequest_When_ItsMetadataIsChecked_Then_ItCommitsToExactlyItsOtherFields()
+    {
+        // Arrange (NL-1157): the fields an invoice mirrors, without the metadata and the payer id
+        var offer = Parse(_issuer.CreateOffer(chain: Chain));
+        var built = InvoiceRequestFactory.Create(offer, new PayOfferRequest(offer.Text, PayerNote: "note"), Chain,
+                                                 _payer);
+        var fields = built.Stream.Records.Where(r => InvoiceVerifier.IsMirroredType(r.Type)
+                                                  && r.Type is not (Bolt12TlvTypes.InvreqMetadata
+                                                                    or Bolt12TlvTypes.InvreqPayerId)).ToList();
+        var changedNote = fields.Select(r => r.Type == Bolt12TlvTypes.InvreqPayerNote
+                                                 ? new Bolt12TlvRecord(r.Type, "other"u8.ToArray())
+                                                 : r).ToList();
+        var addedAmount = fields.Append(new Bolt12TlvRecord(Bolt12TlvTypes.InvreqAmount, new byte[] { 0x01 })).ToList();
+        var otherNonce = built.Metadata.ToArray();
+        otherNonce[0] ^= 0x01;
+
+        // Act / Assert: the request's own fields in any order pass; a changed, added or dropped field, another nonce or
+        // random metadata (requests made before NL-1157) do not
+        Assert.True(InvoiceRequestFactory.IsCommittedMetadata(built.Metadata, fields));
+        Assert.True(InvoiceRequestFactory.IsCommittedMetadata(built.Metadata, Enumerable.Reverse(fields)));
+        Assert.False(InvoiceRequestFactory.IsCommittedMetadata(built.Metadata, changedNote));
+        Assert.False(InvoiceRequestFactory.IsCommittedMetadata(built.Metadata, addedAmount));
+        Assert.False(InvoiceRequestFactory.IsCommittedMetadata(built.Metadata, fields.Skip(1)));
+        Assert.False(InvoiceRequestFactory.IsCommittedMetadata(otherNonce, fields));
+        Assert.False(InvoiceRequestFactory.IsCommittedMetadata(new byte[32], fields));
+        Assert.False(InvoiceRequestFactory.IsCommittedMetadata(built.Metadata.AsSpan(0, 16), fields));
+    }
+
+    [Fact]
     public void Given_AMainnetOfferWithoutChains_When_Creating_Then_NoInvreqChain()
     {
         // Arrange
