@@ -138,6 +138,38 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
     /// <inheritdoc />
     public Task<int> CountTrampolineRelaysAsync() => DbSet.AsNoTracking().CountAsync(e => e.IsTrampolineRelay);
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<PaymentModel>> ListByCreationAsync(CreationRangeQuery query, bool succeededOnly)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        if (query.Take <= 0)
+            return [];
+
+        var set = Filter(DbSet.AsNoTracking(), succeededOnly);
+        if (query.CreatedAfter is { } after)
+            set = set.Where(e => e.CreatedAt > after);
+        if (query.CreatedBefore is { } before)
+            set = set.Where(e => e.CreatedAt < before);
+        set = query.Ascending
+                  ? set.OrderBy(e => e.CreatedAt).ThenBy(e => e.PaymentHash)
+                  : set.OrderByDescending(e => e.CreatedAt).ThenByDescending(e => e.PaymentHash);
+        var entities = await set.Include(e => e.Hops).Take(query.Take).ToListAsync();
+        return entities.Select(e => MapEntityToDomain(e, e.Hops ?? [])).ToList();
+    }
+
+    /// <inheritdoc />
+    public Task<int> CountAsync(bool succeededOnly) => Filter(DbSet.AsNoTracking(), succeededOnly).CountAsync();
+
+    private static IQueryable<PaymentEntity> Filter(IQueryable<PaymentEntity> set, bool succeededOnly)
+    {
+        set = set.Where(e => !e.IsTrampolineRelay);
+        if (!succeededOnly)
+            return set;
+
+        const byte succeeded = (byte)PaymentStatus.Succeeded;
+        return set.Where(e => e.Status == succeeded);
+    }
+
     internal static PaymentModel MapEntityToDomain(PaymentEntity entity, IEnumerable<PaymentHopEntity> hops)
     {
         var route = hops.OrderBy(h => h.HopIndex)

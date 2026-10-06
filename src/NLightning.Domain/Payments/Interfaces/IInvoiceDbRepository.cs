@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Payments.Interfaces;
 
 using Crypto.ValueObjects;
+using Enums;
 using Models;
 
 /// <summary>
@@ -34,6 +35,29 @@ public interface IInvoiceDbRepository
     /// <param name="skip">How many of the newest to skip.</param>
     /// <param name="take">The most to return.</param>
     Task<IReadOnlyList<InvoiceModel>> ListAsync(int skip, int take);
+
+    /// <summary>
+    /// A page of invoices by creation time (<see cref="CreationRangeQuery"/>), only <c>Open</c> ones when
+    /// <paramref name="openOnly"/> (LND's <c>ListInvoices</c>, NL-1163). The default (test doubles) reads every
+    /// invoice through <see cref="ListAsync"/> and filters in memory.
+    /// </summary>
+    async Task<IReadOnlyList<InvoiceModel>> ListByCreationAsync(CreationRangeQuery query, bool openOnly)
+    {
+        var all = new List<InvoiceModel>();
+        for (var skip = 0; ; skip += 500)
+        {
+            var page = await ListAsync(skip, 500);
+            all.AddRange(page);
+            if (page.Count < 500)
+                break;
+        }
+
+        var matching = all.Where(i => query.Contains(i.CreatedAt) && (!openOnly || i.Status == InvoiceStatus.Open));
+        var ordered = query.Ascending
+                          ? matching.OrderBy(i => i.CreatedAt)
+                          : matching.OrderByDescending(i => i.CreatedAt);
+        return ordered.Take(query.Take).ToList();
+    }
 
     /// <summary>
     /// The <c>Settled</c> invoices settled at or before <paramref name="settledAtOrBefore"/>, oldest settle first (then

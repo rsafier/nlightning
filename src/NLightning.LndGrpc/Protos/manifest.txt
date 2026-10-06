@@ -1,0 +1,12 @@
+# LND's gRPC protos for the NLightning.LndGrpc server stubs (LND_GRPC_PLAN.md, NL-1161). Copied from
+# test/NLightning.Testing.Lnd/Protos/ (scripts/lnd-protos/update.sh) with one change per file: the csharp_namespace line
+# names NLightning.LndGrpc.<Package> instead of NLightning.Testing.Lnd.<Package>. Package lines and field numbers are
+# LND's, so the wire service names (/lnrpc.Lightning/...) are LND's.
+# file <path> <sha256 of the upstream file> <sha256 of the committed file>
+# license <committed file> <upstream path at lnd_commit> <sha256>
+lnd_repo github.com/lightningnetwork/lnd
+lnd_tag v0.21.4-beta
+lnd_commit 390b2d2b7bdcc335c183962e483f5daeceb8f0e7
+csharp_namespace_prefix NLightning.LndGrpc
+file lightning.proto 65eec7eaae9d5ad03e1b150cff8dd595fa3d3cb9281283786cacb105db1d1eda 134f575000c31ccedb0e43ff9224319293a74a998024a9d14dc7735074c694ef
+license LICENSE-LND.txt LICENSE 7ebd67c52a36357cb0c6c5e903ece047b195a6b8b04c6e7a8c820e01c884581c

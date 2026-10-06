@@ -112,6 +112,27 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<InvoiceModel>> ListByCreationAsync(CreationRangeQuery query, bool openOnly)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        if (query.Take <= 0)
+            return [];
+
+        var set = DbSet.AsNoTracking();
+        if (query.CreatedAfter is { } after)
+            set = set.Where(e => e.CreatedAt > after);
+        if (query.CreatedBefore is { } before)
+            set = set.Where(e => e.CreatedAt < before);
+        if (openOnly)
+            set = set.Where(e => e.Status == OpenStatus);
+        set = query.Ascending
+                  ? set.OrderBy(e => e.CreatedAt).ThenBy(e => e.PaymentHash)
+                  : set.OrderByDescending(e => e.CreatedAt).ThenByDescending(e => e.PaymentHash);
+        var entities = await set.Take(query.Take).ToListAsync();
+        return entities.Select(MapEntityToDomain).ToList();
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<InvoiceModel>> ListSettledAsync(DateTimeOffset settledAtOrBefore, int skip,
                                                                     int take)
     {

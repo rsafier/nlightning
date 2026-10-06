@@ -125,6 +125,17 @@ public interface ILightningSigner
     CompactSignature SignNodeMessageBip340(Hash messageHash) => throw new NotImplementedException("Taproot gossip T7");
 
     /// <summary>
+    /// Signs <paramref name="message"/> with the node key the way LND's <c>signmessage</c> does (NL-1162): the digest
+    /// is SHA256d (SHA256 with <paramref name="singleHash"/>) of <c>"Lightning Signed Message:" || message</c>, the
+    /// signature a 65-byte recoverable compact one (header <c>31 + recovery id</c>, then <c>r || s</c>; RFC 6979,
+    /// low-S).
+    /// </summary>
+    /// <remarks>The prefix is added here, inside the signer, so a caller can never have a raw hash signed with the
+    /// node key through this method (gossip signing is <see cref="SignNodeMessage"/>).</remarks>
+    byte[] SignLightningMessage(ReadOnlySpan<byte> message, bool singleHash) =>
+        throw new NotSupportedException("LND message signing (NL-1162)");
+
+    /// <summary>
     /// Generate the per-commitment point of one of our commitment transactions.
     /// </summary>
     /// <param name="channelKeyIndex">The channel key index.</param>

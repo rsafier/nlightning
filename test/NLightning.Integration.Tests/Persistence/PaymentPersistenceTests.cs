@@ -132,6 +132,73 @@ public class PaymentPersistenceTests
     }
 
     [Fact]
+    public async Task Given_FiveInvoices_When_ListedByCreation_Then_TheBoundsAreExclusiveAndBothDirectionsWork()
+    {
+        // Arrange (LND's index-offset paging, NL-1163)
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        await SaveAsync(db, async c =>
+        {
+            var repository = new InvoiceDbRepository(c);
+            for (byte i = 0; i < 5; i++)
+            {
+                var invoice = CreateInvoice((byte)(0x70 + i * 3), null, s_now.AddMinutes(i));
+                if (i == 1)
+                    invoice.Cancel();
+                await repository.AddAsync(invoice);
+            }
+        });
+
+        // Act
+        await using var context = db.CreateDbContext();
+        var repository = new InvoiceDbRepository(context);
+        var forward = await repository.ListByCreationAsync(new CreationRangeQuery(s_now, null, true, 2), false);
+        var backward =
+            await repository.ListByCreationAsync(new CreationRangeQuery(null, s_now.AddMinutes(4), false, 2), false);
+        var open = await repository.ListByCreationAsync(new CreationRangeQuery(null, null, true, 10), true);
+
+        // Assert
+        Assert.Equal(new[] { s_now.AddMinutes(1), s_now.AddMinutes(2) }, forward.Select(i => i.CreatedAt));
+        Assert.Equal(new[] { s_now.AddMinutes(3), s_now.AddMinutes(2) }, backward.Select(i => i.CreatedAt));
+        Assert.Equal(4, open.Count);
+        Assert.DoesNotContain(open, i => i.CreatedAt == s_now.AddMinutes(1));
+        Assert.Empty(await repository.ListByCreationAsync(new CreationRangeQuery(null, null, true, 0), false));
+    }
+
+    [Fact]
+    public async Task Given_PaymentsInEveryState_When_ListedByCreationAndCounted_Then_SucceededOnlyFilters()
+    {
+        // Arrange (NL-1163)
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var first = CreatePayment(0x91, s_now);
+        var second = CreatePayment(0x94, s_now.AddSeconds(1));
+        second.Succeed(SecretOf(0x95), s_now.AddSeconds(2));
+        var third = CreatePayment(0x97, s_now.AddSeconds(2));
+        await SaveAsync(db, async c =>
+        {
+            var repository = new PaymentDbRepository(c);
+            await repository.AddAsync(first);
+            await repository.AddAsync(second);
+            await repository.AddAsync(third);
+        });
+
+        // Act
+        await using var context = db.CreateDbContext();
+        var repository = new PaymentDbRepository(context);
+        var all = await repository.ListByCreationAsync(new CreationRangeQuery(null, null, true, 10), false);
+        var newest = await repository.ListByCreationAsync(new CreationRangeQuery(s_now, null, false, 1), false);
+        var succeeded = await repository.ListByCreationAsync(new CreationRangeQuery(null, null, true, 10), true);
+
+        // Assert
+        Assert.Equal(new[] { first.PaymentHash, second.PaymentHash, third.PaymentHash },
+                     all.Select(p => p.PaymentHash));
+        AssertPayment(third, Assert.Single(newest));
+        AssertPayment(second, Assert.Single(succeeded));
+        Assert.Equal(2, all[0].Route.Count);
+        Assert.Equal(3, await repository.CountAsync(false));
+        Assert.Equal(1, await repository.CountAsync(true));
+    }
+
+    [Fact]
     public async Task Given_FailedPayment_When_RetriedWithAShorterRoute_Then_TheAttemptAndItsHopsAreReplaced()
     {
         // Arrange

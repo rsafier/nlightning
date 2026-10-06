@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NLightning.LnBackend;
+using NLightning.LndGrpc;
 
 namespace NLightning.Daemon.Extensions;
 
@@ -99,6 +100,10 @@ public static class NodeServiceExtensions
             // Cashu:PaymentProcessor:Enabled)
             services.AddCashuPaymentProcessorHost();
             services.AddLnBackendHost();
+
+            // LND gRPC compatibility (NL-1161): lnrpc.Lightning with TLS and macaroons, files under
+            // <configPath>/lnd-grpc (off unless LndGrpc:Enabled)
+            services.AddLndGrpcHost(configPath);
 
             // IPC server pieces that need the config path
             services.AddSingleton<INamedPipeIpcService>(sp =>
@@ -276,6 +281,7 @@ public static class NodeServiceExtensions
         // Cashu plan C1 (NL-992): the CDK payment processor (Cashu:PaymentProcessor, off by default)
         services.AddCashuPaymentProcessor(configuration);
         services.AddLnBackend(configuration);
+        services.AddLndGrpc(configuration);
         // BOLT 12 offers (wave B12): createoffer/listoffers/disableoffer (ClientCommand 26-28) and payoffer/
         // fetchinvoice (29-30); the Application registers the offer services themselves (AddApplicationServices)
         services.AddOfferIpcServices();
