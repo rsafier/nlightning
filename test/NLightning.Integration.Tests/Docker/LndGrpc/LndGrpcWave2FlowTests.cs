@@ -145,15 +145,15 @@ public class LndGrpcWave2FlowTests : IAsyncLifetime
             Memo = "hold via lnd grpc",
             Expiry = 600
         }, cancellationToken: ct);
+        using var streams = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        streams.CancelAfter(TimeSpan.FromMinutes(5));
         using var subscription = ours.InvoiceClient.SubscribeSingleInvoice(
-            new SubscribeSingleInvoiceRequest { RHash = ByteString.CopyFrom(hash) }, cancellationToken: ct);
-        Assert.True(await subscription.ResponseStream.MoveNext(ct));
+            new SubscribeSingleInvoiceRequest { RHash = ByteString.CopyFrom(hash) }, cancellationToken: streams.Token);
+        Assert.True(await subscription.ResponseStream.MoveNext(streams.Token));
         Assert.Equal(Invoice.Types.InvoiceState.Open, subscription.ResponseStream.Current.State);
 
-        var holdPayment = LndTestHelpers.SendPaymentV2Async(
-            alice, LndTestHelpers.PinnedPayment(hold.PaymentRequest, [ourChannel.ChanId], timeoutSeconds: 120), ct,
-            TimeSpan.FromMinutes(3));
-        Assert.True(await subscription.ResponseStream.MoveNext(ct));
+        var holdPayment = await PayUntilHeldAsync(alice, ours, hold.PaymentRequest, hash, ourChannel.ChanId, ct);
+        Assert.True(await subscription.ResponseStream.MoveNext(streams.Token));
         var accepted = subscription.ResponseStream.Current;
         Assert.Equal(Invoice.Types.InvoiceState.Accepted, accepted.State);
         Assert.Equal(30_000_000, accepted.AmtPaidMsat);
@@ -161,9 +161,9 @@ public class LndGrpcWave2FlowTests : IAsyncLifetime
 
         await ours.InvoiceClient.SettleInvoiceAsync(new SettleInvoiceMsg { Preimage = ByteString.CopyFrom(preimage) },
                                                     cancellationToken: ct);
-        Assert.True(await subscription.ResponseStream.MoveNext(ct));
+        Assert.True(await subscription.ResponseStream.MoveNext(streams.Token));
         Assert.Equal(Invoice.Types.InvoiceState.Settled, subscription.ResponseStream.Current.State);
-        Assert.False(await subscription.ResponseStream.MoveNext(ct));
+        Assert.False(await subscription.ResponseStream.MoveNext(streams.Token));
         var holdPaid = await holdPayment;
         Assert.Equal(Payment.Types.PaymentStatus.Succeeded, holdPaid.Status);
         Assert.Equal(Convert.ToHexStringLower(preimage), holdPaid.PaymentPreimage);
@@ -176,14 +176,8 @@ public class LndGrpcWave2FlowTests : IAsyncLifetime
             ValueMsat = 5_000_000,
             Expiry = 600
         }, cancellationToken: ct);
-        var canceledPayment = LndTestHelpers.SendPaymentV2Async(
-            alice, LndTestHelpers.PinnedPayment(canceled.PaymentRequest, [ourChannel.ChanId], timeoutSeconds: 120), ct,
-            TimeSpan.FromMinutes(3));
-        await Poll.UntilAsync(async () =>
-                                  (await ours.InvoiceClient.LookupInvoiceV2Async(
-                                       new LookupInvoiceMsg { PaymentHash = ByteString.CopyFrom(canceledHash) },
-                                       cancellationToken: ct)).State == Invoice.Types.InvoiceState.Accepted,
-                              s_timeout, "the second hold invoice is ACCEPTED", ct);
+        var canceledPayment = await PayUntilHeldAsync(alice, ours, canceled.PaymentRequest, canceledHash,
+                                                      ourChannel.ChanId, ct);
         await ours.InvoiceClient.CancelInvoiceAsync(
             new CancelInvoiceMsg { PaymentHash = ByteString.CopyFrom(canceledHash) }, cancellationToken: ct);
         Assert.Equal(Payment.Types.PaymentStatus.Failed, (await canceledPayment).Status);
@@ -195,12 +189,13 @@ public class LndGrpcWave2FlowTests : IAsyncLifetime
         await Poll.UntilAsync(async () => (await LndTestHelpers.GetChannelByPointAsync(ours, channelPoint, ct))
                                           ?.PendingHtlcs.Count == 0,
                               s_timeout, "no HTLC left on the channel", ct);
+        streams.CancelAfter(TimeSpan.FromMinutes(5));
         using var close = ours.LightningClient.CloseChannel(new CloseChannelRequest
         {
             ChannelPoint = new ChannelPoint { FundingTxidBytes = point.FundingTxidBytes, OutputIndex = point.OutputIndex },
             SatPerVbyte = 5
-        }, cancellationToken: ct);
-        Assert.True(await close.ResponseStream.MoveNext(ct));
+        }, cancellationToken: streams.Token);
+        Assert.True(await close.ResponseStream.MoveNext(streams.Token));
         var closingTxId = close.ResponseStream.Current.ClosePending.Txid;
         Assert.Equal(32, closingTxId.Length);
         var miner = Task.Run(async () =>
@@ -211,7 +206,7 @@ public class LndGrpcWave2FlowTests : IAsyncLifetime
                 await Task.Delay(TimeSpan.FromSeconds(2), ct);
             }
         }, ct);
-        Assert.True(await close.ResponseStream.MoveNext(ct));
+        Assert.True(await close.ResponseStream.MoveNext(streams.Token));
         var chanClose = close.ResponseStream.Current.ChanClose;
         Assert.True(chanClose.Success);
         Assert.Equal(closingTxId, chanClose.ClosingTxid);
@@ -223,6 +218,40 @@ public class LndGrpcWave2FlowTests : IAsyncLifetime
         Assert.True(summary.SettledBalance > 0);
         Console.WriteLine($"closed {channelPoint}: settled {summary.SettledBalance} sat, close tx "
                         + summary.ClosingTxHash);
+    }
+
+    /// <summary>
+    /// alice pays a hold invoice of ours until it is held (ACCEPTED in our LookupInvoiceV2): a fresh channel may not be
+    /// in her router's graph yet (NL-319), so a payment that fails at once is retried. The returned task completes with
+    /// the payment's final update once we settle or cancel.
+    /// </summary>
+    private static async Task<Task<Payment>> PayUntilHeldAsync(LndNodeConnection alice, LndNodeConnection ours,
+                                                               string bolt11, byte[] hash, ulong chanId,
+                                                               CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + s_timeout;
+        while (true)
+        {
+            await LndTestHelpers.ResetMissionControlAsync(alice, ct);
+            var payment = LndTestHelpers.SendPaymentV2Async(
+                alice, LndTestHelpers.PinnedPayment(bolt11, [chanId], timeoutSeconds: 120), ct, TimeSpan.FromMinutes(3));
+            while (!payment.IsCompleted)
+            {
+                var invoice = await ours.InvoiceClient.LookupInvoiceV2Async(
+                                  new LookupInvoiceMsg { PaymentHash = ByteString.CopyFrom(hash) }, cancellationToken: ct);
+                if (invoice.State == Invoice.Types.InvoiceState.Accepted)
+                    return payment;
+
+                await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+            }
+
+            var ended = await payment;
+            Console.WriteLine($"alice's payment of the hold invoice ended {ended.Status} {ended.FailureReason}; retrying");
+            if (DateTime.UtcNow > deadline)
+                throw new TimeoutException("alice's payment never reached our hold invoice");
+
+            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+        }
     }
 
     public async ValueTask DisposeAsync()

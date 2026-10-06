@@ -177,16 +177,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 89 | 91 |
+| open | 0 | 0 | 1 | 88 | 89 |
 | in-progress | 0 | 0 | 5 | 1 | 6 |
-| fixed | 15 | 68 | 228 | 467 | 778 |
+| fixed | 15 | 68 | 229 | 471 | 783 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **244** | **577** | **904** |
+| **Total** | **15** | **68** | **244** | **580** | **907** |
 
 ### Epics
 
-- NL-1160: LND gRPC compatibility (in-progress, medium; plan `docs/agents/LND_GRPC_PLAN.md`, branch `wip/lnd-grpc-compat`: wave 1 read/invoice/message surface with real macaroons NL-1161..NL-1163 fixed, wave 2 NL-1164, wave 3 NL-1168; follow-ups NL-1165..NL-1167, NL-1169)
+- NL-1160: LND gRPC compatibility (in-progress, medium; plan `docs/agents/LND_GRPC_PLAN.md`, branch `wip/lnd-grpc-compat`: wave 1 read/invoice/message surface with real macaroons NL-1161..NL-1163 fixed, wave 2 pay/channels/hold invoices/streams NL-1164..NL-1167, NL-1169 fixed, wave 3 NL-1168; follow-ups NL-1170..NL-1172)
 - NL-990: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-991 (fixed), C1 CDK gRPC payment processor NL-992 (fixed, BOLT 11; follow-ups NL-997), C2 proof NL-993 (fixed, on the cluster harness), C3 native wallet NL-994, C4 hold invoices NL-995; integration review NL-998, NL-999, NL-1001..NL-1004 fixed, NL-1000 fixed, NL-1010 and NL-1011 open; BOLT 12 and on-chain NL-997 fixed)
 - NL-877: Simple taproot channels (`option_simple_taproot`) (open, medium; plan `docs/agents/TAPROOT_CHANNELS_PLAN.md` T0-T6; spec merged 2026-05-04, LND 0.21 and Eclair 0.14 run it as private channels; taproot gossip NL-878 waits for BOLTs #1059)
 - NL-875: Trampoline routing (BOLTs PR #836): client, relay and target (in-progress, medium; plan `docs/agents/TRAMPOLINE_PLAN.md`, TR0-TR5 built on `wip/fafo` 2026-10-03, merges `7f5c5d85` TR0, `e958b8eb` TR1, `9f0d1050` TR3-P, `165acd77` TR2, `fb2b07ca` TR5 phase 1, `1c09e718` TR4, `dd48b26d` TR3, `c1811bbf` TR5 phase 2; experimental until an owner decision; follow-ups NL-895..NL-899)
@@ -9479,7 +9479,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1151
 
 ### NL-1160 LND gRPC compatibility: serve a subset of LND's gRPC API (epic)
-- **Status:** in-progress (wave 0 plan done; wave 1 NL-1161..NL-1163 fixed; open: NL-1164, NL-1168, follow-ups NL-1165..NL-1167, NL-1169)
+- **Status:** in-progress (wave 0 plan done; wave 1 NL-1161..NL-1163 and wave 2 NL-1164..NL-1167, NL-1169 fixed; open: wave 3 NL-1168, follow-ups NL-1170..NL-1172)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `docs/agents/LND_GRPC_PLAN.md`; branch `wip/lnd-grpc-compat`
@@ -9517,39 +9517,39 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** part of NL-1161
 
 ### NL-1164 LND gRPC wave 2: pay, channels, hold invoices and the streams
-- **Status:** open
+- **Status:** fixed (a1bb2bbe)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `src/NLightning.LndGrpc/` (routerrpc and invoicesrpc protos to vendor)
 - **Evidence:** wave 1 serves no payment, channel or hold-invoice RPC (`LND_GRPC_PLAN.md` §3 wave 2).
-- **Fix sketch:** ConnectPeer/DisconnectPeer, OpenChannelSync (returns at funding publish), CloseChannel stream, UpdateChannelPolicy, routerrpc SendPaymentV2/TrackPaymentV2, invoicesrpc AddHoldInvoice/SettleInvoice/CancelInvoice/SubscribeSingleInvoice, SubscribeInvoices.
+- **Fix sketch:** done: lnrpc ConnectPeer (DialPeerAsync, port 9735 by default, `perm` in the background, an already connected peer answers a status), DisconnectPeer (refused with an open channel, as LND), OpenChannelSync and OpenChannel (the node's `openchannel` until the funding is published, then `chan_open` once ready; push, private, sat_per_vbyte, announced limits, zero_conf, ANCHORS/TAPROOT; shims, fund_max, outpoints, close_address, STATIC_REMOTE_KEY refused), CloseChannel streamed (cooperative over `closechannel` with sat_per_vbyte, force over `forceclosechannel`; `close_pending` then `chan_close` once confirmed, `no_wait` = one `close_instant`; delivery_address and max_fee_per_vbyte refused), UpdateChannelPolicy (one channel or every Open channel; inbound fees refused), SendCoins (`withdraw`), NewAddress (P2WPKH/P2TR) — through `INodeCommandDispatcher`, implemented by the daemon over its `IClientCommandHandler`s, so each operation has one implementation; routerrpc SendPaymentV2 (IN_FLIGHT then the outcome, the payment not tied to the call; keysend refused, NL-1170), TrackPaymentV2, TrackPayments (outcomes only, NL-1171); invoicesrpc AddHoldInvoice/SettleInvoice/CancelInvoice/SubscribeSingleInvoice/LookupInvoiceV2 over the NL-995 hold invoices; lnrpc SubscribeInvoices (index replay, then live). In-process `LndGrpcHostTests` (Wave2 partial) and the cluster proof `Docker/LndGrpc/LndGrpcWave2FlowTests` against LND alice (open, pay, hold settle and cancel, cooperative close).
 - **Blocks/Blocked-by:** part of NL-1160
 
 ### NL-1165 LND gRPC: dense add_index/settle_index/payment_index counters
-- **Status:** open
+- **Status:** fixed (a1bb2bbe)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `LightningService.AddIndex`/`SettleIndex`/`PaymentIndex`
 - **Evidence:** LND's indexes count 1, 2, 3, ...; ours are the creation/settle times in .NET ticks: unique, increasing and usable as opaque cursors, but sparse. A client that assumes density (e.g. "settle_index n+1 is the next settle") would miss nothing but could misjudge gaps.
-- **Fix sketch:** an auto-increment column on `Invoices`/`Payments` (all three providers) and a settle counter, if a client turns out to need it.
+- **Fix sketch:** done: `Invoices.AddIndex`/`SettleIndex` and `Payments.PaymentIndex` (migration `AddLndIndexes`, all three providers, backfilled in creation/settle order, trampoline relay legs excluded), assigned by `LndIndexAllocator` (one per node) inside `UnitOfWork.SaveChanges[Async]` under a gate held until the commit, so they are dense in commit order and a failed save gives its values back; listings page by index (`ListByIndexAsync`, `ListSettledAfterAsync`, `GetMaxIndexesAsync`). Tests: `PaymentPersistenceTests` (dense, paged, failed save leaves no gap, SQLite backfill) and the Postgres backfill in `PostgresTests`.
 - **Blocks/Blocked-by:** follow-up of NL-1161
 
 ### NL-1166 LND gRPC: ClosedChannels balances and resolutions
-- **Status:** open
+- **Status:** fixed (a1bb2bbe)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `LightningService.ClosedChannels`
 - **Evidence:** `settled_balance`, `time_locked_balance` and `resolutions` stay empty; the data exists in `OutputResolutions` and `ChannelCloses`.
-- **Fix sketch:** map the per-output resolutions (to_local, HTLCs, anchors, penalties) to LND's `Resolution` and sum the settled amounts.
+- **Fix sketch:** done: a force-closed channel lists its outputs' resolutions (our commitment outputs as COMMIT, HTLCs by direction, our anchor; CLAIMED/UNCLAIMED/ABANDONED/OUTCOME_UNKNOWN from the resolution state and resolving transaction), the claimed amounts as `settled_balance` and the pending ones as `time_locked_balance`; a cooperative close's `settled_balance` is our output of the closing transaction.
 - **Blocks/Blocked-by:** follow-up of NL-1161
 
 ### NL-1167 LND gRPC: Invoice.htlcs
-- **Status:** open
+- **Status:** fixed (a1bb2bbe)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `LightningService.ToLndInvoice`
 - **Evidence:** LND lists the HTLCs that paid an invoice (`InvoiceHTLC`: chan_id, htlc_index, amount, accept/resolve time, state); our invoice rows do not link them, so the field stays empty.
-- **Fix sketch:** read the final-hop HTLC records of the payment hash (HTLC origins) when an invoice is mapped.
+- **Fix sketch:** done: the switch records the set's HTLCs on the invoice (`InvoiceModel.Htlcs`, column `Invoices.Htlcs`, codec `InvoiceHtlcCodec`) when a hold set is held (ACCEPTED), settled or canceled and when a plain invoice settles; mapped to LND's `InvoiceHTLC` (chan_id, htlc_index, amount, accept height/time, resolve time, expiry, state, MPP total). Tests: `HoldInvoiceTests`, `BlindedThreeNodeSwitchTests`, the cluster hold invoice.
 - **Blocks/Blocked-by:** follow-up of NL-1161
 
 ### NL-1168 LND gRPC wave 3: ChannelAcceptor, walletrpc, GetTransactions, HtlcInterceptor
@@ -9562,10 +9562,37 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** part of NL-1160
 
 ### NL-1169 LND gRPC: bakemacaroon and macaroon root key ids
-- **Status:** open
+- **Status:** fixed (a1bb2bbe)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.LndGrpc/Macaroons/`
 - **Evidence:** only root key id `0` exists and only the three default macaroons are baked; LND's `BakeMacaroon`/`ListMacaroonIDs`/`DeleteMacaroonID` (custom permissions, per-client rotation) are UNIMPLEMENTED. Rotation today = deleting `macaroons.key`, which invalidates every macaroon.
-- **Fix sketch:** a root key store keyed by id (file or table), the three RPCs, and a `nltg` command to bake one offline.
+- **Fix sketch:** done: `LndRootKeyStore` (id 0 = `macaroons.key`, others `macaroon-root-keys/<id>.key` made 0600 on first bake; storage id = the decimal id, as LND), the verifier looks the key up by the macaroon's storage id; BakeMacaroon (LND's entity/action lists and `uri:` methods unless `allow_external_permissions`), ListMacaroonIDs, DeleteMacaroonID (id 0 refused, as LND's ErrDeletionForbidden).
 - **Blocks/Blocked-by:** follow-up of NL-1161
+
+### NL-1170 LND gRPC: SendPaymentV2 without an invoice (keysend) is refused
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.LndGrpc/Services/RouterService.cs` (`SendPaymentV2`)
+- **Evidence:** LND clients send keysend as `dest` + `amt` + `dest_custom_records[5482373484]` = their own preimage with `payment_hash` = its hash, and then track that hash. Our `IPaymentService.PayKeysendAsync` draws the preimage itself, so the payment hash would not be the client's; the request is answered UNIMPLEMENTED instead.
+- **Fix sketch:** a keysend send that takes the caller's preimage (and custom records) and pays under its hash.
+- **Blocks/Blocked-by:** follow-up of NL-1164
+
+### NL-1171 LND gRPC: TrackPayments streams outcomes only
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.LndGrpc/Services/RouterService.cs` (`TrackPayments`), `IPaymentEventSource`
+- **Evidence:** the payment event bus publishes succeeded/failed outcomes only (Cashu plan C0), so `TrackPayments` sends no IN_FLIGHT update for a payment that starts (LND sends one per state change); `no_inflight_updates` is therefore always in effect.
+- **Fix sketch:** a `PaymentStartedEvent` on the bus when the payment row is first saved.
+- **Blocks/Blocked-by:** follow-up of NL-1164
+
+### NL-1172 LND gRPC: UpdateChannelPolicy global does not change the default for future channels
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.LndGrpc/Services/LightningService.Operations.cs` (`UpdateChannelPolicy`)
+- **Evidence:** LND's `global` sets the policy of every channel and the default of channels opened later. Ours sets it on every Open channel through `setchannelpolicy`; the node's default (`Node:Routing`) is configuration and is not changed at run time, so a channel opened later starts with the configured policy.
+- **Fix sketch:** a stored node-wide policy override read by `ChannelPolicyRules.Resolve`, or document the difference for clients.
+- **Blocks/Blocked-by:** follow-up of NL-1164
