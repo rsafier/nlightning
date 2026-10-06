@@ -30,7 +30,7 @@ public readonly record struct MacaroonCheckResult(MacaroonCheck Outcome, string?
 
 /// <summary>
 /// Checks a macaroon the way LND's <c>macaroons.Service.CheckMacAuth</c> does with the bakery's checker: v2 binary,
-/// a bakery version 3 identifier, a root key we hold (storage id <c>0</c>), the HMAC chain, every operation the method
+/// a bakery version 3 identifier, a root key we hold for its storage id, the HMAC chain, every operation the method
 /// requires among the macaroon's (or LND's <c>uri:&lt;full method&gt;</c>), and every first-party caveat satisfied.
 /// </summary>
 /// <remarks>
@@ -41,13 +41,23 @@ public readonly record struct MacaroonCheckResult(MacaroonCheck Outcome, string?
 /// </remarks>
 public sealed class MacaroonVerifier
 {
-    private readonly byte[] _rootKey;
+    private readonly Func<byte[], byte[]?> _rootKeyOf;
     private readonly TimeProvider _timeProvider;
 
+    /// <summary>A verifier of macaroons under one root key, LND's default id <c>0</c>.</summary>
     public MacaroonVerifier(byte[] rootKey, TimeProvider timeProvider)
     {
         ArgumentNullException.ThrowIfNull(rootKey);
-        _rootKey = (byte[])rootKey.Clone();
+        var key = (byte[])rootKey.Clone();
+        _rootKeyOf = storageId => storageId.AsSpan().SequenceEqual(LndPermissions.DefaultRootKeyId) ? key : null;
+        _timeProvider = timeProvider;
+    }
+
+    /// <summary>A verifier of macaroons under every root key id of <paramref name="rootKeys"/> (NL-1169).</summary>
+    public MacaroonVerifier(LndRootKeyStore rootKeys, TimeProvider timeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(rootKeys);
+        _rootKeyOf = storageId => rootKeys.TryGet(storageId);
         _timeProvider = timeProvider;
     }
 
@@ -71,9 +81,9 @@ public sealed class MacaroonVerifier
             return MacaroonCheckResult.Unauthenticated($"invalid macaroon: {e.Message}");
         }
 
-        if (!id.StorageId.AsSpan().SequenceEqual(LndPermissions.DefaultRootKeyId))
+        if (_rootKeyOf(id.StorageId) is not { } rootKey)
             return MacaroonCheckResult.Unauthenticated("macaroon not found in storage");
-        if (!macaroon.VerifySignature(_rootKey))
+        if (!macaroon.VerifySignature(rootKey))
             return MacaroonCheckResult.Unauthenticated("verification failed: signature mismatch");
 
         foreach (var caveat in macaroon.Caveats)

@@ -104,6 +104,7 @@ public class UnitOfWork : IUnitOfWork
     // Accounting feed (NL-602)
     private AccountingEventDbRepository? _accountingEventDbRepository;
     private readonly AccountingFeedGate? _accountingFeedGate;
+    private readonly LndIndexAllocator? _indexAllocator;
     private AccountingBooksDbRepository? _accountingBooksDbRepository;
 
     // Accounting financial books (NL-602 A3, migration AddAccountingFinancial)
@@ -238,8 +239,10 @@ public class UnitOfWork : IUnitOfWork
     /// snapshot stored without one runs under while it is loaded (NL-290); null keeps the check off.</param>
     public UnitOfWork(NLightningDbContext context, ILogger<UnitOfWork> logger, ISha256 sha256,
                       IUtxoMemoryRepository utxoMemoryRepository, TimeProvider? timeProvider = null,
-                      ulong? maxDustHtlcExposureMsat = null, AccountingFeedGate? accountingFeedGate = null)
+                      ulong? maxDustHtlcExposureMsat = null, AccountingFeedGate? accountingFeedGate = null,
+                      LndIndexAllocator? indexAllocator = null)
     {
+        _indexAllocator = indexAllocator;
         _accountingFeedGate = accountingFeedGate;
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _logger = logger;
@@ -331,13 +334,59 @@ public class UnitOfWork : IUnitOfWork
 
     public void SaveChanges()
     {
-        _context.SaveChanges();
+        if (_indexAllocator is { } allocator && LndIndexAllocator.NeedsIndexes(_context))
+        {
+            allocator.Gate.Wait();
+            try
+            {
+                allocator.AssignAsync(_context).GetAwaiter().GetResult();
+                _context.SaveChanges();
+            }
+            catch
+            {
+                allocator.Rollback();
+                throw;
+            }
+            finally
+            {
+                allocator.Gate.Release();
+            }
+        }
+        else
+        {
+            _context.SaveChanges();
+        }
+
         ApplyPendingUtxoChanges();
     }
 
+    /// <remarks>A save with a new invoice or payment, or an invoice it settles, takes LND's indexes (NL-1165) under
+    /// the allocator's gate, so they are dense in commit order.</remarks>
     public async Task SaveChangesAsync()
     {
-        await _context.SaveChangesAsync();
+        if (_indexAllocator is { } allocator && LndIndexAllocator.NeedsIndexes(_context))
+        {
+            await allocator.Gate.WaitAsync();
+            try
+            {
+                await allocator.AssignAsync(_context);
+                await _context.SaveChangesAsync();
+            }
+            catch
+            {
+                allocator.Rollback();
+                throw;
+            }
+            finally
+            {
+                allocator.Gate.Release();
+            }
+        }
+        else
+        {
+            await _context.SaveChangesAsync();
+        }
+
         ApplyPendingUtxoChanges();
     }
 

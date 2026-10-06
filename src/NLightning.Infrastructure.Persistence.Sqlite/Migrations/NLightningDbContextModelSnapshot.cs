@@ -2057,6 +2057,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<byte[]>("PaymentHash")
                         .HasColumnType("BLOB");
 
+                    b.Property<long?>("AddIndex")
+                        .HasColumnType("INTEGER");
+
                     b.Property<long?>("AmountMsat")
                         .HasColumnType("INTEGER");
 
@@ -2080,6 +2083,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 
                     b.Property<uint>("ExpirySeconds")
                         .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("Htlcs")
+                        .HasColumnType("BLOB");
 
                     b.Property<byte[]>("InvoiceRequestPayerId")
                         .HasColumnType("BLOB");
@@ -2110,6 +2116,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<ulong?>("Quantity")
                         .HasColumnType("INTEGER");
 
+                    b.Property<long?>("SettleIndex")
+                        .HasColumnType("INTEGER");
+
                     b.Property<long?>("SettledAt")
                         .HasColumnType("INTEGER");
 
@@ -2122,7 +2131,13 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 
                     b.HasKey("PaymentHash");
 
+                    b.HasIndex("AddIndex")
+                        .IsUnique();
+
                     b.HasIndex("CreatedAt");
+
+                    b.HasIndex("SettleIndex")
+                        .IsUnique();
 
                     b.HasIndex("OfferId", "Status");
 
@@ -2279,6 +2294,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<string>("PayerNote")
                         .HasColumnType("TEXT");
 
+                    b.Property<long?>("PaymentIndex")
+                        .HasColumnType("INTEGER");
+
                     b.Property<byte[]>("Preimage")
                         .HasColumnType("BLOB");
 
@@ -2292,6 +2310,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.HasKey("PaymentHash");
 
                     b.HasIndex("CreatedAt");
+
+                    b.HasIndex("PaymentIndex")
+                        .IsUnique();
 
                     b.HasIndex("Status");
 

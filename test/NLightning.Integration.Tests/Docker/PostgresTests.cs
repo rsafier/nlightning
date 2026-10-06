@@ -171,6 +171,18 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresRowsFromBeforeAddLndIndexes_When_Migrated_Then_TheyGetDenseIndexesInCreationOrder()
+    {
+        // Arrange (NL-1165: the backfill of LND's add_index/settle_index/payment_index on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_lnd_indexes");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await LndIndexSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                  DatabaseType.PostgreSql, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresChannelsFromBeforeAddGossipGraph_When_Migrated_Then_TheyArePrivateAndTheGraphRoundTrips()
     {
         // Arrange (BOLT 7 plan G2-T3/G1-T1: channels stored before the migration are private with no announcement

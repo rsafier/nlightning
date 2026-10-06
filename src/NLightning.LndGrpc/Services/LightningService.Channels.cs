@@ -1,3 +1,4 @@
+using Google.Protobuf;
 using Grpc.Core;
 
 namespace NLightning.LndGrpc.Services;
@@ -227,10 +228,97 @@ public sealed partial class LightningService
             };
             if (channel.LocalAliases is { } aliases)
                 summary.AliasScids.Add(aliases.Select(ToChanId));
+            if (type == ChannelCloseSummary.Types.ClosureType.CooperativeClose)
+                summary.SettledBalance = CooperativeCloseBalance(channel);
+            else if (close is not null)
+                await AddResolutionsAsync(unitOfWork, channel, summary);
             response.Channels.Add(summary);
         }
 
         return response;
+    }
+
+    /// <summary>
+    /// The resolutions of a force-closed channel's outputs (NL-1166): ours only (the peer's outputs and anchors are not
+    /// listed), typed and judged as LND does — <c>CLAIMED</c> when our transaction spent it, <c>UNCLAIMED</c> when
+    /// another did, <c>ABANDONED</c> when ignored, still <c>OUTCOME_UNKNOWN</c> while pending. The claimed amounts of
+    /// our commitment outputs and HTLCs are the settled balance, the pending ones the time-locked balance.
+    /// </summary>
+    private static async Task AddResolutionsAsync(Domain.Persistence.Interfaces.IUnitOfWork unitOfWork,
+                                                  ChannelModel channel, ChannelCloseSummary summary)
+    {
+        foreach (var output in await unitOfWork.OnchainResolutionDbRepository.GetOutputsByChannelIdAsync(
+                                   channel.ChannelId))
+        {
+            var type = output.Descriptor switch
+            {
+                OutputDescriptorKind.DelayedToLocal or OutputDescriptorKind.PaymentToRemote
+                 or OutputDescriptorKind.RevokedToLocal => ResolutionType.Commit,
+                OutputDescriptorKind.OurAnchor => ResolutionType.Anchor,
+                OutputDescriptorKind.LocalOfferedHtlc or OutputDescriptorKind.RemoteReceivedHtlc =>
+                    ResolutionType.OutgoingHtlc,
+                OutputDescriptorKind.LocalReceivedHtlc or OutputDescriptorKind.RemoteOfferedHtlc =>
+                    ResolutionType.IncomingHtlc,
+                OutputDescriptorKind.RevokedHtlc or OutputDescriptorKind.RevokedSecondLevel =>
+                    output.HtlcDirection == HtlcDirection.Incoming
+                        ? ResolutionType.IncomingHtlc
+                        : ResolutionType.OutgoingHtlc,
+                _ => ResolutionType.TypeUnknown
+            };
+            if (type == ResolutionType.TypeUnknown)
+                continue;
+
+            var outcome = output.State switch
+            {
+                OutputResolutionState.Resolved or OutputResolutionState.Irrevocable =>
+                    output.ResolvingTransactionId is null
+                        ? ResolutionOutcome.Unclaimed
+                        : ResolutionOutcome.Claimed,
+                OutputResolutionState.Ignored => ResolutionOutcome.Abandoned,
+                _ => ResolutionOutcome.OutcomeUnknown
+            };
+            var amountSat = OutputDescriptorData.TryDecode(output)?.AmountSat ?? 0;
+            summary.Resolutions.Add(new Resolution
+            {
+                ResolutionType = type,
+                Outcome = outcome,
+                Outpoint = new OutPoint
+                {
+                    TxidBytes = ByteString.CopyFrom((byte[])output.TransactionId),
+                    TxidStr = output.TransactionId.ToString(),
+                    OutputIndex = output.OutputIndex
+                },
+                AmountSat = amountSat,
+                SweepTxid = output.ResolvingTransactionId?.ToString() ?? string.Empty
+            });
+            if (type == ResolutionType.Anchor)
+                continue;
+
+            if (outcome == ResolutionOutcome.Claimed)
+                summary.SettledBalance += (long)amountSat;
+            else if (outcome == ResolutionOutcome.OutcomeUnknown)
+                summary.TimeLockedBalance += (long)amountSat;
+        }
+    }
+
+    /// <summary>Our output of the mutual close transaction (to our shutdown script), 0 when not found.</summary>
+    private static long CooperativeCloseBalance(ChannelModel channel)
+    {
+        if (channel.ClosingTransaction is not { } closing || channel.LocalShutdownScript is not { } script)
+            return 0;
+
+        try
+        {
+            var transaction = NBitcoin.Transaction.Load(closing.RawTxBytes, NBitcoin.Network.RegTest);
+            var ours = transaction.Outputs.FirstOrDefault(o => o.ScriptPubKey.ToBytes()
+                                                                              .AsSpan()
+                                                                              .SequenceEqual((byte[])script));
+            return ours?.Value.Satoshi ?? 0;
+        }
+        catch (FormatException)
+        {
+            return 0;
+        }
     }
 
     private async Task<IReadOnlyDictionary<ChannelId, ChannelCloseModel>> LoadClosesAsync()

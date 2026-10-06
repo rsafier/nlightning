@@ -37,11 +37,41 @@ public interface IInvoiceDbRepository
     Task<IReadOnlyList<InvoiceModel>> ListAsync(int skip, int take);
 
     /// <summary>
-    /// A page of invoices by creation time (<see cref="CreationRangeQuery"/>), only <c>Open</c> ones when
-    /// <paramref name="openOnly"/> (LND's <c>ListInvoices</c>, NL-1163). The default (test doubles) reads every
+    /// A page of invoices by <c>add_index</c> (<see cref="LndIndexQuery"/>), only <c>Open</c> ones when
+    /// <paramref name="openOnly"/> (LND's <c>ListInvoices</c>, NL-1163/NL-1165). The default (test doubles) reads every
     /// invoice through <see cref="ListAsync"/> and filters in memory.
     /// </summary>
-    async Task<IReadOnlyList<InvoiceModel>> ListByCreationAsync(CreationRangeQuery query, bool openOnly)
+    async Task<IReadOnlyList<InvoiceModel>> ListByIndexAsync(LndIndexQuery query, bool openOnly)
+    {
+        var all = await ReadAllAsync();
+        var matching = all.Where(i => query.Contains(i.AddIndex, i.CreatedAt)
+                                   && (!openOnly || i.Status == InvoiceStatus.Open));
+        var ordered = query.Ascending
+                          ? matching.OrderBy(i => i.AddIndex)
+                          : matching.OrderByDescending(i => i.AddIndex);
+        return ordered.Take(query.Take).ToList();
+    }
+
+    /// <summary>
+    /// The settled invoices whose <c>settle_index</c> is above <paramref name="settleIndexAfter"/>, lowest first, at most
+    /// <paramref name="take"/> (LND's <c>SubscribeInvoices</c> replay, NL-1165). The default (test doubles) filters in
+    /// memory.
+    /// </summary>
+    async Task<IReadOnlyList<InvoiceModel>> ListSettledAfterAsync(ulong settleIndexAfter, int take) =>
+        (await ReadAllAsync()).Where(i => i.SettleIndex > settleIndexAfter)
+                              .OrderBy(i => i.SettleIndex)
+                              .Take(take)
+                              .ToList();
+
+    /// <summary>The highest <c>add_index</c> and <c>settle_index</c> stored (0 when none; NL-1165). The default (test
+    /// doubles) reads every invoice.</summary>
+    async Task<(ulong AddIndex, ulong SettleIndex)> GetMaxIndexesAsync()
+    {
+        var all = await ReadAllAsync();
+        return (all.Max(i => i.AddIndex) ?? 0, all.Max(i => i.SettleIndex) ?? 0);
+    }
+
+    private async Task<List<InvoiceModel>> ReadAllAsync()
     {
         var all = new List<InvoiceModel>();
         for (var skip = 0; ; skip += 500)
@@ -49,14 +79,8 @@ public interface IInvoiceDbRepository
             var page = await ListAsync(skip, 500);
             all.AddRange(page);
             if (page.Count < 500)
-                break;
+                return all;
         }
-
-        var matching = all.Where(i => query.Contains(i.CreatedAt) && (!openOnly || i.Status == InvoiceStatus.Open));
-        var ordered = query.Ascending
-                          ? matching.OrderBy(i => i.CreatedAt)
-                          : matching.OrderByDescending(i => i.CreatedAt);
-        return ordered.Take(query.Take).ToList();
     }
 
     /// <summary>

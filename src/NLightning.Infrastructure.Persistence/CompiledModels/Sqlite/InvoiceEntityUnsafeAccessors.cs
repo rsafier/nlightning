@@ -14,6 +14,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<PaymentHash>k__BackingField")]
         public static extern ref Hash PaymentHash(InvoiceEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<AddIndex>k__BackingField")]
+        public static extern ref long? AddIndex(InvoiceEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<AmountMsat>k__BackingField")]
         public static extern ref long? AmountMsat(InvoiceEntity @this);
 
@@ -37,6 +40,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<ExpirySeconds>k__BackingField")]
         public static extern ref uint ExpirySeconds(InvoiceEntity @this);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Htlcs>k__BackingField")]
+        public static extern ref byte[] Htlcs(InvoiceEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<InvoiceRequestPayerId>k__BackingField")]
         public static extern ref CompactPubKey? InvoiceRequestPayerId(InvoiceEntity @this);
@@ -64,6 +70,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Quantity>k__BackingField")]
         public static extern ref ulong? Quantity(InvoiceEntity @this);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<SettleIndex>k__BackingField")]
+        public static extern ref long? SettleIndex(InvoiceEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<SettledAt>k__BackingField")]
         public static extern ref DateTimeOffset? SettledAt(InvoiceEntity @this);

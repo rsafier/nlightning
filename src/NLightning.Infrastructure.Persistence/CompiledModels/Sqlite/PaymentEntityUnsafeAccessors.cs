@@ -70,6 +70,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<PayerNote>k__BackingField")]
         public static extern ref string PayerNote(PaymentEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<PaymentIndex>k__BackingField")]
+        public static extern ref long? PaymentIndex(PaymentEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Preimage>k__BackingField")]
         public static extern ref byte[] Preimage(PaymentEntity @this);
 

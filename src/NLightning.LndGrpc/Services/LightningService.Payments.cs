@@ -18,7 +18,7 @@ public sealed partial class LightningService
     private const uint MaxForwardingEvents = 50_000;
 
     /// <summary>
-    /// <c>ListPayments</c> with LND's paging: <c>payment_index</c> is the creation time in ticks; forward after
+    /// <c>ListPayments</c> with LND's paging: <c>payment_index</c> is dense (NL-1165); forward after
     /// <c>index_offset</c> oldest first, <c>reversed</c> before it (0: from the newest), answered oldest first;
     /// without <c>include_incomplete</c> only succeeded payments (LND). Trampoline relay legs are never listed. The
     /// recorded route is one HTLC attempt unless <c>omit_hops</c>.
@@ -30,7 +30,7 @@ public sealed partial class LightningService
                               request.CreationDateStart, request.CreationDateEnd);
         await using var scope = CreateScope();
         var repository = UnitOfWork(scope).PaymentDbRepository;
-        var payments = await repository.ListByCreationAsync(query, !request.IncludeIncomplete);
+        var payments = await repository.ListByIndexAsync(query, !request.IncludeIncomplete);
         var ordered = request.Reversed ? payments.Reverse() : payments;
         var response = new ListPaymentsResponse();
         response.Payments.Add(ordered.Select(p => ToLndPayment(p, request.OmitHops)));
@@ -122,8 +122,8 @@ public sealed partial class LightningService
             ? node.AliasText
             : string.Empty;
 
-    /// <summary>LND's <c>payment_index</c>: the creation time in ticks (unique, increasing, sparse).</summary>
-    internal static ulong PaymentIndex(PaymentModel payment) => (ulong)payment.CreatedAt.UtcTicks;
+    /// <summary>LND's <c>payment_index</c> (dense, NL-1165); 0 for a row saved without one.</summary>
+    internal static ulong PaymentIndex(PaymentModel payment) => payment.PaymentIndex ?? 0;
 
     internal static Payment ToLndPayment(PaymentModel payment, bool omitHops)
     {

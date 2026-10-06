@@ -17,7 +17,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
     public partial class NLightningDbContextModel
     {
         private NLightningDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("6281e8b6-37a8-41cc-9ea9-300238fde95c"), entityTypeCount: 56)
+            : base(skipDetectChanges: false, modelId: new Guid("5f46aa41-9887-48b8-80bf-3b5767ca4e3e"), entityTypeCount: 56)
         {
         }
 
@@ -6369,6 +6369,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var defaultTableMappings44 = new List<TableMappingBase<ColumnMappingBase>>();
             invoiceEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings44);
             var nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.InvoiceEntity", null, relationalModel);
+            var add_indexColumnBase = new ColumnBase<ColumnMappingBase>("add_index", "bigint", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.Columns.Add("add_index", add_indexColumnBase);
             var amount_msatColumnBase3 = new ColumnBase<ColumnMappingBase>("amount_msat", "bigint", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase)
             {
                 IsNullable = true
@@ -6403,6 +6408,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.Columns.Add("description", descriptionColumnBase0);
             var expiry_secondsColumnBase = new ColumnBase<ColumnMappingBase>("expiry_seconds", "bigint", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.Columns.Add("expiry_seconds", expiry_secondsColumnBase);
+            var htlcsColumnBase1 = new ColumnBase<ColumnMappingBase>("htlcs", "bytea", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.Columns.Add("htlcs", htlcsColumnBase1);
             var invoice_request_payer_idColumnBase = new ColumnBase<ColumnMappingBase>("invoice_request_payer_id", "bytea", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase)
             {
                 IsNullable = true
@@ -6441,6 +6451,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 IsNullable = true
             };
             nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.Columns.Add("quantity", quantityColumnBase);
+            var settle_indexColumnBase = new ColumnBase<ColumnMappingBase>("settle_index", "bigint", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.Columns.Add("settle_index", settle_indexColumnBase);
             var settled_atColumnBase = new ColumnBase<ColumnMappingBase>("settled_at", "bigint", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase)
             {
                 IsNullable = true
@@ -6458,6 +6473,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase, false);
             defaultTableMappings44.Add(nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)payment_hashColumnBase4, invoiceEntity.FindProperty("PaymentHash")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)add_indexColumnBase, invoiceEntity.FindProperty("AddIndex")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amount_msatColumnBase3, invoiceEntity.FindProperty("AmountMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amount_received_msatColumnBase, invoiceEntity.FindProperty("AmountReceivedMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)bolt11ColumnBase, invoiceEntity.FindProperty("Bolt11")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
@@ -6466,6 +6482,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)custom_recordsColumnBase, invoiceEntity.FindProperty("CustomRecords")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)descriptionColumnBase0, invoiceEntity.FindProperty("Description")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)expiry_secondsColumnBase, invoiceEntity.FindProperty("ExpirySeconds")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)htlcsColumnBase1, invoiceEntity.FindProperty("Htlcs")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)invoice_request_payer_idColumnBase, invoiceEntity.FindProperty("InvoiceRequestPayerId")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)kindColumnBase5, invoiceEntity.FindProperty("Kind")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)labelColumnBase1, invoiceEntity.FindProperty("Label")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
@@ -6475,6 +6492,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)payment_secretColumnBase, invoiceEntity.FindProperty("PaymentSecret")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)preimageColumnBase, invoiceEntity.FindProperty("Preimage")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)quantityColumnBase, invoiceEntity.FindProperty("Quantity")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)settle_indexColumnBase, invoiceEntity.FindProperty("SettleIndex")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)settled_atColumnBase, invoiceEntity.FindProperty("SettledAt")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)statusColumnBase2, invoiceEntity.FindProperty("Status")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)tagsColumnBase1, invoiceEntity.FindProperty("Tags")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
@@ -6485,6 +6503,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var payment_hashColumn4 = new Column("payment_hash", "bytea", invoicesTable);
             invoicesTable.Columns.Add("payment_hash", payment_hashColumn4);
             payment_hashColumn4.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(payment_hashColumn4);
+            var add_indexColumn = new Column("add_index", "bigint", invoicesTable)
+            {
+                IsNullable = true
+            };
+            invoicesTable.Columns.Add("add_index", add_indexColumn);
+            add_indexColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(add_indexColumn);
             var amount_msatColumn3 = new Column("amount_msat", "bigint", invoicesTable)
             {
                 IsNullable = true
@@ -6527,6 +6551,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var expiry_secondsColumn = new Column("expiry_seconds", "bigint", invoicesTable);
             invoicesTable.Columns.Add("expiry_seconds", expiry_secondsColumn);
             expiry_secondsColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(expiry_secondsColumn);
+            var htlcsColumn1 = new Column("htlcs", "bytea", invoicesTable)
+            {
+                IsNullable = true
+            };
+            invoicesTable.Columns.Add("htlcs", htlcsColumn1);
+            htlcsColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(htlcsColumn1);
             var invoice_request_payer_idColumn = new Column("invoice_request_payer_id", "bytea", invoicesTable)
             {
                 IsNullable = true
@@ -6572,6 +6602,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             };
             invoicesTable.Columns.Add("quantity", quantityColumn);
             quantityColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<decimal>(quantityColumn);
+            var settle_indexColumn = new Column("settle_index", "bigint", invoicesTable)
+            {
+                IsNullable = true
+            };
+            invoicesTable.Columns.Add("settle_index", settle_indexColumn);
+            settle_indexColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(settle_indexColumn);
             var settled_atColumn = new Column("settled_at", "bigint", invoicesTable)
             {
                 IsNullable = true
@@ -6592,6 +6628,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             invoicesTable.AddTypeMapping(invoicesTableMapping, false);
             tableMappings44.Add(invoicesTableMapping);
             RelationalModel.CreateColumnMapping(payment_hashColumn4, invoiceEntity.FindProperty("PaymentHash")!, invoicesTableMapping);
+            RelationalModel.CreateColumnMapping(add_indexColumn, invoiceEntity.FindProperty("AddIndex")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(amount_msatColumn3, invoiceEntity.FindProperty("AmountMsat")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(amount_received_msatColumn, invoiceEntity.FindProperty("AmountReceivedMsat")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(bolt11Column, invoiceEntity.FindProperty("Bolt11")!, invoicesTableMapping);
@@ -6600,6 +6637,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping(custom_recordsColumn, invoiceEntity.FindProperty("CustomRecords")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(descriptionColumn0, invoiceEntity.FindProperty("Description")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(expiry_secondsColumn, invoiceEntity.FindProperty("ExpirySeconds")!, invoicesTableMapping);
+            RelationalModel.CreateColumnMapping(htlcsColumn1, invoiceEntity.FindProperty("Htlcs")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(invoice_request_payer_idColumn, invoiceEntity.FindProperty("InvoiceRequestPayerId")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(kindColumn5, invoiceEntity.FindProperty("Kind")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(labelColumn1, invoiceEntity.FindProperty("Label")!, invoicesTableMapping);
@@ -6609,6 +6647,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping(payment_secretColumn, invoiceEntity.FindProperty("PaymentSecret")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(preimageColumn, invoiceEntity.FindProperty("Preimage")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(quantityColumn, invoiceEntity.FindProperty("Quantity")!, invoicesTableMapping);
+            RelationalModel.CreateColumnMapping(settle_indexColumn, invoiceEntity.FindProperty("SettleIndex")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(settled_atColumn, invoiceEntity.FindProperty("SettledAt")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(statusColumn2, invoiceEntity.FindProperty("Status")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(tagsColumn1, invoiceEntity.FindProperty("Tags")!, invoicesTableMapping);
@@ -6621,6 +6660,15 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             pk_invoices.MappedKeys.Add(pk_invoicesKey);
             RelationalModel.GetOrCreateUniqueConstraints(pk_invoicesKey).Add(pk_invoices);
             invoicesTable.UniqueConstraints.Add("pk_invoices", pk_invoices);
+            var ix_invoices_add_index = new TableIndex(
+            "ix_invoices_add_index", invoicesTable, new[] { add_indexColumn }, true);
+            ix_invoices_add_index.SetRowIndexValueFactory(new SimpleRowIndexValueFactory<long>(ix_invoices_add_index));
+            var ix_invoices_add_indexIx = RelationalModel.GetIndex(this,
+                "NLightning.Infrastructure.Persistence.Entities.Payment.InvoiceEntity",
+                new[] { "AddIndex" });
+            ix_invoices_add_index.MappedIndexes.Add(ix_invoices_add_indexIx);
+            RelationalModel.GetOrCreateTableIndexes(ix_invoices_add_indexIx).Add(ix_invoices_add_index);
+            invoicesTable.Indexes.Add("ix_invoices_add_index", ix_invoices_add_index);
             var ix_invoices_created_at = new TableIndex(
             "ix_invoices_created_at", invoicesTable, new[] { created_atColumn11 }, false);
             ix_invoices_created_at.SetRowIndexValueFactory(new SimpleRowIndexValueFactory<long>(ix_invoices_created_at));
@@ -6639,6 +6687,15 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             ix_invoices_offer_id_status.MappedIndexes.Add(ix_invoices_offer_id_statusIx);
             RelationalModel.GetOrCreateTableIndexes(ix_invoices_offer_id_statusIx).Add(ix_invoices_offer_id_status);
             invoicesTable.Indexes.Add("ix_invoices_offer_id_status", ix_invoices_offer_id_status);
+            var ix_invoices_settle_index = new TableIndex(
+            "ix_invoices_settle_index", invoicesTable, new[] { settle_indexColumn }, true);
+            ix_invoices_settle_index.SetRowIndexValueFactory(new SimpleRowIndexValueFactory<long>(ix_invoices_settle_index));
+            var ix_invoices_settle_indexIx = RelationalModel.GetIndex(this,
+                "NLightning.Infrastructure.Persistence.Entities.Payment.InvoiceEntity",
+                new[] { "SettleIndex" });
+            ix_invoices_settle_index.MappedIndexes.Add(ix_invoices_settle_indexIx);
+            RelationalModel.GetOrCreateTableIndexes(ix_invoices_settle_indexIx).Add(ix_invoices_settle_index);
+            invoicesTable.Indexes.Add("ix_invoices_settle_index", ix_invoices_settle_index);
 
             var offerEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.OfferEntity")!;
 
@@ -7004,6 +7061,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase.Columns.Add("payer_note", payer_noteColumnBase0);
             var payment_hashColumnBase5 = new ColumnBase<ColumnMappingBase>("payment_hash", "bytea", nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase.Columns.Add("payment_hash", payment_hashColumnBase5);
+            var payment_indexColumnBase = new ColumnBase<ColumnMappingBase>("payment_index", "bigint", nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase.Columns.Add("payment_index", payment_indexColumnBase);
             var preimageColumnBase0 = new ColumnBase<ColumnMappingBase>("preimage", "bytea", nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase)
             {
                 IsNullable = true
@@ -7039,6 +7101,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)outgoing_htlc_idColumnBase0, paymentEntity.FindProperty("OutgoingHtlcId")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)payee_node_idColumnBase, paymentEntity.FindProperty("PayeeNodeId")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)payer_noteColumnBase0, paymentEntity.FindProperty("PayerNote")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)payment_indexColumnBase, paymentEntity.FindProperty("PaymentIndex")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)preimageColumnBase0, paymentEntity.FindProperty("Preimage")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)statusColumnBase4, paymentEntity.FindProperty("Status")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)tagsColumnBase3, paymentEntity.FindProperty("Tags")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
@@ -7142,6 +7205,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             };
             paymentsTable.Columns.Add("payer_note", payer_noteColumn0);
             payer_noteColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<string>(payer_noteColumn0);
+            var payment_indexColumn = new Column("payment_index", "bigint", paymentsTable)
+            {
+                IsNullable = true
+            };
+            paymentsTable.Columns.Add("payment_index", payment_indexColumn);
+            payment_indexColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(payment_indexColumn);
             var preimageColumn0 = new Column("preimage", "bytea", paymentsTable)
             {
                 IsNullable = true
@@ -7180,6 +7249,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping(outgoing_htlc_idColumn0, paymentEntity.FindProperty("OutgoingHtlcId")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(payee_node_idColumn, paymentEntity.FindProperty("PayeeNodeId")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(payer_noteColumn0, paymentEntity.FindProperty("PayerNote")!, paymentsTableMapping);
+            RelationalModel.CreateColumnMapping(payment_indexColumn, paymentEntity.FindProperty("PaymentIndex")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(preimageColumn0, paymentEntity.FindProperty("Preimage")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(statusColumn4, paymentEntity.FindProperty("Status")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(tagsColumn3, paymentEntity.FindProperty("Tags")!, paymentsTableMapping);
@@ -7201,6 +7271,15 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             ix_payments_created_at.MappedIndexes.Add(ix_payments_created_atIx);
             RelationalModel.GetOrCreateTableIndexes(ix_payments_created_atIx).Add(ix_payments_created_at);
             paymentsTable.Indexes.Add("ix_payments_created_at", ix_payments_created_at);
+            var ix_payments_payment_index = new TableIndex(
+            "ix_payments_payment_index", paymentsTable, new[] { payment_indexColumn }, true);
+            ix_payments_payment_index.SetRowIndexValueFactory(new SimpleRowIndexValueFactory<long>(ix_payments_payment_index));
+            var ix_payments_payment_indexIx = RelationalModel.GetIndex(this,
+                "NLightning.Infrastructure.Persistence.Entities.Payment.PaymentEntity",
+                new[] { "PaymentIndex" });
+            ix_payments_payment_index.MappedIndexes.Add(ix_payments_payment_indexIx);
+            RelationalModel.GetOrCreateTableIndexes(ix_payments_payment_indexIx).Add(ix_payments_payment_index);
+            paymentsTable.Indexes.Add("ix_payments_payment_index", ix_payments_payment_index);
             var ix_payments_status = new TableIndex(
             "ix_payments_status", paymentsTable, new[] { statusColumn4 }, false);
             ix_payments_status.SetRowIndexValueFactory(new SimpleRowIndexValueFactory<byte>(ix_payments_status));

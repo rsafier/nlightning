@@ -57,6 +57,13 @@ public static class InvoiceEntityConfiguration
             // Newest-first listing
             entity.HasIndex(e => e.CreatedAt);
 
+            // LND's add_index/settle_index (NL-1165): dense, unique where set
+            entity.Property(e => e.AddIndex).IsRequired(false);
+            entity.Property(e => e.SettleIndex).IsRequired(false);
+            entity.HasIndex(e => e.AddIndex).IsUnique();
+            entity.HasIndex(e => e.SettleIndex).IsUnique();
+            entity.Property(e => e.Htlcs).IsRequired(false);
+
             // A BOLT 12 invoice belongs to one of our offers, which are never deleted; the per-offer caps count by
             // (OfferId, Status) (BOLT 12 plan D11)
             entity.HasOne<OfferEntity>()

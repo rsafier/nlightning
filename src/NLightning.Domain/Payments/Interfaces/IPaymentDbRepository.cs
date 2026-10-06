@@ -68,11 +68,11 @@ public interface IPaymentDbRepository
     Task<int> CountTrampolineRelaysAsync() => Task.FromResult(0);
 
     /// <summary>
-    /// A page of payments by creation time (<see cref="CreationRangeQuery"/>), without trampoline relay legs, only
-    /// <c>Succeeded</c> ones when <paramref name="succeededOnly"/> (LND's <c>ListPayments</c>, NL-1163). The default
-    /// (test doubles) reads every payment through <see cref="ListAsync(int, int)"/> and filters in memory.
+    /// A page of payments by <c>payment_index</c> (<see cref="LndIndexQuery"/>), without trampoline relay legs, only
+    /// <c>Succeeded</c> ones when <paramref name="succeededOnly"/> (LND's <c>ListPayments</c>, NL-1163/NL-1165). The
+    /// default (test doubles) reads every payment through <see cref="ListAsync(int, int)"/> and filters in memory.
     /// </summary>
-    async Task<IReadOnlyList<PaymentModel>> ListByCreationAsync(CreationRangeQuery query, bool succeededOnly)
+    async Task<IReadOnlyList<PaymentModel>> ListByIndexAsync(LndIndexQuery query, bool succeededOnly)
     {
         var all = new List<PaymentModel>();
         for (var skip = 0; ; skip += 500)
@@ -83,17 +83,26 @@ public interface IPaymentDbRepository
                 break;
         }
 
-        var matching = all.Where(p => !p.IsTrampolineRelay && query.Contains(p.CreatedAt)
+        var matching = all.Where(p => !p.IsTrampolineRelay && query.Contains(p.PaymentIndex, p.CreatedAt)
                                    && (!succeededOnly || p.Status == PaymentStatus.Succeeded));
         var ordered = query.Ascending
-                          ? matching.OrderBy(p => p.CreatedAt)
-                          : matching.OrderByDescending(p => p.CreatedAt);
+                          ? matching.OrderBy(p => p.PaymentIndex)
+                          : matching.OrderByDescending(p => p.PaymentIndex);
         return ordered.Take(query.Take).ToList();
     }
 
     /// <summary>How many stored payments are not trampoline relay legs, only <c>Succeeded</c> ones when
     /// <paramref name="succeededOnly"/> (LND's <c>total_num_payments</c>). The default (test doubles) counts in
     /// memory.</summary>
-    async Task<int> CountAsync(bool succeededOnly) =>
-        (await ListByCreationAsync(new CreationRangeQuery(null, null, true, int.MaxValue), succeededOnly)).Count;
+    async Task<int> CountAsync(bool succeededOnly)
+    {
+        var count = 0;
+        for (var skip = 0; ; skip += 500)
+        {
+            var page = await ListAsync(skip, 500);
+            count += page.Count(p => !p.IsTrampolineRelay && (!succeededOnly || p.Status == PaymentStatus.Succeeded));
+            if (page.Count < 500)
+                return count;
+        }
+    }
 }

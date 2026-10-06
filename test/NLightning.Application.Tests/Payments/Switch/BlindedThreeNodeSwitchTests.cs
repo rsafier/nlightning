@@ -56,6 +56,11 @@ public class BlindedThreeNodeSwitchTests
         var stored = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
                                                              .GetByPaymentHashAsync(invoice.PaymentHash));
         Assert.Equal(InvoiceStatus.Settled, stored!.Status);
+        // NL-1167: the settled part is recorded on the invoice (LND's Invoice.htlcs)
+        var recorded = Assert.Single(stored.Htlcs);
+        Assert.Equal(InvoiceHtlcState.Settled, recorded.State);
+        Assert.Equal(ThreeNodeHarness.BobCarolScid, recorded.ShortChannelId);
+        Assert.NotNull(recorded.ResolveTime);
         AssertNoHtlcs(harness);
     }
 

@@ -857,8 +857,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
         // The parts still held (just pruned) cover total_msat: the invoice receives their amounts
         var amount = set.HtlcSum;
         var parts = set.Parts.Count;
-        Task Settle(IUnitOfWork unitOfWork) => SettleInvoiceAsync(unitOfWork, set.PaymentHash, amount, part.ChannelId,
-                                                                  parts);
+        Task Settle(IUnitOfWork unitOfWork) => SettleInvoiceAsync(unitOfWork, set, amount, part.ChannelId, parts);
 
         if (!IsOnchain(part.ChannelId))
         {
@@ -1108,15 +1107,16 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
     /// rebalance, NL-609: a payment row for the hash that is <c>InFlight</c> or <c>Succeeded</c>), the event is flagged
     /// <c>selfPayment</c>, so the books take it as no income.
     /// </summary>
-    private async Task SettleInvoiceAsync(IUnitOfWork unitOfWork, Hash paymentHash, LightningMoney amount,
+    private async Task SettleInvoiceAsync(IUnitOfWork unitOfWork, HtlcSet set, LightningMoney amount,
                                           ChannelId channelId, int parts)
     {
-        var invoice = await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(paymentHash);
+        var invoice = await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(set.PaymentHash);
         if (invoice is not { Status: InvoiceStatus.Open })
             throw new InvoiceNotOpenException($"the invoice is {invoice?.Status.ToString() ?? "gone"}");
 
         invoice.Accept(amount);
         invoice.Settle(_timeProvider.GetUtcNow());
+        RecordInvoiceHtlcs(invoice, set, InvoiceHtlcState.Settled);
         await unitOfWork.InvoiceDbRepository.UpdateAsync(invoice);
         var selfPayment = await IsOurOwnPaymentAsync(unitOfWork, invoice);
         PaymentAccountingEvents.TryStage(unitOfWork, () =>
@@ -2281,6 +2281,29 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
     #region Helpers
 
     private uint CurrentHeight => _blockchainMonitor?.LastProcessedBlockHeight ?? 0;
+
+    /// <summary>
+    /// Records the set's HTLCs on the invoice (NL-1167, LND's <c>Invoice.htlcs</c>): their channel's short channel id,
+    /// id, amount and expiry, when the set completed and when it was resolved. Parts already recorded (a held set)
+    /// keep their accept height and time.
+    /// </summary>
+    private void RecordInvoiceHtlcs(InvoiceModel invoice, HtlcSet set, InvoiceHtlcState state)
+    {
+        var now = _timeProvider.GetUtcNow();
+        invoice.Htlcs = set.Parts.Select(part =>
+        {
+            var scid = _channelMemoryRepository.TryGetChannel(part.ChannelId, out var channel)
+                           ? channel.ShortChannelId
+                           : default;
+            var recorded = invoice.Htlcs.FirstOrDefault(h => h.HtlcId == part.HtlcId && h.ShortChannelId == scid);
+            return new InvoiceHtlc(scid, part.HtlcId, part.HtlcAmount.MilliSatoshi,
+                                   recorded?.AcceptHeight ?? CurrentHeight, recorded?.AcceptTime ?? now,
+                                   state == InvoiceHtlcState.Accepted ? null : now,
+                                   channel?.Commitments?.GetHtlc(HtlcDirection.Incoming, part.HtlcId)?.CltvExpiry
+                                ?? recorded?.ExpiryHeight ?? 0,
+                                   state, set.TotalMsat.MilliSatoshi);
+        }).ToList();
+    }
 
     /// <summary>
     /// The tip the monitor persisted when it last stopped (NL-267): while it has not reported a height in this run,

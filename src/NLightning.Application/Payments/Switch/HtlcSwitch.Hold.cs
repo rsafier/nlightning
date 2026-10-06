@@ -40,6 +40,7 @@ public sealed partial class HtlcSwitch : IHoldInvoiceService
         if (invoice.Status == InvoiceStatus.Open)
         {
             invoice.Hold(set.PartsSum);
+            RecordInvoiceHtlcs(invoice, set, InvoiceHtlcState.Accepted);
             using (var scope = _serviceScopeFactory.CreateScope())
             {
                 var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -97,6 +98,7 @@ public sealed partial class HtlcSwitch : IHoldInvoiceService
 
             var amount = set.PartsSum;
             invoice.SettleHeld(preimage, _timeProvider.GetUtcNow());
+            RecordInvoiceHtlcs(invoice, set, InvoiceHtlcState.Settled);
             await unitOfWork.InvoiceDbRepository.UpdateAsync(invoice);
             var selfPayment = await IsOurOwnPaymentAsync(unitOfWork, invoice);
             var firstChannelId = set.Parts[0].ChannelId;
@@ -187,6 +189,7 @@ public sealed partial class HtlcSwitch : IHoldInvoiceService
                                           CancellationToken cancellationToken)
     {
         var height = CurrentHeight;
+        RecordInvoiceHtlcs(invoice, set, InvoiceHtlcState.Canceled);
         foreach (var part in set.Parts.ToList())
         {
             if (!IsPartWaiting(part))

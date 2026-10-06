@@ -67,7 +67,8 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
             AmountReceivedMsat = ToMsat(invoice.AmountReceived),
             SettledAt = invoice.SettledAt,
             Label = invoice.Label,
-            Tags = invoice.Tags
+            Tags = invoice.Tags,
+            Htlcs = InvoiceHtlcCodec.Encode(invoice.Htlcs)
         });
     }
 
@@ -84,6 +85,8 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
         entity.SettledAt = invoice.SettledAt;
         // A hold invoice (NL-995) gains its preimage with the operator's settle
         entity.Preimage = invoice.Preimage is { } preimage ? ((byte[])preimage).ToArray() : entity.Preimage;
+        // The paying HTLCs once held or settled (NL-1167)
+        entity.Htlcs = InvoiceHtlcCodec.Encode(invoice.Htlcs) ?? entity.Htlcs;
     }
 
     /// <inheritdoc />
@@ -112,25 +115,61 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<InvoiceModel>> ListByCreationAsync(CreationRangeQuery query, bool openOnly)
+    public async Task<IReadOnlyList<InvoiceModel>> ListByIndexAsync(LndIndexQuery query, bool openOnly)
     {
         ArgumentNullException.ThrowIfNull(query);
         if (query.Take <= 0)
             return [];
 
-        var set = DbSet.AsNoTracking();
-        if (query.CreatedAfter is { } after)
-            set = set.Where(e => e.CreatedAt > after);
-        if (query.CreatedBefore is { } before)
-            set = set.Where(e => e.CreatedAt < before);
+        var set = DbSet.AsNoTracking().Where(e => e.AddIndex != null);
+        if (query.After is { } after)
+        {
+            var bound = ToIndex(after);
+            set = set.Where(e => e.AddIndex > bound);
+        }
+
+        if (query.Before is { } before)
+        {
+            var bound = ToIndex(before);
+            set = set.Where(e => e.AddIndex < bound);
+        }
+
+        if (query.CreatedFrom is { } from)
+            set = set.Where(e => e.CreatedAt >= from);
+        if (query.CreatedUntil is { } until)
+            set = set.Where(e => e.CreatedAt <= until);
         if (openOnly)
             set = set.Where(e => e.Status == OpenStatus);
-        set = query.Ascending
-                  ? set.OrderBy(e => e.CreatedAt).ThenBy(e => e.PaymentHash)
-                  : set.OrderByDescending(e => e.CreatedAt).ThenByDescending(e => e.PaymentHash);
+        set = query.Ascending ? set.OrderBy(e => e.AddIndex) : set.OrderByDescending(e => e.AddIndex);
         var entities = await set.Take(query.Take).ToListAsync();
         return entities.Select(MapEntityToDomain).ToList();
     }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<InvoiceModel>> ListSettledAfterAsync(ulong settleIndexAfter, int take)
+    {
+        if (take <= 0)
+            return [];
+
+        var bound = ToIndex(settleIndexAfter);
+        var entities = await DbSet.AsNoTracking()
+                                  .Where(e => e.SettleIndex != null && e.SettleIndex > bound)
+                                  .OrderBy(e => e.SettleIndex)
+                                  .Take(take)
+                                  .ToListAsync();
+        return entities.Select(MapEntityToDomain).ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<(ulong AddIndex, ulong SettleIndex)> GetMaxIndexesAsync()
+    {
+        var add = await DbSet.AsNoTracking().MaxAsync(e => e.AddIndex) ?? 0;
+        var settle = await DbSet.AsNoTracking().MaxAsync(e => e.SettleIndex) ?? 0;
+        return ((ulong)add, (ulong)settle);
+    }
+
+    /// <summary>An LND index as the stored long (the largest index any store reaches is far below 2^63).</summary>
+    private static long ToIndex(ulong index) => (long)Math.Min(index, long.MaxValue);
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<InvoiceModel>> ListSettledAsync(DateTimeOffset settledAtOrBefore, int skip,
@@ -211,7 +250,10 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
                                 MapKeysend(entity))
         {
             Label = entity.Label,
-            Tags = entity.Tags
+            Tags = entity.Tags,
+            AddIndex = entity.AddIndex is { } addIndex ? (ulong)addIndex : null,
+            SettleIndex = entity.SettleIndex is { } settleIndex ? (ulong)settleIndex : null,
+            Htlcs = InvoiceHtlcCodec.Decode(entity.Htlcs)
         };
     }
 

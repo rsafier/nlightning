@@ -60,6 +60,10 @@ public static class PaymentEntityConfiguration
             entity.HasIndex(e => e.Status);
             entity.HasIndex(e => e.CreatedAt);
 
+            // LND's payment_index (NL-1165): dense, unique where set
+            entity.Property(e => e.PaymentIndex).IsRequired(false);
+            entity.HasIndex(e => e.PaymentIndex).IsUnique();
+
             entity.HasMany(e => e.Hops)
                   .WithOne()
                   .HasForeignKey(h => h.PaymentHash)

@@ -68,10 +68,16 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
             throw new InvalidOperationException(error);
 
         _certificate = LndTlsFiles.EnsureCreated(DataDirectory, _options, _timeProvider, _logger);
-        var verifier = _options.AllowNoMacaroons
-                           ? null
-                           : new MacaroonVerifier(LndMacaroonFiles.EnsureCreated(DataDirectory, _logger),
-                                                  _timeProvider);
+        MacaroonVerifier? verifier = null;
+        if (!_options.AllowNoMacaroons)
+        {
+            LndMacaroonFiles.EnsureCreated(DataDirectory, _logger);
+            var rootKeys = _serviceProvider.GetService<LndRootKeyStore>() is { } registered
+                        && registered.DataDirectory == DataDirectory
+                               ? registered
+                               : new LndRootKeyStore(DataDirectory);
+            verifier = new MacaroonVerifier(rootKeys, _timeProvider);
+        }
 
         // No ambient configuration (appsettings.json in the working directory, environment variables): a Kestrel
         // section there would add endpoints beside the checked one (the Cashu host's NL-998 rule)
@@ -93,6 +99,8 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
             grpc.MaxSendMessageSize = null;
         });
         builder.Services.AddSingleton(_serviceProvider.GetRequiredService<LightningService>());
+        builder.Services.AddSingleton(_serviceProvider.GetRequiredService<RouterService>());
+        builder.Services.AddSingleton(_serviceProvider.GetRequiredService<InvoicesService>());
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
             kestrel.Limits.MaxConcurrentConnections = _options.MaxConnections;
@@ -102,6 +110,8 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
 
         var app = builder.Build();
         app.MapGrpcService<LightningService>();
+        app.MapGrpcService<RouterService>();
+        app.MapGrpcService<InvoicesService>();
         app.StartAsync(cancellationToken).GetAwaiter().GetResult();
         _app = app;
 
@@ -115,7 +125,7 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
         }
 
         BoundPort = new Uri(addresses.First()).Port;
-        _logger.LogInformation("LND gRPC (lnrpc.Lightning) listening on {Address}:{Port} (TLS{ClientCertificates}, "
+        _logger.LogInformation("LND gRPC (lnrpc.Lightning, routerrpc.Router, invoicesrpc.Invoices) listening on {Address}:{Port} (TLS{ClientCertificates}, "
                              + "{Macaroons}; files in {Directory})", _options.ListenAddress, BoundPort,
                                string.IsNullOrWhiteSpace(_options.ClientCaPath) ? "" : " with client certificates",
                                verifier is null ? "NO macaroons" : "macaroons", DataDirectory);
