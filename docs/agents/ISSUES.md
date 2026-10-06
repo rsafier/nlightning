@@ -177,9 +177,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 94 | 95 |
+| open | 0 | 0 | 0 | 94 | 94 |
 | in-progress | 0 | 0 | 5 | 1 | 6 |
-| fixed | 15 | 68 | 229 | 477 | 789 |
+| fixed | 15 | 68 | 230 | 477 | 790 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
 | **Total** | **15** | **68** | **244** | **592** | **919** |
@@ -9209,12 +9209,12 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Seen again 2026-10-05:** matrix hold-mx1 (7069b1ab, no coverage): the Eclair-force-close case `Given_HtlcsInFlightBothWays_When_EclairForceClosesATaprootChannel_*` failed once, green on the class rerun alone; so not only under coverlet.
 
 ### NL-1100 [EPIC] Wire codec redesign: one declarative definition per message, both directions
-- **Status:** open
+- **Status:** fixed (81e90dd4, 105b1f7a, 7c63dd55, 3cc482ec)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Serialization/Wire/`, plan `docs/agents/CODEC_REDESIGN_PLAN.md`
 - **Evidence:** The wire codec layer costs ~12.9k code lines in 341 files where Eclair's scodec-based layer needs ~2.0k in 12 (6.4x); one message costs 4 classes + 4 factory registrations + a Create* pair, and a missing registration silently turns a message "unknown" (dropped if odd, peer killed if even). The plan compares hand-written combinators, spec-CSV codegen (CLN-style), a Roslyn source generator and the hybrid; the decision (plan §3) is the hybrid: a span-based `WireReader`/`WireWriter` runtime with a strict TLV reader and per-message declarative `MessageWire<T>` definitions. Scope of the epic: wire messages and their TLV streams; later phases P1 (rest of BOLT 2), P2 (interactive-tx, splice, liquidity-ads TLV 1339), P3 (gossip incl. ExtraData-verbatim), P4 (onion 513; hop payloads need an error-detailing reader); BOLT 12 stays on its pure Domain codecs.
-- **Fix sketch:** per-phase checklists in plan §5; each phase keeps every round-trip/vector test green unchanged and adds registry + property coverage.
+- **Closeout (2026-10-06):** `7c63dd55` moves all 45 typed TLV value codecs into the owning message definitions or shared `TlvDefs`/`HopTlvDefs`; removes the converter classes, factory/interfaces and unused `MessageTlvReader`. `3cc482ec` removes the empty payload/message serializer factories and Domain interfaces, routes serialization directly through `WireRegistry`, and updates DI. All 54 peer messages are declarative; `HopPayloadSerializer` and `FailureMessageSerializer` retain their dedicated readers for the plan §5 reasons. Existing byte fixtures and assertion counts are preserved when converter tests move to the Serialization project. Net production C# reduction from `origin/wip/fafo`: 1,424 lines (2,437 deleted, 1,013 added). Release net10.0 build: 0 warnings/errors; full filtered net10.0 unit run: 17,033 passed, 74 explicit/platform skips, 0 failures across 12 suites, no reruns (every test invocation uses the required 5m hang timeout and Docker/SqlServer exclusions). Full `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"` passes; solution configuration check passes (40 projects). Infrastructure/Crypto is untouched, so Release.Native is not required. `ef0d6c45` resolves the existing formatting finding NL-1225. Final recipes and plan status describe the registry-only shape.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** `docs/agents/CODEC_REDESIGN_PLAN.md`
 
@@ -9698,7 +9698,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1225 Existing HtlcInterceptorHub null checks fail the formatting gate
-- **Status:** fixed (this commit; SHA recorded in NL-1100 closeout)
+- **Status:** fixed (ef0d6c45)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Payments/Interception/HtlcInterceptorHub.cs` (constructor and Dispose)

@@ -1,6 +1,6 @@
 # CODEC_REDESIGN_PLAN — the wire codec layer redesign
 
-Status: draft (2026-10-04). Epic NL-1100. Branch `wip/codec-redesign` from `wip/fafo`.
+Status: complete (2026-10-06). Epic NL-1100; final scaffolding cleanup on `wip/codec-cleanup` from `origin/wip/fafo`. The migration and cleanup retain the existing byte-exact tests.
 
 The BOLT wire codec layer costs ~12.9k code lines in 341 files. Eclair expresses the same
 surface in ~2.0k lines in 12 files (scodec combinators, `eclair-core/.../wire/protocol`,
@@ -55,9 +55,9 @@ These are the behaviors the equivalence tests pin; every candidate must keep all
    `NLightning.Infrastructure.Serialization` (references Domain + Infrastructure only).
    Domain keeps the message/payload/TLV *types* (handlers use them); only the codec
    mechanics move.
-9. **Coexistence**: migrated and unmigrated messages sit behind the same
-   `IMessageSerializer`/`IMessageTypeSerializerFactory` API. Callers and handlers do not
-   change. Domain public shapes do not change.
+9. **Entry point**: all peer messages sit behind the unchanged `IMessageSerializer` API,
+   resolved directly by `WireRegistry`. Callers, handlers and Domain message/payload/TLV shapes
+   do not change; the obsolete factory interfaces are removed.
 
 ## 2. Candidate approaches, with worked examples
 
@@ -116,7 +116,7 @@ internal static class ChannelReestablishWire
 }
 ```
 
-The stream rules (increasing types, canonical BigSize, length <= remaining, known-even
+The stream rules (increasing types, canonical BigSize, length <= remaining, unknown-even
 rejection) are written once in the TLV reader; each definition contributes only its known
 set and its typed decoders — exactly what the per-serializer `s_knownExtensionTypes` sets do
 today, minus the ~20 lines of `TryGetTlv`/converter plumbing per TLV per message.
@@ -241,7 +241,7 @@ so the runtime parses body → extension → construct); typed-TLV lookups are *
 (`tlvs.Get<NextFundingTlv>(TlvConstants.NextFunding)`), not by table index; the encode side writes **straight from the
 pooled buffer to the stream** (`WireWriter.WriteTo`); the definition's TLV table doubles as the known-type set and is
 built into a by-type lookup at registration (a duplicate type fails registration); and strict `TlvDef`s wrap **any**
-converter failure as `SerializationException` (converters can throw `ArgumentException`, not only
+value decoder failure as `SerializationException` (decoders can throw `ArgumentException`, not only
 `InvalidCastException`).
 
 1. **Risk to byte-exact behavior dominates.** The whole point is that nothing on the wire
@@ -260,9 +260,7 @@ converter failure as `SerializationException` (converters can throw `ArgumentExc
    BOLT text; no generated code exists to audit; the equivalence harness is the arbiter.
 
 What option 3 still wins — the compiler-checked registry — is captured by
-`WireRegistryTests`: for every `MessageTypes` value the old factory knows, the merged
-factory must return a serializer; and for every migrated message, both directions of the
-old and new codecs must agree. A missing definition fails the build's test gate, not a
+`WireRegistryTests`: for every supported `MessageTypes` value, the registry must return a serializer; and for every migrated message, both directions must retain the established fixtures. A missing definition fails the build's test gate, not a
 peer's connection.
 
 **Scope decision.** This redesign covers *wire messages and their TLV streams*. The chosen
@@ -289,19 +287,21 @@ approach also fits (later phases, in rough order of value):
    old recipe).
 2. New file `src/NLightning.Infrastructure.Serialization/Wire/Definitions/XWire.cs`: one
    `MessageWire<XMessage>` definition (encode lambda, decode lambda, TLV table if any).
-3. Register the definition in `Wire/Definitions/WireRegistry.cs` (one line).
+3. Register the definition in `Wire/WireRegistry.cs` (one line).
 4. `Create*` on `IMessageFactory`/`MessageFactory` — unchanged (still the send-side seam).
 5. Round-trip test — unchanged.
 
 Not needed anymore: the payload serializer, the message-type serializer, both
 `PayloadSerializerFactory` registrations, both `MessageTypeSerializerFactory` registrations,
-and the TLV converter (for TLVs whose Domain `Value` holds wire bytes). A missing
+and per-TLV converters. Every typed TLV has an explicit encode/decode pair in its owning
+message definition or a shared `TlvDefs` helper, including values such as `fee_range` whose
+Domain `Value` is not the wire encoding. A missing
 registration fails `WireRegistryTests` at build time instead of killing peers at run time.
 
 ## 5. Migration phases
 
-Phase 0 (this branch) is the vertical slice below; each later phase is one reviewable PR,
-same gates, same equivalence harness. **Status: the migration is COMPLETE on `wip/codec-redesign` (NL-1101, NL-1102) — all 50
+The following checklists record the completed migration phases, each with the same gates
+and equivalence harness. **Status: the migration and scaffolding cleanup are COMPLETE (NL-1100, NL-1101, NL-1102) — all 54
 `MessageTypes` messages the node speaks are on the Wire codec. P3 moved the gossip family over
 (256/257/258 frame the Domain codecs with `ExtraData` verbatim; 259 uses the strict-empty + keep-raw
 extension options; the five queries carry `TlvDef.RawKnown` records); `announcement_signatures` 259
@@ -309,10 +309,15 @@ moved from P1 to P3 with its family as planned. P4 resolved: `onion_message` 513
 `HopPayloadSerializer` and `FailureMessageSerializer` stay dedicated — `invalid_onion_payload` needs
 the offending record's type+offset (wire-visible error data the strict reader deliberately does not
 carry), the failure serializer is synchronous inside the crypto loop with its own lenient framing, and
-neither is a `MessageTypes`-keyed peer message. Revisit hop payloads only if the runtime grows an
+neither is a `MessageTypes`-keyed peer message. The final cleanup moves their reusable hop value
+definitions to `Wire/HopTlvDefs.cs` while retaining the dedicated reader and its error details. All
+peer TLV value codecs now live in the owning message definition or shared `Wire/TlvDefs.cs`; the
+converter classes/factory/interfaces, empty payload/message factories/interfaces and unused
+`MessageTlvReader` are removed. DI and `MessageSerializer` use `WireRegistry` directly. Taproot
+gossip adds the four later messages (NL-878), bringing the registry to 54. Revisit hop payloads only if the runtime grows an
 error-detailing TLV reader.**
 
-- **P0 (this PR): infrastructure + slice.** Wire runtime (reader/writer, primitives, strict
+- **P0 (complete): infrastructure + slice.** Wire runtime (reader/writer, primitives, strict
   TLV stream, `MessageWire<T>`, `WireRegistry`, factory merge), then migrate:
   - BOLT 1: `init`, `error`, `warning`, `ping`, `pong`;
   - BOLT 2 HTLC/commitment set: `update_add_htlc`, `update_fulfill_htlc`, `update_fail_htlc`,
@@ -322,13 +327,13 @@ error-detailing TLV reader.**
   Checklist per message: definition file; delete payload+message serializer; remove both
   factory registrations; equivalence test (fixture + property); round-trip test still green
   unchanged.
-- **P1: the rest of BOLT 2** (open/accept both versions, funding_created/signed,
+- **P1 (complete): the rest of BOLT 2** (open/accept both versions, funding_created/signed,
   channel_ready, shutdown, closing_signed/closing_complete/closing_sig, stfu,
   announcement_signatures 259) and their TLVs. Watch: `channel_type` optional-on-wire rule,
   taproot TLV known sets, `option_simple_close` 98/32-byte nonces.
-- **P2: interactive-tx (66-74) + splice TLVs**, liquidity-ads TLV 1339.
-- **P3: gossip** (256/257/258 with `ExtraData`-verbatim + signature-hash coupling, 261-265).
-- **P4: onion** (513; hop payloads only with the error-detailing reader variant).
+- **P2 (complete): interactive-tx (66-74) + splice TLVs**, liquidity-ads TLV 1339.
+- **P3 (complete): gossip** (256/257/258 with `ExtraData`-verbatim + signature-hash coupling, 261-265).
+- **P4 (resolved): onion** (513; hop payloads only with the error-detailing reader variant).
 - **Not planned**: BOLT 12 codecs (already pure Domain, different consumers); the onion hop payloads and
   the failure-message serializer (see the P4 resolution above).
 
@@ -356,12 +361,23 @@ After the P0 slice (measured on `wip/codec-redesign`, commit `81e90dd4`):
 | added definitions (14 messages) | 5 | 384 (~27 per message) |
 | **net for the slice** | | **−508** (excl. tests) |
 
-Remaining unmigrated boilerplate: 38 payload serializers (2,138 lines) + 36 message-type
+Original projection before P1/P2 (historical): 38 payload serializers (2,138 lines) + 36 message-type
 serializers (2,157 lines) = ~4,300 lines over ~40 messages; replacing them at ~27 lines per
 message plus removing the per-TLV converters (26 files, ~1,000 lines) puts the projected
 full-layer net at roughly **−3,500 to −4,000 code lines**, with the structural wins larger
 than the count: 7→3 touch points per message, one shared strict-TLV implementation, and the
 registry-completeness test replacing the silent-unknown failure mode.
+
+Final scaffolding cleanup (`wip/codec-cleanup`, `7c63dd55` + `3cc482ec`): all 45 typed TLV value
+codecs are composed by the 54 message definitions and the dedicated hop table. No converter
+classes/factory/interfaces or payload/message factories remain. Production C# Git line delta
+against `origin/wip/fafo`: **+1013 / −2437, net −1424 lines** (tests and docs excluded).
+
+Final validation (2026-10-06, net10.0): Release build 0 warnings/errors; full unit run
+17,033 passed, 74 explicit/platform skips, 0 failures across 12 suites, no reruns. Every
+`dotnet test` used `--blame-hang-timeout 5m` and the Docker/SqlServer exclusions. Full format
+verification excluding Blazor tests and `scripts/check-sln-configs.py` pass. Infrastructure/Crypto
+was untouched; no Release.Native gate was needed.
 
 Performance (Stopwatch micro-benchmark `WirePerfBenchmark`, `Explicit`/`Category=Benchmark`,
 Release net10.0, Apple M-series, 20k iterations after warmup; the same file was run against
@@ -383,18 +399,18 @@ primitives, no per-field factory lookups), comfortably inside the 1.5x acceptanc
    migrated message: old codec and new codec must agree byte-for-byte on encode, and decode
    to equal values, over existing fixtures plus randomized property tests, including strict
    rejection cases) and by the unchanged round-trip/vector tests.
-2. **TLV `Value`-is-wire-bytes invariant** — some Domain TLVs do not hold wire bytes in
-   `Value` (e.g. `FeeRangeTlv`); those keep the converter path until their phase. Each
-   migrated TLV's definition asserts it with an encode-side equivalence test.
+2. **TLV value encoding** — some Domain TLVs do not hold wire bytes in `Value`
+   (e.g. `FeeRangeTlv`); their `TlvDef` encode lambdas compute the wire bytes. Existing
+   value, stream and message tests retain their byte expectations.
 3. **Async/stream contract regressions** — the codec reads the remaining bytes of the
    bounded seekable stream into a pooled buffer; the seekable-stream-only gotcha is
    unchanged and re-documented.
 4. **Behavior drift on rejection paths** — exception types and wrap points are pinned by
    the existing malformed-message tests; the equivalence harness includes the
    strict-TLV rejection cases.
-5. **Coexistence bugs at the factory seam** — the merged factory prefers `WireRegistry` and
-   falls back to legacy; `WireRegistryTests` plus the full Serialization suite cover both
-   paths; migrated legacy registrations are deleted, not dead-coded.
+5. **Registry completeness** — `MessageSerializer` resolves directly through `WireRegistry`;
+   `WireRegistryTests` covers every supported type and both lookup directions. No legacy
+   factory fallback or converter binding remains.
 6. **AOT** — ref structs and static generics only; the Release.Native build gate stays at
    0 warnings.
 7. **Scope creep into handlers/Domain shapes** — prohibited by the contract in §1; the
@@ -402,7 +418,10 @@ primitives, no per-field factory lookups), comfortably inside the 1.5x acceptanc
 
 ## 8. Ledger
 
-Reserved range NL-1100..NL-1129 in `docs/agents/ISSUES.md`:
+Migration ledger in `docs/agents/ISSUES.md`:
 - NL-1100: epic, the codec redesign (this plan);
 - P0 slice entries: NL-1101 (infrastructure), NL-1102.. per migrated message group, plus any
   bugs found during the equivalence work.
+
+Final cleanup finding: NL-1225 (the existing interceptor formatting gate failure); cleanup
+findings were limited to the owner-reserved NL-1225..NL-1234 range.
