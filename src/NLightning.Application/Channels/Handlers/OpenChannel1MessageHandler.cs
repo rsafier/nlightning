@@ -7,10 +7,14 @@ using Close;
 using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
+using Domain.Channels.Acceptance;
+using Domain.Channels.Closing;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
 using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Node.Constants;
 using Domain.Node.Interfaces;
@@ -36,6 +40,7 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
     private readonly GossipOptions _gossipOptions;
     private readonly NodeOptions _nodeOptions;
     private readonly UpfrontShutdownScriptSource? _upfrontShutdownScriptSource;
+    private readonly IChannelOpenDecisionGate? _openDecisionGate;
 
     /// <param name="gossipOptions">Whether public channels are accepted (<see cref="GossipOptions.AcceptPublicChannels"/>,
     /// default yes, and on mainnet only with <see cref="GossipOptions.AllowPublicChannelsOnMainnet"/>).</param>
@@ -49,6 +54,8 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
     /// (NL-877 T5); without it a taproot channel is refused.</param>
     /// <param name="musig2">Checks the opener's simple taproot <c>next_local_nonce</c>; without it a taproot channel
     /// is refused.</param>
+    /// <param name="openDecisionGate">External deciders on the open (LND's <c>ChannelAcceptor</c>, NL-1180): asked
+    /// before anything is created for it; without one, or with no decider registered, the open goes on as usual.</param>
     public OpenChannel1MessageHandler(IChannelFactory channelFactory, IChannelMemoryRepository channelMemoryRepository,
                                       ILogger<OpenChannel1MessageHandler> logger, IMessageFactory messageFactory,
                                       IBlockchainMonitor? blockchainMonitor = null,
@@ -57,8 +64,10 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
                                       IAnchorReserveService? anchorReserveService = null,
                                       UpfrontShutdownScriptSource? upfrontShutdownScriptSource = null,
                                       INodeDrainState? nodeDrainState = null, ILightningSigner? lightningSigner = null,
-                                      IMusig2Service? musig2 = null)
+                                      IMusig2Service? musig2 = null,
+                                      IChannelOpenDecisionGate? openDecisionGate = null)
     {
+        _openDecisionGate = openDecisionGate;
         _lightningSigner = lightningSigner;
         _musig2 = musig2;
         _nodeDrainState = nodeDrainState;
@@ -120,8 +129,29 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
             }
         }
 
+        // NL-1180: external deciders (LND's ChannelAcceptor) answer before anything is created for the open; the wait
+        // holds only this peer's channel messages (IChannelOpenDecisionGate)
+        ChannelOpenRequest? openRequest = null;
+        ChannelOpenDecision? decision = null;
+        if (_openDecisionGate is { HasDeciders: true })
+        {
+            openRequest = ToOpenRequest(message, peerPubKey);
+            decision = await _openDecisionGate.DecideAsync(openRequest);
+            if (!decision.Accept)
+            {
+                _logger.LogInformation("open_channel {TemporaryChannelId} of {Peer} rejected by a channel acceptor: "
+                                     + "{Error}", payload.ChannelId, peerPubKey, decision.Error);
+                throw new ChannelErrorException($"Rejected by a channel acceptor: {decision.Error}", payload.ChannelId,
+                                                decision.Error);
+            }
+        }
+
         // Create the channel
         var channel = await _channelFactory.CreateChannelV1AsNonInitiatorAsync(message, negotiatedFeatures, peerPubKey);
+
+        // The acceptor's values replace the ones we would announce (a value that cannot apply refuses the open)
+        if (decision is { HasOverrides: true })
+            ApplyOpenDecision(channel, decision, openRequest!, negotiatedFeatures);
 
         _logger.LogTrace("Created Channel with fundingPubKey: {fundingPubKey}",
                          channel.LocalKeySet.FundingCompactPubKey);
@@ -210,6 +240,47 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
                                                  upfrontShutdownScriptTlv);
 
         return [acceptChannel1ReplyMessage];
+    }
+
+    /// <summary>The open as an external decider sees it (NL-1180).</summary>
+    internal static ChannelOpenRequest ToOpenRequest(OpenChannel1Message message, CompactPubKey peerPubKey)
+    {
+        var payload = message.Payload;
+        return new ChannelOpenRequest(peerPubKey, payload.ChainHash, payload.ChannelId, payload.FundingAmount,
+                                      payload.PushAmount, payload.DustLimitAmount, payload.MaxHtlcValueInFlight,
+                                      payload.ChannelReserveAmount, payload.HtlcMinimumAmount,
+                                      (ulong)payload.FeeRatePerKw.Satoshi, payload.ToSelfDelay, payload.MaxAcceptedHtlcs,
+                                      payload.ChannelFlags, message.ChannelTypeTlv?.Features, false);
+    }
+
+    /// <summary>Applies an acceptor's values to what we announce, or refuses the open when one cannot apply.</summary>
+    private void ApplyOpenDecision(ChannelModel channel, ChannelOpenDecision decision,
+                                   ChannelOpenRequest request, FeatureOptions negotiatedFeatures)
+    {
+        var channelId = request.PendingChannelId;
+        if (decision.UpfrontShutdownScript is { } script)
+        {
+            // LND: an upfront_shutdown for a peer without the feature fails the open
+            if (negotiatedFeatures.UpfrontShutdownScript == FeatureSupport.No)
+                throw new ChannelErrorException("A channel acceptor set upfront_shutdown, but "
+                                              + "option_upfront_shutdown_script is not negotiated", channelId,
+                                                ChannelOpenDecision.GenericRejection);
+            if (!ShutdownScriptValidator.IsValidUpfront(script, negotiatedFeatures))
+                throw new ChannelErrorException("A channel acceptor's upfront_shutdown is not a valid shutdown script",
+                                                channelId, ChannelOpenDecision.GenericRejection);
+        }
+
+        if (ChannelOpenDecisionRules.TryApply(decision, request, channel.ChannelParams.Local,
+                                              channel.ChannelParams.MinimumDepth, request.FundingAmount,
+                                              out var local, out var minimumDepth) is { } error)
+        {
+            _logger.LogWarning("Refusing open_channel {TemporaryChannelId}: the channel acceptor's answer cannot apply "
+                             + "({Error})", channelId, error);
+            throw new ChannelErrorException($"The channel acceptor's answer cannot apply: {error}", channelId,
+                                            ChannelOpenDecision.GenericRejection);
+        }
+
+        channel.ApplyOpenDecision(local, minimumDepth);
     }
 
     /// <summary>The opener's simple taproot <c>next_local_nonce</c>, checked (MUST fail the channel otherwise).</summary>

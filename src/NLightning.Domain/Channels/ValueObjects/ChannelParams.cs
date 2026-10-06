@@ -110,6 +110,16 @@ public readonly record struct ChannelParams
             OptionSimpleTaproot = OptionSimpleTaproot
         };
 
+    /// <summary>These parameters with our announced values and the funding depth replaced (an external open decision,
+    /// NL-1180).</summary>
+    public ChannelParams WithLocalAndMinimumDepth(ChannelParty local, uint minimumDepth) =>
+        new(local, Remote, FeeRateAmountPerKw, minimumDepth, OptionAnchorOutputs, UseScidAlias)
+        {
+            HasInferredParams = HasInferredParams,
+            AnnounceChannel = AnnounceChannel,
+            OptionSimpleTaproot = OptionSimpleTaproot
+        };
+
     /// <summary>
     /// Returns a copy with the peer's parameters replaced (the initiator learns them from <c>accept_channel</c>).
     /// </summary>

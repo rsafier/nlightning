@@ -93,6 +93,13 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
             grpc.MaxSendMessageSize = null;
         });
         builder.Services.AddSingleton(_serviceProvider.GetRequiredService<LightningService>());
+        // Wave 3 (NL-1183, NL-1184): the sub-servers run when the node registered them (AddLndGrpc does)
+        var router = _serviceProvider.GetService<RouterService>();
+        if (router is not null)
+            builder.Services.AddSingleton(router);
+        var walletKit = _serviceProvider.GetService<WalletKitService>();
+        if (walletKit is not null)
+            builder.Services.AddSingleton(walletKit);
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
             kestrel.Limits.MaxConcurrentConnections = _options.MaxConnections;
@@ -102,6 +109,10 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
 
         var app = builder.Build();
         app.MapGrpcService<LightningService>();
+        if (router is not null)
+            app.MapGrpcService<RouterService>();
+        if (walletKit is not null)
+            app.MapGrpcService<WalletKitService>();
         app.StartAsync(cancellationToken).GetAwaiter().GetResult();
         _app = app;
 

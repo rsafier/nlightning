@@ -1,0 +1,39 @@
+namespace NLightning.Application.Payments.Interception;
+
+using Domain.Payments.Interception;
+
+/// <summary>The connected forward interceptor (an LND <c>HtlcInterceptor</c> stream, NL-1183).</summary>
+public interface IHtlcInterceptorClient
+{
+    /// <summary>
+    /// Queues <paramref name="forward"/> for the client without waiting; false when the client cannot take it (the
+    /// forward stays held and is offered again when a client connects, as LND does).
+    /// </summary>
+    bool TryOffer(InterceptedForward forward);
+}
+
+/// <summary>The limits of forward interception (LND's defaults, NL-1183).</summary>
+public sealed class HtlcInterceptorSettings
+{
+    /// <summary>Blocks before the incoming expiry at which a held forward fails back (LND: 19).</summary>
+    public uint CltvRejectDelta { get; set; } = 19;
+
+    /// <summary>A forward whose incoming HTLC expires within this many blocks is not held (LND: 22).</summary>
+    public uint CltvInterceptDelta { get; set; } = 22;
+
+    /// <summary>The most forwards held at once.</summary>
+    public int MaxHeld { get; set; } = 1000;
+}
+
+/// <summary>How <see cref="HtlcInterceptorHub.ResolveAsync"/> ended.</summary>
+public enum InterceptResolveResult
+{
+    /// <summary>The resolution was carried out (or attempted: a refused channel operation is logged).</summary>
+    Resolved,
+
+    /// <summary>No forward with that key is held (LND's <c>ErrFwdNotExists</c>).</summary>
+    NotFound,
+
+    /// <summary>A settle whose preimage does not match the payment hash; the forward stays held.</summary>
+    PreimageMismatch
+}
