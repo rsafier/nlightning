@@ -9442,7 +9442,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** found by NL-1148 wave C
 
 ### NL-1154 LN backend: ListPays could report FAILED between two attempts of a payment that was still retrying
-- **Status:** fixed (pending SHA, see the ledger commit)
+- **Status:** fixed (47ec437e)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.LnBackend/ClnNodeBackendService.cs` (`ListPays`, `Xpay`)
