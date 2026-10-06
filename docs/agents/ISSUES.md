@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 93 | 94 |
+| open | 0 | 0 | 1 | 94 | 95 |
 | in-progress | 0 | 0 | 5 | 1 | 6 |
 | fixed | 15 | 68 | 229 | 476 | 788 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **244** | **590** | **917** |
+| **Total** | **15** | **68** | **244** | **591** | **918** |
 
 ### Epics
 
@@ -9685,4 +9685,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `test/NLightning.Application.Tests/Channels/DualFunding/DualFundLiquidityAdsRefusalTests.cs`
 - **Evidence:** the same wave 3 gate run failed it once (16 s, the harness's open timeout range); the class alone is green (12/12). Wave 3 registers an empty `ChannelOpenDecisionGate` in `DualFundHarness` (no decider: the accepter path returns at once), so the open timing is unchanged.
 - **Fix sketch:** a stepped clock for the harness's open timeout, as the other de-timed dual-fund tests.
+- **Blocks/Blocked-by:** none
+
+### NL-1093 `GossipIngressLimitsTests.Given_ANodeBlacklistedForAConflictingAnnouncement_*` failed once under a loaded full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Gossip/Graph/GossipIngressLimitsTests.cs` (`Given_ANodeBlacklistedForAConflictingAnnouncement_When_ItRelaysOthersGossip_Then_ItIsStillTaken`)
+- **Evidence:** in the LND gRPC waves 2+3 integration's full net10.0 run (2026-10-06, `wip/fafo` at `28d7bdd2`, while `run-cluster.sh --matrix lnd,postgres` built and ran on the same host) it failed after 1 m 36 s; the class passed 25/25 three times alone right after.
+- **Fix sketch:** find the real-clock wait in the test (or the ingress worker it waits on) and move it to a stepped `TimeProvider` or a bounded event-driven wait, as the de-timing pass did; else the `timing-serial` collection.
 - **Blocks/Blocked-by:** none
