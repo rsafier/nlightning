@@ -179,10 +179,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 83 | 84 |
 | in-progress | 0 | 0 | 4 | 1 | 5 |
-| fixed | 15 | 68 | 226 | 464 | 773 |
+| fixed | 15 | 68 | 227 | 464 | 774 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **240** | **568** | **891** |
+| **Total** | **15** | **68** | **241** | **568** | **892** |
 
 ### Epics
 
@@ -9449,3 +9449,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** NL-1148 wave C, checking captaind's contract (its attempt's fate comes only from `ListPays`; a FAILED row fails the attempt and makes the user's HTLC VTXOs revocable): `PaymentService` saves the row `Failed` when no part is in flight before a retry round replaces it (NL-999), and `IPaymentService.IsPaying` is the only signal that a retry is still to come. `ListPays` served the row as read, so a lookup in that window — captaind's sync right after an xpay that returned at its retry deadline while a retry round was being planned — could see FAILED while our next attempt then put an HTLC out (the ASP could refund the user and still pay). The Cashu processor had the same rule (NL-999); the backend did not apply it.
 - **Fix sketch:** done: a `Failed` row whose hash `IsPaying` is reported PENDING (no `completed_at`, `updated_index` = `created_index`), in the by-hash lookup, the paged list and the status filter; `Xpay` maps its outcome the same way (DEADLINE_EXCEEDED, not FAILED_PRECONDITION). The other half of the contract holds by construction: the payment row is persisted `InFlight` before the first offer and survives restarts, so `ListPays` is empty only for a payment that never offered an HTLC. Unit tests pin both.
 - **Blocks/Blocked-by:** found by NL-1148 wave C; same rule as NL-999
+
+### NL-1155 Our onion-message reply paths started at an arbitrary peer, which the recipient may not reach: replies lost
+- **Status:** fixed (f9365d64)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/OnionMessages/ReplyPathFactory.cs` (`Create`), `OnionMessageService.SendAndWaitForReplyAsync`
+- **Evidence:** the post-merge `lnd` cluster run of `wip/fafo` at `18e4aec2` failed `BarkWalletFlowTests` (2/2 green on a rerun): our node's `fetchinvoice` for a second NLightning node's offer got "No reply from offer path 0 within 30 s" three times, while the payee answered every `invoice_request` within 40 ms with `NoPath`. The reply path's introduction node was `ListOnionMessagePeers()[0]` (channel peers first, otherwise in listing order): with two channel peers (LND alice and the payee) it was alice whenever she listed first, and the payee, connected only to us, had no route to her. Any `fetchinvoice`/reply-awaiting send from a node with several onion-message peers could lose its replies the same way.
+- **Fix sketch:** done: the route is resolved before the reply path, and the peer the message leaves through introduces the reply path when it is as good a kept peer as the first listed one (it has an open channel, or the first listed has none) — the recipient's side reached that peer. The channel-peer preference (plan D7: we reconnect only to channel peers) stays first, pinned by `OnionMessageChannelTests.Given_TwoPeersOneWithAChannel_*`. Test `OnionMessageComponentsTests.Given_TwoPeers_When_CreatingAReplyPathThroughOne_Then_ThatPeerIntroducesIt` (4 cases).
+- **Blocks/Blocked-by:** found by NL-1148 wave C; plan `BOLT12_PLAN.md` D7
