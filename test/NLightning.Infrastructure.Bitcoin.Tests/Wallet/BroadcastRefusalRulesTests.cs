@@ -13,6 +13,7 @@ public class BroadcastRefusalRulesTests
     [InlineData("bad-txns-inputs-duplicate")]
     [InlineData("mandatory-script-verify-flag-failed (Signature must be zero for failed CHECK(MULTI)SIG operation)")]
     [InlineData("non-mandatory-script-verify-flag (Witness program hash mismatch)")]
+    [InlineData("mempool-script-verify-flag-failed (Signature must be zero for failed CHECK(MULTI)SIG operation)")]
     public void Given_APermanentRejectReason_When_Classified_Then_ItIsPermanent(string reason)
     {
         // Act / Assert
