@@ -138,6 +138,12 @@ public sealed class PaymentModel
     public string? Tags { get; set; }
 
     /// <summary>
+    /// LND's <c>payment_index</c> (NL-1165): 1, 2, 3, ... in the order payments were saved, read from the store; null on
+    /// a model not read back since its first save.
+    /// </summary>
+    public ulong? PaymentIndex { get; set; }
+
+    /// <summary>
     /// The payment is the outgoing leg of a trampoline relay (NL-875), not our own spend: its HTLCs carry
     /// <c>HtlcOrigin.Trampoline(PaymentHash)</c>, and the accounting books it through the relay's
     /// <c>TrampolineRelaySettled</c> event instead of <c>PaymentSucceeded</c>/<c>PaymentFailed</c>. Written with the

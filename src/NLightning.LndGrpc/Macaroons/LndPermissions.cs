@@ -118,5 +118,5 @@ public static class LndPermissions
 
     /// <summary>The operations <paramref name="fullMethod"/> requires, or null for a method LND does not know.</summary>
     public static IReadOnlyList<MacaroonOp>? ForMethod(string fullMethod) =>
-        Methods.TryGetValue(fullMethod, out var ops) ? ops : null;
+        Methods.TryGetValue(fullMethod, out var ops) ? ops : LndSubServerPermissions.ForMethod(fullMethod);
 }

@@ -102,6 +102,20 @@ public sealed class InvoiceModel
     /// </summary>
     public string? Tags { get; set; }
 
+    /// <summary>
+    /// LND's <c>add_index</c> (NL-1165): 1, 2, 3, ... in the order invoices were saved, read from the store (the unit
+    /// of work assigns it when the invoice is first saved); null on a model not read back since.
+    /// </summary>
+    public ulong? AddIndex { get; set; }
+
+    /// <summary>LND's <c>settle_index</c> (NL-1165): assigned in the save that settles the invoice; null until read back
+    /// settled.</summary>
+    public ulong? SettleIndex { get; set; }
+
+    /// <summary>The HTLCs that paid (or are held for) the invoice (NL-1167), recorded when the set is held or settles;
+    /// empty before, and for rows from before the record existed.</summary>
+    public IReadOnlyList<InvoiceHtlc> Htlcs { get; set; } = [];
+
     public InvoiceModel(Hash paymentHash, Secret? preimage, Secret paymentSecret, LightningMoney? amount,
                         string? description, string? bolt11, DateTimeOffset createdAt, uint expirySeconds,
                         ushort minFinalCltvExpiry, InvoiceStatus status = InvoiceStatus.Open,

@@ -139,20 +139,30 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
     public Task<int> CountTrampolineRelaysAsync() => DbSet.AsNoTracking().CountAsync(e => e.IsTrampolineRelay);
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<PaymentModel>> ListByCreationAsync(CreationRangeQuery query, bool succeededOnly)
+    public async Task<IReadOnlyList<PaymentModel>> ListByIndexAsync(LndIndexQuery query, bool succeededOnly)
     {
         ArgumentNullException.ThrowIfNull(query);
         if (query.Take <= 0)
             return [];
 
-        var set = Filter(DbSet.AsNoTracking(), succeededOnly);
-        if (query.CreatedAfter is { } after)
-            set = set.Where(e => e.CreatedAt > after);
-        if (query.CreatedBefore is { } before)
-            set = set.Where(e => e.CreatedAt < before);
-        set = query.Ascending
-                  ? set.OrderBy(e => e.CreatedAt).ThenBy(e => e.PaymentHash)
-                  : set.OrderByDescending(e => e.CreatedAt).ThenByDescending(e => e.PaymentHash);
+        var set = Filter(DbSet.AsNoTracking(), succeededOnly).Where(e => e.PaymentIndex != null);
+        if (query.After is { } after)
+        {
+            var bound = (long)Math.Min(after, long.MaxValue);
+            set = set.Where(e => e.PaymentIndex > bound);
+        }
+
+        if (query.Before is { } before)
+        {
+            var bound = (long)Math.Min(before, long.MaxValue);
+            set = set.Where(e => e.PaymentIndex < bound);
+        }
+
+        if (query.CreatedFrom is { } from)
+            set = set.Where(e => e.CreatedAt >= from);
+        if (query.CreatedUntil is { } until)
+            set = set.Where(e => e.CreatedAt <= until);
+        set = query.Ascending ? set.OrderBy(e => e.PaymentIndex) : set.OrderByDescending(e => e.PaymentIndex);
         var entities = await set.Include(e => e.Hops).Take(query.Take).ToListAsync();
         return entities.Select(e => MapEntityToDomain(e, e.Hops ?? [])).ToList();
     }
@@ -189,6 +199,7 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
                                            MapBolt12(entity), MapKeysend(entity), entity.IsTrampolineRelay);
         payment.Label = entity.Label;
         payment.Tags = entity.Tags;
+        payment.PaymentIndex = entity.PaymentIndex is { } index ? (ulong)index : null;
         return payment;
     }
 

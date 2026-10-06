@@ -282,6 +282,7 @@ public static class NodeServiceExtensions
         services.AddCashuPaymentProcessor(configuration);
         services.AddLnBackend(configuration);
         services.AddLndGrpc(configuration);
+        services.AddSingleton<INodeCommandDispatcher, ClientCommandDispatcher>();
         // BOLT 12 offers (wave B12): createoffer/listoffers/disableoffer (ClientCommand 26-28) and payoffer/
         // fetchinvoice (29-30); the Application registers the offer services themselves (AddApplicationServices)
         services.AddOfferIpcServices();

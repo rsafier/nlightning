@@ -124,6 +124,12 @@ public class PaymentEntity
     public bool IsTrampolineRelay { get; set; }
 
     /// <summary>
+    /// LND's <c>payment_index</c> (NL-1165, migration <c>AddLndIndexes</c>): 1, 2, 3, ... in the order payments were
+    /// saved; null only for a row saved by a unit of work without the allocator.
+    /// </summary>
+    public long? PaymentIndex { get; set; }
+
+    /// <summary>
     /// The route of the onion, with each hop's shared secret (cascade-deleted with the payment).
     /// </summary>
     public virtual ICollection<PaymentHopEntity>? Hops { get; set; }

@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Integration.Tests.Persistence;
 
@@ -11,11 +12,14 @@ using Domain.Money;
 using Domain.Payments.Enums;
 using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
+using Infrastructure.Crypto.Hashes;
 using Infrastructure.Persistence.Contexts;
 using Infrastructure.Persistence.Enums;
 using Infrastructure.Persistence.Providers;
+using Infrastructure.Repositories;
 using Infrastructure.Repositories.Database.Channel;
 using Infrastructure.Repositories.Database.Payment;
+using Infrastructure.Repositories.Memory;
 using static PaymentSchemaRoundTrip;
 
 /// <summary>
@@ -39,6 +43,22 @@ public class PaymentPersistenceTests
 
         // Act & Assert (the same rows and assertions as the Docker Postgres/SQL Server tests)
         await PaymentSchemaRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)), DatabaseType.Sqlite,
+            TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Given_RowsFromBeforeAddLndIndexes_When_Migrated_Then_TheyGetDenseIndexesInCreationOrder()
+    {
+        // Arrange
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        var options = new DbContextOptionsBuilder<NLightningDbContext>()
+                     .UseSqlite(connection, x => x.MigrationsAssembly("NLightning.Infrastructure.Persistence.Sqlite"))
+                     .Options;
+
+        // Act & Assert (the same rows and assertions as the Postgres test, NL-1165)
+        await LndIndexSchemaRoundTrip.AssertAsync(
             () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)), DatabaseType.Sqlite,
             TestContext.Current.CancellationToken);
     }
@@ -132,70 +152,101 @@ public class PaymentPersistenceTests
     }
 
     [Fact]
-    public async Task Given_FiveInvoices_When_ListedByCreation_Then_TheBoundsAreExclusiveAndBothDirectionsWork()
+    public async Task Given_FiveInvoicesSavedThroughTheUnitOfWork_When_ListedByIndex_Then_IndexesAreDenseAndPaged()
     {
-        // Arrange (LND's index-offset paging, NL-1163)
+        // Arrange (LND's add_index/settle_index, NL-1163/NL-1165): one allocator, as the node has
         await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
-        await SaveAsync(db, async c =>
+        var allocator = new LndIndexAllocator();
+        for (byte i = 0; i < 5; i++)
         {
-            var repository = new InvoiceDbRepository(c);
-            for (byte i = 0; i < 5; i++)
-            {
-                var invoice = CreateInvoice((byte)(0x70 + i * 3), null, s_now.AddMinutes(i));
-                if (i == 1)
-                    invoice.Cancel();
-                await repository.AddAsync(invoice);
-            }
-        });
+            var invoice = CreateInvoice((byte)(0x70 + i * 3), null, s_now.AddMinutes(i));
+            if (i == 1)
+                invoice.Cancel();
+            await SaveThroughUnitOfWorkAsync(db, allocator, u => u.InvoiceDbRepository.AddAsync(invoice));
+        }
+
+        // The fourth one settles: it takes settle_index 1
+        var settling = CreateInvoice(0x79, null, s_now.AddMinutes(3));
+        settling.Accept(LightningMoney.MilliSatoshis(1_000));
+        settling.Settle(s_now.AddMinutes(10));
+        await SaveThroughUnitOfWorkAsync(db, allocator, u => u.InvoiceDbRepository.UpdateAsync(settling));
 
         // Act
         await using var context = db.CreateDbContext();
         var repository = new InvoiceDbRepository(context);
-        var forward = await repository.ListByCreationAsync(new CreationRangeQuery(s_now, null, true, 2), false);
-        var backward =
-            await repository.ListByCreationAsync(new CreationRangeQuery(null, s_now.AddMinutes(4), false, 2), false);
-        var open = await repository.ListByCreationAsync(new CreationRangeQuery(null, null, true, 10), true);
+        var forward = await repository.ListByIndexAsync(new LndIndexQuery(1, null, true, 2), false);
+        var backward = await repository.ListByIndexAsync(new LndIndexQuery(null, 5, false, 2), false);
+        var open = await repository.ListByIndexAsync(new LndIndexQuery(null, null, true, 10), true);
+        var dated = await repository.ListByIndexAsync(
+                        new LndIndexQuery(null, null, true, 10, s_now.AddMinutes(1), s_now.AddMinutes(2)), false);
+        var settled = await repository.ListSettledAfterAsync(0, 10);
 
         // Assert
-        Assert.Equal(new[] { s_now.AddMinutes(1), s_now.AddMinutes(2) }, forward.Select(i => i.CreatedAt));
-        Assert.Equal(new[] { s_now.AddMinutes(3), s_now.AddMinutes(2) }, backward.Select(i => i.CreatedAt));
-        Assert.Equal(4, open.Count);
-        Assert.DoesNotContain(open, i => i.CreatedAt == s_now.AddMinutes(1));
-        Assert.Empty(await repository.ListByCreationAsync(new CreationRangeQuery(null, null, true, 0), false));
+        Assert.Equal(new ulong?[] { 2, 3 }, forward.Select(i => i.AddIndex));
+        Assert.Equal(new ulong?[] { 4, 3 }, backward.Select(i => i.AddIndex));
+        Assert.Equal(new ulong?[] { 1, 3, 5 }, open.Select(i => i.AddIndex));
+        Assert.Equal(new ulong?[] { 2, 3 }, dated.Select(i => i.AddIndex));
+        var only = Assert.Single(settled);
+        Assert.Equal(settling.PaymentHash, only.PaymentHash);
+        Assert.Equal(1ul, only.SettleIndex);
+        Assert.Equal(4ul, only.AddIndex);
+        Assert.Empty(await repository.ListByIndexAsync(new LndIndexQuery(null, null, true, 0), false));
     }
 
     [Fact]
-    public async Task Given_PaymentsInEveryState_When_ListedByCreationAndCounted_Then_SucceededOnlyFilters()
+    public async Task Given_PaymentsSavedThroughTheUnitOfWork_When_ListedByIndexAndCounted_Then_SucceededOnlyFilters()
     {
-        // Arrange (NL-1163)
+        // Arrange (NL-1163/NL-1165)
         await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var allocator = new LndIndexAllocator();
         var first = CreatePayment(0x91, s_now);
         var second = CreatePayment(0x94, s_now.AddSeconds(1));
         second.Succeed(SecretOf(0x95), s_now.AddSeconds(2));
         var third = CreatePayment(0x97, s_now.AddSeconds(2));
-        await SaveAsync(db, async c =>
-        {
-            var repository = new PaymentDbRepository(c);
-            await repository.AddAsync(first);
-            await repository.AddAsync(second);
-            await repository.AddAsync(third);
-        });
+        foreach (var payment in new[] { first, second, third })
+            await SaveThroughUnitOfWorkAsync(db, allocator, u => u.PaymentDbRepository.AddAsync(payment));
 
         // Act
         await using var context = db.CreateDbContext();
         var repository = new PaymentDbRepository(context);
-        var all = await repository.ListByCreationAsync(new CreationRangeQuery(null, null, true, 10), false);
-        var newest = await repository.ListByCreationAsync(new CreationRangeQuery(s_now, null, false, 1), false);
-        var succeeded = await repository.ListByCreationAsync(new CreationRangeQuery(null, null, true, 10), true);
+        var all = await repository.ListByIndexAsync(new LndIndexQuery(null, null, true, 10), false);
+        var newest = await repository.ListByIndexAsync(new LndIndexQuery(1, null, false, 1), false);
+        var succeeded = await repository.ListByIndexAsync(new LndIndexQuery(null, null, true, 10), true);
 
         // Assert
-        Assert.Equal(new[] { first.PaymentHash, second.PaymentHash, third.PaymentHash },
-                     all.Select(p => p.PaymentHash));
+        Assert.Equal(new ulong?[] { 1, 2, 3 }, all.Select(p => p.PaymentIndex));
+        Assert.Equal(first.PaymentHash, all[0].PaymentHash);
         AssertPayment(third, Assert.Single(newest));
-        AssertPayment(second, Assert.Single(succeeded));
+        Assert.Equal(2ul, Assert.Single(succeeded).PaymentIndex);
         Assert.Equal(2, all[0].Route.Count);
         Assert.Equal(3, await repository.CountAsync(false));
         Assert.Equal(1, await repository.CountAsync(true));
+    }
+
+    [Fact]
+    public async Task Given_ASaveThatFails_When_TheNextSaveTakesAnIndex_Then_NoIndexIsSkipped()
+    {
+        // Arrange: the second save fails (a trigger refuses the insert): its index is given back
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var allocator = new LndIndexAllocator();
+        await SaveThroughUnitOfWorkAsync(db, allocator,
+                                         u => u.InvoiceDbRepository.AddAsync(CreateInvoice(0x31, null, s_now)));
+        await ExecuteAsync(db, "CREATE TRIGGER fail_once BEFORE INSERT ON \"Invoices\" "
+                             + "BEGIN SELECT RAISE(ABORT, 'refused'); END;");
+        await Assert.ThrowsAsync<DbUpdateException>(() => SaveThroughUnitOfWorkAsync(
+            db, allocator, u => u.InvoiceDbRepository.AddAsync(CreateInvoice(0x34, null, s_now.AddSeconds(1)))));
+        await ExecuteAsync(db, "DROP TRIGGER fail_once;");
+
+        // Act
+        await SaveThroughUnitOfWorkAsync(db, allocator,
+                                         u => u.InvoiceDbRepository.AddAsync(CreateInvoice(0x37, null,
+                                                                                           s_now.AddSeconds(2))));
+
+        // Assert
+        await using var context = db.CreateDbContext();
+        var listed = await new InvoiceDbRepository(context).ListByIndexAsync(new LndIndexQuery(null, null, true, 10),
+                                                                               false);
+        Assert.Equal(new ulong?[] { 1, 2 }, listed.Select(i => i.AddIndex));
     }
 
     [Fact]
@@ -594,6 +645,22 @@ public class PaymentPersistenceTests
                                                                         .ToArray()),
             SecretOf((byte)(0xC0 + incomingHtlcId)), new ShortChannelId(900_000, 7, 1),
             LightningMoney.MilliSatoshis(10_000_000), 760, s_now.AddSeconds(incomingHtlcId));
+
+    private static async Task ExecuteAsync(SqliteDbTestContext db, string sql)
+    {
+        await using var context = db.CreateDbContext();
+        await context.Database.ExecuteSqlRawAsync(sql, TestContext.Current.CancellationToken);
+    }
+
+    private static async Task SaveThroughUnitOfWorkAsync(SqliteDbTestContext db, LndIndexAllocator allocator,
+                                                         Func<UnitOfWork, Task> stage)
+    {
+        await using var context = db.CreateDbContext();
+        var unitOfWork = new UnitOfWork(context, NullLogger<UnitOfWork>.Instance, new Sha256(),
+                                              new UtxoMemoryRepository(), indexAllocator: allocator);
+        await stage(unitOfWork);
+        await unitOfWork.SaveChangesAsync();
+    }
 
     private static async Task SaveAsync(SqliteDbTestContext db, Func<NLightningDbContext, Task> stage)
     {

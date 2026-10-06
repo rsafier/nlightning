@@ -2078,6 +2078,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("PaymentHash")
                         .HasColumnType("varbinary(32)");
 
+                    b.Property<long?>("AddIndex")
+                        .HasColumnType("bigint");
+
                     b.Property<long?>("AmountMsat")
                         .HasColumnType("bigint");
 
@@ -2101,6 +2104,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.Property<long>("ExpirySeconds")
                         .HasColumnType("bigint");
+
+                    b.Property<byte[]>("Htlcs")
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("InvoiceRequestPayerId")
                         .HasColumnType("varbinary(33)");
@@ -2131,6 +2137,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<decimal?>("Quantity")
                         .HasColumnType("decimal(20,0)");
 
+                    b.Property<long?>("SettleIndex")
+                        .HasColumnType("bigint");
+
                     b.Property<long?>("SettledAt")
                         .HasColumnType("bigint");
 
@@ -2143,7 +2152,15 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.HasKey("PaymentHash");
 
+                    b.HasIndex("AddIndex")
+                        .IsUnique()
+                        .HasFilter("[AddIndex] IS NOT NULL");
+
                     b.HasIndex("CreatedAt");
+
+                    b.HasIndex("SettleIndex")
+                        .IsUnique()
+                        .HasFilter("[SettleIndex] IS NOT NULL");
 
                     b.HasIndex("OfferId", "Status");
 
@@ -2300,6 +2317,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<string>("PayerNote")
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<long?>("PaymentIndex")
+                        .HasColumnType("bigint");
+
                     b.Property<byte[]>("Preimage")
                         .HasColumnType("varbinary(32)");
 
@@ -2313,6 +2333,10 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.HasKey("PaymentHash");
 
                     b.HasIndex("CreatedAt");
+
+                    b.HasIndex("PaymentIndex")
+                        .IsUnique()
+                        .HasFilter("[PaymentIndex] IS NOT NULL");
 
                     b.HasIndex("Status");
 

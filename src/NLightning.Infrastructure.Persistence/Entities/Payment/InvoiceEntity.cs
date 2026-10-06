@@ -118,6 +118,24 @@ public class InvoiceEntity
     /// </summary>
     public string? Tags { get; set; }
 
+    /// <summary>
+    /// LND's <c>add_index</c> (NL-1165, migration <c>AddLndIndexes</c>): 1, 2, 3, ... in the order invoices were saved,
+    /// assigned when the row is first saved; null only for a row saved by a unit of work without the allocator.
+    /// </summary>
+    public long? AddIndex { get; set; }
+
+    /// <summary>
+    /// LND's <c>settle_index</c> (NL-1165): 1, 2, 3, ... in the order invoices were settled, assigned in the save that
+    /// settles the invoice; null until then.
+    /// </summary>
+    public long? SettleIndex { get; set; }
+
+    /// <summary>
+    /// The HTLCs that paid (or are held for) the invoice (NL-1167, migration <c>AddLndIndexes</c>), recorded when the
+    /// set is held or settles; null before (codec <c>InvoiceHtlcCodec</c> in the repositories).
+    /// </summary>
+    public byte[]? Htlcs { get; set; }
+
     // Default constructor for EF Core
     internal InvoiceEntity()
     {

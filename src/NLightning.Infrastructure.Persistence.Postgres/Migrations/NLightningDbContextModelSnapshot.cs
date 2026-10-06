@@ -2675,6 +2675,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("bytea")
                         .HasColumnName("payment_hash");
 
+                    b.Property<long?>("AddIndex")
+                        .HasColumnType("bigint")
+                        .HasColumnName("add_index");
+
                     b.Property<long?>("AmountMsat")
                         .HasColumnType("bigint")
                         .HasColumnName("amount_msat");
@@ -2706,6 +2710,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.Property<long>("ExpirySeconds")
                         .HasColumnType("bigint")
                         .HasColumnName("expiry_seconds");
+
+                    b.Property<byte[]>("Htlcs")
+                        .HasColumnType("bytea")
+                        .HasColumnName("htlcs");
 
                     b.Property<byte[]>("InvoiceRequestPayerId")
                         .HasColumnType("bytea")
@@ -2745,6 +2753,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("numeric(20,0)")
                         .HasColumnName("quantity");
 
+                    b.Property<long?>("SettleIndex")
+                        .HasColumnType("bigint")
+                        .HasColumnName("settle_index");
+
                     b.Property<long?>("SettledAt")
                         .HasColumnType("bigint")
                         .HasColumnName("settled_at");
@@ -2761,8 +2773,16 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.HasKey("PaymentHash")
                         .HasName("pk_invoices");
 
+                    b.HasIndex("AddIndex")
+                        .IsUnique()
+                        .HasDatabaseName("ix_invoices_add_index");
+
                     b.HasIndex("CreatedAt")
                         .HasDatabaseName("ix_invoices_created_at");
+
+                    b.HasIndex("SettleIndex")
+                        .IsUnique()
+                        .HasDatabaseName("ix_invoices_settle_index");
 
                     b.HasIndex("OfferId", "Status")
                         .HasDatabaseName("ix_invoices_offer_id_status");
@@ -2965,6 +2985,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("text")
                         .HasColumnName("payer_note");
 
+                    b.Property<long?>("PaymentIndex")
+                        .HasColumnType("bigint")
+                        .HasColumnName("payment_index");
+
                     b.Property<byte[]>("Preimage")
                         .HasColumnType("bytea")
                         .HasColumnName("preimage");
@@ -2983,6 +3007,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
 
                     b.HasIndex("CreatedAt")
                         .HasDatabaseName("ix_payments_created_at");
+
+                    b.HasIndex("PaymentIndex")
+                        .IsUnique()
+                        .HasDatabaseName("ix_payments_payment_index");
 
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_payments_status");

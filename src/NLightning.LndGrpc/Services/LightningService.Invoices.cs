@@ -65,6 +65,8 @@ public sealed partial class LightningService
             throw InvalidArgument(e.Message);
         }
 
+        // The add_index is assigned by the save (NL-1165): read the row back for it
+        invoice = await _invoiceService.GetInvoiceAsync(invoice.PaymentHash, context.CancellationToken) ?? invoice;
         return new AddInvoiceResponse
         {
             RHash = ByteString.CopyFrom((byte[])invoice.PaymentHash),
@@ -96,7 +98,7 @@ public sealed partial class LightningService
     }
 
     /// <summary>
-    /// <c>ListInvoices</c> with LND's paging: <c>index_offset</c> is an <c>add_index</c> (our creation time in ticks);
+    /// <c>ListInvoices</c> with LND's paging: <c>index_offset</c> is an <c>add_index</c> (dense, NL-1165);
     /// forward the invoices after it oldest first, <c>reversed</c> the ones before it (0: from the newest), answered
     /// oldest first either way; <c>pending_only</c>, <c>creation_date_start</c>/<c>end</c> (inclusive Unix seconds).
     /// </summary>
@@ -105,7 +107,7 @@ public sealed partial class LightningService
         var query = PageQuery(request.IndexOffset, request.Reversed, request.NumMaxInvoices, DefaultInvoicePage,
                               request.CreationDateStart, request.CreationDateEnd);
         await using var scope = CreateScope();
-        var invoices = await UnitOfWork(scope).InvoiceDbRepository.ListByCreationAsync(query, request.PendingOnly);
+        var invoices = await UnitOfWork(scope).InvoiceDbRepository.ListByIndexAsync(query, request.PendingOnly);
         var ordered = request.Reversed ? invoices.Reverse() : invoices;
         var response = new ListInvoiceResponse();
         response.Invoices.Add(ordered.Select(ToLndInvoice));
@@ -169,12 +171,11 @@ public sealed partial class LightningService
         return Task.FromResult(response);
     }
 
-    /// <summary>LND's <c>add_index</c> of our invoice: its creation time in .NET ticks (unique, increasing, sparse).</summary>
-    internal static ulong AddIndex(InvoiceModel invoice) => (ulong)invoice.CreatedAt.UtcTicks;
+    /// <summary>LND's <c>add_index</c> of our invoice (dense, NL-1165); 0 for a row saved without one.</summary>
+    internal static ulong AddIndex(InvoiceModel invoice) => invoice.AddIndex ?? 0;
 
-    /// <summary>LND's <c>settle_index</c>: the settle time in ticks, 0 until settled.</summary>
-    internal static ulong SettleIndex(InvoiceModel invoice) =>
-        invoice.SettledAt is { } settled ? (ulong)settled.UtcTicks : 0;
+    /// <summary>LND's <c>settle_index</c> (dense, NL-1165); 0 until settled.</summary>
+    internal static ulong SettleIndex(InvoiceModel invoice) => invoice.SettleIndex ?? 0;
 
     internal static Invoice ToLndInvoice(InvoiceModel invoice)
     {
@@ -187,7 +188,7 @@ public sealed partial class LightningService
             InvoiceStatus.Accepted or InvoiceStatus.Held => Invoice.Types.InvoiceState.Accepted,
             _ => Invoice.Types.InvoiceState.Open
         };
-        return new Invoice
+        var lndInvoice = new Invoice
         {
             Memo = invoice.Description ?? string.Empty,
             RPreimage = invoice.Preimage is { } preimage ? ByteString.CopyFrom((byte[])preimage) : ByteString.Empty,
@@ -209,43 +210,48 @@ public sealed partial class LightningService
             IsKeysend = invoice.Kind == InvoiceKind.Keysend,
             PaymentAddr = ByteString.CopyFrom((byte[])invoice.PaymentSecret)
         };
+        lndInvoice.Htlcs.Add(invoice.Htlcs.Select(h => new InvoiceHTLC
+        {
+            ChanId = ToChanId(h.ShortChannelId),
+            HtlcIndex = h.HtlcId,
+            AmtMsat = h.AmountMsat,
+            AcceptHeight = (int)h.AcceptHeight,
+            AcceptTime = h.AcceptTime.ToUnixTimeSeconds(),
+            ResolveTime = h.ResolveTime?.ToUnixTimeSeconds() ?? 0,
+            ExpiryHeight = (int)h.ExpiryHeight,
+            State = h.State switch
+            {
+                InvoiceHtlcState.Settled => InvoiceHTLCState.Settled,
+                InvoiceHtlcState.Canceled => InvoiceHTLCState.Canceled,
+                _ => InvoiceHTLCState.Accepted
+            },
+            MppTotalAmtMsat = h.MppTotalMsat
+        }));
+        return lndInvoice;
     }
 
     /// <summary>
-    /// The creation-time page of an LND index-offset listing: forward after the offset oldest first, reversed before it
-    /// newest first, within the inclusive creation dates.
+    /// The page of an LND index-offset listing: forward the rows after the offset lowest index first, reversed the rows
+    /// before it highest first (0: from the last), within the inclusive creation dates (Unix seconds).
     /// </summary>
-    internal static CreationRangeQuery PageQuery(ulong indexOffset, bool reversed, ulong max, ulong defaultMax,
-                                                 ulong creationDateStart, ulong creationDateEnd)
+    internal static LndIndexQuery PageQuery(ulong indexOffset, bool reversed, ulong max, ulong defaultMax,
+                                            ulong creationDateStart, ulong creationDateEnd)
     {
-        DateTimeOffset? after = null, before = null;
+        ulong? after = null, before = null;
         if (indexOffset != 0)
         {
-            var offset = FromTicks(indexOffset);
             if (reversed)
-                before = offset;
+                before = indexOffset;
             else
-                after = offset;
-        }
-
-        if (creationDateStart != 0)
-        {
-            var start = FromUnixSeconds(creationDateStart).AddTicks(-1);
-            after = after is { } a && a > start ? a : start;
-        }
-
-        if (creationDateEnd != 0)
-        {
-            var end = FromUnixSeconds(creationDateEnd).AddSeconds(1);
-            before = before is { } b && b < end ? b : end;
+                after = indexOffset;
         }
 
         var take = (int)Math.Min(max == 0 ? defaultMax : max, MaxPage);
-        return new CreationRangeQuery(after, before, !reversed, take);
+        return new LndIndexQuery(after, before, !reversed, take,
+                                 creationDateStart != 0 ? FromUnixSeconds(creationDateStart) : null,
+                                 creationDateEnd != 0 ? FromUnixSeconds(creationDateEnd).AddSeconds(1).AddTicks(-1)
+                                                      : null);
     }
-
-    private static DateTimeOffset FromTicks(ulong ticks) =>
-        new(checked((long)Math.Min(ticks, (ulong)DateTimeOffset.MaxValue.UtcTicks)), TimeSpan.Zero);
 
     private static DateTimeOffset FromUnixSeconds(ulong seconds) =>
         DateTimeOffset.FromUnixTimeSeconds((long)Math.Min(seconds, 253_402_300_798UL));

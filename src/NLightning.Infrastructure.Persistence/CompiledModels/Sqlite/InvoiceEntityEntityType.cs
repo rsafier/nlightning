@@ -33,9 +33,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                 "NLightning.Infrastructure.Persistence.Entities.Payment.InvoiceEntity",
                 typeof(InvoiceEntity),
                 baseEntityType,
-                propertyCount: 21,
+                propertyCount: 24,
                 foreignKeyCount: 1,
-                unnamedIndexCount: 2,
+                unnamedIndexCount: 4,
                 keyCount: 1);
 
             var paymentHash = runtimeEntityType.AddProperty(
@@ -95,6 +95,57 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             paymentHash.SetCurrentValueComparer(new StructuralEntryCurrentProviderValueComparer(paymentHash));
             paymentHash.SetSentinelFromProviderValue(null);
 
+            var addIndex = runtimeEntityType.AddProperty(
+                "AddIndex",
+                typeof(long?),
+                propertyInfo: typeof(InvoiceEntity).GetProperty("AddIndex", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(InvoiceEntity).GetField("<AddIndex>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            addIndex.SetGetter(
+                long? (InvoiceEntity instance) => InvoiceEntityUnsafeAccessors.AddIndex(instance),
+                bool (InvoiceEntity instance) => !(InvoiceEntityUnsafeAccessors.AddIndex(instance).HasValue));
+            addIndex.SetSetter(
+                InvoiceEntity (InvoiceEntity instance, long? value) =>
+                {
+                    InvoiceEntityUnsafeAccessors.AddIndex(instance) = value;
+                    return instance;
+                });
+            addIndex.SetMaterializationSetter(
+                InvoiceEntity (InvoiceEntity instance, long? value) =>
+                {
+                    InvoiceEntityUnsafeAccessors.AddIndex(instance) = value;
+                    return instance;
+                });
+            addIndex.SetAccessors(
+                long? (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.AddIndex(((InvoiceEntity)(entry.Entity))),
+                long? (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.AddIndex(((InvoiceEntity)(entry.Entity))),
+                long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(addIndex, 1),
+                long? (IInternalEntry entry) => entry.GetCurrentValue<long?>(addIndex));
+            addIndex.SetPropertyIndexes(
+                index: 1,
+                originalValueIndex: 1,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            addIndex.TypeMapping = LongTypeMapping.Default.Clone(
+                comparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                keyComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                providerValueComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                mappingInfo: new RelationalTypeMappingInfo(
+                    storeTypeName: "INTEGER"));
+            addIndex.SetCurrentValueComparer(new EntryCurrentValueComparer<long?>(addIndex));
+            addIndex.SetComparer(new NullableValueComparer<long>(addIndex.TypeMapping.Comparer));
+            addIndex.SetKeyComparer(new NullableValueComparer<long>(addIndex.TypeMapping.KeyComparer));
+
             var amountMsat = runtimeEntityType.AddProperty(
                 "AmountMsat",
                 typeof(long?),
@@ -119,11 +170,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             amountMsat.SetAccessors(
                 long? (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.AmountMsat(((InvoiceEntity)(entry.Entity))),
                 long? (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.AmountMsat(((InvoiceEntity)(entry.Entity))),
-                long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(amountMsat, 1),
+                long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(amountMsat, 2),
                 long? (IInternalEntry entry) => entry.GetCurrentValue<long?>(amountMsat));
             amountMsat.SetPropertyIndexes(
-                index: 1,
-                originalValueIndex: 1,
+                index: 2,
+                originalValueIndex: 2,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -169,11 +220,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             amountReceivedMsat.SetAccessors(
                 long? (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.AmountReceivedMsat(((InvoiceEntity)(entry.Entity))),
                 long? (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.AmountReceivedMsat(((InvoiceEntity)(entry.Entity))),
-                long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(amountReceivedMsat, 2),
+                long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(amountReceivedMsat, 3),
                 long? (IInternalEntry entry) => entry.GetCurrentValue<long?>(amountReceivedMsat));
             amountReceivedMsat.SetPropertyIndexes(
-                index: 2,
-                originalValueIndex: 2,
+                index: 3,
+                originalValueIndex: 3,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -219,11 +270,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             bolt11.SetAccessors(
                 string (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Bolt11(((InvoiceEntity)(entry.Entity))),
                 string (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Bolt11(((InvoiceEntity)(entry.Entity))),
-                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(bolt11, 3),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(bolt11, 4),
                 string (IInternalEntry entry) => entry.GetCurrentValue<string>(bolt11));
             bolt11.SetPropertyIndexes(
-                index: 3,
-                originalValueIndex: 3,
+                index: 4,
+                originalValueIndex: 4,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -253,11 +304,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             bolt12InvoiceBytes.SetAccessors(
                 byte[] (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Bolt12InvoiceBytes(((InvoiceEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Bolt12InvoiceBytes(((InvoiceEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(bolt12InvoiceBytes, 4),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(bolt12InvoiceBytes, 5),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(bolt12InvoiceBytes));
             bolt12InvoiceBytes.SetPropertyIndexes(
-                index: 4,
-                originalValueIndex: 4,
+                index: 5,
+                originalValueIndex: 5,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -299,11 +350,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             createdAt.SetAccessors(
                 DateTimeOffset (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.CreatedAt(((InvoiceEntity)(entry.Entity))),
                 DateTimeOffset (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.CreatedAt(((InvoiceEntity)(entry.Entity))),
-                DateTimeOffset (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset>(createdAt, 5),
+                DateTimeOffset (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset>(createdAt, 6),
                 DateTimeOffset (IInternalEntry entry) => entry.GetCurrentValue<DateTimeOffset>(createdAt));
             createdAt.SetPropertyIndexes(
-                index: 5,
-                originalValueIndex: 5,
+                index: 6,
+                originalValueIndex: 6,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -356,11 +407,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             customRecords.SetAccessors(
                 byte[] (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.CustomRecords(((InvoiceEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.CustomRecords(((InvoiceEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(customRecords, 6),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(customRecords, 7),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(customRecords));
             customRecords.SetPropertyIndexes(
-                index: 6,
-                originalValueIndex: 6,
+                index: 7,
+                originalValueIndex: 7,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -402,11 +453,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             description.SetAccessors(
                 string (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Description(((InvoiceEntity)(entry.Entity))),
                 string (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Description(((InvoiceEntity)(entry.Entity))),
-                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(description, 7),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(description, 8),
                 string (IInternalEntry entry) => entry.GetCurrentValue<string>(description));
             description.SetPropertyIndexes(
-                index: 7,
-                originalValueIndex: 7,
+                index: 8,
+                originalValueIndex: 8,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -436,11 +487,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             expirySeconds.SetAccessors(
                 uint (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.ExpirySeconds(((InvoiceEntity)(entry.Entity))),
                 uint (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.ExpirySeconds(((InvoiceEntity)(entry.Entity))),
-                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(expirySeconds, 8),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(expirySeconds, 9),
                 uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(expirySeconds));
             expirySeconds.SetPropertyIndexes(
-                index: 8,
-                originalValueIndex: 8,
+                index: 9,
+                originalValueIndex: 9,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -459,6 +510,52 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                     uint (uint v) => v),
                 mappingInfo: new RelationalTypeMappingInfo(
                     storeTypeName: "INTEGER"));
+
+            var htlcs = runtimeEntityType.AddProperty(
+                "Htlcs",
+                typeof(byte[]),
+                propertyInfo: typeof(InvoiceEntity).GetProperty("Htlcs", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(InvoiceEntity).GetField("<Htlcs>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            htlcs.SetGetter(
+                byte[] (InvoiceEntity instance) => InvoiceEntityUnsafeAccessors.Htlcs(instance),
+                bool (InvoiceEntity instance) => InvoiceEntityUnsafeAccessors.Htlcs(instance) == null);
+            htlcs.SetSetter(
+                InvoiceEntity (InvoiceEntity instance, byte[] value) =>
+                {
+                    InvoiceEntityUnsafeAccessors.Htlcs(instance) = value;
+                    return instance;
+                });
+            htlcs.SetMaterializationSetter(
+                InvoiceEntity (InvoiceEntity instance, byte[] value) =>
+                {
+                    InvoiceEntityUnsafeAccessors.Htlcs(instance) = value;
+                    return instance;
+                });
+            htlcs.SetAccessors(
+                byte[] (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Htlcs(((InvoiceEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Htlcs(((InvoiceEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(htlcs, 10),
+                byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(htlcs));
+            htlcs.SetPropertyIndexes(
+                index: 10,
+                originalValueIndex: 10,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            htlcs.TypeMapping = SqliteByteArrayTypeMapping.Default.Clone(
+                comparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => ((object)v).GetHashCode(),
+                    byte[] (byte[] v) => v),
+                keyComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()),
+                providerValueComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()));
 
             var invoiceRequestPayerId = runtimeEntityType.AddProperty(
                 "InvoiceRequestPayerId",
@@ -485,11 +582,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             invoiceRequestPayerId.SetAccessors(
                 CompactPubKey? (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.InvoiceRequestPayerId(((InvoiceEntity)(entry.Entity))),
                 CompactPubKey? (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.InvoiceRequestPayerId(((InvoiceEntity)(entry.Entity))),
-                CompactPubKey? (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey?>(invoiceRequestPayerId, 9),
+                CompactPubKey? (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey?>(invoiceRequestPayerId, 11),
                 CompactPubKey? (IInternalEntry entry) => entry.GetCurrentValue<CompactPubKey?>(invoiceRequestPayerId));
             invoiceRequestPayerId.SetPropertyIndexes(
-                index: 9,
-                originalValueIndex: 9,
+                index: 11,
+                originalValueIndex: 11,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -541,11 +638,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             kind.SetAccessors(
                 byte (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Kind(((InvoiceEntity)(entry.Entity))),
                 byte (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Kind(((InvoiceEntity)(entry.Entity))),
-                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(kind, 10),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(kind, 12),
                 byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(kind));
             kind.SetPropertyIndexes(
-                index: 10,
-                originalValueIndex: 10,
+                index: 12,
+                originalValueIndex: 12,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -590,11 +687,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             label.SetAccessors(
                 string (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Label(((InvoiceEntity)(entry.Entity))),
                 string (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Label(((InvoiceEntity)(entry.Entity))),
-                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(label, 11),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(label, 13),
                 string (IInternalEntry entry) => entry.GetCurrentValue<string>(label));
             label.SetPropertyIndexes(
-                index: 11,
-                originalValueIndex: 11,
+                index: 13,
+                originalValueIndex: 13,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -624,11 +721,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             minFinalCltvExpiry.SetAccessors(
                 ushort (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.MinFinalCltvExpiry(((InvoiceEntity)(entry.Entity))),
                 ushort (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.MinFinalCltvExpiry(((InvoiceEntity)(entry.Entity))),
-                ushort (IInternalEntry entry) => entry.ReadOriginalValue<ushort>(minFinalCltvExpiry, 12),
+                ushort (IInternalEntry entry) => entry.ReadOriginalValue<ushort>(minFinalCltvExpiry, 14),
                 ushort (IInternalEntry entry) => entry.GetCurrentValue<ushort>(minFinalCltvExpiry));
             minFinalCltvExpiry.SetPropertyIndexes(
-                index: 12,
-                originalValueIndex: 12,
+                index: 14,
+                originalValueIndex: 14,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -671,13 +768,13 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                     return instance;
                 });
             offerId.SetAccessors(
-                Hash? (IInternalEntry entry) => (entry.FlaggedAsStoreGenerated(13) ? entry.ReadStoreGeneratedValue<Hash?>(0) : (entry.FlaggedAsTemporary(13) && !(InvoiceEntityUnsafeAccessors.OfferId(((InvoiceEntity)(entry.Entity))).HasValue) ? entry.ReadTemporaryValue<Hash?>(0) : InvoiceEntityUnsafeAccessors.OfferId(((InvoiceEntity)(entry.Entity))))),
+                Hash? (IInternalEntry entry) => (entry.FlaggedAsStoreGenerated(15) ? entry.ReadStoreGeneratedValue<Hash?>(0) : (entry.FlaggedAsTemporary(15) && !(InvoiceEntityUnsafeAccessors.OfferId(((InvoiceEntity)(entry.Entity))).HasValue) ? entry.ReadTemporaryValue<Hash?>(0) : InvoiceEntityUnsafeAccessors.OfferId(((InvoiceEntity)(entry.Entity))))),
                 Hash? (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.OfferId(((InvoiceEntity)(entry.Entity))),
-                Hash? (IInternalEntry entry) => entry.ReadOriginalValue<Hash?>(offerId, 13),
+                Hash? (IInternalEntry entry) => entry.ReadOriginalValue<Hash?>(offerId, 15),
                 Hash? (IInternalEntry entry) => ((InternalEntityEntry)entry).ReadRelationshipSnapshotValue<Hash?>(offerId, 1));
             offerId.SetPropertyIndexes(
-                index: 13,
-                originalValueIndex: 13,
+                index: 15,
+                originalValueIndex: 15,
                 shadowIndex: -1,
                 relationshipIndex: 1,
                 storeGenerationIndex: 0);
@@ -730,11 +827,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             payerNote.SetAccessors(
                 string (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.PayerNote(((InvoiceEntity)(entry.Entity))),
                 string (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.PayerNote(((InvoiceEntity)(entry.Entity))),
-                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(payerNote, 14),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(payerNote, 16),
                 string (IInternalEntry entry) => entry.GetCurrentValue<string>(payerNote));
             payerNote.SetPropertyIndexes(
-                index: 14,
-                originalValueIndex: 14,
+                index: 16,
+                originalValueIndex: 16,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -763,11 +860,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             paymentSecret.SetAccessors(
                 byte[] (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.PaymentSecret(((InvoiceEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.PaymentSecret(((InvoiceEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(paymentSecret, 15),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(paymentSecret, 17),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(paymentSecret));
             paymentSecret.SetPropertyIndexes(
-                index: 15,
-                originalValueIndex: 15,
+                index: 17,
+                originalValueIndex: 17,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -809,11 +906,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             preimage.SetAccessors(
                 byte[] (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Preimage(((InvoiceEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Preimage(((InvoiceEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(preimage, 16),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(preimage, 18),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(preimage));
             preimage.SetPropertyIndexes(
-                index: 16,
-                originalValueIndex: 16,
+                index: 18,
+                originalValueIndex: 18,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -855,17 +952,68 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             quantity.SetAccessors(
                 ulong? (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Quantity(((InvoiceEntity)(entry.Entity))),
                 ulong? (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Quantity(((InvoiceEntity)(entry.Entity))),
-                ulong? (IInternalEntry entry) => entry.ReadOriginalValue<ulong?>(quantity, 17),
+                ulong? (IInternalEntry entry) => entry.ReadOriginalValue<ulong?>(quantity, 19),
                 ulong? (IInternalEntry entry) => entry.GetCurrentValue<ulong?>(quantity));
             quantity.SetPropertyIndexes(
-                index: 17,
-                originalValueIndex: 17,
+                index: 19,
+                originalValueIndex: 19,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
             quantity.TypeMapping = SqliteULongTypeMapping.Default;
             quantity.SetComparer(new NullableValueComparer<ulong>(quantity.TypeMapping.Comparer));
             quantity.SetKeyComparer(new NullableValueComparer<ulong>(quantity.TypeMapping.KeyComparer));
+
+            var settleIndex = runtimeEntityType.AddProperty(
+                "SettleIndex",
+                typeof(long?),
+                propertyInfo: typeof(InvoiceEntity).GetProperty("SettleIndex", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(InvoiceEntity).GetField("<SettleIndex>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            settleIndex.SetGetter(
+                long? (InvoiceEntity instance) => InvoiceEntityUnsafeAccessors.SettleIndex(instance),
+                bool (InvoiceEntity instance) => !(InvoiceEntityUnsafeAccessors.SettleIndex(instance).HasValue));
+            settleIndex.SetSetter(
+                InvoiceEntity (InvoiceEntity instance, long? value) =>
+                {
+                    InvoiceEntityUnsafeAccessors.SettleIndex(instance) = value;
+                    return instance;
+                });
+            settleIndex.SetMaterializationSetter(
+                InvoiceEntity (InvoiceEntity instance, long? value) =>
+                {
+                    InvoiceEntityUnsafeAccessors.SettleIndex(instance) = value;
+                    return instance;
+                });
+            settleIndex.SetAccessors(
+                long? (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.SettleIndex(((InvoiceEntity)(entry.Entity))),
+                long? (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.SettleIndex(((InvoiceEntity)(entry.Entity))),
+                long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(settleIndex, 20),
+                long? (IInternalEntry entry) => entry.GetCurrentValue<long?>(settleIndex));
+            settleIndex.SetPropertyIndexes(
+                index: 20,
+                originalValueIndex: 20,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            settleIndex.TypeMapping = LongTypeMapping.Default.Clone(
+                comparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                keyComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                providerValueComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                mappingInfo: new RelationalTypeMappingInfo(
+                    storeTypeName: "INTEGER"));
+            settleIndex.SetCurrentValueComparer(new EntryCurrentValueComparer<long?>(settleIndex));
+            settleIndex.SetComparer(new NullableValueComparer<long>(settleIndex.TypeMapping.Comparer));
+            settleIndex.SetKeyComparer(new NullableValueComparer<long>(settleIndex.TypeMapping.KeyComparer));
 
             var settledAt = runtimeEntityType.AddProperty(
                 "SettledAt",
@@ -892,11 +1040,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             settledAt.SetAccessors(
                 DateTimeOffset? (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.SettledAt(((InvoiceEntity)(entry.Entity))),
                 DateTimeOffset? (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.SettledAt(((InvoiceEntity)(entry.Entity))),
-                DateTimeOffset? (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset?>(settledAt, 18),
+                DateTimeOffset? (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset?>(settledAt, 21),
                 DateTimeOffset? (IInternalEntry entry) => entry.GetCurrentValue<DateTimeOffset?>(settledAt));
             settledAt.SetPropertyIndexes(
-                index: 18,
-                originalValueIndex: 18,
+                index: 21,
+                originalValueIndex: 21,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -950,11 +1098,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             status.SetAccessors(
                 byte (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Status(((InvoiceEntity)(entry.Entity))),
                 byte (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Status(((InvoiceEntity)(entry.Entity))),
-                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(status, 19),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(status, 22),
                 byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(status));
             status.SetPropertyIndexes(
-                index: 19,
-                originalValueIndex: 19,
+                index: 22,
+                originalValueIndex: 22,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -999,11 +1147,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             tags.SetAccessors(
                 string (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Tags(((InvoiceEntity)(entry.Entity))),
                 string (IInternalEntry entry) => InvoiceEntityUnsafeAccessors.Tags(((InvoiceEntity)(entry.Entity))),
-                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(tags, 20),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(tags, 23),
                 string (IInternalEntry entry) => entry.GetCurrentValue<string>(tags));
             tags.SetPropertyIndexes(
-                index: 20,
-                originalValueIndex: 20,
+                index: 23,
+                originalValueIndex: 23,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1014,9 +1162,17 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             runtimeEntityType.SetPrimaryKey(key);
 
             var index = runtimeEntityType.AddIndex(
-                new[] { createdAt });
+                new[] { addIndex },
+                unique: true);
 
             var index0 = runtimeEntityType.AddIndex(
+                new[] { createdAt });
+
+            var index1 = runtimeEntityType.AddIndex(
+                new[] { settleIndex },
+                unique: true);
+
+            var index2 = runtimeEntityType.AddIndex(
                 new[] { offerId, status });
 
             return runtimeEntityType;
@@ -1035,6 +1191,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
         public static void CreateAnnotations(RuntimeEntityType runtimeEntityType)
         {
             var paymentHash = runtimeEntityType.FindProperty("PaymentHash");
+            var addIndex = runtimeEntityType.FindProperty("AddIndex");
             var amountMsat = runtimeEntityType.FindProperty("AmountMsat");
             var amountReceivedMsat = runtimeEntityType.FindProperty("AmountReceivedMsat");
             var bolt11 = runtimeEntityType.FindProperty("Bolt11");
@@ -1043,6 +1200,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var customRecords = runtimeEntityType.FindProperty("CustomRecords");
             var description = runtimeEntityType.FindProperty("Description");
             var expirySeconds = runtimeEntityType.FindProperty("ExpirySeconds");
+            var htlcs = runtimeEntityType.FindProperty("Htlcs");
             var invoiceRequestPayerId = runtimeEntityType.FindProperty("InvoiceRequestPayerId");
             var kind = runtimeEntityType.FindProperty("Kind");
             var label = runtimeEntityType.FindProperty("Label");
@@ -1052,6 +1210,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var paymentSecret = runtimeEntityType.FindProperty("PaymentSecret");
             var preimage = runtimeEntityType.FindProperty("Preimage");
             var quantity = runtimeEntityType.FindProperty("Quantity");
+            var settleIndex = runtimeEntityType.FindProperty("SettleIndex");
             var settledAt = runtimeEntityType.FindProperty("SettledAt");
             var status = runtimeEntityType.FindProperty("Status");
             var tags = runtimeEntityType.FindProperty("Tags");
@@ -1062,7 +1221,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType1 = ((InvoiceEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<Hash, long?, long?, string, byte[], DateTimeOffset, byte[], string, uint, CompactPubKey?, byte, string, ushort, Hash?, string, byte[], byte[], ulong?, DateTimeOffset?, byte, string>(((ValueComparer<Hash>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash>(paymentHash)), (source.GetCurrentValue<long?>(amountMsat) == null ? null : ((ValueComparer<long?>)(((IProperty)amountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(amountMsat))), (source.GetCurrentValue<long?>(amountReceivedMsat) == null ? null : ((ValueComparer<long?>)(((IProperty)amountReceivedMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(amountReceivedMsat))), (source.GetCurrentValue<string>(bolt11) == null ? null : ((ValueComparer<string>)(((IProperty)bolt11).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(bolt11))), (source.GetCurrentValue<byte[]>(bolt12InvoiceBytes) == null ? null : ((ValueComparer<byte[]>)(((IProperty)bolt12InvoiceBytes).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(bolt12InvoiceBytes))), ((ValueComparer<DateTimeOffset>)(((IProperty)createdAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(createdAt)), (source.GetCurrentValue<byte[]>(customRecords) == null ? null : ((ValueComparer<byte[]>)(((IProperty)customRecords).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(customRecords))), (source.GetCurrentValue<string>(description) == null ? null : ((ValueComparer<string>)(((IProperty)description).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(description))), ((ValueComparer<uint>)(((IProperty)expirySeconds).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(expirySeconds)), (source.GetCurrentValue<CompactPubKey?>(invoiceRequestPayerId) == null ? null : ((ValueComparer<CompactPubKey?>)(((IProperty)invoiceRequestPayerId).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey?>(invoiceRequestPayerId))), ((ValueComparer<byte>)(((IProperty)kind).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(kind)), (source.GetCurrentValue<string>(label) == null ? null : ((ValueComparer<string>)(((IProperty)label).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(label))), ((ValueComparer<ushort>)(((IProperty)minFinalCltvExpiry).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(minFinalCltvExpiry)), (source.GetCurrentValue<Hash?>(offerId) == null ? null : ((ValueComparer<Hash?>)(((IProperty)offerId).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash?>(offerId))), (source.GetCurrentValue<string>(payerNote) == null ? null : ((ValueComparer<string>)(((IProperty)payerNote).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(payerNote))), (source.GetCurrentValue<byte[]>(paymentSecret) == null ? null : ((ValueComparer<byte[]>)(((IProperty)paymentSecret).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(paymentSecret))), (source.GetCurrentValue<byte[]>(preimage) == null ? null : ((ValueComparer<byte[]>)(((IProperty)preimage).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(preimage))), (source.GetCurrentValue<ulong?>(quantity) == null ? null : ((ValueComparer<ulong?>)(((IProperty)quantity).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(quantity))), (source.GetCurrentValue<DateTimeOffset?>(settledAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)settledAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(settledAt))), ((ValueComparer<byte>)(((IProperty)status).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(status)), (source.GetCurrentValue<string>(tags) == null ? null : ((ValueComparer<string>)(((IProperty)tags).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(tags))))));
+                    return ((ISnapshot)(new Snapshot<Hash, long?, long?, long?, string, byte[], DateTimeOffset, byte[], string, uint, byte[], CompactPubKey?, byte, string, ushort, Hash?, string, byte[], byte[], ulong?, long?, DateTimeOffset?, byte, string>(((ValueComparer<Hash>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash>(paymentHash)), (source.GetCurrentValue<long?>(addIndex) == null ? null : ((ValueComparer<long?>)(((IProperty)addIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(addIndex))), (source.GetCurrentValue<long?>(amountMsat) == null ? null : ((ValueComparer<long?>)(((IProperty)amountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(amountMsat))), (source.GetCurrentValue<long?>(amountReceivedMsat) == null ? null : ((ValueComparer<long?>)(((IProperty)amountReceivedMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(amountReceivedMsat))), (source.GetCurrentValue<string>(bolt11) == null ? null : ((ValueComparer<string>)(((IProperty)bolt11).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(bolt11))), (source.GetCurrentValue<byte[]>(bolt12InvoiceBytes) == null ? null : ((ValueComparer<byte[]>)(((IProperty)bolt12InvoiceBytes).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(bolt12InvoiceBytes))), ((ValueComparer<DateTimeOffset>)(((IProperty)createdAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(createdAt)), (source.GetCurrentValue<byte[]>(customRecords) == null ? null : ((ValueComparer<byte[]>)(((IProperty)customRecords).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(customRecords))), (source.GetCurrentValue<string>(description) == null ? null : ((ValueComparer<string>)(((IProperty)description).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(description))), ((ValueComparer<uint>)(((IProperty)expirySeconds).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(expirySeconds)), (source.GetCurrentValue<byte[]>(htlcs) == null ? null : ((ValueComparer<byte[]>)(((IProperty)htlcs).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(htlcs))), (source.GetCurrentValue<CompactPubKey?>(invoiceRequestPayerId) == null ? null : ((ValueComparer<CompactPubKey?>)(((IProperty)invoiceRequestPayerId).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey?>(invoiceRequestPayerId))), ((ValueComparer<byte>)(((IProperty)kind).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(kind)), (source.GetCurrentValue<string>(label) == null ? null : ((ValueComparer<string>)(((IProperty)label).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(label))), ((ValueComparer<ushort>)(((IProperty)minFinalCltvExpiry).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(minFinalCltvExpiry)), (source.GetCurrentValue<Hash?>(offerId) == null ? null : ((ValueComparer<Hash?>)(((IProperty)offerId).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash?>(offerId))), (source.GetCurrentValue<string>(payerNote) == null ? null : ((ValueComparer<string>)(((IProperty)payerNote).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(payerNote))), (source.GetCurrentValue<byte[]>(paymentSecret) == null ? null : ((ValueComparer<byte[]>)(((IProperty)paymentSecret).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(paymentSecret))), (source.GetCurrentValue<byte[]>(preimage) == null ? null : ((ValueComparer<byte[]>)(((IProperty)preimage).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(preimage))), (source.GetCurrentValue<ulong?>(quantity) == null ? null : ((ValueComparer<ulong?>)(((IProperty)quantity).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(quantity))), (source.GetCurrentValue<long?>(settleIndex) == null ? null : ((ValueComparer<long?>)(((IProperty)settleIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(settleIndex))), (source.GetCurrentValue<DateTimeOffset?>(settledAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)settledAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(settledAt))), ((ValueComparer<byte>)(((IProperty)status).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(status)), (source.GetCurrentValue<string>(tags) == null ? null : ((ValueComparer<string>)(((IProperty)tags).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(tags))))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => ((ISnapshot)(new Snapshot<Hash?>((default(Hash? ) == null ? null : ((ValueComparer<Hash?>)(((IProperty)offerId).GetValueComparer())).Snapshot(default(Hash? )))))));
@@ -1079,11 +1238,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                     return ((ISnapshot)(new Snapshot<Hash, Hash?>(((ValueComparer<Hash>)(((IProperty)paymentHash).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<Hash>(paymentHash)), (source.GetCurrentValue<Hash?>(offerId) == null ? null : ((ValueComparer<Hash?>)(((IProperty)offerId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<Hash?>(offerId))))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 21,
+                propertyCount: 24,
                 navigationCount: 0,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 21,
+                originalValueCount: 24,
                 shadowCount: 0,
                 relationshipCount: 2,
                 storeGeneratedCount: 1));

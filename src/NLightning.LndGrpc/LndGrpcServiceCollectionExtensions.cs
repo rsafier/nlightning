@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.LndGrpc;
 
 using Domain.Protocol.ValueObjects;
+using Macaroons;
 using Services;
 using NodeOptions = Domain.Node.Options.NodeOptions;
 
@@ -28,6 +29,8 @@ public static class LndGrpcServiceCollectionExtensions
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<LndGrpcOptions>,
                                       LndGrpcOptionsValidator>());
         services.AddSingleton<LightningService>();
+        services.AddSingleton<RouterService>();
+        services.AddSingleton<InvoicesService>();
         return services;
     }
 
@@ -35,6 +38,9 @@ public static class LndGrpcServiceCollectionExtensions
     /// <c>LndGrpc:DataDirectory</c> resolved against <paramref name="configPath"/>.</summary>
     public static IServiceCollection AddLndGrpcHost(this IServiceCollection services, string configPath)
     {
+        // The macaroon root keys (BakeMacaroon, NL-1169), shared by the host's verifier and LightningService
+        services.AddSingleton(sp => new LndRootKeyStore(sp.GetRequiredService<IOptions<LndGrpcOptions>>().Value
+                                                          .ResolveDataDirectory(configPath)));
         services.AddHostedService(sp =>
         {
             var options = sp.GetRequiredService<IOptions<LndGrpcOptions>>();

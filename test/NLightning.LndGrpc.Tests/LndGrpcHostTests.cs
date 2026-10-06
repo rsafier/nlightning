@@ -8,6 +8,7 @@ using NBitcoin;
 
 namespace NLightning.LndGrpc.Tests;
 
+using Application.Payments.Events;
 using Domain.Accounting.Labels;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
@@ -21,6 +22,8 @@ using Domain.Enums;
 using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
+using Domain.Onchain.Interfaces;
+using Domain.Onchain.Models;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
@@ -44,7 +47,7 @@ using MacaroonId = LndGrpc.Macaroons.MacaroonId;
 /// (<see cref="LndNodeConnection"/>, the one the cluster suites use against real LND 0.21.4) with the macaroons and
 /// the certificate the host made, like an LND client pointed at an LND node. The node's services are mocked.
 /// </summary>
-public sealed class LndGrpcHostTests : IAsyncLifetime
+public sealed partial class LndGrpcHostTests : IAsyncLifetime
 {
     private static readonly byte[] s_nodeKey =
         Convert.FromHexString("1111111111111111111111111111111111111111111111111111111111111111");
@@ -59,6 +62,16 @@ public sealed class LndGrpcHostTests : IAsyncLifetime
     private readonly List<PaymentModel> _payments = [];
     private readonly List<ForwardCircuitModel> _forwards = [];
     private readonly Mock<IInvoiceService> _invoiceService = new();
+    private readonly Mock<IPeerManager> _peers = new();
+    private readonly Mock<IChannelMemoryRepository> _channelMemory = new();
+    private readonly Mock<IPaymentService> _paymentService = new();
+    private readonly Mock<IHoldInvoiceService> _holdInvoices = new();
+    private readonly Mock<IBitcoinWalletService> _wallet = new();
+    private readonly PaymentEventHub _events = new();
+    private readonly FakeDispatcher _dispatcher = new();
+    private readonly List<ChannelModel> _closedChannels = [];
+    private readonly List<OutputResolutionModel> _outputs = [];
+    private readonly List<ChannelCloseModel> _closes = [];
 
     private ServiceProvider? _services;
     private LndGrpcHost? _host;
@@ -378,8 +391,12 @@ public sealed class LndGrpcHostTests : IAsyncLifetime
                                                             new Secret(new byte[32]))
                                          ]);
         succeeded.Succeed(new Secret(Enumerable.Repeat((byte)2, 32).ToArray()), created.AddSeconds(3));
+        succeeded.PaymentIndex = 1;
         var inFlight = new PaymentModel(new Hash(Enumerable.Repeat((byte)3, 32).ToArray()), "lnbcrt2", payee,
-                                        LightningMoney.Satoshis(5), LightningMoney.Zero, created.AddMinutes(1));
+                                        LightningMoney.Satoshis(5), LightningMoney.Zero, created.AddMinutes(1))
+        {
+            PaymentIndex = 2
+        };
         _payments.AddRange([succeeded, inFlight]);
         _channels.Add(CreateChannel(7, ChannelState.Open));
         var forward = ForwardCircuitModel.Restore(_channels[0].ChannelId, 4, LightningMoney.MilliSatoshis(2_001_000),
@@ -427,7 +444,7 @@ public sealed class LndGrpcHostTests : IAsyncLifetime
 
         // Act
         var error = await Assert.ThrowsAsync<RpcException>(
-            () => connection.LightningClient.SendCoinsAsync(new SendCoinsRequest(), cancellationToken: Ct)
+            () => connection.LightningClient.EstimateFeeAsync(new EstimateFeeRequest(), cancellationToken: Ct)
                             .ResponseAsync);
         var graph = await Assert.ThrowsAsync<RpcException>(
             () => connection.LightningClient.DescribeGraphAsync(new ChannelGraphRequest(), cancellationToken: Ct)
@@ -476,14 +493,12 @@ public sealed class LndGrpcHostTests : IAsyncLifetime
                                               keyManager.Object, new Mock<IUtxoMemoryRepository>().Object);
         services.AddSingleton<ILightningSigner>(signer);
 
-        var channels = new Mock<IChannelMemoryRepository>();
-        channels.Setup(x => x.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
-                .Returns((Func<ChannelModel, bool> predicate) => _channels.Where(predicate).ToList());
-        services.AddSingleton(channels.Object);
+        _channelMemory.Setup(x => x.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+                      .Returns((Func<ChannelModel, bool> predicate) => _channels.Where(predicate).ToList());
+        services.AddSingleton(_channelMemory.Object);
 
-        var peers = new Mock<IPeerManager>();
-        peers.Setup(x => x.ListPeers()).Returns([]);
-        services.AddSingleton(peers.Object);
+        _peers.Setup(x => x.ListPeers()).Returns([]);
+        services.AddSingleton(_peers.Object);
 
         _invoiceService.Setup(x => x.CreateInvoiceAsync(It.IsAny<LightningMoney?>(), It.IsAny<string>(),
                                                         It.IsAny<uint?>(), It.IsAny<SourceLabels>(),
@@ -495,7 +510,10 @@ public sealed class LndGrpcHostTests : IAsyncLifetime
                                                           new Secret(new byte[32]),
                                                           new Secret(Enumerable.Repeat((byte)0x24, 32).ToArray()),
                                                           amount, description, "lnbcrt250u1fake",
-                                                          DateTimeOffset.UtcNow, expiry ?? 3600, 40);
+                                                          DateTimeOffset.UtcNow, expiry ?? 3600, 40)
+                           {
+                               AddIndex = (ulong)_invoices.Count + 1
+                           };
                            _invoices.Add(invoice);
                            return invoice;
                        });
@@ -515,7 +533,15 @@ public sealed class LndGrpcHostTests : IAsyncLifetime
         services.AddSingleton(utxos.Object);
 
         services.AddScoped(_ => CreateUnitOfWork());
+        services.AddScoped(_ => _wallet.Object);
+        services.AddSingleton(_paymentService.Object);
+        services.AddSingleton(_holdInvoices.Object);
+        services.AddSingleton<IPaymentEventSource>(_events);
+        services.AddSingleton<INodeCommandDispatcher>(_dispatcher);
+        services.AddSingleton(new LndRootKeyStore(_directory));
         services.AddSingleton<LightningService>();
+        services.AddSingleton<RouterService>();
+        services.AddSingleton<InvoicesService>();
         return services.BuildServiceProvider();
     }
 
@@ -537,7 +563,15 @@ public sealed class LndGrpcHostTests : IAsyncLifetime
                                   _forwards.OrderByDescending(f => f.CreatedAt).Skip(query.Skip).Take(query.Take)
                                            .ToList());
         var state = new Mock<IBlockchainStateDbRepository>();
+        var stored = new Mock<IChannelDbRepository>();
+        stored.Setup(x => x.GetAllAsync()).ReturnsAsync(() => _closedChannels.ToList());
+        var resolutions = new Mock<IOnchainResolutionDbRepository>();
+        resolutions.Setup(x => x.GetClosesAsync()).ReturnsAsync(() => _closes.ToList());
+        resolutions.Setup(x => x.GetOutputsByChannelIdAsync(It.IsAny<ChannelId>()))
+                   .ReturnsAsync((ChannelId id) => _outputs.Where(o => o.ChannelId == id).ToList());
         var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.SetupGet(x => x.ChannelDbRepository).Returns(stored.Object);
+        unitOfWork.SetupGet(x => x.OnchainResolutionDbRepository).Returns(resolutions.Object);
         unitOfWork.SetupGet(x => x.InvoiceDbRepository).Returns(invoices.Object);
         unitOfWork.SetupGet(x => x.PaymentDbRepository).Returns(payments.Object);
         unitOfWork.SetupGet(x => x.ForwardCircuitDbRepository).Returns(forwards.Object);
@@ -549,7 +583,11 @@ public sealed class LndGrpcHostTests : IAsyncLifetime
         new(new Hash(Enumerable.Repeat(tag, 32).ToArray()), new Secret(new byte[32]), new Secret(new byte[32]),
             LightningMoney.Satoshis(tag * 100), $"invoice {tag}", $"lnbcrt{tag}", createdAt, 3600, 40, status,
             status == InvoiceStatus.Settled ? LightningMoney.Satoshis(tag * 100) : null,
-            status == InvoiceStatus.Settled ? createdAt.AddSeconds(30) : null);
+            status == InvoiceStatus.Settled ? createdAt.AddSeconds(30) : null)
+        {
+            AddIndex = tag,
+            SettleIndex = status == InvoiceStatus.Settled ? tag : null
+        };
 
     private static ChannelModel CreateChannel(byte tag, ChannelState state)
     {

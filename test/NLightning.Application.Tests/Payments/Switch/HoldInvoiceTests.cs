@@ -71,6 +71,13 @@ public class HoldInvoiceTests
         Assert.Equal(s_amount, stored.AmountReceived);
         Assert.Null(stored.Preimage);
         Assert.Contains(invoice.PaymentHash, CarolSwitch(harness).HeldPaymentHashes);
+        // NL-1167: the held part is recorded on the invoice (LND's Invoice.htlcs, ACCEPTED)
+        var recorded = Assert.Single(stored.Htlcs);
+        Assert.Equal(InvoiceHtlcState.Accepted, recorded.State);
+        Assert.Equal(s_amount.MilliSatoshi, recorded.AmountMsat);
+        Assert.Equal(s_amount.MilliSatoshi, recorded.MppTotalMsat);
+        Assert.Null(recorded.ResolveTime);
+        Assert.True(recorded.ExpiryHeight > 0);
         Assert.Single(harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId).Commitments!.Htlcs.Values,
                       h => h is { Direction: HtlcDirection.Incoming, Removal: null });
         Assert.Contains(harness.Bob.Channel(ThreeNodeHarness.BobCarolChannelId).Commitments!.Htlcs.Values,
@@ -123,6 +130,9 @@ public class HoldInvoiceTests
         Assert.Equal(s_amount, stored.AmountReceived);
         Assert.Empty(CarolSwitch(harness).HeldPaymentHashes);
         AssertNoHtlcs(harness);
+        var settledHtlc = Assert.Single(stored.Htlcs);
+        Assert.Equal(InvoiceHtlcState.Settled, settledHtlc.State);
+        Assert.NotNull(settledHtlc.ResolveTime);
 
         // One InvoiceSettled accounting event (staged in the settle's own save) and one InvoiceSettledEvent
         var settled = Assert.Single(await AccountingEventsAsync(harness.Carol));
@@ -197,7 +207,9 @@ public class HoldInvoiceTests
         Assert.Equal(1, decrypted.ErringHopIndex);
         Assert.Equal(FailureCode.IncorrectOrUnknownPaymentDetails, decrypted.Code);
         Assert.Empty(harness.Alice.PaymentHandler.Fulfilled);
-        Assert.Equal(InvoiceStatus.Canceled, (await GetInvoiceAsync(harness, invoice)).Status);
+        var canceled = await GetInvoiceAsync(harness, invoice);
+        Assert.Equal(InvoiceStatus.Canceled, canceled.Status);
+        Assert.Equal(InvoiceHtlcState.Canceled, Assert.Single(canceled.Htlcs).State);
         Assert.Empty(CarolSwitch(harness).HeldPaymentHashes);
         Assert.Equal(0, _clock.PendingTimers);
         AssertNoHtlcs(harness);

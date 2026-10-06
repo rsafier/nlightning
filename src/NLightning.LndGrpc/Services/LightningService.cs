@@ -20,6 +20,7 @@ using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Transport.Interfaces;
+using Macaroons;
 
 /// <summary>
 /// LND's <c>lnrpc.Lightning</c> service over this node (<c>docs/agents/LND_GRPC_PLAN.md</c> §3, NL-1161): the wave 1
@@ -56,6 +57,9 @@ public sealed partial class LightningService : Lnrpc.Lightning.LightningBase
     private readonly IReestablishTracker? _reestablish;
     private readonly ITcpService? _tcpService;
     private readonly IUtxoMemoryRepository? _utxos;
+    private readonly INodeCommandDispatcher? _dispatcher;
+    private readonly LndRootKeyStore? _rootKeys;
+    private readonly IPaymentEventSource? _paymentEvents;
 
     public LightningService(ILightningSigner signer, IOptions<NodeOptions> nodeOptions,
                             IServiceScopeFactory scopeFactory, IChannelMemoryRepository channels,
@@ -64,8 +68,13 @@ public sealed partial class LightningService : Lnrpc.Lightning.LightningBase
                             TimeProvider? timeProvider = null, IBlockchainMonitor? blockchainMonitor = null,
                             IUtxoMemoryRepository? utxos = null, IAnchorReserveService? anchorReserve = null,
                             IReestablishTracker? reestablish = null, IGraphStore? graphStore = null,
-                            IOptions<GossipGraphOptions>? graphOptions = null, ITcpService? tcpService = null)
+                            IOptions<GossipGraphOptions>? graphOptions = null, ITcpService? tcpService = null,
+                            INodeCommandDispatcher? dispatcher = null, LndRootKeyStore? rootKeys = null,
+                            IPaymentEventSource? paymentEvents = null)
     {
+        _paymentEvents = paymentEvents;
+        _dispatcher = dispatcher;
+        _rootKeys = rootKeys;
         _signer = signer;
         _nodeOptions = nodeOptions.Value;
         _scopeFactory = scopeFactory;

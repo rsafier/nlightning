@@ -1,7 +1,7 @@
 # LND_GRPC_PLAN — LND gRPC compatibility (NL-1160)
 
 Status: wave 0 (this plan) and wave 1 done on `wip/lnd-grpc-compat` (from `wip/fafo` 7bf72c20), 2026-10-05;
-see "Wave 1 record". Waves 2 and 3 open (NL-1164, NL-1168).
+see "Wave 1 record"; wave 2 done 2026-10-06, see "Wave 2 record". Wave 3 (NL-1168) on `wip/lnd-grpc-wave3`.
 
 NLightning serves a subset of LND's gRPC API (`lnrpc.Lightning`, later `routerrpc.Router`,
 `invoicesrpc.Invoices` and `walletrpc.WalletKit`) so existing LND clients can use the node as their
@@ -127,8 +127,8 @@ fields in Unix nanoseconds.
 
 The Invoice message: `memo`, `r_preimage` (when known), `r_hash`, `value`/`value_msat`, `settled`,
 `creation_date`, `settle_date`, `payment_request` (BOLT 11; empty for BOLT 12 and keysend rows),
-`expiry`, `cltv_expiry` (min final CLTV), `private` false, `add_index` = the creation time in .NET ticks,
-`settle_index` = the settle time in ticks (0 until settled), `amt_paid*`, `state` (Open → OPEN, Held/Accepted
+`expiry`, `cltv_expiry` (min final CLTV), `private` false, `add_index`/`settle_index` (dense since wave 2, NL-1165;
+wave 1 used the creation/settle times in ticks), `amt_paid*`, `state` (Open → OPEN, Held/Accepted
 → ACCEPTED, Settled → SETTLED, Canceled → CANCELED; an expired Open invoice stays OPEN like LND until its
 expiry sweep), `is_keysend`, `payment_addr`. **Difference:** LND's `add_index`/`settle_index` are dense
 counters (1, 2, 3, ...); ours are unique and increasing but sparse (ticks). Clients that use them as opaque
@@ -211,3 +211,40 @@ Commits `feda8ce7` (this plan, NL-1160) and `34821ac0` (server, signer, reposito
   AddInvoice, our LookupInvoice/ListInvoices report it SETTLED with alice's preimage and ChannelBalance moves by the
   amount, alice's VerifyMessage recovers our key from our SignMessage (and reports it valid: LND's graph holds our node
   as a channel end), ours recovers alice's, the read-only macaroon is refused on AddInvoice.
+
+## Wave 2 record (2026-10-06)
+
+Commit `a1bb2bbe` (NL-1164..NL-1167, NL-1169; findings NL-1170..NL-1172).
+
+- **Shape:** the channel, peer and wallet operations go through `INodeCommandDispatcher` (LndGrpc), implemented by
+  the daemon's `ClientCommandDispatcher` over its `IClientCommandHandler<TRequest, TResponse>` registrations (one
+  scope per call): `openchannel`, its subscription, `closechannel`, `forceclosechannel`, `setchannelpolicy`,
+  `withdraw`, `disconnect` — one implementation per operation, whichever API asks. `ClientException`s map to gRPC
+  statuses (unknown channel `NOT_FOUND`, refusal `FAILED_PRECONDITION`, ...). Payments, hold invoices and the
+  streams use the Application services directly (`IPaymentService`, `IHoldInvoiceService`, `IInvoiceService`,
+  `IPaymentEventSource`). `RouterService` and `InvoicesService` are partial classes (wave 3 adds its methods in files
+  of its own); the sub-servers' permission tables are `LndSubServerPermissions` (LND v0.21.4 `macPermissions`).
+- **RPCs:** as the wave 2 table, with these decisions: OpenChannelSync answers at the published funding (LND too);
+  OpenChannel streams `chan_pending` then `chan_open` once ready; a public channel is LND's default and ours
+  (`private` false = `--public`); `sat_per_vbyte` x 250 is the feerate per kw; CloseChannel's `chan_close` is sent at
+  the confirmation (mutual: Closed; force: the commitment confirmed, OnchainResolving); SendPaymentV2 without a fee
+  limit uses the node's default limit (LND's unset limit refuses every fee-paying route), one outgoing channel at
+  most, keysend refused (NL-1170); TrackPayments sends outcomes only (NL-1171); UpdateChannelPolicy `global` sets
+  every Open channel, not the default of later ones (NL-1172); SubscribeSingleInvoice ends after SETTLED/CANCELED as
+  LND's; SubscribeInvoices replays by `add_index`/`settle_index` then follows (event bus + 1 s re-read, cancellations
+  and new invoices raise no event).
+- **NL-1165 dense indexes:** columns `Invoices.AddIndex`/`SettleIndex`, `Payments.PaymentIndex` (migration
+  `AddLndIndexes`, backfilled with `ROW_NUMBER()` in creation/settle order; trampoline relay legs get none), assigned
+  by `LndIndexAllocator` inside `UnitOfWork.SaveChanges[Async]` under a gate held through the commit (dense in commit
+  order, a failed save gives its values back). AddInvoice/AddHoldInvoice read the row back for the index.
+- **NL-1167:** `Invoices.Htlcs` records the set's HTLCs when a hold set is held/settled/canceled and when an invoice
+  settles (`HtlcSwitch.RecordInvoiceHtlcs`); LND's `Invoice.htlcs`.
+- **NL-1169:** `LndRootKeyStore` (root key ids; id 0 = `macaroons.key`), BakeMacaroon/ListMacaroonIDs/
+  DeleteMacaroonID.
+- **Proof:** in-process `LndGrpcHostTests` (Wave2 partial: 14 more tests, 98 in the project) and the cluster test
+  `Docker/LndGrpc/LndGrpcWave2FlowTests` (lnd suite) against LND alice: ConnectPeer, OpenChannelSync (1,000,000 sat,
+  300,000 pushed) until active on both sides, SendPaymentV2 (the unchanged `LndTestHelpers.SendPaymentV2Async` against
+  our endpoint) to alice's invoice SUCCEEDED and TrackPaymentV2 agreeing, an AddHoldInvoice alice pays seen ACCEPTED
+  (with its HTLC) then SETTLED after SettleInvoice (alice's payment succeeds with our preimage), a second one canceled
+  (alice's payment fails), a cooperative CloseChannel streamed to `chan_close` and listed by ClosedChannels with its
+  settled balance (705,000 sat). The Postgres backfill runs in the `postgres` suite (`PostgresTests`).

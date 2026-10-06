@@ -114,25 +114,23 @@ public class MappingTests
     [Fact]
     public void Given_LndPagingArguments_When_PageQuery_Then_BoundsAndDirectionFollow()
     {
-        // Arrange
-        var offset = new DateTimeOffset(2026, 10, 1, 0, 0, 0, TimeSpan.Zero);
-
         // Act
-        var forward = LightningService.PageQuery((ulong)offset.UtcTicks, false, 0, 100, 0, 0);
-        var reversed = LightningService.PageQuery((ulong)offset.UtcTicks, true, 5, 100, 0, 0);
+        var forward = LightningService.PageQuery(7, false, 0, 100, 0, 0);
+        var reversed = LightningService.PageQuery(7, true, 5, 100, 0, 0);
         var dated = LightningService.PageQuery(0, false, 50_000, 100, 1_000, 2_000);
 
         // Assert
-        Assert.Equal(offset, forward.CreatedAfter);
-        Assert.Null(forward.CreatedBefore);
+        Assert.Equal(7ul, forward.After);
+        Assert.Null(forward.Before);
         Assert.True(forward.Ascending);
         Assert.Equal(100, forward.Take);
-        Assert.Equal(offset, reversed.CreatedBefore);
+        Assert.Equal(7ul, reversed.Before);
         Assert.False(reversed.Ascending);
         Assert.Equal(5, reversed.Take);
-        Assert.True(dated.Contains(DateTimeOffset.FromUnixTimeSeconds(1_000)));
-        Assert.True(dated.Contains(DateTimeOffset.FromUnixTimeSeconds(2_000)));
-        Assert.False(dated.Contains(DateTimeOffset.FromUnixTimeSeconds(2_001)));
+        Assert.True(dated.Contains(1, DateTimeOffset.FromUnixTimeSeconds(1_000)));
+        Assert.True(dated.Contains(1, DateTimeOffset.FromUnixTimeSeconds(2_000).AddMilliseconds(999)));
+        Assert.False(dated.Contains(1, DateTimeOffset.FromUnixTimeSeconds(2_001)));
+        Assert.False(dated.Contains(null, DateTimeOffset.FromUnixTimeSeconds(1_500)));
         Assert.Equal(10_000, dated.Take);
     }
 }

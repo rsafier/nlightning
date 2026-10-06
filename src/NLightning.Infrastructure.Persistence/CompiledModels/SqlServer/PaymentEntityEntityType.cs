@@ -32,9 +32,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 "NLightning.Infrastructure.Persistence.Entities.Payment.PaymentEntity",
                 typeof(PaymentEntity),
                 baseEntityType,
-                propertyCount: 22,
+                propertyCount: 23,
                 navigationCount: 1,
-                unnamedIndexCount: 2,
+                unnamedIndexCount: 3,
                 keyCount: 1);
 
             var paymentHash = runtimeEntityType.AddProperty(
@@ -1054,6 +1054,56 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 storeTypePostfix: StoreTypePostfix.None);
             payerNote.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
+            var paymentIndex = runtimeEntityType.AddProperty(
+                "PaymentIndex",
+                typeof(long?),
+                propertyInfo: typeof(PaymentEntity).GetProperty("PaymentIndex", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(PaymentEntity).GetField("<PaymentIndex>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            paymentIndex.SetGetter(
+                long? (PaymentEntity instance) => PaymentEntityUnsafeAccessors.PaymentIndex(instance),
+                bool (PaymentEntity instance) => !(PaymentEntityUnsafeAccessors.PaymentIndex(instance).HasValue));
+            paymentIndex.SetSetter(
+                PaymentEntity (PaymentEntity instance, long? value) =>
+                {
+                    PaymentEntityUnsafeAccessors.PaymentIndex(instance) = value;
+                    return instance;
+                });
+            paymentIndex.SetMaterializationSetter(
+                PaymentEntity (PaymentEntity instance, long? value) =>
+                {
+                    PaymentEntityUnsafeAccessors.PaymentIndex(instance) = value;
+                    return instance;
+                });
+            paymentIndex.SetAccessors(
+                long? (IInternalEntry entry) => PaymentEntityUnsafeAccessors.PaymentIndex(((PaymentEntity)(entry.Entity))),
+                long? (IInternalEntry entry) => PaymentEntityUnsafeAccessors.PaymentIndex(((PaymentEntity)(entry.Entity))),
+                long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(paymentIndex, 19),
+                long? (IInternalEntry entry) => entry.GetCurrentValue<long?>(paymentIndex));
+            paymentIndex.SetPropertyIndexes(
+                index: 19,
+                originalValueIndex: 19,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            paymentIndex.TypeMapping = SqlServerLongTypeMapping.Default.Clone(
+                comparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                keyComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                providerValueComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v));
+            paymentIndex.SetCurrentValueComparer(new EntryCurrentValueComparer<long?>(paymentIndex));
+            paymentIndex.SetComparer(new NullableValueComparer<long>(paymentIndex.TypeMapping.Comparer));
+            paymentIndex.SetKeyComparer(new NullableValueComparer<long>(paymentIndex.TypeMapping.KeyComparer));
+            paymentIndex.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
+
             var preimage = runtimeEntityType.AddProperty(
                 "Preimage",
                 typeof(byte[]),
@@ -1078,11 +1128,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             preimage.SetAccessors(
                 byte[] (IInternalEntry entry) => PaymentEntityUnsafeAccessors.Preimage(((PaymentEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => PaymentEntityUnsafeAccessors.Preimage(((PaymentEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(preimage, 19),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(preimage, 20),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(preimage));
             preimage.SetPropertyIndexes(
-                index: 19,
-                originalValueIndex: 19,
+                index: 20,
+                originalValueIndex: 20,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1129,11 +1179,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             status.SetAccessors(
                 byte (IInternalEntry entry) => PaymentEntityUnsafeAccessors.Status(((PaymentEntity)(entry.Entity))),
                 byte (IInternalEntry entry) => PaymentEntityUnsafeAccessors.Status(((PaymentEntity)(entry.Entity))),
-                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(status, 20),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(status, 21),
                 byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(status));
             status.SetPropertyIndexes(
-                index: 20,
-                originalValueIndex: 20,
+                index: 21,
+                originalValueIndex: 21,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1177,11 +1227,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             tags.SetAccessors(
                 string (IInternalEntry entry) => PaymentEntityUnsafeAccessors.Tags(((PaymentEntity)(entry.Entity))),
                 string (IInternalEntry entry) => PaymentEntityUnsafeAccessors.Tags(((PaymentEntity)(entry.Entity))),
-                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(tags, 21),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(tags, 22),
                 string (IInternalEntry entry) => entry.GetCurrentValue<string>(tags));
             tags.SetPropertyIndexes(
-                index: 21,
-                originalValueIndex: 21,
+                index: 22,
+                originalValueIndex: 22,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1213,6 +1263,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 new[] { createdAt });
 
             var index0 = runtimeEntityType.AddIndex(
+                new[] { paymentIndex },
+                unique: true);
+            index0.AddAnnotation("Relational:Filter", "[PaymentIndex] IS NOT NULL");
+
+            var index1 = runtimeEntityType.AddIndex(
                 new[] { status });
 
             return runtimeEntityType;
@@ -1239,6 +1294,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             var outgoingHtlcId = runtimeEntityType.FindProperty("OutgoingHtlcId");
             var payeeNodeId = runtimeEntityType.FindProperty("PayeeNodeId");
             var payerNote = runtimeEntityType.FindProperty("PayerNote");
+            var paymentIndex = runtimeEntityType.FindProperty("PaymentIndex");
             var preimage = runtimeEntityType.FindProperty("Preimage");
             var status = runtimeEntityType.FindProperty("Status");
             var tags = runtimeEntityType.FindProperty("Tags");
@@ -1250,7 +1306,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType1 = ((PaymentEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<Hash, long, string, byte[], DateTimeOffset?, DateTimeOffset, byte[], ushort?, string, int?, long, byte[], bool, string, string, ChannelId?, ulong?, CompactPubKey, string, byte[], byte, string>(((ValueComparer<Hash>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash>(paymentHash)), ((ValueComparer<long>)(((IProperty)amountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(amountMsat)), (source.GetCurrentValue<string>(bolt11) == null ? null : ((ValueComparer<string>)(((IProperty)bolt11).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(bolt11))), (source.GetCurrentValue<byte[]>(bolt12InvoiceBytes) == null ? null : ((ValueComparer<byte[]>)(((IProperty)bolt12InvoiceBytes).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(bolt12InvoiceBytes))), (source.GetCurrentValue<DateTimeOffset?>(completedAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)completedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(completedAt))), ((ValueComparer<DateTimeOffset>)(((IProperty)createdAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(createdAt)), (source.GetCurrentValue<byte[]>(customRecords) == null ? null : ((ValueComparer<byte[]>)(((IProperty)customRecords).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(customRecords))), (source.GetCurrentValue<ushort?>(failureCode) == null ? null : ((ValueComparer<ushort?>)(((IProperty)failureCode).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort?>(failureCode))), (source.GetCurrentValue<string>(failureReason) == null ? null : ((ValueComparer<string>)(((IProperty)failureReason).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(failureReason))), (source.GetCurrentValue<int?>(failureSourceIndex) == null ? null : ((ValueComparer<int?>)(((IProperty)failureSourceIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<int?>(failureSourceIndex))), ((ValueComparer<long>)(((IProperty)feeMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(feeMsat)), (source.GetCurrentValue<byte[]>(invoiceRequestMetadata) == null ? null : ((ValueComparer<byte[]>)(((IProperty)invoiceRequestMetadata).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(invoiceRequestMetadata))), ((ValueComparer<bool>)(((IProperty)isTrampolineRelay).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(isTrampolineRelay)), (source.GetCurrentValue<string>(label) == null ? null : ((ValueComparer<string>)(((IProperty)label).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(label))), (source.GetCurrentValue<string>(offerBolt12) == null ? null : ((ValueComparer<string>)(((IProperty)offerBolt12).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(offerBolt12))), (source.GetCurrentValue<ChannelId?>(outgoingChannelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)outgoingChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(outgoingChannelId))), (source.GetCurrentValue<ulong?>(outgoingHtlcId) == null ? null : ((ValueComparer<ulong?>)(((IProperty)outgoingHtlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(outgoingHtlcId))), ((ValueComparer<CompactPubKey>)(((IProperty)payeeNodeId).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(payeeNodeId)), (source.GetCurrentValue<string>(payerNote) == null ? null : ((ValueComparer<string>)(((IProperty)payerNote).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(payerNote))), (source.GetCurrentValue<byte[]>(preimage) == null ? null : ((ValueComparer<byte[]>)(((IProperty)preimage).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(preimage))), ((ValueComparer<byte>)(((IProperty)status).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(status)), (source.GetCurrentValue<string>(tags) == null ? null : ((ValueComparer<string>)(((IProperty)tags).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(tags))))));
+                    return ((ISnapshot)(new Snapshot<Hash, long, string, byte[], DateTimeOffset?, DateTimeOffset, byte[], ushort?, string, int?, long, byte[], bool, string, string, ChannelId?, ulong?, CompactPubKey, string, long?, byte[], byte, string>(((ValueComparer<Hash>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash>(paymentHash)), ((ValueComparer<long>)(((IProperty)amountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(amountMsat)), (source.GetCurrentValue<string>(bolt11) == null ? null : ((ValueComparer<string>)(((IProperty)bolt11).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(bolt11))), (source.GetCurrentValue<byte[]>(bolt12InvoiceBytes) == null ? null : ((ValueComparer<byte[]>)(((IProperty)bolt12InvoiceBytes).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(bolt12InvoiceBytes))), (source.GetCurrentValue<DateTimeOffset?>(completedAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)completedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(completedAt))), ((ValueComparer<DateTimeOffset>)(((IProperty)createdAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(createdAt)), (source.GetCurrentValue<byte[]>(customRecords) == null ? null : ((ValueComparer<byte[]>)(((IProperty)customRecords).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(customRecords))), (source.GetCurrentValue<ushort?>(failureCode) == null ? null : ((ValueComparer<ushort?>)(((IProperty)failureCode).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort?>(failureCode))), (source.GetCurrentValue<string>(failureReason) == null ? null : ((ValueComparer<string>)(((IProperty)failureReason).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(failureReason))), (source.GetCurrentValue<int?>(failureSourceIndex) == null ? null : ((ValueComparer<int?>)(((IProperty)failureSourceIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<int?>(failureSourceIndex))), ((ValueComparer<long>)(((IProperty)feeMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(feeMsat)), (source.GetCurrentValue<byte[]>(invoiceRequestMetadata) == null ? null : ((ValueComparer<byte[]>)(((IProperty)invoiceRequestMetadata).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(invoiceRequestMetadata))), ((ValueComparer<bool>)(((IProperty)isTrampolineRelay).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(isTrampolineRelay)), (source.GetCurrentValue<string>(label) == null ? null : ((ValueComparer<string>)(((IProperty)label).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(label))), (source.GetCurrentValue<string>(offerBolt12) == null ? null : ((ValueComparer<string>)(((IProperty)offerBolt12).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(offerBolt12))), (source.GetCurrentValue<ChannelId?>(outgoingChannelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)outgoingChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(outgoingChannelId))), (source.GetCurrentValue<ulong?>(outgoingHtlcId) == null ? null : ((ValueComparer<ulong?>)(((IProperty)outgoingHtlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(outgoingHtlcId))), ((ValueComparer<CompactPubKey>)(((IProperty)payeeNodeId).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(payeeNodeId)), (source.GetCurrentValue<string>(payerNote) == null ? null : ((ValueComparer<string>)(((IProperty)payerNote).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(payerNote))), (source.GetCurrentValue<long?>(paymentIndex) == null ? null : ((ValueComparer<long?>)(((IProperty)paymentIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(paymentIndex))), (source.GetCurrentValue<byte[]>(preimage) == null ? null : ((ValueComparer<byte[]>)(((IProperty)preimage).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(preimage))), ((ValueComparer<byte>)(((IProperty)status).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(status)), (source.GetCurrentValue<string>(tags) == null ? null : ((ValueComparer<string>)(((IProperty)tags).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(tags))))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => Snapshot.Empty);
@@ -1267,11 +1323,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     return ((ISnapshot)(new Snapshot<Hash, object>(((ValueComparer<Hash>)(((IProperty)paymentHash).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<Hash>(paymentHash)), SnapshotFactoryFactory.SnapshotCollection(source.GetCurrentValue<ICollection<PaymentHopEntity>>(hops)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 22,
+                propertyCount: 23,
                 navigationCount: 1,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 22,
+                originalValueCount: 23,
                 shadowCount: 0,
                 relationshipCount: 2,
                 storeGeneratedCount: 0));
