@@ -225,9 +225,15 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
             return new OnionMessageSendResult(OnionMessageSendStatus.Dropped);
         }
 
-        var replyPath = _replyPathFactory.Create(pending.PathId);
+        if (CheckContents(contents) is { } refused)
+            return refused;
+
+        // The reply path starts at the peer the message leaves through: the recipient's side reached it, so the
+        // reply can be routed back to it (an arbitrary peer may be unreachable from there, NL-1155)
+        var route = ResolveRoute(destination);
+        var replyPath = _replyPathFactory.Create(pending.PathId, route is null ? null : FirstHop(route));
         cancellationToken.ThrowIfCancellationRequested();
-        var result = SendCore(destination, contents, WireBlindedPath.FromBlindedPath(replyPath));
+        var result = SendAlong(route, contents, WireBlindedPath.FromBlindedPath(replyPath));
         if (result.Status != OnionMessageSendStatus.Sent)
             return result;
 
@@ -433,18 +439,33 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
     private OnionMessageSendResult SendCore(OnionMessageDestination destination, OnionMessageContents contents,
                                             WireBlindedPath? replyPath)
     {
+        return CheckContents(contents) ?? SendAlong(ResolveRoute(destination), contents, replyPath);
+    }
+
+    /// <summary>Refuses contents a packet cannot carry: <see cref="OnionMessageSendStatus.TooLarge"/>, else null.</summary>
+    private static OnionMessageSendResult? CheckContents(OnionMessageContents contents)
+    {
         if (contents.Records.Any(r => r.Type is OnionMessageConstants.ReplyPathType
                                                or OnionMessageConstants.EncryptedRecipientDataType))
             throw new ArgumentException("The contents cannot carry reply_path or encrypted_recipient_data",
                                         nameof(contents));
 
-        if (contents.Records.Sum(r => (long)r.Value.Length) > OnionMessageConstants.LargePayloadsLength)
-            return new OnionMessageSendResult(OnionMessageSendStatus.TooLarge);
+        return contents.Records.Sum(r => (long)r.Value.Length) > OnionMessageConstants.LargePayloadsLength
+                   ? new OnionMessageSendResult(OnionMessageSendStatus.TooLarge)
+                   : null;
+    }
 
-        if (ResolveRoute(destination) is not { } route)
+    /// <summary>The peer a message along <paramref name="route"/> is handed to.</summary>
+    private static CompactPubKey FirstHop(SendRoute route) =>
+        route.Prefix.Count > 0 ? route.Prefix[0] : route.Path.FirstNodeId;
+
+    private OnionMessageSendResult SendAlong(SendRoute? route, OnionMessageContents contents,
+                                             WireBlindedPath? replyPath)
+    {
+        if (route is null)
             return new OnionMessageSendResult(OnionMessageSendStatus.NoPath);
 
-        var firstHop = route.Prefix.Count > 0 ? route.Prefix[0] : route.Path.FirstNodeId;
+        var firstHop = FirstHop(route);
         if (!_pathFinder.CanSendTo(firstHop))
             return new OnionMessageSendResult(OnionMessageSendStatus.NoPath);
 

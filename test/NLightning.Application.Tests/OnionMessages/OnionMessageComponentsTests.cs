@@ -6,8 +6,11 @@ namespace NLightning.Application.Tests.OnionMessages;
 using Application.OnionMessages;
 using Application.Tests.Payments;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
+using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Node.Interfaces;
+using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.OnionMessages;
@@ -243,5 +246,42 @@ public class OnionMessageComponentsTests
         var dummy = node.RouteBlinding.UnblindAsLocalNode(atDummy, path.Hops[1].EncryptedRecipientData);
         Assert.Null(dummy.RecipientData.NextNodeId);
         Assert.Equal(pathId, dummy.RecipientData.PathId!.Value.ToArray());
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(1, false)]
+    [InlineData(0, true)]
+    [InlineData(1, true)]
+    public void Given_TwoPeers_When_CreatingAReplyPathThroughOne_Then_ThatPeerIntroducesIt(int through,
+                                                                                          bool bothWithChannels)
+    {
+        // Arrange: two equal onion-message peers (both with channels, as our node with LND alice and a BOLT 12 payee, or
+        // neither); the message leaves through one, and the recipient's side may have no route to the other (NL-1155)
+        using var node = new OnionMessageTestNode("alice", 1);
+        using var bob = new OnionMessageTestNode("bob", 2);
+        using var carol = new OnionMessageTestNode("carol", 3);
+        CompactPubKey[] peers = [bob.NodeId, carol.NodeId];
+        var peerManager = new Mock<IPeerManager>();
+        peerManager.Setup(m => m.ListPeers())
+                   .Returns([.. peers.Select(p => new PeerModel(p, "127.0.0.1", 9735, "IPv4"))]);
+        var outbox = new Mock<IPeerOnionMessageOutbox>();
+        outbox.Setup(o => o.CanSendOnionMessage(It.IsAny<CompactPubKey>())).Returns(true);
+        var channels = new Mock<IChannelMemoryRepository>();
+        channels.Setup(c => c.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+                .Returns(() => bothWithChannels ? [null!] : []);
+        var finder = new OnionMessagePathFinder(peerManager.Object, channels.Object, node.NodeId, 3, outbox: outbox.Object);
+        var factory = new ReplyPathFactory(node.PathBuilder, finder, node.NodeId);
+
+        // Act
+        var path = factory.Create(new byte[32], peers[through]);
+        var withoutPreference = factory.Create(new byte[32]);
+        var throughUs = factory.Create(new byte[32], node.NodeId);
+
+        // Assert: the peer the message leaves through introduces the reply path; without one (or naming ourselves),
+        // the first listed peer as before
+        Assert.Equal(peers[through], path.FirstNodeId);
+        Assert.Equal(peers[0], withoutPreference.FirstNodeId);
+        Assert.Equal(peers[0], throughUs.FirstNodeId);
     }
 }

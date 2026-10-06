@@ -7,8 +7,9 @@ using Domain.Protocol.OnionMessages.Interfaces;
 /// <summary>
 /// Builds the <c>reply_path</c> of our own messages (BOLT 4 writer: <c>first_node_id</c> is the unblinded
 /// introduction node, <c>first_path_key</c> its path key; plan D7): a path whose introduction node is a connected peer
-/// that negotiated <c>option_onion_messages</c> (one we have an open channel with first), else a one-hop path to
-/// ourselves, ended by dummy hops of our own node (<see cref="OnionMessageOptions.BlindedPathDummyHops"/>, NL-525).
+/// that negotiated <c>option_onion_messages</c> (one we have an open channel with first, and among those the peer the
+/// message itself leaves through when the caller names it: the recipient's side reached that peer, so it can route the
+/// reply back to it, NL-1155), else a one-hop path to ourselves, ended by dummy hops of our own node (<see cref="OnionMessageOptions.BlindedPathDummyHops"/>, NL-525).
 /// Our hop's <c>path_id</c> is the secret the <see cref="PendingReplyRegistry"/> recognizes.
 /// </summary>
 /// <remarks>
@@ -37,10 +38,19 @@ public sealed class ReplyPathFactory
     /// A reply path to us whose final hop carries <paramref name="pathId"/>.
     /// </summary>
     /// <param name="pathId">Our hop's <c>path_id</c>.</param>
-    public BlindedPath Create(ReadOnlyMemory<byte> pathId)
+    /// <param name="introduction">The peer the message leaves through, preferred as the introduction node when it is an
+    /// onion-message peer and no better kept (channel) peer than it: an arbitrary other peer may be one the recipient
+    /// has no route to, and the reply is lost (NL-1155).</param>
+    public BlindedPath Create(ReadOnlyMemory<byte> pathId, CompactPubKey? introduction = null)
     {
         var peers = _pathFinder.ListOnionMessagePeers();
-        IReadOnlyList<CompactPubKey> nodeIds = peers.Count > 0 ? [peers[0], _ourNodeId] : [_ourNodeId];
+        // The channel-peer preference stays first (we reconnect only to those, so the path outlives a disconnection):
+        // the message's own first hop wins among equals
+        var first = introduction is { } preferred && preferred != _ourNodeId && peers.Contains(preferred)
+                 && (_pathFinder.HasOpenChannelWith(preferred) || !_pathFinder.HasOpenChannelWith(peers[0]))
+                        ? preferred
+                        : peers.Count > 0 ? peers[0] : (CompactPubKey?)null;
+        IReadOnlyList<CompactPubKey> nodeIds = first is { } peer ? [peer, _ourNodeId] : [_ourNodeId];
         return _pathBuilder.CreateMessagePath(nodeIds, pathId, dummyHops: _dummyHops);
     }
 }
