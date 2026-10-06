@@ -15,6 +15,7 @@ using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Interfaces;
+using Domain.Channels.Acceptance;
 using Domain.Channels.Closing;
 using Domain.Channels.Commitments;
 using Domain.Channels.DualFunding;
@@ -780,6 +781,12 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             throw new ChannelErrorException("The channel would be a large channel", temporaryId,
                                             "We don't support large channels");
 
+        // NL-1180: external deciders (LND's ChannelAcceptor) answer before keys are made for the open; their values
+        // replace what we announce, and one that cannot apply to a dual-funded open refuses it
+        var decision = await DecideOpenAsync(message, peerPubKey, cancellationToken);
+        (localParams, minimumDepth) = ApplyOpenDecision(decision, message, peerPubKey, localParams, minimumDepth,
+                                                        total);
+
         var keyIndex = _lightningSigner.CreateNewChannel(out var basepoints, out var firstPoint);
         var secondPoint = _lightningSigner.GetPerCommitmentPoint(keyIndex, 1);
         var channelId = ChannelIdV2.Derive(_sha256, basepoints.RevocationBasepoint, payload.RevocationBasepoint);
@@ -895,6 +902,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             reserve = DualFundingRules.GetChannelReserve(total, Max(payload.DustLimitAmount,
                                                                     _nodeOptions.DustLimitAmount));
             localParams = CreateLocalParams(reserve, GetAnnouncedMaxHtlcValueInFlight(total, negotiatedFeatures));
+            (localParams, minimumDepth) = ApplyOpenDecision(decision, message, peerPubKey, localParams, minimumDepth,
+                                                            total);
             remoteParams = new ChannelParty(payload.DustLimitAmount, reserve, payload.HtlcMinimumAmount,
                                             payload.MaxAcceptedHtlcs, payload.MaxHtlcValueInFlightAmount,
                                             payload.ToSelfDelay, NonEmpty(message.UpfrontShutdownScriptTlv));
@@ -927,6 +936,56 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                         message.ChannelTypeTlv, new UpfrontShutdownScriptTlv(Array.Empty<byte>()),
                                                         willFund: negotiation.AttemptLiquidity?.WillFund)
         ];
+    }
+
+    /// <summary>The external deciders' answer on <paramref name="message"/> (NL-1180); a rejection refuses the open.</summary>
+    private async Task<ChannelOpenDecision?> DecideOpenAsync(OpenChannel2Message message, CompactPubKey peerPubKey,
+                                                             CancellationToken cancellationToken)
+    {
+        if (_serviceProvider.GetService<IChannelOpenDecisionGate>() is not { HasDeciders: true } gate)
+            return null;
+
+        var decision = await gate.DecideAsync(ToOpenRequest(message, peerPubKey), cancellationToken);
+        if (decision.Accept)
+            return decision;
+
+        _logger.LogInformation("open_channel2 {TemporaryChannelId} of {Peer} rejected by a channel acceptor: {Error}",
+                               message.Payload.ChannelId, peerPubKey, decision.Error);
+        throw new ChannelErrorException($"Rejected by a channel acceptor: {decision.Error}", message.Payload.ChannelId,
+                                        decision.Error);
+    }
+
+    /// <summary>Our announced values and depth with an acceptance's values applied (unchanged without one).</summary>
+    private (ChannelParty Local, uint MinimumDepth) ApplyOpenDecision(ChannelOpenDecision? decision,
+                                                                     OpenChannel2Message message,
+                                                                     CompactPubKey peerPubKey, ChannelParty local,
+                                                                     uint minimumDepth, LightningMoney capacity)
+    {
+        if (decision is not { HasOverrides: true })
+            return (local, minimumDepth);
+
+        if (ChannelOpenDecisionRules.TryApply(decision, ToOpenRequest(message, peerPubKey), local, minimumDepth,
+                                              capacity, out var newLocal, out var newMinimumDepth) is { } error)
+        {
+            _logger.LogWarning("Refusing open_channel2 {TemporaryChannelId}: the channel acceptor's answer cannot apply "
+                             + "({Error})", message.Payload.ChannelId, error);
+            throw new ChannelErrorException($"The channel acceptor's answer cannot apply: {error}",
+                                            message.Payload.ChannelId, ChannelOpenDecision.GenericRejection);
+        }
+
+        return (newLocal, newMinimumDepth);
+    }
+
+    /// <summary>A peer's <c>open_channel2</c> as an external decider sees it (NL-1180).</summary>
+    internal static ChannelOpenRequest ToOpenRequest(OpenChannel2Message message, CompactPubKey peerPubKey)
+    {
+        var payload = message.Payload;
+        return new ChannelOpenRequest(peerPubKey, payload.ChainHash, payload.ChannelId, payload.FundingAmount,
+                                      LightningMoney.Zero, payload.DustLimitAmount,
+                                      payload.MaxHtlcValueInFlightAmount, LightningMoney.Zero,
+                                      payload.HtlcMinimumAmount, payload.CommitmentFeeRatePerKw, payload.ToSelfDelay,
+                                      payload.MaxAcceptedHtlcs, payload.ChannelFlags, message.ChannelTypeTlv?.Features,
+                                      true);
     }
 
     /// <summary>

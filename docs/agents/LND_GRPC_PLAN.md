@@ -248,3 +248,84 @@ Commit `a1bb2bbe` (NL-1164..NL-1167, NL-1169; findings NL-1170..NL-1172).
   (with its HTLC) then SETTLED after SettleInvoice (alice's payment succeeds with our preimage), a second one canceled
   (alice's payment fails), a cooperative CloseChannel streamed to `chan_close` and listed by ClosedChannels with its
   settled balance (705,000 sat). The Postgres backfill runs in the `postgres` suite (`PostgresTests`).
+
+## Wave 3 record (2026-10-06)
+
+Branch `wip/lnd-grpc-wave3` (from `wip/fafo` 6e66e4cd, in parallel with wave 2), NL-1168: commits `788466f3`
+(implementation and tests) and the proof/docs commit. Protos `routerrpc/router.proto`, `walletrpc/walletkit.proto` and
+`signrpc/signer.proto` vendored (server stubs, the manifest's rule); the sub-server permissions are LND's
+(`Macaroons/LndSubServerPermissions`: every `walletrpc.WalletKit` method and `routerrpc.Router/HtlcInterceptor`),
+consulted after the `lnrpc` table. `RouterService` (partial; wave 2 adds its other methods) and `WalletKitService`
+run when registered (`AddLndGrpc` does).
+
+- **ChannelAcceptor (NL-1180).** Domain `Channels/Acceptance/`: `IChannelOpenDecisionGate` (Application
+  `ChannelOpenDecisionGate`, registered by `AddApplicationServices`) with `IChannelOpenDecider`s; LND's
+  `ChainedAcceptor`: no decider = accept, deciders asked in order, the first rejection wins, acceptances merged by
+  `ChannelOpenDecisionRules.TryMerge` (a value two set differently rejects, LND's `mergeResponse`), a throwing decider
+  rejects. `OpenChannel1MessageHandler` asks after the cheap refusals and **before the factory** (no key index used for a
+  rejected open); `DualFundedOpenService` before it makes keys. The accepted values replace what we announce
+  (`ChannelOpenDecisionRules.TryApply`, `ChannelModel.ApplyOpenDecision`): csv_delay (our `to_self_delay` on the opener),
+  reserve_sat (v1), in_flight_max_msat, max_htlc_count (at most 483), min_htlc_in, min_accept_depth, upfront_shutdown
+  (v1, needs `option_upfront_shutdown_script`, as LND); refused with the generic `channel rejected`: zero_conf (and depth
+  0), reserve_sat or upfront_shutdown on a dual-funded open, a reserve below either dust limit (NL-1181). Each RPC stream
+  is an `RpcChannelAcceptor`: the request in LND's units and LND's commitment-type reading of `channel_type`, LND's
+  `validateAcceptorResponse` (accept with an error, an error over 500 characters, a bad upfront address or a reserve below
+  the opener's dust limit reject generically), answers matched by `pending_chan_id` (zero-padded), at most
+  `LndGrpc:MaxPendingChannelAccepts` (64) unanswered, `LndGrpc:AcceptorTimeout` (15 s, LND's `acceptortimeout`) then
+  reject, a closed stream rejects what is pending. **Waiting:** the handlers run under the temporary channel's lock on the
+  peer's inbound loop, so a decider that thinks holds only that peer's channel messages; pings (`PingPongService`) and
+  other peers go on. LND's funding manager waits likewise.
+- **HtlcInterceptor (NL-1183).** Domain `Payments/Interception/` (`IHtlcForwardInterceptor`, `InterceptedForward`,
+  `ForwardInterceptResolution`), Application `HtlcInterceptorHub`, `HtlcSwitch.Interception.cs`. LND semantics with
+  `requireinterceptor` off (LND 0.21's default): forwards only (final-hop HTLCs never), offered after the onion is
+  peeled and **before** the outgoing channel is resolved and `IForwardingPolicy` runs — as LND's `InterceptableSwitch`,
+  which sits in front of the outgoing link's checks, so an unknown outgoing scid reaches the interceptor (the JIT-channel
+  hook); RESUME runs the whole normal forward. The task description asked for interception after the policy; LND's order
+  was kept because RESUME re-runs the policy anyway and the JIT case needs it. One client (a second: `ALREADY_EXISTS`,
+  LND's `ErrInterceptorAlreadyExists`). Holding never blocks: the switch registers the hold and returns (the per-peer
+  loop goes on); the resolution takes the incoming HTLC's lock later and does nothing if the HTLC was resolved meanwhile.
+  CLTV rules of LND: incoming expiry within `InterceptorCltvInterceptDelta` (22) blocks = `expiry_too_soon`, held
+  forwards fail back with `temporary_channel_failure` at expiry − `InterceptorCltvRejectDelta` (19) on each block
+  (`auto_fail_height`), at most `MaxHeldHtlcs` (1,000) held (`temporary_channel_failure`). FAIL maps LND's codes
+  (`temporary_channel_failure` with the incoming channel's update, the BADONION codes) or a 292-byte error packet
+  obfuscated with the incoming secret; SETTLE checks the preimage (a wrong one ends the stream and leaves the forward
+  held until the disconnect resumes it); an unknown circuit ends the stream (LND); `RESUME_MODIFIED` is UNIMPLEMENTED.
+  **Restart:** holds are memory only; the lock-in replay of an HTLC without a circuit offers it again when a client is
+  connected, otherwise forwards it (LND without `requireinterceptor`). A client that disconnects resumes every held
+  forward. Gaps NL-1182 (incl. the accounting of a SETTLE).
+- **walletrpc (NL-1184).** `IWalletPsbtService` / `Infrastructure.Bitcoin/Wallet/WalletPsbtService`, registered with
+  `withdraw`. Leases are fee-input reservations with purpose `lnd-lease:<id hex>:<unix expiry>` (persisted; LND's default
+  10 min and `LndInternalLockID` for FundPsbt). FinalizePsbt and PublishTransaction **are implemented** because they go
+  through the reserved-inputs rule safely: FinalizePsbt refuses unless every input is a wallet output leased here (an
+  output reserved for a CPFP, a withdraw or an interactive-tx is refused) and then calls `SignWalletTransaction`, which
+  signs reserved wallet inputs only; nothing a pending broadcast of ours spends (a funding whose memory lock a restart
+  dropped) or a channel funding locks can be leased; FundPsbt keeps the anchors reserve like `withdraw`. PublishTransaction
+  sends first and answers bitcoind's refusal with an RPC error like LND (UNKNOWN, LND's texts: "transaction rejected:
+  output already spent", "... because of low fees: ...", "insufficient fee", "txn same nonwitness data in mempool";
+  lndclient ignores `publish_error`, so a refusal reported there would look published) and keeps nothing; an accepted or
+  already-known spend of leased outputs is then stored as a `WalletSend` row (rebroadcast, booked as a wallet send), a
+  transaction without wallet inputs is sent once. EstimateFee's `min_relay_fee_sat_per_kw` is bitcoind's
+  `mempoolminfee` (at least 253). Refused or UNIMPLEMENTED: NL-1186.
+- **GetTransactions (NL-1185).** The accounting feed (sealed first): `WalletReceived` by creating transaction and
+  `WalletOutputSpent` by its `spentBy`, reorg reversals removed; pending broadcasts and unconfirmed deposits as
+  unconfirmed entries; label and fee from our broadcast rows; the raw transaction from the row, else from bitcoind (out of its block, no
+  `txindex` needed, or the mempool). Gaps NL-1187.
+- **Tests:** Domain `Channels/Acceptance` (14), Application `Channels/Acceptance` (gate, v1 handler, dual-funded harness:
+  rejection, accepted values on `accept_channel2`, refused reserve), `Payments/Interception/HtlcInterceptorHubTests`,
+  `Payments/Switch/HtlcInterceptionSwitchTests` (three-node harness: FAIL decrypted at Alice as Bob's
+  `temporary_channel_failure`, RESUME pays, SETTLE with a wrong then the right preimage pays Alice with Carol untouched,
+  a disconnect resumes, a restart re-offers), `Infrastructure.Bitcoin.Tests/Wallet/WalletPsbtServiceTests` (14, real
+  selector and signer, P2WPKH + P2TR inputs verified by the interpreter), `LndGrpc.Tests/Wave3` (mappings and the
+  streams in-process through our LND client).
+- **Cluster proof** (`Docker/LndGrpc/LndGrpcWave3FlowTests`, lnd suite, `scripts/run-cluster.sh -n 1 --suite lnd
+  --class ...`: 1/1 green in 73 s): with our acceptor connected, LND alice's first `OpenChannelSync` fails with
+  "received funding error from <us>: ... err=nltg acceptor: not this one", the second opens with our acceptor's
+  csv_delay 200 as alice's local CSV; a forward alice → us → an NLightning payee is intercepted (circuit key = alice's
+  chan_id), FAILed (alice: FAILED, attempt failure TEMPORARY_CHANNEL_FAILURE at hop 1), the next RESUMEd and SUCCEEDED;
+  ListUnspent/NextAddr on the real wallet, FundPsbt → FinalizePsbt → PublishTransaction pays alice 77,000 sat (fee 703
+  sat), mined, alice lists it, our GetTransactions lists amount −77,703 with the label at alice's block height. The
+  whole lnd suite afterwards: 66/66, "1/1 run(s) green" (604 s).
+- **Gates:** Release build 0 warnings; `dotnet format --verify-no-changes` clean; full non-Docker net10.0 run green
+  except two load flakes recorded as NL-1188 (`FinancialHeldOutsideTests`) and NL-1189
+  (`DualFundLiquidityAdsRefusalTests`), each class green alone; net11.0 daemon compile 0 warnings;
+  `check-sln-configs.py` OK. No schema change (leases reuse `FeeInputReservations`).

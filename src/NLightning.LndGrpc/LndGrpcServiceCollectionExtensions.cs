@@ -29,8 +29,11 @@ public static class LndGrpcServiceCollectionExtensions
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<LndGrpcOptions>,
                                       LndGrpcOptionsValidator>());
         services.AddSingleton<LightningService>();
+        // Wave 2 (NL-1164) and wave 3 (NL-1183, NL-1184): routerrpc.Router (payments, HtlcInterceptor),
+        // invoicesrpc.Invoices and walletrpc.WalletKit
         services.AddSingleton<RouterService>();
         services.AddSingleton<InvoicesService>();
+        services.AddSingleton<WalletKitService>();
         return services;
     }
 

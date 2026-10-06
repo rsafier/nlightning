@@ -9,6 +9,7 @@ using NBitcoin;
 namespace NLightning.LndGrpc.Tests;
 
 using Application.Payments.Events;
+using Application.Payments.Interception;
 using Domain.Accounting.Labels;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
@@ -540,6 +541,7 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
         services.AddSingleton<INodeCommandDispatcher>(_dispatcher);
         services.AddSingleton(new LndRootKeyStore(_directory));
         services.AddSingleton<LightningService>();
+        services.AddSingleton(new HtlcInterceptorHub(NullLogger<HtlcInterceptorHub>.Instance));
         services.AddSingleton<RouterService>();
         services.AddSingleton<InvoicesService>();
         return services.BuildServiceProvider();

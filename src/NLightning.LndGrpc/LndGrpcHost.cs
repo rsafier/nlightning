@@ -99,8 +99,17 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
             grpc.MaxSendMessageSize = null;
         });
         builder.Services.AddSingleton(_serviceProvider.GetRequiredService<LightningService>());
-        builder.Services.AddSingleton(_serviceProvider.GetRequiredService<RouterService>());
-        builder.Services.AddSingleton(_serviceProvider.GetRequiredService<InvoicesService>());
+        // The sub-servers run when the node registered them (AddLndGrpc registers every one)
+        var invoices = _serviceProvider.GetService<InvoicesService>();
+        if (invoices is not null)
+            builder.Services.AddSingleton(invoices);
+        // Wave 3 (NL-1183, NL-1184): the sub-servers run when the node registered them (AddLndGrpc does)
+        var router = _serviceProvider.GetService<RouterService>();
+        if (router is not null)
+            builder.Services.AddSingleton(router);
+        var walletKit = _serviceProvider.GetService<WalletKitService>();
+        if (walletKit is not null)
+            builder.Services.AddSingleton(walletKit);
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
             kestrel.Limits.MaxConcurrentConnections = _options.MaxConnections;
@@ -110,8 +119,12 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
 
         var app = builder.Build();
         app.MapGrpcService<LightningService>();
-        app.MapGrpcService<RouterService>();
-        app.MapGrpcService<InvoicesService>();
+        if (invoices is not null)
+            app.MapGrpcService<InvoicesService>();
+        if (router is not null)
+            app.MapGrpcService<RouterService>();
+        if (walletKit is not null)
+            app.MapGrpcService<WalletKitService>();
         app.StartAsync(cancellationToken).GetAwaiter().GetResult();
         _app = app;
 
@@ -125,7 +138,7 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
         }
 
         BoundPort = new Uri(addresses.First()).Port;
-        _logger.LogInformation("LND gRPC (lnrpc.Lightning, routerrpc.Router, invoicesrpc.Invoices) listening on {Address}:{Port} (TLS{ClientCertificates}, "
+        _logger.LogInformation("LND gRPC (lnrpc.Lightning, routerrpc.Router, invoicesrpc.Invoices, walletrpc.WalletKit) listening on {Address}:{Port} (TLS{ClientCertificates}, "
                              + "{Macaroons}; files in {Directory})", _options.ListenAddress, BoundPort,
                                string.IsNullOrWhiteSpace(_options.ClientCaPath) ? "" : " with client certificates",
                                verifier is null ? "NO macaroons" : "macaroons", DataDirectory);

@@ -3,15 +3,17 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.LndGrpc.Services;
 
+using Application.Payments.Interception;
 using Domain.Channels.Interfaces;
 using Domain.Node.Options;
 using Domain.Payments.Interfaces;
 using Routerrpc;
 
 /// <summary>
-/// LND's <c>routerrpc.Router</c> over this node (<c>LND_GRPC_PLAN.md</c> §3 wave 2, NL-1164): <c>SendPaymentV2</c>,
-/// <c>TrackPaymentV2</c> and <c>TrackPayments</c> over <see cref="IPaymentService"/> and the payment event bus. Every
-/// other Router method answers <c>UNIMPLEMENTED</c>. Partial: later waves add their methods in files of their own.
+/// LND's <c>routerrpc.Router</c> over this node (<c>LND_GRPC_PLAN.md</c>): <c>SendPaymentV2</c>,
+/// <c>TrackPaymentV2</c> and <c>TrackPayments</c> over <see cref="IPaymentService"/> and the payment event bus
+/// (<c>RouterService.Payments.cs</c>, wave 2, NL-1164) and <c>HtlcInterceptor</c> (<c>RouterService.Interceptor.cs</c>,
+/// wave 3, NL-1183). Every other Router method answers <c>UNIMPLEMENTED</c>.
 /// </summary>
 public sealed partial class RouterService : Router.RouterBase
 {
@@ -24,9 +26,13 @@ public sealed partial class RouterService : Router.RouterBase
     private readonly IPaymentService _paymentService;
     private readonly TimeProvider _timeProvider;
     private readonly IPaymentEventSource? _events;
+    private readonly HtlcInterceptorHub _interceptorHub;
+    private readonly ILogger<RouterService> _routerLogger;
+    private readonly LndGrpcOptions _routerOptions;
 
     public RouterService(IPaymentService paymentService, IChannelMemoryRepository channels,
                          IOptions<NodeOptions> nodeOptions, ILogger<RouterService> logger,
+                         HtlcInterceptorHub interceptorHub, IOptions<LndGrpcOptions>? options = null,
                          TimeProvider? timeProvider = null, IPaymentEventSource? events = null)
     {
         _paymentService = paymentService;
@@ -35,5 +41,8 @@ public sealed partial class RouterService : Router.RouterBase
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _events = events;
+        _interceptorHub = interceptorHub;
+        _routerLogger = logger;
+        _routerOptions = options?.Value ?? new LndGrpcOptions();
     }
 }

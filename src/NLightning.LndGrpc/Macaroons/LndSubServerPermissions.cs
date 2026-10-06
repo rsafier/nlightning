@@ -1,8 +1,10 @@
 namespace NLightning.LndGrpc.Macaroons;
 
 /// <summary>
-/// The macaroon permissions of LND's sub-servers this node serves (LND v0.21.4: <c>lnrpc/routerrpc/router_server.go</c>
-/// and <c>lnrpc/invoicesrpc/invoices_server.go</c> <c>macPermissions</c>), by full gRPC method name (NL-1164).
+/// The macaroon permissions of LND's sub-servers this node serves (LND v0.21.4: <c>lnrpc/routerrpc/router_server.go</c>,
+/// <c>lnrpc/invoicesrpc/invoices_server.go</c> and <c>lnrpc/walletrpc/walletkit_server.go</c> <c>macPermissions</c>), by
+/// full gRPC method name (NL-1164, NL-1184). Every WalletKit method is listed, implemented or not, so an unimplemented
+/// one answers <c>UNIMPLEMENTED</c> after the macaroon check.
 /// </summary>
 public static class LndSubServerPermissions
 {
@@ -42,7 +44,46 @@ public static class LndSubServerPermissions
             ["/invoicesrpc.Invoices/HtlcModifier"] = [new("invoices", "write")]
         };
 
+    /// <summary><c>walletrpc.WalletKit</c>.</summary>
+    public static readonly IReadOnlyDictionary<string, IReadOnlyList<MacaroonOp>> WalletKit =
+        new Dictionary<string, IReadOnlyList<MacaroonOp>>(StringComparer.Ordinal)
+        {
+            ["/walletrpc.WalletKit/DeriveNextKey"] = [new("address", "read")],
+            ["/walletrpc.WalletKit/DeriveKey"] = [new("address", "read")],
+            ["/walletrpc.WalletKit/NextAddr"] = [new("address", "read")],
+            ["/walletrpc.WalletKit/GetTransaction"] = [new("onchain", "read")],
+            ["/walletrpc.WalletKit/PublishTransaction"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/SubmitPackage"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/SendOutputs"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/EstimateFee"] = [new("onchain", "read")],
+            ["/walletrpc.WalletKit/PendingSweeps"] = [new("onchain", "read")],
+            ["/walletrpc.WalletKit/BumpFee"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/BumpForceCloseFee"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/ListSweeps"] = [new("onchain", "read")],
+            ["/walletrpc.WalletKit/LabelTransaction"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/LeaseOutput"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/ReleaseOutput"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/ListLeases"] = [new("onchain", "read")],
+            ["/walletrpc.WalletKit/ListUnspent"] = [new("onchain", "read")],
+            ["/walletrpc.WalletKit/ListAddresses"] = [new("onchain", "read")],
+            ["/walletrpc.WalletKit/SignMessageWithAddr"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/VerifyMessageWithAddr"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/FundPsbt"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/SignPsbt"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/FinalizePsbt"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/ListAccounts"] = [new("onchain", "read")],
+            ["/walletrpc.WalletKit/XCreateAccount"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/RequiredReserve"] = [new("onchain", "read")],
+            ["/walletrpc.WalletKit/ImportAccount"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/ImportPublicKey"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/ImportTapscript"] = [new("onchain", "write")],
+            ["/walletrpc.WalletKit/RemoveTransaction"] = [new("onchain", "write")]
+        };
+
     /// <summary>The operations <paramref name="fullMethod"/> requires, or null when no sub-server table lists it.</summary>
     public static IReadOnlyList<MacaroonOp>? ForMethod(string fullMethod) =>
-        Router.TryGetValue(fullMethod, out var ops) || Invoices.TryGetValue(fullMethod, out ops) ? ops : null;
+        Router.TryGetValue(fullMethod, out var ops) || Invoices.TryGetValue(fullMethod, out ops)
+                                                   || WalletKit.TryGetValue(fullMethod, out ops)
+            ? ops
+            : null;
 }

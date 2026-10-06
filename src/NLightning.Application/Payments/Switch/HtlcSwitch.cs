@@ -28,6 +28,7 @@ using Domain.Node.Options;
 using Domain.Onchain.Models;
 using Domain.Payments.Enums;
 using Domain.Payments.Events;
+using Domain.Payments.Interception;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Payments.Trampoline;
@@ -184,6 +185,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
     private readonly ISecureKeyManager? _secureKeyManager;
     private readonly ITrampolineFailureOnionService? _trampolineFailureOnionService;
     private readonly IPaymentEventPublisher? _paymentEventPublisher;
+    private readonly IHtlcForwardInterceptor? _forwardInterceptor;
     private volatile bool _disposed;
 
     public HtlcSwitch(IChannelLockProvider channelLockProvider, IChannelMemoryRepository channelMemoryRepository,
@@ -201,8 +203,10 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
                       IRefusedHtlcCounter? refusedHtlcCounter = null, ISecureKeyManager? secureKeyManager = null,
                       ITrampolineHtlcHandler? trampolineHandler = null,
                       ITrampolineFailureOnionService? trampolineFailureOnionService = null,
-                      IPaymentEventPublisher? paymentEventPublisher = null)
+                      IPaymentEventPublisher? paymentEventPublisher = null,
+                      IHtlcForwardInterceptor? forwardInterceptor = null)
     {
+        _forwardInterceptor = forwardInterceptor;
         _trampolineHandler = trampolineHandler;
         _paymentEventPublisher = paymentEventPublisher;
         _secureKeyManager = secureKeyManager;
@@ -1164,7 +1168,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
     /// Forward (M4-T4): resolve, check the policy, persist the circuit, offer, record the offer.
     /// </summary>
     private async Task ForwardAsync(ChannelId incomingChannelId, HtlcRecord htlc, IncomingOnionForward forward,
-                                    bool firstHandling, CancellationToken cancellationToken)
+                                    bool firstHandling, CancellationToken cancellationToken, bool intercept = true)
     {
         var height = CurrentHeight;
         var introduction = forward.Blinded?.IsIntroduction ?? false;
@@ -1185,6 +1189,11 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
                                 cancellationToken, introduction);
             return;
         }
+
+        // NL-1183: a connected interceptor (LND's HtlcInterceptor) holds the forward before the outgoing channel and the
+        // policy are looked at; its resolution continues below (resume) or fails/settles the incoming HTLC
+        if (intercept && await TryInterceptAsync(incomingChannelId, htlc, forward, height, cancellationToken))
+            return;
 
         // Inside a blinded route the recipient names the next hop by short_channel_id or by next_node_id (M5)
         ChannelModel? outgoing;

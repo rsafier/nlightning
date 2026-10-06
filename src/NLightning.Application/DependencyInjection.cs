@@ -98,6 +98,13 @@ public static class DependencyInjection
         // What a `shutdown --wait` waits for (NL-592): HTLCs in flight and mid-flight negotiations
         services.TryAddSingleton<NodeBusyStateMonitor>();
         services.TryAddSingleton<INodeBusyStateMonitor>(sp => sp.GetRequiredService<NodeBusyStateMonitor>());
+        // External decisions (NL-1180): on inbound channel opens (LND's ChannelAcceptor) and on forwards (LND's
+        // HtlcInterceptor); both are no-ops until a decider or an interceptor registers
+        services.TryAddSingleton<Domain.Channels.Acceptance.IChannelOpenDecisionGate,
+            Channels.Acceptance.ChannelOpenDecisionGate>();
+        services.TryAddSingleton<Payments.Interception.HtlcInterceptorHub>();
+        services.TryAddSingleton<Domain.Payments.Interception.IHtlcForwardInterceptor>(
+            sp => sp.GetRequiredService<Payments.Interception.HtlcInterceptorHub>());
         services.AddSingleton(sp =>
         {
             var blockchainMonitor = sp.GetRequiredService<IBlockchainMonitor>();

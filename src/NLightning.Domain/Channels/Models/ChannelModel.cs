@@ -349,6 +349,19 @@ public class ChannelModel
         ChannelParams = ChannelParams.WithLocal(ChannelParams.Local.WithUpfrontShutdownScript(script));
     }
 
+    /// <summary>
+    /// Replaces the values we announce and the funding depth we ask for with those an external open decision set
+    /// (NL-1180), before <c>accept_channel</c> is sent.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The channel is past <see cref="ChannelState.V1Opening"/>.</exception>
+    public void ApplyOpenDecision(ChannelParty local, uint minimumDepth)
+    {
+        if (State != ChannelState.V1Opening)
+            throw new InvalidOperationException("An open decision can only apply while opening the channel");
+
+        ChannelParams = ChannelParams.WithLocalAndMinimumDepth(local, minimumDepth);
+    }
+
     public void AddRemoteKeySet(ChannelKeySetModel remoteKeySet)
     {
         if (RemoteKeySet is not null)

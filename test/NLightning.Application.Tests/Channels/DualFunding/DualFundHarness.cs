@@ -372,6 +372,10 @@ internal sealed class DualFundNode
     public List<IChannelMessage> Dropped { get; } = [];
     public List<Exception> Errors { get; } = [];
 
+    /// <summary>The gate of external deciders on this node's inbound opens (NL-1180); none registered by default.</summary>
+    public Application.Channels.Acceptance.ChannelOpenDecisionGate OpenDecisionGate { get; } =
+        new(NullLogger<Application.Channels.Acceptance.ChannelOpenDecisionGate>.Instance);
+
     /// <summary>This node's <c>Node:DualFund:AllowRbf</c> instead of the harness's, from its next start.</summary>
     public bool? AllowRbfOverride { get; set; }
 
@@ -609,6 +613,7 @@ internal sealed class DualFundNode
         services.AddInteractiveTxServices();
         services.AddDualFundingServices();
         services.AddSingleton<LiquidityAdsService>();
+        services.AddSingleton<Domain.Channels.Acceptance.IChannelOpenDecisionGate>(OpenDecisionGate);
 
         services.AddSingleton(sp => new ChannelManager(ChainMonitor.Object,
                                                        sp.GetRequiredService<IChannelLockProvider>(),

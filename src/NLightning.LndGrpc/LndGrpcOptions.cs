@@ -68,6 +68,30 @@ public sealed class LndGrpcOptions
     /// <summary>The most channels <c>DescribeGraph</c> returns (0: all, as LND).</summary>
     public int MaxDescribeGraphEdges { get; set; }
 
+    /// <summary>
+    /// How long a <c>ChannelAcceptor</c> client may take to answer an open before it is rejected (LND's
+    /// <c>acceptortimeout</c>, 15 s).
+    /// </summary>
+    public TimeSpan AcceptorTimeout { get; set; } = TimeSpan.FromSeconds(15);
+
+    /// <summary>The most opens one <c>ChannelAcceptor</c> client may have unanswered; more are rejected.</summary>
+    public int MaxPendingChannelAccepts { get; set; } = 64;
+
+    /// <summary>
+    /// <c>HtlcInterceptor</c>: blocks before the incoming HTLC's expiry at which a held forward is failed back (LND's
+    /// <c>DefaultFinalCltvRejectDelta</c>, 19).
+    /// </summary>
+    public uint InterceptorCltvRejectDelta { get; set; } = 19;
+
+    /// <summary>
+    /// <c>HtlcInterceptor</c>: a forward whose incoming HTLC expires within this many blocks is failed with
+    /// <c>expiry_too_soon</c> instead of offered (LND's <c>DefaultCltvInterceptDelta</c>, 22; above the reject delta).
+    /// </summary>
+    public uint InterceptorCltvInterceptDelta { get; set; } = 22;
+
+    /// <summary>The most forwards held for the <c>HtlcInterceptor</c> client at once; more fail back.</summary>
+    public int MaxHeldHtlcs { get; set; } = 1000;
+
     /// <summary>The configuration errors that refuse the start (the network rule is checked by the validator).</summary>
     public IReadOnlyList<string> GetValidationErrors()
     {
@@ -89,6 +113,15 @@ public sealed class LndGrpcOptions
                 errors.Add($"{SectionName}:{nameof(TlsExtraIps)} '{ip}' is not an IP address.");
         }
 
+        if (AcceptorTimeout <= TimeSpan.Zero || AcceptorTimeout > TimeSpan.FromHours(1))
+            errors.Add($"{SectionName}:{nameof(AcceptorTimeout)} must be positive and at most one hour.");
+        if (MaxPendingChannelAccepts is < 1 or > 10_000)
+            errors.Add($"{SectionName}:{nameof(MaxPendingChannelAccepts)} must be 1 to 10000.");
+        if (InterceptorCltvInterceptDelta <= InterceptorCltvRejectDelta)
+            errors.Add($"{SectionName}:{nameof(InterceptorCltvInterceptDelta)} must be above "
+                     + $"{nameof(InterceptorCltvRejectDelta)}.");
+        if (MaxHeldHtlcs is < 1 or > 100_000)
+            errors.Add($"{SectionName}:{nameof(MaxHeldHtlcs)} must be 1 to 100000.");
         if (!string.IsNullOrWhiteSpace(ClientCaPath) && !File.Exists(ClientCaPath))
             errors.Add($"{SectionName}:{nameof(ClientCaPath)} '{ClientCaPath}' does not exist.");
         return errors;
