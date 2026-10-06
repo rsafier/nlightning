@@ -95,7 +95,7 @@ public sealed class HoldBackendServiceTests
         using var harness = new Harness();
         var hash = Hash(0x01);
         harness.InvoiceService
-               .Setup(s => s.CreateHoldInvoiceAsync(hash, s_amount, "swap", 1_200u, It.IsAny<SourceLabels>(),
+               .Setup(s => s.CreateHoldInvoiceAsync(hash, s_amount, "swap", 1_200u, It.IsAny<ushort?>(), It.IsAny<SourceLabels>(),
                                                     It.IsAny<CancellationToken>()))
                .ReturnsAsync(Row(hash, InvoiceStatus.Open));
 
@@ -110,7 +110,7 @@ public sealed class HoldBackendServiceTests
 
         // Assert: the request's hash, amount, memo and expiry became the hold, and its BOLT 11 is handed back
         Assert.Equal("lnbcrt1test", response.Bolt11);
-        harness.InvoiceService.Verify(s => s.CreateHoldInvoiceAsync(hash, s_amount, "swap", 1_200,
+        harness.InvoiceService.Verify(s => s.CreateHoldInvoiceAsync(hash, s_amount, "swap", 1_200, It.IsAny<ushort?>(),
                                       It.Is<SourceLabels>(l => l.Label == "ln-backend"), It.IsAny<CancellationToken>()),
                                       Times.Once);
     }
@@ -125,7 +125,7 @@ public sealed class HoldBackendServiceTests
         using var harness = new Harness();
         var hash = Hash(0x02);
         harness.InvoiceService
-               .Setup(s => s.CreateHoldInvoiceAsync(hash, s_amount, "swap", null, It.IsAny<SourceLabels>(),
+               .Setup(s => s.CreateHoldInvoiceAsync(hash, s_amount, "swap", null, It.IsAny<ushort?>(), It.IsAny<SourceLabels>(),
                                                     It.IsAny<CancellationToken>()))
                .ReturnsAsync(Row(hash, InvoiceStatus.Open));
 
@@ -138,7 +138,7 @@ public sealed class HoldBackendServiceTests
         }, new TestServerCallContext());
 
         // Assert: 0 went in where the default (null) was meant
-        harness.InvoiceService.Verify(s => s.CreateHoldInvoiceAsync(hash, s_amount, "swap", null,
+        harness.InvoiceService.Verify(s => s.CreateHoldInvoiceAsync(hash, s_amount, "swap", null, It.IsAny<ushort?>(),
                                       It.IsAny<SourceLabels>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -170,7 +170,7 @@ public sealed class HoldBackendServiceTests
         var descriptionHash = RandomNumberGenerator.GetBytes(32);
         var description = Convert.ToHexString(descriptionHash).ToLowerInvariant();
         harness.InvoiceService
-               .Setup(s => s.CreateHoldInvoiceAsync(hash, s_amount, description, 600u, It.IsAny<SourceLabels>(),
+               .Setup(s => s.CreateHoldInvoiceAsync(hash, s_amount, description, 600u, It.IsAny<ushort?>(), It.IsAny<SourceLabels>(),
                                                     It.IsAny<CancellationToken>()))
                .ReturnsAsync(Row(hash, InvoiceStatus.Open));
 
@@ -184,7 +184,7 @@ public sealed class HoldBackendServiceTests
         }, new TestServerCallContext());
 
         // Assert
-        harness.InvoiceService.Verify(s => s.CreateHoldInvoiceAsync(hash, s_amount, description, 600,
+        harness.InvoiceService.Verify(s => s.CreateHoldInvoiceAsync(hash, s_amount, description, 600, It.IsAny<ushort?>(),
                                       It.IsAny<SourceLabels>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -195,7 +195,7 @@ public sealed class HoldBackendServiceTests
         using var harness = new Harness();
         var hash = Hash(0x05);
         harness.InvoiceService
-               .Setup(s => s.CreateHoldInvoiceAsync(hash, s_amount, string.Empty, 600u, It.IsAny<SourceLabels>(),
+               .Setup(s => s.CreateHoldInvoiceAsync(hash, s_amount, string.Empty, 600u, It.IsAny<ushort?>(), It.IsAny<SourceLabels>(),
                                                     It.IsAny<CancellationToken>()))
                .ReturnsAsync(Row(hash, InvoiceStatus.Open));
 
@@ -208,8 +208,135 @@ public sealed class HoldBackendServiceTests
         }, new TestServerCallContext());
 
         // Assert
-        harness.InvoiceService.Verify(s => s.CreateHoldInvoiceAsync(hash, s_amount, string.Empty, 600,
+        harness.InvoiceService.Verify(s => s.CreateHoldInvoiceAsync(hash, s_amount, string.Empty, 600, It.IsAny<ushort?>(),
                                       It.IsAny<SourceLabels>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// NL-1149: captaind asks for <c>min_final_cltv_expiry</c> = its HTLC delta plus the user's; the HTLC must carry it
+    /// (captaind checks the incoming expiry against it, and the bark wallet's claim requires the room), so it reaches
+    /// the invoice service instead of our default 40.
+    /// </summary>
+    [Fact]
+    public async Task Given_CaptaindsMinFinalCltvExpiry_When_Invoice_Then_TheHoldCarriesIt()
+    {
+        // Arrange
+        using var harness = new Harness();
+        var hash = Hash(0x0a);
+        harness.InvoiceService
+               .Setup(s => s.CreateHoldInvoiceAsync(hash, s_amount, "swap", null, (ushort?)256,
+                                                    It.IsAny<SourceLabels>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(Row(hash, InvoiceStatus.Open));
+
+        // Act
+        await harness.Build().Invoice(new Hold.InvoiceRequest
+        {
+            PaymentHash = ByteString.CopyFrom((byte[])hash),
+            AmountMsat = 50_000,
+            Memo = "swap",
+            MinFinalCltvExpiry = 256
+        }, new TestServerCallContext());
+
+        // Assert
+        harness.InvoiceService.Verify(s => s.CreateHoldInvoiceAsync(hash, s_amount, "swap", null, (ushort?)256,
+                                                                    It.IsAny<SourceLabels>(),
+                                                                    It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_NoMinFinalCltvExpiry_When_Invoice_Then_TheNodesDefaultApplies()
+    {
+        // Arrange: unset (or proto3's 0) means "the node's own c"
+        using var harness = new Harness();
+        var hash = Hash(0x0b);
+        harness.InvoiceService
+               .Setup(s => s.CreateHoldInvoiceAsync(hash, s_amount, "swap", null, null, It.IsAny<SourceLabels>(),
+                                                    It.IsAny<CancellationToken>()))
+               .ReturnsAsync(Row(hash, InvoiceStatus.Open));
+
+        // Act
+        await harness.Build().Invoice(new Hold.InvoiceRequest
+        {
+            PaymentHash = ByteString.CopyFrom((byte[])hash),
+            AmountMsat = 50_000,
+            Memo = "swap"
+        }, new TestServerCallContext());
+
+        // Assert
+        harness.InvoiceService.Verify(s => s.CreateHoldInvoiceAsync(hash, s_amount, "swap", null, null,
+                                                                    It.IsAny<SourceLabels>(),
+                                                                    It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_AMinFinalCltvExpiryBeyond16Bits_When_Invoice_Then_InvalidArgumentWithoutAnInvoice()
+    {
+        // Arrange
+        using var harness = new Harness();
+
+        // Act
+        var error = await Assert.ThrowsAsync<RpcException>(() => harness.Build().Invoice(new Hold.InvoiceRequest
+        {
+            PaymentHash = ByteString.CopyFrom((byte[])Hash(0x0c)),
+            AmountMsat = 50_000,
+            MinFinalCltvExpiry = 70_000
+        }, new TestServerCallContext()));
+
+        // Assert
+        Assert.Equal(StatusCode.InvalidArgument, error.StatusCode);
+        harness.InvoiceService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_ADeltaTheInvoiceServiceRefuses_When_Invoice_Then_InvalidArgument()
+    {
+        // Arrange: beyond the node's maximum CLTV distance
+        using var harness = new Harness();
+        harness.InvoiceService
+               .Setup(s => s.CreateHoldInvoiceAsync(It.IsAny<Hash>(), It.IsAny<LightningMoney?>(), It.IsAny<string>(),
+                                                    It.IsAny<uint?>(), It.IsAny<ushort?>(), It.IsAny<SourceLabels>(),
+                                                    It.IsAny<CancellationToken>()))
+               .ThrowsAsync(new ArgumentOutOfRangeException("minFinalCltvExpiry", "too far"));
+
+        // Act
+        var error = await Assert.ThrowsAsync<RpcException>(() => harness.Build().Invoice(new Hold.InvoiceRequest
+        {
+            PaymentHash = ByteString.CopyFrom((byte[])Hash(0x0d)),
+            AmountMsat = 50_000,
+            MinFinalCltvExpiry = 5_000
+        }, new TestServerCallContext()));
+
+        // Assert
+        Assert.Equal(StatusCode.InvalidArgument, error.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(null, 18)]
+    [InlineData(10ul, 18)]
+    [InlineData(144ul, 144)]
+    public async Task Given_AnInjectedInvoice_When_Injected_Then_ItsOwnCIsKeptUnlessTheRequestAsksMore(
+        ulong? minCltvExpiry, int expected)
+    {
+        // Arrange: an outside invoice without a c field (BOLT 11's default 18)
+        using var harness = new Harness();
+        var (bolt11, paymentHashBytes, _) = SignedBolt11(LightningMoney.Satoshis(1_000), 600, "outside");
+        harness.InvoiceService
+               .Setup(s => s.CreateHoldInvoiceAsync(It.IsAny<Hash>(), It.IsAny<LightningMoney?>(), It.IsAny<string>(),
+                                                    It.IsAny<uint?>(), It.IsAny<ushort?>(), It.IsAny<SourceLabels>(),
+                                                    It.IsAny<CancellationToken>()))
+               .ReturnsAsync(Row(new Hash(paymentHashBytes), InvoiceStatus.Open));
+        var request = new Hold.InjectRequest { Invoice = bolt11 };
+        if (minCltvExpiry is { } min)
+            request.MinCltvExpiry = min;
+
+        // Act
+        await harness.Build().Inject(request, new TestServerCallContext());
+
+        // Assert
+        harness.InvoiceService.Verify(s => s.CreateHoldInvoiceAsync(new Hash(paymentHashBytes), It.IsAny<LightningMoney?>(),
+                                                                    It.IsAny<string>(), It.IsAny<uint?>(),
+                                                                    (ushort?)expected, It.IsAny<SourceLabels>(),
+                                                                    It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -220,7 +347,7 @@ public sealed class HoldBackendServiceTests
         var (bolt11, paymentHashBytes, expirySeconds) = SignedBolt11(LightningMoney.Satoshis(1_000), 1_200, "outside");
         harness.InvoiceService
                .Setup(s => s.CreateHoldInvoiceAsync(new Hash(paymentHashBytes), LightningMoney.Satoshis(1_000),
-                                                    "outside", expirySeconds, SourceLabels.None,
+                                                    "outside", expirySeconds, It.IsAny<ushort?>(), SourceLabels.None,
                                                     It.IsAny<CancellationToken>()))
                .ReturnsAsync(Row(new Hash(paymentHashBytes), InvoiceStatus.Open));
 
@@ -229,7 +356,7 @@ public sealed class HoldBackendServiceTests
 
         // Assert: the hold was created for the invoice's own payment hash, amount, description and expiry
         harness.InvoiceService.Verify(s => s.CreateHoldInvoiceAsync(new Hash(paymentHashBytes),
-                                      LightningMoney.Satoshis(1_000), "outside", expirySeconds,
+                                      LightningMoney.Satoshis(1_000), "outside", expirySeconds, It.IsAny<ushort?>(),
                                       It.IsAny<SourceLabels>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -247,7 +374,7 @@ public sealed class HoldBackendServiceTests
                                                                   .PaymentHash!.ToString());
         harness.InvoiceService
                .Setup(s => s.CreateHoldInvoiceAsync(new Hash(paymentHashBytes), LightningMoney.Satoshis(2_000),
-                                                    string.Empty, 600u, It.IsAny<SourceLabels>(),
+                                                    string.Empty, 600u, It.IsAny<ushort?>(), It.IsAny<SourceLabels>(),
                                                     It.IsAny<CancellationToken>()))
                .ReturnsAsync(Row(new Hash(paymentHashBytes), InvoiceStatus.Open));
 
@@ -256,7 +383,7 @@ public sealed class HoldBackendServiceTests
 
         // Assert
         harness.InvoiceService.Verify(s => s.CreateHoldInvoiceAsync(new Hash(paymentHashBytes),
-                                      LightningMoney.Satoshis(2_000), string.Empty, 600,
+                                      LightningMoney.Satoshis(2_000), string.Empty, 600, It.IsAny<ushort?>(),
                                       It.IsAny<SourceLabels>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -281,7 +408,7 @@ public sealed class HoldBackendServiceTests
         Assert.Equal(StatusCode.InvalidArgument, error.StatusCode);
         Assert.Contains("must carry an amount", error.Status.Detail);
         harness.InvoiceService.Verify(s => s.CreateHoldInvoiceAsync(It.IsAny<Hash>(), It.IsAny<LightningMoney>(),
-                                      It.IsAny<string>(), It.IsAny<uint?>(), It.IsAny<SourceLabels>(),
+                                      It.IsAny<string>(), It.IsAny<uint?>(), It.IsAny<ushort?>(), It.IsAny<SourceLabels>(),
                                       It.IsAny<CancellationToken>()), Times.Never);
     }
 

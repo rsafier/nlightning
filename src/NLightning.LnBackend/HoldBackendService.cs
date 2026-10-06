@@ -85,10 +85,24 @@ public sealed class HoldBackendService : Hold.Hold.HoldBase
             Hold.InvoiceRequest.DescriptionOneofCase.Hash => Convert.ToHexString(request.Hash.ToByteArray()).ToLowerInvariant(),
             _ => string.Empty
         };
-        var invoice = await _invoiceService.CreateHoldInvoiceAsync(
-            new Hash(request.PaymentHash.ToByteArray()), amount, description,
-            request.HasExpiry && request.Expiry > 0 ? (uint)request.Expiry : null,
-            s_labelled, context.CancellationToken);
+        // captaind sizes c for the time it needs before it settles (its HTLC delta plus the user's): the HTLC must
+        // carry it, so the invoice says it and our final hop enforces it (NL-1149)
+        var minFinalCltv = request.HasMinFinalCltvExpiry && request.MinFinalCltvExpiry > 0
+                               ? CheckedCltvDelta(request.MinFinalCltvExpiry, "min_final_cltv_expiry")
+                               : (ushort?)null;
+        InvoiceModel invoice;
+        try
+        {
+            invoice = await _invoiceService.CreateHoldInvoiceAsync(
+                          new Hash(request.PaymentHash.ToByteArray()), amount, description,
+                          request.HasExpiry && request.Expiry > 0 ? (uint)request.Expiry : null, minFinalCltv,
+                          s_labelled, context.CancellationToken);
+        }
+        catch (ArgumentOutOfRangeException e)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, e.Message));
+        }
+
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Backend hold invoice {PaymentHash} for {AmountMsat} msat",
                                    invoice.PaymentHash, request.AmountMsat);
@@ -114,13 +128,17 @@ public sealed class HoldBackendService : Hold.Hold.HoldBase
         var paymentHashHex = invoice.PaymentHash?.ToString()
                           ?? throw new RpcException(new Status(StatusCode.InvalidArgument,
                                                               "the invoice has no payment hash"));
+        // The injected invoice's own c, raised to the request's min_cltv_expiry when that asks for more
+        var minFinalCltv = request.HasMinCltvExpiry && request.MinCltvExpiry > invoice.MinFinalCltvExpiry
+                               ? CheckedCltvDelta(request.MinCltvExpiry, "min_cltv_expiry")
+                               : invoice.MinFinalCltvExpiry;
         await _invoiceService.CreateHoldInvoiceAsync(
             new Hash(NBitcoin.DataEncoders.Encoders.Hex.DecodeData(paymentHashHex)), amount,
                                                      invoice.Description ?? string.Empty,
                                                      (uint)Math.Max(1, (invoice.ExpiryDate -
                                                                         DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp))
                                                                        .TotalSeconds),
-                                                     s_labelled, context.CancellationToken);
+                                                     minFinalCltv, s_labelled, context.CancellationToken);
         return new Hold.InjectResponse();
     }
 
@@ -302,6 +320,13 @@ public sealed class HoldBackendService : Hold.Hold.HoldBase
                 return result;
         }
     }
+
+    /// <summary>A CLTV delta of the request, which BOLT 11's <c>c</c> carries as at most 16 bits here.</summary>
+    private static ushort CheckedCltvDelta(ulong value, string field) =>
+        value <= ushort.MaxValue
+            ? (ushort)value
+            : throw new RpcException(new Status(StatusCode.InvalidArgument,
+                                                $"{field} {value} is not a CLTV delta of at most {ushort.MaxValue}"));
 
     private static Hold.InvoiceState ToHoldState(InvoiceStatus status) =>
         status switch

@@ -251,11 +251,13 @@ public sealed class InvoiceService : IInvoiceService
     }
 
     /// <inheritdoc />
-    /// <exception cref="ArgumentOutOfRangeException">If the amount or the expiry is zero.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">If the amount or the expiry is zero, or the final CLTV delta exceeds
+    /// <see cref="RoutingOptions.MaxCltvExpiryDistance"/>.</exception>
     /// <exception cref="ArgumentException">If a BOLT 11 invoice already exists for the hash or the description is too
     /// long. Nothing is persisted.</exception>
     public async Task<InvoiceModel> CreateHoldInvoiceAsync(Hash paymentHash, LightningMoney? amount, string description,
-                                                           uint? expirySeconds, SourceLabels labels,
+                                                           uint? expirySeconds, ushort? minFinalCltvExpiry,
+                                                           SourceLabels labels,
                                                            CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(description);
@@ -269,6 +271,12 @@ public sealed class InvoiceService : IInvoiceService
         var expiry = expirySeconds ?? routing.InvoiceExpirySeconds;
         if (expiry == 0)
             throw new ArgumentOutOfRangeException(nameof(expirySeconds), "The expiry must be positive.");
+        // The caller's delta (the time it needs before it settles) but never below ours; a sender's CLTV budget caps it
+        var minFinalCltv = Math.Max(minFinalCltvExpiry ?? (ushort)0, routing.InvoiceMinFinalCltvExpiry);
+        if (minFinalCltv > routing.MaxCltvExpiryDistance)
+            throw new ArgumentOutOfRangeException(nameof(minFinalCltvExpiry),
+                                                  $"The final CLTV delta {minFinalCltv} exceeds the maximum CLTV "
+                                                + $"distance {routing.MaxCltvExpiryDistance}.");
 
         // The preimage arrives from outside with the operator's settle (NL-995); only the payment secret is ours. A
         // hold invoice has no blinded-path form (the blinded path_id is derived from the preimage)
@@ -278,7 +286,7 @@ public sealed class InvoiceService : IInvoiceService
                                   PaymentTarget.FromWireBytes(paymentSecret), nodeOptions.BitcoinNetwork,
                                   _secureKeyManager)
         {
-            MinFinalCltvExpiry = routing.InvoiceMinFinalCltvExpiry
+            MinFinalCltvExpiry = minFinalCltv
         };
         var basicMpp = nodeOptions.Features.BasicMpp != FeatureSupport.No;
         var trampoline = TrampolineRoutingSupport.IsAdvertised(nodeOptions.Features);
@@ -299,7 +307,7 @@ public sealed class InvoiceService : IInvoiceService
 
         var model = new InvoiceModel(paymentHash, null, new Secret(paymentSecret), amount, description, bolt11,
                                      DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp), expiry,
-                                     routing.InvoiceMinFinalCltvExpiry)
+                                     minFinalCltv)
         {
             Label = labels.Label,
             Tags = labels.CanonicalTags

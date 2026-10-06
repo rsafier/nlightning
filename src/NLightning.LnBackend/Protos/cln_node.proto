@@ -1,10 +1,13 @@
 // Minimal subset of CLN's gRPC proxy proto (https://github.com/ElementsProject/lightning,
 // cln-grpc/proto/node.proto and cln-grpc/proto/primitives.proto), BSD-MIT License,
 // Copyright Rusty Russell (Blockstream) 2015-2024 — exactly the three calls Second's captaind (the
-// Bark ASP) makes against a CLN node's pay side and lifecycle (server/src/ln/cln/mod.rs and
-// xpay.rs): Getinfo, Xpay and Listpays, with the messages they reference. Field numbers are the
-// wire contract with the full proto's Rust client (cln-rpc); never reorder or renumber. The other
-// ~100 methods of cln.Node are not vendored: a client that calls one gets UNIMPLEMENTED.
+// Bark ASP) makes against a CLN node's pay side and lifecycle (server/src/ln/cln/mod.rs,
+// xpay.rs and node_manager.rs): Getinfo, Xpay, ListPays and FetchInvoice (a BOLT 12 offer's
+// invoice), with the messages they reference. Method names and field numbers are the wire contract
+// with the full proto's Rust client (cln-rpc, bark's cln-rpc/protos/node.proto at 2c5f0fcb): the
+// gRPC path is /cln.Node/<Method> exactly as there (ListPays, FetchInvoice); never rename, reorder or
+// renumber. The other ~100 methods of cln.Node are not vendored: a client that calls one gets
+// UNIMPLEMENTED.
 syntax = "proto3";
 
 package cln;
@@ -12,7 +15,8 @@ package cln;
 service Node {
 	rpc Getinfo(GetinfoRequest) returns (GetinfoResponse) {}
 	rpc Xpay(XpayRequest) returns (XpayResponse) {}
-	rpc Listpays(ListpaysRequest) returns (ListpaysResponse) {}
+	rpc ListPays(ListpaysRequest) returns (ListpaysResponse) {}
+	rpc FetchInvoice(FetchinvoiceRequest) returns (FetchinvoiceResponse) {}
 }
 
 // primitives.proto
@@ -120,7 +124,7 @@ message ListpaysPays {
 	optional string bolt11 = 6;
 	optional string bolt12 = 7;
 	optional Amount amount_msat = 8;
-	Amount amount_sent_msat = 9;
+	optional Amount amount_sent_msat = 9;
 	optional bytes erroronion = 10;
 	optional string description = 11;
 	optional uint64 completed_at = 12;
@@ -150,4 +154,39 @@ message XpayResponse {
 	uint64 successful_parts = 3;
 	Amount amount_msat = 4;
 	Amount amount_sent_msat = 5;
+}
+
+message FetchinvoiceRequest {
+	string offer = 1;
+	optional Amount amount_msat = 2;
+	optional uint64 quantity = 3;
+	optional uint64 recurrence_counter = 4;
+	optional double recurrence_start = 5;
+	optional string recurrence_label = 6;
+	optional double timeout = 7;
+	optional string payer_note = 8;
+	optional string payer_metadata = 9;
+	optional string bip353 = 10;
+}
+
+message FetchinvoiceResponse {
+	string invoice = 1;
+	FetchinvoiceChanges changes = 2;
+	optional FetchinvoiceNextPeriod next_period = 3;
+}
+
+message FetchinvoiceChanges {
+	optional string description_appended = 1;
+	optional string description = 2;
+	optional string vendor_removed = 3;
+	optional string vendor = 4;
+	optional Amount amount_msat = 5;
+}
+
+message FetchinvoiceNextPeriod {
+	uint64 counter = 1;
+	uint64 starttime = 2;
+	uint64 endtime = 3;
+	uint64 paywindow_start = 4;
+	uint64 paywindow_end = 5;
 }

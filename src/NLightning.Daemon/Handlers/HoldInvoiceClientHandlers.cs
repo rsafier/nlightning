@@ -47,7 +47,7 @@ public sealed class CreateHoldInvoiceClientHandler
         {
             var invoice = await _invoiceService.CreateHoldInvoiceAsync(request.PaymentHash, request.Amount,
                                                                        request.Description ?? string.Empty,
-                                                                       request.ExpirySeconds, labels, ct);
+                                                                       request.ExpirySeconds, null, labels, ct);
             return new HoldInvoiceClientResponse(
                 InvoiceInfoClientResponse.FromModel(invoice, _timeProvider.GetUtcNow()));
         }

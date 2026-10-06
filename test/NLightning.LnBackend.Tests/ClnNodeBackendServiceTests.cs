@@ -10,6 +10,11 @@ namespace NLightning.LnBackend.Tests;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Offers.Constants;
+using Domain.Offers.Encoding;
+using Domain.Offers.Enums;
+using Domain.Offers.Interfaces;
+using Domain.Offers.Models;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
@@ -21,7 +26,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// <summary>
 /// The <c>cln.Node</c> subset (the pay side and lifecycle of the Bark/ASP seam) over the node's mocked services:
 /// the node identity of <c>Getinfo</c>, the request mapping of <c>Xpay</c> (amount, fee limit, retry window) and its
-/// outcome-to-status mapping, and the queries and status mapping of <c>Listpays</c>. Both services live on one
+/// outcome-to-status mapping, and the queries and status mapping of <c>ListPays</c>. Both services live on one
 /// listener in <see cref="LnBackendHostTests"/>.
 /// </summary>
 public sealed class ClnNodeBackendServiceTests
@@ -34,6 +39,7 @@ public sealed class ClnNodeBackendServiceTests
         public readonly Mock<ISecureKeyManager> KeyManager = new();
         public readonly Mock<IPaymentDbRepository> Repository = new();
         public readonly Mock<IPaymentService> PaymentService = new();
+        public readonly Mock<IOfferPaymentService> Offers = new();
         private readonly ServiceProvider _provider;
 
         public byte[] NodePubKey { get; } = [0x02, .. Enumerable.Repeat((byte)0x42, 32)];
@@ -44,6 +50,7 @@ public sealed class ClnNodeBackendServiceTests
 
         public Harness()
         {
+            Offers.SetupGet(o => o.IsAvailable).Returns(true);
             KeyManager.Setup(k => k.GetNodePubKey()).Returns(new CompactPubKey(NodePubKey));
             BlockchainMonitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(BlockHeight);
             var collection = new ServiceCollection();
@@ -55,14 +62,18 @@ public sealed class ClnNodeBackendServiceTests
                                                     KeyManager.Object, Options.Create(
                                                         new NodeOptions { BitcoinNetwork = Network }),
                                                     BlockchainMonitor.Object, PaymentService.Object,
-                                                    _provider.GetRequiredService<IServiceScopeFactory>());
+                                                    _provider.GetRequiredService<IServiceScopeFactory>(),
+                                                    WithOffers ? Offers.Object : null);
+
+        /// <summary>Whether the node pays BOLT 12 (an <see cref="IOfferPaymentService"/> registered).</summary>
+        public bool WithOffers { get; init; } = true;
 
         public void Dispose() => _provider.Dispose();
     }
 
     /// <summary>A call context with every abstract member defaulted; the service reads only the cancellation
     /// token, never the metadata.</summary>
-    private sealed class TestServerCallContext : ServerCallContext
+    private sealed class TestServerCallContext(CancellationToken cancellationToken = default) : ServerCallContext
     {
         protected override string MethodCore => "cln.Node/Method";
         protected override string HostCore => "localhost";
@@ -77,7 +88,7 @@ public sealed class ClnNodeBackendServiceTests
             null!;
 
         protected override Task WriteResponseHeadersAsyncCore(Metadata headers) => Task.CompletedTask;
-        protected override CancellationToken CancellationTokenCore => CancellationToken.None;
+        protected override CancellationToken CancellationTokenCore => cancellationToken;
     }
 
     [Fact]
@@ -305,9 +316,61 @@ public sealed class ClnNodeBackendServiceTests
                          new Cln.XpayRequest { Invstring = "lnbcrt1slow", RetryFor = 60 },
                          new TestServerCallContext()));
 
-        // Assert: their caller keeps waiting on Listpays, where the row reports PENDING
+        // Assert: their caller keeps waiting on ListPays, where the row reports PENDING
         Assert.Equal(StatusCode.DeadlineExceeded, error.StatusCode);
         Assert.Contains("still in flight", error.Status.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Given_TheCallerLeaves_When_Xpay_Then_CancelledWhileThePaymentKeepsGoing()
+    {
+        // Arrange: a payment still running when the gRPC caller goes away (captaind restarting mid-call)
+        using var harness = new Harness();
+        var outcome = new TaskCompletionSource<PayInvoiceResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken paymentToken = default;
+        harness.PaymentService
+               .Setup(s => s.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
+                                             It.IsAny<PayInvoiceOptions>(), It.IsAny<CancellationToken>()))
+               .Callback<string, LightningMoney?, PayInvoiceOptions, CancellationToken>((_, _, _, t) => paymentToken = t)
+               .Returns(outcome.Task);
+        using var caller = new CancellationTokenSource();
+
+        // Act
+        var call = harness.Build().Xpay(new Cln.XpayRequest { Invstring = "lnbcrt1leaving", RetryFor = 60 },
+                                        new TestServerCallContext(caller.Token));
+        await caller.CancelAsync();
+        var error = await Assert.ThrowsAsync<RpcException>(() => call);
+
+        // Assert: only the call ended — the payment never saw the caller's token (CLN's xpay keeps running in
+        // lightningd), so it retries for its window and its outcome reaches ListPays
+        Assert.Equal(StatusCode.Cancelled, error.StatusCode);
+        Assert.False(paymentToken.CanBeCanceled);
+        Assert.False(outcome.Task.IsCompleted);
+        outcome.SetResult(new PayInvoiceResult(Pending("lnbcrt1leaving"), 1, 1));
+    }
+
+    [Fact]
+    public async Task Given_APaymentThatXpayLeftInFlight_When_CaptaindReconcilesByHash_Then_ExactlyOnePendingRowWithItsIndex()
+    {
+        // Arrange: captaind's reconciliation after an xpay that ended DEADLINE_EXCEEDED — ListPays by the hash; an
+        // empty answer would fail its attempt (releasing the user's HTLC VTXOs) while our HTLC is still out
+        using var harness = new Harness();
+        var row = Pending("lnbcrt1held");
+        harness.Repository.Setup(r => r.GetByPaymentHashAsync(row.PaymentHash)).ReturnsAsync(row);
+
+        // Act
+        var response = await harness.Build().ListPays(new Cln.ListpaysRequest
+        {
+            PaymentHash = ByteString.CopyFrom((byte[])row.PaymentHash)
+        }, new TestServerCallContext());
+
+        // Assert: one PENDING row (their status() maps it to Submitted, the attempt stays open), created_index set
+        // (their client unwraps it with expect), no preimage and nothing reported sent
+        var pay = Assert.Single(response.Pays);
+        Assert.Equal(Cln.ListpaysPays.Types.ListpaysPaysStatus.Pending, pay.Status);
+        Assert.True(pay.HasCreatedIndex);
+        Assert.False(pay.HasPreimage);
+        Assert.Equal(0ul, pay.AmountSentMsat.Msat);
     }
 
     [Fact]
@@ -330,7 +393,7 @@ public sealed class ClnNodeBackendServiceTests
     }
 
     [Fact]
-    public async Task Given_APaymentByHash_When_Listpays_Then_ItIsServedWithEveryFieldMapped()
+    public async Task Given_APaymentByHash_When_ListPays_Then_ItIsServedWithEveryFieldMapped()
     {
         // Arrange
         using var harness = new Harness();
@@ -339,7 +402,7 @@ public sealed class ClnNodeBackendServiceTests
                .ReturnsAsync(row.Payment);
 
         // Act
-        var response = await harness.Build().Listpays(new Cln.ListpaysRequest
+        var response = await harness.Build().ListPays(new Cln.ListpaysRequest
         {
             PaymentHash = ByteString.CopyFrom((byte[])row.Payment.PaymentHash)
         }, new TestServerCallContext());
@@ -361,7 +424,7 @@ public sealed class ClnNodeBackendServiceTests
     }
 
     [Fact]
-    public async Task Given_AnUnknownPaymentHash_When_Listpays_Then_Nothing()
+    public async Task Given_AnUnknownPaymentHash_When_ListPays_Then_Nothing()
     {
         // Arrange
         using var harness = new Harness();
@@ -369,7 +432,7 @@ public sealed class ClnNodeBackendServiceTests
                .ReturnsAsync((PaymentModel?)null);
 
         // Act
-        var response = await harness.Build().Listpays(new Cln.ListpaysRequest
+        var response = await harness.Build().ListPays(new Cln.ListpaysRequest
         {
             PaymentHash = ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32))
         }, new TestServerCallContext());
@@ -379,13 +442,13 @@ public sealed class ClnNodeBackendServiceTests
     }
 
     [Fact]
-    public async Task Given_AHashThatIsNot32Bytes_When_Listpays_Then_InvalidArgument()
+    public async Task Given_AHashThatIsNot32Bytes_When_ListPays_Then_InvalidArgument()
     {
         // Arrange
         using var harness = new Harness();
 
         // Act
-        var error = await Assert.ThrowsAsync<RpcException>(() => harness.Build().Listpays(
+        var error = await Assert.ThrowsAsync<RpcException>(() => harness.Build().ListPays(
                          new Cln.ListpaysRequest { PaymentHash = ByteString.CopyFrom([0x01, 0x02]) },
                          new TestServerCallContext()));
 
@@ -411,7 +474,7 @@ public sealed class ClnNodeBackendServiceTests
         harness.Repository.Setup(r => r.GetByPaymentHashAsync(row.PaymentHash)).ReturnsAsync(row);
 
         // Act
-        var response = await harness.Build().Listpays(new Cln.ListpaysRequest
+        var response = await harness.Build().ListPays(new Cln.ListpaysRequest
         {
             PaymentHash = ByteString.CopyFrom((byte[])row.PaymentHash)
         }, new TestServerCallContext());
@@ -421,7 +484,7 @@ public sealed class ClnNodeBackendServiceTests
     }
 
     [Fact]
-    public async Task Given_PendingAndFailedRows_When_Listpays_Then_NothingWasSent()
+    public async Task Given_PendingAndFailedRows_When_ListPays_Then_NothingWasSent()
     {
         // Arrange: only a succeeded payment sent funds — a pending or failed one sent none
         using var harness = new Harness();
@@ -432,11 +495,11 @@ public sealed class ClnNodeBackendServiceTests
 
         // Act
         var service = harness.Build();
-        var pendingResponse = await service.Listpays(new Cln.ListpaysRequest
+        var pendingResponse = await service.ListPays(new Cln.ListpaysRequest
         {
             PaymentHash = ByteString.CopyFrom((byte[])pending.PaymentHash)
         }, new TestServerCallContext());
-        var failedResponse = await service.Listpays(new Cln.ListpaysRequest
+        var failedResponse = await service.ListPays(new Cln.ListpaysRequest
         {
             PaymentHash = ByteString.CopyFrom((byte[])failed.PaymentHash)
         }, new TestServerCallContext());
@@ -449,7 +512,7 @@ public sealed class ClnNodeBackendServiceTests
     }
 
     [Fact]
-    public async Task Given_NoConstraint_When_Listpays_Then_TheRowsArePagedNewestFirst()
+    public async Task Given_NoConstraint_When_ListPays_Then_TheRowsArePagedNewestFirst()
     {
         // Arrange
         using var harness = new Harness();
@@ -458,7 +521,7 @@ public sealed class ClnNodeBackendServiceTests
                .ReturnsAsync((int skip, int take) => rows.Skip(skip).Take(take).ToList());
 
         // Act
-        var response = await harness.Build().Listpays(new Cln.ListpaysRequest(), new TestServerCallContext());
+        var response = await harness.Build().ListPays(new Cln.ListpaysRequest(), new TestServerCallContext());
 
         // Assert: the repository's page size (64, the hold side's own) is asked for, newest first
         harness.Repository.Verify(r => r.ListAsync(0, 64), Times.Once);
@@ -467,7 +530,7 @@ public sealed class ClnNodeBackendServiceTests
     }
 
     [Fact]
-    public async Task Given_ALimit_When_Listpays_Then_NoMoreThanLimitRows()
+    public async Task Given_ALimit_When_ListPays_Then_NoMoreThanLimitRows()
     {
         // Arrange: more rows than the limit asks for
         using var harness = new Harness();
@@ -476,7 +539,7 @@ public sealed class ClnNodeBackendServiceTests
                .ReturnsAsync((int skip, int take) => rows.Skip(skip).Take(take).ToList());
 
         // Act
-        var response = await harness.Build().Listpays(new Cln.ListpaysRequest { Limit = 2 },
+        var response = await harness.Build().ListPays(new Cln.ListpaysRequest { Limit = 2 },
                                                       new TestServerCallContext());
 
         // Assert
@@ -485,7 +548,7 @@ public sealed class ClnNodeBackendServiceTests
     }
 
     [Fact]
-    public async Task Given_AStatusFilter_When_Listpays_Then_OnlyThatStatusIsServed()
+    public async Task Given_AStatusFilter_When_ListPays_Then_OnlyThatStatusIsServed()
     {
         // Arrange
         using var harness = new Harness();
@@ -494,7 +557,7 @@ public sealed class ClnNodeBackendServiceTests
                .ReturnsAsync((int skip, int take) => rows.Skip(skip).Take(take).ToList());
 
         // Act
-        var response = await harness.Build().Listpays(new Cln.ListpaysRequest
+        var response = await harness.Build().ListPays(new Cln.ListpaysRequest
         {
             Status = Cln.ListpaysRequest.Types.ListpaysStatus.Failed
         }, new TestServerCallContext());
@@ -506,7 +569,7 @@ public sealed class ClnNodeBackendServiceTests
     }
 
     [Fact]
-    public async Task Given_ABolt11Filter_When_Listpays_Then_OnlyThatInvoiceIsServed()
+    public async Task Given_ABolt11Filter_When_ListPays_Then_OnlyThatInvoiceIsServed()
     {
         // Arrange
         using var harness = new Harness();
@@ -515,12 +578,178 @@ public sealed class ClnNodeBackendServiceTests
                .ReturnsAsync((int skip, int take) => rows.Skip(skip).Take(take).ToList());
 
         // Act
-        var response = await harness.Build().Listpays(new Cln.ListpaysRequest { Bolt11 = "lnbcrt1wanted" },
+        var response = await harness.Build().ListPays(new Cln.ListpaysRequest { Bolt11 = "lnbcrt1wanted" },
                                                       new TestServerCallContext());
 
         // Assert
         Assert.Equal((byte[])rows[0].PaymentHash, Assert.Single(response.Pays).PaymentHash.ToByteArray());
     }
+
+    [Fact]
+    public async Task Given_ABolt12InvoiceTheNodeFetched_When_Xpay_Then_ItIsPaidAsTheFetchedInvoice()
+    {
+        // Arrange: captaind's xpay of the lni string its FetchInvoice handed the wallet (NL-1151)
+        using var harness = new Harness();
+        harness.Offers.Setup(o => o.PayFetchedInvoiceAsync("lni1fetched",
+                                                           It.Is<PayInvoiceOptions>(p => p.Timeout == TimeSpan.FromSeconds(30)
+                                                                                      && p.Labels.Label == "ln-backend"),
+                                                           It.Is<CancellationToken>(t => !t.CanBeCanceled)))
+               .ReturnsAsync(Paid("lni1fetched"));
+
+        // Act
+        var response = await harness.Build().Xpay(new Cln.XpayRequest { Invstring = "lni1fetched", RetryFor = 30 },
+                                                  new TestServerCallContext());
+
+        // Assert: the preimage, and no BOLT 11 decoding attempted
+        Assert.Equal(Enumerable.Repeat((byte)0xcd, 32).ToArray(), response.PaymentPreimage.ToByteArray());
+        harness.PaymentService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_NoOfferPayments_When_XpayOfABolt12Invoice_Then_FailedPrecondition()
+    {
+        // Arrange
+        using var harness = new Harness { WithOffers = false };
+
+        // Act
+        var error = await Assert.ThrowsAsync<RpcException>(() => harness.Build().Xpay(
+                         new Cln.XpayRequest { Invstring = "LNI1FETCHED" }, new TestServerCallContext()));
+
+        // Assert
+        Assert.Equal(StatusCode.FailedPrecondition, error.StatusCode);
+        harness.PaymentService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_AnOffer_When_FetchInvoice_Then_TheVerifiedInvoiceIsServedAsAnLniString()
+    {
+        // Arrange: captaind's request (bark's node_manager.rs: offer and amount_msat only), plus the optional fields
+        using var harness = new Harness();
+        var invoiceBytes = new byte[] { 0xa0, 0x01, 0x02, 0x03, 0x04 };
+        harness.Offers.Setup(o => o.FetchInvoiceAsync(
+                                 new PayOfferRequest("lno1offer", LightningMoney.MilliSatoshis(21_000), 2, "note"),
+                                 It.Is<PayOfferOptions>(p => p.FetchTimeout == TimeSpan.FromSeconds(12)),
+                                 It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new FetchInvoiceResult(FetchInvoiceStatus.Received, Fetched(invoiceBytes, 21_000), 1));
+
+        // Act
+        var response = await harness.Build().FetchInvoice(new Cln.FetchinvoiceRequest
+        {
+            Offer = "lno1offer",
+            AmountMsat = new Cln.Amount { Msat = 21_000 },
+            Quantity = 2,
+            PayerNote = "note",
+            Timeout = 12
+        }, new TestServerCallContext());
+
+        // Assert: BOLT 12's bech32 of the invoice bytes; no change to report when the request named the amount
+        Assert.Equal(Bolt12Bech32.Encode(Bolt12Constants.InvoiceHrp, invoiceBytes), response.Invoice);
+        Assert.StartsWith("lni1", response.Invoice, StringComparison.Ordinal);
+        Assert.Null(response.Changes.AmountMsat);
+    }
+
+    [Fact]
+    public async Task Given_AnOfferWithoutARequestedAmount_When_FetchInvoice_Then_TheIssuersAmountIsAChange()
+    {
+        // Arrange
+        using var harness = new Harness();
+        harness.Offers.Setup(o => o.FetchInvoiceAsync(It.IsAny<PayOfferRequest>(), It.IsAny<PayOfferOptions>(),
+                                                      It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new FetchInvoiceResult(FetchInvoiceStatus.Received, Fetched([0xa0, 0x00], 9_000), 1));
+
+        // Act
+        var response = await harness.Build().FetchInvoice(new Cln.FetchinvoiceRequest { Offer = "lno1priced" },
+                                                          new TestServerCallContext());
+
+        // Assert
+        Assert.Equal(9_000ul, response.Changes.AmountMsat.Msat);
+    }
+
+    [Theory]
+    [InlineData(FetchInvoiceStatus.TimedOut, StatusCode.DeadlineExceeded)]
+    [InlineData(FetchInvoiceStatus.Unreachable, StatusCode.Unavailable)]
+    [InlineData(FetchInvoiceStatus.InvoiceError, StatusCode.FailedPrecondition)]
+    [InlineData(FetchInvoiceStatus.InvalidInvoice, StatusCode.FailedPrecondition)]
+    public async Task Given_AFetchThatGotNoInvoice_When_FetchInvoice_Then_ItsStatusMapsWithTheReason(
+        FetchInvoiceStatus status, StatusCode expected)
+    {
+        // Arrange
+        using var harness = new Harness();
+        harness.Offers.Setup(o => o.FetchInvoiceAsync(It.IsAny<PayOfferRequest>(), It.IsAny<PayOfferOptions>(),
+                                                      It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new FetchInvoiceResult(status, null, 1, "why not"));
+
+        // Act
+        var error = await Assert.ThrowsAsync<RpcException>(() => harness.Build().FetchInvoice(
+                         new Cln.FetchinvoiceRequest { Offer = "lno1nothing" }, new TestServerCallContext()));
+
+        // Assert
+        Assert.Equal(expected, error.StatusCode);
+        Assert.Equal("why not", error.Status.Detail);
+    }
+
+    [Fact]
+    public async Task Given_RecurrenceOrBip353_When_FetchInvoice_Then_InvalidArgumentWithoutAFetch()
+    {
+        // Arrange
+        using var harness = new Harness();
+
+        // Act
+        var recurrence = await Assert.ThrowsAsync<RpcException>(() => harness.Build().FetchInvoice(
+                              new Cln.FetchinvoiceRequest { Offer = "lno1r", RecurrenceCounter = 1 },
+                              new TestServerCallContext()));
+        var bip353 = await Assert.ThrowsAsync<RpcException>(() => harness.Build().FetchInvoice(
+                          new Cln.FetchinvoiceRequest { Offer = "lno1b", Bip353 = "a@b.c" },
+                          new TestServerCallContext()));
+
+        // Assert
+        Assert.Equal(StatusCode.InvalidArgument, recurrence.StatusCode);
+        Assert.Equal(StatusCode.InvalidArgument, bip353.StatusCode);
+        harness.Offers.Verify(o => o.FetchInvoiceAsync(It.IsAny<PayOfferRequest>(), It.IsAny<PayOfferOptions>(),
+                                                       It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_NoOfferPayments_When_FetchInvoice_Then_Unavailable()
+    {
+        // Arrange
+        using var harness = new Harness { WithOffers = false };
+
+        // Act
+        var error = await Assert.ThrowsAsync<RpcException>(() => harness.Build().FetchInvoice(
+                         new Cln.FetchinvoiceRequest { Offer = "lno1x" }, new TestServerCallContext()));
+
+        // Assert
+        Assert.Equal(StatusCode.Unavailable, error.StatusCode);
+    }
+
+    [Fact]
+    public async Task Given_ABolt12Payment_When_ListPays_Then_ItsInvoiceIsTheBolt12Field()
+    {
+        // Arrange
+        using var harness = new Harness();
+        var invoiceBytes = new byte[] { 0xa0, 0x05, 0x06 };
+        var row = PaymentModel.Restore(HashOf("bolt12"), null, Payee(), s_amount, LightningMoney.Zero,
+                                       DateTimeOffset.FromUnixTimeSeconds(1_700_000_000), PaymentStatus.InFlight,
+                                       null, null, null, null, null, null, null,
+                                       bolt12: new Bolt12PaymentDetails("lno1offer", invoiceBytes, new byte[] { 1 }));
+        harness.Repository.Setup(r => r.GetByPaymentHashAsync(row.PaymentHash)).ReturnsAsync(row);
+
+        // Act
+        var response = await harness.Build().ListPays(new Cln.ListpaysRequest
+        {
+            PaymentHash = ByteString.CopyFrom((byte[])row.PaymentHash)
+        }, new TestServerCallContext());
+
+        // Assert
+        var pay = Assert.Single(response.Pays);
+        Assert.Equal(Bolt12Bech32.Encode(Bolt12Constants.InvoiceHrp, invoiceBytes), pay.Bolt12);
+        Assert.Equal(string.Empty, pay.Bolt11);
+    }
+
+    private static FetchedBolt12Invoice Fetched(byte[] invoiceBytes, ulong amountMsat) =>
+        new(invoiceBytes, new byte[] { 0x00 }, Payee(), LightningMoney.MilliSatoshis(amountMsat), HashOf("fetched"),
+            DateTimeOffset.FromUnixTimeSeconds(1_700_000_000), 7_200, 1);
 
     /// <summary>A succeeded payment of the standard amount, as <c>PayInvoiceAsync</c> hands it back.</summary>
     private static PayInvoiceResult Paid(string bolt11, ulong feeMsat = 0, int attempts = 1, int parts = 1)

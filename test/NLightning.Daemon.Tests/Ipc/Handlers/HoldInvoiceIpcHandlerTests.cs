@@ -49,7 +49,7 @@ public class HoldInvoiceIpcHandlerTests
     {
         // Arrange
         _invoiceServiceMock.Setup(x => x.CreateHoldInvoiceAsync(s_paymentHash, It.IsAny<LightningMoney?>(), "tea",
-                                                                900U,
+                                                                900U, It.IsAny<ushort?>(),
                                                                 It.Is<SourceLabels>(l => l.Label == "shop"
                                                                                        && l.TagStrings.Contains("a=b")),
                                                                 It.IsAny<CancellationToken>()))
@@ -80,7 +80,7 @@ public class HoldInvoiceIpcHandlerTests
         Assert.Equal(["a=b"], payload.Invoice.Tags);
         _invoiceServiceMock.Verify(x => x.CreateHoldInvoiceAsync(
                                        s_paymentHash,
-                                       It.Is<LightningMoney?>(a => a!.MilliSatoshi == 21_000), "tea", 900U,
+                                       It.Is<LightningMoney?>(a => a!.MilliSatoshi == 21_000), "tea", 900U, It.IsAny<ushort?>(),
                                        It.Is<SourceLabels>(l => l.Label == "shop" && l.TagStrings.Contains("a=b")),
                                        It.IsAny<CancellationToken>()),
                                    Times.Once);
@@ -156,7 +156,7 @@ public class HoldInvoiceIpcHandlerTests
         Assert.Equal(ErrorCodes.InvalidOperation, error.Code);
         Assert.Contains("amount", error.Message);
         _invoiceServiceMock.Verify(x => x.CreateHoldInvoiceAsync(It.IsAny<Hash>(), It.IsAny<LightningMoney?>(),
-                                                                 It.IsAny<string>(), It.IsAny<uint?>(),
+                                                                 It.IsAny<string>(), It.IsAny<uint?>(), It.IsAny<ushort?>(),
                                                                  It.IsAny<SourceLabels>(),
                                                                  It.IsAny<CancellationToken>()),
                                    Times.Never);
@@ -167,7 +167,7 @@ public class HoldInvoiceIpcHandlerTests
     {
         // Arrange: a BOLT 11 invoice already exists for the hash (the service's ArgumentException)
         _invoiceServiceMock.Setup(x => x.CreateHoldInvoiceAsync(It.IsAny<Hash>(), It.IsAny<LightningMoney?>(),
-                                                                It.IsAny<string>(), It.IsAny<uint?>(),
+                                                                It.IsAny<string>(), It.IsAny<uint?>(), It.IsAny<ushort?>(),
                                                                 It.IsAny<SourceLabels>(),
                                                                 It.IsAny<CancellationToken>()))
                            .ThrowsAsync(new ArgumentException("An invoice already exists for this payment hash.",
