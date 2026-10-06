@@ -177,9 +177,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 101 | 102 |
+| open | 0 | 0 | 1 | 99 | 100 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 233 | 483 | 800 |
+| fixed | 15 | 69 | 233 | 485 | 802 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
 | **Total** | **15** | **69** | **250** | **605** | **939** |
@@ -8286,23 +8286,25 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** NET11_PLAN.md (batch 11 update)
 
 ### NL-755 With an expired estimate and a failing fee API, every `GetFeeRatePerKwAsync` caller waits for its own fetch
-- **Status:** open
+- **Status:** fixed (411e0aa8)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Services/FeeService.cs` (`GetFeeRatePerKwAsync`, `IsCacheValid`)
 - **Evidence:** Predates NL-706 (found by batch11 lane fee-cache while reading the code; no test). Once the estimate is older than `CacheExpiration` (5 min), `GetFeeRatePerKwAsync` awaits `RefreshFeeRateAsync`; while the API is down or stalling every caller (open_channel, update_fee, sweeps) starts its own fetch, bounded only by the 30 s HttpClient timeout, before it falls back to the kept estimate, although the background loop already refreshes on its own schedule.
 - **Fix sketch:** Serve the kept estimate at once and let one fetch run at a time (single-flight), or leave refreshing to the background loop; optionally a short backoff after a failed fetch.
 - **Blocks/Blocked-by:** Related NL-706
+- **Fix:** `FeeService` runs one shared fetch for the node-wide estimate and one per bitcoind target, on the service's lifetime token (a caller's cancellation ends only its own wait); an expired estimate is answered at once while that fetch refreshes it, only a caller without an estimate waits, and callers start no fetch for `FailedFetchBackoff` (30 s, at most `CacheExpiration`) after a failure; the refresh loop and `RefreshFeeRateAsync` ignore the backoff but join the fetch in flight. Tests: `FeeServiceSingleFlightTests` (fake clock and scripted API).
 - **Plan ref:** —
 
 ### NL-756 `FeeEstimation:CacheExpiration` is not validated: a malformed value silently becomes 5 minutes
-- **Status:** open
+- **Status:** fixed (411e0aa8)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Services/FeeService.cs` (`ParseCacheTime`)
 - **Evidence:** Predates NL-706 (batch11 lane fee-cache). `ParseCacheTime` strips the non-digits and non-letters, so "1h30m" reads as 130 with the unit "hm", which becomes 5 min; any unknown unit also becomes 5 min, with no error or log. The new `CacheMaxAge` uses the strict `FeeEstimationOptions.TryParseDuration` and is validated; `CacheExpiration` was left lenient so existing configurations keep binding.
 - **Fix sketch:** Validate `CacheExpiration` with `TryParseDuration` in `GetValidationErrors`, or at least log a warning when the value falls back to 5 min.
 - **Blocks/Blocked-by:** Related NL-706
+- **Fix:** `GetValidationErrors` parses `CacheExpiration` with `TryParseDuration` (10 s to 1 d), checks `CacheMaxAge` against `CacheExpiration` and 7 d (with a cache file), `Method` (GET/POST) and `PreferredFeeRate`; the daemon validates the `FeeEstimation` section at the start and in `--check-config` (`ConfigurationCheckTests`). A configuration that relied on the silent fallback is now refused at the start.
 - **Plan ref:** —
 
 ### NL-758 A price replacement's note and the replaced price are kept only in the log when no closed period used the price
