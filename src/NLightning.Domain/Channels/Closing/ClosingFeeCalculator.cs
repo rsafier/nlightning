@@ -19,16 +19,29 @@ public static class ClosingFeeCalculator
     private const ulong WitnessBytes = 2 + 1 + 1 + 2 * 74 + 72;
 
     /// <summary>
+    /// Witness bytes of a simple taproot channel's key-path spend of its MuSig2 funding output: marker and flag (2),
+    /// item count (1) and the 64-byte BIP 340 signature (<c>SIGHASH_DEFAULT</c>, no sighash byte) with its length (65).
+    /// </summary>
+    private const ulong TaprootKeyPathWitnessBytes = 2 + 1 + 1 + 64;
+
+    /// <summary>
     /// The weight of the signed closing transaction paying both <paramref name="localScriptLength"/> and
     /// <paramref name="remoteScriptLength"/> byte scripts (an upper bound: signatures counted at their maximum size).
     /// </summary>
-    public static ulong EstimateWeight(int localScriptLength, int remoteScriptLength)
+    public static ulong EstimateWeight(int localScriptLength, int remoteScriptLength) =>
+        EstimateWeight(localScriptLength, remoteScriptLength, false);
+
+    /// <summary>
+    /// <see cref="EstimateWeight(int, int)"/> for the funding output's spend: the P2WSH 2-of-2 witness, or the
+    /// key-path witness of a simple taproot channel when <paramref name="taprootKeyPath"/> (NL-968).
+    /// </summary>
+    public static ulong EstimateWeight(int localScriptLength, int remoteScriptLength, bool taprootKeyPath)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(localScriptLength);
         ArgumentOutOfRangeException.ThrowIfNegative(remoteScriptLength);
 
         var outputs = OutputBytes(localScriptLength) + OutputBytes(remoteScriptLength);
-        return (BaseNonWitnessBytes + outputs) * 4 + WitnessBytes;
+        return (BaseNonWitnessBytes + outputs) * 4 + (taprootKeyPath ? TaprootKeyPathWitnessBytes : WitnessBytes);
     }
 
     /// <summary>The fee in satoshis at <paramref name="feeratePerKw"/> for <paramref name="weight"/> (rounded down).</summary>

@@ -3,6 +3,7 @@ using NBitcoin;
 
 namespace NLightning.Application.Tests.Channels.Close;
 
+using Domain.Channels.Closing;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Crypto.ValueObjects;
@@ -94,6 +95,13 @@ public class SimpleTaprootCloseHarnessTests
         var tx = AssertKeyPathSpend(close, stored.RawTxBytes);
         Assert.Equal(AliceSat - (long)(ulong)aliceCompletes[2].Payload.FeeSatoshis.Satoshi,
                      CloseHarness.OutputTo(tx, CloseHarness.AliceScript));
+        // NL-968: the fee is the feerate times the signed transaction's exact weight (a key-path witness, 520 WU
+        // with two P2WPKH outputs), not the 2-of-2 estimate
+        var weight = (ulong)(tx.GetSerializedSize(TransactionOptions.None) * 3
+                           + tx.GetSerializedSize(TransactionOptions.All));
+        Assert.Equal(520UL, weight);
+        Assert.Equal(ClosingFeeCalculator.FeeSat(15_000, weight),
+                     (ulong)aliceCompletes[2].Payload.FeeSatoshis.Satoshi);
         Assert.Equal(5, close.Published(close.Alice).Count);
         foreach (var published in close.Published(close.Bob))
             AssertKeyPathSpend(close, published.RawTxBytes);
