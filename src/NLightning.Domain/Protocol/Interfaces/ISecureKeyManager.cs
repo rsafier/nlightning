@@ -14,6 +14,10 @@ public interface ISecureKeyManager
     uint HeightOfBirth { get; }
 
     ExtPrivKey GetNextChannelKey(out uint index);
+    /// <summary>
+    /// The extended channel key at <paramref name="index"/>, as a fresh copy on every call: the signer zeroes it once
+    /// it has derived what it needs (NL-911), so an implementation must never hand out an array it keeps.
+    /// </summary>
     ExtPrivKey GetChannelKeyAtIndex(uint index);
     ExtPrivKey GetDepositP2TrKeyAtIndex(uint index, bool isChange);
     ExtPrivKey GetDepositP2WpkhKeyAtIndex(uint index, bool isChange);

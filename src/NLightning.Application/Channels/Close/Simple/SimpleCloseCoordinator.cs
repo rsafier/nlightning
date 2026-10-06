@@ -146,7 +146,8 @@ public sealed class SimpleCloseCoordinator
         var feerate = feeratePerKw ?? await ResolveFeerateAsync(entry);
 
         // B2-SC-C01/C02: at most our balance, at least one output above dust
-        var fee = SimpleCloseRules.ChooseFee(localMsat, remoteMsat, localScript, remoteScript, feerate);
+        var fee = SimpleCloseRules.ChooseFee(localMsat, remoteMsat, localScript, remoteScript, feerate,
+                                             TaprootCloseNonces.IsTaproot(channel));
         if (fee is null)
         {
             _logger.LogInformation(

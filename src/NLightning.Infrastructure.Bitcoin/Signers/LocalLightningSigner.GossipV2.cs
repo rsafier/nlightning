@@ -58,8 +58,9 @@ public partial class LocalLightningSigner
         }
 
         MusigNoncePair bitcoinPair;
-        using (var fundingKey = DeriveTaprootFundingKey(channelId, signingInfo.ChannelKeyIndex, funding))
+        try
         {
+            using var fundingKey = DeriveTaprootFundingKey(channelId, signingInfo.ChannelKeyIndex, funding);
             var privateKey = fundingKey.ToBytes();
             try
             {
@@ -70,6 +71,12 @@ public partial class LocalLightningSigner
             {
                 CryptographicOperations.ZeroMemory(privateKey);
             }
+        }
+        catch
+        {
+            // The node nonce never outlives a failed call (NL-911)
+            nodePair.SecretNonce.Dispose();
+            throw;
         }
 
         var set = new Announcement2NonceSet(nodePair, bitcoinPair, message);

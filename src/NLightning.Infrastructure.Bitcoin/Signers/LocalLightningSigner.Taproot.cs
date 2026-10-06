@@ -391,9 +391,38 @@ public partial class LocalLightningSigner
     /// <summary>The channel's per-commitment seed (m/5' of the channel key), the shachain root of BOLT 3.</summary>
     private byte[] DerivePerCommitmentSeed(uint channelKeyIndex)
     {
-        var channelKey = ExtKey.CreateFromBytes(_secureKeyManager.GetChannelKeyAtIndex(channelKeyIndex));
-        using var seed = channelKey.Derive(PerCommitmentSeedDerivationIndex, true).PrivateKey;
+        using var seed = DeriveChannelChildKey(channelKeyIndex, [PerCommitmentSeedDerivationIndex]);
         return seed.ToBytes();
+    }
+
+    /// <summary>
+    /// The private key at the hardened <paramref name="path"/> below the channel key, with the extended key bytes the
+    /// key manager handed out zeroed and every intermediate private key disposed on every path (NL-911). The caller
+    /// disposes the result.
+    /// </summary>
+    private Key DeriveChannelChildKey(uint channelKeyIndex, ReadOnlySpan<int> path)
+    {
+        var extKeyBytes = _secureKeyManager.GetChannelKeyAtIndex(channelKeyIndex).Value;
+        ExtKey? current = null;
+        try
+        {
+            current = ExtKey.CreateFromBytes(extKeyBytes);
+            foreach (var index in path)
+            {
+                var next = current.Derive(index, true);
+                current.PrivateKey.Dispose();
+                current = next;
+            }
+
+            var result = current.PrivateKey;
+            current = null;
+            return result;
+        }
+        finally
+        {
+            current?.PrivateKey.Dispose();
+            CryptographicOperations.ZeroMemory(extKeyBytes);
+        }
     }
 
     /// <summary>

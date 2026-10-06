@@ -173,7 +173,7 @@ public sealed partial class AnchorCpfpService
                 await unitOfWork.SaveChangesAsync();
 
             if (isPeers && _options.SweepAnchors)
-                result.Sweep ??= await PlanPeerAnchorSweepAsync(channel, close,
+                result.Sweep ??= await PlanPeerAnchorSweepAsync(channel, unitOfWork, close,
                                                                 children.Any(c => ParentOf(c)
                                                                                == close.CommitmentTransactionId),
                                                                 height, cancellationToken);
@@ -450,8 +450,8 @@ public sealed partial class AnchorCpfpService
     /// The sweep of the anchors of the peer's confirmed commitment, once due: its bytes from the mempool reactor's
     /// hand-over, else from the block that holds it.
     /// </summary>
-    private async Task<BroadcastTransactionModel?> PlanPeerAnchorSweepAsync(ChannelModel channel, ChannelCloseModel close,
-                                                                    bool anyChild, uint height,
+    private async Task<BroadcastTransactionModel?> PlanPeerAnchorSweepAsync(ChannelModel channel, IUnitOfWork unitOfWork,
+                                                                    ChannelCloseModel close, bool anyChild, uint height,
                                                                     CancellationToken cancellationToken)
     {
         if (!IsSweepDue(close.SpentAtHeight, height) || IsSwept(close.CommitmentTransactionId))
@@ -487,7 +487,8 @@ public sealed partial class AnchorCpfpService
         }
 
         var sweep = await PlanAnchorSweepAsync(channel, close.CommitmentTransactionId, raw, true, null,
-                                               close.SpentAtHeight, anyChild, height, cancellationToken);
+                                               close.SpentAtHeight, anyChild, height, cancellationToken,
+                                               await GetRevokedPeerPointAsync(channel, unitOfWork, close));
         _peerCommitments.TryRemove(channel.ChannelId, out _);
         return sweep;
     }

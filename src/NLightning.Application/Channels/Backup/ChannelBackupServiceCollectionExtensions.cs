@@ -8,8 +8,10 @@ namespace NLightning.Application.Channels.Backup;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
 using Domain.Crypto.Hashes;
+using Domain.Crypto.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
+using Domain.Node.PeerStorage;
 using Domain.Onchain.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Serialization.Interfaces;
@@ -75,12 +77,14 @@ public static class ChannelBackupServiceCollectionExtensions
                                                              sp.GetService<IGraphStore>(),
                                                              sp.GetService<IChannelMemoryRepository>(),
                                                              sp.GetService<IChannelFundingKeySource>(),
-                                                             sp.GetService<IChannelLockProvider>()));
+                                                             sp.GetService<IChannelLockProvider>(),
+                                                             peerStorage: () => sp.GetService<IPeerStorageService>()));
         services.TryAddSingleton<IFundingSpendLocator>(sp => sp.GetService<IBitcoinChainService>() is { } chain
                                                                  ? new ChainFundingSpendLocator(
                                                                      chain,
                                                                      sp.GetService<IOptions<ChannelBackupOptions>>(),
-                                                                     sp.GetService<ILogger<ChainFundingSpendLocator>>())
+                                                                     sp.GetService<ILogger<ChainFundingSpendLocator>>(),
+                                                                     sp.GetService<IMusig2Service>())
                                                                  : NullFundingSpendLocator.Instance);
         services.TryAddSingleton<IChannelFundingKeySource>(sp => new SignerChannelFundingKeySource(
                                                                sp.GetRequiredService<ILightningSigner>()));

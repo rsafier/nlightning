@@ -373,7 +373,7 @@ public class LocalLightningSignerTests
     private static LocalLightningSigner CreateSignerWithChannelKey(IKeyDerivationService keyDerivationService)
     {
         var secureKeyManagerMock = new Mock<ISecureKeyManager>();
-        secureKeyManagerMock.Setup(x => x.GetChannelKeyAtIndex(ChannelKeyIndex)).Returns(s_channelKey.ToBytes());
+        secureKeyManagerMock.Setup(x => x.GetChannelKeyAtIndex(ChannelKeyIndex)).Returns(() => s_channelKey.ToBytes());
         var index = ChannelKeyIndex;
         secureKeyManagerMock.Setup(x => x.GetNextChannelKey(out index)).Returns(s_channelKey.ToBytes());
 

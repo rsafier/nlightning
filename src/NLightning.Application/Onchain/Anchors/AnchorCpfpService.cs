@@ -16,6 +16,7 @@ using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Onchain.Enums;
@@ -121,6 +122,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ISweepDestinationProvider _sweepDestinationProvider;
     private readonly ICommitmentKeyDerivationService? _keyDerivation;
+    private readonly ISecretStorageServiceFactory? _secretStorageServiceFactory;
 
     private readonly SemaphoreSlim _roundLock = new(1, 1);
     private readonly HashSet<string> _loggedOnce = [];
@@ -151,9 +153,11 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
                              IAnchorFeeInputSource? feeInputSource = null, AnchorCpfpOptions? options = null,
                              IBitcoinChainService? chainService = null,
                              ICommitmentOutputMapper? commitmentOutputMapper = null,
-                             ICommitmentKeyDerivationService? keyDerivation = null)
+                             ICommitmentKeyDerivationService? keyDerivation = null,
+                             ISecretStorageServiceFactory? secretStorageServiceFactory = null)
     {
         _keyDerivation = keyDerivation;
+        _secretStorageServiceFactory = secretStorageServiceFactory;
         _blockchainMonitor = blockchainMonitor;
         _chainService = chainService;
         _commitmentOutputMapper = commitmentOutputMapper;
@@ -1236,7 +1240,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
                                                                 byte[] commitmentTransaction, bool isPeers,
                                                                 ulong? ourCommitmentNumber, uint confirmedHeight,
                                                                 bool anyChild, uint height,
-                                                                CancellationToken cancellationToken)
+                                                                CancellationToken cancellationToken,
+                                                                CompactPubKey? peerCommitmentPoint = null)
     {
         if (!IsSweepDue(confirmedHeight, height))
             return null;
@@ -1251,7 +1256,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         var ours = FindOurAnchor(channel, commitmentTxId, commitmentTransaction, isPeers, ourCommitmentNumber);
         if (ours is not null)
             anchors.Add(ours);
-        if (FindPeerAnchor(channel, commitmentTxId, commitmentTransaction, isPeers) is { } theirs)
+        if (FindPeerAnchor(channel, commitmentTxId, commitmentTransaction, isPeers, peerCommitmentPoint) is { } theirs)
             anchors.Add(theirs);
 
         // One spent input invalidates the whole sweep: keep only the anchors nobody spent (a child of ours, also a

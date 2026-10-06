@@ -190,7 +190,7 @@ After the merge the integrator replays the spec's signed commitment vectors end 
 
 **T6 against Eclair 0.14.3 (lanes ECL, ECL2):** Eclair needs no configuration (it advertises `option_simple_taproot` and prefers it for private channels). `EclairTaprootTests` (suite `eclair`): Eclair's dual-funded taproot open to us and ours to Eclair from a P2TR-only wallet, payments both ways, restarts of either side, simple close both ways, and RBF of either side's open. `EclairTaprootSpliceTests` (suite `eclair2`, 5): splices in and out by either side, our `bumpsplice`, Eclair's `rbfsplice`, a restart of either side while our splice is pending. `EclairTaprootOnchainTests` (suite `eclair`, 2): both force closes with an HTLC each way, resolved without an `[NL-966]` alert. Each green twice; full `eclair` 31/31 and `eclair2` 12/12. Interop fixes: NL-1065 (we charged Eclair's splice-out the segwit marker and flag), NL-1058 (a splice `commitment_signed` crossing our `tx_abort`).
 
-**Open:** NL-1050 (the peer's anchor on a revoked or future commitment is not swept), NL-1059 (restore does not follow taproot splices), NL-1061 (Eclair fails the channel when we lost an attempt it is signing), NL-1062 (cosmetic), liquidity ads in a taproot splice (NL-971 note). T7 waits for BOLTs #1059.
+**Open:** NL-1050 and NL-1059 fixed in the taproot polish (see "Taproot polish record"), NL-1061 (Eclair fails the channel when we lost an attempt it is signing), NL-1062 (cosmetic), liquidity ads in a taproot splice (NL-971 note). T7 waits for BOLTs #1059.
 
 **Next:** the owner decision D-T2 (advertise `option_simple_taproot` Optional); T7 once BOLTs #1059 is merged.
 
@@ -211,6 +211,13 @@ After the merge the integrator replays the spec's signed commitment vectors end 
 ## T7 follow-ups record (2026-10-05, branch `wip/t7-followups` from `wip/fafo` at `b6adfa2e`)
 
 BOLTs #1059 unchanged (head `4eef3dfa`). **NL-1131 fixed** (`8be037ac`): a public taproot channel can be spliced and is re-announced under the splice (see "Exchange" above); proofs `SpliceAnnouncement2HarnessTests` (7), the extended `TaprootGossipProofTests` (`4ed73bf2`, a lane in `wip/t7-followups-proof`: Carol pays over the new scid, an onion naming the old scid forwards through the retired map) and the regtest e2e splice case of `Docker/Taproot/TaprootPublicChannelFlowTests` (splice-in by alice, splice-out by bob, every graph follows, a payment over the old scid inside the window). The e2e found **NL-1145** (`0b8de5c8`): the v2 relay never sent the peer's `channel_update_2` of a channel of ours. **NL-1140 partial** (`2ce6cc31`, lane `wip/t7-followups-ingress`): a 4-key `channel_announcement_2`'s MuSig2 signature is checked before the funding lookup; keyless announcements wait in a pending index until their first `channel_update_2`. **NL-1141 partial** (`b4fb6269`): `describegraph` v2 counts (IPC keys 35-40). Still open: the v2 blacklist and chain-check shortcuts (NL-1140), the lane's follow-ups NL-1146 and NL-1147, the v2 backlog pacing (NL-1141), NL-1130, NL-1081, an interop proof.
+
+## Taproot polish record (2026-10-06, branch `wip/taproot-polish` from `wip/fafo` at `d074fe01`)
+
+- NL-968 (513a1d4a): the simple-close fee of a taproot channel uses the key-path witness weight (68 WU; 568 WU with P2WPKH + P2WSH outputs).
+- NL-1050 (a1c8ef79): the anchor sweep of a revoked taproot peer commitment takes the peer's anchor too, its point derived from the revealed secret; a future commitment's point stays unknowable by design.
+- NL-911 (5911e14a): BIP 327 secret hashes on a wiping managed SHA-256, secret intermediates cleared on every path, the signer zeroes the extended channel keys it is handed; SR-09a updated.
+- NL-1059 (a1a0fd32): restore follows taproot splices by `KeyAgg` matches, by the peer's commitment that pays our `to_remote` at the end of the chain, and by the funding the peer's copy of our blob names; follow-up NL-1215 (the funding keys of a funding found that way).
 
 ## 3. Decisions
 
