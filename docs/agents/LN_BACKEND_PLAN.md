@@ -102,9 +102,18 @@ now served).
 3. **NL-1151 (fixed):** BOLT 12 pay through captaind (FetchInvoice + xpay of `lni`). Fetched invoices
    live in memory until expiry: after a restart captaind's xpay of an earlier fetch is refused (the
    attempt fails, the wallet retries).
-4. **NL-1153 (open, low):** our `retry_for` cap of 300 s equals captaind's default maximum but an
+4. **NL-1154 (fixed):** our row reads `Failed` between two attempts while `PaymentService` still retries
+   (NL-999); `ListPays` (and `Xpay`'s mapping) now report it PENDING while `IsPaying` is true, so captaind
+   never sees FAILED while a retry may still put an HTLC out. An empty `ListPays` (which fails the attempt)
+   can only mean nothing was offered: the row is persisted `InFlight` before the first offer and survives
+   restarts.
+5. **Liveness after `retry_for`:** our `PayInvoiceOptions.Timeout` stops new attempts at the deadline and
+   the parts in flight resolve on their own; our understanding of CLN's xpay is the same (no new attempts
+   after `retry_for`), and either way captaind only reconciles by `ListPays`, so this is liveness, not
+   safety. Retrying in the background past the window is not done.
+6. **NL-1153 (open, low):** our `retry_for` cap of 300 s equals captaind's default maximum but an
    operator may raise theirs.
-5. Test-only: captaind's chain is its own (Core 31), so the proof keeps it at our height — captaind
+7. Test-only: captaind's chain is its own (Core 31), so the proof keeps it at our height — captaind
    compares its tip with our `Getinfo` height (xpay's `maxdelay`) and requires the inbound HTLC's expiry
    (our chain) to clear its own tip + `c` ("Incoming HTLC expiry height doesn't fit").
 
