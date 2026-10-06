@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NBitcoin.RPC;
 using Transaction = NBitcoin.Transaction;
 
 namespace NLightning.Integration.Tests.Docker.Onchain;
@@ -213,7 +214,14 @@ public sealed class OnchainSpliceTests : IAsyncLifetime
         var penalties = new Dictionary<uint256, Transaction>();
         await Poll.UntilAsync(async () =>
         {
-            foreach (var row in await GetOutputsAsync(bob, channelId))
+            // A penalty the sweep scheduler replaced (RBF) leaves bitcoind's mempool: follow the rows' current ones
+            var rows = await GetOutputsAsync(bob, channelId);
+            var current = rows.Where(r => r.ResolvingTransactionId is not null)
+                              .Select(r => new uint256((byte[])r.ResolvingTransactionId!.Value)).ToHashSet();
+            foreach (var replaced in penalties.Keys.Where(k => !current.Contains(k)).ToList())
+                penalties.Remove(replaced);
+
+            foreach (var row in rows)
             {
                 if (row.ResolvingTransactionId is not { } txId || penalties.ContainsKey(new uint256((byte[])txId)))
                     continue;
@@ -466,8 +474,15 @@ public sealed class OnchainSpliceTests : IAsyncLifetime
     {
         foreach (var txId in txIds)
         {
-            if ((await _fixture.Bitcoin.GetRawTransactionInfoAsync(txId, ct)).Confirmations == 0)
-                return false;
+            try
+            {
+                if ((await _fixture.Bitcoin.GetRawTransactionInfoAsync(txId, ct)).Confirmations == 0)
+                    return false;
+            }
+            catch (RPCException e) when (e.RPCCode == RPCErrorCode.RPC_INVALID_ADDRESS_OR_KEY)
+            {
+                return false; // replaced since it was read (the next round follows the rows)
+            }
         }
 
         return true;

@@ -209,7 +209,8 @@ public class RbitcoinContractClusterTests
                 Options.Create(new BitcoinOptions
                 {
                     RpcEndpoint = $"http://{miner.Handle.PodIp}:{BitcoinCorePorts.Rpc}",
-                    RpcUser = miner.Options.RpcUser, RpcPassword = miner.Options.RpcPassword,
+                    RpcUser = miner.Options.RpcUser,
+                    RpcPassword = miner.Options.RpcPassword,
                     Notifications = ChainNotificationMode.Poll
                 }), NullLogger<BitcoinChainService>.Instance,
                 Options.Create(new NodeOptions { BitcoinNetwork = "regtest" }));
@@ -217,7 +218,6 @@ public class RbitcoinContractClusterTests
             var corePackage = await coreChain.SubmitPackageAsync(coreParent, Spend(new Coin(coreParent, 0u), key, 60));
             Log($"Core 31.1 submitpackage of the same kind: {corePackage.Status}: {corePackage.Describe()}");
             Assert.Equal(PackageSubmitStatus.Accepted, corePackage.Status);
-
 
             // A confirmed transaction sent again (Core mines what rbitcoin did not relay to it)
             await coreNode.SendRawTransactionAsync(spend, ct);
