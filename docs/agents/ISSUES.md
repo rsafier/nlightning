@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 97 | 98 |
+| open | 0 | 0 | 1 | 98 | 99 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
 | fixed | 15 | 69 | 233 | 490 | 807 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **69** | **250** | **608** | **942** |
+| **Total** | **15** | **69** | **250** | **609** | **943** |
 
 ### Epics
 
@@ -9934,3 +9934,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** the full non-Docker net10.0 run of `wip/acct1182` (2026-10-06, a net11 daemon build running at the same time) failed these two; both classes green alone right after (38/38, 18/18). Neither touches the NL-1205 change. The second is a neighbour of NL-1202's timing case.
 - **Fix sketch:** as NL-445 and NL-1202: drive the retry and replay on stepped clocks or bounded event waits instead of wall time.
 - **Blocks/Blocked-by:** related NL-445, NL-1202
+
+### NL-1207 FAFO books show small clearing and channel drift on reconcile
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `Application/Accounting/Books/AccountingBooksService` reconcile; FAFO/FAFO2 Mutinynet books
+- **Evidence:** `nltg accounting reconcile` after the `09666f37` deploy (2026-10-06): FAFO `assets:onchain:clearing` books −514,000 msat vs node 0 (no transaction in flight explains it) and `assets:lightning:channels` drift +5 msat; FAFO2 clearing −246,000 msat and channels −5 msat; FAFO3 clean. The hash chains verify (FAFO 275 events) and the signed period closes verify. The 09666f37 accounting change (NL-1205, `InterceptedHtlcSettled`) cannot have produced it (LndGrpc is off on these nodes and the books were not rebuilt), so the drift predates this deploy; when it appeared is unknown (no earlier reconcile output was kept). The ±5 msat on the FAFO–FAFO2 pair looks like a rounding difference on a shared channel; the clearing amounts look like on-chain fees or an output booked to clearing whose counterpart event is missing (e.g. a sweep, splice or close fee).
+- **Fix sketch:** list the clearing postings per transaction on FAFO (`accounting report register` on `assets:onchain:clearing`), find the transactions that do not net to zero, and trace the missing event kind; for the 5 msat, compare the books' channel lines with `listchannels` per channel.
+- **Blocks/Blocked-by:** none
