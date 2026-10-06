@@ -31,6 +31,7 @@ public class BitcoinChainService : IBitcoinChainService
     private readonly ILogger<BitcoinChainService> _logger;
     private readonly string _rpcAuthorization;
     private int _packageRelayUnsupported;
+    private int _mempoolSpendersUnsupported;
 
     public BitcoinChainService(IOptions<BitcoinOptions> bitcoinOptions, ILogger<BitcoinChainService> logger,
                                IOptions<NodeOptions> nodeOptions)
@@ -91,7 +92,7 @@ public class BitcoinChainService : IBitcoinChainService
         {
             return await _rpcClient.GetRawTransactionAsync(new uint256(txId), false);
         }
-        catch (RPCException ex) when (ex.RPCCode == RPCErrorCode.RPC_INVALID_ADDRESS_OR_KEY)
+        catch (RPCException ex) when (IsTransactionNotFound(ex.RPCCode, ex.Message))
         {
             return null; // Transaction not found
         }
@@ -167,6 +168,16 @@ public class BitcoinChainService : IBitcoinChainService
         GetUnspentOutputAsync(outPoint, false);
 
     /// <summary>
+    /// True for <c>getrawtransaction</c>'s "not found": Bitcoin Core answers <c>RPC_INVALID_ADDRESS_OR_KEY</c> (-5);
+    /// rbitcoin answers <c>RPC_MISC_ERROR</c> (-1) with Core's text "No such mempool or blockchain transaction"
+    /// (NL-1098).
+    /// </summary>
+    internal static bool IsTransactionNotFound(RPCErrorCode code, string? message) =>
+        code == RPCErrorCode.RPC_INVALID_ADDRESS_OR_KEY
+     || (code == RPCErrorCode.RPC_MISC_ERROR
+      && message?.Contains("No such mempool or blockchain transaction", StringComparison.OrdinalIgnoreCase) == true);
+
+    /// <summary>
     /// True for the <c>getblock</c> error of a pruned block (Bitcoin Core: RPC_MISC_ERROR "Block not available (pruned
     /// data)"). Other RPC_MISC_ERRORs (such as "Block not found on disk") are failures, not a pruned answer.
     /// </summary>
@@ -184,18 +195,39 @@ public class BitcoinChainService : IBitcoinChainService
     {
         try
         {
-            var response = await _rpcClient.GetTxOutAsync(outPoint.Hash, (int)outPoint.N, includeMempool);
-            if (response is null || response.Confirmations <= 0)
+            var response = await _rpcClient.SendCommandAsync(
+                               new RPCRequest("gettxout", [outPoint.Hash.ToString(), (int)outPoint.N, includeMempool]),
+                               CancellationToken.None);
+            if (ParseTxOutResponse(response.Result) is not { } txOut || txOut.Confirmations <= 0)
                 return null;
 
-            var bestHeight = await GetBlockHeightAsync(response.BestBlock);
-            return (response.TxOut, (uint)(bestHeight - response.Confirmations + 1));
+            var bestHeight = await GetBlockHeightAsync(txOut.BestBlock);
+            return (txOut.Output, (uint)(bestHeight - txOut.Confirmations + 1));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to get the unspent output {OutPoint}", outPoint);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Reads a <c>gettxout</c> answer: <c>bestblock</c>, <c>confirmations</c>, <c>value</c> (BTC) and the script from
+    /// <c>scriptPubKey.hex</c>; null for a null answer (spent or unknown). NBitcoin's own <c>GetTxOutAsync</c> parses
+    /// <c>scriptPubKey.asm</c>, which only Bitcoin Core's notation passes: rbitcoin writes rust-bitcoin's
+    /// (<c>OP_0 OP_PUSHBYTES_20 ...</c>) and the parse threw (NL-1097).
+    /// </summary>
+    internal static (uint256 BestBlock, int Confirmations, TxOut Output)? ParseTxOutResponse(JToken? result)
+    {
+        if (result is not JObject answer)
+            return null;
+
+        var bestBlock = uint256.Parse(answer["bestblock"]!.Value<string>()!);
+        var confirmations = answer["confirmations"]!.Value<int>();
+        var value = ReadDecimal(answer["value"]) ?? throw new FormatException("gettxout answered without a value");
+        var script = Script.FromHex(answer["scriptPubKey"]?["hex"]?.Value<string>()
+                                 ?? throw new FormatException("gettxout answered without scriptPubKey.hex"));
+        return (bestBlock, confirmations, new TxOut(Money.Coins(value), script));
     }
 
     /// <summary>The height of <paramref name="blockHash"/> (<c>getblockheader &lt;hash&gt; true</c>), also for a stale
@@ -560,6 +592,70 @@ public class BitcoinChainService : IBitcoinChainService
         s_alreadyKnownErrors.Any(e => error.Contains(e, StringComparison.OrdinalIgnoreCase));
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Asked in batches of <see cref="MempoolSpendersBatchSize"/> outpoints. A node without the method (-32601) answers
+    /// null; it is remembered and logged once. Any other failure throws.
+    /// </remarks>
+    public async Task<IReadOnlyDictionary<OutPoint, uint256>?> GetMempoolSpendersAsync(
+        IReadOnlyCollection<OutPoint> outPoints)
+    {
+        ArgumentNullException.ThrowIfNull(outPoints);
+        if (Volatile.Read(ref _mempoolSpendersUnsupported) != 0)
+            return null;
+
+        var spenders = new Dictionary<OutPoint, uint256>();
+        foreach (var batch in outPoints.Chunk(MempoolSpendersBatchSize))
+        {
+            try
+            {
+                var response = await _rpcClient.SendCommandAsync(CreateTxSpendingPrevOutRequest(batch),
+                                                                 CancellationToken.None);
+                foreach (var (outPoint, spender) in ParseTxSpendingPrevOutResponse(response.Result))
+                    spenders[outPoint] = spender;
+            }
+            catch (RPCException ex) when (ex.RPCCode == RPCErrorCode.RPC_METHOD_NOT_FOUND)
+            {
+                if (Interlocked.Exchange(ref _mempoolSpendersUnsupported, 1) == 0)
+                    _logger.LogWarning("bitcoind has no gettxspendingprevout ({Reason}); the mempool cannot be "
+                                     + "polled (Bitcoin Core 24 or newer is needed)", ex.Message);
+                return null;
+            }
+        }
+
+        return spenders;
+    }
+
+    /// <summary>How many outpoints one <c>gettxspendingprevout</c> call asks about.</summary>
+    internal const int MempoolSpendersBatchSize = 500;
+
+    /// <summary>The <c>gettxspendingprevout</c> request: one parameter, the array of <c>{txid, vout}</c>.</summary>
+    internal static RPCRequest CreateTxSpendingPrevOutRequest(IEnumerable<OutPoint> outPoints) =>
+        new("gettxspendingprevout",
+            [new JArray(outPoints.Select(o => new JObject { ["txid"] = o.Hash.ToString(), ["vout"] = o.N }))]);
+
+    /// <summary>
+    /// Reads a <c>gettxspendingprevout</c> answer: an array of <c>{txid, vout, spendingtxid?}</c>; the entries without
+    /// <c>spendingtxid</c> (not spent in the mempool) or that cannot be read are left out.
+    /// </summary>
+    internal static IEnumerable<(OutPoint OutPoint, uint256 Spender)> ParseTxSpendingPrevOutResponse(JToken? result)
+    {
+        if (result is not JArray entries)
+            yield break;
+
+        foreach (var entry in entries.OfType<JObject>())
+        {
+            if (entry["spendingtxid"]?.Value<string>() is not { } spenderText
+             || !uint256.TryParse(spenderText, out var spender)
+             || entry["txid"]?.Value<string>() is not { } txIdText
+             || !uint256.TryParse(txIdText, out var txId)
+             || entry["vout"] is not { Type: JTokenType.Integer } vout)
+                continue;
+
+            yield return (new OutPoint(txId, vout.Value<uint>()), spender);
+        }
+    }
+
+    /// <inheritdoc />
     public async Task<uint?> GetMempoolMinFeeRatePerKwAsync()
     {
         try
@@ -612,7 +708,7 @@ public class BitcoinChainService : IBitcoinChainService
             var txInfo = await _rpcClient.GetRawTransactionInfoAsync(new uint256(txId));
             return txInfo.Confirmations;
         }
-        catch (RPCException ex) when (ex.RPCCode == RPCErrorCode.RPC_INVALID_ADDRESS_OR_KEY)
+        catch (RPCException ex) when (IsTransactionNotFound(ex.RPCCode, ex.Message))
         {
             return 0; // Transaction not found
         }
