@@ -14,7 +14,7 @@ public class UpdateFeeMessageTests
     public UpdateFeeMessageTests()
     {
         _updateFeeMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<UpdateFeeMessage>()!;
+            SerializerHelper.WireRegistry.Get<UpdateFeeMessage>()!;
     }
 
     [Fact]

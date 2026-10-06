@@ -12,7 +12,7 @@ public class PongMessageTests
     public PongMessageTests()
     {
         _pongMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<PongMessage>()!;
+            SerializerHelper.WireRegistry.Get<PongMessage>()!;
     }
 
     [Fact]

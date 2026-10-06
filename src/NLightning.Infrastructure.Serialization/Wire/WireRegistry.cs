@@ -7,9 +7,8 @@ using Definitions;
 using Domain.Protocol.Constants;
 
 /// <summary>
-/// The registry of migrated wire definitions. <see cref="MessageTypeSerializerFactory"/> consults it first and
-/// falls back to the hand-written serializers, so migrated and unmigrated messages coexist behind the same
-/// <c>IMessageSerializer</c> API (plan <c>docs/agents/CODEC_REDESIGN_PLAN.md</c>).
+/// The declarative message registry and the typed TLV value index derived from its message tables.
+/// Definitions compose their own value codecs; registration has no converter binding or reflection.
 /// </summary>
 /// <remarks>
 /// Every migrated message is registered here exactly once; <c>WireRegistryTests</c> fails the build when a
@@ -20,7 +19,9 @@ public sealed class WireRegistry
     private readonly Dictionary<MessageTypes, IMessageTypeSerializer> _byType = [];
     private readonly Dictionary<Type, IMessageTypeSerializer> _byMessageType = [];
 
-    public WireRegistry(ITlvConverterFactory converters)
+    private readonly Dictionary<Type, TlvDef> _tlvDefinitions = [];
+
+    public WireRegistry()
     {
         IMessageTypeSerializer[] defs =
         [
@@ -90,29 +91,42 @@ public sealed class WireRegistry
             ChannelUpdate2Wire.Def
         ];
 
+        foreach (var tlv in HopTlvDefs.All)
+            _tlvDefinitions.Add(tlv.RuntimeType!, tlv);
+
         foreach (var def in defs)
         {
             if (def is not MessageWireBase wire)
                 throw new InvalidOperationException($"A wire definition of {def.GetType().Name} must derive {nameof(MessageWireBase)}.");
 
-            wire.Bind(converters);
             if (!_byType.TryAdd(wire.Type, def))
                 throw new InvalidOperationException($"Wire definition for {wire.Type} registered twice.");
             _byMessageType[wire.MessageType] = def;
+            foreach (var tlv in wire.TlvDefinitions)
+                if (tlv.RuntimeType is { } runtimeType)
+                    _tlvDefinitions.TryAdd(runtimeType, tlv.ValueDefinition);
         }
     }
 
     public IMessageTypeSerializer? Get(MessageTypes type) => _byType.GetValueOrDefault(type);
 
-    public IMessageTypeSerializer? Get<TMessage>() where TMessage : IMessage
-        => _byMessageType.GetValueOrDefault(typeof(TMessage));
+    public IMessageTypeSerializer<TMessage>? Get<TMessage>() where TMessage : IMessage
+        => _byMessageType.GetValueOrDefault(typeof(TMessage)) as IMessageTypeSerializer<TMessage>;
+
+    /// <summary>Typed value definitions composed by peer messages and the dedicated hop codec.</summary>
+    public IReadOnlyCollection<Type> TlvTypes => _tlvDefinitions.Keys;
+
+    public TlvDef? GetTlvDefinition(Type runtimeType) => _tlvDefinitions.GetValueOrDefault(runtimeType);
+
+    public TlvDef<TTlv>? GetTlvDefinition<TTlv>() where TTlv : Domain.Protocol.Tlv.BaseTlv
+        => GetTlvDefinition(typeof(TTlv)) as TlvDef<TTlv>;
 
     /// <summary>Every registered definition's wire type (the completeness tests walk this).</summary>
     public IEnumerable<MessageTypes> Types => _byType.Keys;
 }
 
 /// <summary>
-/// The non-generic seam the registry uses to bind a definition's TLV converter factory and read its type; the
+/// The non-generic seam the registry uses to read message types and their TLV definitions; the
 /// generic <see cref="MessageWire{TMessage}"/> is both this and the <c>IMessageTypeSerializer</c> callers get back.
 /// </summary>
 public abstract class MessageWireBase
@@ -121,5 +135,5 @@ public abstract class MessageWireBase
 
     public abstract Type MessageType { get; }
 
-    internal abstract void Bind(ITlvConverterFactory converters);
+    public abstract IEnumerable<TlvDef> TlvDefinitions { get; }
 }

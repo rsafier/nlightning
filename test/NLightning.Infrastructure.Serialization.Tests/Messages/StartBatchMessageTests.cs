@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -9,7 +10,6 @@ using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Domain.Serialization.Interfaces;
 using Exceptions;
-using Factories;
 using Helpers;
 using Serialization.Messages;
 
@@ -26,12 +26,10 @@ public class StartBatchMessageTests
 
     private readonly MessageSerializer _messageSerializer =
         new(NullLogger<MessageSerializer>.Instance,
-            new MessageTypeSerializerFactory(SerializerHelper.PayloadSerializerFactory,
-                                             SerializerHelper.TlvConverterFactory,
-                                             SerializerHelper.TlvStreamSerializer));
+            new WireRegistry());
 
     private readonly IMessageTypeSerializer<StartBatchMessage> _serializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<StartBatchMessage>()!;
+        SerializerHelper.WireRegistry.Get<StartBatchMessage>()!;
 
     [Fact]
     public async Task Given_StartBatchOfCommitmentSigned_When_RoundTripped_Then_ItIsByteExact()

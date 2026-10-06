@@ -23,7 +23,7 @@ public class TxSignaturesMessageTests
     public TxSignaturesMessageTests()
     {
         _txSignaturesMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxSignaturesMessage>()!;
+            SerializerHelper.WireRegistry.Get<TxSignaturesMessage>()!;
     }
 
     [Fact]

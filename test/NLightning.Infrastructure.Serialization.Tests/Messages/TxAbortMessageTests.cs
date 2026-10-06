@@ -13,7 +13,7 @@ public class TxAbortMessageTests
 
     public TxAbortMessageTests()
     {
-        _txAbortMessageTypeSerializer = SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxAbortMessage>()!;
+        _txAbortMessageTypeSerializer = SerializerHelper.WireRegistry.Get<TxAbortMessage>()!;
     }
 
     [Fact]

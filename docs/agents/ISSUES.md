@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 98 | 99 |
+| open | 0 | 0 | 0 | 98 | 98 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 233 | 490 | 807 |
+| fixed | 15 | 69 | 234 | 490 | 808 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
-| duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **69** | **250** | **609** | **943** |
+| duplicate | 0 | 0 | 3 | 6 | 9 |
+| **Total** | **15** | **69** | **250** | **610** | **944** |
 
 ### Epics
 
@@ -9227,12 +9227,12 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Seen again 2026-10-05:** matrix hold-mx1 (7069b1ab, no coverage): the Eclair-force-close case `Given_HtlcsInFlightBothWays_When_EclairForceClosesATaprootChannel_*` failed once, green on the class rerun alone; so not only under coverlet.
 
 ### NL-1100 [EPIC] Wire codec redesign: one declarative definition per message, both directions
-- **Status:** open
+- **Status:** fixed (81e90dd4, 105b1f7a, 7c63dd55, 3cc482ec)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Serialization/Wire/`, plan `docs/agents/CODEC_REDESIGN_PLAN.md`
 - **Evidence:** The wire codec layer costs ~12.9k code lines in 341 files where Eclair's scodec-based layer needs ~2.0k in 12 (6.4x); one message costs 4 classes + 4 factory registrations + a Create* pair, and a missing registration silently turns a message "unknown" (dropped if odd, peer killed if even). The plan compares hand-written combinators, spec-CSV codegen (CLN-style), a Roslyn source generator and the hybrid; the decision (plan §3) is the hybrid: a span-based `WireReader`/`WireWriter` runtime with a strict TLV reader and per-message declarative `MessageWire<T>` definitions. Scope of the epic: wire messages and their TLV streams; later phases P1 (rest of BOLT 2), P2 (interactive-tx, splice, liquidity-ads TLV 1339), P3 (gossip incl. ExtraData-verbatim), P4 (onion 513; hop payloads need an error-detailing reader); BOLT 12 stays on its pure Domain codecs.
-- **Fix sketch:** per-phase checklists in plan §5; each phase keeps every round-trip/vector test green unchanged and adds registry + property coverage.
+- **Closeout (2026-10-06):** `7c63dd55` moves all 45 typed TLV value codecs into the owning message definitions or shared `TlvDefs`/`HopTlvDefs`; removes the converter classes, factory/interfaces and unused `MessageTlvReader`. `3cc482ec` removes the empty payload/message serializer factories and Domain interfaces, routes serialization directly through `WireRegistry`, and updates DI. All 54 peer messages are declarative; `HopPayloadSerializer` and `FailureMessageSerializer` retain their dedicated readers for the plan §5 reasons. Existing byte fixtures and assertion counts are preserved when converter tests move to the Serialization project. Net production C# reduction from `origin/wip/fafo`: 1,424 lines (2,437 deleted, 1,013 added). Release net10.0 build: 0 warnings/errors; full filtered net10.0 unit run: 17,033 passed, 74 explicit/platform skips, 0 failures across 12 suites, no reruns (every test invocation uses the required 5m hang timeout and Docker/SqlServer exclusions). Full `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"` passes; solution configuration check passes (40 projects). Infrastructure/Crypto is untouched, so Release.Native is not required. `ef0d6c45` resolves the existing formatting finding NL-1225. Final recipes and plan status describe the registry-only shape.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** `docs/agents/CODEC_REDESIGN_PLAN.md`
 
@@ -9943,3 +9943,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** `nltg accounting reconcile` after the `09666f37` deploy (2026-10-06): FAFO `assets:onchain:clearing` books −514,000 msat vs node 0 (no transaction in flight explains it) and `assets:lightning:channels` drift +5 msat; FAFO2 clearing −246,000 msat and channels −5 msat; FAFO3 clean. The hash chains verify (FAFO 275 events) and the signed period closes verify. The 09666f37 accounting change (NL-1205, `InterceptedHtlcSettled`) cannot have produced it (LndGrpc is off on these nodes and the books were not rebuilt), so the drift predates this deploy; when it appeared is unknown (no earlier reconcile output was kept). The ±5 msat on the FAFO–FAFO2 pair looks like a rounding difference on a shared channel; the clearing amounts look like on-chain fees or an output booked to clearing whose counterpart event is missing (e.g. a sweep, splice or close fee).
 - **Fix sketch:** list the clearing postings per transaction on FAFO (`accounting report register` on `assets:onchain:clearing`), find the transactions that do not net to zero, and trace the missing event kind; for the 5 msat, compare the books' channel lines with `listchannels` per channel.
 - **Blocks/Blocked-by:** none
+
+### NL-1225 Existing HtlcInterceptorHub null checks fail the formatting gate
+- **Status:** duplicate of NL-1200 (the same IDE0031 fix in `HtlcInterceptorHub`, made on `wip/loopd` and on `wip/codec-cleanup` from the same base; both carried by the merge)
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Application/Payments/Interception/HtlcInterceptorHub.cs` (constructor and Dispose)
+- **Evidence:** The base branch's `dotnet format --verify-no-changes` reports IDE0031 for the two explicit null checks around block-event subscription/unsubscription (also recorded by cloud onboarding). This prevents the NL-1100 cleanup's required format gate from passing.
+- **Fix sketch:** Use C# 14 null-conditional event assignment for both operations, preserving behavior; the full Release unit run covers the interceptor.
+- **Blocks/Blocked-by:** NL-1100 verification gate

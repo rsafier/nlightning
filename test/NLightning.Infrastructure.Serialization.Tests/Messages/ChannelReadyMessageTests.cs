@@ -12,7 +12,7 @@ using Helpers;
 public class ChannelReadyMessageTests
 {
     private readonly IMessageTypeSerializer<ChannelReadyMessage> _channelReadyMessageTypeSerializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ChannelReadyMessage>()!;
+        SerializerHelper.WireRegistry.Get<ChannelReadyMessage>()!;
 
     #region Deserialize
 

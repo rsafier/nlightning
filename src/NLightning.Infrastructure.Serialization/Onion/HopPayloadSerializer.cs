@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
-using NLightning.Domain.Protocol.Interfaces;
 using NLightning.Domain.Serialization.Interfaces;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Onion;
 
@@ -9,7 +9,6 @@ using Domain.Protocol.Models;
 using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Factories;
 using Domain.Protocol.Onion.Models;
-using Domain.Protocol.Onion.Tlv;
 using Domain.Protocol.Tlv;
 using Domain.Protocol.ValueObjects;
 using Interfaces;
@@ -18,7 +17,7 @@ using Interfaces;
 /// <remarks>
 /// Records are read one at a time (rather than through <see cref="ITlvStreamSerializer.DeserializeStrictAsync"/>)
 /// so the failing record's type and byte offset can be reported, as <c>invalid_onion_payload</c> requires. The rules
-/// are the same as the strict stream reader's, plus converter-level checks of every known type.
+/// are the same as the strict stream reader's, plus value-level checks of every known type.
 /// </remarks>
 public class HopPayloadSerializer : IHopPayloadSerializer
 {
@@ -30,13 +29,11 @@ public class HopPayloadSerializer : IHopPayloadSerializer
     private readonly ITlvSerializer _tlvSerializer;
     private readonly ITlvStreamSerializer _tlvStreamSerializer;
     private readonly IValueObjectTypeSerializer<BigSize> _bigSizeSerializer;
-    private readonly Dictionary<BigSize, ITlvConverter> _converters;
+    private readonly Dictionary<BigSize, TlvDef> _definitions;
 
     public HopPayloadSerializer(ITlvSerializer tlvSerializer, ITlvStreamSerializer tlvStreamSerializer,
-                                ITlvConverterFactory tlvConverterFactory,
                                 IValueObjectSerializerFactory valueObjectSerializerFactory)
     {
-        ArgumentNullException.ThrowIfNull(tlvConverterFactory);
         ArgumentNullException.ThrowIfNull(valueObjectSerializerFactory);
 
         _tlvSerializer = tlvSerializer ?? throw new ArgumentNullException(nameof(tlvSerializer));
@@ -45,23 +42,7 @@ public class HopPayloadSerializer : IHopPayloadSerializer
                           ?? throw new ArgumentException("No BigSize serializer registered.",
                                                          nameof(valueObjectSerializerFactory));
 
-        _converters = new Dictionary<BigSize, ITlvConverter>
-        {
-            [OnionPayloadTlvTypes.AmtToForward] = GetConverter<AmtToForwardTlv>(tlvConverterFactory),
-            [OnionPayloadTlvTypes.OutgoingCltvValue] = GetConverter<OutgoingCltvValueTlv>(tlvConverterFactory),
-            [OnionPayloadTlvTypes.ShortChannelId] = GetConverter<OnionShortChannelIdTlv>(tlvConverterFactory),
-            [OnionPayloadTlvTypes.PaymentData] = GetConverter<PaymentDataTlv>(tlvConverterFactory),
-            [OnionPayloadTlvTypes.EncryptedRecipientData] =
-                GetConverter<EncryptedRecipientDataTlv>(tlvConverterFactory),
-            [OnionPayloadTlvTypes.CurrentPathKey] = GetConverter<CurrentPathKeyTlv>(tlvConverterFactory),
-            [OnionPayloadTlvTypes.PaymentMetadata] = GetConverter<PaymentMetadataTlv>(tlvConverterFactory),
-            [OnionPayloadTlvTypes.TotalAmountMsat] = GetConverter<TotalAmountMsatTlv>(tlvConverterFactory),
-            [OnionPayloadTlvTypes.OutgoingNodeId] = GetConverter<OutgoingNodeIdTlv>(tlvConverterFactory),
-            [OnionPayloadTlvTypes.TrampolineOnionPacket] =
-                GetConverter<TrampolineOnionPacketTlv>(tlvConverterFactory),
-            [OnionPayloadTlvTypes.RecipientFeatures] = GetConverter<RecipientFeaturesTlv>(tlvConverterFactory),
-            [OnionPayloadTlvTypes.RecipientBlindedPaths] = GetConverter<RecipientBlindedPathsTlv>(tlvConverterFactory)
-        };
+        _definitions = HopTlvDefs.All.ToDictionary(def => def.Type);
     }
 
     /// <inheritdoc />
@@ -190,7 +171,7 @@ public class HopPayloadSerializer : IHopPayloadSerializer
 
     private BaseTlv ConvertRecord(BaseTlv record, int offset)
     {
-        if (!_converters.TryGetValue(record.Type, out var converter))
+        if (!_definitions.TryGetValue(record.Type, out var definition))
         {
             // BOLT 1: an unknown even type MUST fail; unknown odd types are kept verbatim. Custom records (65536 and
             // up: keysend, application records) are kept whatever their parity, as LND does; HopPayloadValidator
@@ -204,7 +185,7 @@ public class HopPayloadSerializer : IHopPayloadSerializer
 
         try
         {
-            return converter.ConvertFromBase(record);
+            return (BaseTlv)definition.Decode(record)!;
         }
         catch (Exception e) when (e is InvalidCastException or ArgumentException)
         {
@@ -236,10 +217,4 @@ public class HopPayloadSerializer : IHopPayloadSerializer
         };
     }
 
-    private static ITlvConverter GetConverter<TTlv>(ITlvConverterFactory tlvConverterFactory) where TTlv : BaseTlv
-    {
-        return tlvConverterFactory.GetConverter(typeof(TTlv))
-            ?? throw new ArgumentException($"No converter registered for {typeof(TTlv).Name}.",
-                                           nameof(tlvConverterFactory));
-    }
 }

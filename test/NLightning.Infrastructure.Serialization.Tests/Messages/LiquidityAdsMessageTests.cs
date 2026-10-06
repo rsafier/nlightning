@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -8,8 +9,6 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
-using Factories;
-using Helpers;
 using Serialization.Messages;
 
 /// <summary>
@@ -84,9 +83,7 @@ public class LiquidityAdsMessageTests
 
     private readonly MessageSerializer _messageSerializer =
         new(NullLogger<MessageSerializer>.Instance,
-            new MessageTypeSerializerFactory(SerializerHelper.PayloadSerializerFactory,
-                                             SerializerHelper.TlvConverterFactory,
-                                             SerializerHelper.TlvStreamSerializer));
+            new WireRegistry());
 
     [Fact]
     public async Task Given_EclairTxInitRbfWithRequestFunding_When_RoundTripped_Then_ItIsByteExact()

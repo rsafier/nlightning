@@ -14,7 +14,7 @@ public class TxAddOutputMessageTests
     public TxAddOutputMessageTests()
     {
         _txAddOutputMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxAddOutputMessage>()!;
+            SerializerHelper.WireRegistry.Get<TxAddOutputMessage>()!;
     }
 
     [Fact]

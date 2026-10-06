@@ -19,7 +19,7 @@ public class UpdateFailHtlcMessageTests
     public UpdateFailHtlcMessageTests()
     {
         _updateFailHtlcMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<UpdateFailHtlcMessage>()!;
+            SerializerHelper.WireRegistry.Get<UpdateFailHtlcMessage>()!;
     }
 
     #region Deserialize

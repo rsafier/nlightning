@@ -13,7 +13,7 @@ public class RevokeAndAckMessageTests
     public RevokeAndAckMessageTests()
     {
         _revokeAndAckMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<RevokeAndAckMessage>()!;
+            SerializerHelper.WireRegistry.Get<RevokeAndAckMessage>()!;
     }
 
     [Fact]

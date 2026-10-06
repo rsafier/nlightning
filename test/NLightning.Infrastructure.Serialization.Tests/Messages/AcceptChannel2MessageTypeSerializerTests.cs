@@ -19,7 +19,7 @@ public class AcceptChannel2MessageTypeSerializerTests
     private readonly LightningMoney _expectedMaxHtlcValueInFlightAmount = LightningMoney.Satoshis(1_000);
     private const ushort ExpectedMaxAcceptedHtlcs = 2;
     private readonly IMessageTypeSerializer<AcceptChannel2Message> _acceptChannel2TypeSerializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<AcceptChannel2Message>()!;
+        SerializerHelper.WireRegistry.Get<AcceptChannel2Message>()!;
 
     // BOLT 2 accept_channel2 carries second_per_commitment_point after first_per_commitment_point (NL-037 / DF1)
     private static readonly CompactPubKey s_secondPerCommitmentCompactPoint =

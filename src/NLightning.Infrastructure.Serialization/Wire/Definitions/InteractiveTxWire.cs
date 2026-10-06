@@ -1,12 +1,14 @@
+using NLightning.Domain.Bitcoin.ValueObjects;
+using NLightning.Domain.Crypto.Constants;
+using NLightning.Domain.Crypto.ValueObjects;
+using NLightning.Domain.Money;
+using NLightning.Domain.Protocol.Constants;
+using NLightning.Domain.Protocol.Tlv;
+
 namespace NLightning.Infrastructure.Serialization.Wire.Definitions;
 
-using Domain.Bitcoin.ValueObjects;
-using Domain.Crypto.Constants;
-using Domain.Money;
-using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
-using Domain.Protocol.Tlv;
 
 /// <summary>
 /// The wire definitions of BOLT 2 "Interactive Transaction Construction": <c>tx_add_output</c> (67),
@@ -78,9 +80,27 @@ internal static class TxRemoveOutputWire
 
 internal static class TxCompleteWire
 {
+    public static readonly TlvDef<CommitNoncesTlv> CommitNonces = TlvDef.Typed<CommitNoncesTlv>(TaprootTlvConstants.CommitNonces,
+        baseTlv =>
+        {
+            if (baseTlv.Type != TaprootTlvConstants.CommitNonces)
+                throw new InvalidCastException("Invalid TLV type");
+
+            if (baseTlv.Length != CommitNoncesTlv.ValueLength || baseTlv.Value.Length != baseTlv.Length)
+                throw new InvalidCastException(
+                    $"Invalid length: commit_nonces holds {CommitNoncesTlv.ValueLength} bytes, not {baseTlv.Value.Length}");
+
+            return new CommitNoncesTlv(new MusigPublicNonce(baseTlv.Value[..MusigConstants.PublicNonceLen]),
+                                       new MusigPublicNonce(baseTlv.Value[MusigConstants.PublicNonceLen..]));
+        },
+        tlv => tlv);
+
+    public static readonly TlvDef<FundingNonceTlv> FundingNonce =
+        TlvDefs.PublicNonce(TaprootTlvConstants.FundingNonce, value => new FundingNonceTlv(value));
+
     public static readonly MessageWire<TxCompleteMessage> Def = new(MessageTypes.TxComplete, Encode, Decode,
-        TlvDef.Typed<CommitNoncesTlv>(TaprootTlvConstants.CommitNonces),
-        TlvDef.Typed<FundingNonceTlv>(TaprootTlvConstants.FundingNonce));
+        TxCompleteWire.CommitNonces,
+        TxCompleteWire.FundingNonce);
 
     private static void Encode(ref WireWriter writer, TxCompleteMessage message)
     {
@@ -99,9 +119,26 @@ internal static class TxCompleteWire
 
 internal static class TxSignaturesWire
 {
+    public static readonly TlvDef<SharedInputPartialSignatureTlv> SharedInputPartialSignature =
+        TlvDefs.PartialSignature(TaprootTlvConstants.SharedInputPartialSignature, value => new SharedInputPartialSignatureTlv(value));
+
+    public static readonly TlvDef<SharedInputSignatureTlv> SharedInputSignature = TlvDef.Typed<SharedInputSignatureTlv>(InteractiveTxTlvConstants.SharedInputSignature,
+        baseTlv =>
+        {
+            if (baseTlv.Type != InteractiveTxTlvConstants.SharedInputSignature)
+                throw new InvalidCastException("Invalid TLV type");
+
+            if (baseTlv.Length != SharedInputSignatureTlv.ValueLength
+             || baseTlv.Value.Length != SharedInputSignatureTlv.ValueLength)
+                throw new InvalidCastException("Invalid length");
+
+            return new SharedInputSignatureTlv(baseTlv.Value[..SharedInputSignatureTlv.ValueLength]);
+        },
+        tlv => tlv);
+
     public static readonly MessageWire<TxSignaturesMessage> Def = new(MessageTypes.TxSignatures, Encode, Decode,
-        TlvDef.Typed<SharedInputSignatureTlv>(InteractiveTxTlvConstants.SharedInputSignature),
-        TlvDef.Typed<SharedInputPartialSignatureTlv>(TaprootTlvConstants.SharedInputPartialSignature));
+        TxSignaturesWire.SharedInputSignature,
+        TxSignaturesWire.SharedInputPartialSignature);
 
     private static void Encode(ref WireWriter writer, TxSignaturesMessage message)
     {
@@ -136,9 +173,9 @@ internal static class TxSignaturesWire
 internal static class TxInitRbfWire
 {
     public static readonly MessageWire<TxInitRbfMessage> Def = new(MessageTypes.TxInitRbf, Encode, Decode,
-        TlvDef.Typed<FundingOutputContributionTlv>(TlvConstants.FundingOutputContribution),
-        TlvDef.Typed<RequireConfirmedInputsTlv>(TlvConstants.RequireConfirmedInputs),
-        TlvDef.Typed<RequestFundingTlv>(TlvConstants.LiquidityAds));
+        TlvDefs.FundingOutputContribution,
+        TlvDefs.RequireConfirmedInputs,
+        TlvDefs.RequestFunding);
 
     private static void Encode(ref WireWriter writer, TxInitRbfMessage message)
     {
@@ -164,9 +201,9 @@ internal static class TxInitRbfWire
 internal static class TxAckRbfWire
 {
     public static readonly MessageWire<TxAckRbfMessage> Def = new(MessageTypes.TxAckRbf, Encode, Decode,
-        TlvDef.Typed<FundingOutputContributionTlv>(TlvConstants.FundingOutputContribution),
-        TlvDef.Typed<RequireConfirmedInputsTlv>(TlvConstants.RequireConfirmedInputs),
-        TlvDef.Typed<ProvideFundingTlv>(TlvConstants.LiquidityAds));
+        TlvDefs.FundingOutputContribution,
+        TlvDefs.RequireConfirmedInputs,
+        TlvDefs.ProvideFunding);
 
     private static void Encode(ref WireWriter writer, TxAckRbfMessage message)
     {

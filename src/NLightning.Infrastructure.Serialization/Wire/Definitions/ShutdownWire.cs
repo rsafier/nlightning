@@ -1,16 +1,19 @@
+using NLightning.Domain.Bitcoin.ValueObjects;
+using NLightning.Domain.Crypto.Constants;
+using NLightning.Domain.Crypto.ValueObjects;
+using NLightning.Domain.Enums;
+using NLightning.Domain.Money;
+using NLightning.Domain.Protocol.Constants;
+using NLightning.Domain.Protocol.Tlv;
+using NLightning.Infrastructure.Converters;
+
 namespace NLightning.Infrastructure.Serialization.Wire.Definitions;
 
 using System.Runtime.Serialization;
 
 using Domain.Bitcoin.Constants;
-using Domain.Bitcoin.ValueObjects;
-using Domain.Crypto.Constants;
-using Domain.Crypto.ValueObjects;
-using Domain.Money;
-using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
-using Domain.Protocol.Tlv;
 
 /// <summary>
 /// The wire definitions of BOLT 2 <c>shutdown</c> (38; simple taproot <c>shutdown_nonce</c> 8) and
@@ -18,8 +21,11 @@ using Domain.Protocol.Tlv;
 /// </summary>
 internal static class ShutdownWire
 {
+    public static readonly TlvDef<ShutdownNonceTlv> ShutdownNonce =
+        TlvDefs.PublicNonce(TaprootTlvConstants.ShutdownNonce, value => new ShutdownNonceTlv(value));
+
     public static readonly MessageWire<ShutdownMessage> Def = new(MessageTypes.Shutdown, Encode, Decode,
-        TlvDef.Typed<ShutdownNonceTlv>(TaprootTlvConstants.ShutdownNonce));
+        ShutdownWire.ShutdownNonce);
 
     private static void Encode(ref WireWriter writer, ShutdownMessage message)
     {
@@ -51,8 +57,33 @@ internal static class ShutdownWire
 
 internal static class ClosingSignedWire
 {
+    public static readonly TlvDef<FeeRangeTlv> FeeRange = TlvDef.Typed<FeeRangeTlv>(TlvConstants.FeeRange,
+        baseTlv =>
+        {
+            if (baseTlv.Type != TlvConstants.FeeRange)
+                throw new InvalidCastException("Invalid TLV type");
+
+            if (baseTlv.Length != sizeof(ulong) * 2) // 2 long (128 bits) is 16 bytes
+                throw new InvalidCastException("Invalid length");
+
+            var minFeeAmount = LightningMoney
+               .FromUnit(EndianBitConverter.ToUInt64BigEndian(baseTlv.Value[..sizeof(ulong)]), LightningMoneyUnit.Satoshi);
+            var maxFeeAmount = LightningMoney
+               .FromUnit(EndianBitConverter.ToUInt64BigEndian(baseTlv.Value[sizeof(ulong)..]), LightningMoneyUnit.Satoshi);
+
+            return new FeeRangeTlv(minFeeAmount, maxFeeAmount);
+        },
+        tlv =>
+        {
+            var tlvValue = new byte[sizeof(ulong) * 2];
+            EndianBitConverter.GetBytesBigEndian(tlv.MinFeeAmount.Satoshi).CopyTo(tlvValue, 0);
+            EndianBitConverter.GetBytesBigEndian(tlv.MaxFeeAmount.Satoshi).CopyTo(tlvValue, sizeof(ulong));
+
+            return new BaseTlv(tlv.Type, tlvValue);
+        });
+
     public static readonly MessageWire<ClosingSignedMessage> Def = new(MessageTypes.ClosingSigned, Encode, Decode,
-        TlvDef.Typed<FeeRangeTlv>(TlvConstants.FeeRange));
+        ClosingSignedWire.FeeRange);
 
     private static void Encode(ref WireWriter writer, ClosingSignedMessage message)
     {

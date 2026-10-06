@@ -1,10 +1,15 @@
+using NLightning.Domain.Crypto.Constants;
+using NLightning.Domain.Gossip.Addresses;
+using NLightning.Domain.LiquidityAds;
+using NLightning.Domain.Protocol.Constants;
+using NLightning.Domain.Protocol.Tlv;
+using NLightning.Domain.Protocol.ValueObjects;
+
 namespace NLightning.Infrastructure.Serialization.Wire.Definitions;
 
 using Domain.Node;
-using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
-using Domain.Protocol.Tlv;
 using Node;
 
 /// <summary>
@@ -14,12 +19,71 @@ using Node;
 /// </summary>
 internal static class InitWire
 {
+    public static readonly TlvDef<NetworksTlv> Networks = TlvDef.Typed<NetworksTlv>(TlvConstants.Networks,
+        baseTlv =>
+        {
+            if (baseTlv.Type != TlvConstants.Networks)
+            {
+                throw new InvalidCastException("Invalid TLV type");
+            }
+
+            if (baseTlv.Length % CryptoConstants.Sha256HashLen != 0)
+            {
+                throw new InvalidCastException("Invalid length");
+            }
+
+            var chainHashes = new List<ChainHash>();
+            // split the Value into 32 bytes chunks and add it to the list
+            for (var i = 0; i < baseTlv.Length; i += CryptoConstants.Sha256HashLen)
+            {
+                chainHashes.Add(baseTlv.Value[i..(i + CryptoConstants.Sha256HashLen)]);
+            }
+
+            return new NetworksTlv(chainHashes);
+        },
+        tlv => tlv);
+
+    public static readonly TlvDef<RemoteAddressTlv> RemoteAddress = TlvDef.Typed<RemoteAddressTlv>(TlvConstants.RemoteAddress,
+        baseTlv =>
+        {
+            ArgumentNullException.ThrowIfNull(baseTlv);
+            if (baseTlv.Type != TlvConstants.RemoteAddress)
+                throw new InvalidCastException("Invalid TLV type");
+
+            try
+            {
+                return new RemoteAddressTlv(AddressDescriptorCodec.DecodeSingle(baseTlv.Value));
+            }
+            catch (FormatException e)
+            {
+                throw new InvalidCastException($"Invalid remote_addr: {e.Message}", e);
+            }
+        },
+        tlv =>
+        {
+            ArgumentNullException.ThrowIfNull(tlv);
+            return new BaseTlv(tlv.Type, AddressDescriptorCodec.Encode(tlv.Descriptor));
+        });
+
+    public static readonly TlvDef<WillFundRatesTlv> WillFundRates = TlvDef.Typed<WillFundRatesTlv>(TlvConstants.LiquidityAds,
+        baseTlv =>
+        {
+            if (baseTlv.Type != TlvConstants.LiquidityAds)
+                throw new InvalidCastException("Invalid TLV type");
+
+            if (!LiquidityAdsCodec.TryDecodeWillFundRates(baseTlv.Value, out var rates) || rates is null)
+                throw new InvalidCastException("Invalid option_will_fund value");
+
+            return new WillFundRatesTlv(rates);
+        },
+        tlv => new BaseTlv(tlv.Type, tlv.Value));
+
     private static readonly FeatureSetSerializer s_featureSetSerializer = new();
 
     public static readonly MessageWire<InitMessage> Def = new(MessageTypes.Init, Encode, Decode,
-        TlvDef.Typed<NetworksTlv>(TlvConstants.Networks),
-        TlvDef.Lenient<RemoteAddressTlv>(TlvConstants.RemoteAddress),
-        TlvDef.Lenient<WillFundRatesTlv>(TlvConstants.LiquidityAds));
+        InitWire.Networks,
+        InitWire.RemoteAddress.AsLenient(),
+        InitWire.WillFundRates.AsLenient());
 
     private static void Encode(ref WireWriter writer, InitMessage message)
     {

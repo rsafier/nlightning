@@ -13,10 +13,10 @@ using Domain.Protocol.Onion.ValueObjects;
 using Infrastructure.Bitcoin.Crypto.Functions;
 using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Onion.RouteBlinding;
-using Infrastructure.Protocol.Factories;
 using Infrastructure.Serialization.Factories;
 using Infrastructure.Serialization.Onion;
 using Infrastructure.Serialization.Tlv;
+using NLightning.Infrastructure.Serialization.Wire;
 
 /// <summary>
 /// BOLT 4 route blinding (ONION M5) against the official vectors: route-blinding-test.json (path creation, the
@@ -33,10 +33,10 @@ public class RouteBlindingVectorTests
     public RouteBlindingVectorTests()
     {
         var valueObjectSerializerFactory = new ValueObjectSerializerFactory();
-        var tlvConverterFactory = new TlvConverterFactory();
+        var tlvConverterFactory = new WireRegistry();
         var tlvSerializer = new TlvSerializer(valueObjectSerializerFactory);
         var tlvStreamSerializer = new TlvStreamSerializer(tlvConverterFactory, tlvSerializer);
-        _hopPayloadSerializer = new HopPayloadSerializer(tlvSerializer, tlvStreamSerializer, tlvConverterFactory,
+        _hopPayloadSerializer = new HopPayloadSerializer(tlvSerializer, tlvStreamSerializer,
                                                          valueObjectSerializerFactory);
     }
 

@@ -9,7 +9,7 @@ using Helpers;
 public class ShutdownMessageTests
 {
     private readonly IMessageTypeSerializer<ShutdownMessage> _shutdownMessageTypeSerializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ShutdownMessage>()!;
+        SerializerHelper.WireRegistry.Get<ShutdownMessage>()!;
 
     [Fact]
     public async Task Given_ValidStream_When_DeserializeAsync_Then_ReturnsShutdownMessage()

@@ -27,7 +27,7 @@ public class UpdateAddHtlcMessageTests
     public UpdateAddHtlcMessageTests()
     {
         _updateAddHtlcMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<UpdateAddHtlcMessage>()!;
+            SerializerHelper.WireRegistry.Get<UpdateAddHtlcMessage>()!;
     }
 
     #region Deserialize

@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -9,8 +10,6 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Exceptions;
-using Factories;
-using Helpers;
 using Serialization.Messages;
 
 /// <summary>
@@ -23,10 +22,7 @@ public class ChannelAnnouncementMessageTests
     private static readonly ShortChannelId s_scid = new(103, 1, 0);
 
     private readonly MessageSerializer _messageSerializer = new(NullLogger<MessageSerializer>.Instance,
-                                                                new MessageTypeSerializerFactory(
-                                                                    SerializerHelper.PayloadSerializerFactory,
-                                                                    SerializerHelper.TlvConverterFactory,
-                                                                    SerializerHelper.TlvStreamSerializer));
+                                                                new WireRegistry());
 
     [Fact]
     public async Task Given_AnnouncementWithFeaturesAndExtraData_When_Serialized_Then_WireLayoutMatchesBolt7()

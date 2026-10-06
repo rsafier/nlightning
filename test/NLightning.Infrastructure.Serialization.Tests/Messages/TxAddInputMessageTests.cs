@@ -25,7 +25,7 @@ public class TxAddInputMessageTests
     public TxAddInputMessageTests()
     {
         _txAddInputMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxAddInputMessage>()!;
+            SerializerHelper.WireRegistry.Get<TxAddInputMessage>()!;
     }
 
     [Fact]

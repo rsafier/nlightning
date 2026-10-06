@@ -14,7 +14,7 @@ public class TxRemoveInputMessageTests
     public TxRemoveInputMessageTests()
     {
         _txRemoveInputMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxRemoveInputMessage>()!;
+            SerializerHelper.WireRegistry.Get<TxRemoveInputMessage>()!;
     }
 
     [Fact]

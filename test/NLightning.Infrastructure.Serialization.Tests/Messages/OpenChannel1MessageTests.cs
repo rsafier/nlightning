@@ -59,13 +59,13 @@ public class OpenChannel1MessageTests
         Zero32 + new string('0', 4 * 16) + "00000003" + "0090" + "01E3" + string.Concat(Enumerable.Repeat(Point, 6));
 
     private readonly IMessageTypeSerializer<OpenChannel1Message> _openChannel1Serializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<OpenChannel1Message>()!;
+        SerializerHelper.WireRegistry.Get<OpenChannel1Message>()!;
 
     private readonly IMessageTypeSerializer<AcceptChannel1Message> _acceptChannel1Serializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<AcceptChannel1Message>()!;
+        SerializerHelper.WireRegistry.Get<AcceptChannel1Message>()!;
 
     private readonly IMessageTypeSerializer<OpenChannel1Message> _serializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<OpenChannel1Message>()!;
+        SerializerHelper.WireRegistry.Get<OpenChannel1Message>()!;
 
     [Fact]
     public async Task Given_SpecShapedBytes_When_DeserializeAsync_Then_AllFieldsAreDecoded()

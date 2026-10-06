@@ -3,10 +3,10 @@ using NLightning.Tests.Utils.Vectors;
 namespace NLightning.Integration.Tests.BOLT4;
 
 using Domain.Protocol.Onion.Validators;
-using Infrastructure.Protocol.Factories;
 using Infrastructure.Serialization.Factories;
 using Infrastructure.Serialization.Onion;
 using Infrastructure.Serialization.Tlv;
+using NLightning.Infrastructure.Serialization.Wire;
 
 public class HopPayloadVectorTests
 {
@@ -15,11 +15,11 @@ public class HopPayloadVectorTests
     public HopPayloadVectorTests()
     {
         var valueObjectSerializerFactory = new ValueObjectSerializerFactory();
-        var tlvConverterFactory = new TlvConverterFactory();
+        var tlvConverterFactory = new WireRegistry();
         var tlvSerializer = new TlvSerializer(valueObjectSerializerFactory);
         var tlvStreamSerializer = new TlvStreamSerializer(tlvConverterFactory, tlvSerializer);
 
-        _serializer = new HopPayloadSerializer(tlvSerializer, tlvStreamSerializer, tlvConverterFactory,
+        _serializer = new HopPayloadSerializer(tlvSerializer, tlvStreamSerializer,
                                                valueObjectSerializerFactory);
     }
 

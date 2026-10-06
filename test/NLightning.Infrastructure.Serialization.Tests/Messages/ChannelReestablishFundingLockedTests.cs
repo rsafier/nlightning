@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -10,7 +11,6 @@ using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Domain.Serialization.Interfaces;
 using Exceptions;
-using Factories;
 using Helpers;
 using Serialization.Messages;
 
@@ -33,12 +33,10 @@ public class ChannelReestablishFundingLockedTests
 
     private readonly MessageSerializer _messageSerializer =
         new(NullLogger<MessageSerializer>.Instance,
-            new MessageTypeSerializerFactory(SerializerHelper.PayloadSerializerFactory,
-                                             SerializerHelper.TlvConverterFactory,
-                                             SerializerHelper.TlvStreamSerializer));
+            new WireRegistry());
 
     private readonly IMessageTypeSerializer<ChannelReestablishMessage> _serializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ChannelReestablishMessage>()!;
+        SerializerHelper.WireRegistry.Get<ChannelReestablishMessage>()!;
 
     [Fact]
     public async Task Given_MyCurrentFundingLocked_When_RoundTripped_Then_ItIsByteExact()

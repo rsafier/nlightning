@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Integration.Tests.Docker.Interop.Eclair;
 
@@ -48,7 +49,7 @@ public sealed class LiquidityAdsWireRecorder
                                                       new RecordingSerializer(
                                                           new MessageSerializer(
                                                               sp.GetRequiredService<ILogger<MessageSerializer>>(),
-                                                              sp.GetRequiredService<IMessageTypeSerializerFactory>()),
+                                                              sp.GetRequiredService<WireRegistry>()),
                                                           this));
     }
 

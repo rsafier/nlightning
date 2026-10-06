@@ -35,7 +35,6 @@ public static class DependencyInjection
         services.AddSingleton<ITransportServiceFactory, TransportServiceFactory>();
 
         // TryAdd: AddSerializationInfrastructureServices also registers it so that it can be composed on its own
-        services.TryAddSingleton<ITlvConverterFactory, TlvConverterFactory>();
 
         // The onion replay set (NL-078): persisted, owned by the incoming HTLC and pruned by its cltv_expiry. Every
         // onion is processed through a scoped IUnitOfWork (AddRepositoriesInfrastructureServices)

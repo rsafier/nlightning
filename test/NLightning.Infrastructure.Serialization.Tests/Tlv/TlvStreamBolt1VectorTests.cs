@@ -24,7 +24,7 @@ public class TlvStreamBolt1VectorTests
 
     private const string ValidNodeId = "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb";
 
-    private readonly TlvStreamSerializer _tlvStreamSerializer = new(SerializerHelper.TlvConverterFactory,
+    private readonly TlvStreamSerializer _tlvStreamSerializer = new(SerializerHelper.WireRegistry,
                                                                      SerializerHelper.TlvSerializer);
 
     #region TLV Decoding Failures (any namespace)

@@ -14,7 +14,7 @@ public class TxCompleteMessageTests
     public TxCompleteMessageTests()
     {
         _txCompleteMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxCompleteMessage>()!;
+            SerializerHelper.WireRegistry.Get<TxCompleteMessage>()!;
     }
 
     [Fact]

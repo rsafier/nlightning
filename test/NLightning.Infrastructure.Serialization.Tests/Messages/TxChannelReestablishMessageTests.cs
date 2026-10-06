@@ -16,7 +16,7 @@ public class ChannelReestablishMessageTests
     public ChannelReestablishMessageTests()
     {
         _channelReestablishMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ChannelReestablishMessage>()!;
+            SerializerHelper.WireRegistry.Get<ChannelReestablishMessage>()!;
     }
 
     #region Deserialize
