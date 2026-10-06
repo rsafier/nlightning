@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Version>0.0.1</Version>
+    <!-- LND still fills its deprecated fields for older clients, and so do we: the generated [Obsolete] markers would
+         otherwise warn on every one -->
+    <NoWarn>$(NoWarn);CS0612</NoWarn>
+    <Description>A subset of LND's gRPC API (lnrpc.Lightning) over an NLightning node, with TLS and LND-format macaroons, so LND clients can use the node as their backend</Description>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(Configuration.Contains('Debug'))">
+    <DefineConstants>DEBUG;$(DefineConstants)</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(Configuration.Contains('Release'))">
+    <Optimize Condition=" '$(Optimize)' == '' ">true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The versions the in-tree LND test client uses (test/NLightning.Testing.Lnd) -->
+    <PackageReference Include="Google.Protobuf" Version="3.34.0"/>
+    <PackageReference Include="Grpc.AspNetCore.Server" Version="2.76.0"/>
+    <PackageReference Include="Grpc.Tools" Version="2.76.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- LND v0.21.4-beta's protos with our csharp_namespace (Protos/manifest.txt); server stubs only: the client side
+         of the same protos is test/NLightning.Testing.Lnd -->
+    <Protobuf Include="Protos\**\*.proto" ProtoRoot="Protos" GrpcServices="Server" Access="Public"/>
+    <None Include="Protos\manifest.txt"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NLightning.Application\NLightning.Application.csproj"/>
+    <ProjectReference Include="..\NLightning.Bolt11\NLightning.Bolt11.csproj"/>
+    <ProjectReference Include="..\NLightning.Domain\NLightning.Domain.csproj"/>
+  </ItemGroup>
+
+</Project>

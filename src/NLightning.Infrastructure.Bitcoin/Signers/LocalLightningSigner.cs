@@ -192,6 +192,26 @@ public partial class LocalLightningSigner : ILightningSigner
     }
 
     /// <inheritdoc />
+    public byte[] SignLightningMessage(ReadOnlySpan<byte> message, bool singleHash)
+    {
+        // The prefix goes in here, never in the caller: this path can only sign "Lightning Signed Message:..." digests
+        var digest = LightningMessageSignature.Digest(message, singleHash);
+        var privateKey = _secureKeyManager.GetNodeKeyPair().PrivKey.Value;
+        try
+        {
+            return LightningMessageSignature.Sign(privateKey, digest);
+        }
+        catch (CryptographicException e)
+        {
+            throw new SignerException(e.Message, e, "Internal error");
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(privateKey);
+        }
+    }
+
+    /// <inheritdoc />
     public ChannelAnnouncementSignatures SignChannelAnnouncement(ChannelId channelId,
                                                                  ReadOnlyMemory<byte> unsignedAnnouncement,
                                                                  ShortChannelId shortChannelId)

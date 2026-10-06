@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Payments.Interfaces;
 
 using Crypto.ValueObjects;
+using Enums;
 using Models;
 
 /// <summary>
@@ -65,4 +66,34 @@ public interface IPaymentDbRepository
     /// none.
     /// </summary>
     Task<int> CountTrampolineRelaysAsync() => Task.FromResult(0);
+
+    /// <summary>
+    /// A page of payments by creation time (<see cref="CreationRangeQuery"/>), without trampoline relay legs, only
+    /// <c>Succeeded</c> ones when <paramref name="succeededOnly"/> (LND's <c>ListPayments</c>, NL-1163). The default
+    /// (test doubles) reads every payment through <see cref="ListAsync(int, int)"/> and filters in memory.
+    /// </summary>
+    async Task<IReadOnlyList<PaymentModel>> ListByCreationAsync(CreationRangeQuery query, bool succeededOnly)
+    {
+        var all = new List<PaymentModel>();
+        for (var skip = 0; ; skip += 500)
+        {
+            var page = await ListAsync(skip, 500);
+            all.AddRange(page);
+            if (page.Count < 500)
+                break;
+        }
+
+        var matching = all.Where(p => !p.IsTrampolineRelay && query.Contains(p.CreatedAt)
+                                   && (!succeededOnly || p.Status == PaymentStatus.Succeeded));
+        var ordered = query.Ascending
+                          ? matching.OrderBy(p => p.CreatedAt)
+                          : matching.OrderByDescending(p => p.CreatedAt);
+        return ordered.Take(query.Take).ToList();
+    }
+
+    /// <summary>How many stored payments are not trampoline relay legs, only <c>Succeeded</c> ones when
+    /// <paramref name="succeededOnly"/> (LND's <c>total_num_payments</c>). The default (test doubles) counts in
+    /// memory.</summary>
+    async Task<int> CountAsync(bool succeededOnly) =>
+        (await ListByCreationAsync(new CreationRangeQuery(null, null, true, int.MaxValue), succeededOnly)).Count;
 }
