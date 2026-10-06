@@ -81,6 +81,26 @@ public class ConfigurationCheckTests
                                     || f.Contains(key.Split(':')[^1], StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData("FeeEstimation:CacheExpiration", "1h30m")]
+    [InlineData("FeeEstimation:CacheExpiration", "300")]
+    [InlineData("FeeEstimation:CacheExpiration", "5s")]
+    [InlineData("FeeEstimation:CacheMaxAge", "30d")]
+    [InlineData("FeeEstimation:Method", "PUT")]
+    public void Given_ABadFeeEstimationSetting_When_Checked_Then_ItIsReported(string key, string value)
+    {
+        // Arrange (NL-756): a malformed CacheExpiration silently became 5 minutes, and the section was checked only
+        // when the fee service was first built, never by --check-config
+        var configuration = BuildTemplateConfiguration("mainnet", (key, value));
+
+        // Act
+        var failures = ConfigurationCheck.Run(configuration, "mainnet");
+
+        // Assert
+        Assert.Contains(failures, f => f.StartsWith(key, StringComparison.Ordinal)
+                                    && f.Contains(value, StringComparison.Ordinal));
+    }
+
     [Fact]
     public void Given_PollModeWithoutZmq_When_Checked_Then_ItIsValid()
     {

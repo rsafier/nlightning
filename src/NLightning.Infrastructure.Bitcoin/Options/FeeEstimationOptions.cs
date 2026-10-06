@@ -92,15 +92,31 @@ public class FeeEstimationOptions
     /// </summary>
     public string CacheFile { get; set; } = string.Empty;
 
+    /// <summary>The <see cref="CacheExpiration"/> default (5 minutes).</summary>
+    public static readonly TimeSpan DefaultCacheExpiration = TimeSpan.FromMinutes(5);
+
+    /// <summary>The shortest <see cref="CacheExpiration"/> (10 s): a public fee API is not polled faster.</summary>
+    public static readonly TimeSpan MinCacheExpiration = TimeSpan.FromSeconds(10);
+
+    /// <summary>The longest <see cref="CacheExpiration"/> (1 day).</summary>
+    public static readonly TimeSpan MaxCacheExpiration = TimeSpan.FromDays(1);
+
+    /// <summary>The longest <see cref="CacheMaxAge"/> (7 days): an older estimate says nothing about today's fees.</summary>
+    public static readonly TimeSpan MaxCacheMaxAge = TimeSpan.FromDays(7);
+
     /// <summary>
     /// How long an estimate is fresh (<c>30s</c>, <c>5m</c>, <c>1h</c>, <c>1d</c>; default 5 minutes): the refresh
-    /// interval, and a saved estimate younger than this is used at the start without waiting for a fetch.
+    /// interval, and a saved estimate younger than this is used at the start without waiting for a fetch. One number and
+    /// one unit (<see cref="TryParseDuration"/>), from <see cref="MinCacheExpiration"/> to
+    /// <see cref="MaxCacheExpiration"/>; anything else is refused at the start (NL-756: it silently became 5 minutes).
     /// </summary>
     public string CacheExpiration { get; set; } = "5m"; // 5 minutes
 
     /// <summary>
     /// The oldest saved estimate used at the start (same format as <see cref="CacheExpiration"/>; default 1 hour). An
     /// older one is ignored and logged: <see cref="FallbackFeeRatePerKw"/> applies until the first fetch succeeds.
+    /// Checked only with a <see cref="CacheFile"/>: at least <see cref="CacheExpiration"/>, at most
+    /// <see cref="MaxCacheMaxAge"/>.
     /// </summary>
     public string CacheMaxAge { get; set; } = "1h";
 
@@ -120,6 +136,12 @@ public class FeeEstimationOptions
                 errors.Add(urlError + ".");
             if (!FeeRateConverter.IsKnownUnit(RateUnit))
                 errors.Add($"FeeEstimation:RateUnit '{RateUnit}' is not one of {FeeRateConverter.KnownUnitsText}.");
+            // Anything but GET was sent as a POST (NL-756)
+            if (!string.Equals(Method?.Trim(), "GET", StringComparison.OrdinalIgnoreCase)
+             && !string.Equals(Method?.Trim(), "POST", StringComparison.OrdinalIgnoreCase))
+                errors.Add($"FeeEstimation:Method '{Method}' is not GET or POST.");
+            if (string.IsNullOrWhiteSpace(PreferredFeeRate))
+                errors.Add("FeeEstimation:PreferredFeeRate must name the JSON property that holds the rate.");
         }
 
         if (IsSource(SourceBitcoind))
@@ -135,8 +157,25 @@ public class FeeEstimationOptions
             errors.Add(
                 $"FeeEstimation:FallbackFeeRatePerKw must be at least {FeeRateConverter.FeeratePerKwFloor} sat/kw.");
 
-        if (!string.IsNullOrWhiteSpace(CacheFile) && !TryParseDuration(CacheMaxAge, out _))
-            errors.Add($"FeeEstimation:CacheMaxAge '{CacheMaxAge}' is not a positive duration such as 30m, 1h or 1d.");
+        // NL-756: a malformed or out-of-range value is refused, never read as the default
+        var expirationValid = TryParseDuration(CacheExpiration, out var expiration);
+        if (!expirationValid)
+            errors.Add($"FeeEstimation:CacheExpiration '{CacheExpiration}' is not a duration such as 30s, 5m or 1h "
+                     + "(one number and one unit: s, m, h or d).");
+        else if (expiration < MinCacheExpiration || expiration > MaxCacheExpiration)
+            errors.Add($"FeeEstimation:CacheExpiration '{CacheExpiration}' must be between 10s and 1d.");
+
+        if (!string.IsNullOrWhiteSpace(CacheFile))
+        {
+            if (!TryParseDuration(CacheMaxAge, out var maxAge))
+                errors.Add($"FeeEstimation:CacheMaxAge '{CacheMaxAge}' is not a positive duration such as 30m, 1h or "
+                         + "1d.");
+            else if (maxAge > MaxCacheMaxAge)
+                errors.Add($"FeeEstimation:CacheMaxAge '{CacheMaxAge}' must be at most 7d.");
+            else if (expirationValid && maxAge < expiration)
+                errors.Add($"FeeEstimation:CacheMaxAge '{CacheMaxAge}' must not be shorter than "
+                         + $"FeeEstimation:CacheExpiration '{CacheExpiration}'.");
+        }
 
         if (IsSource(SourceFixed) && FixedFeeRatePerKw < FeeRateConverter.FeeratePerKwFloor)
             errors.Add($"FeeEstimation:FixedFeeRatePerKw must be at least {FeeRateConverter.FeeratePerKwFloor} sat/kw.");
