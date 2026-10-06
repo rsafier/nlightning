@@ -379,7 +379,18 @@ public static class NodeServiceExtensions
                      return true;
                  })
                 .ValidateOnStart();
-        services.AddOptions<FeeEstimationOptions>().BindConfiguration("FeeEstimation").ValidateOnStart();
+        // Checked at the start and by --check-config, not only when the fee service is first built (NL-756)
+        services.AddOptions<FeeEstimationOptions>()
+                .BindConfiguration("FeeEstimation")
+                .Validate(options =>
+                 {
+                     var errors = options.GetValidationErrors();
+                     if (errors.Count > 0)
+                         throw new OptionsValidationException("FeeEstimation", typeof(FeeEstimationOptions), errors);
+
+                     return true;
+                 })
+                .ValidateOnStart();
         services.AddOptions<ChannelCloseOptions>().BindConfiguration(ChannelCloseOptions.SectionName);
         services.Configure<ChannelSafetyOptions>(configuration.GetSection(ChannelSafetyOptions.SectionName));
         services.Configure<OnchainOptions>(configuration.GetSection(OnchainOptions.SectionName));

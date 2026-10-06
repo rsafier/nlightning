@@ -153,7 +153,7 @@ public class FeeServiceTests
                                });
         var feeOptions = new FeeEstimationOptions
         {
-            CacheExpiration = "1s"
+            CacheExpiration = "10s"
         };
         var feeService = new FeeService(new OptionsWrapper<FeeEstimationOptions>(feeOptions),
                                         new HttpClient(httpMessageHandlerMock.Object),
