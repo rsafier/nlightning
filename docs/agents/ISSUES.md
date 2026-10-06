@@ -177,12 +177,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 101 | 102 |
+| open | 0 | 0 | 1 | 98 | 99 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 233 | 483 | 800 |
+| fixed | 15 | 69 | 233 | 487 | 804 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **69** | **250** | **605** | **939** |
+| **Total** | **15** | **69** | **250** | **606** | **940** |
 
 ### Epics
 
@@ -1944,13 +1944,24 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-1059 Restoring a static channel backup does not follow a simple taproot channel's splices
-- **Status:** open
+- **Status:** fixed (a1a0fd32)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Backup/SpliceSpendFollower.cs` (`Matches`, `GetCandidateOutputs`, `TryParseFundingWitness`)
 - **Evidence:** taproot wave t03 lane SPL. The follower recognizes a splice's new funding output as the P2WSH 2-of-2 of our rotated key and the peer's known key, and learns a peer's rotated key from the 2-of-2 witness of its spend. A taproot splice creates a MuSig2 P2TR output and spends by key path, whose witness names no key: a restored taproot channel follows only a splice its backup named as pending, and stops at any other (the peer's rotated key is unknown).
 - **Fix sketch:** match P2TR outputs of `KeyAgg(our candidate keys, the peer's known keys)` for a taproot entry; past a splice the backup did not name, ask the peer (peer storage, or the peer's `channel_reestablish` after the restore) rather than the chain.
-- **Blocks/Blocked-by:** Related NL-965, NL-478
+- **Fix:** (taproot polish, a1a0fd32) `SpliceSpendFollower` matches P2TR outputs of `KeyAgg(our candidate key, the peer's known keys)` for a taproot entry (`ChainFundingSpendLocator` takes the optional `IMusig2Service`). Past a splice whose peer key is unknown, the locator walks the splice's P2TR outputs spend by spend (at most 32 per follow) until the peer's commitment that pays our taproot `to_remote` or anchor (`PaysUsOnTaprootCommitment`, keyed to our payment basepoint, which no other channel shares) or a splice our keys recognize proves the path; the restore also asks the peer: the latest `peer_storage_retrieval` of the channel's peer names the funding outpoint and our key index (`FollowPeerStorageHintAsync`, at restore and in every splice-wait round), and the splice, or the earlier splice that the named funding's transaction spends, is followed there. Tests: `SpliceSpendFollowerTaprootTests`, `ChainFundingSpendLocatorTaprootSpliceTests` (one and two splices, rotated peer keys, a foreign commitment, an open splice), `ChannelRestoreServiceTaprootSpliceTests` (two splices to the peer's commitment; an open splice resolved by a later retrieval; two splices resolved by the retrieval at restore; a retrieval of another channel). Left: NL-1215 (the funding keys of a funding found that way).
+- **Blocks/Blocked-by:** Related NL-965, NL-478, NL-1215
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Backups")
+
+### NL-1215 A recovery channel followed past a simple taproot splice by its commitment or the peer's blob keeps stale funding keys
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Backup/ChainFundingSpendLocator.cs` (`CheckTaprootOutputAsync`), `ChannelRestoreService.FollowPeerStorageHintAsync`
+- **Evidence:** taproot polish (NL-1059): a key-path spend names no key and the peer-storage blob names only our key index, so a taproot funding found by the peer's commitment or the blob is stored with the peer's last known funding key (and ours too when the commitment found it). The recovery channel never signs, the peer's commitment is classified by outpoint and swept by our payment basepoint, so nothing is lost; but the funding row's keys do not aggregate to the output's key and the signer's `RegisterFunding`/`LockFunding` of the move may refuse it (logged, ignored).
+- **Fix sketch:** take the peer's funding key from its `channel_reestablish` (`my_current_funding_locked` names the txid) or a later splice message if the protocol ever carries it; otherwise mark the funding row's keys as unknown instead of copying the last ones.
+- **Blocks/Blocked-by:** Related NL-1059
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Backups")
 
 ### NL-1065 The receiver charged the initiator the segwit marker and flag, refusing Eclair's taproot splice-out by 3 sat
@@ -2017,12 +2028,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Audit 2026-10-04:** simple close is built and used for every taproot cooperative close (cluster `taproot` and Eclair suites, the first live taproot close on Mutinynet). This entry covers only a peer that later reconnects without bits 60/61; refusing the cooperative close there follows the spec dependency, and the channel can still be force closed. Reopen if such a peer is seen.
 
 ### NL-968 The simple-close fee of a taproot channel is estimated with the P2WSH 2-of-2 witness weight
-- **Status:** open
+- **Status:** fixed (513a1d4a)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `Domain/Channels/Closing/ClosingFeeCalculator.EstimateWeight`, `Application/Channels/Close/Simple/SimpleCloseRules.ChooseFee`
 - **Evidence:** Taproot wave t02 lane CLOSE: a taproot closing transaction spends the funding output by key path (a 64-byte witness, about 66 WU) where the estimate assumes the 2-of-2 multisig witness (about 222 WU), so our `closing_complete` pays about 156 WU x feerate / 1000 sat more than its feerate asks (under 0.4 sat/vB at 2,500 sat/kw). Harmless for safety (a higher feerate), but not exact.
 - **Fix sketch:** Pass the commitment format to `EstimateWeight` and use the key-path witness for `SimpleTaproot`.
+- **Fix:** (taproot polish, 513a1d4a) `ClosingFeeCalculator.EstimateWeight(local, remote, taprootKeyPath)` counts 68 WU of witness (marker and flag, one item, the 64-byte `SIGHASH_DEFAULT` signature) and `SimpleCloseRules.ChooseFee` passes it for taproot channels: 568 WU with a P2WPKH and a P2WSH output (was 724). Tests: `ClosingFeeCalculatorTests` taproot rows, `SimpleCloseRulesTests` taproot fees, `SimpleTaprootCloseHarnessTests` (the fee equals the feerate times the signed transaction's exact weight, 520 WU).
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T5
 
@@ -6363,7 +6375,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 ## Crypto providers and key management
 
 ### NL-911 MuSig2 secrets are zeroed on a best-effort basis only
-- **Status:** open
+- **Status:** fixed (5911e14a)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Crypto/Musig2/Bip327.cs`
@@ -6372,6 +6384,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-877, NL-437
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T0, T3
 - **Audit 2026-10-04:** partly done: the residual is recorded as SECURITY_REVIEW.md SR-09a (cde672a9); left: the NonceHash/TaggedHash SHA-256 states are not wiped and the hash outputs passed to ScalarFromHash are not zeroed.
+- **Fix:** (taproot polish, 5911e14a) the secret-absorbing hashes (`MuSig/aux`, `MuSig/nonce`, `MuSig/deterministic/nonce`) run on `Crypto/Musig2/WipingSha256` (managed SHA-256, pinned state and block zeroed after the digest and on dispose, also on exceptions; digests only in zeroed stack buffers); `Bip327.Sign` clears every secret intermediate scalar on every path, `NonceGen` zeroes its secret nonce on failure; the signer zeroes the extended channel key `GetChannelKeyAtIndex` hands out (a fresh copy per call, documented on `ISecureKeyManager`), disposes intermediate BIP 32 keys and drops the node nonce of a failed `channel_announcement_2` pair. Every BIP 327 and simple taproot vector unchanged. Tests: `WipingSha256Tests` (FIPS vectors, platform cross-check, wiping), `Bip327SecretWipingTests` (hashers wiped after NonceGen/DeterministicSign and when they throw, nonce scalars zeroed on Sign success and failure), `SimpleTaprootSignerSecretWipingTests`. Residual (SR-09a): CPU registers/stack of the compression function and NBitcoin.Secp256k1's internal temporaries, and the node key copies of SR-17.
 
 ### NL-912 NBitcoin.Secp256k1 3.2.0's MuSig2 accepts the point at infinity in a signer's public nonce
 - **Status:** wontfix (we do not use NBitcoin's MuSig2: D-T3 chose our own BIP 327 module; it stays only as a cross-check in tests)
@@ -9157,12 +9170,13 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** BOLT5_ONCHAIN_PLAN O6-T2, O7
 
 ### NL-1050 The anchor sweep of a revoked or future simple taproot peer commitment leaves the peer's anchor
-- **Status:** open
+- **Status:** fixed (a1c8ef79)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/Anchors/AnchorCpfpService.Taproot.cs` (`FindPeerAnchor`)
 - **Evidence:** A simple taproot anchor's control block needs its internal key, and the peer's anchor on its own commitment is keyed to its `local_delayedpubkey` at that commitment's point. `FindPeerAnchor` derives it for the points the snapshot holds (the peer's current and next commitment); a revoked or future peer commitment (data loss) is swept with our anchor only. P2WSH anchors are keyed to the funding keys and do not have this limit. Sweeping a single anchor is almost never economical (`AnchorCpfpPolicy.DecideAnchorSweep`), so this costs at most the peer's 330 sat staying unspent.
 - **Fix sketch:** for a revoked close derive the point from the shachain secret (`RevokedCommitDataSource`), or find any 330-sat P2TR output of the commitment whose key-path tweak matches a known key.
+- **Fix:** (taproot polish, a1c8ef79) for a revoked close of a simple taproot channel `AnchorCpfpService.GetRevokedPeerPointAsync` derives the peer's point of that commitment from the secret it revealed (our copy of its shachain, `ISecretStorageServiceFactory` now an optional dependency) and `FindPeerAnchor` tries it, so the 16-block sweep takes both anchors, as LND and Eclair do. A future commitment (data loss) keeps the limit by design: its point is unknowable (BOLT 2 says to ignore `my_current_per_commitment_point`), and the second sketch cannot work (the leaf's control block needs the internal key). Test: `AnchorPeerCpfpTests.Given_PeersRevokedTaprootCommitmentConfirmed_*` (with the secret: both anchors swept and script-valid; without: no uneconomical lone sweep).
 - **Blocks/Blocked-by:** Related NL-966, NL-877
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T4
 
