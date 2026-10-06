@@ -26,7 +26,6 @@ public class HopPayloadSerializerKeysendTests
 
     private readonly HopPayloadSerializer _serializer = new(SerializerHelper.TlvSerializer,
                                                             SerializerHelper.TlvStreamSerializer,
-                                                            SerializerHelper.TlvConverterFactory,
                                                             SerializerHelper.ValueObjectSerializerFactory);
 
     [Fact]

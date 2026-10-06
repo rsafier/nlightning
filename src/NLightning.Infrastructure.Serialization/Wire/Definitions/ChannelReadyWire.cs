@@ -1,9 +1,10 @@
+using NLightning.Domain.Protocol.Constants;
+using NLightning.Domain.Protocol.Tlv;
+
 namespace NLightning.Infrastructure.Serialization.Wire.Definitions;
 
-using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
-using Domain.Protocol.Tlv;
 
 /// <summary>
 /// The wire definition of BOLT 2 <c>channel_ready</c> (36): <c>channel_id</c> ‖ <c>second_per_commitment_point</c>,
@@ -12,11 +13,33 @@ using Domain.Protocol.Tlv;
 /// </summary>
 internal static class ChannelReadyWire
 {
+    public static readonly TlvDef<ShortChannelIdTlv> ShortChannelId = TlvDef.Typed<ShortChannelIdTlv>(TlvConstants.ShortChannelId,
+        baseTlv =>
+        {
+            if (baseTlv.Type != TlvConstants.ShortChannelId)
+            {
+                throw new InvalidCastException("Invalid TLV type");
+            }
+
+            if (baseTlv.Length == 0)
+            {
+                throw new InvalidCastException("Invalid length");
+            }
+
+            return new ShortChannelIdTlv(baseTlv.Value);
+        },
+        tlv =>
+        {
+            tlv.Value = tlv.ShortChannelId;
+
+            return tlv;
+        });
+
     public static readonly MessageWire<ChannelReadyMessage> Def = new(MessageTypes.ChannelReady, Encode, Decode,
-        TlvDef.Typed<ShortChannelIdTlv>(TlvConstants.ShortChannelId),
-        TlvDef.Typed<NextLocalNonceTlv>(TaprootTlvConstants.NextLocalNonce),
-        TlvDef.Typed<AnnouncementNodeNonceTlv>(TaprootTlvConstants.AnnouncementNodeNonce),
-        TlvDef.Typed<AnnouncementBitcoinNonceTlv>(TaprootTlvConstants.AnnouncementBitcoinNonce));
+        ChannelReadyWire.ShortChannelId,
+        TlvDefs.NextLocalNonce,
+        TlvDefs.AnnouncementNodeNonce,
+        TlvDefs.AnnouncementBitcoinNonce);
 
     private static void Encode(ref WireWriter writer, ChannelReadyMessage message)
     {

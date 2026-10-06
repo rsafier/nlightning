@@ -11,18 +11,15 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
     private readonly Dictionary<Type, IMessageTypeSerializer> _serializers = new();
     private readonly Dictionary<MessageTypes, Type> _messageTypeDictionary = new();
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
-    private readonly ITlvConverterFactory _tlvConverterFactory;
     private readonly ITlvStreamSerializer _tlvStreamSerializer;
     private readonly Wire.WireRegistry _wireRegistry;
 
     public MessageTypeSerializerFactory(IPayloadSerializerFactory payloadSerializerFactory,
-                                        ITlvConverterFactory tlvConverterFactory,
                                         ITlvStreamSerializer tlvStreamSerializer)
     {
         _payloadSerializerFactory = payloadSerializerFactory;
-        _tlvConverterFactory = tlvConverterFactory;
         _tlvStreamSerializer = tlvStreamSerializer;
-        _wireRegistry = new Wire.WireRegistry(tlvConverterFactory);
+        _wireRegistry = new Wire.WireRegistry();
     }
 
     public IMessageTypeSerializer<TMessageType>? GetSerializer<TMessageType>() where TMessageType : IMessage

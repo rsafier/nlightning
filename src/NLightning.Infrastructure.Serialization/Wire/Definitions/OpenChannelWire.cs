@@ -17,9 +17,9 @@ using Domain.Protocol.ValueObjects;
 internal static class OpenChannelWire
 {
     public static readonly MessageWire<OpenChannel1Message> Def = new(MessageTypes.OpenChannel, Encode, Decode,
-        TlvDef.Typed<UpfrontShutdownScriptTlv>(TlvConstants.UpfrontShutdownScript),
-        TlvDef.Typed<ChannelTypeTlv>(TlvConstants.ChannelType),
-        TlvDef.Typed<NextLocalNonceTlv>(TaprootTlvConstants.NextLocalNonce));
+        TlvDefs.UpfrontShutdownScript,
+        TlvDefs.ChannelType,
+        TlvDefs.NextLocalNonce);
 
     private static void Encode(ref WireWriter writer, OpenChannel1Message message)
     {
@@ -80,9 +80,9 @@ internal static class OpenChannelWire
 internal static class AcceptChannelWire
 {
     public static readonly MessageWire<AcceptChannel1Message> Def = new(MessageTypes.AcceptChannel, Encode, Decode,
-        TlvDef.Typed<UpfrontShutdownScriptTlv>(TlvConstants.UpfrontShutdownScript),
-        TlvDef.Typed<ChannelTypeTlv>(TlvConstants.ChannelType),
-        TlvDef.Typed<NextLocalNonceTlv>(TaprootTlvConstants.NextLocalNonce));
+        TlvDefs.UpfrontShutdownScript,
+        TlvDefs.ChannelType,
+        TlvDefs.NextLocalNonce);
 
     private static void Encode(ref WireWriter writer, AcceptChannel1Message message)
     {

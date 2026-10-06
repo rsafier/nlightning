@@ -30,7 +30,6 @@ public class GossipQueryMessageTests
     {
         var messageTypeSerializerFactory =
             new MessageTypeSerializerFactory(SerializerHelper.PayloadSerializerFactory,
-                                             SerializerHelper.TlvConverterFactory,
                                              SerializerHelper.TlvStreamSerializer);
         _messageSerializer = new MessageSerializer(NullLogger<MessageSerializer>.Instance,
                                                    messageTypeSerializerFactory);

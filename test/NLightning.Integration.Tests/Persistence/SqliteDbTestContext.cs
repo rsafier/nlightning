@@ -14,14 +14,12 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
-using Domain.Protocol.Interfaces;
 using Domain.Protocol.Models;
 using Domain.Serialization.Interfaces;
 using Infrastructure.Crypto.Hashes;
 using Infrastructure.Persistence.Contexts;
 using Infrastructure.Persistence.Enums;
 using Infrastructure.Persistence.Providers;
-using Infrastructure.Protocol.Factories;
 using Infrastructure.Serialization;
 
 /// <summary>
@@ -69,7 +67,6 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
 
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddSingleton<ITlvConverterFactory, TlvConverterFactory>();
         services.AddSerializationInfrastructureServices();
 
         var testContext = new SqliteDbTestContext(connection, services.BuildServiceProvider());

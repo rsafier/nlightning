@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Integration.Tests.BOLT4;
 
@@ -52,7 +53,7 @@ public class OnionServiceRegistrationTests
     [Fact]
     public void Given_OnlySerializationRegistrations_When_ResolvingHopPayloadSerializer_Then_Resolves()
     {
-        // Arrange: HopPayloadSerializer depends on ITlvConverterFactory, which used to come only from Bitcoin
+        // Arrange: HopPayloadSerializer depends on WireRegistry, which used to come only from Bitcoin
         var services = new ServiceCollection();
         services.AddSerializationInfrastructureServices();
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -77,7 +78,7 @@ public class OnionServiceRegistrationTests
         services.AddBitcoinInfrastructure();
 
         // Act
-        var registrations = services.Count(d => d.ServiceType == typeof(ITlvConverterFactory));
+        var registrations = services.Count(d => d.ServiceType == typeof(WireRegistry));
 
         // Assert
         Assert.Equal(1, registrations);

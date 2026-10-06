@@ -27,7 +27,6 @@ public class TrampolineHopPayloadSerializerTests
 
     private readonly HopPayloadSerializer _serializer = new(SerializerHelper.TlvSerializer,
                                                             SerializerHelper.TlvStreamSerializer,
-                                                            SerializerHelper.TlvConverterFactory,
                                                             SerializerHelper.ValueObjectSerializerFactory);
 
     public static TheoryData<string> TrampolineVectorPayloads => new(

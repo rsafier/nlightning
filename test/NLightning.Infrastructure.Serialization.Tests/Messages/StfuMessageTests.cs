@@ -63,7 +63,6 @@ public class StfuMessageTests
         // (splicing plan Q-W-01), so the factory must map type 2 or the even type would kill the connection
         var messageTypeSerializerFactory =
             new MessageTypeSerializerFactory(SerializerHelper.PayloadSerializerFactory,
-                                             SerializerHelper.TlvConverterFactory,
                                              SerializerHelper.TlvStreamSerializer);
         var messageSerializer = new MessageSerializer(NullLogger<MessageSerializer>.Instance,
                                                       messageTypeSerializerFactory);

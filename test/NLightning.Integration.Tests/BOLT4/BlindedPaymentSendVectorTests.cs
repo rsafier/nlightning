@@ -10,10 +10,10 @@ using Domain.Money;
 using Domain.Protocol.Onion.Models;
 using Infrastructure.Bitcoin.Crypto.Functions;
 using Infrastructure.Bitcoin.Onion;
-using Infrastructure.Protocol.Factories;
 using Infrastructure.Serialization.Factories;
 using Infrastructure.Serialization.Onion;
 using Infrastructure.Serialization.Tlv;
+using NLightning.Infrastructure.Serialization.Wire;
 
 /// <summary>
 /// BOLT 4 route blinding, sender side (ONION M5 step 2): blinded-payment-onion-test.json's <c>generate</c> section
@@ -28,10 +28,10 @@ public class BlindedPaymentSendVectorTests
     public BlindedPaymentSendVectorTests()
     {
         var valueObjectSerializerFactory = new ValueObjectSerializerFactory();
-        var tlvConverterFactory = new TlvConverterFactory();
+        var tlvConverterFactory = new WireRegistry();
         var tlvSerializer = new TlvSerializer(valueObjectSerializerFactory);
         var tlvStreamSerializer = new TlvStreamSerializer(tlvConverterFactory, tlvSerializer);
-        _hopPayloadSerializer = new HopPayloadSerializer(tlvSerializer, tlvStreamSerializer, tlvConverterFactory,
+        _hopPayloadSerializer = new HopPayloadSerializer(tlvSerializer, tlvStreamSerializer,
                                                          valueObjectSerializerFactory);
         _onionFactory = new PaymentOnionFactory(new SphinxService(new Secp256K1Math()), _hopPayloadSerializer);
     }

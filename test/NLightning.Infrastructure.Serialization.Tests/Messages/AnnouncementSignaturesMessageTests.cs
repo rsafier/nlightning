@@ -24,7 +24,6 @@ public class AnnouncementSignaturesMessageTests
     private readonly MessageSerializer _messageSerializer = new(NullLogger<MessageSerializer>.Instance,
                                                                 new MessageTypeSerializerFactory(
                                                                     SerializerHelper.PayloadSerializerFactory,
-                                                                    SerializerHelper.TlvConverterFactory,
                                                                     SerializerHelper.TlvStreamSerializer));
 
     [Fact]

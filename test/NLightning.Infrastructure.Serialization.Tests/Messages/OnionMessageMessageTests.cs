@@ -24,7 +24,6 @@ public class OnionMessageMessageTests
     private readonly MessageSerializer _messageSerializer =
         new(NullLogger<MessageSerializer>.Instance,
             new MessageTypeSerializerFactory(SerializerHelper.PayloadSerializerFactory,
-                                             SerializerHelper.TlvConverterFactory,
                                              SerializerHelper.TlvStreamSerializer));
 
     public static TheoryData<int> VectorHops => new() { 0, 1, 2, 3 };

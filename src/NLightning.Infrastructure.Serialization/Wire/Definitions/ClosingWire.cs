@@ -1,18 +1,19 @@
+using NLightning.Domain.Bitcoin.ValueObjects;
+using NLightning.Domain.Channels.ValueObjects;
+using NLightning.Domain.Crypto.Constants;
+using NLightning.Domain.Crypto.ValueObjects;
+using NLightning.Domain.Money;
+using NLightning.Domain.Protocol.Constants;
+using NLightning.Domain.Protocol.Tlv;
+using NLightning.Domain.Protocol.ValueObjects;
+
 namespace NLightning.Infrastructure.Serialization.Wire.Definitions;
 
 using System.Runtime.Serialization;
 
 using Domain.Bitcoin.Constants;
-using Domain.Bitcoin.ValueObjects;
-using Domain.Channels.ValueObjects;
-using Domain.Crypto.Constants;
-using Domain.Crypto.ValueObjects;
-using Domain.Money;
-using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
-using Domain.Protocol.Tlv;
-using Domain.Protocol.ValueObjects;
 
 /// <summary>
 /// The wire definitions of BOLT 2 <c>option_simple_close</c>'s <c>closing_complete</c> (40) and <c>closing_sig</c>
@@ -110,6 +111,9 @@ internal static class ClosingCompleteWire
 
 internal static class ClosingSigWire
 {
+    public static readonly TlvDef<NextCloseeNonceTlv> NextCloseeNonce =
+        TlvDefs.PublicNonce(TaprootTlvConstants.NextCloseeNonce, value => new NextCloseeNonceTlv(value));
+
     public static readonly MessageWire<ClosingSigMessage> Def =
         new(MessageTypes.ClosingSig, Encode, Decode, false, false, wrapBodyErrors: true,
             TlvDef.Raw(ClosingSignatures.CloserOutputOnlyType, CryptoConstants.MaxSignatureSize),
@@ -118,7 +122,7 @@ internal static class ClosingSigWire
             TlvDef.Raw(TaprootTlvConstants.CloserNoClosee, MusigConstants.PartialSignatureLen),
             TlvDef.Raw(TaprootTlvConstants.NoCloserClosee, MusigConstants.PartialSignatureLen),
             TlvDef.Raw(TaprootTlvConstants.CloserAndClosee, MusigConstants.PartialSignatureLen),
-            TlvDef.Typed<NextCloseeNonceTlv>(TaprootTlvConstants.NextCloseeNonce));
+            ClosingSigWire.NextCloseeNonce);
 
     private static void Encode(ref WireWriter writer, ClosingSigMessage message)
     {

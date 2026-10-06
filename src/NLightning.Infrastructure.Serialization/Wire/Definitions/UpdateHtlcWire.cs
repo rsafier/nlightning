@@ -1,14 +1,15 @@
 using System.Runtime.Serialization;
+using NLightning.Domain.Crypto.Constants;
+using NLightning.Domain.Crypto.ValueObjects;
+using NLightning.Domain.Money;
+using NLightning.Domain.Protocol.Constants;
+using NLightning.Domain.Protocol.Onion.Constants;
+using NLightning.Domain.Protocol.Tlv;
 
 namespace NLightning.Infrastructure.Serialization.Wire.Definitions;
 
-using Domain.Crypto.Constants;
-using Domain.Money;
-using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
-using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Payloads;
-using Domain.Protocol.Tlv;
 
 /// <summary>
 /// The wire definitions of the BOLT 2 HTLC-update messages (<c>update_add_htlc</c> 128 with its mandatory 1366-byte
@@ -18,8 +19,39 @@ using Domain.Protocol.Tlv;
 /// </summary>
 internal static class UpdateAddHtlcWire
 {
+    public static readonly TlvDef<BlindedPathTlv> BlindedPath = TlvDef.Typed<BlindedPathTlv>(TlvConstants.BlindedPath,
+        baseTlv =>
+        {
+            if (baseTlv.Type != TlvConstants.BlindedPath)
+            {
+                throw new InvalidCastException("Invalid TLV type");
+            }
+
+            // BOLT 2: blinded_path carries a single `point` (33-byte compressed public key).
+            if (baseTlv.Length != CryptoConstants.CompactPubkeyLen
+             || baseTlv.Value.Length != CryptoConstants.CompactPubkeyLen)
+            {
+                throw new InvalidCastException("Invalid length");
+            }
+
+            try
+            {
+                return new BlindedPathTlv(new CompactPubKey(baseTlv.Value.ToArray()));
+            }
+            catch (ArgumentException e)
+            {
+                throw new InvalidCastException("Invalid path key", e);
+            }
+        },
+        tlv =>
+        {
+            tlv.Value = tlv.PathKey;
+
+            return tlv;
+        });
+
     public static readonly MessageWire<UpdateAddHtlcMessage> Def = new(MessageTypes.UpdateAddHtlc, Encode, Decode,
-        TlvDef.Typed<BlindedPathTlv>(TlvConstants.BlindedPath));
+        UpdateAddHtlcWire.BlindedPath);
 
     private static void Encode(ref WireWriter writer, UpdateAddHtlcMessage message)
     {
@@ -53,9 +85,21 @@ internal static class UpdateAddHtlcWire
 
 internal static class UpdateFulfillHtlcWire
 {
+    public static readonly TlvDef<FulfillmentPayloadTlv> FulfillmentPayload = TlvDef.Typed<FulfillmentPayloadTlv>(TlvConstants.FulfillmentPayload,
+        baseTlv =>
+        {
+            if (baseTlv.Type != TlvConstants.FulfillmentPayload)
+            {
+                throw new InvalidCastException("Invalid TLV type");
+            }
+
+            return new FulfillmentPayloadTlv(baseTlv.Value);
+        },
+        tlv => tlv);
+
     public static readonly MessageWire<UpdateFulfillHtlcMessage> Def = new(MessageTypes.UpdateFulfillHtlc, Encode,
-        Decode, TlvDef.Typed<AttributionDataTlv>(TlvConstants.AttributionData),
-        TlvDef.Typed<FulfillmentPayloadTlv>(TlvConstants.FulfillmentPayload));
+        Decode, TlvDefs.AttributionData,
+        UpdateFulfillHtlcWire.FulfillmentPayload);
 
     private static void Encode(ref WireWriter writer, UpdateFulfillHtlcMessage message)
     {
@@ -80,7 +124,7 @@ internal static class UpdateFulfillHtlcWire
 internal static class UpdateFailHtlcWire
 {
     public static readonly MessageWire<UpdateFailHtlcMessage> Def = new(MessageTypes.UpdateFailHtlc, Encode, Decode,
-        TlvDef.Typed<AttributionDataTlv>(TlvConstants.AttributionData));
+        TlvDefs.AttributionData);
 
     private static void Encode(ref WireWriter writer, UpdateFailHtlcMessage message)
     {

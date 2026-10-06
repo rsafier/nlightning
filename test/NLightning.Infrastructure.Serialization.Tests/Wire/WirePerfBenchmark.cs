@@ -93,10 +93,9 @@ public class WirePerfBenchmark(ITestOutputHelper output)
             new NLightning.Infrastructure.Serialization.Factories.PayloadSerializerFactory(
                 new NLightning.Infrastructure.Serialization.Node.FeatureSetSerializer(),
                 new NLightning.Infrastructure.Serialization.Factories.ValueObjectSerializerFactory()),
-            new NLightning.Infrastructure.Protocol.Factories.TlvConverterFactory(),
             new NLightning.Infrastructure.Serialization.Tlv.TlvStreamSerializer(
-                new NLightning.Infrastructure.Protocol.Factories.TlvConverterFactory(),
-                new NLightning.Infrastructure.Serialization.Tlv.TlvSerializer(
+                new NLightning.Infrastructure.Serialization.Wire.WireRegistry(),
+                    new NLightning.Infrastructure.Serialization.Tlv.TlvSerializer(
                     new NLightning.Infrastructure.Serialization.Factories.ValueObjectSerializerFactory())));
     }
 

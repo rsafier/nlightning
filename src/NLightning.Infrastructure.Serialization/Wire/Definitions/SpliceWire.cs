@@ -1,11 +1,13 @@
+using System.Buffers.Binary;
+using NLightning.Domain.Bitcoin.ValueObjects;
+using NLightning.Domain.Crypto.Constants;
+using NLightning.Domain.Protocol.Constants;
+using NLightning.Domain.Protocol.Tlv;
+
 namespace NLightning.Infrastructure.Serialization.Wire.Definitions;
 
-using Domain.Bitcoin.ValueObjects;
-using Domain.Crypto.Constants;
-using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
-using Domain.Protocol.Tlv;
 
 /// <summary>
 /// The wire definitions of BOLT 2 "Channel Splicing" and batching: <c>splice_init</c> (80), <c>splice_ack</c> (81),
@@ -16,8 +18,8 @@ using Domain.Protocol.Tlv;
 internal static class SpliceInitWire
 {
     public static readonly MessageWire<SpliceInitMessage> Def = new(MessageTypes.SpliceInit, Encode, Decode,
-        TlvDef.Typed<RequireConfirmedInputsTlv>(TlvConstants.RequireConfirmedInputs),
-        TlvDef.Typed<RequestFundingTlv>(TlvConstants.LiquidityAds));
+        TlvDefs.RequireConfirmedInputs,
+        TlvDefs.RequestFunding);
 
     private static void Encode(ref WireWriter writer, SpliceInitMessage message)
     {
@@ -47,8 +49,8 @@ internal static class SpliceInitWire
 internal static class SpliceAckWire
 {
     public static readonly MessageWire<SpliceAckMessage> Def = new(MessageTypes.SpliceAck, Encode, Decode,
-        TlvDef.Typed<RequireConfirmedInputsTlv>(TlvConstants.RequireConfirmedInputs),
-        TlvDef.Typed<ProvideFundingTlv>(TlvConstants.LiquidityAds));
+        TlvDefs.RequireConfirmedInputs,
+        TlvDefs.ProvideFunding);
 
     private static void Encode(ref WireWriter writer, SpliceAckMessage message)
     {
@@ -74,8 +76,8 @@ internal static class SpliceLockedWire
 {
     public static readonly MessageWire<SpliceLockedMessage> Def =
         new(MessageTypes.SpliceLocked, Encode, Decode,
-            TlvDef.Typed<AnnouncementNodeNonceTlv>(TaprootTlvConstants.AnnouncementNodeNonce),
-            TlvDef.Typed<AnnouncementBitcoinNonceTlv>(TaprootTlvConstants.AnnouncementBitcoinNonce));
+            TlvDefs.AnnouncementNodeNonce,
+            TlvDefs.AnnouncementBitcoinNonce);
 
     private static void Encode(ref WireWriter writer, SpliceLockedMessage message)
     {
@@ -97,8 +99,25 @@ internal static class SpliceLockedWire
 
 internal static class StartBatchWire
 {
+    public static readonly TlvDef<StartBatchMessageTypeTlv> StartBatchMessageType = TlvDef.Typed<StartBatchMessageTypeTlv>(TlvConstants.StartBatchMessageType,
+        baseTlv =>
+        {
+            if (baseTlv.Type != TlvConstants.StartBatchMessageType)
+            {
+                throw new InvalidCastException("Invalid TLV type");
+            }
+
+            if (baseTlv.Length != StartBatchMessageTypeTlv.ValueLength || baseTlv.Value.Length != baseTlv.Length)
+            {
+                throw new InvalidCastException("Invalid length");
+            }
+
+            return new StartBatchMessageTypeTlv(BinaryPrimitives.ReadUInt16BigEndian(baseTlv.Value));
+        },
+        tlv => tlv);
+
     public static readonly MessageWire<StartBatchMessage> Def = new(MessageTypes.StartBatch, Encode, Decode,
-        TlvDef.Typed<StartBatchMessageTypeTlv>(TlvConstants.StartBatchMessageType));
+        StartBatchWire.StartBatchMessageType);
 
     private static void Encode(ref WireWriter writer, StartBatchMessage message)
     {

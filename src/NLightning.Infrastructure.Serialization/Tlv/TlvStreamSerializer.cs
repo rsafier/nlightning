@@ -1,6 +1,6 @@
 using System.Runtime.Serialization;
-using NLightning.Domain.Protocol.Interfaces;
 using NLightning.Domain.Serialization.Interfaces;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tlv;
 
@@ -12,11 +12,11 @@ using Interfaces;
 public class TlvStreamSerializer : ITlvStreamSerializer
 {
     private readonly ITlvSerializer _tlvSerializer;
-    private readonly ITlvConverterFactory _tlvConverterFactory;
+    private readonly WireRegistry _wireRegistry;
 
-    public TlvStreamSerializer(ITlvConverterFactory tlvConverterFactory, ITlvSerializer tlvSerializer)
+    public TlvStreamSerializer(WireRegistry wireRegistry, ITlvSerializer tlvSerializer)
     {
-        _tlvConverterFactory = tlvConverterFactory;
+        _wireRegistry = wireRegistry;
         _tlvSerializer = tlvSerializer;
     }
 
@@ -24,11 +24,11 @@ public class TlvStreamSerializer : ITlvStreamSerializer
     /// Serializes every TLV in <paramref name="tlvStream"/> in insertion order.
     /// </summary>
     /// <remarks>
-    /// Typed TLVs are converted through the converter registered for their exact runtime type. A raw
+    /// Typed TLVs use the value definition indexed by the registry for their exact runtime type. A raw
     /// <see cref="BaseTlv"/> (runtime type exactly <see cref="BaseTlv"/>) is written as-is.
     /// </remarks>
     /// <exception cref="SerializationException">
-    /// Thrown when no converter is registered for a typed TLV, or when the types are not strictly increasing (BOLT 1
+    /// Thrown when no value definition is registered for a typed TLV, or when the types are not strictly increasing (BOLT 1
     /// requires ascending types on the wire; <see cref="TlvStream"/> keeps insertion order, so a hand-built stream in
     /// the wrong order fails here instead of being silently re-sorted).
     /// </exception>
@@ -82,10 +82,10 @@ public class TlvStreamSerializer : ITlvStreamSerializer
         if (runtimeType == typeof(BaseTlv))
             return tlv;
 
-        var converter = _tlvConverterFactory.GetConverter(runtimeType)
-                     ?? throw new SerializationException($"No converter found for tlv type {runtimeType.Name}");
+        var definition = _wireRegistry.GetTlvDefinition(runtimeType)
+                     ?? throw new SerializationException($"No definition found for tlv type {runtimeType.Name}");
 
-        return converter.ConvertToBase(tlv);
+        return definition.Encode(tlv);
     }
 
     private async Task<TlvStream> ReadTlvStreamAsync(Stream stream, IReadOnlySet<BigSize>? knownTypes)

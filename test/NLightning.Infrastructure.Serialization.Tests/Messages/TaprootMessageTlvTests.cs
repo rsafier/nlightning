@@ -41,7 +41,7 @@ public class TaprootMessageTlvTests
         Zero32 + new string('0', 4 * 16) + "00000003" + "0090" + "01E3" + string.Concat(Enumerable.Repeat(Point, 6));
 
     private readonly MessageTypeSerializerFactory _factory = new(SerializerHelper.PayloadSerializerFactory,
-                                                                 SerializerHelper.TlvConverterFactory,
+
                                                                  SerializerHelper.TlvStreamSerializer);
 
     [Fact]
