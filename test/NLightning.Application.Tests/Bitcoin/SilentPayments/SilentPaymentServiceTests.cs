@@ -244,7 +244,7 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
             Assert.True(await restarted.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
 
         // Assert: default ordinary change is retained, rather than falsely balanced away as an external withdrawal.
-        var coin = Assert.Single(await UnspentAsync());
+        var coin = Assert.Single(await UnspentAsync(includeWalletAddress: true));
         Assert.Equal(new TxId(change.Hash.ToBytes()), coin.TxId);
         Assert.Equal(1u, coin.Index);
         Assert.Equal(54_500L, coin.Amount.Satoshi);
@@ -674,10 +674,10 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         MsOptions.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }), NullLogger<SilentPaymentService>.Instance,
         recoveryAddresses: _recoveryAddresses);
 
-    private async Task<UtxoModel[]> UnspentAsync()
+    private async Task<UtxoModel[]> UnspentAsync(bool includeWalletAddress = false)
     {
         using var scope = _provider.CreateScope();
-        return (await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().UtxoDbRepository.GetUnspentAsync()).ToArray();
+        return (await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().UtxoDbRepository.GetUnspentAsync(includeWalletAddress)).ToArray();
     }
 
     private OutPoint AddReceipt(uint height, long amount)
