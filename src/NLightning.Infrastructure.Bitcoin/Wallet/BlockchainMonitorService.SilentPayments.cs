@@ -122,13 +122,13 @@ public partial class BlockchainMonitorService
                 // Historical rescan facts may never have materialized a UTXO; their receipts still need reversal.
                 if (!output.Ignored)
                 {
-                    var coin = new UtxoModel(output with { SpentByTransactionId = null, SpentAtHeight = null });
-                    if (!removed.Any(existing => existing.TxId == coin.TxId && existing.Index == coin.Index))
-                        removed.Add(coin);
+                    var disconnectedCoin = new UtxoModel(output with { SpentByTransactionId = null, SpentAtHeight = null });
+                    if (!removed.Any(existing => existing.TxId == disconnectedCoin.TxId && existing.Index == disconnectedCoin.Index))
+                        removed.Add(disconnectedCoin);
                     // A creation and spend both disconnected need both facts reversed; this coin is never restored.
                     if (output.SpentAtHeight is { } spentAbove && spentAbove > forkHeight &&
-                        !restored.Any(row => row.Item1.TxId == coin.TxId && row.Item1.Index == coin.Index))
-                        restored.Add((coin, spentAbove));
+                        !restored.Any(row => row.Item1.TxId == disconnectedCoin.TxId && row.Item1.Index == disconnectedCoin.Index))
+                        restored.Add((disconnectedCoin, spentAbove));
                 }
                 continue;
             }
