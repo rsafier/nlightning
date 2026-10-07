@@ -151,14 +151,17 @@ stock LNC WASM client (lnc-web). Against this bridge it needs, and gets:
 
 What works, on the node's LND-compatible API: pairing and reconnect, node info
 and balances (`GetInfo`, `ChannelBalance`, `WalletBalance`), channels (open,
-pending, closed), peers, payments, invoices, forwarding history, on-chain
-transactions, node lookups and the invoice, transaction, channel and HTLC
-subscriptions. Signet is supported by Terminal.
+pending, closed), peers, payments, invoices, forwarding history, the fee report
+(`FeeReport`, each channel's policy and the day/week/month forwarding fees;
+NL-1239), on-chain transactions, node lookups and the invoice, transaction,
+channel and HTLC subscriptions. Signet is supported by Terminal.
 
 What does not: Loop, Pool, Faraday, Taproot Assets and autopilot (reported off;
-their pages show nothing or an error), `FeeReport`, `BatchOpenChannel` (channel
-opening from Terminal) and `walletrpc.GetTransaction` (not implemented by the
-node), and channel open, close and policy changes (not in either profile).
+their pages show nothing or an error; `litrpc.Firewall.ListActions`, which the
+Autopilot/AutoFees page calls, and every `taprpc`/`mintrpc` call stay
+unimplemented by owner decision), `BatchOpenChannel` (channel opening from
+Terminal) and `walletrpc.GetTransaction` (not implemented by the node), and
+channel open, close and policy changes (not in either profile).
 Terminal shows write buttons for a read-only session too (its macaroon holds
 `uri` permissions, which the WASM client does not count as read-only); the node
 refuses those calls. Sessions created before this change lack the litrpc

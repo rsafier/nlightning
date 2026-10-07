@@ -605,7 +605,15 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
                                   _payments.OrderByDescending(p => p.CreatedAt).Skip(skip).Take(take).ToList());
         var forwards = new Mock<IForwardCircuitDbRepository>();
         forwards.Setup(x => x.SummarizeAsync(It.IsAny<ForwardCircuitListQuery>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => new ForwardCircuitTotals(0, 0, _forwards.Count, 0, 0));
+                .ReturnsAsync((ForwardCircuitListQuery query, CancellationToken _) =>
+                {
+                    var matching = _forwards.Where(f => (query.Since is not { } since || f.CreatedAt >= since)
+                                                     && (query.Until is not { } until || f.CreatedAt <= until)
+                                                     && (query.Status is not { } status || f.Status == status))
+                                            .ToList();
+                    return new ForwardCircuitTotals(0, 0, matching.Count, 0,
+                                                    matching.Sum(f => (long)f.Fee.MilliSatoshi));
+                });
         forwards.Setup(x => x.ListAsync(It.IsAny<ForwardCircuitListQuery>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((ForwardCircuitListQuery query, CancellationToken _) =>
                                   _forwards.OrderByDescending(f => f.CreatedAt).Skip(query.Skip).Take(query.Take)
