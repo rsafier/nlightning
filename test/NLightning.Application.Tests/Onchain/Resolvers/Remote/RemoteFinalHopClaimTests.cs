@@ -241,7 +241,12 @@ public sealed class RemoteFinalHopClaimTests : IDisposable
         await _context.BeginAsync(tip);
 
         // Assert
-        Assert.DoesNotContain(_context.SwitchEvents, e => e is IncomingHtlcLockedIn);
+        // NL-1283: a forward is still handed to the switch, which holds it for an HTLC interceptor (the switch never
+        // accepts a forward onion as our final hop on a channel closing on chain); nothing is claimed with our preimage
+        if (why == "forward")
+            Assert.Contains(_context.SwitchEvents, e => e is IncomingHtlcLockedIn);
+        else
+            Assert.DoesNotContain(_context.SwitchEvents, e => e is IncomingHtlcLockedIn);
         Assert.DoesNotContain(_context.Published, b => b.Purpose == BroadcastPurpose.HtlcClaim);
     }
 
