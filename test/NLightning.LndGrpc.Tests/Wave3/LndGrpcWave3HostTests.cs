@@ -226,7 +226,9 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
         Assert.Equal(FailureCode.TemporaryChannelFailure, resolution.FailureCode);
         Assert.Equal(1UL, request.IncomingCircuitKey.HtlcId);
         Assert.Equal(500 - 19, request.AutoFailHeight);
-        Assert.Equal(0, _hub.HeldCount);
+        // The hub drops the hold only after the callback returned (NL-1234), and this callback completes `resolved`
+        // inline, so the removal may still be running here (NL-1235)
+        await WaitUntilAsync(() => _hub.HeldCount == 0);
     }
 
     [Fact]

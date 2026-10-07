@@ -181,9 +181,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 0 | 97 | 97 |
+| open | 0 | 0 | 0 | 96 | 96 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 237 | 498 | 819 |
+| fixed | 15 | 69 | 237 | 499 | 820 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
 | **Total** | **15** | **69** | **253** | **618** | **955** |
@@ -10039,13 +10039,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Batch validation (2026-10-06, NL-1215 / NL-1197 / NL-1182):** Release net10.0 build: 0 warnings/errors; format verification clean; solution configuration check: 40 projects OK. Full non-Docker/non-SqlServer run: 17,221 passed, 75 not executed, only known timing flakes NL-1198 and NL-729 failed; their classes passed alone (44/44 GraphPathfinderTests, 53/53 ClassificationEngineTests). Final persistence/model coverage passed 28/28, including both new initial/rotated unknown-key cases (also independently 2/2). Every test used the 5-minute hang timeout. No Infrastructure/Crypto changes or Native gate required.
 
 ### NL-1235 `LndGrpcWave3HostTests.Given_AnInterceptor_When_AForwardIsHeld_Then_ItsFailReachesTheSwitch` failed once under a loaded run
-- **Status:** open
+- **Status:** fixed (PENDING)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.LndGrpc.Tests/Wave3/LndGrpcWave3HostTests.cs`
 - **Evidence:** the PR #27 integration onto `wip/fafo` (2026-10-06, with PR #26's subscription feeds) failed it after 241 ms. LndGrpc.Tests ran 210/211 while the Application suite ran in parallel. The class passed 18/18 three times alone. The test exercises the interceptor hold/resolve path that NL-1234 changed (holds retained until the callback succeeds, both stream directions observed), so a real ordering race between the FAIL resolution and the switch is possible, not only harness timing.
 - **Fix sketch:** run the test under load in a loop. Check whether the FAIL can be answered before the hold is registered with the switch, or whether the assertion polls with a fixed deadline. Make the wait event-driven.
 - **Diagnosis (NL-1236 lane, 2026-10-06):** in the NL-1236 worktree it failed every run, alone too (17/18). `HtlcInterceptorHub.RunAsync` removes the held forward only after `held.Resolve(...)` returns. The test's callback completes its TaskCompletionSource inline, so `Assert.Equal(0, _hub.HeldCount)` can run before the removal. This is a test race, not a product bug. Fix: wait until `HeldCount == 0` (bounded, event-driven) before asserting.
+- **Fix:** the test waits (bounded, the class's `WaitUntilAsync`) until `HeldCount == 0` instead of asserting it right after the callback completed. The hub keeps removing the hold only after a successful callback, as NL-1234 requires. The class passed 18/18 five times in a row alone, and LndGrpc.Tests 212/212.
 - **Blocks/Blocked-by:** related NL-1234, NL-1182
 
 ### NL-1236 LND gRPC `WalletBalance` calls an output confirmed only at 4 confirmations; LND does at 1
