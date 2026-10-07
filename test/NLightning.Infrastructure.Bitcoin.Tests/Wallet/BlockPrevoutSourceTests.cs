@@ -14,6 +14,40 @@ public class BlockPrevoutSourceTests
     private static readonly byte[] s_script = [0x00, 0x14, .. new byte[20]];
 
     [Fact]
+    public async Task Given_ActualCore31Capture_When_WireSourcesAreParsed_Then_AllSixSpentScriptTypesAgree()
+    {
+        // Arrange: captured from the real cluster proof, whose raw transaction source also agrees.
+        var fixture = JObject.Parse(await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory,
+            "Wallet", "Fixtures", "core31-prevouts.json"), TestContext.Current.CancellationToken));
+        var block = Block.Parse((string)fixture["block_hex"]!, Network.RegTest);
+        using var rest = new MemoryStream(Convert.FromHexString((string)fixture["rest_hex"]!));
+
+        // Act
+        var undo = await BlockPrevoutSource.ParseVerboseAsync(new StringReader(fixture["getblock3"]!.ToString()),
+            block, cancellationToken: TestContext.Current.CancellationToken);
+        var binary = await BlockPrevoutSource.ParseRestAsync(rest, block, TestContext.Current.CancellationToken);
+
+        // Assert: six independently funded script classes plus one earlier-in-block child.
+        Assert.Equal(7, undo.Count);
+        Assert.Equal(undo.Count, binary.Count);
+        foreach (var (id, previous) in undo)
+        {
+            var values = binary[id];
+            Assert.Equal(previous.Count, values.Count);
+            for (var i = 0; i < previous.Count; i++)
+            {
+                Assert.Equal(previous[i].AmountSat, values[i].AmountSat);
+                Assert.Equal((byte[])previous[i].ScriptPubKey, (byte[])values[i].ScriptPubKey);
+            }
+        }
+        var inputs = undo.Values.SelectMany(values => values).ToArray();
+        Assert.Equal(6, inputs.Count(input => input.AmountSat == 200_000));
+        Assert.Single(inputs, input => input.AmountSat == 198_000);
+        // P2PKH, nested P2WPKH, native P2WPKH, P2WSH, and three taproot inputs (two paths plus child).
+        Assert.Equal(new[] { 22, 23, 25, 34, 34, 34, 34 }, inputs.Select(input => ((byte[])input.ScriptPubKey).Length).Order().ToArray());
+    }
+
+    [Fact]
     public async Task Given_VerboseUndoData_When_Read_Then_InputOrderAmountsAndHexArePreserved()
     {
         // Arrange: asm is deliberately wrong; only hex is authoritative.
