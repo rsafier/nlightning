@@ -26,7 +26,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// database round trip, the restart and concurrency on a real database are in
 /// <c>Integration.Tests/Persistence/FeeInputReservationPersistenceTests</c>.
 /// </summary>
-public class FeeInputSelectorTests
+public partial class FeeInputSelectorTests
 {
     private static readonly LightningMoney s_feeRate = LightningMoney.Satoshis(1_000);
 

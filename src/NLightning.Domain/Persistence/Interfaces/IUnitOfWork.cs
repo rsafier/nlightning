@@ -26,6 +26,8 @@ public interface IUnitOfWork : IDisposable
     IWatchedTransactionDbRepository WatchedTransactionDbRepository { get; }
     IWalletAddressesDbRepository WalletAddressesDbRepository { get; }
     IUtxoDbRepository UtxoDbRepository { get; }
+    ISilentPaymentDbRepository SilentPaymentDbRepository =>
+        throw new NotSupportedException("This unit of work does not store silent payments.");
 
     // Fee input reservations (BOLT 5 plan O7-T1)
     IFeeInputReservationDbRepository FeeInputReservationDbRepository { get; }

@@ -10,13 +10,17 @@ public class UtxoEntity
     public uint Index { get; set; }
     public long AmountSats { get; set; }
     public uint BlockHeight { get; set; }
-    public uint AddressIndex { get; set; }
-    public bool IsAddressChange { get; set; }
-    public AddressType AddressType { get; set; }
+    public uint? AddressIndex { get; set; }
+    public bool? IsAddressChange { get; set; }
+    public AddressType? AddressType { get; set; }
     public ChannelId? LockedToChannelId { get; set; }
     public TxId? UsedInTransactionId { get; set; }
 
     public virtual WalletAddressEntity? WalletAddress { get; set; }
+
+    public TxId? SilentPaymentTransactionId { get; set; }
+    public uint? SilentPaymentIndex { get; set; }
+    public virtual SilentPaymentOutputEntity? SilentPayment { get; set; }
 
     // Default constructor for EF Core
     internal UtxoEntity() { }

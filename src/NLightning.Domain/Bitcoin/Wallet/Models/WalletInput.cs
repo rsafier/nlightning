@@ -22,4 +22,8 @@ public sealed record WalletInput(
     LightningMoney Amount,
     AddressType AddressType,
     BitcoinScript ScriptPubKey,
-    int InputWeight);
+    int InputWeight)
+{
+    public bool IsSilentPayment { get; init; }
+    public uint? SilentPaymentLabel { get; init; }
+}

@@ -88,6 +88,7 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
 
     public IChannelFundingDbRepository ChannelFundingDbRepository => inner.ChannelFundingDbRepository;
     public IChannelPolicyDbRepository ChannelPolicyDbRepository => inner.ChannelPolicyDbRepository;
+    public NLightning.Domain.Bitcoin.Interfaces.ISilentPaymentDbRepository SilentPaymentDbRepository => inner.SilentPaymentDbRepository;
     public IAccountingEventDbRepository AccountingEventDbRepository => inner.AccountingEventDbRepository;
     public IAccountingBooksDbRepository AccountingBooksDbRepository => inner.AccountingBooksDbRepository;
     public IAccountingPriceDbRepository AccountingPriceDbRepository => inner.AccountingPriceDbRepository;

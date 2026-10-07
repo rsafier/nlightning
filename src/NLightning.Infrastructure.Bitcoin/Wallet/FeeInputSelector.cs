@@ -56,6 +56,15 @@ public sealed class FeeInputSelector : IFeeInputSelector
                                                         int extraWeight, string purpose,
                                                         CancellationToken cancellationToken = default)
     {
+        return await ReserveAsync(targetFee, feeRatePerKw, extraWeight, purpose, WalletSelectionPolicy.Default,
+                                  cancellationToken);
+    }
+
+    public async Task<FeeInputReservation> ReserveAsync(LightningMoney targetFee, LightningMoney feeRatePerKw,
+                                                        int extraWeight, string purpose, WalletSelectionPolicy policy,
+                                                        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
         ArgumentNullException.ThrowIfNull(targetFee);
         ArgumentNullException.ThrowIfNull(feeRatePerKw);
         ArgumentOutOfRangeException.ThrowIfNegative(extraWeight);
@@ -74,8 +83,8 @@ public sealed class FeeInputSelector : IFeeInputSelector
 
             for (var attempt = 1; attempt <= MaxReserveAttempts; attempt++)
             {
-                var selection = Select(GetCandidates(spentByPendingBroadcasts), CeilSatoshis(targetFee),
-                                       feeRatePerKw.Satoshi, extraWeight);
+                var selection = SelectWithPolicy(GetCandidates(spentByPendingBroadcasts), CeilSatoshis(targetFee),
+                                                 feeRatePerKw.Satoshi, extraWeight, policy);
                 var reservationId = Guid.NewGuid();
                 var outpoints = selection.Inputs.Select(i => (i.TxId, i.Index)).ToList();
 
@@ -89,7 +98,7 @@ public sealed class FeeInputSelector : IFeeInputSelector
 
                 try
                 {
-                    return await PersistAsync(reservationId, purpose, selection);
+                    return await PersistAsync(reservationId, purpose, selection, policy);
                 }
                 catch
                 {
@@ -192,8 +201,10 @@ public sealed class FeeInputSelector : IFeeInputSelector
     /// goes to the fee.
     /// </summary>
     internal static Selection Select(IReadOnlyList<WalletInput> candidates, long targetFeeSat, long feeRatePerKw,
-                                     int extraWeight)
+                                     int extraWeight, bool preferP2TrChange = false)
     {
+        var changeWeight = preferP2TrChange ? 172 : WalletWeights.P2WpkhOutputWeight;
+        var changeDust = preferP2TrChange ? 330 : WalletWeights.P2WpkhDustLimitSat;
         var inputs = new List<WalletInput>();
         long total = 0;
         long inputWeight = 0;
@@ -204,8 +215,8 @@ public sealed class FeeInputSelector : IFeeInputSelector
             inputWeight += candidate.InputWeight;
 
             var feeWithChange = targetFeeSat
-                              + FeeSat(feeRatePerKw, extraWeight + inputWeight + WalletWeights.P2WpkhOutputWeight);
-            if (total - feeWithChange >= WalletWeights.P2WpkhDustLimitSat)
+                              + FeeSat(feeRatePerKw, extraWeight + inputWeight + changeWeight);
+            if (total - feeWithChange >= changeDust)
                 return new Selection(inputs, feeWithChange, total - feeWithChange);
 
             var feeWithoutChange = targetFeeSat + FeeSat(feeRatePerKw, extraWeight + inputWeight);
@@ -216,6 +227,43 @@ public sealed class FeeInputSelector : IFeeInputSelector
         var required = targetFeeSat + FeeSat(feeRatePerKw, extraWeight + inputWeight
                                                          + (inputs.Count == 0 ? WalletWeights.P2WpkhInputWeight : 0));
         throw new InsufficientFundsException(LightningMoney.Satoshis(required), LightningMoney.Satoshis(total));
+    }
+
+    private Selection SelectWithPolicy(IReadOnlyList<WalletInput> candidates, long target, long rate, int weight,
+                                       WalletSelectionPolicy policy)
+    {
+        if (policy.AvoidMixing)
+        {
+            var groups = new List<IReadOnlyList<WalletInput>>
+            {
+                candidates.Where(c => !c.IsSilentPayment).ToList()
+            };
+            groups.AddRange(candidates.Where(c => c.IsSilentPayment).Select(c => (IReadOnlyList<WalletInput>)new[] { c }));
+            groups.AddRange(candidates.Where(c => c.IsSilentPayment).GroupBy(c => c.SilentPaymentLabel)
+                                      .Select(g => (IReadOnlyList<WalletInput>)g.ToList()));
+            foreach (var group in groups)
+                try
+                {
+                    var grouped = Select(group, target, rate, weight, policy.PreferP2TrChange);
+                    LogSilentPaymentLinkage(grouped);
+                    return grouped;
+                }
+                catch (InsufficientFundsException)
+                {
+                    // This privacy-preserving group cannot fund the transaction; try the next group.
+                }
+        }
+        var selection = Select(candidates, target, rate, weight, policy.PreferP2TrChange);
+        LogSilentPaymentLinkage(selection);
+        return selection;
+    }
+
+    private void LogSilentPaymentLinkage(Selection selection)
+    {
+        if (selection.Inputs.Count(c => c.IsSilentPayment) > 1 ||
+            (selection.Inputs.Any(c => c.IsSilentPayment) && selection.Inputs.Any(c => !c.IsSilentPayment)))
+            _logger.LogInformation("Wallet spend links silent payment coins with other inputs ({Count} inputs)",
+                                   selection.Inputs.Count);
     }
 
     /// <inheritdoc />
@@ -241,14 +289,14 @@ public sealed class FeeInputSelector : IFeeInputSelector
                     continue;
 
                 if (!_utxoMemoryRepository.TryGetUtxo(txId, index, out var utxo) || utxo.LockedToChannelId is not null
-                 || utxo.BlockHeight == 0 || utxo.WalletAddress is null
+                 || utxo.BlockHeight == 0 || (utxo.WalletAddress is null && utxo.SilentPayment is null)
                  || utxo.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
                     continue;
 
                 Script scriptPubKey;
                 try
                 {
-                    scriptPubKey = BitcoinAddress.Create(utxo.WalletAddress.Address, _network).ScriptPubKey;
+                    scriptPubKey = GetCoinScript(utxo);
                 }
                 catch (FormatException e)
                 {
@@ -258,7 +306,11 @@ public sealed class FeeInputSelector : IFeeInputSelector
                 }
 
                 inputs.Add(new WalletInput(utxo.TxId, utxo.Index, utxo.Amount, utxo.AddressType,
-                                           scriptPubKey.ToBytes(), WalletWeights.GetInputWeight(utxo.AddressType)));
+                                           scriptPubKey.ToBytes(), WalletWeights.GetInputWeight(utxo.AddressType))
+            {
+                IsSilentPayment = utxo.SilentPayment is not null,
+                SilentPaymentLabel = utxo.SilentPayment?.Label
+            });
             }
 
             if (inputs.Count == 0)
@@ -323,14 +375,14 @@ public sealed class FeeInputSelector : IFeeInputSelector
                 continue;
 
             // Only mined outputs whose script we know
-            if (utxo.BlockHeight == 0 || utxo.WalletAddress is null
+            if (utxo.BlockHeight == 0 || (utxo.WalletAddress is null && utxo.SilentPayment is null)
                                       || utxo.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
                 continue;
 
             Script scriptPubKey;
             try
             {
-                scriptPubKey = BitcoinAddress.Create(utxo.WalletAddress.Address, _network).ScriptPubKey;
+                scriptPubKey = GetCoinScript(utxo);
             }
             catch (FormatException e)
             {
@@ -340,7 +392,11 @@ public sealed class FeeInputSelector : IFeeInputSelector
             }
 
             candidates.Add(new WalletInput(utxo.TxId, utxo.Index, utxo.Amount, utxo.AddressType,
-                                           scriptPubKey.ToBytes(), WalletWeights.GetInputWeight(utxo.AddressType)));
+                                           scriptPubKey.ToBytes(), WalletWeights.GetInputWeight(utxo.AddressType))
+            {
+                IsSilentPayment = utxo.SilentPayment is not null,
+                SilentPaymentLabel = utxo.SilentPayment?.Label
+            });
         }
 
         // Largest first (fewest inputs, so the least weight to pay for); ties in a stable order
@@ -350,7 +406,8 @@ public sealed class FeeInputSelector : IFeeInputSelector
                          .ToList();
     }
 
-    private async Task<FeeInputReservation> PersistAsync(Guid reservationId, string purpose, Selection selection)
+    private async Task<FeeInputReservation> PersistAsync(Guid reservationId, string purpose, Selection selection,
+                                                          WalletSelectionPolicy policy)
     {
         using var scope = _scopeFactory.CreateScope();
         var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -359,7 +416,7 @@ public sealed class FeeInputSelector : IFeeInputSelector
         if (selection.ChangeSat > 0)
         {
             var walletService = scope.ServiceProvider.GetRequiredService<IBitcoinWalletService>();
-            var changeAddress = await walletService.GetUnusedAddressAsync(AddressType.P2Wpkh, true);
+            var changeAddress = await walletService.GetUnusedAddressAsync(policy.PreferP2TrChange ? AddressType.P2Tr : AddressType.P2Wpkh, true);
             changeScript = BitcoinAddress.Create(changeAddress.Address, _network).ScriptPubKey.ToBytes();
         }
 
@@ -377,6 +434,10 @@ public sealed class FeeInputSelector : IFeeInputSelector
 
         return reservation;
     }
+
+    private Script GetCoinScript(UtxoModel utxo) => utxo.SilentPayment is { } silent
+        ? new Script(new byte[] { 0x51, 0x20 }.Concat(silent.OutputKey).ToArray())
+        : BitcoinAddress.Create(utxo.WalletAddress!.Address, _network).ScriptPubKey;
 
     private static long CeilSatoshis(LightningMoney amount) => (long)((amount.MilliSatoshi + 999) / 1000);
 
