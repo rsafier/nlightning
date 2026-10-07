@@ -76,6 +76,8 @@ public class SilentPaymentsStartupOptionsTests
 
     private static ServiceProvider Build(string? network, Dictionary<string, string?> values)
     {
+        values["Database:Provider"] = "Sqlite";
+        values["Database:ConnectionString"] = "Data Source=:memory:";
         if (network is not null)
             values["Node:Network"] = network;
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();

@@ -14,7 +14,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
 
-public class BitcoinWalletServiceTests
+public partial class BitcoinWalletServiceTests
 {
     private static readonly ExtKey s_masterKey =
         ExtKey.CreateFromSeed(Convert.FromHexString("000102030405060708090a0b0c0d0e0f000102030405060708090a0b0c0d0e0f"));
@@ -44,8 +44,8 @@ public class BitcoinWalletServiceTests
                       var mine = _stored.Where(a => a.AddressType == type && a.IsChange == isChange).ToList();
                       var highestUsed = mine.Where(a => _reserved.Contains((type, isChange, a.Index))
                                                      || _funded.Contains(a.Index))
-                                            .Select(a => a.Index)
-                                            .DefaultIfEmpty(uint.MaxValue)
+                                            .Select(a => (long)a.Index)
+                                            .DefaultIfEmpty(-1)
                                             .Max();
                       return mine.Where(a => !_reserved.Contains((type, isChange, a.Index))
                                           && !_funded.Contains(a.Index) && a.Index > highestUsed)
