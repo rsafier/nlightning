@@ -122,8 +122,11 @@ public sealed class CdkPaymentProcessorOnchainTests : CdkProcessorTestBase
         Assert.Equal(StatusCode.FailedPrecondition, error.StatusCode);
     }
 
-    [Fact]
-    public async Task Given_AnOnchainMelt_When_ItsTransactionConfirmsTwice_Then_PendingThenPaidWithItsOutpoint()
+    [Theory]
+    [InlineData(0u)]
+    [InlineData(1u)]
+    [InlineData(7u)]
+    public async Task Given_AnOnchainMelt_When_ItsTransactionConfirmsTwice_Then_PendingThenPaidWithItsOutpoint(uint destinationOutputIndex)
     {
         // Arrange
         WalletWithdrawRequest? asked = null;
@@ -132,7 +135,7 @@ public sealed class CdkPaymentProcessorOnchainTests : CdkProcessorTestBase
                    .ReturnsAsync(new WalletWithdrawResult(s_meltTx, LightningMoney.Satoshis(20_000),
                                                           LightningMoney.Satoshis(210), LightningMoney.Satoshis(5_000),
                                                           LightningMoney.Satoshis(1_666), 600, 1, LightningMoney.Zero,
-                                                          true));
+                                                          true) { DestinationOutputIndex = destinationOutputIndex });
         var broadcast = new BroadcastTransactionModel(new SignedTransaction(s_meltTx, [1, 2, 3]),
                                                       BroadcastPurpose.WalletSend, null, 100);
         Broadcasts.Setup(b => b.GetByTransactionIdAsync(s_meltTx)).ReturnsAsync(() => broadcast);
@@ -166,15 +169,16 @@ public sealed class CdkPaymentProcessorOnchainTests : CdkProcessorTestBase
         Assert.Equal(LightningMoney.Satoshis(300), asked.MaxFee);
         Assert.Contains("cdk_quote=melt-oc-pay", asked.Labels.TagStrings);
         Assert.Equal(QuoteState.Pending, oneConfirmation.Status);
+        Assert.Equal(destinationOutputIndex, (await Quotes.GetAsync("melt-oc-pay"))!.OutputIndex);
         Assert.True(await stream.ResponseStream.MoveNext(Bounded));
         var paid = stream.ResponseStream.Current.PaymentSuccessful;
         Assert.Equal("melt-oc-pay", paid.QuoteId);
         Assert.Equal(QuoteState.Paid, paid.Details.Status);
-        Assert.Equal($"{s_meltTx}:0", paid.Details.PaymentProof);
+        Assert.Equal($"{s_meltTx}:{destinationOutputIndex}", paid.Details.PaymentProof);
         Assert.Equal(20_210UL, paid.Details.TotalSpent.Value);
         var check = await CheckMeltAsync("melt-oc-pay");
         Assert.Equal(QuoteState.Paid, check.Status);
-        Assert.Equal($"{s_meltTx}:0", check.PaymentProof);
+        Assert.Equal($"{s_meltTx}:{destinationOutputIndex}", check.PaymentProof);
     }
 
     [Fact]
