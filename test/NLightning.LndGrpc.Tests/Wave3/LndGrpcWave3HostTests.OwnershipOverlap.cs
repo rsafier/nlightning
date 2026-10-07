@@ -3,7 +3,8 @@ using NBitcoin;
 namespace NLightning.LndGrpc.Tests.Wave3;
 
 using Domain.Accounting.Enums;
-using Domain.Bitcoin.Enums;
+using AddressType = Domain.Bitcoin.Enums.AddressType;
+using OutPoint = NBitcoin.OutPoint;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Bitcoin.Wallet.Models;
