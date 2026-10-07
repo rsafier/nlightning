@@ -10124,7 +10124,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** a multi-channel batch needs funding several channels from one transaction (not supported by the node)
 
 ### NL-1250 LND REST clients (Ride The Lightning) cannot use the node: no REST gateway
-- **Status:** fixed (this commit)
+- **Status:** fixed (ac8e58d8)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `tools/lnd-rest` (`gateway.go`, `server.go`, `middleware.go`, `tls.go`, `config.go`, `main.go`, `README.md`), `.github/workflows/lnd-rest.yml`
