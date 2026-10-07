@@ -181,9 +181,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 0 | 98 | 98 |
+| open | 0 | 0 | 0 | 97 | 97 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 237 | 497 | 818 |
+| fixed | 15 | 69 | 237 | 498 | 819 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
 | **Total** | **15** | **69** | **253** | **618** | **955** |
@@ -10045,15 +10045,17 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `test/NLightning.LndGrpc.Tests/Wave3/LndGrpcWave3HostTests.cs`
 - **Evidence:** the PR #27 integration onto `wip/fafo` (2026-10-06, with PR #26's subscription feeds) failed it after 241 ms. LndGrpc.Tests ran 210/211 while the Application suite ran in parallel. The class passed 18/18 three times alone. The test exercises the interceptor hold/resolve path that NL-1234 changed (holds retained until the callback succeeds, both stream directions observed), so a real ordering race between the FAIL resolution and the switch is possible, not only harness timing.
 - **Fix sketch:** run the test under load in a loop. Check whether the FAIL can be answered before the hold is registered with the switch, or whether the assertion polls with a fixed deadline. Make the wait event-driven.
+- **Diagnosis (NL-1236 lane, 2026-10-06):** in the NL-1236 worktree it failed every run, alone too (17/18). `HtlcInterceptorHub.RunAsync` removes the held forward only after `held.Resolve(...)` returns. The test's callback completes its TaskCompletionSource inline, so `Assert.Equal(0, _hub.HeldCount)` can run before the removal. This is a test race, not a product bug. Fix: wait until `HeldCount == 0` (bounded, event-driven) before asserting.
 - **Blocks/Blocked-by:** related NL-1234, NL-1182
 
 ### NL-1236 LND gRPC `WalletBalance` calls an output confirmed only at 4 confirmations; LND does at 1
-- **Status:** open
+- **Status:** fixed (f1223efa)
 - **Severity:** low
 - **Kind:** interop
 - **Location:** `src/NLightning.LndGrpc/Services/LightningService.Info.cs` (`WalletBalance`, lines 93-94); `UtxoMemoryRepository.GetConfirmedBalance` (BlockHeight + 3 <= tip)
 - **Evidence:** public signet Loop trial (`LOOP_SIGNET_TRIAL.md`, 2026-10-06). Outputs from loopd's sweep and its cooperative static withdrawal stayed "unconfirmed" in `WalletBalance` for 3 blocks after they confirmed. Our wallet applies its 4-confirmation spend rule to every address type, which is correct for `walletbalance`. LND's `WalletBalance` counts an output as confirmed from 1 confirmation, so LND clients (loopd, dashboards) see a balance that lags.
 - **Fix sketch:** in the gRPC response only, split confirmed and unconfirmed at LND's 1 confirmation. Keep the node's own spend rule and `walletbalance`. Add a unit test. Cosmetic, same area: `WalletPsbtService.PublishTransactionAsync` should log a client's republish of a transaction bitcoind already has (loopd republishes every block until 3 confirmations) as already known, not as a fresh broadcast.
+- **Fix:** `WalletBalance` splits by LND's rule (rpcserver: total at 0 confirmations, confirmed at `min_confs`, default 1, unconfirmed the difference): `total_balance` is every wallet output, `confirmed_balance` those with at least `min_confs` confirmations, `unconfirmed_balance` the rest, `account_balance["default"]` the same; `locked_balance` and `reserved_balance_anchor_chan` unchanged. The new `IUtxoMemoryRepository.GetBalanceWithConfirmations(tip, minConfirmations)` (an output mined at the tip has 1 confirmation, an unmined one 0) serves only this report; `walletbalance` and the spend rules keep `GetConfirmedBalance`'s 4 confirmations. `WalletPsbtService.PublishAsync` now logs a transaction without wallet inputs that bitcoind already has (`txn-already-in-mempool`, `txn-already-known`, "already in utxo set"/"already in block chain", which `MapRefusal` already read as success) at Debug as already known, and still returns success. Tests: `LndGrpcHostTests.Given_OutputsWith0And1And4Confirmations_*` (real `UtxoMemoryRepository`), `WalletPsbtServiceTests.Given_BitcoindAlreadyHasATransactionWithoutWalletInputs_*` and `Given_ATransactionWithoutWalletInputs_When_PublishedFirst_*`.
 - **Blocks/Blocked-by:** none
 ### NL-1233 A final payload without `payment_data` answered `invalid_onion_payload`, so LND probes (Loop's static loop-in) saw us unreachable
 - **Status:** fixed (91759661)

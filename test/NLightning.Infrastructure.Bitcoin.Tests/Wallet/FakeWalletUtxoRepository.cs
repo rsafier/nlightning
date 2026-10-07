@@ -41,6 +41,9 @@ internal sealed class FakeWalletUtxoRepository : IUtxoMemoryRepository
 
     public LightningMoney GetConfirmedBalance(uint currentBlockHeight) => throw new NotSupportedException();
     public LightningMoney GetUnconfirmedBalance(uint currentBlockHeight) => throw new NotSupportedException();
+
+    public LightningMoney GetBalanceWithConfirmations(uint currentBlockHeight, uint minConfirmations) =>
+        throw new NotSupportedException();
     public LightningMoney GetLockedBalance() => throw new NotSupportedException();
     public void Load(List<UtxoModel> utxoSet) => utxoSet.ForEach(Add);
 

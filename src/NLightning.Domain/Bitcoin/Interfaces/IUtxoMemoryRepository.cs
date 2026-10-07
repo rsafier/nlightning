@@ -14,6 +14,16 @@ public interface IUtxoMemoryRepository
     bool TryGetUtxo(TxId txId, uint index, [MaybeNullWhen(false)] out UtxoModel utxoModel);
     LightningMoney GetConfirmedBalance(uint currentBlockHeight);
     LightningMoney GetUnconfirmedBalance(uint currentBlockHeight);
+
+    /// <summary>
+    /// The wallet outputs with at least <paramref name="minConfirmations"/> confirmations at
+    /// <paramref name="currentBlockHeight"/> (an output mined at the tip has 1; one with no block height, or above the
+    /// tip, has 0, so <paramref name="minConfirmations"/> 0 is every output). Locks and reservations are not checked.
+    /// Only for reports that follow another rule than the wallet's own (LND's 1-confirmation <c>WalletBalance</c>,
+    /// NL-1236): <see cref="GetConfirmedBalance"/> is the node's rule.
+    /// </summary>
+    LightningMoney GetBalanceWithConfirmations(uint currentBlockHeight, uint minConfirmations);
+
     LightningMoney GetLockedBalance();
     void Load(List<UtxoModel> utxoSet);
     /// <summary>
