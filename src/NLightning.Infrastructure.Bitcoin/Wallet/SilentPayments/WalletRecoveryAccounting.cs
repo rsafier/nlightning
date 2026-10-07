@@ -30,6 +30,7 @@ public static class WalletRecoveryAccounting
                 var output = transaction.Outputs[(int)index];
                 var address = output.ScriptPubKey.GetDestinationAddress(network)?.ToString();
                 if (address is null || !addresses.TryGetValue(address, out var owned)) continue;
+                await uow.WalletAddressesDbRepository.ReserveAsync(owned);
                 var baseKey = AccountingEventKeys.WalletReceived(transactionId, index);
                 var existing = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync(baseKey, cancellationToken);
                 var key = AccountingConfirmations.NextConfirmationKey(baseKey, existing);
@@ -45,6 +46,15 @@ public static class WalletRecoveryAccounting
                         ("change", owned.IsChange ? "true" : "false"), (AccountingDetailKeys.Source, source))
                 });
             }
+        }
+        await StageInputSpendsAsync(uow, block, height, cancellationToken);
+    }
+
+    public static async Task StageInputSpendsAsync(IUnitOfWork uow, Block block, uint height,
+        CancellationToken cancellationToken)
+    {
+        foreach (var transaction in block.Transactions.Where(transaction => !transaction.IsCoinBase))
+        {
             foreach (var input in transaction.Inputs)
             {
                 var point = new TxId(input.PrevOut.Hash.ToBytes());

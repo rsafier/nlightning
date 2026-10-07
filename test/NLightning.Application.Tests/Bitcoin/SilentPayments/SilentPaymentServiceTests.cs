@@ -52,6 +52,7 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
     private readonly SilentPaymentCrypto _crypto = new();
     private ServiceProvider _provider = null!;
     private SilentPaymentScanner _scanner = null!;
+    private ISilentPaymentRecoveryAddressSource? _recoveryAddresses;
 
     public async ValueTask InitializeAsync()
     {
@@ -204,6 +205,65 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         var settlement = Assert.Single(settlements);
         Assert.Equal(_blocks[5].Header.BlockTime, settlement.OccurredAt);
         AssertRecoveredBooks(events.Concat(settlements), 0, -21_000_000, 10_000_000, 11_000_000);
+    }
+
+    [Fact]
+    public async Task Given_FreshWalletAndDefaultBip86Change_When_RecoveryRestarts_Then_FullCustodyAndBalancedSettlementAreRestored()
+    {
+        // Arrange: no ordinary address/UTXO exists in this fresh database. The source supplies key-derived ownership.
+        using var changeKey = new Key(FixtureKeys.Secret(4));
+        var address = new WalletAddressModel(AddressType.P2Tr, 0, true,
+            changeKey.PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, Network.RegTest).ToString());
+        var staged = new HashSet<IUnitOfWork>();
+        var source = new Mock<ISilentPaymentRecoveryAddressSource>();
+        source.Setup(source => source.StageAddressesAsync(It.IsAny<IUnitOfWork>(), It.IsAny<uint>(), It.IsAny<CancellationToken>()))
+            .Returns((IUnitOfWork work, uint _, CancellationToken _) =>
+            {
+                if (staged.Add(work) && !work.WalletAddressesDbRepository.GetAllAddresses().Any(item => item.Address == address.Address))
+                    work.WalletAddressesDbRepository.AddRange([address]);
+                return Task.FromResult<IReadOnlyList<WalletAddressModel>>([address]);
+            });
+        _recoveryAddresses = source.Object;
+        var receipt = AddReceipt(1, 75_000);
+        AddSpend(2, receipt);
+        var spender = _blocks[2].Transactions.Last();
+        spender.Outputs[0].Value = Money.Satoshis(20_000);
+        spender.Outputs.Add(new TxOut(Money.Satoshis(54_500), BitcoinAddress.Create(address.Address, Network.RegTest).ScriptPubKey));
+        _blocks[2].UpdateMerkleRoot();
+        var change = new OutPoint(spender.GetHash(), 1);
+        _unspent[change] = (spender.Outputs[1], 2);
+        using var service = CreateService();
+        await service.GetAddressAsync(cancellationToken: TestContext.Current.CancellationToken);
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+
+        // Act: the historical change remains metadata/journal only until the final chain proof after restart.
+        Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        Assert.Empty(await UnspentAsync());
+        using var restarted = CreateService();
+        for (var round = 0; round < 3; round++)
+            Assert.True(await restarted.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+
+        // Assert: default ordinary change is retained, rather than falsely balanced away as an external withdrawal.
+        var coin = Assert.Single(await UnspentAsync());
+        Assert.Equal(new TxId(change.Hash.ToBytes()), coin.TxId);
+        Assert.Equal(1u, coin.Index);
+        Assert.Equal(54_500L, coin.Amount.Satoshi);
+        Assert.Equal(AddressType.P2Tr, coin.AddressType);
+        Assert.Null(coin.SilentPayment);
+        Assert.Equal(address.Address, coin.WalletAddress!.Address);
+        Assert.True(coin.WalletAddress.IsChange);
+        Assert.False((await restarted.GetStatusAsync(TestContext.Current.CancellationToken)).IsRescanning);
+        using var after = _provider.CreateScope();
+        var uow = after.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var wallet = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wallet:", TestContext.Current.CancellationToken);
+        var recoveredChange = Assert.Single(wallet.Where(fact => fact.Details.GetValueOrDefault("receiptSource") == "wallet_recovery"));
+        Assert.Equal(AccountingDetailKeys.WalletSource, recoveredChange.Details[AccountingDetailKeys.Source]);
+        Assert.Equal("true", recoveredChange.Details["change"]);
+        var settlements = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wsend:", TestContext.Current.CancellationToken);
+        Assert.Single(settlements);
+        AssertRecoveredBooks(wallet.Concat(settlements), 54_500_000, -75_000_000, 20_000_000, 500_000);
+        _monitor.Verify(monitor => monitor.WatchBitcoinAddress(It.Is<WalletAddressModel>(item => item.Address == address.Address)), Times.AtLeastOnce);
     }
 
     [Fact]
@@ -612,7 +672,8 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
 
     private SilentPaymentService CreateService(IServiceScopeFactory? scopes = null) => new(scopes ?? _provider.GetRequiredService<IServiceScopeFactory>(), _chain.Object,
         _monitor.Object, _prevouts.Object, _scanner, _keys, _crypto, MsOptions.Create(_options),
-        MsOptions.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }), NullLogger<SilentPaymentService>.Instance);
+        MsOptions.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }), NullLogger<SilentPaymentService>.Instance,
+        recoveryAddresses: _recoveryAddresses);
 
     private async Task<UtxoModel[]> UnspentAsync()
     {

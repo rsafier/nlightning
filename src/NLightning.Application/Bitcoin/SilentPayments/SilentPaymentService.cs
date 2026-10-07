@@ -310,7 +310,9 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
                 fact.Details.ContainsKey("recoveryAddressIndex"))
             .Select(fact => uint.Parse(fact.Details["recoveryAddressIndex"], CultureInfo.InvariantCulture))
             .DefaultIfEmpty(0u).Max();
-        return await recoveryAddresses.StageAddressesAsync(uow, checked(highest + 30), cancellationToken);
+        var storedCount = uow.WalletAddressesDbRepository.GetAllAddresses().Select(address => checked(address.Index + 1))
+            .DefaultIfEmpty(0u).Max();
+        return await recoveryAddresses.StageAddressesAsync(uow, Math.Max(storedCount, checked(highest + 30)), cancellationToken);
     }
 
     private async Task<IReadOnlyList<WalletAddressModel>> StageOrdinaryBlockAsync(IUnitOfWork uow, Block block,
