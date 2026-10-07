@@ -169,13 +169,14 @@ public partial class BlockchainMonitorService
             await unitOfWork.SilentPaymentDbRepository.UpsertOutputAsync(unspentMetadata);
             if (output.Ignored) continue;
             var coin = new UtxoModel(unspentMetadata);
-            // Reversing the confirmed spend is independent of whether a mempool spend makes it selectable.
+            // A disconnected spend restores confirmed custody even when it is rebroadcast into the mempool.
+            // Pending broadcast outpoint exclusion and fee reservations keep our pending inputs unselectable.
             if (!restored.Any(row => row.Item1.TxId == coin.TxId && row.Item1.Index == coin.Index))
                 restored.Add((coin, spentHeight));
             var memory = _serviceProvider.GetService<Domain.Bitcoin.Interfaces.IUtxoMemoryRepository>();
             if (memory?.TryGetUtxo(coin.TxId, coin.Index, out _) == true) continue;
             var outpoint = new OutPoint(new uint256((byte[])coin.TxId), coin.Index);
-            var unspent = await _bitcoinChainService.GetUnspentOutputAsync(outpoint);
+            var unspent = await _bitcoinChainService.GetConfirmedUnspentOutputAsync(outpoint);
             if (unspent is not { } previous || previous.Output.Value.Satoshi != output.AmountSats ||
                 !previous.Output.ScriptPubKey.ToBytes().AsSpan().SequenceEqual((byte[])[0x51, 0x20, .. output.OutputKey]))
                 continue;
