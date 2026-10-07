@@ -39,7 +39,7 @@ public sealed record WalletLease(byte[] LockId, TxId TxId, uint Index, DateTimeO
 /// <param name="Version">The transaction's version.</param>
 /// <param name="ChangeAddressType">The type of the change output (P2WPKH or P2TR, NL-1186).</param>
 /// <param name="MaxFeeRatio">The most the fee may be of the outputs' total (LND's <c>max_fee_ratio</c>, 0 to 1), or 0
-/// for no limit (NL-1186).</param>
+/// for no limit (NL-1186; walletrpc FundPsbt maps an unset ratio to LND's default 0.2 before it gets here).</param>
 public sealed record PsbtFundRequest(IReadOnlyList<(BitcoinScript Script, LightningMoney Amount)> Outputs,
                                      IReadOnlyList<(TxId TxId, uint Index)> Inputs, long FeeRatePerKw,
                                      int MinConfirmations, byte[] LockId, TimeSpan LockDuration, uint LockTime = 0,

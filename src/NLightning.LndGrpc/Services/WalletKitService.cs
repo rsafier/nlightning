@@ -44,6 +44,9 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
     /// <summary>bitcoind's default minimum relay fee, 1 sat/vB, in sat/kw.</summary>
     private const long MinRelayFeePerKw = 253;
 
+    /// <summary>LND's <c>chanfunding.DefaultMaxFeeRatio</c>: FundPsbt's fee cap when <c>max_fee_ratio</c> is unset.</summary>
+    internal const double DefaultMaxFeeRatio = 0.2;
+
     private readonly IFeeService _feeService;
     private readonly Network _network;
     private readonly IServiceScopeFactory _scopeFactory;
@@ -193,6 +196,8 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
         if (double.IsNaN(request.MaxFeeRatio) || request.MaxFeeRatio is < 0 or > 1)
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                                               $"max fee ratio {request.MaxFeeRatio} must be between 0 and 1"));
+        // LND v0.21: an unset max_fee_ratio is chanfunding.DefaultMaxFeeRatio, and sanityCheckFee always applies
+        var maxFeeRatio = request.MaxFeeRatio == 0 ? DefaultMaxFeeRatio : request.MaxFeeRatio;
         if (request.InputReleaseAfterSpendConfs != 0)
             throw new RpcException(new Status(StatusCode.Unimplemented,
                                               "input_release_after_spend_confs is not supported"));
@@ -246,7 +251,7 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
         var result = await Run(() => Psbt.FundPsbtAsync(new PsbtFundRequest(outputs, inputs, feeRatePerKw,
                                                                             request.MinConfs, lockId, duration,
                                                                             lockTime, version, changeType,
-                                                                            request.MaxFeeRatio),
+                                                                            maxFeeRatio),
                                                         context.CancellationToken));
         var response = new FundPsbtResponse
         {

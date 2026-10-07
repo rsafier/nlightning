@@ -133,8 +133,15 @@ public sealed partial class LndGrpcWave3HostTests
     {
         // Arrange
         var send = AddBroadcast(BroadcastPurpose.WalletSend, 0x41, BroadcastState.Pending, null);
+        AddReservation(0x41, Infrastructure.Bitcoin.Wallet.WalletSpendService.ReservationPurpose);
         var confirmed = AddBroadcast(BroadcastPurpose.WalletSend, 0x42, BroadcastState.Confirmed, 140);
         var funding = AddBroadcast(BroadcastPurpose.Funding, 0x43, BroadcastState.Pending, null);
+        var leased = AddBroadcast(BroadcastPurpose.WalletSend, 0x44, BroadcastState.Pending, null);
+        AddReservation(0x44, Infrastructure.Bitcoin.Wallet.WalletPsbtService.LeasePurposePrefix + "00:0");
+        // The anchor CPFP reclaim is stored as a wallet send over inputs of the anchor's reservation (NL-1186 review)
+        var reclaim = AddBroadcast(BroadcastPurpose.WalletSend, 0x45, BroadcastState.Pending, null);
+        AddReservation(0x45, "anchor-cpfp");
+        var unreserved = AddBroadcast(BroadcastPurpose.WalletSend, 0x46, BroadcastState.Pending, null);
         using var connection = Connect(LndMacaroonFiles.AdminFileName);
         Task<RemoveTransactionResponse> Remove(TxId txId) =>
             connection.WalletKitClient.RemoveTransactionAsync(new GetTransactionRequest { Txid = txId.ToString() },
@@ -145,6 +152,9 @@ public sealed partial class LndGrpcWave3HostTests
         var twice = await Assert.ThrowsAsync<RpcException>(() => Remove(send));
         var ofConfirmed = await Assert.ThrowsAsync<RpcException>(() => Remove(confirmed));
         var ofFunding = await Assert.ThrowsAsync<RpcException>(() => Remove(funding));
+        var ofLeased = await Remove(leased);
+        var ofReclaim = await Assert.ThrowsAsync<RpcException>(() => Remove(reclaim));
+        var ofUnreserved = await Assert.ThrowsAsync<RpcException>(() => Remove(unreserved));
 
         // Assert
         Assert.Equal("Successfully removed transaction", removed.Status);
@@ -153,7 +163,22 @@ public sealed partial class LndGrpcWave3HostTests
         Assert.Equal(StatusCode.FailedPrecondition, ofConfirmed.StatusCode);
         Assert.Equal(StatusCode.FailedPrecondition, ofFunding.StatusCode);
         Assert.Equal(BroadcastState.Pending, _broadcastRows.Single(r => r.TransactionId == funding).State);
+        Assert.Equal("Successfully removed transaction", ofLeased.Status);
+        Assert.Equal(StatusCode.FailedPrecondition, ofReclaim.StatusCode);
+        Assert.Equal(BroadcastState.Pending, _broadcastRows.Single(r => r.TransactionId == reclaim).State);
+        Assert.Equal(StatusCode.FailedPrecondition, ofUnreserved.StatusCode);
+        Assert.Equal(BroadcastState.Pending, _broadcastRows.Single(r => r.TransactionId == unreserved).State);
     }
+
+    /// <summary>A reservation of <paramref name="purpose"/> holding the input <see cref="AddBroadcast"/> gives a row.</summary>
+    private void AddReservation(byte tag, string purpose) =>
+        _feeReservations.Add(new FeeInputReservation(
+                                 Guid.NewGuid(), purpose,
+                                 [
+                                     new WalletInput(new TxId(new NBitcoin.uint256(tag).ToBytes()), 0,
+                                                     LightningMoney.Satoshis(100_000), AddressType.P2Wpkh,
+                                                     new BitcoinScript(new byte[22]), 272)
+                                 ], LightningMoney.Satoshis(1_000), LightningMoney.Zero, null));
 
     [Fact]
     public async Task Given_TheAnchorsReserve_When_RequiredReserve_Then_ItCountsTheAdditionalChannels()
@@ -298,6 +323,26 @@ public sealed partial class LndGrpcWave3HostTests
         Assert.Equal(AddressType.P2Tr, captured.ChangeAddressType);
         Assert.Equal(0.1, captured.MaxFeeRatio);
         Assert.Equal(StatusCode.Unimplemented, random.StatusCode);
+    }
+
+    [Fact]
+    public async Task Given_AFundPsbtWithoutMaxFeeRatio_When_Called_Then_LndsDefaultRatioReachesTheWallet()
+    {
+        // Arrange (LND v0.21: an unset max_fee_ratio is chanfunding.DefaultMaxFeeRatio, 0.2)
+        PsbtFundRequest? captured = null;
+        _psbt.Setup(x => x.FundPsbtAsync(It.IsAny<PsbtFundRequest>(), It.IsAny<CancellationToken>()))
+             .Callback((PsbtFundRequest r, CancellationToken _) => captured = r)
+             .ReturnsAsync(new PsbtFundResult([1], -1, [], LightningMoney.Zero));
+        using var connection = Connect(LndMacaroonFiles.AdminFileName);
+        var request = new FundPsbtRequest { Raw = new TxTemplate(), SatPerVbyte = 2 };
+        request.Raw.Outputs["bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"] = 20_000;
+
+        // Act
+        await connection.WalletKitClient.FundPsbtAsync(request, cancellationToken: Ct);
+
+        // Assert
+        Assert.NotNull(captured);
+        Assert.Equal(0.2, captured.MaxFeeRatio);
     }
 
     [Fact]

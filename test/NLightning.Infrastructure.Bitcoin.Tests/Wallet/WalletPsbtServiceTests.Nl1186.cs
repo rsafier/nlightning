@@ -170,6 +170,24 @@ public partial class WalletPsbtServiceTests
         Assert.Single(allowed.Leases);
     }
 
+    [Fact]
+    public async Task Given_LndsDefaultMaxFeeRatio_When_TheFeeIsAboveAFifthOfTheOutputs_Then_Refused()
+    {
+        // Arrange (LND v0.21's FundPsbt without max_fee_ratio: 0.2, the ratio walletrpc passes for an unset one): a
+        // 1,000 sat output whose fee at 1,000 sat/kw is more than 200 sat
+        AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
+
+        // Act
+        var e = await Assert.ThrowsAsync<WalletPsbtException>(
+                    () => _service.FundPsbtAsync(Request(1_000) with { MaxFeeRatio = 0.2 }, Ct));
+        var allowed = await _service.FundPsbtAsync(Request(1_000) with { MaxFeeRatio = 1 }, Ct);
+
+        // Assert
+        Assert.Equal(WalletPsbtError.FailedPrecondition, e.Error);
+        Assert.Contains("on total output value 0.00001 BTC with max fee ratio of 0.2", e.Message);
+        Assert.True(allowed.Fee.Satoshi > 200, $"fee {allowed.Fee.Satoshi}");
+    }
+
     [Theory]
     [InlineData(AddressType.P2Wpkh)]
     [InlineData(AddressType.P2Tr)]

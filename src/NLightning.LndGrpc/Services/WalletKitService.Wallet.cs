@@ -11,8 +11,10 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Exceptions;
 using Domain.Onchain.Enums;
+using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Signers;
+using Infrastructure.Bitcoin.Wallet;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Walletrpc;
 
@@ -105,9 +107,13 @@ public sealed partial class WalletKitService
 
     /// <summary>
     /// <c>RemoveTransaction</c>: stops rebroadcasting an unconfirmed wallet spend published here (a
-    /// <c>PublishTransaction</c>, <c>SendOutputs</c> or <c>withdraw</c>), as LND drops it from its wallet store; its
-    /// inputs stay leased (or reserved) until their lease ends. The node's own channel transactions (fundings, sweeps,
-    /// commitments, ...) are never removed, and a confirmed transaction cannot be.
+    /// <c>PublishTransaction</c>, <c>SendOutputs</c> or <c>withdraw</c>), as LND drops it from its wallet store. Inputs
+    /// leased through walletrpc stay leased until their lease ends or <c>ReleaseOutput</c>; the inputs of a
+    /// <c>withdraw</c>/<c>SendOutputs</c> reservation are released by the withdraw orphan rule once no pending row spends
+    /// them, so they can be spent again (as LND frees a removed transaction's inputs) while the removed transaction may
+    /// still sit in mempools. Only a spend whose wallet inputs are all held by walletrpc leases or withdraw reservations
+    /// qualifies: the node's own transactions (fundings, sweeps, commitments, the anchor CPFP reclaim stored as a wallet
+    /// send, ...) are never removed, and a confirmed transaction cannot be.
     /// </summary>
     public override async Task<RemoveTransactionResponse> RemoveTransaction(GetTransactionRequest request,
                                                                            ServerCallContext context)
@@ -127,10 +133,41 @@ public sealed partial class WalletKitService
             throw new RpcException(new Status(StatusCode.FailedPrecondition,
                                               $"transaction with txid={request.Txid} is this node's own "
                                             + $"{row.Purpose} transaction; only wallet sends can be removed"));
+        if (row.Purpose == BroadcastPurpose.WalletSend && !await IsOperatorSpendAsync(unitOfWork, row))
+            throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                                              $"transaction with txid={request.Txid} is this node's own wallet "
+                                            + "transaction (not a walletrpc or withdraw spend); it cannot be removed"));
 
         await unitOfWork.BroadcastTransactionDbRepository.MarkAbandonedAsync(txId);
         await unitOfWork.SaveChangesAsync();
         return new RemoveTransactionResponse { Status = "Successfully removed transaction" };
+    }
+
+    /// <summary>
+    /// Whether a <see cref="BroadcastPurpose.WalletSend"/> row is an operator's spend (published through walletrpc or
+    /// <c>withdraw</c>/<c>SendOutputs</c>): its inputs are held by reservations, every one a walletrpc lease or a
+    /// withdraw reservation. The node's own wallet sends (the anchor CPFP reclaim, which must replace stuck children)
+    /// spend inputs of other reservations.
+    /// </summary>
+    private static async Task<bool> IsOperatorSpendAsync(IUnitOfWork unitOfWork, BroadcastTransactionModel row)
+    {
+        NBitcoin.Transaction tx;
+        try
+        {
+            tx = NBitcoin.Transaction.Load(row.RawTransaction, Network.Main);
+        }
+        catch (Exception e) when (e is FormatException or ArgumentException or EndOfStreamException)
+        {
+            return false;
+        }
+
+        var spent = tx.Inputs.Select(i => (new TxId(i.PrevOut.Hash.ToBytes()), i.PrevOut.N)).ToHashSet();
+        var holding = (await unitOfWork.FeeInputReservationDbRepository.GetAllAsync())
+                     .Where(r => r.Inputs.Any(i => spent.Contains((i.TxId, i.Index))))
+                     .ToList();
+        return holding.Count > 0
+            && holding.All(r => r.Purpose == WalletSpendService.ReservationPurpose
+                             || r.Purpose.StartsWith(WalletPsbtService.LeasePurposePrefix, StringComparison.Ordinal));
     }
 
     /// <summary>

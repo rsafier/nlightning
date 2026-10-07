@@ -169,6 +169,68 @@ public class ChainMonitorAccountingTests
         Assert.Equal(4, (await LoadEventsAsync(harness)).Count);
     }
 
+    [Theory]
+    [InlineData(39_000L)] // a payjoin we send: 61,000 sat of ours leave (payment and our fee share)
+    [InlineData(145_000L)] // a payjoin we receive: 45,000 sat more come back than we put in
+    public async Task Given_ACollaborativeTransaction_When_ItConfirms_Then_ItsNetFlowIsBookedAndClearingNets(
+        long ourOutputSat)
+    {
+        // Arrange (NL-1186 review): a transaction spending our wallet output with an input of another party, published
+        // through walletrpc FinalizePsbt/PublishTransaction (a WalletCollaborative row)
+        await using var harness = new ChainMonitorHarness();
+        var wallet = await SeedWalletAsync(harness, 2);
+        await harness.StartAsync(95);
+        var deposit = CreateDeposit(0x0C, wallet[0], DepositSat);
+        await harness.MineAndDeliverAsync(deposit);
+        var (_, ourKey) = wallet[0];
+        var (ourChange, _) = wallet[1];
+        var collaborative = Network.RegTest.CreateTransaction();
+        collaborative.Inputs.Add(new OutPoint(deposit.GetHash(), 1));
+        collaborative.Inputs[0].WitScript = new WitScript(Op.GetPushOp(new byte[71]),
+                                                          Op.GetPushOp(ourKey.PubKey.ToBytes()));
+        collaborative.Inputs.Add(new OutPoint(new uint256(Enumerable.Repeat((byte)0xCD, 32).ToArray()), 3));
+        collaborative.Outputs.Add(Money.Satoshis(80_000), new Key().PubKey.WitHash.ScriptPubKey);
+        collaborative.Outputs.Add(Money.Satoshis(ourOutputSat),
+                                  BitcoinAddress.Create(ourChange.Address, Network.RegTest));
+        var txId = TxIdOf(collaborative);
+        await harness.Monitor.SaveAndPublishAsync(new BroadcastTransactionModel(ToSigned(collaborative),
+                                                      BroadcastPurpose.WalletCollaborative, null, 101, 253));
+
+        // Act
+        await harness.MineAndDeliverAsync();
+
+        // Assert: our net flow as one WalletSent, fee unknown
+        var events = await LoadEventsAsync(harness);
+        var flow = Assert.Single(events, e => e.Kind == AccountingEventKind.WalletSent);
+        Assert.Equal(AccountingEventKeys.WalletSent(txId), flow.EventKey);
+        Assert.Equal((ourOutputSat - DepositSat) * 1_000, flow.AmountMsat);
+        Assert.Equal(0, flow.FeeMsat);
+        Assert.Equal("true", flow.Details["feeUnknown"]);
+        Assert.Equal(nameof(BroadcastPurpose.WalletCollaborative), flow.Details["purpose"]);
+
+        // The books: the wallet equals the UTXOs, the clearing account nets to zero, the net flow is a transfer
+        var books = BooksSimulator.Of(events);
+        Assert.Equal(await SumUtxosMsatAsync(harness), books[AccountRole.Wallet]);
+        Assert.Equal(0, books[AccountRole.Clearing]);
+        if (ourOutputSat < DepositSat)
+        {
+            Assert.Equal((DepositSat - ourOutputSat) * 1_000, books[AccountRole.TransfersOut]);
+            Assert.Equal(-DepositSat * 1_000, books[AccountRole.TransfersIn]);
+        }
+        else
+        {
+            Assert.Equal(0, books[AccountRole.TransfersOut]);
+            Assert.Equal(-ourOutputSat * 1_000, books[AccountRole.TransfersIn]);
+        }
+
+        // Act: replayed after a restart, and the next block
+        await harness.RestartAsync();
+        await harness.MineAndDeliverAsync();
+
+        // Assert: nothing more
+        Assert.Equal(events.Count, (await LoadEventsAsync(harness)).Count);
+    }
+
     [Fact]
     public async Task Given_OurSplice_When_ItConfirms_Then_ItsWalletEventsCarryTheSplicePurpose()
     {

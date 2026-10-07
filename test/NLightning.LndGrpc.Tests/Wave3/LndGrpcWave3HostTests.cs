@@ -62,6 +62,7 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
     private readonly Mock<IBitcoinChainService> _chain = new();
     private readonly List<AccountingEventModel> _accountingEvents = [];
     private readonly List<BroadcastTransactionModel> _broadcastRows = [];
+    private readonly List<FeeInputReservation> _feeReservations = [];
     private readonly List<ChannelCloseModel> _closes = [];
     private readonly List<OutputResolutionModel> _outputs = [];
     private readonly List<WalletAddressModel> _walletAddresses = [];
@@ -695,7 +696,10 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
             imports.Setup(x => x.GetAsync(It.IsAny<byte[]>()))
                    .ReturnsAsync((byte[] script) => _imported.FirstOrDefault(i => i.Script.SequenceEqual(script)));
             imports.Setup(x => x.Add(It.IsAny<ImportedTapscript>())).Callback<ImportedTapscript>(_imported.Add);
+            var reservations = new Mock<IFeeInputReservationDbRepository>();
+            reservations.Setup(x => x.GetAllAsync()).ReturnsAsync(() => _feeReservations.ToList());
             var unitOfWork = new Mock<IUnitOfWork>();
+            unitOfWork.SetupGet(x => x.FeeInputReservationDbRepository).Returns(reservations.Object);
             unitOfWork.SetupGet(x => x.ImportedTapscriptDbRepository).Returns(imports.Object);
             unitOfWork.SetupGet(x => x.WalletAddressesDbRepository).Returns(addresses.Object);
             unitOfWork.SetupGet(x => x.UtxoDbRepository).Returns(utxoRows.Object);

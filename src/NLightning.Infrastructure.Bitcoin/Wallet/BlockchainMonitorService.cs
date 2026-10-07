@@ -1380,6 +1380,10 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         {
             var txId = transaction.GetHash();
             WalletTransactionSource? source = null;
+            // The wallet's change of this transaction as the feed records it (deposits minus spends, NL-1186 review: a
+            // collaborative transaction books its net flow against the clearing account the movements post to)
+            long recordedWalletDeltaMsat = 0;
+            var recordedMovement = false;
             if (DescribeWalletTransaction(transaction, blockHeight, new uint256((byte[])effects.BlockHash).ToString(),
                                           effects.StagedDeposits, timestamp: blockTime) is { } observed)
                 effects.WalletTransactions.Add(observed);
@@ -1420,6 +1424,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 // NL-602/NL-603: the deposit in the accounting feed (memory guard above: once per output)
                 source ??= ClassifyWalletTransaction(transaction, utxoMemoryRepository, effects);
                 CollectWalletReceived(utxo, watchedAddress, source, effects);
+                recordedWalletDeltaMsat += checked((long)utxo.Amount.MilliSatoshi);
+                recordedMovement = true;
 
                 // The address stays watched (as after a restart, which reloads every wallet address): the wallet hands
                 // an address out again once its deposits are spent, and two channels closing at once can get the
@@ -1448,7 +1454,12 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
 
                 source ??= ClassifyWalletTransaction(transaction, utxoMemoryRepository, effects);
                 CollectWalletOutputSpent(spent, transaction, source, utxoMemoryRepository, effects);
+                recordedWalletDeltaMsat -= checked((long)spent.Amount.MilliSatoshi);
+                recordedMovement = true;
             }
+
+            if (recordedMovement && source is { Purpose: BroadcastPurpose.WalletCollaborative })
+                CollectWalletCollaborativeFlow(transaction, source, recordedWalletDeltaMsat, effects);
         }
     }
 

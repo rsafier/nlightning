@@ -140,7 +140,8 @@ public sealed class SweepScheduler : ISweepScheduler
                 continue;
             }
 
-            var deadline = spent.Where(r => r?.DeadlineHeight is not null).Select(r => r!.DeadlineHeight).Min();
+            var ownDeadline = spent.Where(r => r?.DeadlineHeight is not null).Select(r => r!.DeadlineHeight).Min();
+            var deadline = ownDeadline;
 
             // The operator's request (walletrpc BumpFee, NL-1186): a fresh one replaces at once; its deadline never
             // loosens the output's own
@@ -170,8 +171,9 @@ public sealed class SweepScheduler : ISweepScheduler
                 }
             }
 
-            var replacement = await BuildReplacementAsync(close, broadcast, tx, spent!, deadline, height,
-                                                           revocationSecret, bump, cancellationToken);
+            var replacement = await BuildReplacementAsync(close, broadcast, tx, spent!, deadline,
+                                                           ownDeadline is not null, height, revocationSecret, bump,
+                                                           cancellationToken);
             if (replacement is null)
                 continue;
 
@@ -194,7 +196,8 @@ public sealed class SweepScheduler : ISweepScheduler
                                                                         BroadcastTransactionModel broadcast,
                                                                         Transaction tx,
                                                                         IReadOnlyList<OutputResolutionModel> spent,
-                                                                        uint? deadline, uint height,
+                                                                        uint? deadline, bool hasOwnDeadline,
+                                                                        uint height,
                                                                         Secret? revocationSecret,
                                                                         OperatorFeeBumpRequest? bump,
                                                                         CancellationToken cancellationToken)
@@ -238,8 +241,15 @@ public sealed class SweepScheduler : ISweepScheduler
         var destination = tx.Outputs[0].ScriptPubKey.ToBytes();
         var dust = ShutdownScriptValidator.GetDustThresholdSat(destination);
         var isPenalty = broadcast.Purpose == BroadcastPurpose.Penalty;
+        // An operator's budget never lowers the cap that protects an output a competitor can take at its deadline (an
+        // HTLC claim, a penalty: near the deadline a penalty may pay up to PenaltyMaxFeePerMille), as the anchor CPFP's
+        // ApplyBudget does; without a deadline the budget replaces the cap
         var decision = bump?.BudgetSat is { } budget and > 0
-                           ? _policy.DecideReplacementWithBudget(total, oldFee, weight, estimate, budget, dust)
+                           ? _policy.DecideReplacementWithBudget(
+                               total, oldFee, weight, estimate,
+                               hasOwnDeadline
+                                   ? Math.Max(budget, _policy.GetMaxFee(total, isPenalty, height, deadline))
+                                   : budget, dust)
                            : _policy.DecideReplacement(total, oldFee, weight, estimate, isPenalty, height, deadline,
                                                        dust);
         if (decision is null)
