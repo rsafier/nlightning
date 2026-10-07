@@ -1,5 +1,7 @@
 # NLightning Issue Ledger
 
+Updated 2026-10-07 by `wip/silent-payments` through frozen source `df8642ad`: implemented NL-1253, NL-1255..NL-1266 and NL-1269. NL-1254 is in-progress pending NL-1267's three final consecutive Core regtest proofs; NL-1268 optional remote scanning and NL-1270 mainnet activation/canary remain open. Resolution evidence is attached to each implemented entry; final acceptance is tracked separately in `SILENT_PAYMENTS_VALIDATION.md`. No live-node activation is claimed. Summary recounted: 993 unique classified IDs, no duplicates.
+
 Updated 2026-10-07 by `wip/accounting-review` from latest `wip/fafo` 89d8c7be: new and fixed NL-1271 (late-valuation retry cache), NL-1272 (atomic journal clear), NL-1273 (verification under the financial writer gate), NL-1274 (atomic imported-basis replacement); filed on the branch as NL-1254..NL-1257, renumbered at integration because the silent payments epic landed those IDs first. Nine regressions failed on the original behavior. Validation: net10/net11 Release solution builds with zero warnings/errors; full formatting verification; final net10 Application accounting 299 and broad non-Docker/non-SqlServer/non-cluster Integration 1,162 passed. Fresh cluster proof `accounting-review-proof1`: 1/1 wrapper, 39/39 inner tests, 112 s, including six PostgreSQL fault-recovery cases and real ABCD zero-drift operational reconciliation and balanced financial books; all owned namespaces cleaned. Review and remaining issues are recorded in ACCOUNTING_PLAN section 12. NL-1207's rounding correction is already in the base; NL-758, NL-759, NL-1253 and the other documented follow-ups remain open. Summary: 976 unique classified entries. No schema or live-node configuration change. Implementation commit: `7c9b8e73`.
 
 
@@ -192,16 +194,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 8 | 99 | 107 |
-| in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 70 | 246 | 516 | 847 |
+| open | 0 | 0 | 0 | 92 | 92 |
+| in-progress | 0 | 0 | 8 | 1 | 9 |
+| fixed | 15 | 70 | 253 | 523 | 861 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
 | **Total** | **15** | **70** | **270** | **638** | **993** |
 
 ### Epics
 
-- NL-1254: Silent payments (BIP 352) send and receive (open, medium; plan `docs/agents/SILENT_PAYMENTS_PLAN.md`, owner decisions D-SP1..D-SP14: SP-C codec and maths NL-1255, NL-1256; SP-S send NL-1257, NL-1258; SP-R receive NL-1259..NL-1266; SP-T proofs NL-1267; SP-X tweak-index source, LND visibility and refusals, mainnet NL-1268..NL-1270)
+- NL-1254: Silent payments (BIP 352) send and receive (in-progress, medium; final Core proof NL-1267 pending; plan `docs/agents/SILENT_PAYMENTS_PLAN.md`, owner decisions D-SP1..D-SP14: SP-C codec and maths NL-1255, NL-1256; SP-S send NL-1257, NL-1258; SP-R receive NL-1259..NL-1266; SP-T proofs NL-1267; SP-X tweak-index source, LND visibility and refusals, mainnet NL-1268..NL-1270)
 - NL-1190: Loop gRPC L0–L4 (in-progress, medium; service implementation NL-1191..NL-1195 fixed, external interoperability/failure proofs NL-1196, scanner indexing NL-1197)
 
 - NL-1160: LND gRPC compatibility (in-progress, medium; plan `docs/agents/LND_GRPC_PLAN.md`: wave 1 read/invoice/message surface with real macaroons NL-1161..NL-1163 fixed, wave 2 pay/channels/hold invoices/streams NL-1164..NL-1167, NL-1169 fixed, wave 3 acceptor/interceptor/walletrpc/history NL-1168 fixed (NL-1180, NL-1183..NL-1185); bos/RTL tool gaps NL-1242..NL-1249 fixed; follow-ups NL-1170..NL-1172, NL-1181, NL-1182, NL-1186, NL-1187; NL-1205 fixed)
@@ -10247,23 +10249,25 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** none
 
 ### NL-1253 LND gRPC GetTransactions double-counts wallet outputs also imported as tapscript
-- **Status:** open
+- **Status:** fixed (2026-10-07; `wip/silent-payments`, implemented through `df8642ad`)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `LndGrpc/Services/LightningService.Transactions.cs`, `WalletKitService.Imports.cs`
-- **Evidence:** Code review during waves 1 and 2 found an existing history-merge defect. `WalletKit.ImportTapscript` with `FullKeyOnly` can register the same P2TR script as a canonical wallet address. `GetTransactions` first accumulates canonical accounting movements, then unconditionally adds `watched.Amount` and imported output details for the same transaction. A shared output is therefore counted twice; distinct wallet and imported outputs in one transaction should still sum normally. This is a code-derived finding, without an executed overlap-history proof. The new passive subscription source unions ownership correctly; this read-RPC follow-up is outside NL-1187's indexed-query work.
-- **Fix sketch:** Merge canonical and imported ownership by outpoint/input/output identity before calculating net amount and output details; add overlap deposit/spend and distinct mixed-output history proofs.
+- **Original evidence (before implementation):** Code review during waves 1 and 2 found an existing history-merge defect. `WalletKit.ImportTapscript` with `FullKeyOnly` can register the same P2TR script as a canonical wallet address. `GetTransactions` first accumulates canonical accounting movements, then unconditionally adds `watched.Amount` and imported output details for the same transaction. A shared output is therefore counted twice; distinct wallet and imported outputs in one transaction should still sum normally. This is a code-derived finding, without an executed overlap-history proof. The new passive subscription source unions ownership correctly; this read-RPC follow-up is outside NL-1187's indexed-query work.
+- **Implementation requirements:** Merge canonical and imported ownership by outpoint/input/output identity before calculating net amount and output details; add overlap deposit/spend and distinct mixed-output history proofs.
 - **Blocks/Blocked-by:** Related NL-1187, NL-1232
 - **Plan ref:** LND_SUBSCRIPTIONS_PLAN.md Limits
 
 ## Silent payments (BIP 352)
 
+- **Resolution evidence (2026-10-07):** Canonical and imported ownership now merge by outpoint rather than adding the same movement twice. `LndGrpcWave3HostTests.OwnershipOverlap` covers overlapping deposits/spends and distinct mixed ownership; `LndGrpcWave3HostTests.SilentPayments` pins SP visibility and history.
+
 ### NL-1254 Silent payments (BIP 352): send to and receive on static silent payment addresses (epic)
-- **Status:** open (plan done 2026-10-07 on `wip/sp-plan`; no code yet)
+- **Status:** in-progress (implementation on `wip/silent-payments`; final Core acceptance NL-1267 pending)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `docs/agents/SILENT_PAYMENTS_PLAN.md`
-- **Evidence:** the on-chain wallet pays and receives only BIP84/BIP86 addresses (`BitcoinWalletService`, `WalletSpendService`). It can neither pay an `sp1q…` address (BIP 352 v1.1.1, supported by Cake Wallet, Sparrow 2.5+ and Dana; Bitcoin Core PR #35301 adds the BIP 352 logic) nor receive on one. Nothing in the repo mentions silent payments.
+- **Evidence:** Codec, crypto, sending, receiving, schema, signing, accounting, rescan, labels and LND/IPC surfaces are implemented and covered by focused tests. Final repeated Core end-to-end acceptance remains pending in NL-1267. Optional remote scanning NL-1268 and a separately authorized mainnet canary NL-1270 remain open; neither is silently activated.
 - **Fix sketch:** the waves of the plan:
   - SP-C (shared core): address codec NL-1255, maths and vectors NL-1256.
   - SP-S (send): `withdraw` NL-1257, LND `SendCoins` NL-1258.
@@ -10275,12 +10279,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Plan ref:** `docs/agents/SILENT_PAYMENTS_PLAN.md`
 
 ### NL-1255 Silent payment address codec (bech32m, 1023 characters, `sp`/`tsp`/`sprt`)
-- **Status:** open
+- **Status:** fixed (2026-10-07; `wip/silent-payments`, implemented through `df8642ad`)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** new `src/NLightning.Domain/Bitcoin/SilentPayments/` (`SilentPaymentAddress`, `SilentPaymentAddressCodec`)
-- **Evidence:** No bech32m codec accepts more than 90 characters. The only ones are NBitcoin subclasses in Infrastructure.Bitcoin (`Encoders/Bech32Encoder.cs`, which is bech32 only, and `Bootstrap/LightningNodeIdBech32.cs`) and the checksum-less BOLT 12 codec in Domain. A v0 address is 116-118 characters.
-- **Fix sketch:** a BCL bech32m codec in Domain:
+- **Original evidence (before implementation):** No bech32m codec accepts more than 90 characters. The only ones are NBitcoin subclasses in Infrastructure.Bitcoin (`Encoders/Bech32Encoder.cs`, which is bech32 only, and `Bootstrap/LightningNodeIdBech32.cs`) and the checksum-less BOLT 12 codec in Domain. A v0 address is 116-118 characters.
+- **Implementation requirements:** a BCL bech32m codec in Domain:
   - HRP checked per `BitcoinNetwork`: `sp` on mainnet, `tsp` on test networks and signets, `sprt` on regtest (Core `silent_payments_hrp`);
   - version rules (v0 exactly 66 bytes, v31 refused);
   - curve membership checked through `ISilentPaymentCrypto`.
@@ -10288,13 +10292,15 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** part of NL-1254; blocks NL-1257, NL-1259
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` NL-1255 SP-C1
 
+- **Resolution evidence (2026-10-07):** Domain `SilentPaymentAddressCodec` implements network HRPs, bech32m, the 1023-character limit, version/payload rules and point validation. `SilentPaymentAddressCodecTests` covers the refusal table; `Bip352VectorTests` reproduces every official address byte-for-byte.
+
 ### NL-1256 BIP 352 maths with every send and receive vector byte-exact
-- **Status:** open
+- **Status:** fixed (2026-10-07; `wip/silent-payments`, implemented through `df8642ad`)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** new `src/NLightning.Infrastructure.Bitcoin/Crypto/SilentPayments/Bip352.cs`, `SilentPaymentCrypto`, Domain `ISilentPaymentCrypto` and `SilentPaymentInputClassifier`
-- **Evidence:** No BIP 352 code exists. `ISecp256K1Math` is too narrow (2-ary sums). NBitcoin.Secp256k1 4.0.3 has the primitives: `TryCombine`, `GetSharedPubkey`, the tweaks, and `GE`/`Scalar`.
-- **Fix sketch:** port `reference.py` (bitcoin/bips `c2ac36f4`, v1.1.1) the way `Bip327.cs` was ported:
+- **Original evidence (before implementation):** No BIP 352 code exists. `ISecp256K1Math` is too narrow (2-ary sums). NBitcoin.Secp256k1 4.0.3 has the primitives: `TryCombine`, `GetSharedPubkey`, the tweaks, and `GE`/`Scalar`.
+- **Implementation requirements:** port `reference.py` (bitcoin/bips `c2ac36f4`, v1.1.1) the way `Bip327.cs` was ported:
   - classify eligible inputs: P2TR with the NUMS and annex rules, P2WPKH, P2SH-P2WPKH, malleated P2PKH; compressed keys only; no SegWit v>1 spends;
   - the input hash over the smallest outpoint;
   - constant-time ECDH;
@@ -10305,13 +10311,15 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** part of NL-1254; blocks NL-1257, NL-1262, NL-1263
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` §2, NL-1256 SP-C2
 
+- **Resolution evidence (2026-10-07):** `Bip352`, `SilentPaymentCrypto` and `SilentPaymentInputClassifier` implement eligible-input classification, aggregation, tagged hashes, ECDH, bounded output search, labels and raw spend signing. The unchanged official JSON is pinned to bitcoin/bips `c2ac36f48f71615984087fd151f410457edfed72` and SHA-256 `f5f9ed4afd76a1b76f3c70b1cbe67532f89abbe559f8e02d7fc3d8ecb93af4a1`. `Bip352VectorTests` checks all 28 cases, including intermediates, output sets, private tweaks and reference-aux signatures; `Bip352SecurityTests` covers secret handling and invalid aggregates. The independent pinned Python reference also passed all cases.
+
 ### NL-1257 `withdraw` cannot pay a silent payment address
-- **Status:** open
+- **Status:** fixed (2026-10-07; `wip/silent-payments`, implemented through `df8642ad`)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/WalletSpendService.cs` (`ParseAddress`, `WithdrawLockedAsync`), `FeeInputSelector.cs` (selection policy, change type), `ILightningSigner`/`LocalLightningSigner` (new `ComputeSilentPaymentOutputs`), new `SilentPaymentsOptions`
-- **Evidence:** `ParseAddress` takes only `BitcoinAddress.Create`. The output is fixed before input selection, but an SP output depends on the selected inputs' private keys.
-- **Fix sketch:**
+- **Original evidence (before implementation):** `ParseAddress` takes only `BitcoinAddress.Create`. The output is fixed before input selection, but an SP output depends on the selected inputs' private keys.
+- **Implementation requirements:**
   - parse SP addresses;
   - reserve with a P2TR placeholder output, selecting eligible inputs only (at least one);
   - derive the outputs inside the signer from exactly the reserved inputs (BIP86 coins with their tweaked key, SP coins with `d`);
@@ -10323,26 +10331,30 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** blocked by NL-1255, NL-1256; blocks NL-1258
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` §3.4, NL-1257 SP-S1
 
+- **Resolution evidence (2026-10-07):** `WalletSpendService`, `FeeInputSelector` and the local signer parse SP destinations, reserve eligible inputs, derive outputs inside the signer, verify the reserved input identity and enforce send/mainnet gates. P2TR/SP change, dust and mixed-custody selection are covered by `WalletSpendServiceSilentPaymentTests`, `WalletSpendServiceSilentChangeTests`, `FeeInputSelectorSilentPaymentTests` and signer tests. Silent payments are opt-in; existing wallet paths remain available.
+
 ### NL-1258 LND gRPC `SendCoins` and client surfaces for silent payment sends
-- **Status:** open
+- **Status:** fixed (2026-10-07; `wip/silent-payments`, implemented through `df8642ad`)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `src/NLightning.LndGrpc/Services/LightningService.Operations.cs` (`SendCoins`), `src/NLightning.Client` (withdraw usage)
-- **Evidence:** `SendCoins` forwards the address to `withdraw`, which refuses `sp1…` today. The client usage text does not name SP addresses.
-- **Fix sketch:**
+- **Original evidence (before implementation):** `SendCoins` forwards the address to `withdraw`, which refuses `sp1…` today. The client usage text does not name SP addresses.
+- **Implementation requirements:**
   - `SendCoins` accepts SP addresses when `SilentPayments:Send` is on, and answers `INVALID_ARGUMENT` otherwise (D-SP10);
   - the usage text names SP addresses;
   - the payment label shows in `GetTransactions`.
 - **Blocks/Blocked-by:** blocked by NL-1257
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` §3.10, NL-1258 SP-S2
 
+- **Resolution evidence (2026-10-07):** LND `SendCoins` and CLI withdrawal accept SP destinations through the wallet service and reject disabled/invalid SP requests before sending. `LndGrpcHostTests.SilentPayments`, `SilentPaymentCommandTests` and `CdkPaymentProcessorOnchainTests` cover the exposed send/refusal paths and labels.
+
 ### NL-1259 No silent payment keys or address: scan/spend derivation and `getspaddress` (IPC 52)
-- **Status:** open
+- **Status:** fixed (2026-10-07; `wip/silent-payments`, implemented through `df8642ad`)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Managers/SecureKeyManager.cs`, `src/NLightning.Domain/Bitcoin/Constants/KeyConstants.cs`, new Domain `ISilentPaymentKeySource`, `ClientCommand` 52
-- **Evidence:** `SecureKeyManager` derives only deposit keys (BIP84/86, coin 0' on every network), channel keys and the node key.
-- **Fix sketch:**
+- **Original evidence (before implementation):** `SecureKeyManager` derives only deposit keys (BIP84/86, coin 0' on every network), channel keys and the node key.
+- **Implementation requirements:**
   - derive the scan key at `m/352'/coin'/0'/1'/0` and the spend key at `.../0'/0`, with coin 0' on mainnet and 1' on test networks (D-SP3);
   - v1/v2 key files derive from their legacy master and are flagged as not recoverable elsewhere (D-SP4);
   - keep the scan private key in locked memory, used only inside `ComputeScanSharedSecret`/`GetLabelTweak`;
@@ -10352,13 +10364,15 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** blocked by NL-1255; blocks NL-1260, NL-1262
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` §3.3, NL-1259 SP-R1
 
+- **Resolution evidence (2026-10-07):** `SecureKeyManager.SilentPayments` implements network-aware BIP 352 scan/spend derivation and the key-source port, legacy recoverability metadata, secret ownership and on-demand spend derivation. `getspaddress` IPC 52 and node-info visibility are wired through authenticated handlers. `SecureKeyManagerSilentPaymentTests` checks independent mnemonic-derived fixtures; `SilentPaymentAuthenticatedIpcTests` and command tests cover the API.
+
 ### NL-1260 Schema `AddSilentPayments`: SP outputs as wallet UTXOs
-- **Status:** open
+- **Status:** fixed (2026-10-07; `wip/silent-payments`, implemented through `df8642ad`)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `src/NLightning.Infrastructure.Persistence/Entities/Bitcoin/` (`UtxoEntity`, new `SilentPaymentOutputEntity`, `SilentPaymentLabelEntity`, `SilentPaymentScanStateEntity`), `EntityConfiguration/Bitcoin/UtxoEntityConfiguration.cs`, the three provider migration projects, `CompiledModels/`
-- **Evidence:** `Utxos` has a required FK `(AddressIndex, IsAddressChange, AddressType)` to `WalletAddresses`. An SP output has no wallet address, so it cannot be a wallet UTXO today.
-- **Fix sketch:**
+- **Original evidence (before implementation):** `Utxos` has a required FK `(AddressIndex, IsAddressChange, AddressType)` to `WalletAddresses`. An SP output has no wallet address, so it cannot be a wallet UTXO today.
+- **Implementation requirements:**
   - make that FK nullable;
   - add a one-to-one to `SilentPaymentOutputs` (outpoint, output key, tweak, label, amount, block, spent-by, ignored) and a check constraint that exactly one of the two is set;
   - add the label and scan-state tables;
@@ -10368,13 +10382,15 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** blocked by NL-1259; blocks NL-1261..NL-1266
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` §3.5, NL-1260 SP-R2
 
+- **Resolution evidence (2026-10-07):** `AddSilentPayments` migrations and regenerated compiled models exist for SQLite, PostgreSQL and SQL Server. SP custody uses the nullable ordinary-address relationship plus exclusive SP ownership, durable output/label/scan-state metadata and repository/UoW support. `SilentPaymentPersistenceTests`, `SilentPaymentSchemaRoundTrip` and provider-model guards cover the schema; actual SQL Server migration execution is not claimed. Tweaks remain secret signing material and are excluded from public status/history responses.
+
 ### NL-1261 Chain monitor has no block prevouts (needed to scan for silent payments)
-- **Status:** open
+- **Status:** fixed (2026-10-07; `wip/silent-payments`, implemented through `df8642ad`)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinChainService.cs` (raw `GetBlockAsync`, `getblock 1` streaming), new `IBlockPrevoutSource`
-- **Evidence:** Blocks are fetched raw (verbosity 0). Eligibility and input keys need the prevout scriptPubKey of every input. rbitcoin (NL-1095) answers only `getblock` 0/1.
-- **Fix sketch:** `Auto` probing of three sources (D-SP9):
+- **Original evidence (before implementation):** Blocks are fetched raw (verbosity 0). Eligibility and input keys need the prevout scriptPubKey of every input. rbitcoin (NL-1095) answers only `getblock` 0/1.
+- **Implementation requirements:** `Auto` probing of three sources (D-SP9):
   - `getblock <hash> 3` (Core ≥ 25, from undo data, no txindex), parsed streaming from `scriptPubKey.hex` (NL-1097);
   - REST `/rest/spenttxouts/<hash>.bin` (Core ≥ 30, PR #32540; verify its requirements on Core 31.1);
   - `getrawtransaction` per previous transaction (Core with `-txindex`, or rbitcoin).
@@ -10382,15 +10398,17 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
   - Tests: captured answers for unit tests; a cluster live test on Core 31.1 and rbitcoin.
 - **Blocks/Blocked-by:** blocked by NL-1260; blocks NL-1262
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` §3.5, NL-1261 SP-R3
-- **Verified (2026-10-07, orchestrator):** on the public signet node's Bitcoin Core 31.1 (unpruned, no indexes: `getindexinfo` is empty), `getblock <hash> 3` for block 325300 returned `prevout` objects for every input (101 non-coinbase inputs). So `getblock` verbosity 3 needs no `txindex` there. The REST `spenttxouts` question is still open.
+- **Verified (2026-10-07, orchestrator):** on the public signet node's Bitcoin Core 31.1 (unpruned, no indexes: `getindexinfo` is empty), `getblock <hash> 3` for block 325300 returned `prevout` objects for every input (101 non-coinbase inputs). So `getblock` verbosity 3 needs no `txindex` there. The later Core preflight also verified the REST `spenttxouts` route and agreement with the other sources.
+
+- **Resolution evidence (2026-10-07):** `BlockPrevoutSource` implements capability probing, streaming `getblock` verbosity 3, Core REST spenttxouts and raw-transaction fallback, same-block parents, cancellation and prune-floor checks. `BlockPrevoutSourceTests` includes the retained authentic Core 31.1 capture. Core preflight proved all three routes agree, including REST/getblock without txindex and actionable pruned-history refusal; full end-to-end acceptance remains NL-1267.
 
 ### NL-1262 No silent payment scanner: found outputs never reach the wallet
-- **Status:** open
+- **Status:** fixed (2026-10-07; `wip/silent-payments`, implemented through `df8642ad`)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (`StageBlockAsync`, `StageWalletMovements`, `StageWalletRollbackAsync`, `FindWalletOutputsUnspentAgainAsync`), new `Wallet/SilentPayments/SilentPaymentScanner.cs`
-- **Evidence:** wallet outputs are recognized only by an address lookup in `_watchedAddresses`.
-- **Fix sketch:**
+- **Original evidence (before implementation):** wallet outputs are recognized only by an address lookup in `_watchedAddresses`.
+- **Implementation requirements:**
   - `StageSilentPaymentsAsync` runs before `StageWalletMovements`, in the block's unit of work, for ZMQ and Poll alike;
   - a parallel public-key pre-pass runs outside the unit of work, followed by constant-time ECDH through the key source;
   - label lookup, K_max, and dust ignored while `k` still advances (D-SP12);
@@ -10401,13 +10419,15 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** blocked by NL-1256, NL-1259, NL-1260, NL-1261; blocks NL-1263..NL-1267
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` §3.5, §3.7, NL-1262 SP-R4
 
+- **Resolution evidence (2026-10-07):** `SilentPaymentScanner` and the chain monitor stage accepted receipts, ignored metadata, confirmed spends, cursor updates and accounting in the committing UoW; live/rescan/reorg operations share a lease. Metadata survives spends and rollback handles never-materialized historical receipts. `SilentPaymentScannerTests`, `SilentPaymentChainMonitorTests` and cursor tests cover ZMQ/Poll staging, receive-off gaps, restart and reorg paths. The benchmark publishes metrics and retained cloud measurements; its normal cloud p95 exceeds the 1 s reference-machine goal, while adversarial p95 is below 60 s. Full Core acceptance remains NL-1267.
+
 ### NL-1263 Signer cannot spend silent payment outputs
-- **Status:** open
+- **Status:** fixed (2026-10-07; `wip/silent-payments`, implemented through `df8642ad`)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.cs` (`DeriveWalletPrevOut` ~1637, the script check ~821, `SignP2TrInput`), `Wallet/FeeInputSelector.cs`
-- **Evidence:** wallet P2TR inputs are signed with the BIP86 tweak of a deposit key (`CreateTaprootKeyPair()`). An SP output's key is `b_spend + t_k (+ label)` with no taproot tweak.
-- **Fix sketch:**
+- **Original evidence (before implementation):** wallet P2TR inputs are signed with the BIP86 tweak of a deposit key (`CreateTaprootKeyPair()`). An SP output's key is `b_spend + t_k (+ label)` with no taproot tweak.
+- **Implementation requirements:**
   - SP coins sign with `d` (negated for odd Y) as a raw key-path spend;
   - SP coins are selectable for withdrawals, fee inputs, channel funding, the interactive-tx contributor and PSBT signing;
   - SP coins can be inputs of another SP send;
@@ -10416,29 +10436,33 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** blocked by NL-1262 (and NL-1257 for SP-to-SP)
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` NL-1263 SP-R5
 
+- **Resolution evidence (2026-10-07):** The local signer derives the raw BIP 352 output secret, validates its actual output key and signs key-path spends without a BIP86 tweak. Fee selection, wallet sends, channel funding and PSBT signing recognize SP custody and validate prevout amounts/scripts before signing. `LocalLightningSignerSilentPaymentTests`, `WalletPsbtServiceTests`, selection tests and SP send/change tests cover parity, mutation rejection and signatures. Final live channel-funding proof remains under NL-1267.
+
 ### NL-1264 Accounting does not mark silent payment receipts and labels
-- **Status:** open
+- **Status:** fixed (2026-10-07; `wip/silent-payments`, implemented through `df8642ad`)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.Accounting.cs` (`CollectWalletReceived`), Domain `Accounting/`
-- **Evidence:** SP receipts arrive as plain `WalletReceived` events with no source, no label and no change classification. Rescan findings are not handled.
-- **Fix sketch:**
-  - put source `silent_payment` and the label's name on the event;
-  - classify `m = 0` change as a self-transfer;
+- **Original evidence (before implementation):** SP receipts arrive as plain `WalletReceived` events with no source, no label and no change classification. Rescan findings are not handled.
+- **Implementation requirements:**
+  - retain canonical source ownership, add `receiptSource=silent_payment` and the label's name on the event;
+  - classify a self-transfer only with accepted input custody or retained transaction provenance; label `m = 0` alone proves no ownership;
   - write reversals on reorg;
   - date rescan findings with their block height and time;
-  - confirm that the A1 dedup key separates a rescan finding from a live one;
+  - reuse the same A1 custody key so rescan and live observations deduplicate;
   - check that reconcile shows no drift.
 - **Blocks/Blocked-by:** blocked by NL-1262
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` §3.8, NL-1264 SP-R6
 
+- **Resolution evidence (2026-10-07):** Receipts retain canonical `source` ownership and add `receiptSource=silent_payment`, label and output-index details. Label zero alone does not establish wallet provenance. Shared `SilentPaymentAccounting` stages custody and fully proven transaction settlement atomically for live and historical scans, with immutable corrections for lowered-threshold change, reorg reversals and block timestamps. Unknown shared inputs fail before Save rather than fabricating fees. `SilentPaymentServiceTests` proves historical/current custody, ignored-input equity, change promotion, complete 205-input settlement, dedup and failed-save rollback; monitor settlement/pending-recovery tests cover live metadata-only spends. The historical/helper targeted run passed 22 cases; final later-source/Core verification is recorded separately in `SILENT_PAYMENTS_VALIDATION.md`.
+
 ### NL-1265 No silent payment rescan or restore from a birthday (`sprescan` 54, `spstatus` 55)
-- **Status:** open
+- **Status:** fixed (2026-10-07; `wip/silent-payments`, implemented through `df8642ad`)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** new `src/NLightning.Application/.../SilentPaymentRescanService` (pattern: `Infrastructure.Bitcoin/Wallet/Imports/ImportedTapscriptTracker.cs`, NL-1197), `SilentPaymentScanState`, IPC 54/55
-- **Evidence:** the wallet has no rescan at all. SP outputs can be recovered from the key file only by scanning from a birthday, and the chain monitor starts at `HeightOfBirth` only when its state is fresh.
-- **Fix sketch:**
+- **Original evidence (before implementation):** the wallet has no rescan at all. SP outputs can be recovered from the key file only by scanning from a birthday, and the chain monitor starts at `HeightOfBirth` only when its state is fresh.
+- **Implementation requirements:**
   - a background rescan with its own cursor up to the live height, rewound on reorg, never overlapping live scanning;
   - spend tracking of found outputs;
   - birthday = the tip at first enable (D-SP7);
@@ -10449,13 +10473,15 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** blocked by NL-1262
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` §3.6, NL-1265 SP-R7
 
+- **Resolution evidence (2026-10-07):** Application `SilentPaymentService` implements persisted background checkpoints, `sprescan`/`spstatus`, cancellation, recovery-label counts and SP-only receive-off catch-up without rewinding the global chain cursor. Historical receipts become selectable only after bounded current-chain proof; pending mempool spends, canonical-tip races and failed saves leave recovery pending. A bounded ordinary-address recovery catalogue supplies proven ledger ownership during seed restore. `SilentPaymentServiceTests`, recovery-catalogue and cursor tests cover restart, pruning, cancellation, spent history and 205-output batch progress. The final encrypted-key-file empty-database Core restore gate remains NL-1267; backup birthday metadata remains a follow-up.
+
 ### NL-1266 Silent payment labels and change (`getspaddress --label`, `splabels` 53)
-- **Status:** open
+- **Status:** fixed (2026-10-07; `wip/silent-payments`, implemented through `df8642ad`)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `SilentPaymentLabels`, the scanner's label set, `WalletSpendService` change, IPC 52/53
-- **Evidence:** BIP 352 requires scanning the change label `m = 0`. Operator labels let receipts be told apart.
-- **Fix sketch:**
+- **Original evidence (before implementation):** BIP 352 requires scanning the change label `m = 0`. Operator labels let receipts be told apart.
+- **Implementation requirements:**
   - the change label is always scanned;
   - named labels `m ≥ 1`, up to `MaxLabels`;
   - `splabels`;
@@ -10464,15 +10490,17 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** blocked by NL-1262
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` NL-1266 SP-R8
 
+- **Resolution evidence (2026-10-07):** `getspaddress --label` and `splabels` allocate persisted monotonic named labels; the virtual change label zero is always scanned. Optional SP change is derived from the exact selected input set and becomes custody at confirmation. `SilentPaymentServiceTests` covers concurrent allocation/restart and recovery counts; official label vectors, scanner tests and `WalletSpendServiceSilentChangeTests` cover label search and change outputs.
+
 ### NL-1267 No end-to-end or interop proof of silent payments
 - **Status:** open
 - **Severity:** low
 - **Kind:** test
-- **Location:** new cluster suite `silentpayments` (`test/NLightning.Integration.Tests/...`), image `nltg-spike-spwallet:<commit>`
-- **Evidence:** in-process vectors do not prove the chain-monitor, reorg, Poll-mode and restore paths, or interop with another implementation.
+- **Location:** cluster suite `silentpayments`, `SilentPaymentsFlowTests`, `SilentPaymentPrevoutClusterTests`, and `test/Docker/silentpayments_reference` (pinned upstream reference oracle)
+- **Evidence:** Official vectors, in-process SQLite recovery/monitor regressions and initial Core 31.1 preflight interoperability/source checks have run. The preflight failed its reorg wait and does not count as a green full proof. Three consecutive final Core runs on frozen source `df8642ad` are pending; do not mark this entry fixed until their complete results are recorded. The independent oracle is the pinned upstream BIP 352 Python reference, not an unexecuted Rust-wallet claim.
 - **Fix sketch:**
   - two NLightning nodes on Core 31.1 regtest: labeled and unlabeled payments, found in ZMQ and in Poll mode, spent in a channel open, a reorg, one node wiped and restored by `sprescan`, accounting reconciled;
-  - interop in both directions with a headless reference wallet on the Rust `silent-payments` crates (or Bitcoin Core once #35302/#32966 ship);
+  - interop in both directions with the pinned independent upstream BIP 352 reference in its isolated harness;
   - green 3 times in a row.
 - **Blocks/Blocked-by:** blocked by NL-1257..NL-1266
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` §5, NL-1267 SP-T1
@@ -10492,16 +10520,18 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` NL-1268 SP-X1
 
 ### NL-1269 LND gRPC visibility of silent payment coins; refuse SP for splice-out, sweeps and closes
-- **Status:** open
+- **Status:** fixed (2026-10-07; `wip/silent-payments`, implemented through `df8642ad`)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `src/NLightning.LndGrpc/Services/WalletKitService*.cs` (`ListUnspent`, `ListAddresses`), `LightningService.Transactions.cs`, `src/NLightning.Application/Channels/Splicing/WalletSpliceOutDestination.cs`, close/sweep destination providers
-- **Evidence:** SP coins must show as `TAPROOT_PUBKEY` UTXOs (D-SP10). Splice-out, dual-fund, sweep and close transactions cannot pay an SP address (D-SP11): they carry inputs whose keys we do not hold alone, or no eligible input at all.
-- **Fix sketch:**
+- **Original evidence (before implementation):** SP coins must show as `TAPROOT_PUBKEY` UTXOs (D-SP10). Splice-out, dual-fund, sweep and close transactions cannot pay an SP address (D-SP11): they carry inputs whose keys we do not hold alone, or no eligible input at all.
+- **Implementation requirements:**
   - the three RPCs show SP coins, with an NL-1253 pin against double counting;
   - each non-wallet send path refuses an SP address with "pay the wallet, then `withdraw`".
 - **Blocks/Blocked-by:** blocked by NL-1262
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` §3.10, NL-1269 SP-X2
+
+- **Resolution evidence (2026-10-07):** LND wallet/history surfaces expose SP custody as taproot key-path outputs and union imported/canonical ownership. Splice-out rejects an SP destination with wallet-then-withdraw guidance; shared-input sweep/close paths retain ordinary destinations. `LndGrpcHostTests.SilentPayments`, `LndGrpcWave3HostTests.SilentPayments`, overlap tests and `WalletSpliceOutSilentPaymentTests` cover visibility, API refusals and fail-before-dispatch behavior.
 
 ### NL-1270 Silent payments on mainnet: owner decision and canary
 - **Status:** open
