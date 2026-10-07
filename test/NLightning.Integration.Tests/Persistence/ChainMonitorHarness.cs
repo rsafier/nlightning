@@ -30,6 +30,7 @@ using Infrastructure.Repositories.Memory;
 internal sealed class ChainMonitorHarness : IAsyncDisposable
 {
     private readonly FailingHeaderSaveInterceptor _interceptor = new();
+    private readonly FailingCommitInterceptor _commitInterceptor = new();
     private readonly SilentZmqEndpoint _zmq = new(); // never a real bitcoind's ZMQ port (NL-310)
     private readonly ServiceProvider _services;
 
@@ -47,17 +48,28 @@ internal sealed class ChainMonitorHarness : IAsyncDisposable
         set => _interceptor.Armed = value;
     }
 
+    /// <summary>Fails after every statement succeeded, immediately before the block transaction commits.</summary>
+    public bool FailCommits
+    {
+        get => _commitInterceptor.Armed;
+        set => _commitInterceptor.Armed = value;
+    }
+
+    public int FailedCommits => _commitInterceptor.Failures;
+
     private readonly ILogger<BlockchainMonitorService> _monitorLogger;
 
-    public ChainMonitorHarness(uint tipHeight = 100, ILogger<BlockchainMonitorService>? monitorLogger = null)
+    public ChainMonitorHarness(uint tipHeight = 100, ILogger<BlockchainMonitorService>? monitorLogger = null,
+                               Action<ServiceCollection>? configureServices = null)
     {
         _monitorLogger = monitorLogger ?? NullLogger<BlockchainMonitorService>.Instance;
         Chain = new FakeBitcoinChain(tipHeight);
         var services = new ServiceCollection();
         services.AddSingleton<IUtxoMemoryRepository, UtxoMemoryRepository>();
-        services.AddScoped<IUnitOfWork>(sp => new UnitOfWork(Db.CreateContext(_interceptor),
+        services.AddScoped<IUnitOfWork>(sp => new UnitOfWork(Db.CreateContext(_interceptor, _commitInterceptor),
                                                              NullLogger<UnitOfWork>.Instance, new Sha256(),
                                                              sp.GetRequiredService<IUtxoMemoryRepository>()));
+        configureServices?.Invoke(services);
         _services = services.BuildServiceProvider();
         Monitor = CreateMonitor();
     }
@@ -128,6 +140,33 @@ internal sealed class ChainMonitorHarness : IAsyncDisposable
             BlockRetryBaseDelay = TimeSpan.Zero,
             MaxBlockProcessingAttempts = 2
         };
+    }
+
+    private sealed class FailingCommitInterceptor : DbTransactionInterceptor
+    {
+        public bool Armed { get; set; }
+        public int Failures { get; private set; }
+
+        public override InterceptionResult TransactionCommitting(DbTransaction transaction,
+            TransactionEventData eventData, InterceptionResult result)
+        {
+            Check();
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult> TransactionCommittingAsync(DbTransaction transaction,
+            TransactionEventData eventData, InterceptionResult result, CancellationToken cancellationToken = default)
+        {
+            Check();
+            return ValueTask.FromResult(result);
+        }
+
+        private void Check()
+        {
+            if (!Armed) return;
+            Failures++;
+            throw new SimulatedCrashException(1);
+        }
     }
 
     /// <summary>Throws from the command that writes the header ring, inside the save's transaction.</summary>

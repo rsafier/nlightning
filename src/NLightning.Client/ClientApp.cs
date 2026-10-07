@@ -145,12 +145,7 @@ internal static class ClientApp
                 case "spstatus":
                     await SilentPaymentCommands.RunAsync(cmd, commandArgs, client, cancellationToken);
                     break;
-                case "getspaddress":
-            case "splabels":
-            case "sprescan":
-            case "spstatus":
-                return SilentPaymentCommands.Validate(cmd, commandArgs);
-            case "withdraw":
+                case "withdraw":
                 case "send-coins":
                 case "sendcoins":
                     var withdrawArgs = ParseWithdrawOptions(commandArgs, out _)!;
@@ -454,6 +449,11 @@ internal static class ClientApp
             case "connect":
             case "connect-peer":
                 return commandArgs.Length < 1 ? $"Missing argument. Usage: {cmd} <node>" : null;
+            case "getspaddress":
+            case "splabels":
+            case "sprescan":
+            case "spstatus":
+                return SilentPaymentCommands.Validate(cmd, commandArgs);
             case "withdraw":
             case "send-coins":
             case "sendcoins":

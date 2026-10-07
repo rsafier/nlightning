@@ -56,6 +56,7 @@ internal sealed class NodeInfoIpcHandler : IIpcCommandHandler
                 Version = resp.Version,
                 TorMode = resp.TorMode,
                 OnionAddress = resp.OnionAddress,
+                SilentPaymentRecoverableElsewhere = resp.SilentPaymentRecoverableElsewhere,
                 PeerCount = _peerManager?.ListPeers().Count,
                 ActiveChannelCount = channels?.Count(c => c.State == ChannelState.Open),
                 PendingChannelCount = channels?.Count(c => c.State is > ChannelState.None and < ChannelState.Open),

@@ -60,6 +60,7 @@ public sealed class SilentPaymentScanner(IBlockPrevoutSource prevouts, ISilentPa
     {
         if (!Enabled) return [];
         var watch = Stopwatch.StartNew();
+        var matches = new List<SilentPaymentOutputModel>();
         try
         {
             var raw = Block.Load(block.BlockData, Network.Main);
@@ -109,7 +110,6 @@ public sealed class SilentPaymentScanner(IBlockPrevoutSource prevouts, ISilentPa
             for (uint label = 1; label <= labelCount; label++)
                 labelPoints[label] = GetLabelPoint(label);
             foreach (var label in labels) labelPoints[label.M] = GetLabelPoint(label.M);
-            var matches = new List<SilentPaymentOutputModel>();
             for (var index = 0; index < eligible.Length; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -135,6 +135,11 @@ public sealed class SilentPaymentScanner(IBlockPrevoutSource prevouts, ISilentPa
                 finally { CryptographicOperations.ZeroMemory(shared); }
             }
             return matches;
+        }
+        catch
+        {
+            foreach (var match in matches) CryptographicOperations.ZeroMemory(match.Tweak);
+            throw;
         }
         finally
         {
