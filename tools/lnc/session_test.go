@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +32,7 @@ func TestPersistentSessionPinsOneClientAndErasesPhrase(t *testing.T) {
 	}
 	first, _ := btcec.NewPrivateKey()
 	second, _ := btcec.NewPrivateKey()
+	firstHex := hex.EncodeToString(first.PubKey().SerializeCompressed())
 	if e = store.bindRemote(s.ID, first.PubKey()); e != nil {
 		t.Fatal(e)
 	}
@@ -38,11 +41,21 @@ func TestPersistentSessionPinsOneClientAndErasesPhrase(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if saved.Entropy != "" || saved.RemoteKey == "" {
-		t.Fatal("pairing state was not durably bound and erased")
+	if saved.RemoteKey != firstHex || saved.Confirmed || saved.Entropy == "" {
+		t.Fatal("binding not durable or phrase erased before an authenticated RPC")
 	}
 	if saved.PrivateKey != s.PrivateKey {
 		t.Fatal("local identity changed")
+	}
+	if e = reopened.confirm(s.ID, hex.EncodeToString(second.PubKey().SerializeCompressed())); !errors.Is(e, errStaleConfirmation) {
+		t.Fatal("confirmed an identity that is not bound", e)
+	}
+	if e = reopened.confirm(s.ID, firstHex); e != nil {
+		t.Fatal(e)
+	}
+	saved, _ = reopened.load(s.ID)
+	if !saved.Confirmed || saved.Entropy != "" || saved.RemoteKey != firstHex {
+		t.Fatal("confirmation did not pin the client and erase the phrase")
 	}
 	if e = reopened.bindRemote(s.ID, first.PubKey()); e != nil {
 		t.Fatal(e)
@@ -55,6 +68,43 @@ func TestPersistentSessionPinsOneClientAndErasesPhrase(t *testing.T) {
 		t.Fatal(info.Mode())
 	}
 }
+
+// A client whose handshake completed on the bridge but failed on its own side
+// (it rejected the auth data, closed the tab, timed out) never keeps its keys
+// and comes back with the phrase: until an authenticated RPC confirms the
+// binding, the phrase pairs again and replaces the unproven identity.
+func TestUnconfirmedPairingCanBeRepairedWithThePhrase(t *testing.T) {
+	store, _ := openStore(filepath.Join(t.TempDir(), "state"))
+	s, _, _ := newSession("", time.Now().Add(time.Hour), nil)
+	_ = store.save(s)
+	first, _ := btcec.NewPrivateKey()
+	second, _ := btcec.NewPrivateKey()
+	secondHex := hex.EncodeToString(second.PubKey().SerializeCompressed())
+	if e := store.bindRemote(s.ID, first.PubKey()); e != nil {
+		t.Fatal(e)
+	}
+	if e := store.bindRemote(s.ID, second.PubKey()); e != nil {
+		t.Fatal("unconfirmed pairing not replaceable", e)
+	}
+	saved, _ := store.load(s.ID)
+	if saved.RemoteKey != secondHex || saved.Confirmed {
+		t.Fatal("re-pairing did not bind the new identity")
+	}
+	if e := store.confirm(s.ID, secondHex); e != nil {
+		t.Fatal(e)
+	}
+	if e := store.bindRemote(s.ID, first.PubKey()); e == nil {
+		t.Fatal("confirmed pairing replaced")
+	}
+	// A session paired before confirmation existed has no phrase left.
+	legacy, _, _ := newSession("", time.Now().Add(time.Hour), nil)
+	legacy.RemoteKey, legacy.Entropy = hex.EncodeToString(first.PubKey().SerializeCompressed()), ""
+	_ = store.save(legacy)
+	if e := store.bindRemote(legacy.ID, second.PubKey()); e == nil {
+		t.Fatal("legacy pairing replaced")
+	}
+}
+
 func TestConcurrentPairingChoosesOneIdentity(t *testing.T) {
 	store, _ := openStore(filepath.Join(t.TempDir(), "state"))
 	s, _, _ := newSession("", time.Now().Add(time.Hour), nil)
@@ -69,14 +119,27 @@ func TestConcurrentPairingChoosesOneIdentity(t *testing.T) {
 	}
 	wg.Wait()
 	close(errs)
-	successes := 0
 	for e := range errs {
-		if e == nil {
-			successes++
+		if e != nil {
+			t.Fatal(e)
 		}
 	}
-	if successes != 1 {
-		t.Fatalf("%d winning identities", successes)
+	// Bindings are serialized: exactly one identity is stored, and only it can
+	// be confirmed, after which the other is refused.
+	saved, _ := store.load(s.ID)
+	keys := map[string]*btcec.PrivateKey{
+		hex.EncodeToString(one.PubKey().SerializeCompressed()): two,
+		hex.EncodeToString(two.PubKey().SerializeCompressed()): one,
+	}
+	loser, ok := keys[saved.RemoteKey]
+	if !ok {
+		t.Fatal("stored identity is neither client")
+	}
+	if e := store.confirm(s.ID, saved.RemoteKey); e != nil {
+		t.Fatal(e)
+	}
+	if e := store.bindRemote(s.ID, loser.PubKey()); e == nil {
+		t.Fatal("second identity bound after confirmation")
 	}
 }
 func TestRevokedAndExpiredSessionsCannotPair(t *testing.T) {

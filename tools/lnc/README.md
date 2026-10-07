@@ -9,8 +9,10 @@ session.
 
 This executable is separate from the daemon. It does not require
 `LndGrpc:EnableSigner`, and it does not implement Lightning Terminal's own
-application services. A client's required RPCs must exist in NLightning; the
-bridge preserves backend errors such as `UNIMPLEMENTED`. Each protobuf message
+application services beyond three read-only litrpc answers that let the
+Terminal web app load (see "Lightning Terminal" below). A client's required
+RPCs must exist in NLightning; the bridge preserves backend errors such as
+`UNIMPLEMENTED`. Each protobuf message
 is limited to 32 MiB in either direction; larger messages fail with
 `RESOURCE_EXHAUSTED`. Large graph responses may need backend response limits.
 
@@ -112,10 +114,64 @@ The client initially offers version 0, accepts the responder's version 2 reply,
 and completes version 2 with persistent remote identity binding. No client
 handshake-version override is needed.
 
-The first pairing persists the remote client's identity and erases the original
-pairing entropy from the session record. Subsequent connections and bridge
-restarts accept that identity. A different device needs its own session. The
-client must preserve its LNC transport identity to reconnect.
+The first pairing persists the remote client's identity. The pairing phrase
+stays valid until the first RPC that presents the session credential over that
+identity (`list` shows `"confirmed": true` from then on); that RPC erases the
+pairing entropy from the session record. Until then the phrase can pair again
+and replaces the unconfirmed identity, so a client whose handshake completed on
+the bridge but failed on its own side (and so never kept its keys) is not locked
+out. After confirmation, connections and bridge restarts accept only that
+identity. A different device needs its own session. The client must preserve its
+LNC transport identity to reconnect. Sessions created before this behavior have
+no stored phrase once paired and cannot be paired again; create a new one.
+
+## Lightning Terminal
+
+[Lightning Terminal](https://terminal.lightning.engineering) works through the
+stock LNC WASM client (lnc-web). Against this bridge it needs, and gets:
+
+- **The session macaroon in the handshake.** Like litd, the bridge sends the
+  session's scoped backend macaroon in the Noise handshake auth data as
+  `Macaroon: <hex>`. The WASM client refuses any other form ("authdata does not
+  contain a macaroon": the client then retries forever while the bridge already
+  bound its identity), reads the permissions (`lnc.hasPerms`) and expiry from it,
+  and sends it back as per-RPC metadata. The bridge still forwards with its own
+  copy of that credential and rejects any other. The node admin macaroon is never
+  sent.
+- **litrpc reads answered by the bridge.** After `GetInfo` Terminal refuses a
+  node whose macaroon lacks `/litrpc.Autopilot/ListAutopilotSessions` ("Custodial
+  accounts are not currently supported"), and it reads `litrpc.Status` to decide
+  which pages to offer. New sessions of both profiles carry
+  `/litrpc.Status/SubServerStatus`, `/litrpc.Autopilot/ListAutopilotSessions`
+  and `/litrpc.Autopilot/ListAutopilotFeatures` (baked with
+  `allow_external_permissions`; the node never serves them). The bridge answers
+  them itself without contacting the node: SubServerStatus reports `lnd` and
+  `lit` running and `loop`, `pool`, `faraday` and `taproot-assets` disabled; the
+  two autopilot lists are empty. Every other call goes to the node.
+
+What works, on the node's LND-compatible API: pairing and reconnect, node info
+and balances (`GetInfo`, `ChannelBalance`, `WalletBalance`), channels (open,
+pending, closed), peers, payments, invoices, forwarding history, on-chain
+transactions, node lookups and the invoice, transaction, channel and HTLC
+subscriptions. Signet is supported by Terminal.
+
+What does not: Loop, Pool, Faraday, Taproot Assets and autopilot (reported off;
+their pages show nothing or an error), `FeeReport`, `BatchOpenChannel` (channel
+opening from Terminal) and `walletrpc.GetTransaction` (not implemented by the
+node), and channel open, close and policy changes (not in either profile).
+Terminal shows write buttons for a read-only session too (its macaroon holds
+`uri` permissions, which the WASM client does not count as read-only); the node
+refuses those calls. Sessions created before this change lack the litrpc
+permissions and are refused by Terminal: create a new session.
+
+To see what a client calls, start `serve` with:
+
+- `--log-rpc`: one line per RPC to stderr with the session ID, method, final
+  status code and duration, plus one line per Noise handshake (ok, or the failed
+  step). Payloads, metadata and credentials are never logged.
+- `--log-mailbox`: the mailbox library's debug log (stream setup, retries,
+  handshake start and end with the client's public key). It names stream IDs and
+  public keys only.
 
 ## List, revoke and expire
 
@@ -169,4 +225,5 @@ Signet and Mutinynet have not been tested for this change.
 Full results and reproduction instructions are recorded in
 [`docs/agents/LNC_PLAN.md`](../../docs/agents/LNC_PLAN.md). Client compatibility
 still depends on the RPCs it uses; stock Lightning Terminal services and
-application-specific clients require their own trials.
+application-specific clients require their own trials; the Lightning Terminal
+section above lists what that web app gets.

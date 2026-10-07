@@ -101,7 +101,13 @@ func run() error {
 	connData := mailbox.NewConnData(&keychain.PrivKeyECDH{PrivKey: key}, remote, entropy[:], nil, func(pub *btcec.PublicKey) error {
 		id.Remote = hex.EncodeToString(pub.SerializeCompressed())
 		return save()
-	}, func([]byte) error { return nil })
+	}, func(data []byte) error {
+		// The stock WASM client (Lightning Terminal) accepts only litd's form.
+		if parts := strings.Split(string(data), ": "); len(parts) != 2 || parts[0] != "Macaroon" {
+			return fmt.Errorf("authdata does not contain a macaroon")
+		}
+		return nil
+	})
 	roots := x509.NewCertPool()
 	pem, err := os.ReadFile(*cert)
 	if err != nil {

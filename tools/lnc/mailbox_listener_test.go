@@ -22,7 +22,7 @@ func listenerForTest(t *testing.T) *mailboxListener {
 		t.Fatal(err)
 	}
 	data := mailbox.NewConnData(&keychain.PrivKeyECDH{PrivKey: key}, nil, make([]byte, mailbox.NumPassphraseEntropyBytes), nil, nil, nil)
-	listener, err := newMailboxListener(context.Background(), "127.0.0.1:1", data, nil, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	listener, err := newMailboxListener(context.Background(), "127.0.0.1:1", data, nil, nil, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatal(err)
 	}

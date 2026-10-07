@@ -131,6 +131,18 @@ paths are environment setup helpers, not portable repository commands.
 A Signet or Mutinynet trial is a separate operator task on the user's machine;
 no live node activation is part of this change.
 
+## Lightning Terminal (NL-1238)
+
+The signet trial with terminal.lightning.engineering found that the stock LNC
+WASM client accepts the handshake auth data only as litd sends it,
+`Macaroon: <hex>`; the bridge sent `macaroon: <hex>`, so the client failed after
+the bridge had bound its identity and erased the phrase. The bridge now sends
+litd's form, keeps the phrase valid until the first authenticated RPC confirms
+the binding, and answers the three litrpc reads Terminal needs
+(SubServerStatus, ListAutopilotSessions, ListAutopilotFeatures) itself.
+`serve --log-rpc` and `--log-mailbox` show what a client calls. What Terminal can
+and cannot do is listed in `tools/lnc/README.md`, "Lightning Terminal".
+
 ## Packaging
 
 Build and run the bridge as a separate Go executable under the same service

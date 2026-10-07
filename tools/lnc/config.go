@@ -10,6 +10,10 @@ import (
 type Config struct {
 	StateDir, Backend, TLSCert, TLSServerName, AdminMacaroon, Relay, RelayTLSCert, Name, Profile, ID string
 	TTL                                                                                              time.Duration
+	// LogRPC logs each call's method, status code and duration (serve only).
+	LogRPC bool
+	// LogMailbox turns on the mailbox library's debug log (serve only).
+	LogMailbox bool
 }
 
 func parseConfig(command string, args []string) (Config, error) {
@@ -26,6 +30,8 @@ func parseConfig(command string, args []string) (Config, error) {
 	f.StringVar(&c.Profile, "profile", "readonly", "readonly or wallet permission profile")
 	f.DurationVar(&c.TTL, "ttl", 24*time.Hour, "session lifetime")
 	f.StringVar(&c.ID, "id", "", "session ID for revoke")
+	f.BoolVar(&c.LogRPC, "log-rpc", false, "serve: log each RPC's method, status code and duration (never payloads or credentials)")
+	f.BoolVar(&c.LogMailbox, "log-mailbox", false, "serve: log the mailbox transport and handshakes at debug level")
 	if e := f.Parse(args); e != nil {
 		return c, e
 	}
@@ -52,7 +58,11 @@ func parseConfig(command string, args []string) (Config, error) {
 	return c, nil
 }
 func profileMethods(profile string) ([]string, error) {
-	methods := strings.Fields(`/verrpc.Versioner/GetVersion /lnrpc.Lightning/GetInfo /lnrpc.Lightning/WalletBalance /lnrpc.Lightning/ChannelBalance /lnrpc.Lightning/ListChannels /lnrpc.Lightning/PendingChannels /lnrpc.Lightning/ClosedChannels /lnrpc.Lightning/ListPeers /lnrpc.Lightning/GetTransactions /lnrpc.Lightning/ListUnspent /lnrpc.Lightning/ListInvoices /lnrpc.Lightning/LookupInvoice /lnrpc.Lightning/ListPayments /lnrpc.Lightning/DecodePayReq /lnrpc.Lightning/QueryRoutes /lnrpc.Lightning/GetNodeInfo /lnrpc.Lightning/GetChanInfo /lnrpc.Lightning/DescribeGraph /lnrpc.Lightning/SubscribeInvoices /lnrpc.Lightning/SubscribeTransactions /lnrpc.Lightning/SubscribePeerEvents /lnrpc.Lightning/SubscribeChannelEvents /lnrpc.Lightning/SubscribeChannelGraph /routerrpc.Router/TrackPaymentV2 /routerrpc.Router/TrackPayments /routerrpc.Router/SubscribeHtlcEvents /invoicesrpc.Invoices/SubscribeSingleInvoice`)
+	methods := strings.Fields(`/verrpc.Versioner/GetVersion /lnrpc.Lightning/GetInfo /lnrpc.Lightning/WalletBalance /lnrpc.Lightning/ChannelBalance /lnrpc.Lightning/ListChannels /lnrpc.Lightning/PendingChannels /lnrpc.Lightning/ClosedChannels /lnrpc.Lightning/ListPeers /lnrpc.Lightning/GetTransactions /lnrpc.Lightning/ListUnspent /lnrpc.Lightning/ListInvoices /lnrpc.Lightning/LookupInvoice /lnrpc.Lightning/ListPayments /lnrpc.Lightning/DecodePayReq /lnrpc.Lightning/QueryRoutes /lnrpc.Lightning/GetNodeInfo /lnrpc.Lightning/GetChanInfo /lnrpc.Lightning/DescribeGraph /lnrpc.Lightning/ForwardingHistory /lnrpc.Lightning/FeeReport /lnrpc.Lightning/SubscribeInvoices /lnrpc.Lightning/SubscribeTransactions /lnrpc.Lightning/SubscribePeerEvents /lnrpc.Lightning/SubscribeChannelEvents /lnrpc.Lightning/SubscribeChannelGraph /routerrpc.Router/TrackPaymentV2 /routerrpc.Router/TrackPayments /routerrpc.Router/SubscribeHtlcEvents /invoicesrpc.Invoices/SubscribeSingleInvoice`)
+	// Lightning Terminal refuses a session whose macaroon lacks
+	// ListAutopilotSessions and reads litrpc.Status; the bridge answers these
+	// litrpc reads itself (lit.go), so every profile carries them.
+	methods = append(methods, litSubServerStatus, litListAutopilotSessions, litListAutopilotFeatures)
 	switch profile {
 	case "readonly":
 		return methods, nil

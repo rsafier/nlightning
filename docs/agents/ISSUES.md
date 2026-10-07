@@ -2,6 +2,8 @@
 
 The single durable issue ledger for this repo. GitHub issues are disabled on the fork, so this file replaces them. Every known bug, gap, spec violation, missing feature, test/CI hygiene problem and tech-debt item lives here, so nothing is lost between agent sessions.
 
+Updated 2026-10-06 by `wip/lnc-terminal` from `wip/fafo` c40f725a: new and fixed NL-1238 (the LNC bridge's handshake auth data was `macaroon: <hex>`, which the stock LNC WASM client behind Lightning Terminal refuses; Terminal also needs litrpc reads), with opt-in RPC/mailbox logging. Summary recounted: 957 entries; no schema or live-node configuration change.
+
 Updated 2026-10-06 by `wip/lnc` from latest `wip/fafo` dff5931f: NL-1237 fixed in `478976a1` with a separate scoped LNC sidecar and upstream-client regtest proof `lnc-proof3` (1/1, 130 s). Summary recounted: 956 unique classified entries; no schema or live-node configuration change.
 
 Updated 2026-10-06 by `wip/lnd-p2` from `wip/fafo` d074fe01: NL-1170, NL-1171 and NL-1172 fixed; NL-1190/NL-1196 regtest matrix complete (`lnd-p2-proof6`, 1/1), Mutinynet trial prepared but pending access/server confirmation/owner approval. New and fixed NL-1226 (onion reply metric assertion race) and NL-1228 (same-height chain-sync barrier); new open NL-1227 (unchanged accounting adjustment assertion failed once under load, passed on both frameworks in isolation). NL-1198 reproduced under load, passed alone on both frameworks. Summary recounted: 942 entries, no duplicate IDs; no schema change.
@@ -185,10 +187,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 0 | 96 | 96 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 238 | 499 | 821 |
+| fixed | 15 | 70 | 238 | 499 | 822 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **69** | **254** | **618** | **956** |
+| **Total** | **15** | **70** | **254** | **618** | **957** |
 
 ### Epics
 
@@ -10079,3 +10081,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix:** a separate Go sidecar reusing pinned upstream LNC; scoped, expiring and revocable sessions; TLS-authenticated backend; transparent unary/stream forwarding. Prove with upstream LNC client against our actual node on regtest; document the operator's separate Signet trial.
 - **Blocks/Blocked-by:** no signer prerequisite; full Lightning Terminal product compatibility is separate scope
 - **Validation (2026-10-06):** Final Go suite: 19 tests under the race detector, plus vet, module verification and formatting. Actual upstream default LNC client against NLightning and LND on regtest: `lnc-proof3`, 1/1 green in 130 s; gRPC and WebSocket pairing/GetInfo, read-only write denial, incoming invoice subscription/settlement, outgoing `SendPaymentV2`, persistent reconnect after bridge restart, active HTLC stream cutoff on revocation, revoked/expired reconnect refusal, unaffected control session. All run namespaces removed. Full net11 Release solution and final net10/net11 integration fixture builds: zero warnings/errors; C# format and 40-project solution configuration checks pass. No schema or live-node configuration change. Operator Signet trial remains separate.
+
+### NL-1238 Lightning Terminal cannot use the LNC bridge: wrong auth data header and missing litrpc reads
+- **Status:** fixed (e9f42621)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `tools/lnc/handshake.go`, `tools/lnc/lit.go`, `tools/lnc/serve.go`, `tools/lnc/session.go`, `tools/lnc/proxy.go`, `tools/lnc/config.go`
+- **Evidence:** signet trial 2026-10-06 against terminal.lightning.engineering: the session showed `paired: true` but the app never loaded; the browser console showed `transport: authentication handshake failed: authdata does not contain a macaroon`, retried every 4-7 s, and after a reload `stream not found`. The bridge sent `macaroon: <hex>`; litd sends `Macaroon: <hex>` (lightning-terminal `session_rpcserver.go`, `HeaderMacaroon = "Macaroon"`) and the stock WASM client (lightning-node-connect `cmd/wasm-client/main.go`) accepts only that exact header. The handshake had already completed on the bridge, which bound the client key and erased the phrase, so the client's later attempts with a fresh key used the phrase's mailbox stream that nobody served. Terminal's own bundle (`connect()`) also refuses a macaroon without `litrpc.Autopilot.ListAutopilotSessions` and reads `litrpc.Status.SubServerStatus` to choose its pages.
+- **Fix:** auth data `Macaroon: <session macaroon hex>` as litd sends it; the bridge keeps enforcing its own per-session backend credential. The pairing phrase stays valid until the first authenticated RPC confirms the bound identity (`Session.Confirmed`), and the bridge serves the phrase's stream next to the bound identity's until then, so a client that failed after the bridge-side handshake can pair again. New sessions carry three litrpc URIs (baked with `allow_external_permissions`) that the bridge answers itself, read-only: SubServerStatus (`lnd`/`lit` running; `loop`, `pool`, `faraday`, `taproot-assets` disabled) and empty autopilot session/feature lists. `serve --log-rpc` logs method, status code and duration per RPC and each handshake's outcome; `--log-mailbox` turns on the mailbox library's debug log. Existing sessions must be recreated.
+- **Validation (2026-10-06):** `go vet ./...`, `go test -race -count=1 ./...` in `tools/lnc`; an in-process test drives the stock client's auth data check and per-RPC credentials through the Noise handshake, the bridge and a backend. Live Terminal trial on signet is the operator's.
