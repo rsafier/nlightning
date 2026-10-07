@@ -35,7 +35,8 @@ public partial class BlockchainMonitorService
         if (state is null)
         {
             state = new SilentPaymentScanState(options.BirthdayHeight ?? tip, tip,
-                PrevoutSource: _silentPaymentScanner.PrevoutSource);
+                PrevoutSource: _silentPaymentScanner.PrevoutSource,
+                RecoveryLabelCount: checked((uint)options.RecoveryLabelCount));
             await repository.SetScanStateAsync(state, cancellationToken);
             await unitOfWork.SaveChangesAsync();
         }
@@ -43,11 +44,13 @@ public partial class BlockchainMonitorService
                  cursor < _lastProcessedBlockHeight && cursor < tip)
         {
             // A disabled/offline SP gap is recovered by the SP-only rescan worker. The global cursor is unchanged.
+            var resume = state.RescanCursorHeight is { } rescan ? Math.Min(rescan, cursor) : cursor;
+            var resumeHash = new Hash((await _bitcoinChainService.GetBlockHashAsync(resume)).ToBytes());
             state = state with
             {
                 LiveFromHeight = tip,
-                RescanCursorHeight = state.RescanCursorHeight is { } rescan ? Math.Min(rescan, cursor) : cursor,
-                RescanCursorHash = null,
+                RescanCursorHeight = resume,
+                RescanCursorHash = resumeHash,
                 RescanTargetHeight = tip > 0 ? tip - 1 : 0
             };
             await repository.SetScanStateAsync(state, cancellationToken);
@@ -119,13 +122,13 @@ public partial class BlockchainMonitorService
                 // Historical rescan facts may never have materialized a UTXO; their receipts still need reversal.
                 if (!output.Ignored)
                 {
-                    var coin = new UtxoModel(output with { SpentByTransactionId = null, SpentAtHeight = null });
-                    if (!removed.Any(existing => existing.TxId == coin.TxId && existing.Index == coin.Index))
-                        removed.Add(coin);
+                    var disconnectedCoin = new UtxoModel(output with { SpentByTransactionId = null, SpentAtHeight = null });
+                    if (!removed.Any(existing => existing.TxId == disconnectedCoin.TxId && existing.Index == disconnectedCoin.Index))
+                        removed.Add(disconnectedCoin);
                     // A creation and spend both disconnected need both facts reversed; this coin is never restored.
                     if (output.SpentAtHeight is { } spentAbove && spentAbove > forkHeight &&
-                        !restored.Any(row => row.Item1.TxId == coin.TxId && row.Item1.Index == coin.Index))
-                        restored.Add((coin, spentAbove));
+                        !restored.Any(row => row.Item1.TxId == disconnectedCoin.TxId && row.Item1.Index == disconnectedCoin.Index))
+                        restored.Add((disconnectedCoin, spentAbove));
                 }
                 continue;
             }
@@ -149,13 +152,16 @@ public partial class BlockchainMonitorService
         await unitOfWork.SilentPaymentDbRepository.DeleteOutputsAboveHeightAsync(forkHeight);
         var state = await unitOfWork.SilentPaymentDbRepository.GetScanStateAsync();
         if (state is not null && (state.LiveCursorHeight > forkHeight || state.RescanCursorHeight > forkHeight))
+        {
+            Hash? forkHash = TryGetKnownHash(forkHeight, out var knownFork) ? knownFork : null;
             await unitOfWork.SilentPaymentDbRepository.SetScanStateAsync(state with
             {
                 LiveCursorHeight = state.LiveCursorHeight > forkHeight ? forkHeight : state.LiveCursorHeight,
-                LiveCursorHash = state.LiveCursorHeight > forkHeight ? null : state.LiveCursorHash,
+                LiveCursorHash = state.LiveCursorHeight > forkHeight ? forkHash : state.LiveCursorHash,
                 RescanCursorHeight = state.RescanCursorHeight > forkHeight ? forkHeight : state.RescanCursorHeight,
-                RescanCursorHash = state.RescanCursorHeight > forkHeight ? null : state.RescanCursorHash
+                RescanCursorHash = state.RescanCursorHeight > forkHeight ? forkHash : state.RescanCursorHash
             });
+        }
     }
 
 }
