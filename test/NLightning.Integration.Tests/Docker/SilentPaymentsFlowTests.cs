@@ -207,9 +207,12 @@ public sealed class SilentPaymentsFlowTests
         Log($"SP restore {mode}: exact total custody restored, including ordinary change ({totalAmountBeforeRestore} sat).");
         await ReconcileAsync(b, ct);
 
-        // Fund a real channel using the received silent coins, rather than topping up B with an ordinary deposit.
+        // Ordinary change alone cannot fund this channel, so at least one received silent coin must be signed.
+        var ordinaryCustodySats = totalCustodyAfterRestore.Where(coin => !coin.IsSilentPayment).Sum(coin => coin.AmountSats);
+        var channelFundingSats = ordinaryCustodySats + 500_000;
+        Assert.True(channelFundingSats + 10_000 < totalAmountBeforeRestore, "The trial must retain ample funding fee headroom.");
         var peer = await b.ConnectToAsync(a, ct);
-        var channel = await b.OpenChannelAsync(new OpenChannelClientRequest(peer, LightningMoney.Satoshis(500_000))
+        var channel = await b.OpenChannelAsync(new OpenChannelClientRequest(peer, LightningMoney.Satoshis(channelFundingSats))
         {
             FeeRatePerKw = LightningMoney.Satoshis(2_500)
         }, ct);
