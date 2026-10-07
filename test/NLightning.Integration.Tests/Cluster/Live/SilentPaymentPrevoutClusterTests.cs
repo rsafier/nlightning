@@ -110,6 +110,11 @@ public sealed class SilentPaymentPrevoutClusterTests
         var block = await node.GetBlockAsync(blockHash, ct);
         var height = (uint)await node.GetBlockCountAsync(ct);
         var domain = new BitcoinBlock(block.ToBytes(), new Hash(blockHash.ToBytes()), block.Transactions.Count);
+        await Testing.Cluster.Poll.UntilAsync(async token =>
+        {
+            var index = (await node.SendCommandAsync(token, "getindexinfo")).Result["txindex"];
+            return (bool?)index?["synced"] == true && (uint?)index?["best_block_height"] >= height;
+        }, TimeSpan.FromMinutes(2), TimeSpan.FromMilliseconds(250), "txindex reaches source block", ct);
         IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>>? expected = null;
         foreach (var kind in new[] { SilentPaymentPrevoutSource.GetBlock, SilentPaymentPrevoutSource.Rest, SilentPaymentPrevoutSource.GetRawTransaction })
         {
