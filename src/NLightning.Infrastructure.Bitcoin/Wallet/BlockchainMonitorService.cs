@@ -1312,7 +1312,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
 
         await StageSilentPaymentReceiptsAsync(silentPayments, uow, effects, block);
         StageWalletMovements(transactions, height, block.Header.BlockTime, uow, effects);
-        await StageSilentPaymentSpendsAndStateAsync(silentPayments, height, uow);
+        await StageSilentPaymentSpendsAndStateAsync(silentPayments, height, uow, effects, block);
         await StageAccountingAsync(uow, effects);
         await StageWatchedSpendsAsync(transactions, height, blockHash, uow, effects);
         StageWatchedTransactionDepths(height, uow, effects);

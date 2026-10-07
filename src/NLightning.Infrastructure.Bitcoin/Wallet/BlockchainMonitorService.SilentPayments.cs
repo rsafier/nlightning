@@ -4,6 +4,7 @@ using NBitcoin;
 
 namespace NLightning.Infrastructure.Bitcoin.Wallet;
 
+using Domain.Accounting.Constants;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.SilentPayments;
 using Domain.Bitcoin.ValueObjects;
@@ -98,10 +99,24 @@ public partial class BlockchainMonitorService
     }
 
     private async Task StageSilentPaymentSpendsAndStateAsync(PreparedSilentPaymentBlock? prepared, uint height,
-        IUnitOfWork unitOfWork)
+        IUnitOfWork unitOfWork, BlockEffects effects, Block block)
     {
         if (prepared is null || _silentPaymentScanner is null) return;
-        await _silentPaymentScanner.StageSpendsAsync(prepared.Block, height, unitOfWork, prepared.Matches);
+        var spends = await _silentPaymentScanner.StageSpendsAsync(prepared.Block, height, unitOfWork, prepared.Matches);
+        var memory = _serviceProvider.GetService<Domain.Bitcoin.Interfaces.IUtxoMemoryRepository>();
+        foreach (var (output, spender) in spends)
+        {
+            if (output.Ignored || effects.Accounting.Any(candidate =>
+                    candidate.BaseKey == AccountingEventKeys.WalletOutputSpent(output.TransactionId, output.Index)))
+                continue;
+            // Recovery receipts can exist only in metadata until their unspent state is proven. Their live spends
+            // still need a journal fact in the same save as the spend marker, even with no selectable UTXO.
+            var coin = new UtxoModel(output with { SpentByTransactionId = null, SpentAtHeight = null });
+            var transaction = block.Transactions.Single(transaction => new TxId(transaction.GetHash().ToBytes()) == spender);
+            var source = ClassifyWalletTransaction(transaction, memory, effects);
+            if (source.Source == ExternalSource) source = new WalletTransactionSource(WalletSource, null, null);
+            CollectWalletOutputSpent(coin, transaction, source, memory, effects, block.Header.BlockTime);
+        }
         if (prepared.AdvanceLiveCursor && (prepared.State.LiveCursorHeight is null || height >= prepared.State.LiveCursorHeight))
             await unitOfWork.SilentPaymentDbRepository.SetScanStateAsync(prepared.State with
             {
