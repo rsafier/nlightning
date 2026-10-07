@@ -27,8 +27,8 @@ public partial class WalletSpendServiceTests
         _walletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Tr, true))
                       .ReturnsAsync(new WalletAddressModel(AddressType.P2Tr, 50, true, change.ToString()));
         return new WalletSpendService(_selector, _anchorReserve.Object, _utxos, signer ?? _signer, _monitor.Object,
-            _feeService.Object, _scopeFactory, Options.Create(_nodeOptions), NullLogger<WalletSpendService>.Instance,
-            silentPayments: Options.Create(options ?? new SilentPaymentsOptions { Enabled = true }));
+            _feeService.Object, _scopeFactory, Microsoft.Extensions.Options.Options.Create(_nodeOptions), NullLogger<WalletSpendService>.Instance,
+            silentPayments: Microsoft.Extensions.Options.Options.Create(options ?? new SilentPaymentsOptions { Enabled = true }));
     }
 
     [Fact]
@@ -66,7 +66,7 @@ public partial class WalletSpendServiceTests
             new WalletRecipient(address, LightningMoney.Satoshis(40_000))],
             LightningMoney.Satoshis(FeeRatePerKw), cancellationToken: TestContext.Current.CancellationToken);
         // Assert
-        var tx = AssertPublishedAndValid(coin.Output);
+        var tx = AssertPublishedAndValid(coin.TxOut);
         Assert.Equal(s_destination.ScriptPubKey, tx.Outputs[1].ScriptPubKey);
         Assert.NotEqual(tx.Outputs[0].ScriptPubKey, tx.Outputs[2].ScriptPubKey);
         Assert.Equal(new long[] { 20_000, 30_000, 40_000 }, tx.Outputs.Take(3).Select(o => o.Value.Satoshi));
@@ -83,7 +83,7 @@ public partial class WalletSpendServiceTests
         var result = await service.WithdrawAsync(new WalletWithdrawRequest(SilentPaymentAddressCodec.Encode(s_silentAddress),
             null, LightningMoney.Satoshis(FeeRatePerKw)), TestContext.Current.CancellationToken);
         // Assert
-        var tx = AssertPublishedAndValid(first.Output, second.Output);
+        var tx = AssertPublishedAndValid(first.TxOut, second.TxOut);
         Assert.Single(tx.Outputs);
         Assert.Equal(150_000 - result.Fee.Satoshi, result.Amount.Satoshi);
     }
