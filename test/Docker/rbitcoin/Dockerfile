@@ -7,11 +7,13 @@
 # Native architecture (avoids the x86 binary under emulation on OrbStack). Toolchain as the commit's rust-toolchain.toml (1.95).
 FROM rust:1.95-bookworm AS build
 ARG RBITCOIN_COMMIT=9dd7ef99
+# Keep the cold proof build within the shared worker CPU/RAM budget.
+ARG CARGO_BUILD_JOBS=2
 RUN apt-get update && apt-get install -y --no-install-recommends clang git \
     && rm -rf /var/lib/apt/lists/*
 RUN git clone https://github.com/reardencode/rbitcoin.git /src && cd /src && git checkout ${RBITCOIN_COMMIT}
 WORKDIR /src
-RUN cargo build --release --locked -p rbitcoin-node -p rbitcoin-cli \
+RUN cargo build --release --locked --jobs ${CARGO_BUILD_JOBS} -p rbitcoin-node -p rbitcoin-cli \
     && cp target/release/rbitcoin-node /rbitcoin-node && cp target/release/rbitcoin-cli /rbitcoin-cli
 
 FROM debian:bookworm-slim
