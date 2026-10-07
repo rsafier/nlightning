@@ -97,8 +97,8 @@ public partial class BlockchainMonitorService
                 }
                 var receiptKey = AccountingEventKeys.WalletReceived(point, input.PrevOut.N);
                 var receipts = await unitOfWork.AccountingEventDbRepository.GetByKeyPrefixAsync(receiptKey);
-                if (Domain.Accounting.Services.AccountingConfirmations.FindStanding(receiptKey, receipts)?
-                        .Details.GetValueOrDefault(WalletRecoveryAccounting.RecoveredCustody) == "true")
+                var receipt = Domain.Accounting.Services.AccountingConfirmations.FindStanding(receiptKey, receipts);
+                if (receipt?.Details.GetValueOrDefault(WalletRecoveryAccounting.RecoveredCustody) == "true")
                     effects.SilentPaymentInputs.Add(input.PrevOut);
             }
     }
