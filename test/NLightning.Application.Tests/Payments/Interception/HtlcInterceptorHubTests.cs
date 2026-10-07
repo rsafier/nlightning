@@ -19,7 +19,7 @@ public class HtlcInterceptorHubTests
     public void Given_NoClient_When_Intercepting_Then_TheForwardGoesOn()
     {
         // Act / Assert
-        Assert.Equal(ForwardInterceptOutcome.NotIntercepted, _hub.Intercept(Forward(1), 100, Record));
+        Assert.Equal(ForwardInterceptOutcome.NotIntercepted, _hub.Intercept(Forward(1), 100, false, Record));
     }
 
     [Fact]
@@ -30,8 +30,8 @@ public class HtlcInterceptorHubTests
         using var connection = _hub.Connect(client);
 
         // Act
-        var first = _hub.Intercept(Forward(1), 100, Record);
-        var replay = _hub.Intercept(Forward(1), 100, Record);
+        var first = _hub.Intercept(Forward(1), 100, false, Record);
+        var replay = _hub.Intercept(Forward(1), 100, false, Record);
 
         // Assert
         Assert.Equal(ForwardInterceptOutcome.Held, first);
@@ -47,8 +47,8 @@ public class HtlcInterceptorHubTests
         using var connection = _hub.Connect(new Client());
 
         // Act / Assert: 500 < 479 + 22
-        Assert.Equal(ForwardInterceptOutcome.ExpiryTooSoon, _hub.Intercept(Forward(1), 479, Record));
-        Assert.Equal(ForwardInterceptOutcome.Held, _hub.Intercept(Forward(2), 478, Record));
+        Assert.Equal(ForwardInterceptOutcome.ExpiryTooSoon, _hub.Intercept(Forward(1), 479, false, Record));
+        Assert.Equal(ForwardInterceptOutcome.Held, _hub.Intercept(Forward(2), 478, false, Record));
     }
 
     [Fact]
@@ -56,10 +56,10 @@ public class HtlcInterceptorHubTests
     {
         // Arrange
         using var connection = _hub.Connect(new Client(), new HtlcInterceptorSettings { MaxHeld = 1 });
-        _hub.Intercept(Forward(1), 100, Record);
+        _hub.Intercept(Forward(1), 100, false, Record);
 
         // Act / Assert
-        Assert.Equal(ForwardInterceptOutcome.Full, _hub.Intercept(Forward(2), 100, Record));
+        Assert.Equal(ForwardInterceptOutcome.Full, _hub.Intercept(Forward(2), 100, false, Record));
     }
 
     [Fact]
@@ -90,8 +90,8 @@ public class HtlcInterceptorHubTests
     {
         // Arrange
         using var connection = _hub.Connect(new Client());
-        _hub.Intercept(Forward(1), 100, Record);
-        _hub.Intercept(Forward(2) with { IncomingExpiry = 900 }, 100, Record);
+        _hub.Intercept(Forward(1), 100, false, Record);
+        _hub.Intercept(Forward(2) with { IncomingExpiry = 900 }, 100, false, Record);
 
         // Act
         _hub.ExpireHeld(481);
@@ -109,8 +109,8 @@ public class HtlcInterceptorHubTests
     {
         // Arrange
         var connection = _hub.Connect(new Client());
-        _hub.Intercept(Forward(1), 100, Record);
-        _hub.Intercept(Forward(2), 100, Record);
+        _hub.Intercept(Forward(1), 100, false, Record);
+        _hub.Intercept(Forward(2), 100, false, Record);
 
         // Act
         connection.Dispose();
@@ -127,7 +127,7 @@ public class HtlcInterceptorHubTests
     {
         using var connection = _hub.Connect(new Client());
         var calls = 0;
-        _hub.Intercept(Forward(1), 100, _ => ++calls == 1
+        _hub.Intercept(Forward(1), 100, false, _ => ++calls == 1
             ? Task.FromException(new IOException("save failed")) : Task.CompletedTask);
 
         Assert.Equal(InterceptResolveResult.Failed,
@@ -145,7 +145,7 @@ public class HtlcInterceptorHubTests
         using var connection = _hub.Connect(new Client());
         var attempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var calls = 0;
-        _hub.Intercept(Forward(1), 100, resolution =>
+        _hub.Intercept(Forward(1), 100, false, resolution =>
         {
             Assert.Equal(ForwardInterceptAction.Fail, resolution.Action);
             if (Interlocked.Increment(ref calls) == 1)
@@ -174,7 +174,7 @@ public class HtlcInterceptorHubTests
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var complete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var calls = 0;
-        _hub.Intercept(Forward(1), 100, async _ =>
+        _hub.Intercept(Forward(1), 100, false, async _ =>
         {
             Interlocked.Increment(ref calls);
             entered.SetResult();

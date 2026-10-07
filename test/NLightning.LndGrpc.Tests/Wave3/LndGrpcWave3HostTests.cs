@@ -213,7 +213,7 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
         var resolved = new TaskCompletionSource<ForwardInterceptResolution>();
 
         // Act
-        var outcome = _hub.Intercept(CreateForward(1), 100, r =>
+        var outcome = _hub.Intercept(CreateForward(1), 100, false, r =>
         {
             resolved.TrySetResult(r);
             return Task.CompletedTask;
@@ -250,7 +250,7 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
         var resolved = new TaskCompletionSource<ForwardInterceptResolution>();
 
         // Act
-        _hub.Intercept(CreateForward(2) with { PaymentHash = new Hash(hash) }, 100, r =>
+        _hub.Intercept(CreateForward(2) with { PaymentHash = new Hash(hash) }, 100, false, r =>
         {
             resolved.TrySetResult(r);
             return Task.CompletedTask;
@@ -277,7 +277,7 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
         using var stream = connection.RouterClient.HtlcInterceptor(cancellationToken: Ct);
         await WaitUntilAsync(() => _hub.IsActive);
         var resolved = new TaskCompletionSource<ForwardInterceptResolution>();
-        _hub.Intercept(CreateForward(3), 100, r =>
+        _hub.Intercept(CreateForward(3), 100, false, r =>
         {
             resolved.TrySetResult(r);
             return Task.CompletedTask;

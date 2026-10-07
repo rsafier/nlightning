@@ -364,7 +364,16 @@ publication points, overflow/reconnect behavior, verification and the explicit
 on-chain HTLC/imported-transaction limits. These streams add live visibility, not a
 durable audit history or cursor API.
 
-NL-1182 reliability follow-up (`b3976b0d`, NL-1234): the hub retains holds until callbacks succeed, returns failure/in-progress results and retries failed expiry/disconnect resolutions. The gRPC service observes both directions and cancels/disconnects if either ends. Broader RESUME_MODIFIED, requireinterceptor and on-chain interception gaps remain open under NL-1182.
+NL-1182 reliability follow-up (`b3976b0d`, NL-1234): the hub retains holds until callbacks succeed, returns failure/in-progress results and retries failed expiry/disconnect resolutions. The gRPC service observes both directions and cancels/disconnects if either ends.
+
+## HtlcInterceptor LND parity (NL-1182, lane nl1182, 2026-10-07)
+
+Checked against LND v0.21.4's `htlcswitch/interceptable_switch.go`, `held_htlc_set.go`, `lnrpc/routerrpc/forward_interceptor.go` and `witness_beacon.go`:
+
+- **RESUME_MODIFIED**: `in_amount_msat`/`out_amount_msat` (0 = unchanged) and `out_wire_custom_records` (every type 65536+, else INVALID_ARGUMENT "failed to validate custom records: custom records entry with TLV type below min: 65536"). The forwarding checks use the overridden incoming amount; the `update_add_htlc` carries the outgoing amount and the records merged in, persisted with the HTLC (`Htlcs.WireCustomRecords`, migration `AddHtlcWireCustomRecords`) so a retransmission carries them. `in_wire_custom_records` reports the incoming add's records (odd types only: an unknown even type still fails the message, BOLT 1). Deviations: the forwarding history (circuit) keeps the real incoming amount (LND records the override), the incoming dust exposure is not re-checked against it, and a forward that would send more than the incoming HTLC brings in is failed with `temporary_channel_failure` (no custom/aux channels here).
+- **requireinterceptor**: `LndGrpc:RequireInterceptor` (only with `Enabled`; `GetInfo.require_htlc_interceptor` reports it). Without a client a new forward fails with `temporary_channel_failure`, a replayed one (restart, reconnection) is held for the next client; a disconnect keeps every hold; the 22/19-block rules and `expiry_too_far` (auto-fail height above int32) apply as in LND.
+- **On-chain interception**: a forward without an outgoing leg whose incoming channel goes on chain is offered (again) with `auto_fail_height` = its incoming expiry (LND's `OnChainSettleDeadline`), held across disconnects, dropped at that height; only SETTLE is accepted (FAIL/RESUME/RESUME_MODIFIED end the stream with UNKNOWN "cannot fail/resume held htlc in the on-chain flow", the hold stays). The settle's preimage goes on the incoming HTLC record with `InterceptedHtlcSettled` and the BOLT 5 resolvers claim the HTLC with it. Deviation: LND offers every non-exit HTLC its contest resolver waits on, including forwards whose outgoing HTLC is in flight; we offer only forwards that never left (NL-1283). On-chain holds are offered only while a client is connected or one is required (the resolvers re-raise every block, so a later client sees them at the next block).
+- Not proven against LND on the cluster yet (no cluster run in this lane).
 
 ## Tool gaps record (2026-10-07, wip/lnd-gaps)
 

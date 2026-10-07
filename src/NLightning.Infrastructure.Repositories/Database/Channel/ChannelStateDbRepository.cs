@@ -641,7 +641,8 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         return new HtlcRecord((HtlcDirection)row.Direction, row.HtlcId, row.AmountMsat, new Hash(row.PaymentHash),
                               row.CltvExpiry, (HtlcState)row.State, removal, row.OnionRoutingPacket,
                               row.PathKey is null ? (CompactPubKey?)null : new CompactPubKey(row.PathKey),
-                              row.KnownPreimage is null ? (Secret?)null : new Secret(row.KnownPreimage));
+                              row.KnownPreimage is null ? (Secret?)null : new Secret(row.KnownPreimage),
+                              row.WireCustomRecords ?? ReadOnlyMemory<byte>.Empty);
     }
 
     private static void MapHtlcToEntity(HtlcRecord htlc, HtlcEntity entity)
@@ -653,6 +654,7 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         entity.OnionRoutingPacket = htlc.OnionRoutingPacket.ToArray();
         entity.PathKey = htlc.PathKey is { } pathKey ? ((byte[])pathKey).ToArray() : null;
         entity.KnownPreimage = htlc.KnownPreimage is { } known ? ((byte[])known).ToArray() : null;
+        entity.WireCustomRecords = htlc.WireCustomRecords.IsEmpty ? null : htlc.WireCustomRecords.ToArray();
 
         var removal = htlc.Removal;
         entity.RemovalKind = removal is null ? null : (byte)removal.Kind;

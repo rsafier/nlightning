@@ -17,7 +17,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
     public partial class NLightningDbContextModel
     {
         private NLightningDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("16a55ba1-a709-4e31-bb48-c7a56ef50c5c"), entityTypeCount: 60)
+            : base(skipDetectChanges: false, modelId: new Guid("c3af02bf-969a-4b16-8ee5-0744bbc326d1"), entityTypeCount: 60)
         {
         }
 
@@ -4573,6 +4573,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityTableBase.Columns.Add("sha256of_onion", sha256of_onionColumnBase);
             var stateColumnBase4 = new ColumnBase<ColumnMappingBase>("state", "smallint", nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityTableBase.Columns.Add("state", stateColumnBase4);
+            var wire_custom_recordsColumnBase = new ColumnBase<ColumnMappingBase>("wire_custom_records", "bytea", nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityTableBase.Columns.Add("wire_custom_records", wire_custom_recordsColumnBase);
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Channel.HtlcEntity", nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityMappingBase = new TableMappingBase<ColumnMappingBase>(htlcEntity, nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityMappingBase, false);
@@ -4600,6 +4605,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)removal_kindColumnBase, htlcEntity.FindProperty("RemovalKind")!, nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)sha256of_onionColumnBase, htlcEntity.FindProperty("Sha256OfOnion")!, nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)stateColumnBase4, htlcEntity.FindProperty("State")!, nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)wire_custom_recordsColumnBase, htlcEntity.FindProperty("WireCustomRecords")!, nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityMappingBase);
 
             var tableMappings31 = new List<TableMapping>();
             htlcEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings31);
@@ -4718,6 +4724,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var stateColumn4 = new Column("state", "smallint", htlcsTable);
             htlcsTable.Columns.Add("state", stateColumn4);
             stateColumn4.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(stateColumn4);
+            var wire_custom_recordsColumn = new Column("wire_custom_records", "bytea", htlcsTable)
+            {
+                IsNullable = true
+            };
+            htlcsTable.Columns.Add("wire_custom_records", wire_custom_recordsColumn);
+            wire_custom_recordsColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(wire_custom_recordsColumn);
             relationalModel.Tables.Add(("htlcs", null), htlcsTable);
             var htlcsTableMapping = new TableMapping(htlcEntity, htlcsTable, null);
             htlcsTable.AddTypeMapping(htlcsTableMapping, false);
@@ -4745,6 +4757,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             RelationalModel.CreateColumnMapping(removal_kindColumn, htlcEntity.FindProperty("RemovalKind")!, htlcsTableMapping);
             RelationalModel.CreateColumnMapping(sha256of_onionColumn, htlcEntity.FindProperty("Sha256OfOnion")!, htlcsTableMapping);
             RelationalModel.CreateColumnMapping(stateColumn4, htlcEntity.FindProperty("State")!, htlcsTableMapping);
+            RelationalModel.CreateColumnMapping(wire_custom_recordsColumn, htlcEntity.FindProperty("WireCustomRecords")!, htlcsTableMapping);
             var pk_htlcs = new UniqueConstraint("pk_htlcs", htlcsTable, new[] { channel_idColumn13, htlc_idColumn, directionColumn0 });
             htlcsTable.PrimaryKey = pk_htlcs;
             pk_htlcs.SetRowKeyValueFactory(new CompositeRowKeyValueFactory(pk_htlcs));

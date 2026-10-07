@@ -110,6 +110,13 @@ public class HtlcEntity
     public byte[]? KnownPreimage { get; set; }
 
     /// <summary>
+    /// The custom records (types of 65536 or more) of the <c>update_add_htlc</c> extension as a TLV stream (LND's wire
+    /// custom records, migration <c>AddHtlcWireCustomRecords</c>, NL-1182): received on an incoming HTLC, or put on an
+    /// outgoing one by an interceptor's <c>RESUME_MODIFIED</c>; null when the add carried none.
+    /// </summary>
+    public byte[]? WireCustomRecords { get; set; }
+
+    /// <summary>
     /// The Sphinx shared secret of the onion we peeled for this HTLC, needed to wrap its failure (ONION M4). Written
     /// on its own, never by a state transition.
     /// </summary>

@@ -1504,6 +1504,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte>("State")
                         .HasColumnType("tinyint");
 
+                    b.Property<byte[]>("WireCustomRecords")
+                        .HasColumnType("varbinary(max)");
+
                     b.HasKey("ChannelId", "HtlcId", "Direction");
 
                     b.HasIndex("OriginPaymentHash");

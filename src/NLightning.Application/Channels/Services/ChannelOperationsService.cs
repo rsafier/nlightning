@@ -17,6 +17,7 @@ using Domain.Money;
 using Domain.Node.Constants;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
+using Domain.Payments.Keysend;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Onion.Constants;
@@ -117,10 +118,20 @@ public sealed class ChannelOperationsService : IChannelOperations
     }
 
     /// <inheritdoc />
+    public Task<ulong> OfferHtlcAsync(ChannelId channelId, LightningMoney amount, Hash paymentHash,
+                                      uint cltvExpiry, OnionPacket onion, BlindedPathTlv? pathKey,
+                                      HtlcOrigin origin, CancellationToken cancellationToken = default) =>
+        OfferHtlcAsync(channelId, amount, paymentHash, cltvExpiry, onion, pathKey, origin, [], cancellationToken);
+
+    /// <inheritdoc />
     public async Task<ulong> OfferHtlcAsync(ChannelId channelId, LightningMoney amount, Hash paymentHash,
                                             uint cltvExpiry, OnionPacket onion, BlindedPathTlv? pathKey,
-                                            HtlcOrigin origin, CancellationToken cancellationToken = default)
+                                            HtlcOrigin origin, IReadOnlyList<CustomRecord> wireCustomRecords,
+                                            CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(wireCustomRecords);
+        // NL-1182: checked (and sorted) before anything is staged; persisted with the HTLC for its retransmissions
+        var encodedRecords = WireCustomRecordCodec.Encode(wireCustomRecords);
         ArgumentNullException.ThrowIfNull(amount);
         if (!origin.IsValid)
             throw new ArgumentException("The HTLC origin routes nowhere", nameof(origin));
@@ -140,7 +151,7 @@ public sealed class ChannelOperationsService : IChannelOperations
         var height = _blockchainMonitor?.LastProcessedBlockHeight;
         var result = await RunAsync(channelId, AddOperation,
                                     c => c.SendAdd(amount.MilliSatoshi, paymentHash, cltvExpiry, onion.ToBytes(),
-                                                   pathKey?.PathKey, height is > 0 ? height : null),
+                                                   pathKey?.PathKey, height is > 0 ? height : null, encodedRecords),
                                     cancellationToken,
                                     (unitOfWork, added) => unitOfWork.ChannelStateDbRepository.SetHtlcOriginAsync(
                                         channelId, AddedHtlcKey(added), origin));
