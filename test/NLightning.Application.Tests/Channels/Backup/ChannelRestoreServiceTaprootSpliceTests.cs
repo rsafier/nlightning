@@ -40,6 +40,7 @@ public partial class ChannelRestoreServiceTests
         var channel = Assert.Single(_storedChannels);
         Assert.True(RecoveryChannels.IsRecoveryChannel(channel));
         Assert.True(channel.ChannelParams.OptionSimpleTaproot);
+        Assert.True(channel.FundingKeysUnknown);
         Assert.Equal(kit.Splice2TxId, channel.FundingOutput!.TransactionId);
         Assert.Equal((ushort)0, channel.FundingOutput.Index);
         Assert.Equal(TaprootSpliceBackupKit.Splice2Sat, channel.FundingOutput.Amount.Satoshi);
@@ -81,6 +82,8 @@ public partial class ChannelRestoreServiceTests
         Assert.Equal((ushort)1, channel.FundingOutput.Index);
         var locked = Assert.Single(_fundingLocks).Current;
         Assert.Equal(1u, locked.LocalFundingKeyIndex);
+        Assert.True(locked.FundingKeysUnknown);
+        Assert.True(channel.FundingKeysUnknown);
         Assert.Equal(kit.LocalFundingKey(1), locked.LocalFundingPubKey);
         Assert.Contains(_tracked, w => w.TransactionId == kit.Splice1TxId && w.OutputIndex == 1);
         Assert.Empty(service.ChannelsWaitingForSplice);

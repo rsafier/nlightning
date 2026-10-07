@@ -11,6 +11,23 @@ using Infrastructure.Crypto.Hashes;
 
 public class RecoveryChannelsTests
 {
+    [Fact]
+    public void Given_AnUnknownKeyRecoveryFunding_When_Created_Then_TheUnknownStateReachesFundingAndSigningViews()
+    {
+        var data = new BackupTestData();
+        var entry = ChannelBackupService.CreateEntry(data.AddChannel(3, simpleTaproot: true), data.Peers[0])
+                    with
+        { FundingKeysUnknown = true };
+        using var sha256 = new Sha256();
+        var channel = RecoveryChannels.Create(entry, data.Signer.Object.GetChannelBasepoints(3), sha256);
+
+        Assert.True(RecoveryChannels.HasSpliceFundings(entry));
+        Assert.True(RecoveryChannels.CreateFundings(entry).Current.FundingKeysUnknown);
+        Assert.True(channel.GetSigningInfo().FundingKeysUnknown);
+        Assert.True(RecoveryChannels.IsRecoveryChannel(channel));
+        Assert.True(ChannelBackupService.CreateEntry(channel, data.Peers[0]).FundingKeysUnknown);
+    }
+
     [Theory]
     [InlineData(true, true)]
     [InlineData(false, false)]

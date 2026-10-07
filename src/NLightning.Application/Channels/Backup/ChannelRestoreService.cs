@@ -639,7 +639,8 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
         var locked = new ChannelFunding(to.FundingTxId, to.FundingOutputIndex, to.CapacitySat, to.LocalFundingPubKey,
                                         to.RemoteFundingPubKey, to.LocalFundingKeyIndex, 0, 0,
                                         kind, ChannelFundingStatus.Current,
-                                        ConfirmedHeight: to.FundingHeight, ShortChannelId: to.ShortChannelId);
+                                        ConfirmedHeight: to.FundingHeight, ShortChannelId: to.ShortChannelId,
+                                        FundingKeysUnknown: to.FundingKeysUnknown);
         var lockHandle = _channelLockProvider is null
                              ? null
                              : await _channelLockProvider.AcquireAsync(channelId, cancellationToken);
@@ -695,6 +696,7 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                                                                 to.LocalFundingPubKey, to.RemoteFundingPubKey,
                                                                 to.FundingTxId, to.FundingOutputIndex));
                 live.SetLocalFundingKeyIndex(to.LocalFundingKeyIndex);
+                live.FundingKeysUnknown = to.FundingKeysUnknown;
                 if (to.ShortChannelId is { } shortChannelId)
                     live.ShortChannelId = shortChannelId;
                 live.FundingCreatedAtBlockHeight = to.FundingHeight;
@@ -718,8 +720,11 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
         // The signer follows the lock (it may also load the channel from the database at its new funding already)
         try
         {
-            _signer.RegisterFunding(channelId, locked with { Status = ChannelFundingStatus.Pending });
-            _signer.LockFunding(channelId, to.FundingTxId, to.ShortChannelId);
+            if (!locked.FundingKeysUnknown)
+            {
+                _signer.RegisterFunding(channelId, locked with { Status = ChannelFundingStatus.Pending });
+                _signer.LockFunding(channelId, to.FundingTxId, to.ShortChannelId);
+            }
         }
         catch (Exception e)
         {
@@ -1180,7 +1185,8 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                                               (ulong)transaction.Outputs[namedIndex].Value.Satoshi,
                                               localKey is null ? entry.LocalFundingKeyIndex : keyIndex,
                                               localKey ?? entry.LocalFundingPubKey, entry.RemoteFundingPubKey,
-                                              spend.BlockHeight, spend.TransactionIndex);
+                                              spend.BlockHeight, spend.TransactionIndex) with
+            { FundingKeysUnknown = true };
         }
 
         // An earlier splice: the output whose spend is the named funding's transaction
@@ -1191,7 +1197,8 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                                                        (ulong)transaction.Outputs[vout].Value.Satoshi,
                                                        entry.LocalFundingKeyIndex, entry.LocalFundingPubKey,
                                                        entry.RemoteFundingPubKey, spend.BlockHeight,
-                                                       spend.TransactionIndex);
+                                                       spend.TransactionIndex) with
+            { FundingKeysUnknown = true };
             var location = await _spendLocator.LocateAsync(candidate, cancellationToken);
             if (location is { Status: FundingSpendStatus.SpentFound, Spend: { } next }
              && next.SpendingTransaction.TxId == namedTxId)

@@ -179,9 +179,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 0 | 96 | 96 |
+| open | 0 | 0 | 0 | 95 | 95 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 234 | 495 | 813 |
+| fixed | 15 | 69 | 234 | 496 | 814 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
 | **Total** | **15** | **69** | **250** | **614** | **948** |
@@ -1957,7 +1957,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Backups")
 
 ### NL-1215 A recovery channel followed past a simple taproot splice by its commitment or the peer's blob keeps stale funding keys
-- **Status:** open
+- **Status:** fixed (this commit; schema 04ff2a4c)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Backup/ChainFundingSpendLocator.cs` (`CheckTaprootOutputAsync`), `ChannelRestoreService.FollowPeerStorageHintAsync`
@@ -1965,6 +1965,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** take the peer's funding key from its `channel_reestablish` (`my_current_funding_locked` names the txid) or a later splice message if the protocol ever carries it; otherwise mark the funding row's keys as unknown instead of copying the last ones.
 - **Blocks/Blocked-by:** Related NL-1059
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Backups")
+- **Fix (2026-10-06):** Unproved recovery fundings carry `FundingKeysUnknown` through the funding row, model/signing views and SCB bit 5; key fields are explicitly historical hints. Following a commitment or peer-storage locator marks the keys unknown, while a verified key aggregate clears the flag. The restore skips signer registration/lock for unknown fundings; the signer rejects registering an unknown funding for signing. The migration conservatively marks older taproot recovery rows unknown. Outpoint-based following and payment-basepoint recovery remain available. Coverage includes SCB, initial/rotated funding persistence, commitment/blob recovery paths and signer refusal.
 
 ### NL-1065 The receiver charged the initiator the segwit marker and flag, refusing Eclair's taproot splice-out by 3 sat
 - **Status:** fixed (24324c11; landed in cd5c2c5d)

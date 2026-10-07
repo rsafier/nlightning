@@ -163,7 +163,8 @@ public sealed class ChainFundingSpendLocator : IFundingSpendLocator
         var candidate = SpliceSpendFollower.MoveTo(entry, txId, vout, (ulong)output.Value.Satoshi,
                                                    entry.LocalFundingKeyIndex, entry.LocalFundingPubKey,
                                                    entry.RemoteFundingPubKey, spend.BlockHeight,
-                                                   spend.TransactionIndex);
+                                                   spend.TransactionIndex) with
+        { FundingKeysUnknown = true };
         var location = await SearchAsync(candidate, null, cancellationToken);
         switch (location)
         {
@@ -218,7 +219,8 @@ public sealed class ChainFundingSpendLocator : IFundingSpendLocator
         var candidate = SpliceSpendFollower.MoveTo(entry, txId, vout, (ulong)transaction.Outputs[vout].Value.Satoshi,
                                                    entry.LocalFundingKeyIndex, entry.LocalFundingPubKey,
                                                    entry.RemoteFundingPubKey, spend.BlockHeight,
-                                                   spend.TransactionIndex);
+                                                   spend.TransactionIndex) with
+        { FundingKeysUnknown = true };
         if (!budget.TryTake())
             return new SpliceOutputCheck(SpliceOutputStatus.Unknown);
 

@@ -25,7 +25,7 @@ using Models;
 /// rebuild and the remote resolver's data-loss path sweeps our <c>to_remote</c>.
 /// </summary>
 /// <remarks>
-/// No schema change: "recovery channel" is <see cref="IsRecoveryChannel"/>, a shape no other channel has (a Failed
+/// Recovery identity is shape based: "recovery channel" is <see cref="IsRecoveryChannel"/>, a shape no other channel has (a Failed
 /// channel that went through funding carries the peer's signature of our first commitment).
 /// </remarks>
 public static class RecoveryChannels
@@ -100,7 +100,8 @@ public static class RecoveryChannels
         ArgumentNullException.ThrowIfNull(sha256);
         if (localFundingPubKey != entry.LocalFundingPubKey
          || localBasepoints.PaymentBasepoint != entry.LocalPaymentBasepoint
-         || (entry.LocalFundingKeyIndex == 0 && localBasepoints.FundingPubKey != entry.LocalFundingPubKey))
+         || (!entry.FundingKeysUnknown && entry.LocalFundingKeyIndex == 0
+             && localBasepoints.FundingPubKey != entry.LocalFundingPubKey))
             throw new ArgumentException($"Key index {entry.KeyIndex} does not derive the keys of channel "
                                       + $"{entry.ChannelId}", nameof(localBasepoints));
 
@@ -138,7 +139,8 @@ public static class RecoveryChannels
                                        entry.IsInitiator, null, null, LightningMoney.Zero, localKeySet, 0, 0, capacity,
                                        remoteKeySet, 0, entry.RemoteNodeId, 0, ChannelState.Failed, entry.Version)
         {
-            FundingCreatedAtBlockHeight = entry.FundingHeight
+            FundingCreatedAtBlockHeight = entry.FundingHeight,
+            FundingKeysUnknown = entry.FundingKeysUnknown
         };
         if (entry.ShortChannelId is { } shortChannelId)
             channel.ShortChannelId = shortChannelId;
@@ -155,7 +157,7 @@ public static class RecoveryChannels
     public static bool HasSpliceFundings(ChannelBackupEntry entry)
     {
         ArgumentNullException.ThrowIfNull(entry);
-        return entry.LocalFundingKeyIndex != 0 || entry.PendingFundings.Count > 0;
+        return entry.FundingKeysUnknown || entry.LocalFundingKeyIndex != 0 || entry.PendingFundings.Count > 0;
     }
 
     /// <summary>
@@ -176,7 +178,7 @@ public static class RecoveryChannels
                                          entry.LocalFundingKeyIndex == 0
                                              ? ChannelFundingKind.Initial
                                              : ChannelFundingKind.Splice, ChannelFundingStatus.Current,
-                                         ShortChannelId: entry.ShortChannelId);
+                                         ShortChannelId: entry.ShortChannelId, FundingKeysUnknown: entry.FundingKeysUnknown);
         var pending = entry.PendingFundings
                            .Where(f => f.FundingTxId != entry.FundingTxId)
                            .Select(f => new ChannelFunding(f.FundingTxId, f.FundingOutputIndex, f.CapacitySat,

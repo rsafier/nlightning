@@ -330,6 +330,9 @@ public partial class LocalLightningSigner : ILightningSigner
     /// <inheritdoc />
     public void RegisterChannel(ChannelId channelId, ChannelSigningInfo signingInfo)
     {
+        if (signingInfo.FundingKeysUnknown && !signingInfo.DataLossDetected)
+            throw new SignerException("Unknown funding keys are permitted only for data-loss recovery", channelId,
+                                      "Internal error");
         _logger.LogTrace("Registering channel {ChannelId} with signing info", channelId);
 
         // A registration again (e.g. once the funding confirmed) refreshes what may have become known since: the real
