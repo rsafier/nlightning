@@ -1454,7 +1454,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                     continue;
 
                 source ??= ClassifyWalletTransaction(transaction, utxoMemoryRepository, effects);
-                CollectWalletOutputSpent(spent, transaction, source, utxoMemoryRepository, effects);
+                CollectWalletOutputSpent(spent, transaction, source, utxoMemoryRepository, effects,
+                    spent.SilentPayment is not null ? blockTime : null);
             }
         }
     }

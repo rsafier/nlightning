@@ -40,7 +40,8 @@ public partial class BlockchainMonitorService
             await repository.SetScanStateAsync(state, cancellationToken);
             await unitOfWork.SaveChangesAsync();
         }
-        else if (_silentPaymentScanner.Enabled && state.LiveCursorHeight is { } cursor &&
+        else if (_silentPaymentScanner.Enabled &&
+                 (state.LiveCursorHeight ?? (state.LiveFromHeight > 0 ? state.LiveFromHeight - 1 : (uint?)null)) is { } cursor &&
                  cursor < _lastProcessedBlockHeight && cursor < tip)
         {
             // A disabled/offline SP gap is recovered by the SP-only rescan worker. The global cursor is unchanged.
