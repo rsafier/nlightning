@@ -77,6 +77,7 @@ public sealed class WalletSpendService : IWalletSpendService
     private readonly Domain.Protocol.ValueObjects.BitcoinNetwork _bitcoinNetwork;
     private readonly SilentPaymentsOptions _silentPayments;
     private readonly ISilentPaymentCrypto _silentPaymentCrypto;
+    private readonly ISilentPaymentKeySource? _silentPaymentKeys;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
 
@@ -86,11 +87,13 @@ public sealed class WalletSpendService : IWalletSpendService
                               IServiceScopeFactory scopeFactory, IOptions<NodeOptions> nodeOptions,
                               ILogger<WalletSpendService> logger, IBitcoinChainService? bitcoinChainService = null,
                               IWalletPsbtService? psbt = null, IOptions<SilentPaymentsOptions>? silentPayments = null,
-                              ISilentPaymentCrypto? silentPaymentCrypto = null)
+                              ISilentPaymentCrypto? silentPaymentCrypto = null,
+                              ISilentPaymentKeySource? silentPaymentKeys = null)
     {
         _psbt = psbt;
         _silentPayments = silentPayments?.Value ?? new SilentPaymentsOptions();
         _silentPaymentCrypto = silentPaymentCrypto ?? new SilentPaymentCrypto();
+        _silentPaymentKeys = silentPaymentKeys;
         _bitcoinNetwork = nodeOptions.Value.BitcoinNetwork;
         _feeInputSelector = feeInputSelector;
         _anchorReserveService = anchorReserveService;
@@ -198,8 +201,12 @@ public sealed class WalletSpendService : IWalletSpendService
                 throw new WalletSpendException(WalletSpendError.DustAmount, $"Recipient amount must be whole satoshis and at least {minimum} sat.");
         }
         var rate = await GetFeeRatePerKwAsync(feeRatePerKw, cancellationToken);
+        var silentChange = silentAddresses.Count > 0 && _silentPayments.ChangeToSilentPayment;
+        if (silentChange && (!_silentPayments.Receive || _silentPaymentKeys is null))
+            throw new WalletSpendException(WalletSpendError.InvalidAddress,
+                "Silent payment change requires Receive=true and the local silent payment keys.");
         var policy = new WalletSelectionPolicy(silentAddresses.Count > 0, silentAddresses.Count > 0,
-                                              _silentPayments.AvoidMixing);
+            _silentPayments.AvoidMixing, silentChange, Math.Max(330, _silentPayments.MinReceiveSat));
         var extraWeight = BaseWeight + destinations.Sum(GetOutputWeight);
         await _gate.WaitAsync(cancellationToken);
         try
@@ -219,24 +226,33 @@ public sealed class WalletSpendService : IWalletSpendService
             {
                 await EnsureReserveKeptAsync(reservation, total, cancellationToken);
                 var frozenInputs = reservation.Inputs.Select(i => (i.TxId, i.Index)).ToArray();
+                Script? silentChangeScript = null;
+                var deriveSilentChange = policy.ChangeToSilentPayment &&
+                    reservation.ChangeAmount.Satoshi >= policy.MinimumSilentChangeSat;
+                if (deriveSilentChange)
+                    silentAddresses.Add(GetSilentPaymentChangeAddress());
                 if (policy.SilentPaymentSend)
                 {
                     if (reservation.Inputs.Count == 0 || reservation.Inputs.Any(i =>
                         i.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr)))
                         throw new WalletSpendException(WalletSpendError.InvalidAddress, "Silent payment requires eligible wallet inputs.");
                     var scripts = _lightningSigner.ComputeSilentPaymentOutputs(reservation.Id, silentAddresses.ToArray(), frozenInputs);
-                    if (scripts.Count != silentIndices.Count)
+                    if (scripts.Count != silentIndices.Count + (deriveSilentChange ? 1 : 0))
                         throw new InvalidOperationException("Signer returned an incorrect silent payment output count.");
                     for (var i = 0; i < scripts.Count; i++)
                     {
                         var script = (byte[])scripts[i];
                         if (script.Length != 34 || script[0] != 0x51 || script[1] != 0x20)
                             throw new InvalidOperationException("Signer returned an invalid silent payment output.");
-                        destinations[silentIndices[i]] = new Script(script);
+                        if (i < silentIndices.Count)
+                            destinations[silentIndices[i]] = new Script(script);
+                        else
+                            silentChangeScript = new Script(script);
                     }
                 }
                 var signed = BuildAndSign(reservation, destinations.Zip(amounts, (script, amount) =>
-                    (Script: script, AmountSat: amount)).ToArray(), frozenInputs);
+                    (Script: script, AmountSat: amount)).ToArray(), frozenInputs, silentChangeScript,
+                    shuffleOutputs: policy.SilentPaymentSend);
                 var fee = reservation.Total.Satoshi - total - reservation.ChangeAmount.Satoshi;
                 if (maxFee is not null && LightningMoney.Satoshis(fee) > maxFee)
                     throw new WalletSpendException(WalletSpendError.FeeAboveLimit, "The transaction fee exceeds the requested maximum.");
@@ -260,7 +276,11 @@ public sealed class WalletSpendService : IWalletSpendService
                 }
                 return new WalletWithdrawResult(signed.Signed.TxId, LightningMoney.Satoshis(total),
                     LightningMoney.Satoshis(fee), reservation.ChangeAmount, LightningMoney.Satoshis(rate),
-                    GetWeight(signed.Transaction), reservation.Inputs.Count, reserve, published);
+                    GetWeight(signed.Transaction), reservation.Inputs.Count, reserve, published)
+                {
+                    DestinationOutputIndex = checked((uint)signed.Transaction.Outputs.ToList().FindIndex(output =>
+                        output.Value.Satoshi == amounts[0] && output.ScriptPubKey == destinations[0]))
+                };
             }
             catch
             {
@@ -273,6 +293,14 @@ public sealed class WalletSpendService : IWalletSpendService
         {
             _gate.Release();
         }
+    }
+
+    private SilentPaymentAddress GetSilentPaymentChangeAddress()
+    {
+        var keys = _silentPaymentKeys ?? throw new InvalidOperationException("Silent payment change keys are unavailable.");
+        if (!_silentPaymentCrypto.TrySumPublicKeys([keys.SpendPubKey, keys.GetLabelPoint(0)], out var labeledSpend))
+            throw new InvalidOperationException("Silent payment change label produces an invalid public key.");
+        return new SilentPaymentAddress(0, keys.ScanPubKey, labeledSpend, SilentPaymentAddressCodec.GetHrp(_bitcoinNetwork));
     }
 
     private static bool IsSilentPaymentAddress(string? text) => text is not null &&
@@ -651,7 +679,8 @@ public sealed class WalletSpendService : IWalletSpendService
     }
 
     private (SignedTransaction Signed, Transaction Transaction) BuildAndSign(FeeInputReservation reservation,
-        IReadOnlyList<(Script Script, long AmountSat)> outputs, IReadOnlyList<(TxId TxId, uint Index)> frozenInputs)
+        IReadOnlyList<(Script Script, long AmountSat)> outputs, IReadOnlyList<(TxId TxId, uint Index)> frozenInputs,
+        Script? silentChangeScript = null, bool shuffleOutputs = false)
     {
         if (!reservation.Inputs.Select(i => (i.TxId, i.Index)).SequenceEqual(frozenInputs))
             throw new InvalidOperationException("Wallet inputs changed after silent payment derivation; derive again before signing.");
@@ -667,8 +696,16 @@ public sealed class WalletSpendService : IWalletSpendService
 
         foreach (var output in outputs)
             tx.Outputs.Add(Money.Satoshis(output.AmountSat), output.Script);
-        if (reservation.ChangeScript is { } changeScript)
+        if (silentChangeScript is not null)
+            tx.Outputs.Add(Money.Satoshis(reservation.ChangeAmount.Satoshi), silentChangeScript);
+        else if (reservation.ChangeScript is { } changeScript)
             tx.Outputs.Add(Money.Satoshis(reservation.ChangeAmount.Satoshi), new Script((byte[])changeScript));
+        if (shuffleOutputs)
+            for (var i = tx.Outputs.Count - 1; i > 0; i--)
+            {
+                var swap = System.Security.Cryptography.RandomNumberGenerator.GetInt32(i + 1);
+                (tx.Outputs[i], tx.Outputs[swap]) = (tx.Outputs[swap], tx.Outputs[i]);
+            }
 
         var signed = new SignedTransaction(new TxId(tx.GetHash().ToBytes()), tx.ToBytes());
         if (!_lightningSigner.SignWalletTransaction(signed, reservation.Id, []))

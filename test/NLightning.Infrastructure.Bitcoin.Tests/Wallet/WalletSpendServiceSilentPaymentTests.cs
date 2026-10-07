@@ -21,14 +21,16 @@ public partial class WalletSpendServiceTests
         new CompactPubKey(Convert.FromHexString("0220bcfac5b99e04ad1a06ddfb016ee13582609d60b6291e98d01a9bc9a16c96d4")),
         new CompactPubKey(Convert.FromHexString("025cc9856d6f8375350e123978daac200c260cb5b5ae83106cab90484dcd8fcf36")), "sprt");
 
-    private WalletSpendService CreateSilentService(SilentPaymentsOptions? options = null, ILightningSigner? signer = null)
+    private WalletSpendService CreateSilentService(SilentPaymentsOptions? options = null, ILightningSigner? signer = null,
+        Domain.Bitcoin.SilentPayments.Interfaces.ISilentPaymentKeySource? keys = null)
     {
         var change = GetP2TrExtKey(50, true).Neuter().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, Network.RegTest);
         _walletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Tr, true))
                       .ReturnsAsync(new WalletAddressModel(AddressType.P2Tr, 50, true, change.ToString()));
         return new WalletSpendService(_selector, _anchorReserve.Object, _utxos, signer ?? _signer, _monitor.Object,
             _feeService.Object, _scopeFactory, Microsoft.Extensions.Options.Options.Create(_nodeOptions), NullLogger<WalletSpendService>.Instance,
-            silentPayments: Microsoft.Extensions.Options.Options.Create(options ?? new SilentPaymentsOptions { Enabled = true }));
+            silentPayments: Microsoft.Extensions.Options.Options.Create(options ?? new SilentPaymentsOptions { Enabled = true }),
+            silentPaymentKeys: keys);
     }
 
     [Fact]
@@ -48,9 +50,10 @@ public partial class WalletSpendServiceTests
         // Assert
         var tx = AssertPublishedAndValid(first, second);
         Assert.Equal("51203e9fce73d4e77a4809908e3c3a2e54ee147b9312dc5044a193d1fc85de46e3c1",
-                     Convert.ToHexStringLower(tx.Outputs[0].ScriptPubKey.ToBytes()));
+                     Convert.ToHexStringLower(Assert.Single(tx.Outputs.Where(o => o.Value.Satoshi == 300_000)).ScriptPubKey.ToBytes()));
         Assert.Equal(300_000, result.Amount.Satoshi);
-        Assert.Equal(34, tx.Outputs[1].ScriptPubKey.Length);
+        Assert.Equal(300_000, tx.Outputs[(int)result.DestinationOutputIndex].Value.Satoshi);
+        Assert.All(tx.Outputs, output => Assert.Equal(34, output.ScriptPubKey.Length));
     }
 
     [Fact]
@@ -67,9 +70,11 @@ public partial class WalletSpendServiceTests
             LightningMoney.Satoshis(FeeRatePerKw), cancellationToken: TestContext.Current.CancellationToken);
         // Assert
         var tx = AssertPublishedAndValid(coin.TxOut);
-        Assert.Equal(s_destination.ScriptPubKey, tx.Outputs[1].ScriptPubKey);
-        Assert.NotEqual(tx.Outputs[0].ScriptPubKey, tx.Outputs[2].ScriptPubKey);
-        Assert.Equal(new long[] { 20_000, 30_000, 40_000 }, tx.Outputs.Take(3).Select(o => o.Value.Satoshi));
+        Assert.Equal(s_destination.ScriptPubKey, Assert.Single(tx.Outputs.Where(o => o.Value.Satoshi == 30_000)).ScriptPubKey);
+        Assert.NotEqual(Assert.Single(tx.Outputs.Where(o => o.Value.Satoshi == 20_000)).ScriptPubKey,
+                        Assert.Single(tx.Outputs.Where(o => o.Value.Satoshi == 40_000)).ScriptPubKey);
+        Assert.All(new long[] { 20_000, 30_000, 40_000 }, amount =>
+            Assert.Single(tx.Outputs.Where(o => o.Value.Satoshi == amount)));
     }
 
     [Fact]

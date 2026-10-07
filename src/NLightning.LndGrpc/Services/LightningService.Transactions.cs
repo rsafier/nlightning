@@ -145,19 +145,36 @@ public sealed partial class LightningService
             {
                 throw new RpcException(new Status(StatusCode.FailedPrecondition, e.Message));
             }
+            // Imported watches may cover an output already owned by the wallet (including an SP receipt).
+            // Merge by outpoint; transaction-level net amounts cannot represent partial ownership overlap.
+            var importedAmounts = snapshot.Transactions.SelectMany(watched => watched.OurOutputs.Select(index =>
+                (Outpoint: new OutPoint(watched.Transaction.GetHash(), index),
+                 Amount: watched.Transaction.Outputs[(int)index].Value.Satoshi)))
+                .ToDictionary(output => output.Outpoint, output => output.Amount);
             foreach (var watched in snapshot.Transactions)
             {
                 var txid = new TxId(watched.Transaction.GetHash().ToBytes());
                 if (!entries.TryGetValue(txid, out var entry))
                     entries[txid] = entry = new HistoryEntry(txid) { Height = watched.Height, Time = watched.Time };
-                entry.AmountSat += watched.Amount;
                 foreach (var index in watched.OurOutputs)
                 {
+                    if (entry.OurOutputs.Any(output => output.Index == index))
+                        continue;
                     var output = watched.Transaction.Outputs[(int)index];
+                    entry.AmountSat += output.Value.Satoshi;
                     entry.OurOutputs.Add((index, output.Value.Satoshi, output.ScriptPubKey.GetDestinationAddress(_nodeOptions.BitcoinNetwork.ToNBitcoinNetwork())!.ToString()));
                 }
                 foreach (var spent in watched.SpentOutputs)
-                    entry.PreviousOutpoints.Add($"{spent.Hash}:{spent.N}");
+                {
+                    var outpoint = $"{new TxId(spent.Hash.ToBytes())}:{spent.N}";
+                    if (!entry.PreviousOutpoints.Add(outpoint))
+                        continue;
+                    if (!importedAmounts.TryGetValue(spent, out var amount))
+                        throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                            "Imported wallet history is missing the creating transaction of a spent output; rebuild the index."));
+                    entry.AmountSat -= amount;
+                    entry.SpentOurs += amount;
+                }
             }
         }
 

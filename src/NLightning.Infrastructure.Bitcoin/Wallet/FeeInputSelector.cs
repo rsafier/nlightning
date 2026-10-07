@@ -413,7 +413,8 @@ public sealed class FeeInputSelector : IFeeInputSelector
         var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
         BitcoinScript? changeScript = null;
-        if (selection.ChangeSat > 0)
+        if (selection.ChangeSat > 0 &&
+            !(policy.ChangeToSilentPayment && selection.ChangeSat >= policy.MinimumSilentChangeSat))
         {
             var walletService = scope.ServiceProvider.GetRequiredService<IBitcoinWalletService>();
             var changeAddress = await walletService.GetUnusedAddressAsync(policy.PreferP2TrChange ? AddressType.P2Tr : AddressType.P2Wpkh, true);
