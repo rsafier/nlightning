@@ -464,9 +464,15 @@ public partial class LndGrpcWave3FlowTests
         Assert.True(state.IsActive);
         Assert.False(state.IsPartial);
         Assert.Equal(birthday - 1, state.CursorHeight);
+        var accountKey = Node.SecureKeyManager.GetDepositAccount(Domain.Bitcoin.Enums.AddressType.P2Tr);
+        Assert.NotNull(accountKey);
         await _host!.StopAsync(ct);
         await Node.StopAsync();
+        Assert.Equal(accountKey.ExtendedPublicKey,
+            Node.SecureKeyManager.GetDepositAccount(Domain.Bitcoin.Enums.AddressType.P2Tr)!.ExtendedPublicKey);
         await Node.StartAsync(ct);
+        Assert.Equal(accountKey.ExtendedPublicKey,
+            Node.SecureKeyManager.GetDepositAccount(Domain.Bitcoin.Enums.AddressType.P2Tr)!.ExtendedPublicKey);
         _host = Node.Services.GetServices<IHostedService>().OfType<LndGrpcHost>().Single();
         await _host.StartAsync(ct);
         await Poll.UntilAsync(async () => (await Node.Services.GetRequiredService<IWalletHistoryService>().GetStatusAsync(ct))

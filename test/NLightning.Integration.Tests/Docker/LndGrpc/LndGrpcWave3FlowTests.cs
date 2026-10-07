@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Google.Protobuf;
 using Grpc.Core;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
@@ -14,6 +15,7 @@ using NLightning.Tests.Utils;
 namespace NLightning.Integration.Tests.Docker;
 
 using Abcd;
+using Domain.Bitcoin.SilentPayments.Interfaces;
 using Domain.Client.Requests;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
@@ -93,6 +95,8 @@ public partial class LndGrpcWave3FlowTests : IAsyncLifetime
         Node.ConfigureServices = services =>
         {
             services.AddLndGrpcHost(_directory);
+            // The fixture owns these keys across restarts; a factory alias would let DI dispose them.
+            services.Replace(ServiceDescriptor.Singleton<ISilentPaymentKeySource>(nodeKeys));
             services.AddLogging(builder => builder.AddFilter("Microsoft.EntityFrameworkCore", LogLevel.Warning));
         };
         await Node.StartAsync(ct);
@@ -106,7 +110,10 @@ public partial class LndGrpcWave3FlowTests : IAsyncLifetime
         _nodes.Add(_payee);
         Payee.ExtraConfiguration["SilentPayments:Enabled"] = "true";
         Payee.ConfigureServices = services =>
+        {
+            services.Replace(ServiceDescriptor.Singleton<ISilentPaymentKeySource>(payeeKeys));
             services.AddLogging(builder => builder.AddFilter("Microsoft.EntityFrameworkCore", LogLevel.Warning));
+        };
         await Payee.StartAsync(ct);
     }
 
