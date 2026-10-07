@@ -158,12 +158,19 @@ public sealed class SilentPaymentScanner(IBlockPrevoutSource prevouts, ISilentPa
         var received = new List<UtxoModel>();
         foreach (var match in matches)
         {
-            if (memory?.TryGetUtxo(match.TransactionId, match.Index, out _) == true ||
-                await unitOfWork.SilentPaymentDbRepository.GetOutputAsync(match.TransactionId, match.Index, cancellationToken) is not null)
-                continue;
-            await unitOfWork.SilentPaymentDbRepository.UpsertOutputAsync(match, cancellationToken);
-            if (match.Ignored) continue;
-            var coin = new UtxoModel(match);
+            if (memory?.TryGetUtxo(match.TransactionId, match.Index, out _) == true) continue;
+            var existing = await unitOfWork.SilentPaymentDbRepository.GetOutputAsync(
+                match.TransactionId, match.Index, cancellationToken);
+            if (existing is not null && (materializeUtxos || !existing.Ignored || match.Ignored)) continue;
+            // A lower receive threshold can recover previously ignored receipts in the existing database. Only
+            // historical recovery promotes them: subsequent blocks and final chain proof determine whether they
+            // are still unspent, before any promoted coin can become selectable.
+            var receipt = existing is { Ignored: true }
+                ? match with { SpentByTransactionId = null, SpentAtHeight = null }
+                : match;
+            await unitOfWork.SilentPaymentDbRepository.UpsertOutputAsync(receipt, cancellationToken);
+            if (receipt.Ignored) continue;
+            var coin = new UtxoModel(receipt);
             if (materializeUtxos) unitOfWork.AddUtxo(coin);
             received.Add(coin);
         }
