@@ -38,7 +38,9 @@ public sealed partial class LightningService
             BlockHeight = height,
             SyncedToChain = _blockchainMonitor is { IsChainProcessingHalted: false } && height > 0,
             SyncedToGraph = _graphStore?.IsLoaded ?? false,
-            Testnet = _nodeOptions.BitcoinNetwork.Name is NetworkConstants.Testnet or NetworkConstants.Testnet4
+            Testnet = _nodeOptions.BitcoinNetwork.Name is NetworkConstants.Testnet or NetworkConstants.Testnet4,
+            // NL-1182: LND's requireinterceptor
+            RequireHtlcInterceptor = _options.RequireInterceptor
         };
         response.WalletSynced = response.SyncedToChain;
         response.Chains.Add(new Chain { Chain_ = "bitcoin", Network = LndNetworkName() });

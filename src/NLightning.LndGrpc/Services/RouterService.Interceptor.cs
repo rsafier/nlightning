@@ -6,7 +6,9 @@ namespace NLightning.LndGrpc.Services;
 
 using Application.Payments.Interception;
 using Domain.Channels.ValueObjects;
+using Domain.Money;
 using Domain.Payments.Interception;
+using Domain.Payments.Keysend;
 using Domain.Protocol.Onion.Enums;
 using Routerrpc;
 using LnrpcFailureCode = Lnrpc.Failure.Types.FailureCode;
@@ -32,12 +34,7 @@ public sealed partial class RouterService
         IDisposable connection;
         try
         {
-            connection = _interceptorHub.Connect(client, new HtlcInterceptorSettings
-            {
-                CltvRejectDelta = _routerOptions.InterceptorCltvRejectDelta,
-                CltvInterceptDelta = _routerOptions.InterceptorCltvInterceptDelta,
-                MaxHeld = _routerOptions.MaxHeldHtlcs
-            });
+            connection = _interceptorHub.Connect(client, _routerOptions.ToInterceptorSettings());
         }
         catch (InvalidOperationException)
         {
@@ -59,6 +56,12 @@ public sealed partial class RouterService
                 var (scid, htlcId, resolution) = ToResolution(response);
                 switch (await _interceptorHub.ResolveAsync(scid, htlcId, resolution))
                 {
+                    // NL-1182: LND's ErrCannotFailOnChain / ErrCannotResumeOnChain end the stream (plain errors: UNKNOWN)
+                    case InterceptResolveResult.NotAllowedOnChain:
+                        throw new RpcException(new Status(StatusCode.Unknown,
+                                                          resolution.Action == ForwardInterceptAction.Fail
+                                                              ? "cannot fail held htlc in the on-chain flow"
+                                                              : "cannot resume held htlc in the on-chain flow"));
                     case InterceptResolveResult.Failed:
                         throw new RpcException(new Status(StatusCode.Unavailable, "forward resolution failed; retry"));
                     case InterceptResolveResult.InProgress:
@@ -114,8 +117,8 @@ public sealed partial class RouterService
                 resolution = ForwardInterceptResolution.Resume;
                 break;
             case ResolveHoldForwardAction.ResumeModified:
-                throw new RpcException(new Status(StatusCode.Unimplemented,
-                                                  "RESUME_MODIFIED is not supported by this node"));
+                resolution = ToModifiedResolution(response);
+                break;
             case ResolveHoldForwardAction.Fail when response.FailureMessage.Length > 0:
                 if (response.FailureCode != 0)
                     throw new RpcException(new Status(StatusCode.InvalidArgument,
@@ -153,6 +156,26 @@ public sealed partial class RouterService
         return (scid, key.HtlcId, resolution);
     }
 
+    /// <summary>
+    /// A <c>RESUME_MODIFIED</c> answer (NL-1182, LND's <c>resolveFromClient</c>): a zero amount means unchanged, the
+    /// custom records must all be of type 65536 or more (LND: INVALID_ARGUMENT "failed to validate custom records: ...").
+    /// </summary>
+    internal static ForwardInterceptResolution ToModifiedResolution(ForwardHtlcInterceptResponse response)
+    {
+        try
+        {
+            return ForwardInterceptResolution.Modified(
+                response.InAmountMsat > 0 ? LightningMoney.MilliSatoshis(response.InAmountMsat) : null,
+                response.OutAmountMsat > 0 ? LightningMoney.MilliSatoshis(response.OutAmountMsat) : null,
+                response.OutWireCustomRecords.Select(r => new CustomRecord(r.Key, r.Value.Span)));
+        }
+        catch (ArgumentException e)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                                              $"failed to validate custom records: {MessageOf(e)}"));
+        }
+    }
+
     /// <summary>A held forward as LND sends it to its interceptor.</summary>
     internal static ForwardHtlcInterceptRequest ToRpc(InterceptedForward forward)
     {
@@ -178,8 +201,15 @@ public sealed partial class RouterService
             request.OutgoingRequestedNodeId = ByteString.CopyFrom((byte[])nodeId);
         foreach (var record in forward.CustomRecords)
             request.CustomRecords[record.Type] = ByteString.CopyFrom(record.Value.Span);
+        // NL-1182: the incoming update_add_htlc's custom records (LND's in_wire_custom_records)
+        foreach (var record in forward.InWireCustomRecords ?? [])
+            request.InWireCustomRecords[record.Type] = ByteString.CopyFrom(record.Value.Span);
         return request;
     }
+
+    /// <summary>An argument exception's message without the parameter-name suffix .NET appends.</summary>
+    private static string MessageOf(ArgumentException e) =>
+        e.ParamName is { } name ? e.Message.Replace($" (Parameter '{name}')", string.Empty) : e.Message;
 
     /// <summary>The stream's side of the hub: offers are queued for the writer task, never awaited.</summary>
     private sealed class StreamClient : IHtlcInterceptorClient

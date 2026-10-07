@@ -2,6 +2,7 @@ namespace NLightning.Domain.Channels.Interfaces;
 
 using Crypto.ValueObjects;
 using Money;
+using Payments.Keysend;
 using Payments.ValueObjects;
 using Persistence.Interfaces;
 using Protocol.Onion.Enums;
@@ -63,6 +64,23 @@ public interface IChannelOperations
     Task<ulong> OfferHtlcAsync(ChannelId channelId, LightningMoney amount, Hash paymentHash, uint cltvExpiry,
                                OnionPacket onion, BlindedPathTlv? pathKey, HtlcOrigin origin,
                                CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Offers an HTLC like <see cref="OfferHtlcAsync(ChannelId, LightningMoney, Hash, uint, OnionPacket, BlindedPathTlv?, HtlcOrigin, CancellationToken)"/>
+    /// with custom records in the <c>update_add_htlc</c> extension (an HTLC interceptor's <c>RESUME_MODIFIED</c>,
+    /// NL-1182): persisted with the HTLC, so a retransmission carries them again.
+    /// </summary>
+    /// <param name="wireCustomRecords">The records (types of 65536 or more, LND's wire custom records); empty for none.
+    /// </param>
+    /// <exception cref="NotSupportedException">The implementation cannot send custom records and some were given.
+    /// </exception>
+    Task<ulong> OfferHtlcAsync(ChannelId channelId, LightningMoney amount, Hash paymentHash, uint cltvExpiry,
+                               OnionPacket onion, BlindedPathTlv? pathKey, HtlcOrigin origin,
+                               IReadOnlyList<CustomRecord> wireCustomRecords,
+                               CancellationToken cancellationToken = default) =>
+        wireCustomRecords.Count == 0
+            ? OfferHtlcAsync(channelId, amount, paymentHash, cltvExpiry, onion, pathKey, origin, cancellationToken)
+            : throw new NotSupportedException("This channel layer cannot send update_add_htlc custom records");
 
     /// <summary>
     /// Fulfills an incoming HTLC (<c>update_fulfill_htlc</c>). The HTLC must be locked in, and

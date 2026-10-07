@@ -43,7 +43,7 @@ public class InterceptorReliabilityTests
         var forward = new InterceptedForward(new ChannelId(new byte[32]), 1, new ShortChannelId(1, 1, 0),
             new ShortChannelId(2, 1, 0), null, new Hash(new byte[32]), LightningMoney.MilliSatoshis(1000),
             LightningMoney.MilliSatoshis(900), 500, 450, 0, new byte[1366], []);
-        Assert.Equal(ForwardInterceptOutcome.Held, hub.Intercept(forward, 100, resolution =>
+        Assert.Equal(ForwardInterceptOutcome.Held, hub.Intercept(forward, 100, false, resolution =>
         {
             resumed.TrySetResult(resolution);
             return Task.CompletedTask;
