@@ -18,9 +18,11 @@ public static class SilentPaymentAccounting
     // input belongs to the recovered wallet; shared transactions require their retained purpose/accounting context.
     public static async Task StageSettlementsAsync(IUnitOfWork uow, Block block, uint height,
         IReadOnlyList<SilentPaymentLabelModel> labels, Network network, TimeProvider time,
-        CancellationToken cancellationToken, IReadOnlySet<TxId>? excludedTransactions = null)
+        CancellationToken cancellationToken, IReadOnlySet<TxId>? excludedTransactions = null,
+        IReadOnlyList<WalletAddressModel>? recoveryCatalogue = null)
     {
-        var addresses = uow.WalletAddressesDbRepository.GetAllAddresses().Select(address => address.Address).ToHashSet();
+        var addresses = uow.WalletAddressesDbRepository.GetAllAddresses().Concat(recoveryCatalogue ?? [])
+            .Select(address => address.Address).ToHashSet();
         foreach (var transaction in block.Transactions.Where(transaction => !transaction.IsCoinBase))
         {
             var transactionId = new TxId(transaction.GetHash().ToBytes());
@@ -29,7 +31,15 @@ public static class SilentPaymentAccounting
             foreach (var input in transaction.Inputs)
                 inputs.Add(await uow.SilentPaymentDbRepository.GetOutputAsync(new TxId(input.PrevOut.Hash.ToBytes()),
                     input.PrevOut.N, cancellationToken));
-            if (!inputs.Any(input => input is { Ignored: false } && input.SpentByTransactionId == transactionId))
+            var recoveredOrdinary = false;
+            foreach (var input in transaction.Inputs)
+            {
+                var receiptKey = AccountingEventKeys.WalletReceived(new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N);
+                var receipts = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync(receiptKey, cancellationToken);
+                var receipt = AccountingConfirmations.FindStanding(receiptKey, receipts);
+                if (receipt?.Details.GetValueOrDefault(WalletRecoveryAccounting.RecoveredCustody) == "true") recoveredOrdinary = true;
+            }
+            if (!recoveredOrdinary && !inputs.Any(input => input is { Ignored: false } && input.SpentByTransactionId == transactionId))
                 continue;
             var baseKey = AccountingEventKeys.WalletSent(transactionId);
             var prior = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync(baseKey, cancellationToken);
@@ -140,14 +150,7 @@ public static class SilentPaymentAccounting
         if (key is null) return;
         var txid = spender ?? output.TransactionId;
         var transaction = block.Transactions.First(transaction => new TxId(transaction.GetHash().ToBytes()) == txid);
-        var source = AccountingDetailKeys.ExternalSource;
-        if (await uow.BroadcastTransactionDbRepository.GetByTransactionIdAsync(txid) is not null)
-            source = AccountingDetailKeys.BroadcastSource;
-        else
-            foreach (var input in transaction.Inputs)
-                if (await uow.SilentPaymentDbRepository.GetOutputAsync(new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N,
-                        cancellationToken) is { Ignored: false } || await uow.UtxoDbRepository.GetByIdAsync(new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N) is not null)
-                { source = AccountingDetailKeys.WalletSource; break; }
+        var source = await GetSourceAsync(uow, transaction, cancellationToken);
         var name = output.Label is { } label ? labels.FirstOrDefault(item => item.M == label)?.Name : null;
         uow.AccountingEventDbRepository.Add(new AccountingEventModel
         {
@@ -160,6 +163,23 @@ public static class SilentPaymentAccounting
                 ("receiptSource", "silent_payment"), ("silentPayment", "true"), (AccountingDetailKeys.Label, name),
                 ("silentPaymentLabel", output.Label?.ToString(CultureInfo.InvariantCulture)), ("spentBy", spender?.ToString()))
         });
+    }
+
+    public static async Task<string> GetSourceAsync(IUnitOfWork uow, Transaction transaction, CancellationToken cancellationToken)
+    {
+        if (await uow.BroadcastTransactionDbRepository.GetByTransactionIdAsync(new TxId(transaction.GetHash().ToBytes())) is not null)
+            return AccountingDetailKeys.BroadcastSource;
+        foreach (var input in transaction.Inputs)
+        {
+            var point = new TxId(input.PrevOut.Hash.ToBytes());
+            if (await uow.SilentPaymentDbRepository.GetOutputAsync(point, input.PrevOut.N, cancellationToken) is { Ignored: false } ||
+                await uow.UtxoDbRepository.GetByIdAsync(point, input.PrevOut.N) is not null)
+                return AccountingDetailKeys.WalletSource;
+            var key = AccountingEventKeys.WalletReceived(point, input.PrevOut.N);
+            var facts = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync(key, cancellationToken);
+            if (AccountingConfirmations.FindStanding(key, facts) is not null) return AccountingDetailKeys.WalletSource;
+        }
+        return AccountingDetailKeys.ExternalSource;
     }
 
 }
