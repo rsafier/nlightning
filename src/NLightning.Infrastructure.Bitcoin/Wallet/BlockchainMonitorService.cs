@@ -1436,7 +1436,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 // A block can be processed again (the last processed block is replayed on start, and a failed block is
                 // retried), so a deposit we already track must not be added twice (NL-097).
                 utxoMemoryRepository ??= _serviceProvider.GetRequiredService<IUtxoMemoryRepository>();
-                if (utxoMemoryRepository.TryGetUtxo(new TxId(txId.ToBytes()), (uint)i, out _))
+                if (utxoMemoryRepository.TryGetUtxo(new TxId(txId.ToBytes()), (uint)i, out var existing)
+                    && existing.BlockHeight != 0)
                 {
                     if (_logger.IsEnabled(LogLevel.Debug))
                         _logger.LogDebug("Utxo {TxId}:{Index} is already known, skipping", txId, i);
@@ -1472,10 +1473,10 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 // What the spend removes (TrySpendUtxo is a no-op for an output we do not hold): the wallet output in
                 // memory, or one this block deposited
                 UtxoModel? spent = null;
-                if (utxoMemoryRepository?.TryGetUtxo(spentTxId, input.PrevOut.N, out var known) == true)
-                    spent = known;
-                else if (effects.StagedDeposits.TryGetValue(input.PrevOut, out var deposited))
+                if (effects.StagedDeposits.TryGetValue(input.PrevOut, out var deposited))
                     spent = deposited;
+                else if (utxoMemoryRepository?.TryGetUtxo(spentTxId, input.PrevOut.N, out var known) == true)
+                    spent = known;
 
                 uow.TrySpendUtxo(spentTxId, input.PrevOut.N);
                 if (spent is null)

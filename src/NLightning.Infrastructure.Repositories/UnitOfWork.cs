@@ -313,7 +313,8 @@ public class UnitOfWork : IUnitOfWork
 
     public void AddUtxo(UtxoModel utxoModel)
     {
-        if (_utxoMemoryRepository.TryGetUtxo(utxoModel.TxId, utxoModel.Index, out _)
+        if ((_utxoMemoryRepository.TryGetUtxo(utxoModel.TxId, utxoModel.Index, out var existing)
+              && (existing.BlockHeight != 0 || utxoModel.BlockHeight == 0))
          || TryGetPendingUtxoAdd(utxoModel.TxId, utxoModel.Index, out _))
             throw new InvalidOperationException("Cannot add Utxo");
 
@@ -335,8 +336,8 @@ public class UnitOfWork : IUnitOfWork
     public void TrySpendUtxo(TxId transactionId, uint index)
     {
         // Check if utxo exists in memory or was added in this unit of work
-        if (!_utxoMemoryRepository.TryGetUtxo(transactionId, index, out var utxoModel)
-         && !TryGetPendingUtxoAdd(transactionId, index, out utxoModel))
+        if (!TryGetPendingUtxoAdd(transactionId, index, out var utxoModel)
+         && !_utxoMemoryRepository.TryGetUtxo(transactionId, index, out utxoModel))
             return;
 
         if (_pendingUtxoChanges.Contains((PendingUtxoChange.Spend, utxoModel)))
@@ -344,7 +345,9 @@ public class UnitOfWork : IUnitOfWork
 
         try
         {
-            UtxoDbRepository.Spend(utxoModel);
+            // Height-zero custody lives only in memory until confirmation; never delete a nonexistent database row.
+            if (utxoModel.BlockHeight != 0)
+                UtxoDbRepository.Spend(utxoModel);
         }
         catch (Exception e)
         {
