@@ -207,6 +207,55 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Given_IgnoredOwnChangeAndRecoveredSettlement_When_ThresholdLowers_Then_ImmutableCorrectionKeepsClearingZero()
+    {
+        // Arrange: the fixture's external key controls eligible input evidence; metadata proves custody amounts.
+        _options.MinReceiveSat = 1000;
+        var receipt = AddReceipt(1, 20_000);
+        AddSpend(2, receipt);
+        var spender = _blocks[2].Transactions.Last();
+        using var sender = new Key(FixtureKeys.Secret(1));
+        spender.Inputs[0].WitScript = new WitScript([new byte[64], sender.PubKey.ToBytes()]);
+        var derived = Assert.Single(_crypto.DeriveOutputs(
+            [new SilentPaymentSenderInput(receipt.ToBytes(), sender.ToBytes(), false)],
+            [new SilentPaymentRecipient(_keys.ScanPubKey, _keys.SpendPubKey)]));
+        spender.Outputs.Add(new TxOut(Money.Satoshis(500), new Script(new byte[] { 0x51, 0x20 }.Concat(derived.OutputKey32).ToArray())));
+        _blocks[2].UpdateMerkleRoot();
+        var change = new OutPoint(spender.GetHash(), 1);
+        _unspent[change] = (spender.Outputs[1], 2);
+        using var service = CreateService();
+        await service.GetAddressAsync(cancellationToken: TestContext.Current.CancellationToken);
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+        for (var round = 0; round < 5; round++)
+            Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        Assert.Empty(await UnspentAsync());
+        using (var before = _provider.CreateScope())
+        {
+            var uow = before.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var settlement = Assert.Single(await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wsend:", TestContext.Current.CancellationToken));
+            Assert.Equal(-10_500_000L, settlement.AmountMsat);
+            Assert.Equal(9_500_000L, settlement.FeeMsat);
+        }
+
+        // Act: lowering the threshold promotes proven own change after the original withdrawal was journaled.
+        _options.MinReceiveSat = 0;
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+        for (var round = 0; round < 5; round++)
+            Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+
+        // Assert: keep the original immutable event, negate it and replace its classification exactly once.
+        Assert.Equal(500L, Assert.Single(await UnspentAsync()).Amount.Satoshi);
+        using var after = _provider.CreateScope();
+        var work = after.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var settlements = await work.AccountingEventDbRepository.GetByKeyPrefixAsync("wsend:", TestContext.Current.CancellationToken);
+        Assert.Equal(3, settlements.Count);
+        var reversal = Assert.Single(settlements.Where(fact => fact.Kind == AccountingEventKind.Reversal));
+        Assert.Equal("recovered_custody_policy_changed", reversal.Details["reason"]);
+        var events = await work.AccountingEventDbRepository.GetByKeyPrefixAsync("wallet:", TestContext.Current.CancellationToken);
+        AssertRecoveredBooks(events.Concat(settlements), 500_000, -20_000_000, 10_000_000, 9_500_000);
+    }
+
+    [Fact]
     public async Task Given_HistoricalSpendWithUnknownSharedInput_When_Recovered_Then_AccountingAndCursorFailAtomically()
     {
         // Arrange: neither a reusable-address label nor one owned input proves ownership of the whole transaction.
@@ -514,7 +563,14 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
     private static void AssertRecoveredBooks(IEnumerable<Domain.Accounting.Models.AccountingEventModel> facts,
         long wallet, long transfersIn, long transfersOut, long fees)
     {
-        var balances = facts.SelectMany(fact => AccountingPostingRules.Post(fact, _ => null))
+        var materialized = facts.ToDictionary(fact => fact.EventKey);
+        AccountingEntry? FindEntry(string key)
+        {
+            if (!materialized.TryGetValue(key, out var fact)) return null;
+            return new AccountingEntry(0, fact.EventKey, fact.Kind, fact.OccurredAt, fact.ChannelId, fact.PaymentHash,
+                AccountingPostingRules.Post(fact, FindEntry));
+        }
+        var balances = materialized.Values.SelectMany(fact => AccountingPostingRules.Post(fact, FindEntry))
             .GroupBy(posting => posting.Account).ToDictionary(group => group.Key, group => group.Sum(posting => posting.AmountMsat));
         Assert.Equal(wallet, balances.GetValueOrDefault(AccountRole.Wallet));
         Assert.Equal(0L, balances.GetValueOrDefault(AccountRole.Clearing));
