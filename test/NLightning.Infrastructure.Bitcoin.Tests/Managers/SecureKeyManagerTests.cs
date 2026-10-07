@@ -84,6 +84,39 @@ public sealed class SecureKeyManagerTests : IDisposable
         Assert.Throws<ArgumentOutOfRangeException>(() => loaded.GetKeyRingKeyAtIndex(6, 0));
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Given_ALegacyKeyFile_When_ReloadingSilentPaymentKeys_Then_TheyRemainStableWithoutExternalRecoverability(int version)
+    {
+        // Arrange: v1 upgrades encryption, not the legacy genesis-chain-code derivation.
+        if (version == 1) File.WriteAllText(_filePath, LegacyKeyFileFixture);
+        else
+        {
+            using var initial = NewKeyManager();
+            initial.SaveToFile(Password);
+        }
+
+        // Act
+        using var first = SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password);
+        var scan = first.ScanPubKey;
+        var spend = first.SpendPubKey;
+        var label = new byte[32];
+        first.GetLabelTweak(0, label);
+        using var second = SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password);
+        var restoredLabel = new byte[32];
+        second.GetLabelTweak(0, restoredLabel);
+
+        // Assert
+        Assert.False(first.RecoverableElsewhere);
+        Assert.False(second.RecoverableElsewhere);
+        Assert.Equal(scan, second.ScanPubKey);
+        Assert.Equal(spend, second.SpendPubKey);
+        Assert.Equal(label, restoredLabel);
+        CryptographicOperations.ZeroMemory(label);
+        CryptographicOperations.ZeroMemory(restoredLabel);
+    }
+
     [Fact]
     public void Given_PublicKey_When_ComputingNodeSharedSecret_Then_MatchesEcdhWithNodeKey()
     {
