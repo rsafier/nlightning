@@ -10039,7 +10039,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Batch validation (2026-10-06, NL-1215 / NL-1197 / NL-1182):** Release net10.0 build: 0 warnings/errors; format verification clean; solution configuration check: 40 projects OK. Full non-Docker/non-SqlServer run: 17,221 passed, 75 not executed, only known timing flakes NL-1198 and NL-729 failed; their classes passed alone (44/44 GraphPathfinderTests, 53/53 ClassificationEngineTests). Final persistence/model coverage passed 28/28, including both new initial/rotated unknown-key cases (also independently 2/2). Every test used the 5-minute hang timeout. No Infrastructure/Crypto changes or Native gate required.
 
 ### NL-1235 `LndGrpcWave3HostTests.Given_AnInterceptor_When_AForwardIsHeld_Then_ItsFailReachesTheSwitch` failed once under a loaded run
-- **Status:** fixed (PENDING)
+- **Status:** fixed (89a90b7a)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.LndGrpc.Tests/Wave3/LndGrpcWave3HostTests.cs`
