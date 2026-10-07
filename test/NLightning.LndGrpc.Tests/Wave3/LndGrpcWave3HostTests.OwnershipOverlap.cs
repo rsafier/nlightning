@@ -1,3 +1,4 @@
+using Moq;
 using NBitcoin;
 
 namespace NLightning.LndGrpc.Tests.Wave3;

@@ -19,7 +19,7 @@ public sealed partial class LndGrpcHostTests
         // Arrange
         _dispatcher.On<WithdrawClientRequest, WithdrawClientResponse>(
             _ => throw new ClientException(ErrorCodes.InvalidAddress, reason));
-        using var connection = Connect(LndMacaroonFiles.AdminFileName);
+        using var connection = await ConnectAsync(LndMacaroonFiles.AdminFileName);
         // Act
         var error = await Assert.ThrowsAsync<RpcException>(() => connection.LightningClient.SendCoinsAsync(
             new SendCoinsRequest { Addr = "sprt1q", Amount = 20_000 }, cancellationToken: Ct).ResponseAsync);
@@ -34,7 +34,7 @@ public sealed partial class LndGrpcHostTests
     public async Task Given_SilentPaymentChannelDestination_When_OpenOrClose_Then_RefusedWithWithdrawExplanation(bool close)
     {
         // Arrange
-        using var connection = Connect(LndMacaroonFiles.AdminFileName);
+        using var connection = await ConnectAsync(LndMacaroonFiles.AdminFileName);
         // Act
         var error = await Assert.ThrowsAsync<RpcException>(async () =>
         {
