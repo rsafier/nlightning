@@ -110,10 +110,11 @@ public sealed partial class SilentPaymentChainMonitorTests
         Assert.Null(await new UtxoDbRepository(context).GetByIdAsync(Id(receipt), 0));
         Assert.False(Memory(harness).TryGetUtxo(Id(receipt), 0, out _));
         var events = await EventsAsync(harness);
-        Assert.Equal(2, events.Count);
+        Assert.Equal(3, events.Count);
         Assert.Equal(AmountSat * 1_000, Assert.Single(events, e => e.Kind == AccountingEventKind.WalletReceived).AmountMsat);
         Assert.Equal(-AmountSat * 1_000, Assert.Single(events, e => e.Kind == AccountingEventKind.WalletOutputSpent).AmountMsat);
         Assert.Equal(0, await WalletBalanceAsync(harness));
+        await AssertSimpleSpendSettlementAsync(harness, 0, 0);
     }
 
     [Fact]
@@ -140,9 +141,10 @@ public sealed partial class SilentPaymentChainMonitorTests
         Assert.Empty(await new UtxoDbRepository(context).GetUnspentAsync(true));
         Assert.False(Memory(harness).TryGetUtxo(Id(receipt), 0, out _));
         var events = await EventsAsync(harness);
-        Assert.Equal(4, events.Count);
-        Assert.Equal(2, events.Count(e => e.Kind == AccountingEventKind.Reversal));
+        Assert.Equal(6, events.Count);
+        Assert.Equal(3, events.Count(e => e.Kind == AccountingEventKind.Reversal));
         Assert.Equal(0, await WalletBalanceAsync(harness));
+        await AssertSimpleSpendSettlementAsync(harness, 3, 0);
     }
 
     [Fact]
@@ -172,9 +174,10 @@ public sealed partial class SilentPaymentChainMonitorTests
         Assert.Null(metadata.SpentAtHeight);
         Assert.NotNull(await new UtxoDbRepository(context).GetByIdAsync(Id(receipt), 0));
         Assert.True(Memory(harness).TryGetUtxo(Id(receipt), 0, out _));
-        Assert.Equal(3, (await EventsAsync(harness)).Count);
-        Assert.Single(await EventsAsync(harness), e => e.Kind == AccountingEventKind.Reversal);
+        Assert.Equal(5, (await EventsAsync(harness)).Count);
+        Assert.Equal(2, (await EventsAsync(harness)).Count(e => e.Kind == AccountingEventKind.Reversal));
         Assert.Equal(AmountSat * 1_000, await WalletBalanceAsync(harness));
+        await AssertSimpleSpendSettlementAsync(harness, 2, AmountSat * 1_000);
     }
 
     [Fact]
@@ -262,7 +265,8 @@ public sealed partial class SilentPaymentChainMonitorTests
         Assert.False(harness.Monitor.IsChainProcessingHalted);
         Assert.True(Memory(harness).TryGetUtxo(Id(receipt), 0, out _));
         Assert.Equal(AmountSat * 1_000, await WalletBalanceAsync(harness));
-        Assert.Equal(3, (await EventsAsync(harness)).Count);
+        Assert.Equal(5, (await EventsAsync(harness)).Count);
+        await AssertSimpleSpendSettlementAsync(harness, 2, AmountSat * 1_000);
     }
 
     private static SilentPaymentsOptions EnabledOptions() => new()

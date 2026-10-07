@@ -161,7 +161,7 @@ public sealed partial class SilentPaymentChainMonitorTests
         Assert.Equal(102u, metadata.SpentAtHeight);
         Assert.Null(await new UtxoDbRepository(read).GetByIdAsync(Id(receipt), 0));
         var events = await EventsAsync(harness);
-        Assert.Equal(2, events.Count);
+        Assert.Equal(3, events.Count);
         Assert.Equal(-AmountSat * 1_000, Assert.Single(events, e => e.Kind == AccountingEventKind.WalletOutputSpent).AmountMsat);
         Assert.Equal(0, await WalletBalanceAsync(harness));
         var spent = Assert.Single(observed, o => o.TxHash == spender.GetHash().ToString());
@@ -170,6 +170,7 @@ public sealed partial class SilentPaymentChainMonitorTests
         Assert.Equal([0u], spent.OurInputs);
         Assert.Empty(spent.OurOutputs);
         Assert.Equal(spender.ToHex(), spent.RawTransactionHex);
+        await AssertSimpleSpendSettlementAsync(harness, 0, 0);
         Assert.False(harness.Monitor.IsChainProcessingHalted);
     }
 
