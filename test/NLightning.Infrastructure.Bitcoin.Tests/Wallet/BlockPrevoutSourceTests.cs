@@ -225,6 +225,7 @@ public class BlockPrevoutSourceTests
         // Act / Assert
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => source.GetPrevoutsAsync(domain, 10, TestContext.Current.CancellationToken));
         Assert.Contains("pruned", error.Message);
+        Assert.Contains("pruneheight 20", error.Message);
     }
 
     private sealed class FakeNode(Block block, Transaction parent) : HttpMessageHandler
