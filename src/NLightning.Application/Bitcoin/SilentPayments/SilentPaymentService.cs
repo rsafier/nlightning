@@ -30,7 +30,8 @@ using Hash = Domain.Crypto.ValueObjects.Hash;
 public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinChainService chain,
     IBlockchainMonitor monitor, IBlockPrevoutSource prevouts, SilentPaymentScanner scanner,
     ISilentPaymentKeySource keys, ISilentPaymentCrypto crypto, IOptions<SilentPaymentsOptions> options,
-    IOptions<NodeOptions> nodeOptions, ILogger<SilentPaymentService> logger, TimeProvider? timeProvider = null)
+    IOptions<NodeOptions> nodeOptions, ILogger<SilentPaymentService> logger, TimeProvider? timeProvider = null,
+    ISilentPaymentRecoveryAddressSource? recoveryAddresses = null)
     : BackgroundService, ISilentPaymentService
 {
     private const int FinalizationBatchSize = 100;
@@ -198,20 +199,25 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
         var matches = await scanner.PrepareAsync(blockValue, height, labels, cancellationToken, state.RecoveryLabelCount);
         await using var write = scopes.CreateAsyncScope();
         var work = write.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var catalogue = await StageRecoveryAddressesAsync(work, cancellationToken);
         var received = await scanner.StageReceiptsAsync(matches, work, materializeUtxos: false,
             cancellationToken: cancellationToken);
+        if (catalogue.Count != 0)
+            catalogue = await StageOrdinaryBlockAsync(work, block, height, catalogue, cancellationToken);
         foreach (var receipt in received)
             await SilentPaymentAccounting.StageFactAsync(work, receipt.SilentPayment!, null, block, height, labels, nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork(), cancellationToken);
         var spent = await scanner.StageSpendsAsync(blockValue, height, work, matches, cancellationToken);
         foreach (var (output, spender) in spent)
             if (!output.Ignored)
                 await SilentPaymentAccounting.StageFactAsync(work, output, spender, block, height, labels, nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork(), cancellationToken);
-        await SilentPaymentAccounting.StageSettlementsAsync(work, block, height, labels, nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork(), _time, cancellationToken);
+        await SilentPaymentAccounting.StageSettlementsAsync(work, block, height, labels,
+            nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork(), _time, cancellationToken, recoveryCatalogue: catalogue);
         await RequireCanonicalAsync(block, height, cancellationToken);
         await work.SilentPaymentDbRepository.SetScanStateAsync(state with
         { RescanCursorHeight = height, RescanCursorHash = blockValue.BlockHash, PrevoutSource = scanner.PrevoutSource }, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         await work.SaveChangesAsync();
+        foreach (var address in catalogue) monitor.WatchBitcoinAddress(address);
         return true;
     }
 
@@ -224,6 +230,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
         var tipHash = await chain.GetBlockHashAsync(tip).WaitAsync(cancellationToken);
         await using var scope = scopes.CreateAsyncScope();
         var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var catalogue = await StageRecoveryAddressesAsync(uow, cancellationToken);
         var current = (await uow.UtxoDbRepository.GetUnspentAsync()).Select(coin => (coin.TxId, coin.Index)).ToHashSet();
         var outputs = await uow.SilentPaymentDbRepository.GetOutputsAsync(cancellationToken);
         var missing = outputs.Where(output => !output.Ignored && output.SpentByTransactionId is null &&
@@ -257,7 +264,10 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
                             spender, height, cancellationToken);
                         await SilentPaymentAccounting.StageFactAsync(uow, output, spender, block, height, labels, nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork(), cancellationToken);
                     }
-                await SilentPaymentAccounting.StageSettlementsAsync(uow, block, height, labels, nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork(), _time, cancellationToken);
+                if (catalogue.Count != 0)
+                    catalogue = await StageOrdinaryBlockAsync(uow, block, height, catalogue, cancellationToken);
+                await SilentPaymentAccounting.StageSettlementsAsync(uow, block, height, labels,
+                    nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork(), _time, cancellationToken, recoveryCatalogue: catalogue);
                 await RequireCanonicalAsync(block, height, cancellationToken);
                 if (height == uint.MaxValue) break;
             }
@@ -278,15 +288,96 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
             }
             uow.AddUtxo(new UtxoModel(output));
         }
+        var ordinaryPending = await StageOrdinaryFinalizationAsync(uow, state, tip, labels, cancellationToken);
         if (await chain.GetCurrentBlockHeightAsync().WaitAsync(cancellationToken) != tip ||
             await chain.GetBlockHashAsync(tip).WaitAsync(cancellationToken) != tipHash)
             throw new InvalidOperationException("Chain changed during silent payment recovery finalization.");
         await ValidateCursorAsync(state, cancellationToken);
         await uow.SilentPaymentDbRepository.SetScanStateAsync(state with
-        { RescanTargetHeight = pendingSpends || missing.Length > batch.Count ? state.RescanTargetHeight : null }, cancellationToken);
+        { RescanTargetHeight = pendingSpends || ordinaryPending || missing.Length > batch.Count ? state.RescanTargetHeight : null }, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         await uow.SaveChangesAsync();
+        foreach (var address in catalogue) monitor.WatchBitcoinAddress(address);
         return !pendingSpends;
+    }
+
+    private async Task<IReadOnlyList<WalletAddressModel>> StageRecoveryAddressesAsync(IUnitOfWork uow,
+        CancellationToken cancellationToken)
+    {
+        if (recoveryAddresses is null) return [];
+        var facts = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wallet:", cancellationToken);
+        var highest = facts.Where(fact => fact.Kind == AccountingEventKind.WalletReceived &&
+                fact.Details.ContainsKey("recoveryAddressIndex"))
+            .Select(fact => uint.Parse(fact.Details["recoveryAddressIndex"], CultureInfo.InvariantCulture))
+            .DefaultIfEmpty(0u).Max();
+        return await recoveryAddresses.StageAddressesAsync(uow, checked(highest + 30), cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<WalletAddressModel>> StageOrdinaryBlockAsync(IUnitOfWork uow, Block block,
+        uint height, IReadOnlyList<WalletAddressModel> catalogue, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            await WalletRecoveryAccounting.StageBlockAsync(uow, block, height, catalogue,
+                nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork(), cancellationToken);
+            var extended = await StageRecoveryAddressesAsync(uow, cancellationToken);
+            if (extended.Count <= catalogue.Count) return extended;
+            catalogue = extended;
+        }
+    }
+
+    private async Task<bool> StageOrdinaryFinalizationAsync(IUnitOfWork uow, SilentPaymentScanState state, uint tip,
+        IReadOnlyList<SilentPaymentLabelModel> labels, CancellationToken cancellationToken)
+    {
+        if (recoveryAddresses is null) return false;
+        var catalogue = await StageRecoveryAddressesAsync(uow, cancellationToken);
+        var current = (await uow.UtxoDbRepository.GetUnspentAsync()).Select(coin => (coin.TxId, coin.Index)).ToHashSet();
+        var candidates = (await WalletRecoveryAccounting.GetUnspentAsync(uow, cancellationToken, catalogue))
+            .Where(candidate => !current.Contains((candidate.Coin.TxId, candidate.Coin.Index))).ToArray();
+        var batch = candidates.Take(FinalizationBatchSize).ToArray();
+        var auditNeeded = new Dictionary<(TxId, uint), Domain.Accounting.Models.AccountingEventModel>();
+        var pending = false;
+        foreach (var candidate in batch)
+        {
+            var coin = candidate.Coin;
+            var point = new OutPoint(new uint256(coin.TxId), coin.Index);
+            var proof = await chain.GetConfirmedUnspentOutputAsync(point).WaitAsync(cancellationToken);
+            if (proof is null)
+            {
+                auditNeeded.Add((coin.TxId, coin.Index), candidate.Receipt);
+                continue;
+            }
+            var script = BitcoinAddress.Create(coin.WalletAddress!.Address, nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork()).ScriptPubKey;
+            if (proof.Value.Output.Value.Satoshi != coin.Amount.Satoshi || proof.Value.Output.ScriptPubKey != script ||
+                proof.Value.Height != coin.BlockHeight)
+                throw new InvalidOperationException("Recovered ordinary output differs from its current-chain proof.");
+            if (await chain.GetUnspentOutputAsync(point).WaitAsync(cancellationToken) is null)
+            {
+                pending = true;
+                continue;
+            }
+            uow.AddUtxo(coin);
+            current.Add((coin.TxId, coin.Index));
+        }
+        for (var height = state.LiveFromHeight; height <= tip && auditNeeded.Count != 0; height++)
+        {
+            var block = await chain.GetBlockAsync(height).WaitAsync(cancellationToken)
+                ?? throw new InvalidOperationException($"Block {height} unavailable for ordinary wallet spend recovery.");
+            foreach (var transaction in block.Transactions.Where(transaction => !transaction.IsCoinBase))
+                foreach (var input in transaction.Inputs)
+                    if (auditNeeded.Remove((new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N), out var receipt))
+                        await WalletRecoveryAccounting.StageSpendAsync(uow, receipt, transaction, height,
+                            block.Header.BlockTime, cancellationToken);
+            catalogue = await StageOrdinaryBlockAsync(uow, block, height, catalogue, cancellationToken);
+            await SilentPaymentAccounting.StageSettlementsAsync(uow, block, height, labels,
+                nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork(), _time, cancellationToken, recoveryCatalogue: catalogue);
+            await RequireCanonicalAsync(block, height, cancellationToken);
+            if (height == uint.MaxValue) break;
+        }
+        if (auditNeeded.Count != 0)
+            throw new InvalidOperationException("A recovered ordinary output is spent but confirmed spender evidence is unavailable; recovery remains pending.");
+        var remaining = await WalletRecoveryAccounting.GetUnspentAsync(uow, cancellationToken, catalogue);
+        return pending || remaining.Any(candidate => !current.Contains((candidate.Coin.TxId, candidate.Coin.Index)));
     }
 
     private async Task<SilentPaymentScanState> EnsureStateAsync(IUnitOfWork uow, CancellationToken cancellationToken)
