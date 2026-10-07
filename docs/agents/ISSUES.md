@@ -2,7 +2,7 @@
 
 The single durable issue ledger for this repo. GitHub issues are disabled on the fork, so this file replaces them. Every known bug, gap, spec violation, missing feature, test/CI hygiene problem and tech-debt item lives here, so nothing is lost between agent sessions.
 
-Updated 2026-10-07 by `wip/fixes-waves1and2` from `wip/fafo` 6d166c2e: implemented NL-1062, NL-1141, NL-1146, NL-1147, NL-1153, NL-1231 and NL-1232; NL-1187 remains open with indexed wallet history completed. New provider migrations add passive HTLC checkpoints and derived wallet-history query indexes. Validation: warning-free Release net10.0/net11.0 builds; final net10.0 suites Application (affected areas) 1,697, Integration (non-Docker/non-SqlServer/non-cluster) 1,214, Bitcoin 2,164 + 3 platform skips, LN backend 114 and LND gRPC 224 passed. Real cluster proof `fixes-waves-proof1`: 1/1 wrapper, 35/35 inner tests, 157 s, all owned namespaces cleaned; includes five live feeds, imported deposit/spend/reorg/reconfirmation, on-chain final/restart dedup and PostgreSQL historical-feed upgrade. Full solution formatting verification and staged diff checks passed. Solution configuration check: 40 projects. No live-node activation. Implementation SHA is pinned in the follow-up ledger commit. New open NL-1242 records the existing canonical/imported overlap history defect. Summary recounted: 961 unique classified entries.
+Updated 2026-10-07 by `wip/fixes-waves1and2` from `wip/fafo` 6d166c2e: implemented NL-1062, NL-1141, NL-1146, NL-1147, NL-1153, NL-1231 and NL-1232; NL-1187 remains open with indexed wallet history completed. New provider migrations add passive HTLC checkpoints and derived wallet-history query indexes. Validation: warning-free Release net10.0/net11.0 builds; final net10.0 suites Application (affected areas) 1,697, Integration (non-Docker/non-SqlServer/non-cluster) 1,214, Bitcoin 2,164 + 3 platform skips, LN backend 114 and LND gRPC 224 passed. Real cluster proof `fixes-waves-proof1`: 1/1 wrapper, 35/35 inner tests, 157 s, all owned namespaces cleaned; includes five live feeds, imported deposit/spend/reorg/reconfirmation, on-chain final/restart dedup and PostgreSQL historical-feed upgrade. Full solution formatting verification and staged diff checks passed. Solution configuration check: 40 projects. No live-node activation. Implementation commit: `ae7234e8`. New open NL-1242 records the existing canonical/imported overlap history defect. Summary recounted: 961 unique classified entries.
 
 Updated 2026-10-06 by `wip/terminal-gaps` from `wip/fafo` 3179373c: new and fixed NL-1239 (Lightning Terminal through the LNC bridge: `FeeReport` implemented, `ListPayments` without `max_payments` no longer capped at lncli's 100, LND's truncated sat amounts on payments, cooperatively closing channels counted inactive in `GetInfo`). Summary recounted: 958 entries; no schema or live-node configuration change.
 
@@ -4380,7 +4380,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Update (t7 follow-ups, 2026-10-05):** signature first: a 4-key `channel_announcement_2` (both bitcoin keys) has its MuSig2 signature checked against `KeyAgg(KeySort(node_id_1, node_id_2, bitcoin_key_1, bitcoin_key_2))` before any chain lookup (new `IGossipV2SignatureVerifier.CheckChannelSignature`, which needs no output); a bad signature (or keys that do not aggregate) warns, scores the peer and closes, with no lookup, so a flood of forged 4-key announcements costs no funding lookups. The lookup then checks only the output (outpoint = scid output, depth, amount >= capacity, P2TR = the untweaked or BIP 86 tweaked KeyAgg(b1, b2) via `CheckChannelProof`). A keyless (3-key) announcement of a new channel waits without a lookup in a second `PendingAnnouncementIndex` (`PendingAnnouncement.IsV2`, the v1 bounds `Gossip:MaxPendingAnnouncements`/`PendingAnnouncementTtl`, at most 4 candidates per scid, NL-418 eviction, pruned with the v1 index, gauge `queue=pending_announcements_v2`, counted by `IsPending` for the sync) until its first valid `channel_update_2` promotes it (`GossipIngress.PromoteV2Async`: the candidate whose node signed the update, then the lookup and the 3-key proof; a failed proof drops the candidate without blaming the update's sender). Tests: `Application.Tests/Gossip/Graph/GossipIngressV2PendingTests` (16), `Infrastructure.Bitcoin.Tests/Gossip/GossipV2SignatureVerifierTests` (+1). Remains: the v2 blacklist of a conflicting announcement (B7-CA-04), `Gossip:AssumeChannelValid` and `FundingValidation=SkipUnavailable` for v2 (such announcements are still refused), and the NL-425 refresh of an orphaned `node_announcement_2` whose node's only channels are pending v2 (it expires with the orphan TTL).
 
 ### NL-1141 Taproot gossip relay: the v2 backlog of a new filter is not paced, and v2 is missing from `describegraph`
-- **Status:** fixed (waves 1 and 2; implementation SHA pinned in follow-up ledger commit)
+- **Status:** fixed (ae7234e8)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Relay/GossipRelayScheduler.RelayV2.cs`, `src/NLightning.Application/Gossip/Graph/GossipGraphDescriber.cs`
@@ -6547,7 +6547,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-1062 `InteractiveTxDriver.WithCommitNonces` builds the partial transaction for every `tx_complete`, taproot or not
-- **Status:** fixed (waves 1 and 2; implementation SHA pinned in follow-up ledger commit)
+- **Status:** fixed (ae7234e8)
 - **Severity:** low
 - **Kind:** cleanup
 - **Location:** `src/NLightning.Application/InteractiveTx/InteractiveTxDriver.cs` (`WithCommitNonces`), `IInteractiveTxHost.GetLocalCommitNonces`
@@ -9302,7 +9302,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T7
 
 ### NL-1146 An orphaned `node_announcement_2` whose node has only pending v2 channels expires instead of waiting for the promotion
-- **Status:** fixed (waves 1 and 2; implementation SHA pinned in follow-up ledger commit)
+- **Status:** fixed (ae7234e8)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.V2.cs`, `OrphanUpdateCache`
@@ -9313,7 +9313,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Update (2026-10-07, waves 1 and 2):** Orphan node announcements of either version refresh while either pending channel index names their node, and the v2 orphan replays when its channel promotes. Regression coverage checks TTL retention, promotion and eventual expiry without a pending channel.
 
 ### NL-1147 A keyless `channel_announcement_2` whose proof fails at promotion does not score its sender
-- **Status:** fixed (waves 1 and 2; implementation SHA pinned in follow-up ledger commit)
+- **Status:** fixed (ae7234e8)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.V2.cs` (`PromoteV2Async`)
@@ -9469,7 +9469,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** found by NL-1148 wave C
 
 ### NL-1153 LN backend: Xpay caps `retry_for` at 300 s while captaind's `cln_xpay_max_retry_for` may be larger
-- **Status:** fixed (waves 1 and 2; implementation SHA pinned in follow-up ledger commit)
+- **Status:** fixed (ae7234e8)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `src/NLightning.LnBackend/ClnNodeBackendService.cs` (`Xpay`: `Math.Clamp(request.RetryFor, 1, 300)`)
@@ -9705,7 +9705,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** wallet movements before the accounting cutover (the opening balance) and with `Accounting:Enabled=false` are not listed; a transaction that is not ours gets its `raw_tx_hex` and full `output_details` from bitcoind (out of its block, or the mempool) only while bitcoind still has it (a pruned block leaves them out), and its `total_fees` only when every input was ours; the whole sealed feed is read per call (no index by kind/txid).
 - **Fix sketch:** a wallet-history query on the accounting repository (kinds, height range, paging in the database); store the raw transaction of external deposits with the UTXO.
 - **Blocks/Blocked-by:** follow-up of NL-1185
-- **Update (2026-10-07, waves 1 and 2):** `GetWalletHistoryAsync` pages standing sealed wallet received/spent rows by ledger sequence within the requested inclusive height range. Indexed `ReversesEventKey` references suppress reversals anywhere in the sealed feed, with legacy/explicit references backfilled by the provider migrations without rewriting sealed payloads or hashes. RPC aggregation spans all event pages before transaction pagination. Added actual SQLite query/backfill and >1,000-row RPC coverage. Remains open: pre-accounting/disabled-accounting history, external raw transaction retention on pruned nodes, and complete external-input fee knowledge. Validated by the final RPC, SQLite query/backfill and PostgreSQL historical-upgrade tests; see the batch validation above. Implementation SHA is pinned in the follow-up ledger commit.
+- **Update (2026-10-07, waves 1 and 2):** `GetWalletHistoryAsync` pages standing sealed wallet received/spent rows by ledger sequence within the requested inclusive height range. Indexed `ReversesEventKey` references suppress reversals anywhere in the sealed feed, with legacy/explicit references backfilled by the provider migrations without rewriting sealed payloads or hashes. RPC aggregation spans all event pages before transaction pagination. Added actual SQLite query/backfill and >1,000-row RPC coverage. Remains open: pre-accounting/disabled-accounting history, external raw transaction retention on pruned nodes, and complete external-input fee knowledge. Validated by the final RPC, SQLite query/backfill and PostgreSQL historical-upgrade tests; see the batch validation above. Implementation commit: `ae7234e8`.
 
 ### NL-1188 `FinancialHeldOutsideTests.Given_TheColdStorageStory_*` failed once under a loaded full run
 - **Status:** open
@@ -10023,7 +10023,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Plan ref:** LND_SUBSCRIPTIONS_PLAN.md
 
 ### NL-1231 Passive HTLC subscriptions do not publish BOLT 5 on-chain outcomes
-- **Status:** fixed (waves 1 and 2; implementation SHA pinned in follow-up ledger commit)
+- **Status:** fixed (ae7234e8)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** Application `OnchainResolutionExecutor`, `Payments/Events/HtlcEventMonitor`; Router SubscribeHtlcEvents
@@ -10031,10 +10031,10 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** Add a durable first-publication checkpoint or a resolver result contract distinguishing newly committed outcome facts, then publish on-chain HTLC settle/fail/final with Offchain=false without changing operational recovery replay.
 - **Blocks/Blocked-by:** Follow-up of NL-1230
 - **Plan ref:** LND_SUBSCRIPTIONS_PLAN.md Limits
-- **Update (2026-10-07, waves 1 and 2):** Known outgoing on-chain fulfill/fail and ordinary incoming terminal outcomes publish after the resolution save. `OnchainHtlcObservations` checkpoints channel/direction/HTLC/outcome in that same transaction, including when no reader is present; operational switch replay continues independently. Checkpoints survive restart/reorg/replaced closes. Incoming finals set Offchain=false, classify our confirmed claim versus peer timeout, and positively identified trimmed incoming HTLCs fail at ReasonableDepth. Unknown data-loss outputs or missing trimmed metadata do not invent outcomes. This is a live feed, not an outbox or event history: commit-to-fanout crashes may lose notifications, and reorgs do not retract HTLC events. Added failed-save, replay/restart, reorg, trimming, observer isolation and real final-hop proof coverage; final validation is recorded in the batch header and the implementation SHA is pinned in the follow-up ledger commit.
+- **Update (2026-10-07, waves 1 and 2):** Known outgoing on-chain fulfill/fail and ordinary incoming terminal outcomes publish after the resolution save. `OnchainHtlcObservations` checkpoints channel/direction/HTLC/outcome in that same transaction, including when no reader is present; operational switch replay continues independently. Checkpoints survive restart/reorg/replaced closes. Incoming finals set Offchain=false, classify our confirmed claim versus peer timeout, and positively identified trimmed incoming HTLCs fail at ReasonableDepth. Unknown data-loss outputs or missing trimmed metadata do not invent outcomes. This is a live feed, not an outbox or event history: commit-to-fanout crashes may lose notifications, and reorgs do not retract HTLC events. Added failed-save, replay/restart, reorg, trimming, observer isolation and real final-hop proof coverage; final validation is recorded in the batch header and the implementation commit is `ae7234e8`.
 
 ### NL-1232 Passive transaction subscriptions exclude imported-only tapscript transactions
-- **Status:** fixed (waves 1 and 2; implementation SHA pinned in follow-up ledger commit)
+- **Status:** fixed (ae7234e8)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** Bitcoin `ImportedTapscriptTracker`, `BlockchainMonitorService.TransactionEvents`; Lightning SubscribeTransactions
@@ -10042,7 +10042,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** Extend the NL-1197 incremental/reorg-aware imported index with committed immutable transaction notifications and connect them to the passive wallet feed, deduplicating transactions shared with the canonical wallet.
 - **Blocks/Blocked-by:** NL-1197; follow-up of NL-1230
 - **Plan ref:** LND_SUBSCRIPTIONS_PLAN.md Limits
-- **Update (2026-10-07, waves 1 and 2):** The incremental imported tapscript index publishes immutable deposit/spend confirmation and rewind changes after its index save. The unified source joins canonical ownership without double-counting shared outputs or inputs. Processing/completed height/hash markers defer fanout until the canonical batch finishes, including RPC catch-up, lagging workers and same-tip reorgs; explicit rewind metadata handles fresh trackers. First/reconnected readers establish a checkpoint without historical replay. Pending observations are bounded, index failures terminate affected streams explicitly, and returned snapshots are isolated from queued payloads. Imported-only mempool discovery is not added. Added durable SQLite and generated-client regtest coverage; final validation is recorded in the batch header and the implementation SHA is pinned in the follow-up ledger commit.
+- **Update (2026-10-07, waves 1 and 2):** The incremental imported tapscript index publishes immutable deposit/spend confirmation and rewind changes after its index save. The unified source joins canonical ownership without double-counting shared outputs or inputs. Processing/completed height/hash markers defer fanout until the canonical batch finishes, including RPC catch-up, lagging workers and same-tip reorgs; explicit rewind metadata handles fresh trackers. First/reconnected readers establish a checkpoint without historical replay. Pending observations are bounded, index failures terminate affected streams explicitly, and returned snapshots are isolated from queued payloads. Imported-only mempool discovery is not added. Added durable SQLite and generated-client regtest coverage; final validation is recorded in the batch header and the implementation commit is `ae7234e8`.
 
 ### NL-1234 Interceptor callback and outbound stream failures can strand held forwards
 - **Status:** fixed (b3976b0d)

@@ -118,7 +118,7 @@ proofs. Final validation on 2026-10-07:
 - All three migrations and compiled models are included. SQL Server container tests
   were not run. Solution configuration check: 40 projects. No live-node activation.
 
-Implementation SHA is pinned in the issue ledger follow-up commit.
+Implementation and proof record: `ae7234e8` on `wip/fixes-waves1and2`.
 The following validation belongs to the original five-feed implementation.
 
 Implementation and proof record: `ae737a97` on `wip/lnd-subscriptions`.
