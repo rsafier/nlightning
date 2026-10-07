@@ -35,6 +35,7 @@ using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.ValueObjects;
 using Google.Protobuf;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Infrastructure.Bitcoin.Wallet.Imports;
 using LndGrpc.Macaroons;
 using LndGrpc.Services;
 using LndGrpc.Tls;
@@ -623,6 +624,7 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
         var monitor = new Mock<IBlockchainMonitor>();
         monitor.SetupGet(x => x.LastProcessedBlockHeight).Returns(150);
         services.AddSingleton(monitor.Object);
+        services.AddSingleton<ImportedTapscriptTracker>();
         var utxos = new Mock<IUtxoMemoryRepository>();
         utxos.Setup(x => x.GetUnreservedUtxos()).Returns([]);
         services.AddSingleton(utxos.Object);
@@ -660,7 +662,14 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
             var utxoRows = new Mock<IUtxoDbRepository>();
             utxoRows.Setup(x => x.GetUnspentAsync(It.IsAny<bool>()))
                     .ReturnsAsync(() => _unspent.ToList());
+            var imports = new Mock<IImportedTapscriptDbRepository>();
+            imports.Setup(x => x.ListAsync()).ReturnsAsync(() => _importedScripts.ToList());
+            imports.Setup(x => x.GetIndexAsync()).ReturnsAsync(() => _importedIndex);
+            imports.Setup(x => x.SetIndexAsync(It.IsAny<ImportedWatchIndex>()))
+                   .Callback<ImportedWatchIndex>(index => _importedIndex = index).Returns(Task.CompletedTask);
             var unitOfWork = new Mock<IUnitOfWork>();
+            unitOfWork.Setup(x => x.SaveChangesAsync()).Returns(Task.CompletedTask);
+            unitOfWork.SetupGet(x => x.ImportedTapscriptDbRepository).Returns(imports.Object);
             unitOfWork.SetupGet(x => x.WalletAddressesDbRepository).Returns(addresses.Object);
             unitOfWork.SetupGet(x => x.UtxoDbRepository).Returns(utxoRows.Object);
             unitOfWork.SetupGet(x => x.OnchainResolutionDbRepository).Returns(resolutions.Object);

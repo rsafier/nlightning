@@ -65,7 +65,11 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
         CheckAccount(request.Account);
         var (min, max) = ParseConfs(request.MinConfs, request.MaxConfs, request.UnconfirmedOnly);
         var response = new ListUnspentResponse();
+        var listed = new HashSet<(TxId TxId, uint Index)>();
         foreach (var utxo in await Run(() => Psbt.ListUnspentAsync(min, max, context.CancellationToken)))
+        {
+            if (!listed.Add((utxo.TxId, utxo.Index)))
+                continue;
             response.Utxos.Add(new Lnrpc.Utxo
             {
                 AddressType = utxo.AddressType == AddressType.P2Tr
@@ -77,13 +81,15 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
                 Outpoint = ToOutPoint(utxo.TxId, utxo.Index),
                 Confirmations = utxo.Confirmations
             });
+        }
         if (_serviceProvider.GetService<Infrastructure.Bitcoin.Wallet.Imports.ImportedTapscriptTracker>() is { } imported)
         {
             var snapshot = await Run(() => imported.SnapshotAsync(context.CancellationToken));
             foreach (var output in snapshot.Outputs)
             {
                 var confirmations = snapshot.Tip - output.Height + 1;
-                if (confirmations < min || confirmations > max) continue;
+                if (confirmations < min || confirmations > max ||
+                    !listed.Add((new TxId(output.Outpoint.Hash.ToBytes()), output.Outpoint.N))) continue;
                 response.Utxos.Add(new Lnrpc.Utxo
                 {
                     AddressType = LnrpcAddressType.TaprootPubkey,
