@@ -134,7 +134,7 @@ public partial class BlockchainMonitorService
             var outpoint = new OutPoint(new uint256((byte[])coin.TxId), coin.Index);
             var unspent = await _bitcoinChainService.GetUnspentOutputAsync(outpoint);
             if (unspent is not { } previous || previous.Output.Value.Satoshi != output.AmountSats ||
-                !previous.Output.ScriptPubKey.ToBytes().AsSpan().SequenceEqual([0x51, 0x20, .. output.OutputKey]))
+                !previous.Output.ScriptPubKey.ToBytes().AsSpan().SequenceEqual((byte[])[0x51, 0x20, .. output.OutputKey]))
                 continue;
             unitOfWork.AddUtxo(coin);
         }
