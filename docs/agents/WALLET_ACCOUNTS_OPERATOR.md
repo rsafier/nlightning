@@ -14,6 +14,8 @@ Imported accounts remain watch-only: their scripts and historical transactions a
 
 `coin_select` PSBT funding preserves supplied inputs, output order and PSBT maps. Inputless templates are accepted, including Bitcoin Core’s `createpsbt` v0 output; funded responses use PSBT v0. Existing wallet inputs must already be leased; foreign inputs must provide accurate `witness_utxo`. Only newly selected wallet inputs are leased by this RPC. Designate an existing change output (a zero-value placeholder is accepted and must finish above dust), or request a new account change output. Adding inputs or changing outputs can invalidate a foreign `SIGHASH_ALL` signature: collect that signature after funding, or use a signature mode appropriate to the final transaction. Finalization verifies every input.
 
+`FundPsbt` requires at least 253 sat/kw. With the integer `sat_per_vbyte` field, use at least 2 sat/vB; 1 sat/vB converts to 250 sat/kw and is refused. Core relay policy may require a higher fee.
+
 Transaction labels are durable records independent of confirmation state and raw-history rows. A known deposit, imported transaction or wallet broadcast may be labelled; unknown transactions are refused. Existing labels require `overwrite=true` to replace them.
 
 Unconfirmed funds are available only when explicitly requested with `min_confs=0` and `spend_unconfirmed=true`. Core must still prove that the parent is in its mempool, the wallet owns the output and the output is unspent. These coins do not appear in confirmed balances or ordinary confirmed coin selection. Discovery is bounded; an incomplete discovery result cannot authorize signing. Account filters apply to both confirmed and unconfirmed inputs.

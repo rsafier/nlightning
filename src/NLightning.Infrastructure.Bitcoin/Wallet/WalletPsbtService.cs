@@ -998,12 +998,22 @@ public sealed partial class WalletPsbtService : IWalletPsbtService, IDisposable
         for (var offset = 0; ; offset += pageSize)
         {
             var page = await repository.GetHistoryPageAsync(0, lastEligibleHeight, false, offset, pageSize, ct);
+            // The history query projects ownership without raw bytes. Hydrate at most this bounded page before
+            // using canonical transaction prevouts as confirmed-spend proof; missing/corrupt rows never release.
+            var missing = page.Where(record => record.RawTransaction.Length == 0).Select(record => record.TxId).Distinct().ToArray();
+            var retained = missing.Length == 0 ? Array.Empty<WalletTransactionRecord>()
+                : await repository.GetByIdsAsync(missing, ct) ?? [];
             foreach (var record in page)
             {
-                if (record.BlockHeight is not { } height || height > lastEligibleHeight) continue;
+                var proven = record.RawTransaction.Length == 0
+                    ? retained.FirstOrDefault(candidate => candidate.TxId == record.TxId) : record;
+                if (proven is null || proven.BlockHeight is not { } height || height > lastEligibleHeight
+                    || proven.RawTransaction.Length == 0) continue;
                 Transaction tx;
-                try { tx = Transaction.Load(record.RawTransaction, _network); }
-                catch (FormatException) { continue; }
+                try { tx = Transaction.Load(proven.RawTransaction, _network); }
+                catch (Exception e) when (e is FormatException or ArgumentException or EndOfStreamException or InvalidDataException)
+                { continue; }
+                if (new TxId(tx.GetHash().ToBytes()) != record.TxId) continue;
                 foreach (var input in tx.Inputs) remaining.Remove((new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N));
                 if (remaining.Count == 0) return true;
             }

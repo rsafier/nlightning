@@ -19,8 +19,10 @@ using Infrastructure.Bitcoin.Wallet.Models;
 
 public partial class WalletPsbtServiceTests
 {
-    [Fact]
-    public async Task Given_ConfirmationDepthLease_When_SpendConfirmsAndExpiryPasses_Then_HeldUntilRequiredDepthUsingPagedHistory()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_ConfirmationDepthLease_When_SpendConfirmsAndExpiryPasses_Then_HeldUntilRequiredDepthUsingPagedHistory(bool projected)
     {
         var (coin, outpoint, _) = AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
         var history = new Mock<Domain.Bitcoin.Wallet.Interfaces.IWalletTransactionDbRepository>();
@@ -30,6 +32,12 @@ public partial class WalletPsbtServiceTests
         spend.Outputs.Add(Money.Satoshis(90_000), s_destination);
         var record = new WalletTransactionRecord(new TxId(spend.GetHash().ToBytes()), spend.ToBytes(), Height,
             new byte[32], DateTimeOffset.UnixEpoch, [], [new WalletTransactionInput(0, 100_000)]);
+        var retained = record;
+        if (projected)
+            record = WalletTransactionHistory.Describe(spend, record.BlockHeight, record.BlockHash,
+                record.Timestamp, record.OurOutputs, record.OurInputs) with { RawTransaction = [] };
+        history.Setup(h => h.GetByIdsAsync(It.IsAny<IReadOnlyCollection<TxId>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([retained]);
         history.Setup(h => h.GetHistoryPageAsync(0, It.IsAny<uint>(), false, 0, 128, It.IsAny<CancellationToken>()))
             .ReturnsAsync((uint start, uint end, bool unconfirmed, int offset, int limit, CancellationToken token) =>
                 end >= Height ? new[] { record } : Array.Empty<WalletTransactionRecord>());
@@ -44,6 +52,45 @@ public partial class WalletPsbtServiceTests
         Assert.False(_utxos.TryGetFeeReservation(coin.TxId, coin.Index, out _));
         history.Verify(h => h.GetHistoryAsync(It.IsAny<uint>(), It.IsAny<uint>(), It.IsAny<bool>(),
             It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("corrupt")]
+    [InlineData("unconfirmed")]
+    [InlineData("wrong-txid")]
+    public async Task Given_IncompleteRetainedHistory_When_SweepingLease_Then_NoConfirmedSpendIsInferred(string mutation)
+    {
+        var (coin, outpoint, _) = AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
+        var history = new Mock<Domain.Bitcoin.Wallet.Interfaces.IWalletTransactionDbRepository>();
+        _unitOfWork.Setup(u => u.WalletTransactionDbRepository).Returns(history.Object);
+        var spend = Network.RegTest.CreateTransaction();
+        spend.Inputs.Add(new TxIn(outpoint));
+        spend.Outputs.Add(Money.Satoshis(90_000), s_destination);
+        var retained = WalletTransactionHistory.Describe(spend, Height - 2, new byte[32],
+            DateTimeOffset.UnixEpoch, [], [new WalletTransactionInput(0, 100_000)]);
+        var projection = retained with { RawTransaction = [] };
+        var foreign = Network.RegTest.CreateTransaction();
+        foreign.Inputs.Add(new TxIn(new OutPoint(outpoint.Hash, checked(outpoint.N + 1))));
+        foreign.Outputs.Add(Money.Satoshis(90_000), s_destination);
+        retained = mutation switch
+        {
+            "corrupt" => retained with { RawTransaction = [1, 2] },
+            "unconfirmed" => retained with { BlockHeight = null, BlockHash = null },
+            "wrong-txid" => retained with { RawTransaction = foreign.ToBytes() },
+            _ => retained
+        };
+        history.Setup(h => h.GetHistoryPageAsync(0, It.IsAny<uint>(), false, 0, 128, It.IsAny<CancellationToken>()))
+            .ReturnsAsync([projection]);
+        history.Setup(h => h.GetByIdsAsync(It.IsAny<IReadOnlyCollection<TxId>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(mutation == "missing" ? Array.Empty<WalletTransactionRecord>() : [retained]);
+        await _service.LeaseAsync(s_lockId, coin.TxId, coin.Index, TimeSpan.FromHours(1), 3, Ct);
+        _utxos.Spend(coin);
+        Assert.Single(await _service.ListLeasesAsync(Ct));
+        Assert.True(_utxos.TryGetFeeReservation(coin.TxId, coin.Index, out _));
+        Assert.Single(_stored);
+        history.Verify(h => h.GetByIdsAsync(It.Is<IReadOnlyCollection<TxId>>(ids => ids.Count == 1
+            && ids.Contains(projection.TxId)), It.IsAny<CancellationToken>()), Times.AtLeastOnce);
     }
 
     [Fact]
