@@ -285,7 +285,7 @@ func TestEveryProfileGrantsTerminalLitrpcReads(t *testing.T) {
 	all := litLocalHandlers(&autopilotService{})
 	reads := []string{litSubServerStatus, litListAutopilotSessions, litListAutopilotFeatures, litListActions}
 	writes := []string{litAddAutopilotSession, litRevokeAutopilotSession}
-	for _, profile := range []string{"readonly", "wallet"} {
+	for _, profile := range []string{"readonly", "wallet", "admin"} {
 		methods, _ := profileMethods(profile)
 		granted := localMethodsFor(all, methods)
 		for _, m := range reads {
@@ -294,7 +294,7 @@ func TestEveryProfileGrantsTerminalLitrpcReads(t *testing.T) {
 			}
 		}
 		for _, m := range writes {
-			if (granted[m] != nil) != (profile == "wallet") {
+			if (granted[m] != nil) != (profile != "readonly") {
 				t.Fatal(profile, "autopilot write grant wrong for", m)
 			}
 		}
@@ -409,3 +409,31 @@ func (failingCreds) ServerHandshake(net.Conn) (net.Conn, credentials.AuthInfo, e
 	return nil, nil, errors.New("authentication handshake failed")
 }
 func (failingCreds) Clone() credentials.TransportCredentials { return failingCreds{} }
+
+// What Lightning Terminal's channel and fee management calls (its bundle's
+// openChannel/openChannelsTool, closeChannel and updateChannelPolicy flows):
+// only the admin profile grants it, and admin keeps every wallet grant.
+func TestAdminProfileGrantsTerminalChannelManagement(t *testing.T) {
+	terminal := []string{"/lnrpc.Lightning/BatchOpenChannel", "/lnrpc.Lightning/CloseChannel",
+		"/lnrpc.Lightning/UpdateChannelPolicy", "/lnrpc.Lightning/ConnectPeer", "/lnrpc.Lightning/GetNodeInfo",
+		"/lnrpc.Lightning/GetChanInfo", "/lnrpc.Lightning/OpenChannelSync", "/lnrpc.Lightning/EstimateFee"}
+	admin, _ := profileMethods("admin")
+	wallet, _ := profileMethods("wallet")
+	granted := map[string]bool{}
+	for _, m := range admin {
+		granted[m] = true
+	}
+	for _, m := range append(terminal, wallet...) {
+		if !granted[m] {
+			t.Fatal("admin lacks", m)
+		}
+	}
+	for _, m := range wallet {
+		if m == "/lnrpc.Lightning/BatchOpenChannel" || m == "/lnrpc.Lightning/CloseChannel" || m == "/lnrpc.Lightning/UpdateChannelPolicy" {
+			t.Fatal("wallet grants channel management", m)
+		}
+	}
+	if _, e := parseConfig("create", []string{"--tls-cert", "x", "--admin-macaroon", "a", "--profile", "admin"}); e != nil {
+		t.Fatal(e)
+	}
+}

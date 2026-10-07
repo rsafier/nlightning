@@ -96,6 +96,20 @@ To authorize wallet operations, create a separate session with `--profile wallet
 That profile can move funds; the returned permission list identifies its exact
 RPC surface. No client receives the node's admin macaroon.
 
+> **Warning: `--profile admin` can open and close channels and move funds.**
+> It grants everything in `wallet` plus channel and fee management:
+> `OpenChannel`, `OpenChannelSync`, `BatchOpenChannel`, `CloseChannel` (force
+> closes included), `UpdateChannelPolicy`, `EstimateFee` and walletrpc
+> `ListUnspent`/`EstimateFee`. A client holding it can commit the node's
+> on-chain funds to channels with any peer and close them. Create it only for a
+> client you control, with a short `--ttl`, and revoke it when done.
+
+The admin profile is still a scoped, per-session macaroon like the others,
+never the node's admin macaroon. It never grants macaroon administration
+(`BakeMacaroon`, `DeleteMacaroonID`, `ListMacaroonIDs`), `signrpc`, the
+walletrpc PSBT, lease and signing calls, the channel acceptor or the HTLC
+interceptor.
+
 Start the transport process:
 
 ```bash
@@ -142,10 +156,10 @@ stock LNC WASM client (lnc-web). Against this bridge it needs, and gets:
 - **litrpc answered by the bridge.** After `GetInfo` Terminal refuses a
   node whose macaroon lacks `/litrpc.Autopilot/ListAutopilotSessions` ("Custodial
   accounts are not currently supported"), and it reads `litrpc.Status` to decide
-  which pages to offer. New sessions of both profiles carry
+  which pages to offer. New sessions of every profile carry
   `/litrpc.Status/SubServerStatus`, `/litrpc.Autopilot/ListAutopilotSessions`,
   `/litrpc.Autopilot/ListAutopilotFeatures` and `/litrpc.Firewall/ListActions`;
-  `--profile wallet` sessions also carry `/litrpc.Autopilot/AddAutopilotSession`
+  `wallet` and `admin` sessions also carry `/litrpc.Autopilot/AddAutopilotSession`
   and `/litrpc.Autopilot/RevokeAutopilotSession` (all baked with
   `allow_external_permissions`; the node never serves them). The bridge answers
   them itself and never forwards a litrpc call: SubServerStatus reports `lnd`
@@ -160,12 +174,23 @@ pending, closed), peers, payments, invoices, forwarding history, the fee report
 NL-1239), on-chain transactions, node lookups and the invoice, transaction,
 channel and HTLC subscriptions. Signet is supported by Terminal.
 
+Channel and fee management (NL-1241) needs a `--profile admin` session:
+Terminal connects the peer (`ConnectPeer`), opens with `BatchOpenChannel`
+(one channel per batch, with `use_base_fee`/`use_fee_rate` and
+`sat_per_vbyte`), closes with `CloseChannel` (`force` and `sat_per_vbyte`,
+waiting for `close_pending`) and changes fees with `UpdateChannelPolicy`
+(`chan_point`, `base_fee_msat`, `fee_rate_ppm`, `time_lock_delta`). The node
+funds one channel per transaction, so a Terminal batch of several channels (its
+assistant's multi-open) is refused with `UNIMPLEMENTED` before anything is
+funded. With a `readonly` or `wallet` session these buttons are shown but the
+node refuses the calls.
+
 What does not: Loop, Pool, Faraday and Taproot Assets (reported off; their pages
 show nothing or an error; every `taprpc`/`mintrpc` call stays unimplemented),
-AutoOpen (below), `BatchOpenChannel` (channel opening from Terminal) and
-`walletrpc.GetTransaction` (not implemented by the node), and channel open,
-close and policy changes by the person's own session (not in either profile;
-an AutoFees autopilot changes fees through its own session).
+AutoOpen (below), multi-channel `BatchOpenChannel` batches and
+`walletrpc.GetTransaction` (not implemented by the node), and
+`QueryRoutes` and lnrpc `ListUnspent` (granted to every profile, not
+implemented by the node; Terminal calls `QueryRoutes` only from its assistant).
 Terminal shows write buttons for a read-only session too (its macaroon holds
 `uri` permissions, which the WASM client does not count as read-only); the node
 refuses those calls. Sessions created before this change lack the litrpc
@@ -203,7 +228,7 @@ Setup:
    server. Without the flag the Autopilot page loads with no features, the
    action log still answers, and enabling a feature fails with
    `FailedPrecondition`.
-3. Pair Terminal with a new `--profile wallet` session.
+3. Pair Terminal with a new `--profile wallet` (or `admin`) session.
 
 When Terminal enables AutoFees the bridge validates the rules against the
 server's limits, registers a session with the autopilot server and serves it on

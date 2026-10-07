@@ -172,19 +172,25 @@ func TestStateRejectsTraversalAndUnsafeFiles(t *testing.T) {
 	}
 }
 func TestProfilesNeverPermitMacaroonAdministration(t *testing.T) {
-	for _, profile := range []string{"readonly", "wallet"} {
+	for _, profile := range []string{"readonly", "wallet", "admin"} {
 		methods, e := profileMethods(profile)
 		if e != nil {
 			t.Fatal(e)
 		}
 		for _, method := range methods {
-			if bytes.Contains([]byte(method), []byte("Macaroon")) {
-				t.Fatal("remote credential administration allowed", method)
+			// Macaroon administration, signrpc, raw wallet signing and spends,
+			// and the node's hooks stay out of every profile, admin included.
+			for _, banned := range []string{"Macaroon", "/signrpc.", "Psbt", "LeaseOutput", "ReleaseOutput",
+				"SignOutputRaw", "SendOutputs", "PublishTransaction", "DeriveKey", "ChannelAcceptor", "HtlcInterceptor",
+				"AbandonChannel", "StopDaemon", "RestoreChannelBackups"} {
+				if bytes.Contains([]byte(method), []byte(banned)) {
+					t.Fatal(profile, "grants", method)
+				}
 			}
 		}
 	}
-	if _, e := profileMethods("admin"); e == nil {
-		t.Fatal("admin profile accepted")
+	if _, e := profileMethods("root"); e == nil {
+		t.Fatal("unknown profile accepted")
 	}
 	if _, e := parseConfig("create", []string{"--tls-cert", "x", "--admin-macaroon", "a", "--ttl", "-1s"}); e == nil {
 		t.Fatal("negative expiry accepted")

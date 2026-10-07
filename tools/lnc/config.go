@@ -32,7 +32,7 @@ func parseConfig(command string, args []string) (Config, error) {
 	f.StringVar(&c.Relay, "relay", "mailbox.terminal.lightning.today:443", "LNC mailbox host:port")
 	f.StringVar(&c.RelayTLSCert, "relay-tls-cert", "", "trusted custom relay TLS certificate PEM")
 	f.StringVar(&c.Name, "name", "wallet", "session display name")
-	f.StringVar(&c.Profile, "profile", "readonly", "readonly or wallet permission profile")
+	f.StringVar(&c.Profile, "profile", "readonly", "readonly, wallet or admin permission profile (admin opens and closes channels and moves funds)")
 	f.DurationVar(&c.TTL, "ttl", 24*time.Hour, "session lifetime")
 	f.StringVar(&c.ID, "id", "", "session ID for revoke")
 	f.BoolVar(&c.LogRPC, "log-rpc", false, "serve: log each RPC's method, status code and duration (never payloads or credentials)")
@@ -65,6 +65,20 @@ func parseConfig(command string, args []string) (Config, error) {
 	}
 	return c, nil
 }
+
+// walletMethods are the wallet profile's writes: invoices, payments, on-chain
+// sends, peers and message signing.
+const walletMethods = `/lnrpc.Lightning/AddInvoice /lnrpc.Lightning/NewAddress /lnrpc.Lightning/SendCoins /lnrpc.Lightning/SendMany /lnrpc.Lightning/ConnectPeer /lnrpc.Lightning/DisconnectPeer /lnrpc.Lightning/SignMessage /routerrpc.Router/SendPaymentV2 /routerrpc.Router/SendToRouteV2 /invoicesrpc.Invoices/AddHoldInvoice /invoicesrpc.Invoices/SettleInvoice /invoicesrpc.Invoices/CancelInvoice`
+
+// adminMethods are what the admin profile adds to wallet: Lightning
+// Terminal's channel and fee management (it opens with BatchOpenChannel, closes
+// with CloseChannel and sets fees with UpdateChannelPolicy), the other opens
+// and the fee and coin reads. Still never macaroon administration
+// (BakeMacaroon, DeleteMacaroonID, ListMacaroonIDs), signrpc, the walletrpc
+// PSBT, lease and signing calls (raw spends of any wallet output), the channel
+// acceptor or the HTLC interceptor: Terminal uses none of them.
+const adminMethods = `/lnrpc.Lightning/OpenChannel /lnrpc.Lightning/OpenChannelSync /lnrpc.Lightning/BatchOpenChannel /lnrpc.Lightning/CloseChannel /lnrpc.Lightning/UpdateChannelPolicy /lnrpc.Lightning/EstimateFee /walletrpc.WalletKit/ListUnspent /walletrpc.WalletKit/EstimateFee`
+
 func profileMethods(profile string) ([]string, error) {
 	methods := strings.Fields(`/verrpc.Versioner/GetVersion /lnrpc.Lightning/GetInfo /lnrpc.Lightning/WalletBalance /lnrpc.Lightning/ChannelBalance /lnrpc.Lightning/ListChannels /lnrpc.Lightning/PendingChannels /lnrpc.Lightning/ClosedChannels /lnrpc.Lightning/ListPeers /lnrpc.Lightning/GetTransactions /lnrpc.Lightning/ListUnspent /lnrpc.Lightning/ListInvoices /lnrpc.Lightning/LookupInvoice /lnrpc.Lightning/ListPayments /lnrpc.Lightning/DecodePayReq /lnrpc.Lightning/QueryRoutes /lnrpc.Lightning/GetNodeInfo /lnrpc.Lightning/GetChanInfo /lnrpc.Lightning/DescribeGraph /lnrpc.Lightning/ForwardingHistory /lnrpc.Lightning/FeeReport /lnrpc.Lightning/SubscribeInvoices /lnrpc.Lightning/SubscribeTransactions /lnrpc.Lightning/SubscribePeerEvents /lnrpc.Lightning/SubscribeChannelEvents /lnrpc.Lightning/SubscribeChannelGraph /routerrpc.Router/TrackPaymentV2 /routerrpc.Router/TrackPayments /routerrpc.Router/SubscribeHtlcEvents /invoicesrpc.Invoices/SubscribeSingleInvoice`)
 	// Lightning Terminal refuses a session whose macaroon lacks
@@ -72,15 +86,18 @@ func profileMethods(profile string) ([]string, error) {
 	// log; the bridge answers these litrpc reads itself (lit.go), so every
 	// profile carries them.
 	methods = append(methods, litSubServerStatus, litListAutopilotSessions, litListAutopilotFeatures, litListActions)
-	switch profile {
-	case "readonly":
+	if profile == "readonly" {
 		return methods, nil
-	case "wallet":
-		// Starting and stopping an autopilot (which then changes channel fees
-		// within the rules the person chose) is a write: wallet sessions only.
-		methods = append(methods, litAddAutopilotSession, litRevokeAutopilotSession)
-		return append(methods, strings.Fields(`/lnrpc.Lightning/AddInvoice /lnrpc.Lightning/NewAddress /lnrpc.Lightning/SendCoins /lnrpc.Lightning/SendMany /lnrpc.Lightning/ConnectPeer /lnrpc.Lightning/DisconnectPeer /lnrpc.Lightning/SignMessage /routerrpc.Router/SendPaymentV2 /routerrpc.Router/SendToRouteV2 /invoicesrpc.Invoices/AddHoldInvoice /invoicesrpc.Invoices/SettleInvoice /invoicesrpc.Invoices/CancelInvoice`)...), nil
-	default:
-		return nil, errors.New("--profile must be readonly or wallet")
 	}
+	if profile != "wallet" && profile != "admin" {
+		return nil, errors.New("--profile must be readonly, wallet or admin")
+	}
+	// Starting and stopping an autopilot (which then changes channel fees
+	// within the rules the person chose) is a write: wallet and admin only.
+	methods = append(methods, litAddAutopilotSession, litRevokeAutopilotSession)
+	methods = append(methods, strings.Fields(walletMethods)...)
+	if profile == "admin" {
+		methods = append(methods, strings.Fields(adminMethods)...)
+	}
+	return methods, nil
 }

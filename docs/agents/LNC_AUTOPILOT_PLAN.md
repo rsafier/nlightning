@@ -173,7 +173,8 @@ point at a time within the policy bounds, attaching the meta caveat
   the response is rebuilt field by field with pseudonyms and fuzzing; the
   node's error text is replaced by its code (it can name real channels).
 - **Who can start an autopilot.** `AddAutopilotSession` and
-  `RevokeAutopilotSession` are granted to `--profile wallet` sessions only;
+  `RevokeAutopilotSession` are granted to `--profile wallet` and `--profile
+  admin` sessions only;
   `ListAutopilotSessions`, `ListAutopilotFeatures` and `ListActions` to both
   profiles.
 
