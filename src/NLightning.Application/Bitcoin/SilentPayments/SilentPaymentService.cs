@@ -206,7 +206,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
         foreach (var (output, spender) in spent)
             if (!output.Ignored)
                 await StageFactAsync(work, output, spender, block, height, labels, cancellationToken);
-        await StageHistoricalSettlementsAsync(work, block, height, cancellationToken);
+        await StageHistoricalSettlementsAsync(work, block, height, labels, cancellationToken);
         await RequireCanonicalAsync(block, height, cancellationToken);
         await work.SilentPaymentDbRepository.SetScanStateAsync(state with
         { RescanCursorHeight = height, RescanCursorHash = blockValue.BlockHash, PrevoutSource = scanner.PrevoutSource }, cancellationToken);
@@ -257,7 +257,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
                             spender, height, cancellationToken);
                         await StageFactAsync(uow, output, spender, block, height, labels, cancellationToken);
                     }
-                await StageHistoricalSettlementsAsync(uow, block, height, cancellationToken);
+                await StageHistoricalSettlementsAsync(uow, block, height, labels, cancellationToken);
                 await RequireCanonicalAsync(block, height, cancellationToken);
                 if (height == uint.MaxValue) break;
             }
@@ -292,7 +292,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
     // Historical custody facts must also settle Clearing. Recover the complete transaction only when every
     // input belongs to the recovered wallet; shared transactions require their retained purpose/accounting context.
     private async Task StageHistoricalSettlementsAsync(IUnitOfWork uow, Block block, uint height,
-                                                       CancellationToken cancellationToken)
+        IReadOnlyList<SilentPaymentLabelModel> labels, CancellationToken cancellationToken)
     {
         var network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
         var addresses = uow.WalletAddressesDbRepository.GetAllAddresses().Select(address => address.Address).ToHashSet();
@@ -364,6 +364,16 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
             }
             var feeSat = checked(inputSat - outputSat);
             if (feeSat < 0) throw new InvalidOperationException("Recovered spend outputs exceed its proven wallet inputs.");
+            // Finalization batches outputs, but financial settlement is transaction-wide. Stage all known input
+            // custody debits in this same commit even when a spender crosses the batch boundary.
+            foreach (var owned in inputs.OfType<SilentPaymentOutputModel>().Where(input => !input.Ignored))
+            {
+                if (owned.SpentByTransactionId is { } priorSpender && priorSpender != transactionId)
+                    throw new InvalidOperationException("Recovered input has conflicting confirmed spend evidence.");
+                await uow.SilentPaymentDbRepository.SetSpentAsync(owned.TransactionId, owned.Index, transactionId,
+                    height, cancellationToken);
+                await StageFactAsync(uow, owned, transactionId, block, height, labels, cancellationToken);
+            }
             var amountMsat = -checked(externalSat * 1000);
             var feeMsat = checked(feeSat * 1000);
             if (standing is not null)
