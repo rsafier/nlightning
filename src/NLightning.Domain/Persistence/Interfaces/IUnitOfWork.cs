@@ -25,6 +25,8 @@ public interface IUnitOfWork : IDisposable
     IBlockchainStateDbRepository BlockchainStateDbRepository { get; }
     IWatchedTransactionDbRepository WatchedTransactionDbRepository { get; }
     IWalletAddressesDbRepository WalletAddressesDbRepository { get; }
+    Bitcoin.Wallet.Interfaces.IWalletAccountDbRepository WalletAccountDbRepository =>
+        Bitcoin.Wallet.Interfaces.NullWalletAccountDbRepository.Instance;
     IUtxoDbRepository UtxoDbRepository { get; }
     ISilentPaymentDbRepository SilentPaymentDbRepository =>
         throw new NotSupportedException("This unit of work does not store silent payments.");
@@ -161,6 +163,9 @@ public interface IUnitOfWork : IDisposable
     /// (not Closed or Stale) whose peer has no saved row (NL-497): startup registers every such channel and dials only
     /// the peers with an address.
     /// </summary>
+    Domain.Signing.Recovery.ISigningWorkflowDbRepository SigningWorkflowDbRepository =>
+        throw new NotSupportedException("This unit of work does not store signing workflows.");
+
     Task<ICollection<PeerModel>> GetPeersForStartupAsync();
     void AddUtxo(UtxoModel utxoModel);
     void TrySpendUtxo(TxId transactionId, uint index);

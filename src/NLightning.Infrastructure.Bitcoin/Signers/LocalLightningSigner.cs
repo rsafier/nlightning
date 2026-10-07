@@ -1645,11 +1645,13 @@ public partial class LocalLightningSigner : ILightningSigner
             }
         }
 
-        byte[] extKeyBytes = utxo.AddressType == AddressType.P2Wpkh
-                                 ? _secureKeyManager.GetDepositP2WpkhKeyAtIndex(utxo.AddressIndex,
-                                                                                utxo.IsAddressChange)
-                                 : _secureKeyManager.GetDepositP2TrKeyAtIndex(utxo.AddressIndex,
-                                                                              utxo.IsAddressChange);
+        var address = utxo.WalletAddress!;
+        byte[] extKeyBytes = address.AccountIndex != 0
+            ? _secureKeyManager.GetDepositKeyAtIndex(utxo.AddressType, address.AccountIndex,
+                address.DerivationIndex ?? address.Index, utxo.IsAddressChange)
+            : utxo.AddressType == AddressType.P2Wpkh
+                ? _secureKeyManager.GetDepositP2WpkhKeyAtIndex(utxo.AddressIndex, utxo.IsAddressChange)
+                : _secureKeyManager.GetDepositP2TrKeyAtIndex(utxo.AddressIndex, utxo.IsAddressChange);
         Key key;
         try
         {

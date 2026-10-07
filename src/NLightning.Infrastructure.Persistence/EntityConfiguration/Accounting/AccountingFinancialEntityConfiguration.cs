@@ -46,6 +46,20 @@ public static class AccountingFinancialEntityConfiguration
             entity.HasIndex(p => new { p.Currency, p.Time }).IsUnique();
         });
 
+        modelBuilder.Entity<AccountingPriceReplacementAuditEntity>(entity =>
+        {
+            entity.HasKey(a => a.Id);
+            entity.Property(a => a.Id).ValueGeneratedOnAdd();
+            entity.Property(a => a.OldPrice).HasPrecision(AccountingSchemaLimits.FiatPrecision, AccountingSchemaLimits.FiatScale);
+            entity.Property(a => a.NewPrice).HasPrecision(AccountingSchemaLimits.FiatPrecision, AccountingSchemaLimits.FiatScale);
+            entity.Property(a => a.OldFetchedAt).HasConversion<UtcTicksConverter>();
+            entity.Property(a => a.ReplacedAt).HasConversion<UtcTicksConverter>();
+            entity.Property(a => a.OperatorSource).HasMaxLength(Domain.Accounting.Prices.AccountingPriceReplacement.MaxSourceLength);
+            entity.Property(a => a.Note).HasMaxLength(Domain.Accounting.Prices.AccountingPriceReplacement.MaxNoteLength);
+            entity.HasOne<AccountingPriceEntity>().WithMany().HasForeignKey(a => a.PriceId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasIndex(a => new { a.PriceId, a.ReplacedAt, a.Id });
+        });
+
         modelBuilder.Entity<AccountingRuleEntity>(entity =>
         {
             entity.HasKey(r => r.Id);

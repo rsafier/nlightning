@@ -65,9 +65,9 @@ public sealed partial class WalletKitService
     }
 
     /// <summary>
-    /// <c>LabelTransaction</c>: the label of one of this node's broadcasts (the label <c>GetTransactions</c> shows),
-    /// replaced only with <c>overwrite</c>. Labels are kept on the node's broadcast rows, so a deposit someone else sent
-    /// cannot be labelled (<c>FAILED_PRECONDITION</c>); a label is at most LND's 500 characters and this node's 256
+    /// <c>LabelTransaction</c>: the durable label of a known wallet transaction, including deposits and imported history,
+    /// replaced only with <c>overwrite</c>. Independent label rows survive confirmation changes and raw-history cleanup;
+    /// a label is at most LND's 500 characters and this node's 256
     /// UTF-8 bytes without control characters.
     /// </summary>
     public override async Task<LabelTransactionResponse> LabelTransaction(LabelTransactionRequest request,
@@ -84,23 +84,16 @@ public sealed partial class WalletKitService
         await using var scope = _scopeFactory.CreateAsyncScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var row = await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(txId);
-        if (row is null)
-        {
-            if (_serviceProvider.GetService<LightningService>() is { } lightning
-             && (await lightning.ListWalletTransactionsAsync(new Lnrpc.GetTransactionsRequest(), new HashSet<TxId> { txId }, false,
-                                                             context.CancellationToken)).Transactions.Count > 0)
-                throw new RpcException(new Status(StatusCode.FailedPrecondition,
-                                                  $"transaction {txId} was not published by this node; only its own "
-                                                + "transactions keep a label"));
-
-            throw new RpcException(new Status(StatusCode.NotFound,
-                                              "cannot label transaction not known to wallet"));
-        }
-
-        if (!string.IsNullOrEmpty(row.Label) && !request.Overwrite)
+        var storedLabel = await unitOfWork.WalletTransactionDbRepository.GetLabelAsync(txId, context.CancellationToken);
+        if ((!string.IsNullOrEmpty(storedLabel) || !string.IsNullOrEmpty(row?.Label)) && !request.Overwrite)
             throw new RpcException(new Status(StatusCode.AlreadyExists, "transaction already labelled"));
-
-        await unitOfWork.BroadcastTransactionDbRepository.SetLabelAsync(txId, request.Label);
+        if (row is null && (_serviceProvider.GetService<LightningService>() is not { } lightning ||
+            (await lightning.ListWalletTransactionsAsync(new Lnrpc.GetTransactionsRequest(), new HashSet<TxId> { txId }, false,
+                context.CancellationToken)).Transactions.Count == 0))
+            throw new RpcException(new Status(StatusCode.NotFound, "cannot label transaction not known to wallet"));
+        if (!await unitOfWork.WalletTransactionDbRepository.StageLabelAsync(txId, request.Label, request.Overwrite,
+            context.CancellationToken))
+            throw new RpcException(new Status(StatusCode.AlreadyExists, "transaction already labelled"));
         await unitOfWork.SaveChangesAsync();
         return new LabelTransactionResponse { Status = $"transaction label '{request.Label}' added" };
     }

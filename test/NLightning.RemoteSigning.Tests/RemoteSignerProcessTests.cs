@@ -278,6 +278,8 @@ public sealed class RemoteSignerProcessTests(SignerDaemonFixture daemon) : IClas
         }
         var registeredKeys = provider.GetRequiredService<ISecureKeyManager>();
         Assert.Same(keys, registeredKeys);
+        Assert.Same(provider.GetRequiredService<RemoteSigningWorkflowCoordinator>(),
+            provider.GetRequiredService<NLightning.Domain.Signing.Recovery.IRemoteSigningWorkflowCoordinator>());
         Assert.Throws<NotSupportedException>(() => registeredKeys.GetNodeKeyPair());
         var signer = Assert.IsType<RemoteLightningSigner>(provider.GetRequiredService<ILightningSigner>());
         Assert.Equal(keys.GetNodePubKey(), signer.GetNodePublicKey());

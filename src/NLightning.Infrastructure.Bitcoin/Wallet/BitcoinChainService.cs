@@ -86,6 +86,12 @@ public class BitcoinChainService : IBitcoinChainService
         }
     }
 
+    public async Task<uint> GetBlockDataStartHeightAsync()
+    {
+        var response = await _rpcClient.SendCommandAsync("getblockchaininfo");
+        return (bool?)response.Result["pruned"] == true ? (uint?)response.Result["pruneheight"] ?? 0 : 0;
+    }
+
     public async Task<Transaction?> GetTransactionAsync(uint256 txId)
     {
         try
@@ -159,6 +165,57 @@ public class BitcoinChainService : IBitcoinChainService
             _logger.LogError(ex, "Failed to get block {BlockHash}", blockHash);
             throw;
         }
+    }
+
+    public async Task<uint> GetIncrementalRelayFeeRatePerKwAsync()
+    {
+        var response = await _rpcClient.SendCommandAsync("getmempoolinfo");
+        if (ReadDecimal(response.Result?["incrementalrelayfee"]) is not { } btcPerKvb || btcPerKvb <= 0)
+            return 250;
+        return checked((uint)decimal.Ceiling(btcPerKvb * 100_000_000m / 4m));
+    }
+
+    public async Task<IReadOnlyList<uint256>> GetMempoolTransactionIdsAsync()
+    {
+        var response = await _rpcClient.SendCommandAsync("getrawmempool", false);
+        return response.Result is JArray ids ? ids.Select(id => uint256.Parse(id.Value<string>()!)).ToArray()
+            : throw new FormatException("getrawmempool did not return transaction IDs.");
+    }
+
+    public async Task<WalletMempoolEntry?> GetMempoolEntryAsync(uint256 txId)
+    {
+        try
+        {
+            var response = await _rpcClient.SendCommandAsync("getmempoolentry", txId.ToString());
+            return ParseWalletMempoolEntry(response.Result);
+        }
+        catch (RPCException ex) when (ex.RPCCode == RPCErrorCode.RPC_INVALID_ADDRESS_OR_KEY)
+        {
+            return null;
+        }
+    }
+
+    internal static WalletMempoolEntry ParseWalletMempoolEntry(JToken? result)
+    {
+        if (result is not JObject entry)
+            throw new FormatException("getmempoolentry did not return an object.");
+        var size = entry["vsize"]?.Value<long>() ?? 0;
+        var ancestorSize = entry["ancestorsize"]?.Value<long>() ?? 0;
+        var ancestorCount = entry["ancestorcount"]?.Value<int>() ?? 0;
+        var fee = ReadDecimal(entry["fees"]?["base"]);
+        var ancestorFee = ReadDecimal(entry["fees"]?["ancestor"]);
+        if (size <= 0 || ancestorSize < size || ancestorCount < 1 || fee is null || fee < 0 ||
+            ancestorFee is null || ancestorFee < fee)
+            throw new FormatException("getmempoolentry has invalid ancestor fee/size data.");
+        return new WalletMempoolEntry(Money.Coins(fee.Value).Satoshi, size,
+            Money.Coins(ancestorFee.Value).Satoshi, ancestorSize, ancestorCount);
+    }
+
+    public async Task<TxOut?> GetMempoolUnspentOutputAsync(OutPoint outpoint)
+    {
+        var response = await _rpcClient.SendCommandAsync(new RPCRequest("gettxout",
+            [outpoint.Hash.ToString(), (int)outpoint.N, true]), CancellationToken.None);
+        return ParseTxOutResponse(response.Result) is { Confirmations: 0 } output ? output.Output : null;
     }
 
     public Task<(TxOut Output, uint Height)?> GetUnspentOutputAsync(OutPoint outPoint) =>

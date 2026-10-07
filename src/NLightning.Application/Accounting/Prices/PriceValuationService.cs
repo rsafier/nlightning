@@ -409,6 +409,18 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<AccountingPriceReplacementAudit>> ListReplacementAuditsAsync(
+        IReadOnlyCollection<long> priceIds, CancellationToken cancellationToken = default)
+    {
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var prices = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().AccountingPriceDbRepository;
+        var result = new List<AccountingPriceReplacementAudit>();
+        foreach (var id in priceIds.Order())
+            result.AddRange(await prices.ListReplacementAuditsAsync(id, cancellationToken));
+        return result.OrderBy(a => a.ReplacedAt).ThenBy(a => a.Id).ToList();
+    }
+
+    /// <inheritdoc />
     public async Task<AccountingPriceReplaceResult> ReplaceAsync(AccountingPriceReplacement replacement,
                                                                  CancellationToken cancellationToken = default)
     {
@@ -452,6 +464,9 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
             var now = _timeProvider.GetUtcNow();
             if (!await prices.ReplaceAsync(stored.Id, newPrice, AccountingPriceSource.Manual, now, cancellationToken))
                 throw new ArgumentException($"The {code} price at {second:O} is no longer stored", nameof(replacement));
+
+            prices.AddReplacementAudit(new AccountingPriceReplacementAudit(0, stored.Id, stored.Price, newPrice,
+                stored.Source, AccountingPriceSource.Manual, stored.FetchedAt, now, source, reason));
 
             var audit = $"{code} price of {stored.Time.UtcDateTime.ToString("O", CultureInfo.InvariantCulture)} "
                       + $"replaced: {Format(stored.Price)} ({stored.Source}) -> {Format(newPrice)}"

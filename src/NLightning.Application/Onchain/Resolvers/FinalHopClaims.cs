@@ -51,8 +51,9 @@ internal static class FinalHopClaims
     /// <summary>
     /// The switch event that makes it decide on an incoming HTLC of a channel closing on chain: an
     /// <see cref="IncomingHtlcLockedIn"/> for an HTLC irrevocably committed by the peer, without our removal, not
-    /// expired at <paramref name="height"/>, that is not a forward (no outgoing HTLC carries its origin, no circuit),
-    /// whose payment hash is one of our <c>Open</c> invoices or no invoice of ours (a keysend payment the switch has not
+    /// expired at <paramref name="height"/>. Non-exit forwards are offered to the interceptor even when their outgoing
+    /// HTLC is already committed. Final-hop payments are considered when their hash is
+    /// one of our <c>Open</c> invoices or no invoice of ours (a keysend payment the switch has not
     /// accepted yet). The switch accepts it with the final-hop checks and persists the preimage (and settles the
     /// invoice), or leaves it to time out. Null when there is nothing to decide.
     /// </summary>
@@ -70,7 +71,7 @@ internal static class FinalHopClaims
                            HtlcOrigin.Forwarded(channelId, record.Id));
         if (forwards.Count > 0
          || await unitOfWork.ForwardCircuitDbRepository.GetByIncomingAsync(channelId, record.Id) is not null)
-            return null;
+            return new IncomingHtlcLockedIn(channelId, record);
 
         // NL-875: a part of a trampoline relay: the switch hands the lock-in to the relay (never decided as a final
         // hop), only while the relay may still act on it

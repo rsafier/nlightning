@@ -129,6 +129,7 @@ public sealed class SignerRpcService(ILightningSigner signer, ISecureKeyManager 
         106 => [keys.ReserveChannelKeyIndex()],
         107 => [keys.EnsureLastUsedChannelIndexAtLeast(SignerWire.Read<uint>(a[0]))],
         SignerOperations.GetDepositAccount => [keys.GetDepositAccount(SignerWire.Read<AddressType>(a[0]))],
+        SignerOperations.GetDepositAccount2 => [keys.GetDepositAccount(SignerWire.Read<AddressType>(a[0]), SignerWire.Read<uint>(a[1]))],
         _ => throw new ArgumentException("Unknown key operation.")
     };
     private byte[] ComputeSharedSecret(byte[] publicKey) { var result = new byte[32]; keys.ComputeNodeSharedSecret(publicKey, result); return result; }

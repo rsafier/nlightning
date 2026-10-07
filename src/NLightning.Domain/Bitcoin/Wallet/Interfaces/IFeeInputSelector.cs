@@ -68,6 +68,11 @@ public interface IFeeInputSelector
     /// <summary>Every stored reservation (to resume the spends after a restart).</summary>
     Task<IReadOnlyList<FeeInputReservation>> GetAllAsync(CancellationToken cancellationToken = default);
 
+    Task<IReadOnlyList<WalletInput>> ReserveInputsAsync(IReadOnlyList<(TxId TxId, uint Index)> outpoints,
+        string purpose, bool includeUnconfirmed, CancellationToken cancellationToken = default) =>
+        includeUnconfirmed ? throw new NotSupportedException("Unconfirmed reservations unavailable.")
+                           : ReserveInputsAsync(outpoints, purpose, cancellationToken);
+
     /// <summary>
     /// Re-reserves exactly <paramref name="outpoints"/> for <paramref name="purpose"/> (NL-384): a reorg put a pending
     /// spend's wallet inputs back into the wallet after the reservation it was built from had ended, and they must not

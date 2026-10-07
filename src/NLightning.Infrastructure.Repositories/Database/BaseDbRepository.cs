@@ -10,6 +10,7 @@ public class BaseDbRepository<TEntity> where TEntity : class
 {
     private readonly NLightningDbContext _context;
     protected readonly DbSet<TEntity> DbSet;
+    protected NLightningDbContext Context => _context;
 
     protected BaseDbRepository(NLightningDbContext context)
     {

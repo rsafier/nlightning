@@ -53,6 +53,13 @@ The executable Lightning node, and the DI **composition root** for the whole sta
 - Register new services in their own layer's `DependencyInjection.cs`. A layer service that needs the node key takes `ISecureKeyManager` from DI (as `LocalLightningSigner` does in `AddBitcoinInfrastructure`). `NodeServiceExtensions` owns only what needs `configPath` (`NamedPipeIpcService`, `CookieFileAuthenticator`), the Daemon's own handlers, the `FeeService` HttpClient (Microsoft.Extensions.Http is a Daemon package) and the options.
 
 ## Dependency rules
+
+Remote mode also registers the singleton `RemoteSigningWorkflowCoordinator` through
+`IRemoteSigningWorkflowCoordinator`. The channel transition services resolve it to
+capture normal signing workflows; its own intent/result writes use fresh scoped
+units of work. Workflow consumption uses the caller's channel transaction. Local
+mode has no workflow coordinator. See [node recovery](../../docs/agents/REMOTE_SIGNING_RECOVERY.md)
+for startup ordering and remaining coverage (NL-1305).
 - This project is the outermost layer and may reference every other project (its csproj even references `NLightning.Client`). **Nothing** in `src/` may reference NLightning.Daemon; only `test/NLightning.Daemon.Tests` and `test/NLightning.Integration.Tests` do.
 - Keep protocol, BOLT and crypto logic out of here. It belongs in Domain, Application or Infrastructure.*. Handlers here should only orchestrate.
 - `NLightning.Daemon.Contracts` targets what every src project targets (`src/Directory.Build.props`: net10.0, plus net11.0 when built with SDK 11); .NET 9 was dropped (EOL 2026-11-10, W4-C).

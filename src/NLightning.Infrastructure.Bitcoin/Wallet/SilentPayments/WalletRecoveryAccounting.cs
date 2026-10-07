@@ -82,7 +82,7 @@ public static class WalletRecoveryAccounting
             if (outputs.Count == 0 && inputs.Count == 0) continue;
             // Raw bytes retain every input outpoint. The repository unions ownership with the existing description,
             // including ordinary/imported wallet observations and transactions a rollback made unconfirmed.
-            await history.StageConfirmedAsync(new WalletTransactionRecord(transactionId, transaction.ToBytes(), height,
+            await history.StageConfirmedAsync(WalletTransactionHistory.Describe(transaction, height,
                 block.GetHash().ToBytes(), block.Header.BlockTime, outputs, inputs));
         }
 

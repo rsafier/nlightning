@@ -1,5 +1,6 @@
 namespace NLightning.Integration.Tests.Persistence;
 
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Money;
 using Infrastructure.Repositories.Memory;
@@ -10,6 +11,38 @@ using Infrastructure.Repositories.Memory;
 /// </summary>
 public class UtxoMemoryRepositoryFeeReservationTests
 {
+    [Fact]
+    public void Given_TransientMempoolCoin_When_ReservedEvictedPromotedAndReorged_Then_ConfirmedAccountingAndReservationIdentityStaySeparate()
+    {
+        // Arrange
+        var repository = new UtxoMemoryRepository();
+        var mined = SqliteTestDatabase.CreateUtxo(SqliteTestDatabase.CreateWalletAddress());
+        var transient = new UtxoModel(mined.TxId, mined.Index, mined.Amount, 0, mined.WalletAddress!);
+        repository.AddUnconfirmed(transient);
+        // Assert: even a large tip cannot turn height zero into confirmed custody or anchors collateral.
+        Assert.Equal(0, repository.GetConfirmedBalance(1_000).Satoshi);
+        Assert.Equal(0, repository.GetBalanceWithConfirmations(1_000, 1).Satoshi);
+        Assert.Equal(0, repository.GetAvailableConfirmedBalance(1_000, new HashSet<(Domain.Bitcoin.ValueObjects.TxId, uint)>()).Satoshi);
+        Assert.Empty(repository.GetUnreservedUtxos());
+        var reservation = Guid.NewGuid();
+        Assert.True(repository.TryReserveForFee([(mined.TxId, mined.Index)], reservation));
+        repository.RemoveUnconfirmed(mined.TxId, mined.Index);
+        Assert.False(repository.TryGetUtxo(mined.TxId, mined.Index, out _));
+        Assert.True(repository.TryGetFeeReservation(mined.TxId, mined.Index, out var retained));
+        Assert.Equal(reservation, retained);
+        // Confirmation upgrades custody exactly once without dropping the lease; rewind makes it transient again.
+        repository.AddUnconfirmed(transient);
+        repository.Add(mined);
+        Assert.Empty(repository.GetUnconfirmedUtxos());
+        Assert.Equal(mined.Amount, repository.GetConfirmedBalance(1_000));
+        repository.Spend(mined);
+        repository.AddUnconfirmed(transient);
+        Assert.Equal(0, repository.GetConfirmedBalance(1_000).Satoshi);
+        Assert.True(repository.TryGetFeeReservation(mined.TxId, mined.Index, out retained));
+        Assert.Equal(reservation, retained);
+        Assert.False(repository.TryReserveForFee([(mined.TxId, mined.Index)], Guid.NewGuid()));
+    }
+
     [Fact]
     public void Given_OneOutpointTaken_When_Reserving_Then_NothingIsReserved()
     {

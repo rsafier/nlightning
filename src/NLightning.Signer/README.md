@@ -97,6 +97,10 @@ payload defeats exact-outcome recovery; conflicting reuse of an ID is refused.
 
 Durable receipts cover channel/funding safety mutations, holder broadcast
 signatures, nonce-consuming close/splice signatures and channel-key allocations.
+Normal commitment/HTLC signatures, taproot remote partial signatures, revealed
+per-commitment secrets, channel commitment points and verification nonces also have
+receipts for node workflow recovery. Restoring receipt-only operations reads their
+saved responses without repeating cryptographic signing.
 Ephemeral nonce creation is unsupported across restart because the secret nonce is
 not restored. Nonce sessions bind decoded channel/public-nonce identities: equivalent
 accepted base64 encodings cannot create another signing context. Restart refuses
@@ -108,15 +112,17 @@ unrelated allocation outcomes remain available.
 The receipt store refuses new supported requests at 65,536 identities or its 64 MiB
 response budget (reserving room for the largest response before execution). It never
 evicts old identities to permit re-execution. There is no safe online compaction or
-maintenance procedure yet: deleting the journal is unsafe. The node's current
-synchronous adapters do not persist pending envelopes or automatically reconcile
-node-database transitions. This API and its process-failure tests establish the
-signer boundary; automatic application recovery, external state freshness and cloned
-writer fencing remain separate work.
+maintenance procedure yet: deleting the journal is unsafe. The node now captures
+normal commitment, taproot reconnect and revocation-release workflows in its
+database and reconciles before startup rollback. Locally completed results require
+a matching signer receipt; `NotFound` in that case blocks rather than executes.
+See [node recovery](../../docs/agents/REMOTE_SIGNING_RECOVERY.md) for proof scope.
+Other application workflows, external state freshness and cloned writer fencing
+remain separate work.
 
 
-FAFO integration at `e47ae080` adds remote wallet message signing, public deposit
-account metadata and silent-payment output derivation with the complete frozen
+FAFO integration through `dd598216` adds remote wallet message signing, public named
+deposit-account metadata and silent-payment output derivation with the complete frozen
 reservation context. Silent-payment scanning/receiving and isolated key-ring/swap
 operations remain unsupported in remote mode. `SilentPayments:Enabled=true` is
 rejected at configuration checking and startup; private key-ring and silent-payment

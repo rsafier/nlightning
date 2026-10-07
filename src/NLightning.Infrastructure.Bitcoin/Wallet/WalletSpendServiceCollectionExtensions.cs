@@ -48,7 +48,8 @@ public static class WalletSpendServiceCollectionExtensions
                                                          sp.GetRequiredService<ILogger<WalletPsbtService>>(),
                                                          sp.GetService<IBitcoinChainService>(),
                                                          sp.GetService<TimeProvider>(),
-                                                         sp.GetService<Domain.Protocol.Interfaces.ISecureKeyManager>()));
+                                                         sp.GetService<Domain.Protocol.Interfaces.ISecureKeyManager>(),
+                                                         sp.GetService<IWalletMempoolCatalog>()));
         return services;
     }
 }

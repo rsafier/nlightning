@@ -509,34 +509,42 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
     {
         // Circuits are never deleted; one fulfilled after a page was read only moves rows into the set above the
         // boundary (re-read, skipped by the key check)
-        for (var skip = 0; ; skip += BatchSize)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            using var scope = _scopeFactory.CreateScope();
-            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-            var page = await unitOfWork.ForwardCircuitDbRepository.ListAsync(
-                           new ForwardCircuitListQuery(skip, BatchSize, Status: ForwardCircuitStatus.Fulfilled),
-                           cancellationToken);
-            var events = unitOfWork.AccountingEventDbRepository;
-            var written = 0;
-            foreach (var circuit in page)
+        foreach (var status in new[] { ForwardCircuitStatus.Fulfilled, ForwardCircuitStatus.Failed })
+            for (var skip = 0; ; skip += BatchSize)
             {
-                if (circuit is not { Status: ForwardCircuitStatus.Fulfilled, ResolvedAt: { } resolvedAt }
-                 || resolvedAt > cutoverAt)
-                    continue;
+                cancellationToken.ThrowIfCancellationRequested();
+                using var scope = _scopeFactory.CreateScope();
+                var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                var page = await unitOfWork.ForwardCircuitDbRepository.ListAsync(
+                               new ForwardCircuitListQuery(skip, BatchSize, Status: status),
+                               cancellationToken);
+                var events = unitOfWork.AccountingEventDbRepository;
+                var written = 0;
+                foreach (var circuit in page)
+                {
+                    if (circuit.Status != status || circuit.ResolvedAt is not { } resolvedAt || resolvedAt > cutoverAt)
+                        continue;
+                    if (status == ForwardCircuitStatus.Failed &&
+                        (circuit.IncomingClaimedPreimage is not { } claimed ||
+                         new Hash(System.Security.Cryptography.SHA256.HashData((byte[])claimed)) != circuit.PaymentHash))
+                        continue;
 
-                var built = Build("forward", $"{circuit.IncomingChannelId}:{circuit.IncomingHtlcId}",
-                                  () => PaymentAccountingEvents.ForwardSettled(circuit, null, null));
-                if (built is null || !await TryAddMemoAsync(events, built, tally, cancellationToken))
-                    continue;
+                    var built = Build("forward", $"{circuit.IncomingChannelId}:{circuit.IncomingHtlcId}",
+                                      () => status == ForwardCircuitStatus.Fulfilled
+                                          ? PaymentAccountingEvents.ForwardSettled(circuit, null, null)
+                                          : PaymentAccountingEvents.InterceptedHtlcSettled(circuit.IncomingChannelId,
+                                              circuit.IncomingHtlcId, circuit.PaymentHash, circuit.ActualIncomingAmount, null,
+                                              circuit.OutgoingShortChannelId, null, circuit.OutgoingAmount, resolvedAt, 0));
+                    if (built is null || !await TryAddMemoAsync(events, built, tally, cancellationToken))
+                        continue;
 
-                written++;
+                    written++;
+                }
+
+                await SaveBatchAsync(unitOfWork, "forward", written, tally.Forwards += written);
+                if (page.Count < BatchSize)
+                    break;
             }
-
-            await SaveBatchAsync(unitOfWork, "forward", written, tally.Forwards += written);
-            if (page.Count < BatchSize)
-                return;
-        }
     }
 
     /// <summary>

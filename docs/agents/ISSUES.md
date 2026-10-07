@@ -1,6 +1,6 @@
 # NLightning Issue Ledger
 
-Updated 2026-10-07 on `wip/remotesigner`: merged FAFO `e47ae080`; preserved all upstream assignments and renumbered remote NL-1190..NL-1195 to NL-1298..NL-1303. Summary recounted: 1,009 unique classified entries.
+Updated 2026-10-07 on `wip/remotesigner`: merged FAFO `dd598216` (PR #32). Preserved upstream NL-1298 and renumbered remote issues to NL-1304..NL-1309; historical commit IDs remain unchanged. Summary recounted: 1,010 unique classified entries, no duplicates.
 
 Merge update 2026-10-07: retained upstream NL-1181, NL-1182, NL-1186, NL-1187, NL-1253 and NL-1276 resolutions and new NL-1292/NL-1293 alongside the silent-payment implementation. Summary recounted: 1001 unique classified IDs, no duplicates. NL-1267 is accepted by the complete merged-base `sp-core-merged1-2` pass on `f92c75a2` under the owner's one-pass choice; earlier partial/old-base runs were not used to close the gate.
 
@@ -200,16 +200,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 93 | 96 |
-| in-progress | 0 | 0 | 6 | 0 | 6 |
-| fixed | 15 | 72 | 258 | 531 | 876 |
+| open | 0 | 0 | 2 | 89 | 91 |
+| in-progress | 0 | 0 | 7 | 0 | 7 |
+| fixed | 15 | 72 | 259 | 535 | 881 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **72** | **276** | **646** | **1009** |
+| **Total** | **15** | **72** | **277** | **646** | **1010** |
 
 ### Epics
 
-- NL-1298: Remote signing production readiness (in-progress, medium; native daemon, injected provisioning, durable signer receipts and live LND proof implemented; pinned VLS core spike; application recovery, compaction, VLS adapter and Nitro follow-ups NL-1299..NL-1302)
+- NL-1304: Remote signing production readiness (in-progress, medium; native daemon, injected provisioning, durable signer receipts and live LND proof implemented; pinned VLS core spike; application recovery, compaction, VLS adapter and Nitro follow-ups NL-1305..NL-1308)
 
 - NL-1254: Silent payments (BIP 352) send and receive (in-progress, medium; final Core proof NL-1267 accepted; optional extras open; plan `docs/agents/SILENT_PAYMENTS_PLAN.md`, owner decisions D-SP1..D-SP14: SP-C codec and maths NL-1255, NL-1256; SP-S send NL-1257, NL-1258; SP-R receive NL-1259..NL-1266; SP-T proofs NL-1267; SP-X tweak-index source, LND visibility and refusals, mainnet NL-1268..NL-1270)
 - NL-1190: Loop gRPC L0–L4 (in-progress, medium; service implementation NL-1191..NL-1195 fixed, external interoperability/failure proofs NL-1196, scanner indexing NL-1197)
@@ -8353,7 +8353,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-758 A price replacement's note and the replaced price are kept only in the log when no closed period used the price
-- **Status:** open
+- **Status:** fixed (wip/dangling; implementation, focused tests and combined live proof complete)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs` (`ReplaceAsync`); `docs/agents/SECURITY_REVIEW.md` SR-22
@@ -8361,9 +8361,11 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** A table of price replacements (price id, old and new price and source, time, operator source and note), shown by `accounting prices list`; needs a migration for the three providers.
 - **Blocks/Blocked-by:** Related NL-693; part of NL-602
 - **Plan ref:** ACCOUNTING_PLAN A3-T2
+- **Fix (2026-10-07, wip/dangling):** Durable price replacement audits are staged in the same transaction as the replacement, cursor invalidation and adjustments, including unused prices. The audit preserves both values/sources, original fetched time, replacement time, operator source and note; `accounting prices list` returns the append-only records. All three provider migrations and compiled models are included.
+- **Validation:** Release net10 solution build has zero warnings/errors. Final affected Application 388 and non-Docker/non-SqlServer/non-cluster Integration 1,251 passed; the combined Core/LND proof remains an explicit acceptance gate in DANGLING_PLAN.md.
 
 ### NL-759 After a price replacement, closed lots keep the old cost and a closed period's export prints the corrected price
-- **Status:** open
+- **Status:** fixed (wip/dangling; implementation, focused tests and combined live proof complete)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs` (`RepriceAsync`), `Accounting/Financial/` lots and export
@@ -8371,6 +8373,8 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Decide per D-A8 whether a replacement re-costs open lots acquired in a closed period (with a lot adjustment), and print the price a closed period used (or both) in its export.
 - **Blocks/Blocked-by:** Related NL-693; part of NL-602
 - **Plan ref:** ACCOUNTING_PLAN A3-T2
+- **Fix (2026-10-07, wip/dangling):** New signed closing states retain the prices actually used, and closed-period exports read that immutable snapshot. D-A8 keeps closed lots' original cost; corrections do not silently recost them. Legacy closes use the earliest provable audit value or mark original price provenance unavailable rather than substitute the current corrected price. SQLite tests cover signed legacy closes, replacement rollback/retry, rebuilding and all export formats.
+- **Validation:** Release net10 solution build has zero warnings/errors. Final affected Application 388 and non-Docker/non-SqlServer/non-cluster Integration 1,251 passed; the combined Core/LND proof remains an explicit acceptance gate in DANGLING_PLAN.md.
 
 ### NL-761 The channel report kept a reorg-reversed on-chain loss of a forward
 - **Status:** fixed (c8055767; merged b676c6a4)
@@ -9725,10 +9729,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** refused: `coin_select` templates, `spend_unconfirmed`, P2TR change, `coin_selection_strategy`, `max_fee_ratio`, `release_after_spend_confs`/`input_release_after_spend_confs`, accounts other than `default`, unconfirmed outputs in leases; FinalizePsbt signs only PSBTs whose every input is a leased wallet output (LND signs its own inputs of a mixed PSBT); UNIMPLEMENTED: SignPsbt, SendOutputs, BumpFee, ListSweeps, LabelTransaction, ListAddresses, accounts, imports and the rest of the table.
 - **Fix sketch:** SignPsbt and mixed PSBTs through `SignWalletTransaction(tx, otherSpentOutputs)` with the PSBT's witness UTXOs; the rest as clients need them.
 - **Done (13ecaa6f, 2026-10-07):** (SendOutputs, ListSweeps, ListAddresses/ListAccounts, DeriveKey/DeriveNextKey and ImportTapscript were done before, NL-1245, NL-1247 and the signer lanes.) `SignPsbt` (P2WPKH partial signatures, P2TR key path signatures, `signed_inputs`; an input already finalized is skipped) and `FinalizePsbt` of mixed PSBTs: only wallet outputs leased here are signed (a wallet input not leased, reserved for another spend or locked to a channel funding refuses the PSBT; other parties' inputs are never touched; FinalizePsbt needs them finalized with their UTXO, as LND wants to be the last signer, and verifies every input of the result); FundPsbt and SignPsbt add the BIP 32 derivation and the P2TR internal key (what a finalizer needs). `PublishTransaction` of a transaction with other parties' inputs stores a `WalletCollaborative` row (new `BroadcastPurpose` 13, no schema change: rebroadcast and abandoned after permanent refusals like `WalletSend`, booked by its wallet movements and, since the review fix, one `WalletSent` of our net flow (our spent inputs minus our outputs: transfers out, or transfers in for a payjoin that pays us more than we put in; fee unknown, shared), so the books' clearing account nets to zero). FundPsbt: P2TR change (`change_type`), `max_fee_ratio` (0 to 1, LND's `sanityCheckFee` text; unset (0) is LND v0.21's `chanfunding.DefaultMaxFeeRatio` 0.2, mapped in `WalletKitService.FundPsbt`), `STRATEGY_LARGEST` (the wallet's only strategy; `STRATEGY_RANDOM` refused), the same for SendOutputs. `GetTransaction` (GetTransactions' entry for one txid, `NOT_FOUND` otherwise). `LabelTransaction` (our broadcast rows, `overwrite`, LND's texts; new `IBroadcastTransactionDbRepository.SetLabelAsync`). `RemoveTransaction` (an unconfirmed `WalletCollaborative` row, or a `WalletSend` whose wallet inputs are all held by walletrpc leases or withdraw reservations, abandoned; never a channel transaction nor the anchor CPFP reclaim, which is stored as a `WalletSend`; a withdraw's inputs are then released by its orphan rule, as LND frees a removed transaction's inputs; LND's texts). `RequiredReserve` (`IAnchorReserveService.GetRequiredReserve(additional)`). `SubmitPackage` (bitcoind's `submitpackage` with the transactions as given and `sat_per_vbyte` as `maxfeerate`, its `package_msg`, per-wtxid results and `replaced-transactions`; nothing stored; new `IBitcoinChainService.SubmitRawPackageAsync`). `SignMessageWithAddr`/`VerifyMessageWithAddr` (Bitcoin Core's message format; signing inside the signer, `ILightningSigner.SignWalletMessage`, refused unless the address's derived key gives the address, P2TR with the untweaked internal key as LND; verification of P2PKH, P2WPKH, nested P2WPKH and P2TR through the BIP 86 output key; Bitcoin Core's `rpc_signmessage.py` vector verified and reproduced byte for byte). `ImportPublicKey` (P2WPKH, nested P2WPKH, 32-byte BIP 86 P2TR into the imported-script tracker; `ListUnspent` reports imported outputs by their script type). `BumpForceCloseFee` and `BumpFee`: LND's sweeper parameters kept in memory (`OperatorFeeBumps`): for our anchor of an unconfirmed commitment (ours or the peer's) they steer the CPFP child (starting rate floors the estimate, `target_conf`, `deadline_delta` tightens and never loosens the HTLC deadline, `budget` replaces the cap but never lowers the cap that protects in-flight HTLCs, a budget lets a commitment without stake get a child, a fresh request replaces at once, `immediate` runs the round now); for an output of a resolution its sweep, claim or penalty is replaced at once at the starting rate within the budget (`SweepFeePolicy.DecideReplacementWithBudget`; for an output with a deadline, an HTLC claim or a penalty, the cap is max(budget, `SweepFeePolicy.GetMaxFee`), so a low budget never stops a penalty near its deadline from paying up to `PenaltyMaxFeePerMille`; `immediate` runs the channel's resolution round now).
-- **Remaining (reasons):** `ImportAccount` and `XCreateAccount` (UNIMPLEMENTED: watch-only and new named accounts need key scopes, derivation and recovery the single-account wallet does not have); `coin_select` templates (coin selection on top of a template that may hold foreign inputs and an existing change output: not built); every unconfirmed spend: `spend_unconfirmed`, leases of unconfirmed outputs and a `BumpFee` CPFP of an unconfirmed wallet output (the fee input selector deliberately never reserves unconfirmed outputs; a CPFP also needs `getmempoolentry`); `release_after_spend_confs`/`input_release_after_spend_confs` (refused, as LND refuses them when its wallet cannot apply them: leases are time-based reservations); labels of deposits and other transactions this node did not publish (`FAILED_PRECONDITION`: labels live on the broadcast rows; a label table would be a schema change); `BumpFee` on our anchors HTLC transactions (`FAILED_PRECONDITION`: their resolver RBF-bumps them on its own schedule); operator bump parameters are memory only (lost on restart; LND persists its sweeper inputs' params only while the input is registered too); `SubmitPackage` stores nothing (no rebroadcast after a restart); a collaborative transaction books no fee or withdrawal of ours (its movements only).
+- **Remaining (after wip/dangling):** Nested/hybrid key scopes and arbitrary account/key versions are refused; imported accounts are watch-only and historical recovery requires retained blocks within the documented script/block limits. Random coin selection is refused. Wallet CPFP publishes/replaces at the requested package target; automatic LND-style deadline fee escalation is not implemented. Anchor HTLC transactions remain resolver-driven. Operator channel bump parameters are memory-only; SubmitPackage has no durable package rebroadcast. Shared collaborative fees are not attributed as wholly ours. Named-account discovery metadata requires the database backup alongside the seed.
 - **Validation (2026-10-07):** `Infrastructure.Bitcoin.Tests/Wallet/WalletPsbtServiceTests.Nl1186.cs` (11 cases: SignPsbt then NBitcoin's finalizer, a mixed PSBT signed/finalized/published as `WalletCollaborative`, a foreign input not finalized, an unleased input, a PSBT without wallet inputs, P2TR change fee, `max_fee_ratio`, message signatures P2WPKH/P2TR, a wrong index refused, Core's vector), `BitcoinChainServiceRawPackageTests` (3), `Application.Tests/Onchain/Fees/SweepSchedulerOperatorBumpTests` (4), `Onchain/Anchors/AnchorCpfpServiceTests.OperatorBumps.cs` (5), `LndGrpc.Tests/Wave3/LndGrpcWave3HostTests.Nl1186.cs` (18 cases), `Integration.Tests/Persistence/BroadcastLabelPersistenceTests` (SQLite). net10.0: Domain 4806 (+4 skipped), Infrastructure.Bitcoin 2180 (+2 skipped), Application 4464, LndGrpc 267, Daemon 1692, Integration 1221 (+1 new) green; Release build 0 warnings; `dotnet format` clean. No cluster proof (walletrpc against LND alice is NL-1184's `LndGrpcWave3FlowTests`).
 - **Review fixes (branch `wip/u-nl1186-r1`, 2026-10-07):** the sweep budget cap for outputs with a deadline (`SweepScheduler`), the net flow of a `WalletCollaborative` transaction booked as `WalletSent` (`BlockchainMonitorService.StageWalletMovements`, `AccountingPostingRules.PostWalletSent` posts a positive net flow to transfers in), FundPsbt's unset `max_fee_ratio` as LND's 0.2, and `RemoveTransaction` refused for wallet sends not held by walletrpc leases or withdraw reservations (the anchor CPFP reclaim). Tests: `SweepSchedulerTests.Given_AnOperatorBudgetBelowThePenaltyCap_*` (fails without the fix), `ChainMonitorAccountingTests.Given_ACollaborativeTransaction_*` (payjoin sent and received: clearing 0), `WalletPsbtServiceTests.Given_LndsDefaultMaxFeeRatio_*`, `LndGrpcWave3HostTests.Given_AFundPsbtWithoutMaxFeeRatio_*` and the extended RemoveTransaction case. net10.0: Domain 4806 (+4 skipped), Application 4465, Infrastructure.Bitcoin 2181 (+2 skipped), LndGrpc 268, Integration 1224, Daemon 1692 green; Release build 0 warnings; `dotnet format` clean.
 - **Blocks/Blocked-by:** follow-up of NL-1184
+- **Done (2026-10-07, wip/dangling):** Coin-select templates preserve input/output order and foreign PSBT maps, support existing zero-value change placeholders, and lease only added wallet inputs. Scoped BIP84/BIP86 owned accounts use durable discovery windows and real signer derivation; account-level public imports remain isolated watch-only and extend discovery over historical spent receipts. A Core-proven transient mempool pool enables explicit unconfirmed selection/leases without adding confirmed custody or anchor collateral. Confirmation-depth leases persist in reservation identities and inspect bounded history pages. Wallet CPFP prices all ancestors, persists intent before publishing, and supports exact-input child RBF with incremental relay, dust and budget checks. Deposit/imported/broadcast labels are independent durable records with explicit overwrite. See WALLET_ACCOUNTS_OPERATOR.md. Final LND RPC 312, CLI/accounting handler 90 and circuit model 22 passed; combined Core/LND trial passed in `dangling-proof12-1`. Final boundary fixes hydrate projected history before lease-release proof, round CPFP to whole virtual bytes and atomically promote transient coins when packages confirm; focused lease6/CPFP9/SQLite56 checks passed.
+
+- **Inputless-template recovery (2026-10-07, wip/dangling):** Core-generated BIP174 inputless packets receive bounded normalization instead of witness-marker decoding/transaction-clone failure; PSBTv2 inputless packets work too. Funded responses remain v0 with preserved transaction fields and metadata. Nine cases pass, including wallet signature verification and malformed-map refusal before leases.
 
 ### NL-1187 LND gRPC GetTransactions: history gaps
 - **Status:** fixed (3e78e451); the one residue that needs a wallet rescan is NL-1289
@@ -9770,60 +9777,61 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** none
 
 
-### NL-1298 Remote signing production readiness
+### NL-1304 Remote signing production readiness
 - **Status:** in-progress
 - **Severity:** medium
 - **Kind:** epic
 - **Location:** `src/NLightning.Signer/`, `src/NLightning.Infrastructure.RemoteSigning/`, `docs/agents/REMOTE_SIGNING_PLAN.md`
-- **Evidence:** native C# extraction and injected seed provisioning landed in 9fb3ff1c. The `wip/remotesigner` follow-up adds supported-operation durable receipts/reconciliation, a real LND open/pay/restart/close proof, and a pinned VLS core compatibility spike. FAFO e47ae080 integration adds remote wallet-message signing, deposit-account metadata and silent-payment output computation; remote scanning/receiving and isolated swap keys remain unsupported. Same-machine key isolation is implemented; complete node/signer crash reconciliation, bounded-store maintenance, an authenticated VLS semantic adapter, and Nitro state freshness remain gates.
+- **Evidence:** native C# extraction and injected seed provisioning landed in 9fb3ff1c. The `wip/remotesigner` follow-up adds supported-operation durable receipts/reconciliation, a real LND open/pay/restart/close proof, and a pinned VLS core compatibility spike. FAFO integration through dd598216 (PR #32) adds remote wallet-message signing, named deposit-account metadata and silent-payment output computation; remote scanning/receiving and isolated swap keys remain unsupported. Same-machine key isolation and normal-operation node workflow recovery are implemented. A transactional authenticated VLS gateway is a separate prototype; complete application/on-chain recovery, bounded-store maintenance, the NLightning VLS adapter and Nitro state freshness remain gates.
 - **Fix sketch:** carry the acceptance gates in the remote-signing plan through application recovery, on-chain resolution, policy validation and enclave deployment. Do not describe the prototype as production host-compromise protection.
-- **Blocks/Blocked-by:** NL-1299..NL-1302
+- **Blocks/Blocked-by:** NL-1305..NL-1308
 
-### NL-1299 Node does not persist remote-signer request envelopes before dispatch
-- **Status:** open
+### NL-1305 Remote signing application recovery remains incomplete outside normal commitments
+- **Status:** in-progress
 - **Severity:** medium
 - **Kind:** gap
-- **Location:** `RemoteSignerConnection.Invoke`, `RemoteLightningSigner`, application channel transitions
-- **Evidence:** the signer persists supported outcomes and exposes `Prepare` / `Execute` / `Reconcile`, but ordinary node adapters create envelopes in memory. The transport exception retains a failed envelope only while the node survives. A node-process crash loses that request identity, so signer receipts alone do not reconcile a pending node database transition.
-- **Fix sketch:** persist explicit pending envelopes and workflow stages before dispatch, reconcile exact outcomes on startup, and prove node-ahead/signer-ahead failures without rolling either safety state backward.
-- **Blocks/Blocked-by:** NL-1298; follow the crash-consistency plan
+- **Location:** `RemoteSigningWorkflowCoordinator`, `ChannelStateTransitionService`, `ChannelManager`, `SigningWorkflows` / `SigningRequests`
+- **Evidence:** normal commitment signing, taproot reconnect signing and post-save revocation release now persist immutable envelopes/results, validate authoritative channel snapshots and resume before rollback. Consumption shares the channel-transition transaction and saved commitment diff. Completed node responses require matching signer receipts; uncertain or changed outcomes block. Opening/allocation, cooperative close, splice and on-chain application workflows remain outside this coverage. No deployment-wide writer fencing is claimed.
+- **Validation:** all 65 merged-branch remote-signing tests pass, including eight actual node-process kill/restart boundaries, six negative restarts and three supplementary synthetic receipt-policy cases in `NodeWorkflowCrashTests`; see REMOTE_SIGNING_RECOVERY.md. This is a protocol harness with migrated SQLite, not a new live LND/on-chain acceptance run.
+- **Fix sketch:** extend the same durable prerequisites and atomic consumption to the remaining application workflows, with crash proofs for each; preserve original identities and never roll safety state back. See `docs/agents/REMOTE_SIGNING_RECOVERY.md`.
+- **Blocks/Blocked-by:** NL-1304; follow the crash-consistency plan
 
-### NL-1300 Durable signer receipt store has no safe maintenance or compaction procedure
+### NL-1306 Durable signer receipt store has no safe maintenance or compaction procedure
 - **Status:** open
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `DurableSignerState.MaxRequestReceipts`, receipt response quota, append-only journal
 - **Evidence:** the prototype retains up to 65,536 immutable receipt identities and a 64 MiB response budget. New supported requests fail closed at capacity, rather than evict an old identity and permit duplicate execution. The journal grows, and no safe online compaction or fenced migration procedure exists. Deleting the journal rolls back signer safety history.
 - **Fix sketch:** design authenticated retention/checkpointing with durable operation identity and nonce/session history; prove delayed retries, interrupted compaction and quota recovery fail safely.
-- **Blocks/Blocked-by:** NL-1298; external state freshness/fencing for enclave use
+- **Blocks/Blocked-by:** NL-1304; external state freshness/fencing for enclave use
 
-### NL-1301 Production VLS semantic adapter remains unimplemented
+### NL-1307 Production VLS semantic adapter remains unimplemented
 - **Status:** open
 - **Severity:** medium
 - **Kind:** gap
-- **Location:** `tools/vls-compat-spike/`, `docs/agents/VLS_COMPATIBILITY_SPIKE.md`, application commitment/revocation hooks
-- **Evidence:** pinned VLS core signing/validation, authorization refusals and derivation differences are executable research. The spike uses artificial funding fixtures and DummyPersister; it does not provide a C# adapter, authenticated protocol gateway, durable VLS state, live payment settlement or signer-capability negotiation. Stock splice/taproot support is insufficient for the current node feature set.
+- **Location:** `tools/vls-compat-spike/`, `tools/vls-gateway/`, `docs/agents/VLS_COMPATIBILITY_SPIKE.md`, application commitment/revocation hooks
+- **Evidence:** pinned VLS core signing/validation, authorization refusals and derivation differences are executable research. The core spike uses artificial fixtures and DummyPersister. The subsequent `tools/vls-gateway` prototype has authenticated Unix semantic commands, separately credentialed keysend approval, injected seed and atomic transactional Redb policy-state/receipts, plus actual-process restart and policy/signature checks. It still has no NLightning C# adapter, live payment settlement, invoice authorization or signer-capability negotiation. Stock splice/taproot support is insufficient for the current node feature set.
 - **Fix sketch:** FAFO owner decision (2026-10-07): only user, no prior-version compatibility requirement; use stock VLS derivation with fresh identities/wallets/channels and exclude legacy key/state migration. Implement a fresh-node ECDSA semantic adapter with explicit authorization and durable VLS persistence; suppress unsupported features before negotiation and prove live payments and all on-chain recovery paths without native fallback.
-- **Blocks/Blocked-by:** NL-1298; scope and acceptance gates in the VLS assessment
+- **Blocks/Blocked-by:** NL-1304; scope and acceptance gates in the VLS assessment
 
-### NL-1302 Nitro signer deployment needs attested provisioning and trustworthy external state
+### NL-1308 Nitro signer deployment needs attested provisioning and trustworthy external state
 - **Status:** open
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `docs/agents/REMOTE_SIGNING_PLAN.md`, signer transport and provisioning boundary
 - **Evidence:** stdin seed injection and a replaceable stream connector establish local prototype boundaries. No Nitro image, vsock listener, attested provisioning peer, rollback-resistant external state authority or cloned-writer fencing is implemented. Local sidecar locking protects only processes sharing the same state path.
 - **Fix sketch:** first prove vsock transport, then attested secret delivery and authenticated/fresh external state commits with writer fencing on real Nitro hardware; retain tested recovery and deadline monitoring.
-- **Blocks/Blocked-by:** NL-1298, NL-1299, NL-1300
+- **Blocks/Blocked-by:** NL-1304, NL-1305, NL-1306
 
 
-### NL-1303 Equivalent encoded identities bypassed durable nonce-session lookup after restart
+### NL-1309 Equivalent encoded identities bypassed durable nonce-session lookup after restart
 - **Status:** fixed (9d4e7b944ad16d9f6d2ae888b24200305a7ddf37)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `DurableSignerState.SessionKey`, `Remember`, `RequestRecoveryTests`
 - **Evidence:** nonce sessions hashed raw JSON channel IDs and closing/splice public nonces. Utf8JsonReader accepts embedded whitespace in base64 strings, and JsonElement retains that whitespace when serialized. Against the pre-fix daemon, a real-process restart followed by an equivalent encoded channel ID and a different transaction with a valid peer partial signature signed a second transaction using the same deterministic holder verification nonce. The regression failed because no SignerException was thrown. JSON Unicode escapes normalize, and invalid padding bits are rejected; those are not the reproduced trigger.
 - **Fix sketch:** session identities now use decoded ChannelId and MusigPublicNonce bytes. Restore recomputes canonical identities from existing entries and refuses a repeated session with a different payload hash or response; exact duplicate history remains valid. The process regression checks altered transaction refusal after restart and startup refusal for simulated conflicting legacy history.
-- **Blocks/Blocked-by:** NL-1298; prototype validation remains distinct from production deployment
+- **Blocks/Blocked-by:** NL-1304; prototype validation remains distinct from production deployment
 
 ### NL-1190 Loop gRPC compatibility L0–L4
 - **Status:** fixed (1bd0f7f0)
@@ -10717,13 +10725,17 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** related NL-1181
 
 ### NL-1283 LND gRPC HtlcInterceptor: remaining differences from LND v0.21.4 after NL-1182
-- **Status:** open
+- **Status:** fixed (wip/dangling; implementation, focused tests and combined live proof complete)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `Application/Payments/Switch/HtlcSwitch{,.Interception}.cs`, `Onchain/Resolvers/FinalHopClaims.cs`, `Payments/Interception/HtlcInterceptorHub.cs`
 - **Evidence:** found while closing NL-1182 (lane nl1182, 2026-10-07) against LND v0.21.4's source. (1) LND offers every non-exit incoming HTLC its contest resolver waits on to the interceptor once the channel is on chain (`witness_beacon.go` `SubscribeUpdates`), including forwards whose outgoing HTLC is in flight; we offer only forwards that never left (the resolvers raise the lock-in only for HTLCs without a circuit or outgoing HTLC), because a settle next to a live forward would book the HTLC twice (`ForwardSettled` and `InterceptedHtlcSettled`). (2) RESUME_MODIFIED: the forward circuit (forwarding history, accounting) keeps the HTLC's real incoming amount where LND records the override, the incoming dust exposure is not re-checked against the override, and a forward that would send more than the incoming HTLC brings in is failed with `temporary_channel_failure` (LND allows it for custom/aux channels, which we do not have). (3) LND's `handleExpired` fails forwards within 22 blocks of expiry (`expiry_too_soon`) and above int32 (`expiry_too_far`) even with no interceptor connected and none required; we apply both only while an interceptor is connected or required. (4) On-chain holds are created only while a client is connected or one is required (the resolvers re-raise every block, so a client connecting later is offered them at the next block). (5) No cluster proof against an LND interceptor client of RESUME_MODIFIED, requireinterceptor or the on-chain path. (6) Like LND (`CustomRecords.Validate`), even `out_wire_custom_records` types are accepted and sent; a peer that does not know the type (CLN, Eclair, LDK, NLightning's own `UpdateAddHtlcWire`) answers the add with a warning and disconnects, and since the add is persisted every reconnection retransmits it until the HTLC deadline monitor force-closes the channel. We log a warning when an even type is offered (lane nl1182 r1) but do not refuse it.
 - **Fix sketch:** (1) offer forwards with an outgoing HTLC in flight too, with the accounting rule for a settle that races its downstream fulfill; (2) decide whether the circuit records the override (accounting would need an adjustment line); (3) owner decision whether to change the no-interceptor path; (5) extend `Docker/LndGrpc/LndGrpcWave3FlowTests`; (6) owner decision whether to refuse even types unless the outgoing peer is known to accept them (a deviation from LND).
 - **Blocks/Blocked-by:** follow-up of NL-1182
+- **Fix (2026-10-07, wip/dangling):** On-chain interception also offers forwards with an outgoing HTLC in flight. A hash-validated claimed preimage persists on the circuit with the incoming claim, so downstream fulfill/failure, restart and incoming-row removal book each real leg once. Circuit history records the interpretation override; actual incoming value and actual fees drive accounting. Expiry limits apply without a client, incoming dust exposure is rechecked, and unsupported mandatory outgoing wire records fail before persistence. Ordinary channels still refuse outgoing value above real incoming value; custom/aux channels are unsupported. SQLite channel-engine tests cover both ordering directions, failure, pruning and replay.
+- **Validation:** Release net10 solution build has zero warnings/errors. Final affected Application 388 and non-Docker/non-SqlServer/non-cluster Integration 1,251 passed; the combined Core/LND proof remains an explicit acceptance gate in DANGLING_PLAN.md.
+
+- **Recovery follow-up (2026-10-07):** Failed claimed-circuit income survives accounting cutover even when the incoming HTLC/channel rows are gone. Backfill verifies the persisted preimage, emits the original idempotency key as memo history and excludes ordinary failed forwards. Live claimed-failure staging propagates errors so status and income commit atomically; SQLite fault/retry and switch-writer failure regressions cover the boundary.
 
 ### NL-1286 LND gRPC PublishTransaction/SendOutputs: a label of up to 500 characters overflows the 256-byte column
 - **Status:** fixed (13ecaa6f)
@@ -10736,7 +10748,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** found in NL-1186
 
 ### NL-1289 LND gRPC GetTransactions: history that needs a wallet rescan
-- **Status:** open
+- **Status:** fixed (wip/dangling; implementation, focused tests and combined live proof complete)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.LndGrpc/Services/LightningService.Transactions.cs`; chain monitor wallet history (`WalletTransactions`)
@@ -10744,6 +10756,8 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Update (2026-10-07, NL-1187 review r1):** two more residues: (4) a pre-cutover self-transfer to a non-change receive address held since then is listed with its outputs only (no change output marks it as our send, so its wallet inputs are not resolved); (5) `GetTransactions` reads every stored row in the range with its raw transaction and merges in memory (no paging or projection in the database).
 - **Fix sketch:** a bounded wallet rescan into `WalletTransactions` (from the lowest wallet address's first use or an operator-given birthday, over the blocks bitcoind still serves, with the imported tracker's checkpoint pattern), run once after the migration or on request; on a pruned node only what bitcoind still serves can be recovered.
 - **Blocks/Blocked-by:** follow-up of NL-1187
+- **Fix (2026-10-07, wip/dangling):** Opt-in `wallethistory`/IPC57 performs bounded birthday backfill with durable generation, retained lower bound, target, cursor/hash and error. Raw history and complete ownership projections commit with each checkpoint, resume after restart and use Core undo prevouts without txindex, including pre-birthday parents. Pruned birthdays fail before a job is written unless partial recovery is explicit. A shared gate serializes confirmations/reorgs, preserves cancellation and repairs completed history. No custody, accounting facts or live cursor are replayed. GetTransactions uses lightweight database pages and loads selected raw rows, retaining conservative legacy fallback. Registered named/imported scripts and accepted SP metadata participate; undiscovered SP history requires sprescan first. Independent labels survive reorgs. See WALLET_HISTORY.md.
+- **Validation:** Release net10 solution build has zero warnings/errors. Final affected Application 388 and non-Docker/non-SqlServer/non-cluster Integration 1,251 passed; the combined Core/LND proof remains an explicit acceptance gate in DANGLING_PLAN.md.
 
 ### NL-1296 A received silent payment coin could not be spent by `withdraw` while the anchors reserve exceeded it
 - **Status:** fixed (7e3f0e5b)
@@ -10761,3 +10775,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/SilentPayments/SilentPaymentScanner.cs` (`StageReceiptsAsync`, `StageSpendsAsync`), `Wallet/BlockchainMonitorService.SilentPayments.cs` (`InitializeSilentPaymentsAsync`)
 - **Evidence:** FAFO2's `logs/log-202610.txt` has no silent payment line although the scanner found and stored the 40,000 sat receipt of NL-1296; only a slow scan was logged.
 - **Fix:** Information lines for every received output (outpoint, amount, height, label, live or recovered), every ignored one (below the receive minimum) and every spend of one, and one at start with the scan state (on/off, birthday, live cursor, prevout source, rescan target).
+
+### NL-1298 Explicit wallet input selection was refused for silent-payment destinations
+- **Status:** fixed (wip/dangling)
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `Infrastructure.Bitcoin/Wallet/WalletSpendService.SilentPayments.cs`, `WalletSpendService.cs`, `WalletSelectionPolicy`
+- **Evidence:** NL-1296 added exact `withdraw --utxo` for conventional destinations, but a silent-payment destination still rejected an explicit input list. Operators could not preserve the same exact-input/reserve policy for BIP352 sends.
+- **Fix:** Amount and send-all silent-payment withdrawals spend exactly the named confirmed eligible wallet outpoints, including received silent-payment outputs, preserving anchor reserve backing in other coins and refusing unavailable/duplicate/ineligible inputs. Send-all emits no change; amount withdrawals retain the normal deterministic BIP352 change/signature path. Operator instructions document input linkage, reserves, status and logs.
+- **Validation:** 75 initial selected-input/signing checks passed, including actual named-account signing. Final wallet/selector regressions passed 477 cases plus three corrected monitor reorg cases. Combined normal Core/upstream-LND exact-input receipt proof passed in `dangling-proof12-1`; the chosen 40k coin was spent and the 800k coin left untouched. See DANGLING_PLAN.md.
+- **Blocks/Blocked-by:** follow-up of NL-1296; silent payments D-SP13.

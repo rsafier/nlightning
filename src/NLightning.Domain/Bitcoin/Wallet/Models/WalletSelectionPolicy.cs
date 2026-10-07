@@ -7,6 +7,11 @@ public sealed record WalletSelectionPolicy(bool SilentPaymentSend = false, bool 
                                           bool AvoidMixing = true, bool ChangeToSilentPayment = false,
                                           long MinimumSilentChangeSat = 1_000)
 {
+    public bool IncludeUnconfirmed { get; init; }
+    public uint MinConfirmations { get; init; } = 1;
+    public uint? ConfirmationTip { get; init; }
+    public string Account { get; init; } = "default";
+
     public static WalletSelectionPolicy Default { get; } = new();
 
     /// <summary>

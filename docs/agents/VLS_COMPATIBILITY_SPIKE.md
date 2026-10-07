@@ -140,6 +140,16 @@ backend behavior; supplying only a node secret does not reproduce the BIP32 root
 
 ## Unsupported subset and next gate
 
+The subsequent [gateway prototype](../../tools/vls-gateway/README.md) adds injected
+seed provisioning, authenticated Unix sockets, separately credentialed keysend
+approval and transactional Redb policy-state/receipt persistence. Its actual-process
+test kills and restarts the gateway after independently confirming a receipt while
+leaving the original reply unread, then verifies the original response. It also
+checks persisted approval/revocation state and independently verifies funding
+signatures. This is a regtest JSON semantic gateway, not a NLightning adapter or
+live channel proof. Invoice authorization, chain tracking and complete on-chain
+coverage remain integration gates.
+
 At the pinned revision, `SignSpliceTx` exists in the protocol but its handler is
 `unimplemented!()` and it is not advertised. No NLightning taproot/MuSig2 channel
 or gossip v2 operation family was found in the wire protocol. This spike does not

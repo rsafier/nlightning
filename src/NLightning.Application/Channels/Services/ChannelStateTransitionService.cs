@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -23,6 +24,7 @@ using Domain.Protocol.Models;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Domain.Serialization.Interfaces;
+using Domain.Signing.Recovery;
 using Interfaces;
 using Payments.Events;
 using Quiescence;
@@ -66,6 +68,9 @@ public sealed class ChannelStateTransitionService
     private readonly IStfuReleaseScheduler? _stfuReleaseScheduler;
     private readonly IUnitOfWork _unitOfWork;
     private readonly HtlcEventMonitor? _htlcMonitor;
+    private readonly IRemoteSigningWorkflowCoordinator? _signingWorkflows;
+    private ISigningWorkflowScope? _consumingSigningWorkflow;
+    private readonly IServiceScopeFactory? _signingRecoveryScopes;
 
     public ChannelStateTransitionService(IChannelMemoryRepository channelMemoryRepository,
                                          ChannelDomainEventQueue eventQueue, ICommitmentSigner commitmentSigner,
@@ -75,8 +80,12 @@ public sealed class ChannelStateTransitionService
                                          ISecretStorageServiceFactory secretStorageServiceFactory,
                                          IUnitOfWork unitOfWork, IStfuReleaseScheduler? stfuReleaseScheduler = null,
                                          ICommitmentVerifier? commitmentVerifier = null,
-                                         ICommitScheduler? commitScheduler = null, HtlcEventMonitor? htlcMonitor = null)
+                                         ICommitScheduler? commitScheduler = null, HtlcEventMonitor? htlcMonitor = null,
+                                         IRemoteSigningWorkflowCoordinator? signingWorkflows = null,
+                                         IServiceScopeFactory? signingRecoveryScopes = null)
     {
+        _signingWorkflows = signingWorkflows;
+        _signingRecoveryScopes = signingRecoveryScopes;
         _htlcMonitor = htlcMonitor;
         _stfuReleaseScheduler = stfuReleaseScheduler;
         _commitmentVerifier = commitmentVerifier;
@@ -199,9 +208,18 @@ public sealed class ChannelStateTransitionService
         ArgumentNullException.ThrowIfNull(channel);
         ArgumentNullException.ThrowIfNull(result);
 
+        if (_signingWorkflows is not null && _consumingSigningWorkflow is null
+         && (await _signingWorkflows.GetPendingAsync(channel.ChannelId)).Count != 0)
+            throw new InvalidOperationException("Channel has an unfinished signing workflow; recover it before changing its state.");
+
         await _unitOfWork.ChannelStateDbRepository.ApplyAsync(result.Next, result.Transition, extras);
+        if (_signingWorkflows is not null && extras?.LastSent == LastSentCommitmentMessage.RevokeAndAck)
+            await _signingWorkflows.StageAsync(
+                SigningWorkflowSnapshot.Create(channel, result.Next, SigningWorkflowKind.ReleaseRevoke), _unitOfWork);
         if (stageWithTransition is not null)
             await stageWithTransition(_unitOfWork);
+        if (_consumingSigningWorkflow is not null)
+            await _consumingSigningWorkflow.StageConsumeAsync(_unitOfWork);
         await _unitOfWork.SaveChangesAsync();
 
         channel.UpdateCommitments(result.Next, extras);
@@ -219,6 +237,33 @@ public sealed class ChannelStateTransitionService
     /// counter-derived, so a retransmission repeats it).
     /// </summary>
     public RevokeAndAckMessage CreateRevokeAndAck(ChannelModel channel, OutboundRevokeAndAck revokeAndAck)
+    {
+        if (_signingWorkflows is not null)
+            throw new InvalidOperationException("Remote revocations require CreateRevokeAndAckAsync and a persisted workflow.");
+        return BuildRevokeAndAck(channel, revokeAndAck);
+    }
+
+    public async Task<RevokeAndAckMessage> CreateRevokeAndAckAsync(ChannelModel channel,
+                                                                  OutboundRevokeAndAck revokeAndAck)
+    {
+        if (_signingWorkflows is null) return BuildRevokeAndAck(channel, revokeAndAck);
+        var commitments = channel.Commitments
+                       ?? throw new InvalidOperationException("Revocation requires a persisted commitment snapshot.");
+        if (commitments.LocalCommit.Number == 0 || channel.DataLossDetected || !CarriesUpdates(channel.State)
+         || revokeAndAck.RevokedCommitmentNumber != commitments.LocalCommit.Number - 1
+         || revokeAndAck.NextCommitmentNumber != checked(commitments.LocalCommit.Number + 1))
+            throw new InvalidOperationException("Revocation workflow does not match the committed local channel state.");
+        await ValidatePersistedSigningSnapshotAsync(channel, commitments, SigningWorkflowKind.ReleaseRevoke);
+        using var workflow = await _signingWorkflows.BeginAsync(
+            SigningWorkflowSnapshot.Create(channel, commitments, SigningWorkflowKind.ReleaseRevoke));
+        workflow.Activate();
+        var message = BuildRevokeAndAck(channel, revokeAndAck);
+        await workflow.StageConsumeAsync(_unitOfWork);
+        await _unitOfWork.SaveChangesAsync();
+        return message;
+    }
+
+    private RevokeAndAckMessage BuildRevokeAndAck(ChannelModel channel, OutboundRevokeAndAck revokeAndAck)
     {
         ArgumentNullException.ThrowIfNull(channel);
         ArgumentNullException.ThrowIfNull(revokeAndAck);
@@ -244,7 +289,40 @@ public sealed class ChannelStateTransitionService
     public CommitmentsResult ResignRemoteNextCommit(ChannelCommitments commitments)
     {
         ArgumentNullException.ThrowIfNull(commitments);
+        if (_signingWorkflows is not null)
+            throw new InvalidOperationException("Remote commitment retransmission requires its persisted signing workflow.");
         return commitments.ResignRemoteNextCommit(_commitmentSigner);
+    }
+
+    public async Task<IReadOnlyList<IChannelMessage>> ResignRemoteNextCommitAsync(ChannelModel channel,
+                                                                                ReadOnlyMemory<byte> diff)
+    {
+        var commitments = channel.Commitments
+                       ?? throw new InvalidOperationException("Commitment retransmission requires a channel snapshot.");
+        if (channel.DataLossDetected || !CarriesUpdates(channel.State) || !commitments.IsSimpleTaproot
+         || commitments.RemoteNextCommit is null)
+            throw new InvalidOperationException("Channel cannot re-sign its remote commitment.");
+        if (_signingWorkflows is not null)
+        {
+            if (channel.SentCommitDiff is not { } savedDiff || !savedDiff.Span.SequenceEqual(diff.Span))
+                throw new InvalidOperationException("Retransmission must use the channel's saved commitment diff.");
+            await ValidatePersistedSigningSnapshotAsync(channel, commitments, SigningWorkflowKind.SendCommit);
+        }
+        using var workflow = _signingWorkflows is null ? null : await _signingWorkflows.BeginAsync(
+            SigningWorkflowSnapshot.Create(channel, commitments, SigningWorkflowKind.SendCommit));
+        workflow?.Activate();
+        var stored = await SentCommitDiffCodec.DecodeAsync(_messageSerializer, diff);
+        var updates = stored.TakeWhile(m => m is not (CommitmentSignedMessage or StartBatchMessage))
+                            .Select(m => m as IChannelMessage
+                                      ?? throw new InvalidOperationException("Stored commitment diff contains a non-channel message."))
+                            .ToList();
+        var result = commitments.ResignRemoteNextCommit(_commitmentSigner);
+        var signed = result.Outbound.Select(o => ToWireMessage(channel, o)).ToList();
+        var newDiff = await SentCommitDiffCodec.EncodeAsync(_messageSerializer, updates.Concat(signed));
+        _consumingSigningWorkflow = workflow;
+        try { await CommitAsync(channel, result, new ChannelStateExtras { SentCommitDiff = newDiff }); }
+        finally { _consumingSigningWorkflow = null; }
+        return [.. updates, .. signed];
     }
 
     /// <summary>
@@ -330,6 +408,11 @@ public sealed class ChannelStateTransitionService
             return [];
         }
 
+        if (_signingWorkflows is not null)
+            await ValidatePersistedSigningSnapshotAsync(channel, commitments, SigningWorkflowKind.SendCommit);
+        using var workflow = _signingWorkflows is null ? null : await _signingWorkflows.BeginAsync(
+            SigningWorkflowSnapshot.Create(channel, commitments, SigningWorkflowKind.SendCommit));
+        workflow?.Activate();
         var updates = PendingLocalUpdates(commitments).Select(u => ToWireMessage(channel, u)).ToList();
         var result = commitments.SendCommit(_commitmentSigner);
         var signed = result.Outbound.Select(o => ToWireMessage(channel, o)).ToList();
@@ -337,11 +420,16 @@ public sealed class ChannelStateTransitionService
         // The whole batch is retransmitted verbatim on reestablish (D4)
         var diff = await SentCommitDiffCodec.EncodeAsync(_messageSerializer, updates.Concat(signed));
 
-        await CommitAsync(channel, result, new ChannelStateExtras
+        _consumingSigningWorkflow = workflow;
+        try
         {
-            SentCommitDiff = diff,
-            LastSent = LastSentCommitmentMessage.CommitmentSigned
-        });
+            await CommitAsync(channel, result, new ChannelStateExtras
+            {
+                SentCommitDiff = diff,
+                LastSent = LastSentCommitmentMessage.CommitmentSigned
+            });
+        }
+        finally { _consumingSigningWorkflow = null; }
 
         if (_logger.IsEnabled(LogLevel.Debug))
             _logger.LogDebug(
@@ -350,6 +438,58 @@ public sealed class ChannelStateTransitionService
                 commitments.PendingFundings.Count + 1, updates.Count);
 
         return signed;
+    }
+
+    /// <summary>Called under the channel lock before startup rollback or any subsequent transition.</summary>
+    public async Task ResumeSigningWorkflowsAsync(ChannelModel channel)
+    {
+        if (_signingWorkflows is null) return;
+        var pending = await _signingWorkflows.GetPendingAsync(channel.ChannelId);
+        if (pending.Count == 0) return;
+        if (pending.Count != 1 || channel.DataLossDetected || !CarriesUpdates(channel.State)
+         || channel.Commitments is not { } commitments)
+            throw new InvalidOperationException("Cannot resume signing workflow for this channel state.");
+        var workflow = pending.Single();
+        var descriptor = SigningWorkflowSnapshot.Create(channel, commitments, workflow.Kind);
+        if (workflow.State != SigningWorkflowState.Pending
+         || workflow.ExpectedLocalCommitmentNumber != descriptor.ExpectedLocalCommitmentNumber
+         || workflow.ExpectedRemoteCommitmentNumber != descriptor.ExpectedRemoteCommitmentNumber
+         || !workflow.SnapshotFingerprint.AsSpan().SequenceEqual(descriptor.SnapshotFingerprint))
+            throw new InvalidOperationException("Pending signing workflow belongs to a different channel snapshot.");
+        switch (workflow.Kind)
+        {
+            case SigningWorkflowKind.SendCommit:
+                if (commitments.CanSendCommit)
+                    await SignPendingAsync(channel);
+                else if (commitments.IsSimpleTaproot && commitments.RemoteNextCommit is not null
+                      && channel.SentCommitDiff is { } diff)
+                    await ResignRemoteNextCommitAsync(channel, diff);
+                else throw new InvalidOperationException("Pending commitment workflow cannot be resumed from current state.");
+                break;
+            case SigningWorkflowKind.ReleaseRevoke:
+                if (commitments.LocalCommit.Number == 0)
+                    throw new InvalidOperationException("Initial commitment cannot release a revoked secret.");
+                await CreateRevokeAndAckAsync(channel,
+                    new OutboundRevokeAndAck(commitments.LocalCommit.Number - 1, checked(commitments.LocalCommit.Number + 1)));
+                break;
+            default: throw new InvalidOperationException("Unknown signing workflow kind.");
+        }
+    }
+
+    private async Task ValidatePersistedSigningSnapshotAsync(ChannelModel channel, ChannelCommitments commitments,
+                                                             SigningWorkflowKind kind)
+    {
+        if (_signingRecoveryScopes is null)
+            throw new InvalidOperationException("Remote signing recovery requires independent database scopes.");
+        using var scope = _signingRecoveryScopes.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var saved = await unitOfWork.ChannelDbRepository.GetByIdAsync(channel.ChannelId);
+        if (saved is null || saved.DataLossDetected || !CarriesUpdates(saved.State) || saved.Commitments is null)
+            throw new InvalidOperationException("Signing requires an active, durably committed channel snapshot.");
+        var expected = SigningWorkflowSnapshot.Create(channel, commitments, kind);
+        var actual = SigningWorkflowSnapshot.Create(saved, saved.Commitments, kind);
+        if (!actual.SnapshotFingerprint.AsSpan().SequenceEqual(expected.SnapshotFingerprint))
+            throw new InvalidOperationException("Signing inputs differ from the durably committed channel snapshot.");
     }
 
     /// <summary>
@@ -399,7 +539,7 @@ public sealed class ChannelStateTransitionService
 
         // Persist the new local commitment before the secret exists (B2-CS-R06, I3; per-funding rows: SP1-C, SP-I3)
         await CommitAsync(channel, result, new ChannelStateExtras { LastSent = LastSentCommitmentMessage.RevokeAndAck });
-        var revokeAndAckMessage = CreateRevokeAndAck(channel, revokeAndAck);
+        var revokeAndAckMessage = await CreateRevokeAndAckAsync(channel, revokeAndAck);
 
         if (_logger.IsEnabled(LogLevel.Debug))
             _logger.LogDebug("Accepted local commitment {Number} of channel {ChannelId} on {Fundings} funding(s)",

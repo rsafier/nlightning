@@ -130,13 +130,17 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
 
     /// <summary>Two nodes, each on a database of <paramref name="database"/> (SQLite files when null).</summary>
     /// <param name="database">The provider; the harness disposes it.</param>
-    public static async Task<TaprootOpenHarness> CreateAsync(ITaprootHarnessDatabase? database = null)
+    public static async Task<TaprootOpenHarness> CreateAsync(ITaprootHarnessDatabase? database = null,
+        Action<TaprootOpenNode, IServiceCollection>? configureServices = null)
     {
         database ??= new SqliteTaprootHarnessDatabase();
         var harness = new TaprootOpenHarness(database, await database.CreateAsync("alice"),
                                              await database.CreateAsync("bob"));
         foreach (var node in harness.Nodes)
+        {
+            node.ConfigureServices = configureServices;
             await node.StartAsync(migrate: !database.CreatesMigrated);
+        }
 
         // The peer rows the peer manager saves on connection (channels reference them)
         foreach (var node in harness.Nodes)
@@ -341,7 +345,9 @@ internal sealed class TaprootOpenNode
     public string DatabaseProvider { get; }
     public string ConnectionString { get; }
     public TaprootKeyManager KeyManager { get; }
-    public CompactPubKey NodeId => KeyManager.NodeId;
+    public CompactPubKey NodeId => PublicKeyManager.GetNodePubKey();
+    public ISecureKeyManager PublicKeyManager { get; set; }
+    public Action<TaprootOpenNode, IServiceCollection>? ConfigureServices { get; set; }
     public NodeOptions Options { get; }
     public Mock<IBlockchainMonitor> ChainMonitor { get; private set; } = new();
     public HarnessLinkProbe Probe { get; } = new();
@@ -375,6 +381,7 @@ internal sealed class TaprootOpenNode
         DatabaseProvider = databaseProvider;
         ConnectionString = connectionString;
         KeyManager = new TaprootKeyManager(seed);
+        PublicKeyManager = KeyManager;
         Options = new NodeOptions
         {
             BitcoinNetwork = BitcoinNetwork.Regtest,
@@ -422,7 +429,9 @@ internal sealed class TaprootOpenNode
         _provider.GetRequiredService<IUtxoMemoryRepository>()
                  .Add(new UtxoModel(new TxId(Enumerable.Repeat(KeyManager.Seed, 32).ToArray()), 0,
                                     LightningMoney.Satoshis(TaprootOpenHarness.WalletSat), 100,
-                                    new WalletAddressModel(AddressType.P2Wpkh, 0, false, KeyManager.DepositAddress)));
+                                    new WalletAddressModel(AddressType.P2Wpkh, 0, false,
+                                        new PubKey((byte[])PublicKeyManager.GetWalletPublicKey(0, false, AddressType.P2Wpkh))
+                                            .WitHash.GetAddress(Network.RegTest).ToString())));
 
         ChannelManager = _provider.GetRequiredService<ChannelManager>();
         ChannelManager.OnResponseMessageReady += (_, args) => _harness.Route(this, args.ResponseMessage);
@@ -555,6 +564,7 @@ internal sealed class TaprootOpenNode
         services.AddScoped<IChannelMessageHandler<CommitmentSignedMessage>, CommitmentSignedMessageHandler>();
         services.AddScoped<IChannelMessageHandler<RevokeAndAckMessage>, RevokeAndAckMessageHandler>();
         services.AddScoped<IChannelMessageHandler<UpdateFeeMessage>, UpdateFeeMessageHandler>();
+        ConfigureServices?.Invoke(this, services);
         return services.BuildServiceProvider();
     }
 

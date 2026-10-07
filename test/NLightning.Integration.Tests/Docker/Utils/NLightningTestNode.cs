@@ -19,6 +19,7 @@ using Application.Accounting.Books;
 using Application.Accounting.Financial;
 using Application.Accounting.Prices;
 using Application.Bitcoin.SilentPayments;
+using Application.Bitcoin.WalletHistory;
 using Application.Channels.Fees;
 using Application.Channels.RoutingPolicies;
 using Application.Channels.Safety.Interfaces;
@@ -116,6 +117,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
     private IFeeService? _feeService;
     private GossipGraphHostedService? _gossipGraph;
     private SilentPaymentService? _silentPayments;
+    private WalletHistoryService? _walletHistory;
     private ServiceProvider? _serviceProvider;
     private bool _started;
     private bool _disposed;
@@ -290,16 +292,17 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// </remarks>
     public static Task<NLightningTestNode> CreateAsync(LightningRegtestNetworkFixture fixture, string name,
                                                        TestNodeDatabase? database = null,
-                                                       Action<NodeOptions>? configureNodeOptions = null)
+                                                       Action<NodeOptions>? configureNodeOptions = null,
+                                                       ISecureKeyManager? secureKeyManager = null)
     {
         ArgumentNullException.ThrowIfNull(fixture);
         fixture.SkipIfUnavailable();
         return CreateAsync(() => RegtestBitcoinEndpoint.FromFixture(fixture), name, database, configureNodeOptions,
-                           fixture.GetLndPeerEndpointAsync);
+                           fixture.GetLndPeerEndpointAsync, secureKeyManager);
     }
 
     /// <summary>
-    /// As <see cref="CreateAsync(LightningRegtestNetworkFixture, string, TestNodeDatabase?, Action{NodeOptions}?)"/>,
+    /// As <see cref="CreateAsync(LightningRegtestNetworkFixture, string, TestNodeDatabase?, Action{NodeOptions}?, ISecureKeyManager?)"/>,
     /// for a node on a bitcoind outside the shared regtest network (e.g. the CLN interop fixture's own).
     /// </summary>
     public static Task<NLightningTestNode> CreateAsync(RegtestBitcoinEndpoint bitcoin, string name,
@@ -399,6 +402,9 @@ public sealed class NLightningTestNode : IAsyncDisposable
             _silentPayments = Services.GetService<SilentPaymentService>();
             if (_silentPayments is not null)
                 await _silentPayments.StartAsync(cancellationToken);
+            _walletHistory = Services.GetService<WalletHistoryService>();
+            if (_walletHistory is not null)
+                await _walletHistory.StartAsync(cancellationToken);
             // As the daemon does: drop the retired short channel ids that expired while the node was down (SP2-B)
             retiredScidMap?.PruneExpired(BlockchainMonitor.LastProcessedBlockHeight);
             // As the daemon does: release orphaned withdraw reservations (wave m6 W1)
@@ -449,6 +455,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
         {
             if (_started)
             {
+                if (_walletHistory is not null)
+                    await _walletHistory.StopAsync(CancellationToken.None);
                 if (_silentPayments is not null)
                     await _silentPayments.StopAsync(CancellationToken.None);
                 await StopSafetyServicesAsync();
@@ -751,6 +759,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
     {
         try
         {
+            if (_walletHistory is not null)
+                await _walletHistory.StopAsync(CancellationToken.None);
             if (_silentPayments is not null)
                 await _silentPayments.StopAsync(CancellationToken.None);
             if (safetyStarted)
@@ -805,6 +815,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
         _feeService = null;
         _tcpService = null;
         _silentPayments = null;
+        _walletHistory = null;
         if (serviceProvider is not null)
             await serviceProvider.DisposeAsync();
 

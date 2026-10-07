@@ -20,12 +20,13 @@ public partial class WalletSpendServiceTests
         new CompactPubKey(Convert.FromHexString("025cc9856d6f8375350e123978daac200c260cb5b5ae83106cab90484dcd8fcf36")), "sprt");
 
     private WalletSpendService CreateSilentService(SilentPaymentsOptions? options = null, ILightningSigner? signer = null,
-        Domain.Bitcoin.SilentPayments.Interfaces.ISilentPaymentKeySource? keys = null)
+        Domain.Bitcoin.SilentPayments.Interfaces.ISilentPaymentKeySource? keys = null,
+        Domain.Bitcoin.Wallet.Interfaces.IFeeInputSelector? selector = null)
     {
         var change = GetP2TrExtKey(50, true).Neuter().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, Network.RegTest);
         _walletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Tr, true))
                       .ReturnsAsync(new WalletAddressModel(AddressType.P2Tr, 50, true, change.ToString()));
-        return new WalletSpendService(_selector, _anchorReserve.Object, _utxos, signer ?? _signer, _monitor.Object,
+        return new WalletSpendService(selector ?? _selector, _anchorReserve.Object, _utxos, signer ?? _signer, _monitor.Object,
             _feeService.Object, _scopeFactory, Microsoft.Extensions.Options.Options.Create(_nodeOptions), NullLogger<WalletSpendService>.Instance,
             silentPayments: Microsoft.Extensions.Options.Options.Create(options ?? new SilentPaymentsOptions { Enabled = true }),
             silentPaymentKeys: keys);

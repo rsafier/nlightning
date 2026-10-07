@@ -20,6 +20,9 @@ public static class WalletAddressEntityConfiguration
             entity.Property(e => e.IsReserved)
                   .IsRequired();
 
+            entity.Property(e => e.AccountIndex).HasDefaultValue(0u);
+            entity.Property(e => e.AccountName).HasMaxLength(128).HasDefaultValue("default").IsRequired();
+
             // Set relations
             entity.HasMany(x => x.Utxos)
                   .WithOne(x => x.WalletAddress)

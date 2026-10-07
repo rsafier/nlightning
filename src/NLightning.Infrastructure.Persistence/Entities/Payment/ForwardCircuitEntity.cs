@@ -33,6 +33,11 @@ public class ForwardCircuitEntity
     /// </summary>
     public required long IncomingAmountMsat { get; set; }
 
+    /// <summary>Actual channel amount when an interceptor overrides IncomingAmountMsat; null for legacy circuits.</summary>
+    public long? ActualIncomingAmountMsat { get; set; }
+
+    public byte[]? IncomingClaimedPreimage { get; set; }
+
     /// <summary>
     /// The <c>cltv_expiry</c> of the incoming HTLC.
     /// </summary>

@@ -85,7 +85,8 @@ public class SilentPaymentAuthenticatedIpcTests : IAsyncLifetime
         _silent.Verify(s => s.GetAddressAsync("store", It.IsAny<CancellationToken>()), Times.Once);
         _silent.Verify(s => s.StartRescanAsync(10, 100, It.IsAny<CancellationToken>()), Times.Once);
         _silent.Verify(s => s.CancelRescanAsync(It.IsAny<CancellationToken>()), Times.Once);
-        Assert.Equal(4, _provider.GetServices<IIpcCommandHandler>().Count());
+        // The four silent payment handlers and the wallet history handler (NL-1289), each registered once
+        Assert.Equal(5, _provider.GetServices<IIpcCommandHandler>().Count());
     }
 
     [Fact]

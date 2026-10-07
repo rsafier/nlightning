@@ -13,6 +13,7 @@ using Domain.Bitcoin.Wallet.Models;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Networks;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Walletrpc;
@@ -22,20 +23,14 @@ using OutPoint = Lnrpc.OutPoint;
 using WalletAddressType = Walletrpc.AddressType;
 
 /// <summary>
-/// LND's <c>walletrpc.WalletKit</c> over this node's wallet (<c>LND_GRPC_PLAN.md</c> wave 3, NL-1184; NL-1186):
-/// <c>ListUnspent</c>, <c>NextAddr</c>, <c>EstimateFee</c>, <c>LeaseOutput</c>/<c>ReleaseOutput</c>/<c>ListLeases</c>,
-/// <c>FundPsbt</c> (raw template or PSBT), <c>SignPsbt</c>, <c>FinalizePsbt</c>, <c>PublishTransaction</c>,
-/// <c>SubmitPackage</c>, <c>SendOutputs</c>, <c>GetTransaction</c>, <c>LabelTransaction</c>, <c>RemoveTransaction</c>,
-/// <c>RequiredReserve</c>, <c>SignMessageWithAddr</c>/<c>VerifyMessageWithAddr</c>, <c>ImportPublicKey</c>,
-/// <c>ImportTapscript</c>, <c>BumpFee</c>/<c>BumpForceCloseFee</c>, the accounts, keys and sweeps. Every other method
-/// (<c>ImportAccount</c>, <c>XCreateAccount</c>) answers <c>UNIMPLEMENTED</c> after the macaroon check.
+/// LND's <c>walletrpc.WalletKit</c> over the node's wallet: PSBT funding/signing/publishing,
+/// leases, transaction history and labels, wallet CPFP, imported scripts, and BIP84/BIP86 accounts.
+/// Named owned accounts preserve their own coin-selection and change scope. Imported accounts remain watch-only.
 /// </summary>
 /// <remarks>
-/// Only the default account exists (another name is <c>NOT_FOUND</c>). Only wallet outputs leased here are ever signed
-/// (NL-1184): SignPsbt and FinalizePsbt refuse a PSBT with a wallet input that is not leased, and never touch other
-/// parties' inputs (FinalizePsbt needs them finalized). Refused: <c>coin_select</c> templates, <c>spend_unconfirmed</c>,
-/// the random coin selection strategy and the confirmation-controlled lease release (<c>release_after_spend_confs</c>,
-/// <c>input_release_after_spend_confs</c>), as an LND wallet that cannot apply them refuses them.
+/// Wallet signing requires leased inputs and verifies their recorded ownership. Foreign PSBT maps are retained;
+/// finalization requires foreign signatures and verifies the complete transaction. Unconfirmed selection is explicit
+/// and uses the revalidated mempool catalogue. Nested/hybrid P2SH account scopes remain unsupported.
 /// </remarks>
 public sealed partial class WalletKitService : WalletKit.WalletKitBase
 {
@@ -69,12 +64,29 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
     /// <inheritdoc />
     public override async Task<ListUnspentResponse> ListUnspent(ListUnspentRequest request, ServerCallContext context)
     {
-        CheckAccount(request.Account);
+        await CheckAccountAsync(request.Account, context.CancellationToken);
         var (min, max) = ParseConfs(request.MinConfs, request.MaxConfs, request.UnconfirmedOnly);
+        HashSet<string>? accountScripts = null;
+        if (request.Account.Length > 0 && request.Account != DefaultAccount)
+        {
+            await using var accountScope = _scopeFactory.CreateAsyncScope();
+            var accountUow = accountScope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var account = await accountUow.WalletAccountDbRepository.GetAsync(request.Account, context.CancellationToken);
+            if (account?.WatchOnly == true)
+            {
+                accountScripts = new HashSet<string>(StringComparer.Ordinal);
+                var accountService = accountScope.ServiceProvider.GetRequiredService<Infrastructure.Bitcoin.Wallet.WalletAccountService>();
+                foreach (var change in new[] { false, true })
+                    for (uint index = 0; index < (change ? account.InternalKeyCount : account.ExternalKeyCount) + Infrastructure.Bitcoin.Wallet.BitcoinWalletService.GapLimit; index++)
+                        accountScripts.Add(Convert.ToHexString(BitcoinAddress.Create(accountService.Address(account, change, index), _network).ScriptPubKey.ToBytes()));
+            }
+            else accountScripts = [];
+        }
         var response = new ListUnspentResponse();
         var listed = new HashSet<(TxId TxId, uint Index)>();
         foreach (var utxo in await Run(() => Psbt.ListUnspentAsync(min, max, context.CancellationToken)))
         {
+            if (request.Account.Length > 0 && request.Account != utxo.Account) continue;
             if (!listed.Add((utxo.TxId, utxo.Index)))
                 continue;
             response.Utxos.Add(new Lnrpc.Utxo
@@ -94,6 +106,7 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
             var snapshot = await Run(() => imported.SnapshotAsync(context.CancellationToken));
             foreach (var output in snapshot.Outputs)
             {
+                if (accountScripts is not null && !accountScripts.Contains(Convert.ToHexString(output.Output.ScriptPubKey.ToBytes()))) continue;
                 var confirmations = snapshot.Tip - output.Height + 1;
                 if (confirmations < min || confirmations > max ||
                     !listed.Add((new TxId(output.Outpoint.Hash.ToBytes()), output.Outpoint.N))) continue;
@@ -120,7 +133,6 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
     /// <inheritdoc />
     public override async Task<AddrResponse> NextAddr(AddrRequest request, ServerCallContext context)
     {
-        CheckAccount(request.Account);
         var type = request.Type switch
         {
             WalletAddressType.Unknown or WalletAddressType.WitnessPubkeyHash => AddressType.P2Wpkh,
@@ -132,7 +144,10 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
         // Every handed-out address is reserved and never handed out again (NL-280)
         await using var scope = _scopeFactory.CreateAsyncScope();
         var wallet = scope.ServiceProvider.GetRequiredService<IBitcoinWalletService>();
-        var address = await wallet.GetUnusedAddressAsync(type, request.Change);
+        var address = request.Account.Length == 0 || request.Account == DefaultAccount
+            ? await wallet.GetUnusedAddressAsync(type, request.Change)
+            : await Run(() => scope.ServiceProvider.GetRequiredService<Infrastructure.Bitcoin.Wallet.WalletAccountService>()
+                .NextAsync(request.Account, type, request.Change, context.CancellationToken));
         return new AddrResponse { Addr = address.Address };
     }
 
@@ -159,14 +174,13 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
     public override async Task<LeaseOutputResponse> LeaseOutput(LeaseOutputRequest request, ServerCallContext context)
     {
         var (txId, index) = FromOutPoint(request.Outpoint);
-        if (request.ReleaseAfterSpendConfs != 0)
-            throw new RpcException(new Status(StatusCode.Unimplemented, "release_after_spend_confs is not supported"));
-
         var duration = request.ExpirationSeconds == 0
                            ? TimeSpan.Zero
                            : TimeSpan.FromSeconds(Math.Min(request.ExpirationSeconds, int.MaxValue));
-        var lease = await Run(() => Psbt.LeaseAsync(request.Id.ToByteArray(), txId, index, duration,
-                                                    context.CancellationToken));
+        var lease = await Run(() => request.ReleaseAfterSpendConfs == 0
+            ? Psbt.LeaseAsync(request.Id.ToByteArray(), txId, index, duration, context.CancellationToken)
+            : Psbt.LeaseAsync(request.Id.ToByteArray(), txId, index, duration, request.ReleaseAfterSpendConfs,
+                context.CancellationToken));
         return new LeaseOutputResponse { Expiration = (ulong)lease.Expiration.ToUnixTimeSeconds() };
     }
 
@@ -195,18 +209,25 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
     /// <inheritdoc />
     public override async Task<FundPsbtResponse> FundPsbt(FundPsbtRequest request, ServerCallContext context)
     {
-        CheckAccount(request.Account);
-        if (request.SpendUnconfirmed)
-            throw new RpcException(new Status(StatusCode.Unimplemented, "spend_unconfirmed is not supported"));
+        Domain.Bitcoin.Wallet.Models.WalletAccountModel? namedAccount = null;
+        if (request.Account.Length > 0 && request.Account != DefaultAccount)
+        {
+            await using var accountScope = _scopeFactory.CreateAsyncScope();
+            namedAccount = await accountScope.ServiceProvider.GetRequiredService<IUnitOfWork>()
+                .WalletAccountDbRepository.GetAsync(request.Account, context.CancellationToken)
+                ?? throw new RpcException(new Status(StatusCode.NotFound, "account not found"));
+            if (namedAccount.WatchOnly) throw new RpcException(new Status(StatusCode.FailedPrecondition, "watch-only account cannot fund a PSBT"));
+            if (request.ChangeType != ChangeAddressType.Unspecified)
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "Custom accounts use their own change scope."));
+        }
+        if (request.SpendUnconfirmed && request.MinConfs != 0)
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "spend_unconfirmed requires min_confs=0"));
         CheckCoinSelectionStrategy(request.CoinSelectionStrategy);
         if (double.IsNaN(request.MaxFeeRatio) || request.MaxFeeRatio is < 0 or > 1)
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                                               $"max fee ratio {request.MaxFeeRatio} must be between 0 and 1"));
         // LND v0.21: an unset max_fee_ratio is chanfunding.DefaultMaxFeeRatio, and sanityCheckFee always applies
         var maxFeeRatio = request.MaxFeeRatio == 0 ? DefaultMaxFeeRatio : request.MaxFeeRatio;
-        if (request.InputReleaseAfterSpendConfs != 0)
-            throw new RpcException(new Status(StatusCode.Unimplemented,
-                                              "input_release_after_spend_confs is not supported"));
 
         var lockId = request.CustomLockId.IsEmpty
                          ? Infrastructure.Bitcoin.Wallet.WalletPsbtService.DefaultLockId
@@ -220,6 +241,8 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
         List<(TxId, uint)> inputs = [];
         uint lockTime = 0;
         var version = 2;
+        byte[]? templatePsbt = null;
+        int? existingChangeIndex = null;
         switch (request.TemplateCase)
         {
             case FundPsbtRequest.TemplateOneofCase.Raw:
@@ -248,16 +271,24 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
                     outputs.Add((output.ScriptPubKey.ToBytes(), LightningMoney.Satoshis(output.Value.Satoshi)));
                 break;
             case FundPsbtRequest.TemplateOneofCase.CoinSelect:
-                throw new RpcException(new Status(StatusCode.Unimplemented, "coin_select templates are not supported"));
+                templatePsbt = request.CoinSelect.Psbt.ToByteArray();
+                if (request.CoinSelect.ChangeOutputCase == PsbtCoinSelect.ChangeOutputOneofCase.ExistingOutputIndex)
+                    existingChangeIndex = request.CoinSelect.ExistingOutputIndex;
+                else if (request.CoinSelect.ChangeOutputCase != PsbtCoinSelect.ChangeOutputOneofCase.Add || !request.CoinSelect.Add)
+                    throw new RpcException(new Status(StatusCode.InvalidArgument, "coin_select must name existing change or request a new change output"));
+                break;
             default:
                 throw new RpcException(new Status(StatusCode.InvalidArgument, "no template given"));
         }
 
-        var changeType = request.ChangeType == ChangeAddressType.P2Tr ? AddressType.P2Tr : AddressType.P2Wpkh;
+        var changeType = namedAccount?.AddressType ?? (request.ChangeType == ChangeAddressType.P2Tr ? AddressType.P2Tr : AddressType.P2Wpkh);
         var result = await Run(() => Psbt.FundPsbtAsync(new PsbtFundRequest(outputs, inputs, feeRatePerKw,
                                                                             request.MinConfs, lockId, duration,
                                                                             lockTime, version, changeType,
-                                                                            maxFeeRatio),
+                                                                            maxFeeRatio, templatePsbt, existingChangeIndex,
+                                                                            request.TemplateCase == FundPsbtRequest.TemplateOneofCase.CoinSelect,
+                                                                            request.SpendUnconfirmed, request.InputReleaseAfterSpendConfs,
+                                                                            request.Account.Length == 0 ? DefaultAccount : request.Account),
                                                         context.CancellationToken));
         var response = new FundPsbtResponse
         {
@@ -272,7 +303,7 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
     public override async Task<FinalizePsbtResponse> FinalizePsbt(FinalizePsbtRequest request,
                                                                   ServerCallContext context)
     {
-        CheckAccount(request.Account);
+        await CheckAccountAsync(request.Account, context.CancellationToken);
         var result = await Run(() => Psbt.FinalizePsbtAsync(request.FundedPsbt.ToByteArray(),
                                                             context.CancellationToken));
         return new FinalizePsbtResponse
@@ -352,9 +383,11 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
         }
     }
 
-    private static void CheckAccount(string account)
+    private async Task CheckAccountAsync(string account, CancellationToken ct)
     {
-        if (account.Length > 0 && account != DefaultAccount)
+        if (account.Length == 0 || account == DefaultAccount) return;
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        if (await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().WalletAccountDbRepository.GetAsync(account, ct) is null)
             throw new RpcException(new Status(StatusCode.NotFound, $"account {account} not found"));
     }
 

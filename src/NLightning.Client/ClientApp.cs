@@ -139,6 +139,10 @@ internal static class ClientApp
                     var balance = await client.GetWalletBalance(cancellationToken);
                     new WalletBalancePrinter().Print(balance);
                     break;
+                case "wallethistory":
+                case "wallet-history":
+                    await WalletHistoryCommands.RunAsync(commandArgs, client, cancellationToken);
+                    break;
                 case "getspaddress":
                 case "splabels":
                 case "sprescan":
@@ -460,6 +464,9 @@ internal static class ClientApp
             case "connect":
             case "connect-peer":
                 return commandArgs.Length < 1 ? $"Missing argument. Usage: {cmd} <node>" : null;
+            case "wallethistory":
+            case "wallet-history":
+                return WalletHistoryCommands.Validate(commandArgs);
             case "getspaddress":
             case "splabels":
             case "sprescan":

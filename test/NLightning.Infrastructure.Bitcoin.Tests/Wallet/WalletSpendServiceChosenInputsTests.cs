@@ -5,7 +5,6 @@ using NBitcoin;
 namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
 
 using Domain.Bitcoin.Enums;
-using Domain.Bitcoin.SilentPayments;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Crypto.ValueObjects;
@@ -139,24 +138,6 @@ public partial class WalletSpendServiceTests
             }, TestContext.Current.CancellationToken));
         Assert.Empty(_stored);
         Assert.Empty(_published);
-    }
-
-    [Fact]
-    public async Task Given_ChosenInputs_When_PayingASilentPaymentAddress_Then_Refused()
-    {
-        // Arrange
-        var coin = AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
-        var service = CreateSilentService();
-
-        // Act / Assert
-        var failure = await Assert.ThrowsAsync<WalletSpendException>(() => service.WithdrawAsync(
-            new WalletWithdrawRequest(SilentPaymentAddressCodec.Encode(s_silentAddress), LightningMoney.Satoshis(20_000),
-                                      null)
-            {
-                Inputs = [(coin.Model.TxId, coin.Model.Index)]
-            }, TestContext.Current.CancellationToken));
-        Assert.Equal(WalletSpendError.InputUnavailable, failure.Error);
-        Assert.Empty(_stored);
     }
 
     private LocalLightningSigner CreateSigner(ISecureKeyManager keys) =>

@@ -32,4 +32,12 @@ public interface IAccountingPriceDbRepository
     /// <paramref name="take"/>.</summary>
     Task<IReadOnlyList<AccountingPrice>> ListAsync(string currency, DateTimeOffset? since, DateTimeOffset? until,
                                                    int take, CancellationToken cancellationToken = default);
+
+    /// <summary>Stages immutable correction provenance in the same save as the replacement.</summary>
+    void AddReplacementAudit(AccountingPriceReplacementAudit audit);
+
+    /// <summary>Every replacement of one price, ordered by correction time then identity.</summary>
+    Task<IReadOnlyList<AccountingPriceReplacementAudit>> ListReplacementAuditsAsync(long priceId,
+        CancellationToken cancellationToken = default);
+
 }

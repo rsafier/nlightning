@@ -39,6 +39,25 @@ public interface ISecureKeyManager
     /// </summary>
     DepositAccountInfo? GetDepositAccount(Bitcoin.Enums.AddressType addressType) => null;
 
+    /// <summary>Returns the public description of an isolated named BIP84/86 account.</summary>
+    DepositAccountInfo? GetDepositAccount(Bitcoin.Enums.AddressType addressType, uint accountIndex) =>
+        accountIndex == 0 ? GetDepositAccount(addressType)
+                         : throw new NotSupportedException("This key manager has no named wallet accounts.");
+
+    /// <summary>Returns a fresh private key copy for a local account's child; the caller must wipe its bytes.</summary>
+    ExtPrivKey GetDepositKeyAtIndex(Bitcoin.Enums.AddressType addressType, uint accountIndex, uint index,
+                                   bool isChange)
+    {
+        if (accountIndex != 0)
+            throw new NotSupportedException("This key manager has no named wallet accounts.");
+        return addressType switch
+        {
+            Bitcoin.Enums.AddressType.P2Wpkh => GetDepositP2WpkhKeyAtIndex(index, isChange),
+            Bitcoin.Enums.AddressType.P2Tr => GetDepositP2TrKeyAtIndex(index, isChange),
+            _ => throw new ArgumentOutOfRangeException(nameof(addressType))
+        };
+    }
+
     /// <summary>
     /// Returns the node key pair.
     /// </summary>

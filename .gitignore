@@ -506,6 +506,7 @@ api/
 *.tmp
 *.lock
 !tools/vls-compat-spike/Cargo.lock
+!tools/vls-gateway/Cargo.lock
 *.log
 .log/
 tmp/

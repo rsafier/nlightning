@@ -1210,12 +1210,24 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         for (var attempt = 1; attempt <= MaxBlockProcessingAttempts; attempt++)
         {
             BlockEffects? effects = null;
+            IReadOnlyList<WalletAddressModel> discoveredAddresses = [];
             try
             {
                 var prepared = await PrepareSilentPaymentBlockAsync(block, height, cancellationToken);
+                using var historyLease = _serviceProvider.GetService<Domain.Bitcoin.Wallet.Interfaces.IWalletHistoryGate>() is { } historyGate
+                    ? await historyGate.EnterAsync(cancellationToken) : null;
                 using var scope = _serviceProvider.CreateScope();
                 using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
                 effects = await StageBlockAsync(block, height, uow, prepared);
+                var outputScripts = block.Transactions.SelectMany(transaction => transaction.Outputs)
+                    .Select(output => output.ScriptPubKey).ToHashSet();
+                var usedNamedAddresses = uow.WalletAddressesDbRepository.GetAllAddresses()
+                    .Where(address => address.AccountIndex != 0 && outputScripts.Contains(
+                        BitcoinAddress.Create(address.Address, _network).ScriptPubKey)).ToArray();
+                using var accountLease = usedNamedAddresses.Length > 0
+                    ? await WalletAccountService.EnterDiscoveryAsync(cancellationToken) : null;
+                if (usedNamedAddresses.Length > 0 && scope.ServiceProvider.GetService<WalletAccountService>() is { } accounts)
+                    discoveredAddresses = await accounts.StageOwnedDiscoveryAsync(uow, usedNamedAddresses, cancellationToken);
                 await uow.SaveChangesAsync();
             }
             catch (Exception ex)
@@ -1229,6 +1241,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             {
                 Raise(() => OnWalletTransactionsProcessing?.Invoke(this, EventArgs.Empty), "wallet transactions processing");
                 ApplyBlock(effects);
+                foreach (var address in discoveredAddresses) WatchBitcoinAddress(address);
                 RaiseBlockEvents(effects, block);
                 return true;
             }
@@ -1423,7 +1436,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 // A block can be processed again (the last processed block is replayed on start, and a failed block is
                 // retried), so a deposit we already track must not be added twice (NL-097).
                 utxoMemoryRepository ??= _serviceProvider.GetRequiredService<IUtxoMemoryRepository>();
-                if (utxoMemoryRepository.TryGetUtxo(new TxId(txId.ToBytes()), (uint)i, out _))
+                if (utxoMemoryRepository.TryGetUtxo(new TxId(txId.ToBytes()), (uint)i, out var existing)
+                    && existing.BlockHeight != 0)
                 {
                     if (_logger.IsEnabled(LogLevel.Debug))
                         _logger.LogDebug("Utxo {TxId}:{Index} is already known, skipping", txId, i);
@@ -1459,10 +1473,10 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 // What the spend removes (TrySpendUtxo is a no-op for an output we do not hold): the wallet output in
                 // memory, or one this block deposited
                 UtxoModel? spent = null;
-                if (utxoMemoryRepository?.TryGetUtxo(spentTxId, input.PrevOut.N, out var known) == true)
-                    spent = known;
-                else if (effects.StagedDeposits.TryGetValue(input.PrevOut, out var deposited))
+                if (effects.StagedDeposits.TryGetValue(input.PrevOut, out var deposited))
                     spent = deposited;
+                else if (utxoMemoryRepository?.TryGetUtxo(spentTxId, input.PrevOut.N, out var known) == true)
+                    spent = known;
 
                 uow.TrySpendUtxo(spentTxId, input.PrevOut.N);
                 if (spent is null)
@@ -1503,9 +1517,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
 
             var txId = new TxId(uint256.Parse(observed.TxHash).ToBytes());
             staged.Add(txId);
-            await history.StageConfirmedAsync(new WalletTransactionRecord(
-                txId, Convert.FromHexString(observed.RawTransactionHex), effects.Height, effects.BlockHash,
-                observed.Timestamp, observed.OurOutputs.ToList(), inputs));
+            await history.StageConfirmedAsync(WalletTransactionHistory.Describe(
+                Transaction.Load(Convert.FromHexString(observed.RawTransactionHex), _network), effects.Height,
+                effects.BlockHash, observed.Timestamp, observed.OurOutputs.ToList(), inputs));
         }
 
         var unconfirmed = await history.GetUnconfirmedAsync(CancellationToken.None);
@@ -1533,8 +1547,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             if (inBlock.TryGetValue(record.TxId, out var confirmed))
             {
                 // Its stored ownership is kept (the record carries none to add)
-                await history.StageConfirmedAsync(new WalletTransactionRecord(
-                    record.TxId, confirmed.ToBytes(), effects.Height, effects.BlockHash, blockTime, [], []));
+                await history.StageConfirmedAsync(WalletTransactionHistory.Describe(
+                    confirmed, effects.Height, effects.BlockHash, blockTime, record.OurOutputs, record.OurInputs));
                 continue;
             }
 
@@ -1673,6 +1687,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     {
         using var silentPaymentLease = _silentPaymentScanner is { } scanner
             ? await scanner.EnterAsync() : null;
+        using var historyLease = _serviceProvider.GetService<Domain.Bitcoin.Wallet.Interfaces.IWalletHistoryGate>() is { } historyGate
+            ? await historyGate.EnterAsync() : null;
         try
         {
             uint? fork = null;
@@ -1739,7 +1755,19 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 var unconfirmed = await uow.BroadcastTransactionDbRepository.UnconfirmAboveAsync(forkHeight);
                 // NL-1187: the wallet's history follows the rewind in the same save
                 if (uow.WalletTransactionDbRepository is { } walletHistory)
+                {
                     await walletHistory.UnconfirmAboveAsync(forkHeight);
+                    var job = await walletHistory.GetRescanStateAsync(CancellationToken.None);
+                    if (job?.CursorHeight is { } cursor && cursor > forkHeight)
+                        await walletHistory.StageRescanStateAsync(job with
+                        {
+                            CursorHeight = forkHeight >= job.AvailableFromHeight ? forkHeight : job.AvailableFromHeight == 0 ? null : job.AvailableFromHeight - 1,
+                            CursorHash = null,
+                            // Completed jobs repair their history; an explicitly cancelled partial job stays stopped.
+                            IsActive = job.IsActive || cursor == job.TargetHeight,
+                            Error = null
+                        }, CancellationToken.None);
+                }
                 var (removedDeposits, restoredSpends) = await StageWalletRollbackAsync(uow, forkHeight, restoredUtxos);
                 await StageReorgReversalsAsync(uow, forkHeight, removedDeposits, restoredSpends);
                 await uow.BlockHeaderDbRepository.DeleteAboveAsync(forkHeight);

@@ -4,7 +4,7 @@ namespace NLightning.Domain.Client.Enums;
 /// Commands sent by a client.
 /// </summary>
 /// <remarks>
-/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 57.
+/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 58.
 /// </remarks>
 public enum ClientCommand
 {
@@ -152,5 +152,8 @@ public enum ClientCommand
     /// shards for parts that failed while the payee holds the others, with the same hash, secret and total, inside
     /// the attach window (the payee's <c>mpp_timeout</c>).
     /// </summary>
-    PayRouteAttach = 56
+    PayRouteAttach = 56,
+
+    /// <summary>Explicit bounded durable wallet history rescan and status.</summary>
+    WalletHistory = 57,
 }

@@ -487,7 +487,8 @@ public sealed class AccountingPeriodService : IAccountingPeriods, IAccountingAdj
                                                last?.Digest, nodeId, forced, closedAt);
         using var digest = new AccountingCloseDigest(header);
         var balances = AccountingClosingState.ToMap(previousState.Balances);
-        await AddOpenEntriesAsync(books, digest, range, balances, cancellationToken);
+        var priceIds = new HashSet<long>();
+        await AddOpenEntriesAsync(books, digest, range, balances, priceIds, cancellationToken);
         await AddReliefsAsync(unitOfWork, digest, null, range.End, cancellationToken);
         await AddOpenLotsAsync(unitOfWork, digest, range.End, cancellationToken);
 
@@ -499,7 +500,17 @@ public sealed class AccountingPeriodService : IAccountingPeriods, IAccountingAdj
         var replayAfter = firstOpen.Count == 0
                               ? financialCursor
                               : Math.Min(financialCursor, firstOpen[0].LedgerSeq - 1);
-        var state = new AccountingClosingState(replayAfter, AccountingClosingState.FromMap(Financial, balances));
+        var priceSnapshots = new List<AccountingPrice>();
+        foreach (var priceId in priceIds.Order())
+        {
+            var price = await unitOfWork.AccountingPriceDbRepository.GetByIdAsync(priceId, cancellationToken)
+                     ?? throw new InvalidOperationException($"Price {priceId} of a closing posting is missing.");
+            priceSnapshots.Add(price);
+        }
+        var state = new AccountingClosingState(replayAfter, AccountingClosingState.FromMap(Financial, balances))
+        {
+            Prices = priceSnapshots
+        };
         var stateText = state.Encode();
         var (entryCount, reliefCount, lotCount) = digest.Counts;
         var digestBytes = digest.Finish(stateText);
@@ -652,7 +663,7 @@ public sealed class AccountingPeriodService : IAccountingPeriods, IAccountingAdj
     private static async Task AddOpenEntriesAsync(
         IAccountingBooksDbRepository books, AccountingCloseDigest digest, AccountingPeriodRange range,
         Dictionary<(AccountRole Account, string Name), (long Msat, decimal Fiat)> balances,
-        CancellationToken cancellationToken)
+        HashSet<long> priceIds, CancellationToken cancellationToken)
     {
         long afterSeq = 0;
         var afterAdjustment = -1;
@@ -671,6 +682,8 @@ public sealed class AccountingPeriodService : IAccountingPeriods, IAccountingAdj
                       + $"period {entry.ClosedPeriodId}");
 
                 AddEntry(digest, entry, balances);
+                foreach (var posting in entry.Postings)
+                    if (posting.PriceId is { } priceId) priceIds.Add(priceId);
             }
 
             if (page.Count < PageSize)

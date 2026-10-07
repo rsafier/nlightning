@@ -119,6 +119,10 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
                 $"Ignoring channel_reestablish on channel {channelId} in state {Enum.GetName(channel.State)}", channelId,
                 "channel_reestablish ignored: channel not active");
 
+        // A previous reconnect may have lost its signer reply on this connection. Complete its owned, persisted
+        // snapshot before installing this handshake's replacement verification nonces or changing fundings.
+        await _transitions.ResumeSigningWorkflowsAsync(channel);
+
         // NL-867: an RBF attempt of a dual-funded open whose earlier attempt confirmed is abandoned before anything else
         // (our own channel_reestablish then names no next_funding for it), so the peer's next_funding for it gets our
         // tx_abort and never its commitment_signed again (which it could not sign: its inputs are spent)
@@ -344,7 +348,7 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
             case ReestablishStep.RevokeAndAck:
                 // Deterministic from the seed (D4): the secret of L - 1 and the point of L + 1
                 var l = local.LocalCommitmentNumber;
-                return [_transitions.CreateRevokeAndAck(channel, new OutboundRevokeAndAck(l - 1, l + 1))];
+                return [await _transitions.CreateRevokeAndAckAsync(channel, new OutboundRevokeAndAck(l - 1, l + 1))];
 
             case ReestablishStep.CommitDiff:
                 var diff = channel.SentCommitDiff

@@ -7,24 +7,141 @@ using Grpc.Core;
 using Grpc.Net.Client;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
+using NBitcoin.Crypto;
+using NLightning.Domain.Bitcoin.Transactions.Models;
+using NLightning.Domain.Bitcoin.Transactions.Outputs;
 using NLightning.Domain.Bitcoin.ValueObjects;
 using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Domain.Crypto.ValueObjects;
 using NLightning.Domain.Exceptions;
+using NLightning.Domain.Money;
 using NLightning.Domain.Node.Options;
 using NLightning.Domain.Protocol.Constants;
 using NLightning.Infrastructure.Bitcoin.Builders;
 using NLightning.Infrastructure.Bitcoin.Managers;
+using NLightning.Infrastructure.Bitcoin.Outputs;
 using NLightning.Infrastructure.Bitcoin.Services;
 using NLightning.Infrastructure.Bitcoin.Signers;
 using NLightning.Infrastructure.RemoteSigning;
 using NLightning.Infrastructure.Repositories.Memory;
 using NLightning.Signing.Contracts;
+using CompactSignature = NLightning.Domain.Crypto.ValueObjects.CompactSignature;
 
 namespace NLightning.RemoteSigning.Tests;
 
 public sealed class RequestRecoveryTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task EcdsaCommitmentAndNonemptyHtlcReceiptsSurviveRestartAndRespectDataLoss(bool anchors)
+    {
+        await using var daemon = new SignerDaemonFixture(injected: true);
+        await daemon.InitializeAsync();
+        var channel = new ChannelId(RandomUtils.GetBytes(32));
+        var funding = new TxId(RandomUtils.GetBytes(32));
+        SigningRequest commitmentRequest;
+        SigningRequest htlcRequest;
+        byte[] commitmentResponse;
+        byte[] htlcResponse;
+        using (var connection = new RemoteSignerConnection(daemon.Options()))
+        {
+            var signer = new RemoteLightningSigner(connection);
+            var index = signer.CreateNewChannel(out var points, out var perCommitmentPoint);
+            using var peerFunding = new Key();
+            using var peerHtlc = new Key();
+            using var revocation = new Key();
+            // The legacy FundingSatoshis field carries millisatoshis, as the database source supplies it.
+            var info = new ChannelSigningInfo(funding, 0, LightningMoney.Satoshis(100_000).MilliSatoshi,
+                                             points.FundingPubKey, peerFunding.PubKey.ToBytes(), index);
+            signer.RegisterChannel(channel, info);
+            daemon.LocalSigner.RegisterChannel(channel, info);
+            var htlcKey = new PubKey(new KeyDerivationService().DerivePublicKey(points.HtlcBasepoint,
+                                                                               perCommitmentPoint));
+            var outputs = Enumerable.Range(0, 2).Select(i => new OfferedHtlcOutput(
+                LightningMoney.Satoshis(20_000 + i * 10_000), (ulong)(500 + i), anchors,
+                peerHtlc.PubKey, RandomUtils.GetBytes(32), htlcKey, revocation.PubKey)).ToArray();
+            var commitment = Network.RegTest.CreateTransaction();
+            commitment.Inputs.Add(new TxIn(new OutPoint(new uint256((byte[])funding), 0)));
+            foreach (var output in outputs)
+                commitment.Outputs.Add(output.ToTxOut());
+            commitment.Outputs.Add(Money.Satoshis(49_000), peerFunding.PubKey.WitHash.ScriptPubKey);
+            var unsigned = new SignedTransaction(commitment.GetHash().ToBytes(), commitment.ToBytes());
+            commitmentRequest = RemoteSignerConnection.Prepare(SignerOperations.SignChannelTransaction,
+                                                               channel, unsigned);
+            var commitmentSignature = SignerWire.Read<CompactSignature>(connection.Execute(commitmentRequest)[0]);
+            Assert.Equal(daemon.LocalSigner.SignChannelTransaction(channel, unsigned), commitmentSignature);
+            var fundingOutput = new FundingOutputBuilder().Build(new FundingOutputInfo(
+                LightningMoney.Satoshis(100_000), points.FundingPubKey, peerFunding.PubKey.ToBytes(), funding, 0));
+            Assert.True(ECDSASignature.TryParseFromCompact(commitmentSignature.Value, out var parsedCommitment));
+            Assert.True(new PubKey(points.FundingPubKey).Verify(commitment.GetSignatureHash(
+                new Script((byte[])fundingOutput.RedeemBitcoinScript), 0, SigHash.All,
+                fundingOutput.ToTxOut(), HashVersion.WitnessV0), parsedCommitment));
+
+            var contexts = outputs.Select((output, position) =>
+            {
+                var transaction = Network.RegTest.CreateTransaction();
+                transaction.Version = 2;
+                transaction.LockTime = new LockTime((uint)(500 + position));
+                transaction.Inputs.Add(new TxIn(new OutPoint(commitment.GetHash(), (uint)position))
+                { Sequence = new Sequence(anchors ? 1U : 0U) });
+                transaction.Outputs.Add(Money.Satoshis((long)output.Amount.Satoshi - (anchors ? 0 : 1_000)),
+                                        peerFunding.PubKey.WitHash.ScriptPubKey);
+                return new HtlcSigningContext(new HtlcTransactionBuildResult(
+                    new SignedTransaction(transaction.GetHash().ToBytes(), transaction.ToBytes()),
+                    output.RedeemBitcoinScript, output.Amount), perCommitmentPoint, anchors);
+            }).ToArray();
+            htlcRequest = RemoteSignerConnection.Prepare(SignerOperations.SignRemoteHtlcTransactions,
+                                                        channel, contexts);
+            var signatures = SignerWire.Read<CompactSignature[]>(connection.Execute(htlcRequest)[0]);
+            Assert.Equal(2, signatures.Length);
+            Assert.Equal(daemon.LocalSigner.SignRemoteHtlcTransactions(channel, contexts), signatures);
+            for (var i = 0; i < contexts.Length; i++)
+            {
+                var transaction = Transaction.Load(contexts[i].HtlcTransaction.Transaction.RawTxBytes, Network.RegTest);
+                var sigHash = anchors ? SigHash.Single | SigHash.AnyoneCanPay : SigHash.All;
+                Assert.True(ECDSASignature.TryParseFromCompact(signatures[i].Value, out var parsed));
+                Assert.True(htlcKey.Verify(transaction.GetSignatureHash(
+                    new Script((byte[])outputs[i].RedeemBitcoinScript), 0, sigHash,
+                    outputs[i].ToTxOut(), HashVersion.WitnessV0), parsed));
+            }
+            var commitmentReceipt = connection.Reconcile(commitmentRequest);
+            var htlcReceipt = connection.Reconcile(htlcRequest);
+            Assert.Equal(RequestOutcome.Completed, commitmentReceipt.Outcome);
+            Assert.Equal(RequestOutcome.Completed, htlcReceipt.Outcome);
+            commitmentResponse = commitmentReceipt.Response.Payload.ToByteArray();
+            htlcResponse = htlcReceipt.Response.Payload.ToByteArray();
+        }
+
+        await daemon.RestartAsync();
+        using (var restarted = new RemoteSignerConnection(daemon.Options()))
+        {
+            foreach (var (request, response) in new[]
+                     { (commitmentRequest, commitmentResponse), (htlcRequest, htlcResponse) })
+            {
+                var receipt = restarted.Reconcile(request);
+                Assert.Equal(RequestOutcome.Completed, receipt.Outcome);
+                Assert.Equal(response, receipt.Response.Payload.ToByteArray());
+                var original = SignerWire.Decode(response);
+                var replayed = restarted.Execute(request);
+                Assert.Single(replayed);
+                if (request.Operation == SignerOperations.SignChannelTransaction)
+                    Assert.Equal(SignerWire.Read<CompactSignature>(original[0]),
+                                 SignerWire.Read<CompactSignature>(replayed[0]));
+                else
+                    Assert.Equal(SignerWire.Read<CompactSignature[]>(original[0]),
+                                 SignerWire.Read<CompactSignature[]>(replayed[0]));
+            }
+            new RemoteLightningSigner(restarted).MarkDataLoss(channel);
+        }
+        await daemon.RestartAsync();
+        using var retired = new RemoteSignerConnection(daemon.Options());
+        Assert.Equal(RequestOutcome.Invalidated, retired.Reconcile(commitmentRequest).Outcome);
+        Assert.Equal(RequestOutcome.Invalidated, retired.Reconcile(htlcRequest).Outcome);
+        Assert.Throws<SignerException>(() => retired.Execute(commitmentRequest));
+        Assert.Throws<SignerException>(() => retired.Execute(htlcRequest));
+    }
+
     [Fact]
     public async Task LostAllocationReplyIsReconciledAfterActualProcessCrashWithoutAllocatingTwice()
     {

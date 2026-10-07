@@ -53,6 +53,7 @@ using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
+using Domain.Signing.Recovery;
 using Handlers;
 using Infrastructure;
 using Infrastructure.Bitcoin;
@@ -380,6 +381,9 @@ public static class NodeServiceExtensions
         if (remoteConnection is not null)
         {
             services.AddSingleton(remoteConnection);
+            services.AddSingleton<RemoteSigningWorkflowCoordinator>();
+            services.AddSingleton<IRemoteSigningWorkflowCoordinator>(sp =>
+                sp.GetRequiredService<RemoteSigningWorkflowCoordinator>());
             services.Replace(ServiceDescriptor.Singleton<ILightningSigner>(sp =>
                 new RemoteLightningSigner(remoteConnection, sp.GetRequiredService<IChannelSigningInfoSource>(),
                                            sp.GetRequiredService<IUtxoMemoryRepository>())));

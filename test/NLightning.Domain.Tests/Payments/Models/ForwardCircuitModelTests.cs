@@ -20,6 +20,40 @@ public class ForwardCircuitModelTests
             s_outgoingScid, LightningMoney.MilliSatoshis(outgoingMsat), outgoingCltv, s_createdAt);
 
     [Fact]
+    public void Given_AnInterpretedAmount_When_ActualCustodyIsSet_Then_AccountingUsesTheActualFee()
+    {
+        // Arrange
+        var circuit = CreateCircuit(incomingMsat: 3_001, outgoingMsat: 2_001);
+
+        // Act
+        circuit.SetActualIncomingAmount(LightningMoney.MilliSatoshis(3_000));
+
+        // Assert
+        Assert.Equal(1_000UL, circuit.Fee.MilliSatoshi);
+        Assert.Equal(999UL, circuit.ActualFee.MilliSatoshi);
+        Assert.Throws<InvalidOperationException>(() => circuit.SetActualIncomingAmount(LightningMoney.MilliSatoshis(2_000)));
+        circuit.AddOutgoingHtlc(s_outgoing, 1);
+        Assert.Throws<InvalidOperationException>(() => circuit.SetActualIncomingAmount(LightningMoney.MilliSatoshis(3_000)));
+    }
+
+    [Theory]
+    [InlineData(null, 1_000UL)]
+    [InlineData(1_999UL, 999UL)]
+    public void Given_StoredCircuit_When_ActualCustodyIsRestored_Then_LegacyRowsFallBackAndOverridesRemainSeparate(
+        ulong? actualMsat, ulong expectedFee)
+    {
+        // Act
+        var circuit = ForwardCircuitModel.Restore(s_incoming, 7, LightningMoney.MilliSatoshis(2_000), 140,
+            new Hash(new byte[32]), new Secret(new byte[32]), s_outgoingScid, LightningMoney.MilliSatoshis(1_000),
+            100, s_createdAt, ForwardCircuitStatus.Offered, s_outgoing, 9, null,
+            actualIncomingAmount: actualMsat is { } value ? LightningMoney.MilliSatoshis(value) : null);
+
+        // Assert
+        Assert.Equal(expectedFee, circuit.ActualFee.MilliSatoshi);
+        Assert.Equal(1_000UL, circuit.Fee.MilliSatoshi);
+    }
+
+    [Fact]
     public void Given_NewCircuit_When_Created_Then_PendingWithFee()
     {
         // Act

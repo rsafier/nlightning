@@ -79,6 +79,7 @@ public class UnitOfWork : IUnitOfWork
     private GraphDbRepository? _graphDbRepository;
 
     // Node repositories
+    private SigningWorkflowDbRepository? _signingWorkflowDbRepository;
     private PeerDbRepository? _peerDbRepository;
     private PeerStorageDbRepository? _peerStorageDbRepository;
     private PeerStorageRetrievalDbRepository? _peerStorageRetrievalDbRepository;
@@ -170,12 +171,19 @@ public class UnitOfWork : IUnitOfWork
 
     public IGraphDbRepository GraphDbRepository => _graphDbRepository ??= new GraphDbRepository(_context);
 
+    public Domain.Signing.Recovery.ISigningWorkflowDbRepository SigningWorkflowDbRepository =>
+        _signingWorkflowDbRepository ??= new SigningWorkflowDbRepository(_context);
+
     public IPeerDbRepository PeerDbRepository =>
         _peerDbRepository ??= new PeerDbRepository(_context);
 
     private ImportedTapscriptDbRepository? _importedTapscriptDbRepository;
     public Domain.Bitcoin.Wallet.Interfaces.IImportedTapscriptDbRepository ImportedTapscriptDbRepository =>
         _importedTapscriptDbRepository ??= new ImportedTapscriptDbRepository(_context);
+
+    private WalletAccountDbRepository? _walletAccountDbRepository;
+    public Domain.Bitcoin.Wallet.Interfaces.IWalletAccountDbRepository WalletAccountDbRepository =>
+        _walletAccountDbRepository ??= new WalletAccountDbRepository(_context);
 
     private WalletTransactionDbRepository? _walletTransactionDbRepository;
     public Domain.Bitcoin.Wallet.Interfaces.IWalletTransactionDbRepository WalletTransactionDbRepository =>
@@ -309,7 +317,8 @@ public class UnitOfWork : IUnitOfWork
 
     public void AddUtxo(UtxoModel utxoModel)
     {
-        if (_utxoMemoryRepository.TryGetUtxo(utxoModel.TxId, utxoModel.Index, out _)
+        if ((_utxoMemoryRepository.TryGetUtxo(utxoModel.TxId, utxoModel.Index, out var existing)
+              && (existing.BlockHeight != 0 || utxoModel.BlockHeight == 0))
          || TryGetPendingUtxoAdd(utxoModel.TxId, utxoModel.Index, out _))
             throw new InvalidOperationException("Cannot add Utxo");
 
@@ -331,8 +340,8 @@ public class UnitOfWork : IUnitOfWork
     public void TrySpendUtxo(TxId transactionId, uint index)
     {
         // Check if utxo exists in memory or was added in this unit of work
-        if (!_utxoMemoryRepository.TryGetUtxo(transactionId, index, out var utxoModel)
-         && !TryGetPendingUtxoAdd(transactionId, index, out utxoModel))
+        if (!TryGetPendingUtxoAdd(transactionId, index, out var utxoModel)
+         && !_utxoMemoryRepository.TryGetUtxo(transactionId, index, out utxoModel))
             return;
 
         if (_pendingUtxoChanges.Contains((PendingUtxoChange.Spend, utxoModel)))
@@ -340,7 +349,9 @@ public class UnitOfWork : IUnitOfWork
 
         try
         {
-            UtxoDbRepository.Spend(utxoModel);
+            // Height-zero custody lives only in memory until confirmation; never delete a nonexistent database row.
+            if (utxoModel.BlockHeight != 0)
+                UtxoDbRepository.Spend(utxoModel);
         }
         catch (Exception e)
         {

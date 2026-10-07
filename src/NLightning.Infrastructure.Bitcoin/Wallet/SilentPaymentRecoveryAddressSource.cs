@@ -27,7 +27,7 @@ public sealed class SilentPaymentRecoveryAddressSource(ISecureKeyManager keys, I
         if (addressCount is 0 or > MaximumAddressCount)
             throw new ArgumentOutOfRangeException(nameof(addressCount));
         cancellationToken.ThrowIfCancellationRequested();
-        var stored = uow.WalletAddressesDbRepository.GetAllAddresses()
+        var stored = uow.WalletAddressesDbRepository.GetAllAddresses().Where(address => address.AccountIndex == 0)
             .ToDictionary(a => (a.AddressType, a.IsChange, a.Index));
         var staged = _staged.GetOrCreateValue(uow);
         foreach (var entry in staged)

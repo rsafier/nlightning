@@ -84,6 +84,11 @@ public class AccountingPricesIpcHandlerTests
                    new AccountingPrice(7, "USD", s_hour, 86_048.12345678m, AccountingPriceSource.Http,
                                        s_hour.AddMinutes(5))
                ]);
+        _prices.Setup(p => p.ListReplacementAuditsAsync(It.Is<IReadOnlyCollection<long>>(ids => ids.Count == 1 && ids.Contains(7)),
+            It.IsAny<CancellationToken>())).ReturnsAsync([
+                new AccountingPriceReplacementAudit(9, 7, 80_000.5m, 86_048.12345678m, AccountingPriceSource.Csv,
+                    AccountingPriceSource.Manual, s_hour, s_hour.AddMinutes(5), "exchange statement", "correct quote")
+            ]);
 
         // Act
         var response = await AdminAsync(new AccountingAdminIpcRequest
@@ -101,6 +106,16 @@ public class AccountingPricesIpcHandlerTests
         Assert.Equal((int)AccountingPriceSource.Http, price.Source);
         Assert.Equal("Http", price.SourceName);
         Assert.Equal(s_hour.AddMinutes(5).ToUnixTimeSeconds(), price.FetchedAtUnixSeconds);
+        var correction = Assert.Single(response.Prices.Replacements!);
+        Assert.Equal(7, correction.PriceId);
+        Assert.Equal("80000.5", correction.OldPrice);
+        Assert.Equal("86048.12345678", correction.NewPrice);
+        Assert.Equal("Csv", correction.OldSource);
+        Assert.Equal("Manual", correction.NewSource);
+        Assert.Equal("exchange statement", correction.OperatorSource);
+        Assert.Equal("correct quote", correction.Note);
+        Assert.Equal(s_hour.ToUnixTimeSeconds(), correction.OldFetchedAtUnixSeconds);
+        Assert.Equal(s_hour.AddMinutes(5).ToUnixTimeSeconds(), correction.ReplacedAtUnixSeconds);
     }
 
     [Fact]

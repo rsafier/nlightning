@@ -3,6 +3,7 @@ using NBitcoin;
 using NLightning.Domain.Bitcoin.Enums;
 using NLightning.Domain.Bitcoin.Interfaces;
 using NLightning.Domain.Bitcoin.SilentPayments;
+using NLightning.Domain.Bitcoin.ValueObjects;
 using NLightning.Domain.Bitcoin.Wallet.Models;
 using NLightning.Domain.Exceptions;
 using NLightning.Domain.Money;
@@ -47,6 +48,62 @@ public sealed class RemoteNewSurfaceTests(SignerDaemonFixture daemon) : IClassFi
                      signer.SignWalletMessage(walletAddress, message));
         Assert.Throws<NotSupportedException>(() => keys.GetKeyRingKeyAtIndex(10, 0));
         Assert.Throws<NotSupportedException>(() => keys.GetSilentPaymentSpendKey(new byte[32], null));
+    }
+
+    [Theory]
+    [InlineData(AddressType.P2Wpkh, false)]
+    [InlineData(AddressType.P2Wpkh, true)]
+    [InlineData(AddressType.P2Tr, false)]
+    [InlineData(AddressType.P2Tr, true)]
+    public void NamedAccountMetadataMessagesAndReservedSpendsUseTheAccountChild(AddressType type, bool change)
+    {
+        using var connection = new RemoteSignerConnection(daemon.Options());
+        var keys = new RemoteSecureKeyManager(connection);
+        const uint accountIndex = 7;
+        const uint childIndex = 3;
+        var account = keys.GetDepositAccount(type, accountIndex);
+        var localAccount = daemon.LocalKeys.GetDepositAccount(type, accountIndex);
+        Assert.NotNull(account);
+        Assert.NotNull(localAccount);
+        Assert.Equal(localAccount.ExtendedPublicKey, account.ExtendedPublicKey);
+        Assert.Equal(localAccount.DerivationPath, account.DerivationPath);
+        Assert.Equal(localAccount.MasterFingerprint, account.MasterFingerprint);
+        Assert.Equal(keys.GetDepositAccount(type)!.ExtendedPublicKey,
+                     keys.GetDepositAccount(type, 0)!.ExtendedPublicKey);
+        var publicKey = ExtPubKey.Parse(account.ExtendedPublicKey, Network.RegTest)
+            .Derive(change ? 1u : 0u).Derive(childIndex).PubKey;
+        var bitcoinAddress = publicKey.GetAddress(type == AddressType.P2Tr
+            ? ScriptPubKeyType.TaprootBIP86 : ScriptPubKeyType.Segwit, Network.RegTest);
+        // The wallet row index is deliberately different from the account's child derivation index.
+        var address = new WalletAddressModel(type, 40_003, change, bitcoinAddress.ToString())
+        { AccountIndex = accountIndex, DerivationIndex = childIndex, AccountName = "savings" };
+        var wallet = new UtxoMemoryRepository();
+        var model = new UtxoModel(new TxId(RandomNumberGenerator.GetBytes(32)), 0,
+            LightningMoney.Satoshis(50_000), 100, address);
+        var restored = SignerWire.Read<UtxoModel>(SignerWire.Decode(SignerWire.Encode([model]))[0]);
+        Assert.NotNull(restored.WalletAddress);
+        Assert.Equal(accountIndex, restored.WalletAddress.AccountIndex);
+        Assert.Equal(childIndex, restored.WalletAddress.DerivationIndex);
+        Assert.Equal("savings", restored.WalletAddress.AccountName);
+        wallet.Add(model);
+        var signer = new RemoteLightningSigner(connection, wallet: wallet);
+        var message = "named-account-message"u8.ToArray();
+        Assert.Equal(daemon.LocalSigner.SignWalletMessage(address, message), signer.SignWalletMessage(address, message));
+        var wrongAccount = new WalletAddressModel(type, address.Index, change, address.Address)
+        { AccountIndex = accountIndex + 1, DerivationIndex = childIndex, AccountName = "wrong-account" };
+        Assert.Throws<SignerException>(() => signer.SignWalletMessage(wrongAccount, message));
+        Assert.Throws<NotSupportedException>(() => keys.GetDepositKeyAtIndex(type, accountIndex, childIndex, change));
+        Assert.Throws<NotSupportedException>(() => keys.GetDepositKeyAtIndex(type, 0, childIndex, change));
+        var reservation = Guid.NewGuid();
+        Assert.True(wallet.TryReserveForFee([(model.TxId, model.Index)], reservation));
+        var tx = Network.RegTest.CreateTransaction();
+        tx.Inputs.Add(new TxIn(new OutPoint(new uint256((byte[])model.TxId), model.Index)));
+        tx.Outputs.Add(Money.Satoshis(49_000), new Key().PubKey.WitHash.ScriptPubKey);
+        var unsigned = new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes());
+        Assert.True(signer.SignWalletTransaction(unsigned, reservation, []));
+        var signed = Transaction.Load(unsigned.RawTxBytes, Network.RegTest);
+        var validator = signed.CreateValidator([new TxOut(Money.Satoshis(50_000), bitcoinAddress.ScriptPubKey)]);
+        Assert.True(validator.ValidateInput(0).Error is null or ScriptError.OK);
     }
 
     [Fact]

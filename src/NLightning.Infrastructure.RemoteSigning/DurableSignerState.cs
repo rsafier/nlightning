@@ -34,7 +34,11 @@ public sealed class DurableSignerState : IDisposable
     public static bool SupportsReconciliation(uint operation) => IsStateChange(operation)
         || operation is SignerOperations.CreateNewChannel or SignerOperations.ReserveChannelKeyIndex
                      or SignerOperations.EnsureLastUsedChannelIndexAtLeast
-                     or SignerOperations.SignClosingAsClosee or SignerOperations.SignSpliceSharedInputPartial;
+                     or SignerOperations.SignClosingAsClosee or SignerOperations.SignSpliceSharedInputPartial
+                     or SignerOperations.SignChannelTransaction or SignerOperations.SignChannelTransaction2
+                     or SignerOperations.SignRemoteHtlcTransactions or SignerOperations.SignRemoteCommitmentPartial
+                     or SignerOperations.RevealPerCommitmentSecret or SignerOperations.GetPerCommitmentPoint2
+                     or SignerOperations.GetLocalVerificationNonce2 or SignerOperations.GetLocalVerificationNonce3;
 
     public ReconciliationResponse Reconcile(SigningRequest request)
     {

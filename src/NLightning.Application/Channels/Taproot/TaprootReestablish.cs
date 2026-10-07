@@ -21,14 +21,13 @@ using Services;
 public sealed class TaprootReestablish
 {
     private readonly ILogger _logger;
-    private readonly IMessageSerializer _messageSerializer;
     private readonly ChannelStateTransitionService _transitions;
 
     public TaprootReestablish(ILogger logger, IMessageSerializer messageSerializer,
                               ChannelStateTransitionService transitions)
     {
         _logger = logger;
-        _messageSerializer = messageSerializer;
+        ArgumentNullException.ThrowIfNull(messageSerializer);
         _transitions = transitions;
     }
 
@@ -121,22 +120,12 @@ public sealed class TaprootReestablish
         var commitments = channel.Commitments
                        ?? throw new InvalidOperationException($"Channel {channel.ChannelId} has no commitment state");
 
-        var stored = await SentCommitDiffCodec.DecodeAsync(_messageSerializer, diff);
-        var updates = stored.TakeWhile(m => m is not (CommitmentSignedMessage or StartBatchMessage))
-                            .Select(m => m as IChannelMessage
-                                      ?? throw new InvalidOperationException(
-                                             $"The stored diff of channel {channel.ChannelId} holds a {m.Type}"))
-                            .ToList();
-
-        var result = _transitions.ResignRemoteNextCommit(commitments);
-        var signed = result.Outbound.Select(o => _transitions.ToWireMessage(channel, o)).ToList();
-        var newDiff = await SentCommitDiffCodec.EncodeAsync(_messageSerializer, updates.Concat(signed));
-        await _transitions.CommitAsync(channel, result, new ChannelStateExtras { SentCommitDiff = newDiff });
+        var retransmission = await _transitions.ResignRemoteNextCommitAsync(channel, diff);
 
         _logger.LogInformation(
             "Signed remote commitment {Number} of simple taproot channel {ChannelId} again for its retransmission",
             commitments.RemoteNextCommit?.Commit.Number, channel.ChannelId);
-        return [.. updates, .. signed];
+        return retransmission;
     }
 
     private static ChannelFailedException Fail(ChannelModel channel, string reason) =>

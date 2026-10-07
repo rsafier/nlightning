@@ -16,11 +16,17 @@ public sealed class RemoteSecureKeyManager(RemoteSignerConnection connection) : 
     public ExtPrivKey GetChannelKeyAtIndex(uint index) => throw PrivateKeyUnavailable();
     public ExtPrivKey GetDepositP2TrKeyAtIndex(uint index, bool isChange) => throw PrivateKeyUnavailable();
     public ExtPrivKey GetDepositP2WpkhKeyAtIndex(uint index, bool isChange) => throw PrivateKeyUnavailable();
+    public ExtPrivKey GetDepositKeyAtIndex(AddressType addressType, uint accountIndex, uint index, bool isChange) => throw PrivateKeyUnavailable();
     public ExtPrivKey GetKeyRingKeyAtIndex(int family, int index) => throw PrivateKeyUnavailable();
     public byte[] GetSilentPaymentSpendKey(ReadOnlySpan<byte> tweak32, uint? label) => throw PrivateKeyUnavailable();
     public DepositAccountInfo? GetDepositAccount(AddressType addressType)
     {
         var element = connection.Invoke(SignerOperations.GetDepositAccount, addressType)[0];
+        return element.ValueKind == System.Text.Json.JsonValueKind.Null ? null : SignerWire.Read<DepositAccountInfo>(element);
+    }
+    public DepositAccountInfo? GetDepositAccount(AddressType addressType, uint accountIndex)
+    {
+        var element = connection.Invoke(SignerOperations.GetDepositAccount2, addressType, accountIndex)[0];
         return element.ValueKind == System.Text.Json.JsonValueKind.Null ? null : SignerWire.Read<DepositAccountInfo>(element);
     }
     public CryptoKeyPair GetNodeKeyPair() => throw PrivateKeyUnavailable();

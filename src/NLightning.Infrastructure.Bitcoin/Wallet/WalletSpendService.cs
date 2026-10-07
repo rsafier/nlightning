@@ -149,13 +149,10 @@ public sealed class WalletSpendService : IWalletSpendService
 
         if (IsSilentPaymentAddress(request.Address))
         {
-            if (request.Inputs is { Count: > 0 })
-                throw new WalletSpendException(WalletSpendError.InputUnavailable,
-                                               "Choosing the inputs of a payment to a silent payment address is not "
-                                             + "supported; withdraw to an ordinary address.");
-
-            return await SendAsync([new WalletRecipient(request.Address, request.Amount)], request.FeeRatePerKw,
-                                   request.MaxFee, request.Labels, cancellationToken);
+            return await SendCoreAsync([new WalletRecipient(request.Address, request.Amount)], request.FeeRatePerKw,
+                                      request.MaxFee, request.Labels,
+                                      request.Inputs is { Count: > 0 } inputs ? inputs.ToArray() : null,
+                                      cancellationToken);
         }
         var destination = ParseAddress(request.Address, _network).ScriptPubKey;
         var feeRatePerKw = await GetFeeRatePerKwAsync(request.FeeRatePerKw, cancellationToken);
@@ -179,7 +176,14 @@ public sealed class WalletSpendService : IWalletSpendService
     public async Task<WalletWithdrawResult> SendAsync(IReadOnlyList<WalletRecipient> recipients,
                                                      LightningMoney? feeRatePerKw = null,
                                                      LightningMoney? maxFee = null, SourceLabels? labels = null,
-                                                     CancellationToken cancellationToken = default)
+                                                     CancellationToken cancellationToken = default) =>
+        await SendCoreAsync(recipients, feeRatePerKw, maxFee, labels, null, cancellationToken);
+
+    private async Task<WalletWithdrawResult> SendCoreAsync(IReadOnlyList<WalletRecipient> recipients,
+                                                          LightningMoney? feeRatePerKw, LightningMoney? maxFee,
+                                                          SourceLabels? labels,
+                                                          IReadOnlyList<(TxId TxId, uint Index)>? namedInputs,
+                                                          CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(recipients);
         if (recipients.Count is 0 or > 100 || (recipients.Count > 1 && recipients.Any(r => r.Amount is null)))
@@ -213,7 +217,10 @@ public sealed class WalletSpendService : IWalletSpendService
             throw new WalletSpendException(WalletSpendError.InvalidAddress,
                 "Silent payment change requires Receive=true and the local silent payment keys.");
         var policy = new WalletSelectionPolicy(silentAddresses.Count > 0, silentAddresses.Count > 0,
-            _silentPayments.AvoidMixing, silentChange, Math.Max(330, _silentPayments.MinReceiveSat));
+            _silentPayments.AvoidMixing, silentChange, Math.Max(330, _silentPayments.MinReceiveSat))
+        {
+            Inputs = namedInputs
+        };
         var extraWeight = BaseWeight + destinations.Sum(GetOutputWeight);
         await _gate.WaitAsync(cancellationToken);
         try
@@ -222,15 +229,23 @@ public sealed class WalletSpendService : IWalletSpendService
             var reserve = _anchorReserveService.GetRequiredReserve();
             var amounts = addresses.Select(r => r.Amount?.Satoshi ?? 0).ToArray();
             if (addresses[0].Amount is null)
-                amounts[0] = await GetSendAllAmountAsync(extraWeight, rate, reserve,
-                    silentAddresses.Count > 0 ? Math.Max(330, _silentPayments.MinSendSat) : GetDustThreshold(destinations[0]),
-                    policy.PreferP2TrChange);
+            {
+                var minimum = silentAddresses.Count > 0 ? Math.Max(330, _silentPayments.MinSendSat)
+                                                       : GetDustThreshold(destinations[0]);
+                amounts[0] = namedInputs is not null
+                    ? await GetSendAllAmountOfInputsAsync(namedInputs, extraWeight, rate, minimum)
+                    : await GetSendAllAmountAsync(extraWeight, rate, reserve, minimum, policy.PreferP2TrChange);
+            }
             var total = checked(amounts.Sum());
             var reservation = await _feeInputSelector.ReserveAsync(LightningMoney.Satoshis(total),
                 LightningMoney.Satoshis(rate), extraWeight, ReservationPurpose, policy, cancellationToken);
             var stored = false;
             try
             {
+                if (namedInputs is not null &&
+                    !reservation.Inputs.Select(input => (input.TxId, input.Index)).SequenceEqual(namedInputs))
+                    throw new WalletSpendException(WalletSpendError.InputUnavailable,
+                        "The wallet could not reserve exactly the chosen inputs.");
                 await EnsureReserveKeptAsync(reservation, total, cancellationToken);
                 var frozenInputs = reservation.Inputs.Select(i => (i.TxId, i.Index)).ToArray();
                 Script? silentChangeScript = null;
@@ -281,6 +296,11 @@ public sealed class WalletSpendService : IWalletSpendService
                     stored = await IsStoredAsync(row.TransactionId);
                     throw;
                 }
+                _logger.LogInformation(
+                    "Sent {Amount} sat to {Recipients} recipient(s) in {TxId} (fee {Fee} sat, change {Change} sat, "
+                  + "{Inputs} input(s), explicit input choice {ExplicitInputs}, anchors reserve {Reserve} sat)",
+                    total, addresses.Length, signed.Signed.TxId, fee, reservation.ChangeAmount.Satoshi,
+                    reservation.Inputs.Count, namedInputs is not null, reserve.Satoshi);
                 return new WalletWithdrawResult(signed.Signed.TxId, LightningMoney.Satoshis(total),
                     LightningMoney.Satoshis(fee), reservation.ChangeAmount, LightningMoney.Satoshis(rate),
                     GetWeight(signed.Transaction), reservation.Inputs.Count, reserve, published)

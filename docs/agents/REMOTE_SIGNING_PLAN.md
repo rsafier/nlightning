@@ -118,6 +118,13 @@ Do not equate VLS policy enforcement with full recovery autonomy. Its current RE
 
 ## Implementation sequence and acceptance gates
 
+Current sprint: [node recovery](REMOTE_SIGNING_RECOVERY.md) covers normal commitment
+signing, taproot reconnect signing and post-save revocation release. The separate
+[VLS gateway](../../tools/vls-gateway/README.md) exercises authenticated semantic
+commands and transactional policy-state/receipt persistence. Neither closes the
+broader on-chain, deployment fencing or live VLS adapter acceptance gates below.
+The branch incorporates FAFO `dd598216` (PR #32); no legacy compatibility is required.
+
 1. **Contracts and capability spike.** Inventory every secret consumer; introduce public identity/wallet metadata, invoice signing and scoped auxiliary operations; define operation IDs/error categories and capability negotiation. Implement a small VLS regtest spike for setup, payment and revocation to validate the protocol mapping before committing to its service architecture.
 2. **Native remote prototype.** Extract signer execution and state dependencies, add VM transport and explicit DI/startup mode, replace remaining secret exports. Keep native derivation and all currently enabled features. Acceptance: node process starts without a master/node key or xprv, invoices/payments work, wallet addresses match local mode, and backup/restore works through remote operations.
 3. **Durable state and failures.** Add signer journal, exact retry outcomes, pending cross-store reconciliation, sticky guards and epoch fencing. Acceptance: injected crashes at every persistence/response boundary, stale registrations/snapshots, duplicate/mismatched requests and two active writers cannot cause revocation mistakes or nonce reuse. Prove force-close/HTLC/penalty/anchor recovery with signer/node restarts.

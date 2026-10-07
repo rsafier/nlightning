@@ -12,7 +12,7 @@ using Domain.Accounting.Prices;
 /// price adjustment each in the open period with the change of their value, the closes still verify, a rebuild equals
 /// the incremental book, and a second replacement adds up.
 /// </summary>
-public sealed class FinancialPriceReplaceTests
+public sealed partial class FinancialPriceReplaceTests
 {
     private const string Usd = FinancialProjectorTestKit.Usd;
 

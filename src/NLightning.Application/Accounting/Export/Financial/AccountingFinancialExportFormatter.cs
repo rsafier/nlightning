@@ -258,6 +258,9 @@ internal abstract class AccountingFinancialExportFormatter
             separator = " - ";
         }
 
+        if (item.Entry.ClosedPeriodId is not null && item.Entry.Postings.Any(p =>
+                p.PriceId is { } id && item.Prices?.ContainsKey(id) != true))
+            text.Append(" - original price unavailable (legacy close; stored posting values retained)");
         return text.ToString();
     }
 

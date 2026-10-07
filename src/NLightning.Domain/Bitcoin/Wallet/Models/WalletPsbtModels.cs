@@ -13,7 +13,7 @@ using ValueObjects;
 /// <param name="ScriptPubKey">Its script.</param>
 /// <param name="Confirmations">How deep it is (0: unconfirmed).</param>
 public sealed record WalletUnspentOutput(TxId TxId, uint Index, LightningMoney Amount, AddressType AddressType,
-                                         string Address, BitcoinScript ScriptPubKey, uint Confirmations);
+                                         string Address, BitcoinScript ScriptPubKey, uint Confirmations, string Account = "default");
 
 /// <summary>A wallet output leased to an external spender (LND's <c>UtxoLease</c>, NL-1184).</summary>
 /// <param name="LockId">The 32-byte lease id the spender chose (LND's <c>id</c>).</param>
@@ -44,7 +44,10 @@ public sealed record PsbtFundRequest(IReadOnlyList<(BitcoinScript Script, Lightn
                                      IReadOnlyList<(TxId TxId, uint Index)> Inputs, long FeeRatePerKw,
                                      int MinConfirmations, byte[] LockId, TimeSpan LockDuration, uint LockTime = 0,
                                      int Version = 2, AddressType ChangeAddressType = AddressType.P2Wpkh,
-                                     double MaxFeeRatio = 0);
+                                     double MaxFeeRatio = 0, byte[]? TemplatePsbt = null,
+                                     int? ExistingChangeOutputIndex = null, bool CoinSelectTemplate = false,
+                                     bool SpendUnconfirmed = false, uint ReleaseAfterSpendConfs = 0,
+                                     string Account = "default");
 
 /// <summary>A funded PSBT (NL-1184).</summary>
 /// <param name="Psbt">The serialized PSBT (BIP 174), every input with its witness UTXO.</param>

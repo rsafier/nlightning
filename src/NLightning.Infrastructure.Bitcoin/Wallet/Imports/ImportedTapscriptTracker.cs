@@ -233,6 +233,12 @@ public sealed class ImportedTapscriptTracker : IDisposable
                 _pendingImported.Add(observed);
             }
         }
+        // A newly discovered account child extends the gap and invalidates the script checkpoint. Replay before
+        // exposing the final snapshot so old, already-spent deposits beyond the previous window remain discoverable.
+        await using var accountScope = _scopes.CreateAsyncScope();
+        if (accountScope.ServiceProvider.GetService<WalletAccountService>() is { } accountService
+            && await accountService.ExtendWatchDiscoveryAsync(history.Select(t => t.Transaction).ToArray(), ct))
+            return await SnapshotCoreAsync(ct);
         PublishCommitted(tip, anchor.ToString());
         return Copy(snapshot);
     }

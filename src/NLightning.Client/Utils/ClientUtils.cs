@@ -34,6 +34,10 @@ public static class ClientUtils
         Console.WriteLine("  listchannels [peer_id]       List channels, optionally only those with one peer");
         Console.WriteLine("  getaddress [p2tr|p2wpkh|all] Gets an unused address of the requested type [default: p2tr]");
         Console.WriteLine("  walletbalance                Gets the wallet balance");
+        Console.WriteLine("  wallethistory [--from-height <height> [--to-height <height>] [--address-count <count>]");
+        Console.WriteLine("                 [--allow-partial] | --cancel]");
+        Console.WriteLine("                               Recover bounded durable transaction history; without options show status");
+        Console.WriteLine("                               Pruned birthdays fail unless partial bounds are explicitly requested");
         Console.WriteLine("  getspaddress [--label <name>] Get the static silent payment address, optionally labeled");
         Console.WriteLine("  splabels                     List silent payment labels and addresses");
         Console.WriteLine("  sprescan --from-height <height> [--labels <count>] | --cancel");

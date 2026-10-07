@@ -10,6 +10,7 @@ using Domain.Accounting.Enums;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Exceptions;
 using Domain.Money;
 using Domain.Onchain.Enums;
 using Infrastructure.Bitcoin.Signers;
@@ -72,6 +73,9 @@ public sealed partial class LndGrpcWave3HostTests
     {
         // Arrange
         var send = AddBroadcast(BroadcastPurpose.WalletSend, 0x31, BroadcastState.Pending, null);
+        var broadcast = _broadcastRows.Single(row => row.TransactionId == send);
+        _walletHistory.Add(new WalletTransactionRecord(send, broadcast.RawTransaction, null, null,
+            DateTimeOffset.UnixEpoch.AddSeconds(0x31), [], [new WalletTransactionInput(0, 100_000)]));
         using var connection = Connect(LndMacaroonFiles.AdminFileName);
         LabelTransactionRequest Label(string label, bool overwrite = false) => new()
         {
@@ -95,37 +99,50 @@ public sealed partial class LndGrpcWave3HostTests
         Assert.Equal("transaction label 'rent' added", first.Status);
         Assert.Equal(StatusCode.AlreadyExists, again.StatusCode);
         Assert.Equal("transaction already labelled", again.Status.Detail);
-        Assert.Equal("food", _broadcastRows.Single(r => r.TransactionId == send).Label);
+        Assert.Equal("food", _walletLabels[send]);
+        var history = await connection.WalletKitClient.GetTransactionAsync(
+            new GetTransactionRequest { Txid = send.ToString() }, cancellationToken: Ct);
+        Assert.Equal("food", history.Label);
+        Assert.Equal(-100_000, history.Amount);
+        Assert.Equal(10_000, history.TotalFees);
         Assert.Equal(StatusCode.InvalidArgument, empty.StatusCode);
         Assert.Equal(StatusCode.InvalidArgument, tooLong.StatusCode);
     }
 
     [Fact]
-    public async Task Given_ADepositOrAnUnknownTransaction_When_Labelled_Then_RefusedAsLndWouldOrAsNotOurs()
+    public async Task Given_ADeposit_When_Labelled_Then_DurableHistoryShowsItAndOverwriteIsExplicit()
     {
-        // Arrange
         var deposit = new TxId(Enumerable.Repeat((byte)0x22, 32).ToArray());
         AddEvent(AccountingEventKind.WalletReceived, deposit, 0, 101, 70_000_000);
         using var connection = Connect(LndMacaroonFiles.AdminFileName);
-
-        // Act
-        var ofDeposit = await Assert.ThrowsAsync<RpcException>(async () =>
-            await connection.WalletKitClient.LabelTransactionAsync(new LabelTransactionRequest
-            {
-                Txid = ByteString.CopyFrom((byte[])deposit),
-                Label = "salary"
-            }, cancellationToken: Ct));
+        LabelTransactionRequest Label(string label, bool overwrite = false) => new()
+        {
+            Txid = ByteString.CopyFrom((byte[])deposit),
+            Label = label,
+            Overwrite = overwrite
+        };
+        await connection.WalletKitClient.LabelTransactionAsync(Label("salary"), cancellationToken: Ct);
+        var labelled = await connection.WalletKitClient.GetTransactionAsync(
+            new GetTransactionRequest { Txid = deposit.ToString() }, cancellationToken: Ct);
+        Assert.Equal("salary", labelled.Label);
+        Assert.Empty(_broadcastRows);
+        var conflict = await Assert.ThrowsAsync<RpcException>(async () =>
+            await connection.WalletKitClient.LabelTransactionAsync(Label("bonus"), cancellationToken: Ct));
+        Assert.Equal(StatusCode.AlreadyExists, conflict.StatusCode);
+        await connection.WalletKitClient.LabelTransactionAsync(Label("bonus", true), cancellationToken: Ct);
+        var overwritten = await connection.WalletKitClient.GetTransactionAsync(
+            new GetTransactionRequest { Txid = deposit.ToString() }, cancellationToken: Ct);
+        Assert.Equal("bonus", overwritten.Label);
+        Assert.Equal("bonus", _walletLabels[deposit]);
         var unknown = await Assert.ThrowsAsync<RpcException>(async () =>
             await connection.WalletKitClient.LabelTransactionAsync(new LabelTransactionRequest
             {
                 Txid = ByteString.CopyFrom(new byte[32]),
                 Label = "salary"
             }, cancellationToken: Ct));
-
-        // Assert
-        Assert.Equal(StatusCode.FailedPrecondition, ofDeposit.StatusCode);
         Assert.Equal(StatusCode.NotFound, unknown.StatusCode);
         Assert.Equal("cannot label transaction not known to wallet", unknown.Status.Detail);
+        Assert.Single(_walletLabels);
     }
 
     [Fact]
@@ -430,6 +447,8 @@ public sealed partial class LndGrpcWave3HostTests
             {
                 Outpoint = new Testing.Lnd.Lnrpc.OutPoint { TxidStr = commitment.ToString(), OutputIndex = 1 }
             }, cancellationToken: Ct));
+        _psbt.Setup(p => p.BumpOutputAsync(commitment, 9, It.IsAny<long>(), It.IsAny<long?>(), It.IsAny<CancellationToken>()))
+             .ThrowsAsync(new WalletPsbtException(WalletPsbtError.NotFound, "not a wallet output"));
         var nowhere = await Assert.ThrowsAsync<RpcException>(async () =>
             await connection.WalletKitClient.BumpFeeAsync(new BumpFeeRequest
             {

@@ -32,9 +32,12 @@ public partial class LocalLightningSigner
             throw new SignerException($"Wallet address {address.Address} is not an address of this network", e);
         }
 
-        var extKeyBytes = address.AddressType == AddressType.P2Wpkh
-                              ? _secureKeyManager.GetDepositP2WpkhKeyAtIndex(address.Index, address.IsChange)
-                              : _secureKeyManager.GetDepositP2TrKeyAtIndex(address.Index, address.IsChange);
+        var child = address.DerivationIndex ?? address.Index;
+        var extKeyBytes = address.AccountIndex != 0
+            ? _secureKeyManager.GetDepositKeyAtIndex(address.AddressType, address.AccountIndex, child, address.IsChange)
+            : address.AddressType == AddressType.P2Wpkh
+                ? _secureKeyManager.GetDepositP2WpkhKeyAtIndex(child, address.IsChange)
+                : _secureKeyManager.GetDepositP2TrKeyAtIndex(child, address.IsChange);
         Key key;
         try
         {

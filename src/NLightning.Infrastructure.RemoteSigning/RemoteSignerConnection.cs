@@ -1,10 +1,14 @@
+using System.Buffers.Binary;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text.Json;
 using Google.Protobuf;
 using Grpc.Core;
 using Grpc.Net.Client;
 using NLightning.Domain.Exceptions;
+using NLightning.Domain.Signing.Recovery;
 using NLightning.Signing.Contracts;
+using SigningRequest = NLightning.Signing.Contracts.SigningRequest;
 
 namespace NLightning.Infrastructure.RemoteSigning;
 
@@ -14,6 +18,7 @@ public sealed class RemoteSignerConnection : IDisposable
     private readonly GrpcChannel _channel;
     private readonly SignerRpc.SignerRpcClient _client;
     private readonly RemoteSignerOptions _options;
+    private IRemoteSigningRequestCapture? _workflowCapture;
     public SignerIdentity Identity { get; }
 
     public RemoteSignerConnection(RemoteSignerOptions options)
@@ -49,8 +54,39 @@ public sealed class RemoteSignerConnection : IDisposable
     /// <summary>No automatic retries: a timed out signing operation can have executed. Secret nonce results are never regenerated here.</summary>
     public JsonElement[] Invoke(uint operation, params object?[] arguments)
     {
-        return Execute(Prepare(operation, arguments));
+        var request = Prepare(operation, arguments);
+        var capture = Volatile.Read(ref _workflowCapture);
+        if (capture is null) return Execute(request);
+        var material = new byte[sizeof(uint) + request.Payload.Length];
+        BinaryPrimitives.WriteUInt32LittleEndian(material, operation);
+        request.Payload.Span.CopyTo(material.AsSpan(sizeof(uint)));
+        var payload = capture.Execute(operation, request.ToByteArray(), SHA256.HashData(material),
+            envelope => ToWorkflowStatus(Reconcile(SigningRequest.Parser.ParseFrom(envelope))),
+            envelope => ExecutePayload(SigningRequest.Parser.ParseFrom(envelope)));
+        return SignerWire.Decode(payload);
     }
+
+    public void AttachWorkflowCapture(IRemoteSigningRequestCapture capture)
+    {
+        ArgumentNullException.ThrowIfNull(capture);
+        if (Interlocked.CompareExchange(ref _workflowCapture, capture, null) is { } existing
+         && !ReferenceEquals(existing, capture))
+            throw new InvalidOperationException("This signer connection already has a workflow capture coordinator.");
+    }
+    public void DetachWorkflowCapture(IRemoteSigningRequestCapture capture)
+    {
+        ArgumentNullException.ThrowIfNull(capture);
+        Interlocked.CompareExchange(ref _workflowCapture, null, capture);
+    }
+    private static RemoteSigningRequestStatus ToWorkflowStatus(ReconciliationResponse response) => new(
+        response.Outcome switch
+        {
+            RequestOutcome.Completed => RemoteSigningRequestOutcome.Completed,
+            RequestOutcome.NotFound => RemoteSigningRequestOutcome.NotFound,
+            RequestOutcome.Unknown => RemoteSigningRequestOutcome.Unknown,
+            RequestOutcome.Invalidated => RemoteSigningRequestOutcome.Invalidated,
+            _ => RemoteSigningRequestOutcome.Unsupported
+        }, response.Outcome == RequestOutcome.Completed ? response.Response?.Payload.ToByteArray() : null);
 
     /// <summary>Create an envelope that can be saved by the caller before dispatch for explicit crash reconciliation.</summary>
     public static SigningRequest Prepare(uint operation, params object?[] arguments)
@@ -69,7 +105,9 @@ public sealed class RemoteSignerConnection : IDisposable
     }
 
     /// <summary>Dispatch once. Retrying a saved envelope is explicit; no transport retry is configured.</summary>
-    public JsonElement[] Execute(SigningRequest request)
+    public JsonElement[] Execute(SigningRequest request) => SignerWire.Decode(ExecutePayload(request));
+
+    private byte[] ExecutePayload(SigningRequest request)
     {
         // Snapshot the caller's mutable protobuf envelope so diagnostics bind to what was actually sent.
         request = request.Clone();
@@ -77,7 +115,7 @@ public sealed class RemoteSignerConnection : IDisposable
         {
             var response = _client.ExecuteAsync(request, new Metadata { { "x-signer-token", _options.AuthToken } },
                 deadline: DateTime.UtcNow.AddSeconds(_options.TimeoutSeconds)).ResponseAsync.GetAwaiter().GetResult();
-            return SignerWire.Decode(response.Payload.ToByteArray());
+            return response.Payload.ToByteArray();
         }
         catch (RpcException ex) when (ex.StatusCode == StatusCode.FailedPrecondition)
         { throw new SignerException(ex.Status.Detail, "Internal signer error"); }

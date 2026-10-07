@@ -26,7 +26,7 @@ using Domain.Protocol.Onion.Interfaces;
 /// client), and a forward whose incoming channel is closing on chain is held for a settle whose preimage the resolvers
 /// claim it with (LND's on-chain interception).
 /// </summary>
-public class HtlcInterceptionParitySwitchTests
+public partial class HtlcInterceptionParitySwitchTests
 {
     private static readonly LightningMoney s_amount = LightningMoney.MilliSatoshis(40_000_000);
     private static readonly CustomRecord s_record = new(65_537, [0xCA, 0xFE]);
@@ -67,10 +67,11 @@ public class HtlcInterceptionParitySwitchTests
         Assert.Equal(s_record, Assert.Single(WireCustomRecordCodec.Decode(bobOutgoing.WireCustomRecords)));
         Assert.Equal(s_record, Assert.Single(WireCustomRecordCodec.Decode(carolIncoming.WireCustomRecords)));
 
-        // ... the circuit records what really moved: the HTLC's incoming amount and the modified outgoing one
+        // ... history records the interpretation override while accounting retains real channel custody
         var circuit = await harness.Bob.InScopeAsync(u => u.ForwardCircuitDbRepository.GetByIncomingAsync(
                                                          ThreeNodeHarness.AliceBobChannelId, offered.IncomingHtlcId));
-        Assert.Equal(offered.IncomingAmount, circuit!.IncomingAmount);
+        Assert.Equal(offered.IncomingAmount + LightningMoney.MilliSatoshis(1), circuit!.IncomingAmount);
+        Assert.Equal(offered.IncomingAmount, circuit.ActualIncomingAmount);
         Assert.Equal(outAmount, circuit.OutgoingAmount);
 
         // ... and Carol accepts the (over)payment
@@ -79,6 +80,9 @@ public class HtlcInterceptionParitySwitchTests
         await harness.Carol.Switch.HandleAsync(lockedIn, TestContext.Current.CancellationToken);
         await harness.PumpAsync();
         Assert.Equal(invoice.Preimage!.Value, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        var accounting = Assert.Single(await harness.Bob.InScopeAsync(u => u.AccountingEventDbRepository.GetUnsealedAsync(1_000)));
+        Assert.Equal(AccountingEventKind.ForwardSettled, accounting.Kind);
+        Assert.Equal((long)(offered.IncomingAmount - outAmount).MilliSatoshi, accounting.AmountMsat);
     }
 
     [Fact]
@@ -273,13 +277,17 @@ public class HtlcInterceptionParitySwitchTests
         Assert.Equal(invoice.Preimage.Value, BobIncoming(harness).KnownPreimage);
     }
 
-    private static Task<ThreeNodeHarness> CreateAsync(bool require = false) =>
-        ThreeNodeHarness.CreateAsync(h => h.Bob.ConfigureServices = services =>
+    private static Task<ThreeNodeHarness> CreateAsync(bool require = false, ulong maxDustMsat = 50_000_000) =>
+        ThreeNodeHarness.CreateAsync(h =>
         {
-            if (require)
-                services.Configure<HtlcInterceptorSettings>(s => s.RequireInterceptor = true);
-            services.AddSingleton<HtlcInterceptorHub>();
-            services.AddSingleton<IHtlcForwardInterceptor>(sp => sp.GetRequiredService<HtlcInterceptorHub>());
+            h.Bob.Options.MaxDustHtlcExposureMsat = maxDustMsat;
+            h.Bob.ConfigureServices = services =>
+            {
+                if (require)
+                    services.Configure<HtlcInterceptorSettings>(s => s.RequireInterceptor = true);
+                services.AddSingleton<HtlcInterceptorHub>();
+                services.AddSingleton<IHtlcForwardInterceptor>(sp => sp.GetRequiredService<HtlcInterceptorHub>());
+            };
         });
 
     private static (HtlcInterceptorHub Hub, RecordingClient Client, IDisposable Connection) Connect(

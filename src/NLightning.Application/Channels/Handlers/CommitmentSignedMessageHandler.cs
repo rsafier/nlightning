@@ -67,7 +67,7 @@ public class CommitmentSignedMessageHandler : IChannelMessageHandler<CommitmentS
         // Persist the new local commitment with the peer's signatures before the secret exists (B2-CS-R06, I3)
         await _transitions.CommitAsync(channel, result,
                                        new ChannelStateExtras { LastSent = LastSentCommitmentMessage.RevokeAndAck });
-        var revokeAndAckMessage = _transitions.CreateRevokeAndAck(channel, revokeAndAck);
+        var revokeAndAckMessage = await _transitions.CreateRevokeAndAckAsync(channel, revokeAndAck);
 
         if (_logger.IsEnabled(LogLevel.Debug))
             _logger.LogDebug("Accepted local commitment {Number} of channel {ChannelId}, revoking {Revoked}",

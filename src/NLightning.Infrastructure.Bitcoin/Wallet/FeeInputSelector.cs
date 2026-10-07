@@ -36,15 +36,17 @@ public sealed class FeeInputSelector : IFeeInputSelector
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ILogger<FeeInputSelector> _logger;
     private readonly Network _network;
+    private readonly IWalletMempoolCatalog? _mempoolCatalog;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly TimeProvider _timeProvider;
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
 
     public FeeInputSelector(IUtxoMemoryRepository utxoMemoryRepository, IServiceScopeFactory scopeFactory,
                             IOptions<NodeOptions> nodeOptions, ILogger<FeeInputSelector> logger,
-                            TimeProvider? timeProvider = null)
+                            TimeProvider? timeProvider = null, IWalletMempoolCatalog? mempoolCatalog = null)
     {
         _utxoMemoryRepository = utxoMemoryRepository;
+        _mempoolCatalog = mempoolCatalog;
         _scopeFactory = scopeFactory;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
@@ -83,7 +85,10 @@ public sealed class FeeInputSelector : IFeeInputSelector
 
             for (var attempt = 1; attempt <= MaxReserveAttempts; attempt++)
             {
-                var candidates = GetCandidates(spentByPendingBroadcasts);
+                if (policy.IncludeUnconfirmed)
+                    await (_mempoolCatalog ?? throw new NotSupportedException("Unconfirmed wallet catalogue unavailable."))
+                        .RefreshAsync(cancellationToken);
+                var candidates = GetCandidates(spentByPendingBroadcasts, policy);
                 var selection = policy.Inputs is { } required
                                     ? SelectExact(candidates, required, CeilSatoshis(targetFee), feeRatePerKw.Satoshi,
                                                   extraWeight, policy.PreferP2TrChange)
@@ -329,6 +334,11 @@ public sealed class FeeInputSelector : IFeeInputSelector
     /// <inheritdoc />
     public async Task<IReadOnlyList<WalletInput>> ReserveInputsAsync(
         IReadOnlyList<(TxId TxId, uint Index)> outpoints, string purpose,
+        CancellationToken cancellationToken = default) =>
+        await ReserveInputsAsync(outpoints, purpose, false, cancellationToken);
+
+    public async Task<IReadOnlyList<WalletInput>> ReserveInputsAsync(
+        IReadOnlyList<(TxId TxId, uint Index)> outpoints, string purpose, bool includeUnconfirmed,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(outpoints);
@@ -342,6 +352,9 @@ public sealed class FeeInputSelector : IFeeInputSelector
         {
             // Only the outpoints the wallet still holds and nothing else claims (NL-384): a reorg restored them, and
             // the reservation of the spend that first confirmed them ended before the rewind
+            if (includeUnconfirmed)
+                await (_mempoolCatalog ?? throw new NotSupportedException("Unconfirmed wallet catalogue unavailable."))
+                    .RefreshParentsAsync(outpoints.Select(point => point.TxId).Distinct().ToArray(), cancellationToken);
             var inputs = new List<WalletInput>();
             foreach (var (txId, index) in outpoints)
             {
@@ -349,7 +362,7 @@ public sealed class FeeInputSelector : IFeeInputSelector
                     continue;
 
                 if (!_utxoMemoryRepository.TryGetUtxo(txId, index, out var utxo) || utxo.LockedToChannelId is not null
-                 || utxo.BlockHeight == 0 || (utxo.WalletAddress is null && utxo.SilentPayment is null)
+                 || (!includeUnconfirmed && utxo.BlockHeight == 0) || (utxo.WalletAddress is null && utxo.SilentPayment is null)
                  || utxo.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
                     continue;
 
@@ -426,19 +439,25 @@ public sealed class FeeInputSelector : IFeeInputSelector
         return await PendingBroadcastOutpoints.GetAsync(uow, _network, _logger);
     }
 
-    private List<WalletInput> GetCandidates(HashSet<(TxId TxId, uint Index)> spentByPendingBroadcasts)
+    private List<WalletInput> GetCandidates(HashSet<(TxId TxId, uint Index)> spentByPendingBroadcasts, WalletSelectionPolicy? policy = null)
     {
         var candidates = new List<WalletInput>();
-        foreach (var utxo in _utxoMemoryRepository.GetUnreservedUtxos())
+        foreach (var utxo in _utxoMemoryRepository.GetUnreservedUtxos().Concat(
+                     policy?.IncludeUnconfirmed == true ? _utxoMemoryRepository.GetUnconfirmedUtxos()
+                                                       : Array.Empty<UtxoModel>()))
         {
             if (spentByPendingBroadcasts.Contains((utxo.TxId, utxo.Index)))
                 continue;
 
             // Only mined outputs whose script we know
-            if (utxo.BlockHeight == 0 || (utxo.WalletAddress is null && utxo.SilentPayment is null)
+            if ((!(policy?.IncludeUnconfirmed ?? false) && utxo.BlockHeight == 0) || (utxo.WalletAddress is null && utxo.SilentPayment is null)
                                       || utxo.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
                 continue;
 
+            if (_utxoMemoryRepository.TryGetFeeReservation(utxo.TxId, utxo.Index, out _) ||
+                (utxo.WalletAddress?.AccountName ?? "default") != (policy?.Account ?? "default")) continue;
+            if (policy?.ConfirmationTip is { } tip &&
+                (utxo.BlockHeight == 0 || utxo.BlockHeight > tip ? 0 : tip - utxo.BlockHeight + 1) < policy.MinConfirmations) continue;
             Script scriptPubKey;
             try
             {
@@ -476,8 +495,17 @@ public sealed class FeeInputSelector : IFeeInputSelector
         if (selection.ChangeSat > 0 &&
             !(policy.ChangeToSilentPayment && selection.ChangeSat >= policy.MinimumSilentChangeSat))
         {
-            var walletService = scope.ServiceProvider.GetRequiredService<IBitcoinWalletService>();
-            var changeAddress = await walletService.GetUnusedAddressAsync(policy.PreferP2TrChange ? AddressType.P2Tr : AddressType.P2Wpkh, true);
+            WalletAddressModel changeAddress;
+            if (policy.Account != "default")
+            {
+                var account = await uow.WalletAccountDbRepository.GetAsync(policy.Account, CancellationToken.None)
+                    ?? throw new WalletPsbtException(WalletPsbtError.NotFound, "wallet account not found");
+                changeAddress = await scope.ServiceProvider.GetRequiredService<WalletAccountService>()
+                    .NextAsync(policy.Account, account.AddressType, true, CancellationToken.None);
+            }
+            else
+                changeAddress = await scope.ServiceProvider.GetRequiredService<IBitcoinWalletService>()
+                    .GetUnusedAddressAsync(policy.PreferP2TrChange ? AddressType.P2Tr : AddressType.P2Wpkh, true);
             changeScript = BitcoinAddress.Create(changeAddress.Address, _network).ScriptPubKey.ToBytes();
         }
 

@@ -211,18 +211,24 @@ public class WithdrawIpcHandlerTests
                              Times.Never);
     }
 
-    [Fact]
-    public async Task Given_ChosenOutputs_When_Withdrawing_Then_TheServiceGetsThemInInternalByteOrder()
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Given_ChosenOutputs_When_Withdrawing_Then_TheServiceGetsThemInInternalByteOrder(bool silentPayment, bool all)
     {
         // Arrange (NL-1296): the txid as bitcoind and explorers print it, as the CLI's --utxo takes it
         const string display = "154499a7c742719609d35ae6021fb39a4c0f34ce8863ad06ed6988ad861e6fb0";
         var handler = GetHandler();
+        var destination = silentPayment ? "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv" : Address;
 
         // Act
         var response = await handler.HandleAsync(
                            CreateEnvelope(new WithdrawIpcRequest
                            {
-                               Address = Address,
+                               Address = destination,
+                               AmountSat = all ? null : 20_000,
                                Utxos = [$"{display}:0", $"{new string('a', 64)}:7"]
                            }), TestContext.Current.CancellationToken);
 
@@ -233,7 +239,9 @@ public class WithdrawIpcHandlerTests
         Assert.Equal(display, _request.Inputs[0].TxId.ToString());
         Assert.Equal(0u, _request.Inputs[0].Index);
         Assert.Equal(7u, _request.Inputs[1].Index);
-        Assert.True(_request.SendAll);
+        Assert.Equal(all, _request.SendAll);
+        Assert.Equal(destination, _request.Address);
+        Assert.Equal(all ? (long?)null : 20_000, _request.Amount?.Satoshi);
     }
 
     [Theory]

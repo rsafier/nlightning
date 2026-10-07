@@ -22,17 +22,23 @@ using Infrastructure.Bitcoin.Wallet.SilentPayments;
 
 public partial class WalletSpendServiceTests
 {
-    [Fact]
-    public async Task Given_SilentChangeEnabled_When_SendThenScanRestoreAndSpend_Then_LabelZeroCoinIsRecoverableAndSpendable()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_SilentChangeEnabled_When_SendThenScanRestoreAndSpend_Then_LabelZeroCoinIsRecoverableAndSpendable(bool explicitInputs)
     {
         // Arrange
         using var receiver = new ChangeKeys();
         var coin = AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
+        if (explicitInputs) AddWalletUtxo(AddressType.P2Wpkh, 1, 800_000);
         var options = new SilentPaymentsOptions { Enabled = true, Receive = true, ChangeToSilentPayment = true };
         var sender = CreateSilentService(options, keys: receiver.Keys);
         // Act: derive a private m=0 change output, then independently scan the confirmed transaction.
         var sent = await sender.WithdrawAsync(new WalletWithdrawRequest(SilentPaymentAddressCodec.Encode(s_silentAddress),
-            LightningMoney.Satoshis(20_000), LightningMoney.Satoshis(FeeRatePerKw)), TestContext.Current.CancellationToken);
+            LightningMoney.Satoshis(20_000), LightningMoney.Satoshis(FeeRatePerKw))
+        {
+            Inputs = explicitInputs ? [(coin.Model.TxId, coin.Model.Index)] : null
+        }, TestContext.Current.CancellationToken);
         var tx = AssertPublishedAndValid(coin.TxOut);
         var prevouts = new ChangePrevouts(tx, coin.TxOut);
         var block = Network.RegTest.Consensus.ConsensusFactory.CreateBlock();
@@ -63,8 +69,12 @@ public partial class WalletSpendServiceTests
         _utxos.Add(received);
         var signer = new LocalLightningSigner(Mock.Of<IFundingOutputBuilder>(), Mock.Of<IKeyDerivationService>(),
             NullLogger<LocalLightningSigner>.Instance, _nodeOptions, receiver.Keys, _utxos);
-        await CreateSilentService(signer: signer).WithdrawAsync(Request(10_000), TestContext.Current.CancellationToken);
+        await CreateSilentService(signer: signer).WithdrawAsync(Request(10_000) with
+        {
+            Inputs = [(received.TxId, received.Index)]
+        }, TestContext.Current.CancellationToken);
         var spent = Transaction.Load(Assert.Single(_published.Skip(1)).RawTransaction, Network.RegTest);
+        Assert.Equal(new OutPoint(tx.GetHash(), change.Index), Assert.Single(spent.Inputs).PrevOut);
         var validator = spent.CreateValidator([tx.Outputs[(int)change.Index]]);
         Assert.True(validator.ValidateInput(0).Error is null or ScriptError.OK);
     }

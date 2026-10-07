@@ -7,6 +7,7 @@ public static class SignerOperations
     public const uint ComputeSilentPaymentOutputs = 62;
     public const uint SignWalletMessage = 63;
     public const uint GetDepositAccount = 108;
+    public const uint GetDepositAccount2 = 109;
     // CreateNewChannel(out ChannelBasepoints basepoints, out CompactPubKey firstPerCommitmentPoint)
     public const uint CreateNewChannel = 1;
     // GetChannelBasepoints(uint channelKeyIndex)
@@ -143,6 +144,7 @@ public static class SignerOperations
         ComputeSilentPaymentOutputs => 4,
         SignWalletMessage => 2,
         GetDepositAccount => 1,
+        GetDepositAccount2 => 2,
         CreateNewChannel => 0,
         GetChannelBasepoints => 1,
         GetChannelBasepoints2 => 1,

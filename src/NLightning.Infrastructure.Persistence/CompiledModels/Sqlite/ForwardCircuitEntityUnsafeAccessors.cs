@@ -18,6 +18,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<IncomingHtlcId>k__BackingField")]
         public static extern ref ulong IncomingHtlcId(ForwardCircuitEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<ActualIncomingAmountMsat>k__BackingField")]
+        public static extern ref long? ActualIncomingAmountMsat(ForwardCircuitEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<CreatedAt>k__BackingField")]
         public static extern ref DateTimeOffset CreatedAt(ForwardCircuitEntity @this);
 
@@ -29,6 +32,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<IncomingAmountMsat>k__BackingField")]
         public static extern ref long IncomingAmountMsat(ForwardCircuitEntity @this);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<IncomingClaimedPreimage>k__BackingField")]
+        public static extern ref byte[] IncomingClaimedPreimage(ForwardCircuitEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<IncomingCltvExpiry>k__BackingField")]
         public static extern ref uint IncomingCltvExpiry(ForwardCircuitEntity @this);

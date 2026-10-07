@@ -27,6 +27,10 @@ public interface IAccountingPrices
     Task<IReadOnlyList<AccountingPrice>> ListAsync(string? currency, DateTimeOffset? since, DateTimeOffset? until,
                                                    int take, CancellationToken cancellationToken = default);
 
+    /// <summary>The immutable correction history of the selected prices, oldest first.</summary>
+    Task<IReadOnlyList<AccountingPriceReplacementAudit>> ListReplacementAuditsAsync(IReadOnlyCollection<long> priceIds,
+        CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Asks the configured sources for the price of every hour in [since, until) that holds no stored price yet (at
     /// most <see cref="AccountingPriceOptions.MaxFetchHoursPerCommand"/> hours), stores what they answer and values

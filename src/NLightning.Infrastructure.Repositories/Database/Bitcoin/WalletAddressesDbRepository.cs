@@ -17,14 +17,14 @@ public class WalletAddressesDbRepository(NLightningDbContext context)
         // UTXO row, so an address handed out before reservations existed and since spent is skipped as long as a later
         // address was used.
         var highestUsedEntity = await DbSet.AsNoTracking()
-                                           .Where(x => x.AddressType.Equals(type)
+                                           .Where(x => x.AccountIndex == 0 && x.AddressType.Equals(type)
                                                     && x.IsChange.Equals(isChange)
                                                     && (x.IsReserved || (x.Utxos != null && x.Utxos.Any())))
                                            .OrderByDescending(x => x.Index)
                                            .FirstOrDefaultAsync();
         var query = DbSet.AsNoTracking()
                          .Include(x => x.Utxos)
-                         .Where(x => x.AddressType.Equals(type)
+                         .Where(x => x.AccountIndex == 0 && x.AddressType.Equals(type)
                                   && x.IsChange.Equals(isChange)
                                   && !x.IsReserved)
                          .Where(x => x.Utxos != null
@@ -60,7 +60,7 @@ public class WalletAddressesDbRepository(NLightningDbContext context)
     public async Task<uint> GetLastUsedAddressIndex(AddressType addressType, bool isChange)
     {
         var walletAddressEntity = await DbSet.AsNoTracking()
-                                             .Where(x => x.AddressType.Equals(addressType)
+                                             .Where(x => x.AccountIndex == 0 && x.AddressType.Equals(addressType)
                                                       && x.IsChange.Equals(isChange))
                                              .OrderByDescending(x => x.Index)
                                              .FirstOrDefaultAsync();
@@ -93,7 +93,10 @@ public class WalletAddressesDbRepository(NLightningDbContext context)
             IsChange = model.IsChange,
             AddressType = model.AddressType,
             Address = model.Address,
-            IsReserved = model.IsReserved
+            IsReserved = model.IsReserved,
+            AccountIndex = model.AccountIndex,
+            DerivationIndex = model.DerivationIndex,
+            AccountName = model.AccountName
         };
     }
 
@@ -101,7 +104,10 @@ public class WalletAddressesDbRepository(NLightningDbContext context)
     {
         return new WalletAddressModel(entity.AddressType, entity.Index, entity.IsChange, entity.Address)
         {
-            IsReserved = entity.IsReserved
+            IsReserved = entity.IsReserved,
+            AccountIndex = entity.AccountIndex,
+            DerivationIndex = entity.DerivationIndex,
+            AccountName = entity.AccountName
         };
     }
 }

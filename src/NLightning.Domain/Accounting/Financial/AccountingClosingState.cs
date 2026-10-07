@@ -22,6 +22,9 @@ using Books;
 /// </remarks>
 public sealed record AccountingClosingState(long ReplayAfterLedgerSeq, IReadOnlyList<AccountingAccountBalance> Balances)
 {
+    /// <summary>The immutable prices used by this close (NL-759); absent in legacy closing states.</summary>
+    public IReadOnlyList<AccountingPrice> Prices { get; init; } = [];
+
     /// <summary>The encoding version.</summary>
     public const int Version = 1;
 
@@ -81,6 +84,22 @@ public sealed record AccountingClosingState(long ReplayAfterLedgerSeq, IReadOnly
             }
 
             writer.WriteEndArray();
+            if (Prices.Count > 0)
+            {
+                writer.WriteStartArray("prices");
+                foreach (var price in Prices.OrderBy(p => p.Id))
+                {
+                    writer.WriteStartObject();
+                    writer.WriteNumber("id", price.Id);
+                    writer.WriteString("currency", price.Currency);
+                    writer.WriteNumber("time", price.Time.UtcTicks);
+                    writer.WriteString("price", FormatFiat(price.Price));
+                    writer.WriteNumber("source", (int)price.Source);
+                    writer.WriteNumber("fetchedAt", price.FetchedAt.UtcTicks);
+                    writer.WriteEndObject();
+                }
+                writer.WriteEndArray();
+            }
             writer.WriteEndObject();
         }
 
@@ -112,7 +131,16 @@ public sealed record AccountingClosingState(long ReplayAfterLedgerSeq, IReadOnly
                                                           line.GetProperty("msat").GetInt64(), fiat));
             }
 
-            return new AccountingClosingState(root.GetProperty("replayAfter").GetInt64(), balances);
+            var prices = new List<AccountingPrice>();
+            if (root.TryGetProperty("prices", out var storedPrices))
+                foreach (var price in storedPrices.EnumerateArray())
+                    prices.Add(new AccountingPrice(price.GetProperty("id").GetInt64(),
+                        price.GetProperty("currency").GetString()!,
+                        new DateTimeOffset(price.GetProperty("time").GetInt64(), TimeSpan.Zero),
+                        decimal.Parse(price.GetProperty("price").GetString()!, NumberStyles.Number, CultureInfo.InvariantCulture),
+                        (AccountingPriceSource)price.GetProperty("source").GetInt32(),
+                        new DateTimeOffset(price.GetProperty("fetchedAt").GetInt64(), TimeSpan.Zero)));
+            return new AccountingClosingState(root.GetProperty("replayAfter").GetInt64(), balances) { Prices = prices };
         }
         catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException
                                        or OverflowException)

@@ -12,6 +12,29 @@ using Infrastructure.Repositories.Memory;
 public class UnitOfWorkUtxoTests
 {
     [Fact]
+    public async Task Given_OnlyTransientMempoolCustody_When_Spent_Then_SaveDoesNotDeleteAnAbsentDurableRow()
+    {
+        // Arrange
+        using var database = new SqliteTestDatabase();
+        var memory = new UtxoMemoryRepository();
+        var wallet = SqliteTestDatabase.CreateWalletAddress();
+        var sample = SqliteTestDatabase.CreateUtxo(wallet);
+        var transient = new Domain.Bitcoin.Wallet.Models.UtxoModel(sample.TxId, sample.Index, sample.Amount, 0, wallet);
+        memory.AddUnconfirmed(transient);
+        using var work = CreateUnitOfWork(database.CreateContext(), memory);
+
+        // Act: cleanup is staged until the successful save and performs no database DELETE.
+        work.TrySpendUtxo(transient.TxId, transient.Index);
+        Assert.True(memory.TryGetUtxo(transient.TxId, transient.Index, out _));
+        await work.SaveChangesAsync();
+
+        // Assert
+        Assert.False(memory.TryGetUtxo(transient.TxId, transient.Index, out _));
+        await using var read = database.CreateContext();
+        Assert.Empty(await read.Utxos.ToListAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Given_SaveChangesFails_When_AddUtxo_Then_MemoryRepositoryIsUnchanged()
     {
         // Arrange

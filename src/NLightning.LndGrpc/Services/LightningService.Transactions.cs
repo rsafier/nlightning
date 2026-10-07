@@ -1,3 +1,4 @@
+using System.Globalization;
 using Grpc.Core;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
@@ -34,8 +35,10 @@ public sealed partial class LightningService
     /// <c>total_fees</c> follows btcwallet's rule: 0 unless every input is the wallet's (a dual-funded funding or a
     /// splice reports 0), then our broadcast row's fee or the inputs less the outputs. The durable history's height is
     /// authoritative for every transaction it stores (a reorg's unconfirmed verdict included), and a stored transaction
-    /// a confirmed conflicting spend invalidated is removed by the chain monitor. Remaining limits (NL-1187): a transaction whose wallet outputs were all spent before
-    /// the accounting cutover is not listed (spent outputs are deleted; only a chain rescan would find it); a transaction
+    /// a confirmed conflicting spend invalidated is removed by the chain monitor. An explicit bounded
+    /// <c>wallethistory</c> backfill recovers older transactions within its retained-block and ownership-catalogue scope.
+    /// Without that backfill, a transaction whose wallet outputs were all spent before the accounting cutover is not
+    /// listed (spent outputs are deleted); a transaction
     /// that left a change output held since before the cutover is listed only when bitcoind can still return its parents
     /// (its inputs' values), a deposit held since then is listed with its outputs only; the raw transaction and block hash
     /// of a transaction known only to the accounting feed come from bitcoind (out of its block, so no <c>txindex</c> is
@@ -88,9 +91,16 @@ public sealed partial class LightningService
         IReadOnlyDictionary<TxId, uint?> durableHeights = new Dictionary<TxId, uint?>();
         if (unitOfWork.WalletTransactionDbRepository is { } walletHistory)
         {
-            foreach (var record in await walletHistory.GetHistoryAsync(startHeight, endHeight, includeUnconfirmed,
-                                                                       cancellationToken))
-                AddWalletRecord(entries, record, network);
+            using var historyLease = scope.ServiceProvider.GetService<Domain.Bitcoin.Wallet.Interfaces.IWalletHistoryGate>() is { } gate
+                ? await gate.EnterAsync(cancellationToken) : null;
+            const int historyPageSize = 500;
+            for (var historyOffset = 0; ; historyOffset = checked(historyOffset + historyPageSize))
+            {
+                var batch = await walletHistory.GetHistoryPageAsync(startHeight, endHeight, includeUnconfirmed,
+                    historyOffset, historyPageSize, cancellationToken);
+                foreach (var record in batch) AddWalletRecord(entries, record, network);
+                if (batch.Count < historyPageSize) break;
+            }
             durableHeights = await walletHistory.GetHeightsAsync(cancellationToken);
         }
 
@@ -225,7 +235,11 @@ public sealed partial class LightningService
         foreach (var entry in page)
         {
             var row = await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(entry.TxId);
-            response.Transactions.Add(await ToRpcAsync(entry, row, tip, network, chain, blockHashes, blocks));
+            if (entry.IsDurable && entry.Tx is null &&
+                await unitOfWork.WalletTransactionDbRepository.GetByIdAsync(entry.TxId, cancellationToken) is { } stored)
+                AddWalletRecord(entries, stored, network);
+            var label = await unitOfWork.WalletTransactionDbRepository.GetLabelAsync(entry.TxId, cancellationToken);
+            response.Transactions.Add(await ToRpcAsync(entry, row, tip, network, chain, blockHashes, blocks, label));
         }
 
         return response;
@@ -234,8 +248,12 @@ public sealed partial class LightningService
     private void AddWalletRecord(Dictionary<TxId, HistoryEntry> entries, WalletTransactionRecord record,
                                  Network network)
     {
-        if (!TryLoad(record.RawTransaction, out var tx))
+        if (record.OwnershipSummary is not null && record.RawTransaction.Length == 0)
+        {
+            AddWalletSummary(entries, record, network);
             return;
+        }
+        if (!TryLoad(record.RawTransaction, out var tx)) return;
 
         var entry = Entry(entries, record.TxId);
         entry.Tx = tx;
@@ -268,6 +286,27 @@ public sealed partial class LightningService
 
             var prevOut = tx.Inputs[(int)input.InputIndex].PrevOut;
             entry.AddInput($"{new TxId(prevOut.Hash.ToBytes())}:{prevOut.N}", input.AmountSat);
+        }
+    }
+
+    private static void AddWalletSummary(Dictionary<TxId, HistoryEntry> entries, WalletTransactionRecord record,
+        Network network)
+    {
+        var entry = Entry(entries, record.TxId);
+        entry.SetDurableHeight(record.BlockHeight);
+        if (record.BlockHash is { Length: 32 } hash && record.BlockHeight is not null)
+            entry.BlockHash = new uint256(hash).ToString();
+        entry.SetTime(record.Timestamp, record.BlockHeight is null ? TimeSource.Observed : TimeSource.Block);
+        foreach (var part in record.OwnershipSummary!.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var values = part.Split(':');
+            var index = uint.Parse(values[1], CultureInfo.InvariantCulture);
+            var amount = long.Parse(values[2], CultureInfo.InvariantCulture);
+            if (values[0] == "o" && values.Length == 4)
+                entry.AddOutput(index, amount, new Script(Convert.FromHexString(values[3])).GetDestinationAddress(network)?.ToString());
+            else if (values[0] == "i" && values.Length == 5)
+                entry.AddInput($"{new TxId(Convert.FromHexString(values[3]))}:{uint.Parse(values[4], CultureInfo.InvariantCulture)}", amount);
+            else throw new InvalidDataException("Invalid durable wallet ownership projection.");
         }
     }
 
@@ -471,7 +510,7 @@ public sealed partial class LightningService
     private async Task<Transaction> ToRpcAsync(HistoryEntry entry, BroadcastTransactionModel? row, uint tip,
                                                Network network, IBitcoinChainService? chain,
                                                Dictionary<uint, string> blockHashes,
-                                               Dictionary<uint, Block?> blocks)
+                                               Dictionary<uint, Block?> blocks, string? transactionLabel = null)
     {
         var rpc = new Transaction
         {
@@ -480,7 +519,7 @@ public sealed partial class LightningService
             BlockHeight = (int)(entry.Height ?? 0),
             NumConfirmations = entry.Height is { } height && height <= tip ? (int)(tip - height + 1) : 0,
             TimeStamp = entry.Time.ToUnixTimeSeconds(),
-            Label = row?.Label ?? ""
+            Label = transactionLabel ?? row?.Label ?? ""
         };
         if (entry.Height is { } confirmedAt)
             rpc.BlockHash = (entry.IndexHeight is not null || entry.ImportedHeight is not null

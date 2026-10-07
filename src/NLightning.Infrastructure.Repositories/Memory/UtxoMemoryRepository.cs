@@ -15,6 +15,8 @@ public class UtxoMemoryRepository : IUtxoMemoryRepository
 {
     private readonly ConcurrentDictionary<(TxId, uint), UtxoModel> _utxoSet = [];
 
+    private readonly ConcurrentDictionary<(TxId, uint), UtxoModel> _unconfirmed = [];
+
     // Fee input reservations by outpoint (BOLT 5 plan O7-T1). Kept apart from the UtxoModel so a reorg that removes and
     // re-adds an output (NL-293) does not drop its reservation.
     private readonly Dictionary<(TxId, uint), Guid> _feeReservations = [];
@@ -25,19 +27,45 @@ public class UtxoMemoryRepository : IUtxoMemoryRepository
 
     public void Add(UtxoModel utxoModel)
     {
-        if (!_utxoSet.TryAdd((utxoModel.TxId, utxoModel.Index), utxoModel))
-            throw new InvalidOperationException("Cannot add Utxo");
+        lock (_reservationLock)
+        {
+            if (!_utxoSet.TryAdd((utxoModel.TxId, utxoModel.Index), utxoModel))
+                throw new InvalidOperationException("Cannot add Utxo");
+            _unconfirmed.TryRemove((utxoModel.TxId, utxoModel.Index), out _);
+        }
     }
 
     public void Spend(UtxoModel utxoModel)
     {
-        _utxoSet.TryRemove((utxoModel.TxId, utxoModel.Index), out _);
+        lock (_reservationLock)
+        {
+            _utxoSet.TryRemove((utxoModel.TxId, utxoModel.Index), out _);
+            _unconfirmed.TryRemove((utxoModel.TxId, utxoModel.Index), out _);
+        }
     }
 
     public bool TryGetUtxo(TxId txId, uint index, [MaybeNullWhen(false)] out UtxoModel utxoModel)
     {
-        return _utxoSet.TryGetValue((txId, index), out utxoModel);
+        return _utxoSet.TryGetValue((txId, index), out utxoModel)
+            || _unconfirmed.TryGetValue((txId, index), out utxoModel);
     }
+
+    public void AddUnconfirmed(UtxoModel utxo)
+    {
+        if (utxo.BlockHeight != 0 || utxo.WalletAddress is null || utxo.LockedToChannelId is not null)
+            throw new ArgumentException("Mempool custody requires a known wallet address and height zero.", nameof(utxo));
+        lock (_reservationLock)
+            if (!_utxoSet.ContainsKey((utxo.TxId, utxo.Index)))
+                _unconfirmed[(utxo.TxId, utxo.Index)] = utxo;
+    }
+
+    public void RemoveUnconfirmed(TxId txId, uint index)
+    {
+        lock (_reservationLock)
+            _unconfirmed.TryRemove((txId, index), out _);
+    }
+
+    public IReadOnlyList<UtxoModel> GetUnconfirmedUtxos() => _unconfirmed.Values.ToArray();
 
     public LightningMoney GetConfirmedBalance(uint currentBlockHeight)
     {
@@ -209,7 +237,8 @@ public class UtxoMemoryRepository : IUtxoMemoryRepository
             var locked = 0;
             foreach (var outpoint in outpoints)
             {
-                if (!_utxoSet.TryGetValue(outpoint, out var utxo) || utxo.LockedToChannelId is not null)
+                if ((!_utxoSet.TryGetValue(outpoint, out var utxo) && !_unconfirmed.TryGetValue(outpoint, out utxo))
+                 || utxo.LockedToChannelId is not null)
                     continue;
 
                 utxo.LockedToChannelId = channelId;
@@ -253,8 +282,8 @@ public class UtxoMemoryRepository : IUtxoMemoryRepository
         {
             foreach (var outpoint in outpoints)
             {
-                if (!_utxoSet.TryGetValue(outpoint, out var utxo) || utxo.LockedToChannelId is not null
-                                                                  || _feeReservations.ContainsKey(outpoint))
+                if ((!_utxoSet.TryGetValue(outpoint, out var utxo) && !_unconfirmed.TryGetValue(outpoint, out utxo))
+                    || utxo.LockedToChannelId is not null || _feeReservations.ContainsKey(outpoint))
                     return false;
             }
 

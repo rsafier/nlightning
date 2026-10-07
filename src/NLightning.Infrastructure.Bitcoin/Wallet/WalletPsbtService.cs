@@ -29,7 +29,7 @@ using Networks;
 /// <remarks>
 /// <para>Leases: one reservation per lease id and expiration, purpose <c>lnd-lease:&lt;id hex&gt;:&lt;unix
 /// expiry&gt;</c>, so a lease survives a restart and every other spend, channel funding and fee selection skips its
-/// outputs. Only confirmed P2WPKH/P2TR wallet outputs that no channel funding, other reservation or pending broadcast of
+/// outputs. Confirmed or explicitly revalidated mempool P2WPKH/P2TR wallet outputs that no channel funding, other reservation or pending broadcast of
 /// ours holds can be leased. Expired leases are released, and leases whose outputs have all left the wallet (their spend
 /// was processed in a block) are ended, by every call and by a timer every minute.</para>
 /// <para>FundPsbt keeps the anchors reserve as <c>withdraw</c> does, with a P2WPKH or P2TR change and LND's
@@ -41,7 +41,7 @@ using Networks;
 /// that also spends others' outputs as a <see cref="BroadcastPurpose.WalletCollaborative"/> row (both rebroadcast until
 /// they confirm), and sends a transaction that spends no wallet output once.</para>
 /// </remarks>
-public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
+public sealed partial class WalletPsbtService : IWalletPsbtService, IDisposable
 {
     /// <summary>The purpose prefix of a lease reservation.</summary>
     public const string LeasePurposePrefix = "lnd-lease:";
@@ -66,15 +66,17 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
     private readonly ITimer _sweepTimer;
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
     private readonly ISecureKeyManager? _secureKeyManager;
+    private readonly IWalletMempoolCatalog? _mempoolCatalog;
 
     public WalletPsbtService(IFeeInputSelector feeInputSelector, IAnchorReserveService anchorReserveService,
                              IUtxoMemoryRepository utxoMemoryRepository, ILightningSigner lightningSigner,
                              IBlockchainMonitor blockchainMonitor, IServiceScopeFactory scopeFactory,
                              IOptions<NodeOptions> nodeOptions, ILogger<WalletPsbtService> logger,
                              IBitcoinChainService? bitcoinChainService = null, TimeProvider? timeProvider = null,
-                             ISecureKeyManager? secureKeyManager = null)
+                             ISecureKeyManager? secureKeyManager = null, IWalletMempoolCatalog? mempoolCatalog = null)
     {
         _secureKeyManager = secureKeyManager;
+        _mempoolCatalog = mempoolCatalog;
         _feeInputSelector = feeInputSelector;
         _anchorReserveService = anchorReserveService;
         _utxoMemoryRepository = utxoMemoryRepository;
@@ -94,13 +96,16 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
                                                                            uint maxConfirmations,
                                                                            CancellationToken cancellationToken = default)
     {
+        if (minConfirmations == 0 && _mempoolCatalog is not null)
+            await _mempoolCatalog.RefreshAsync(cancellationToken);
         await SweepAsync(cancellationToken);
         var pending = await GetPendingBroadcastOutpointsAsync();
         var height = _blockchainMonitor.LastProcessedBlockHeight;
         var result = new List<WalletUnspentOutput>();
-        foreach (var utxo in _utxoMemoryRepository.GetUnreservedUtxos())
+        foreach (var utxo in _utxoMemoryRepository.GetUnreservedUtxos().Concat(minConfirmations == 0
+                     ? _utxoMemoryRepository.GetUnconfirmedUtxos() : Array.Empty<UtxoModel>()))
         {
-            if (utxo.LockedToChannelId is not null || (utxo.WalletAddress is null && utxo.SilentPayment is null)
+            if (_utxoMemoryRepository.TryGetFeeReservation(utxo.TxId, utxo.Index, out _) || utxo.LockedToChannelId is not null || (utxo.WalletAddress is null && utxo.SilentPayment is null)
                                                    || pending.Contains((utxo.TxId, utxo.Index)))
                 continue;
 
@@ -119,7 +124,7 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
             }
 
             result.Add(new WalletUnspentOutput(utxo.TxId, utxo.Index, utxo.Amount, utxo.AddressType,
-                                               script.GetDestinationAddress(_network)?.ToString() ?? string.Empty, script.ToBytes(), confirmations));
+                                               script.GetDestinationAddress(_network)?.ToString() ?? string.Empty, script.ToBytes(), confirmations, utxo.WalletAddress?.AccountName ?? "default"));
         }
 
         return result.OrderBy(u => u.Confirmations).ThenBy(u => u.TxId.ToString()).ThenBy(u => u.Index).ToList();
@@ -128,6 +133,10 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
     /// <inheritdoc />
     public async Task<WalletLease> LeaseAsync(byte[] lockId, TxId txId, uint index, TimeSpan duration,
                                               CancellationToken cancellationToken = default)
+        => await LeaseAsync(lockId, txId, index, duration, 0, cancellationToken);
+
+    public async Task<WalletLease> LeaseAsync(byte[] lockId, TxId txId, uint index, TimeSpan duration,
+                                             uint releaseAfterSpendConfs, CancellationToken cancellationToken = default)
     {
         CheckLockId(lockId);
         if (duration <= TimeSpan.Zero)
@@ -136,6 +145,7 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
         await _gate.WaitAsync(cancellationToken);
         try
         {
+            if (_mempoolCatalog is not null) await _mempoolCatalog.RefreshParentsAsync([txId], cancellationToken);
             await SweepLockedAsync(cancellationToken);
             var expiration = Expiration(duration);
             if (_utxoMemoryRepository.TryGetFeeReservation(txId, index, out var reservationId))
@@ -150,10 +160,11 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
             }
             else
             {
-                await CheckLeasableAsync(txId, index);
+                await CheckLeasableAsync(txId, index, true);
             }
 
-            var reserved = await _feeInputSelector.ReserveInputsAsync([(txId, index)], LeasePurpose(lockId, expiration),
+            var reserved = await _feeInputSelector.ReserveInputsAsync([(txId, index)], LeasePurpose(lockId, expiration, releaseAfterSpendConfs),
+                                                                      _utxoMemoryRepository.TryGetUtxo(txId, index, out var leaseCoin) && leaseCoin.BlockHeight == 0,
                                                                       cancellationToken);
             if (reserved.Count != 1)
                 throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
@@ -222,6 +233,8 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
                                                     CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (request.CoinSelectTemplate)
+            return await FundTemplateAsync(request, cancellationToken);
         CheckLockId(request.LockId);
         if (request.Outputs.Count == 0)
             throw new WalletPsbtException(WalletPsbtError.InvalidArgument, "the template has no output");
@@ -255,7 +268,12 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
         {
             await SweepLockedAsync(cancellationToken);
             var expiration = Expiration(duration);
-            var purpose = LeasePurpose(request.LockId, expiration);
+            var purpose = LeasePurpose(request.LockId, expiration, request.ReleaseAfterSpendConfs);
+            if (request.SpendUnconfirmed && request.MinConfirmations > 0)
+                throw new WalletPsbtException(WalletPsbtError.InvalidArgument, "spend_unconfirmed requires min_confs=0");
+            if (request.SpendUnconfirmed)
+                await (_mempoolCatalog ?? throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
+                    "unconfirmed wallet catalogue unavailable")).RefreshParentsAsync(request.Inputs.Select(point => point.TxId).Distinct().ToArray(), cancellationToken);
             var outputsSat = outputs.Sum(o => o.Value.Satoshi);
             var extraWeight = WalletSpendService.BaseWeight
                             + outputs.Sum(o => WalletSpendService.GetOutputWeight(o.ScriptPubKey));
@@ -271,7 +289,13 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
                 {
                     selection = await _feeInputSelector.ReserveAsync(LightningMoney.Satoshis(outputsSat),
                                                                      LightningMoney.Satoshis(request.FeeRatePerKw),
-                                                                     extraWeight, purpose, cancellationToken);
+                                                                     extraWeight, purpose, WalletSelectionPolicy.Default with
+                                                                     {
+                                                                         IncludeUnconfirmed = request.SpendUnconfirmed,
+                                                                         Account = request.Account,
+                                                                         ConfirmationTip = _blockchainMonitor.LastProcessedBlockHeight,
+                                                                         MinConfirmations = (uint)(request.SpendUnconfirmed ? Math.Max(0, request.MinConfirmations) : Math.Max(1, request.MinConfirmations))
+                                                                     }, cancellationToken);
                 }
                 catch (InsufficientFundsException e)
                 {
@@ -290,7 +314,7 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
                         changeSat -= FeeSat(request.FeeRatePerKw, ChangeOutputWeight(AddressType.P2Tr)
                                                                 - WalletWeights.P2WpkhOutputWeight);
                         changeScript = changeSat >= ChangeDustLimit(AddressType.P2Tr)
-                                           ? await NewChangeScriptAsync(AddressType.P2Tr)
+                                           ? await NewChangeScriptAsync(AddressType.P2Tr, request.Account)
                                            : null;
                         if (changeScript is null)
                             changeSat = 0;
@@ -305,8 +329,8 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
             else
             {
                 foreach (var (txId, index) in request.Inputs)
-                    await CheckLeasableAsync(txId, index);
-                inputs = await _feeInputSelector.ReserveInputsAsync(request.Inputs, purpose, cancellationToken);
+                    await CheckLeasableAsync(txId, index, request.SpendUnconfirmed, request.Account);
+                inputs = await _feeInputSelector.ReserveInputsAsync(request.Inputs, purpose, request.SpendUnconfirmed, cancellationToken);
                 if (inputs.Count != request.Inputs.Count)
                 {
                     await ReleaseReservationOfAsync(inputs, cancellationToken);
@@ -318,7 +342,7 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
                 {
                     (changeSat, changeScript) = await GetChangeAsync(inputs, outputsSat, extraWeight,
                                                                      request.FeeRatePerKw,
-                                                                     request.ChangeAddressType);
+                                                                     request.ChangeAddressType, request.Account);
                 }
                 catch
                 {
@@ -333,13 +357,14 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
                 foreach (var input in inputs)
                 {
                     if (_utxoMemoryRepository.TryGetUtxo(input.TxId, input.Index, out var utxo)
-                     && Confirmations(utxo.BlockHeight, height) < Math.Max(1, request.MinConfirmations))
+                     && Confirmations(utxo.BlockHeight, height) < (request.SpendUnconfirmed ? Math.Max(0, request.MinConfirmations) : Math.Max(1, request.MinConfirmations)))
                         throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
                                                       $"not enough inputs with {request.MinConfirmations} "
                                                     + "confirmations");
                 }
 
-                await EnsureReserveKeptAsync(changeSat, cancellationToken);
+                await EnsureReserveKeptAsync(inputs.Any(input => _utxoMemoryRepository.TryGetUtxo(input.TxId, input.Index,
+                    out var coin) && coin.BlockHeight == 0) ? 0 : changeSat, cancellationToken);
 
                 var tx = _network.CreateTransaction();
                 tx.Version = (uint)request.Version;
@@ -517,7 +542,7 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
         {
             tx = Transaction.Load(rawTransaction, _network);
         }
-        catch (Exception e) when (e is FormatException or ArgumentException or EndOfStreamException)
+        catch (Exception e) when (e is FormatException or ArgumentException or EndOfStreamException or InvalidDataException)
         {
             throw new WalletPsbtException(WalletPsbtError.InvalidArgument, $"the transaction does not parse: {e.Message}");
         }
@@ -584,9 +609,10 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
     }
 
     /// <summary>The lease purpose of <paramref name="lockId"/> until <paramref name="expiration"/>.</summary>
-    internal static string LeasePurpose(byte[] lockId, DateTimeOffset expiration) =>
+    internal static string LeasePurpose(byte[] lockId, DateTimeOffset expiration, uint releaseAfterSpendConfs = 0) =>
         $"{LeasePurposePrefix}{Convert.ToHexString(lockId).ToLowerInvariant()}:"
-      + expiration.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
+      + expiration.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture)
+      + (releaseAfterSpendConfs == 0 ? "" : $":{releaseAfterSpendConfs}");
 
     /// <summary>Reads a lease purpose back.</summary>
     internal static bool TryParseLease(string purpose, out byte[] lockId, out DateTimeOffset expiration)
@@ -597,7 +623,7 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
             return false;
 
         var parts = purpose[LeasePurposePrefix.Length..].Split(':');
-        if (parts.Length != 2 || parts[0].Length != 64
+        if (parts.Length is not (2 or 3) || (parts.Length == 3 && !uint.TryParse(parts[2], out _)) || parts[0].Length != 64
                               || !long.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture,
                                                 out var unix))
             return false;
@@ -677,7 +703,7 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
         DateTimeOffset.FromUnixTimeSeconds((_timeProvider.GetUtcNow() + duration).ToUnixTimeSeconds());
 
     /// <summary>A wallet output a new lease may take: held, mined, P2WPKH/P2TR, free, not spent by our broadcasts.</summary>
-    private async Task CheckLeasableAsync(TxId txId, uint index)
+    private async Task CheckLeasableAsync(TxId txId, uint index, bool includeUnconfirmed = false, string? account = null)
     {
         if (!_utxoMemoryRepository.TryGetUtxo(txId, index, out var utxo))
             throw new WalletPsbtException(WalletPsbtError.NotFound, $"{txId}:{index} is not a wallet output");
@@ -686,7 +712,10 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
                                           $"{txId}:{index} is locked to a channel funding");
         if (_utxoMemoryRepository.TryGetFeeReservation(txId, index, out _))
             throw new WalletPsbtException(WalletPsbtError.FailedPrecondition, "output already locked");
-        if (utxo.BlockHeight == 0)
+        if (account is not null && (utxo.WalletAddress?.AccountName ?? "default") != account)
+            throw new WalletPsbtException(WalletPsbtError.FailedPrecondition, "input belongs to another wallet account");
+        if (utxo.BlockHeight == 0 && (!includeUnconfirmed || !_utxoMemoryRepository.GetUnconfirmedUtxos()
+                .Any(coin => coin.TxId == txId && coin.Index == index)))
             throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
                                           $"{txId}:{index} is unconfirmed; only confirmed outputs can be leased");
         if (utxo.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
@@ -709,7 +738,8 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
         if (rest.Count == 0)
             return;
 
-        var again = await _feeInputSelector.ReserveInputsAsync(rest, reservation.Purpose, cancellationToken);
+        var again = await _feeInputSelector.ReserveInputsAsync(rest, reservation.Purpose,
+            rest.Any(point => _utxoMemoryRepository.TryGetUtxo(point.TxId, point.Index, out var coin) && coin.BlockHeight == 0), cancellationToken);
         if (again.Count != rest.Count)
             _logger.LogWarning("{Lost} leased output(s) of {Purpose} were taken while one lease of the group ended",
                                rest.Count - again.Count, reservation.Purpose);
@@ -730,6 +760,10 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
     private async Task<ClassifiedInputs> ClassifyInputsAsync(Transaction tx, PSBT? psbt,
                                                              CancellationToken cancellationToken)
     {
+        if (_mempoolCatalog is not null && tx.Inputs.Any(input =>
+            _utxoMemoryRepository.TryGetFeeReservation(new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N, out _) &&
+            (!_utxoMemoryRepository.TryGetUtxo(new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N, out var coin) || coin.BlockHeight == 0)))
+            await _mempoolCatalog.RefreshParentsAsync(tx.Inputs.Select(input => new TxId(input.PrevOut.Hash.ToBytes())).Distinct().ToArray(), cancellationToken);
         var spent = new TxOut?[tx.Inputs.Count];
         var ours = new bool[tx.Inputs.Count];
         var purposes = new Dictionary<Guid, string?>();
@@ -739,6 +773,8 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
             var txId = new TxId(prevOut.Hash.ToBytes());
             if (!_utxoMemoryRepository.TryGetUtxo(txId, prevOut.N, out var utxo))
             {
+                if (_utxoMemoryRepository.TryGetFeeReservation(txId, prevOut.N, out _))
+                    throw new WalletPsbtException(WalletPsbtError.FailedPrecondition, "leased input is no longer available on the current chain/mempool");
                 spent[i] = psbt is null ? null : ForeignSpentOutput(psbt.Inputs[i], prevOut);
                 continue;
             }
@@ -831,16 +867,19 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
         // and change flag must never produce a fictitious HD path or an extra TapTweak internal key in the PSBT.
         if (utxo.SilentPayment is not null || utxo.WalletAddress is null)
             return;
-        if (_secureKeyManager?.GetDepositAccount(utxo.AddressType) is not { } account)
+        var accountIndex = utxo.WalletAddress.AccountIndex;
+        var accountInfo = accountIndex == 0 ? _secureKeyManager?.GetDepositAccount(utxo.AddressType)
+            : _secureKeyManager?.GetDepositAccount(utxo.AddressType, accountIndex);
+        if (accountInfo is not { } account)
             return;
 
         try
         {
             var branch = utxo.IsAddressChange ? 1u : 0u;
-            var pubKey = ExtPubKey.Parse(account.ExtendedPublicKey, _network).Derive(branch).Derive(utxo.AddressIndex)
+            var pubKey = ExtPubKey.Parse(account.ExtendedPublicKey, _network).Derive(branch).Derive(utxo.WalletAddress.DerivationIndex ?? utxo.AddressIndex)
                                   .PubKey;
             var path = new RootedKeyPath(new HDFingerprint(account.MasterFingerprint),
-                                         KeyPath.Parse($"{account.DerivationPath}/{branch}/{utxo.AddressIndex}"));
+                                         KeyPath.Parse($"{account.DerivationPath}/{branch}/{utxo.WalletAddress.DerivationIndex ?? utxo.AddressIndex}"));
             if (utxo.AddressType == AddressType.P2Tr)
             {
                 input.TaprootInternalKey = pubKey.TaprootInternalKey;
@@ -868,7 +907,7 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
         {
             return PSBT.Load(psbt, _network);
         }
-        catch (Exception e) when (e is FormatException or ArgumentException or EndOfStreamException)
+        catch (Exception e) when (e is FormatException or ArgumentException or EndOfStreamException or InvalidDataException)
         {
             throw new WalletPsbtException(WalletPsbtError.InvalidArgument, $"the PSBT does not parse: {e.Message}");
         }
@@ -881,13 +920,13 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
     private async Task<(long ChangeSat, Script? ChangeScript)> GetChangeAsync(IReadOnlyList<WalletInput> inputs,
                                                                              long outputsSat, int extraWeight,
                                                                              long feeRatePerKw,
-                                                                             AddressType changeType)
+                                                                             AddressType changeType, string account = "default")
     {
         var totalSat = inputs.Sum(i => i.Amount.Satoshi);
         var weight = extraWeight + inputs.Sum(i => i.InputWeight);
         var feeWithChange = FeeSat(feeRatePerKw, weight + ChangeOutputWeight(changeType));
         if (totalSat - outputsSat - feeWithChange >= ChangeDustLimit(changeType))
-            return (totalSat - outputsSat - feeWithChange, await NewChangeScriptAsync(changeType));
+            return (totalSat - outputsSat - feeWithChange, await NewChangeScriptAsync(changeType, account));
 
         if (totalSat - outputsSat < FeeSat(feeRatePerKw, weight))
             throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
@@ -945,6 +984,49 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
         }
     }
 
+    private async Task<bool> HasConfirmedLeaseSpendAsync(FeeInputReservation reservation, CancellationToken ct, uint? requiredOverride = null)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var tip = _blockchainMonitor.LastProcessedBlockHeight;
+        if (uow.WalletTransactionDbRepository is not { } repository) return false;
+        var required = Math.Max(1u, requiredOverride ?? LeaseReleaseConfirmations(reservation.Purpose));
+        if (tip + 1ul < required) return false;
+        var lastEligibleHeight = tip - required + 1;
+        var remaining = reservation.Inputs.Select(input => (input.TxId, input.Index)).ToHashSet();
+        const int pageSize = 128;
+        for (var offset = 0; ; offset += pageSize)
+        {
+            var page = await repository.GetHistoryPageAsync(0, lastEligibleHeight, false, offset, pageSize, ct);
+            // The history query projects ownership without raw bytes. Hydrate at most this bounded page before
+            // using canonical transaction prevouts as confirmed-spend proof; missing/corrupt rows never release.
+            var missing = page.Where(record => record.RawTransaction.Length == 0).Select(record => record.TxId).Distinct().ToArray();
+            var retained = missing.Length == 0 ? Array.Empty<WalletTransactionRecord>()
+                : await repository.GetByIdsAsync(missing, ct) ?? [];
+            foreach (var record in page)
+            {
+                var proven = record.RawTransaction.Length == 0
+                    ? retained.FirstOrDefault(candidate => candidate.TxId == record.TxId) : record;
+                if (proven is null || proven.BlockHeight is not { } height || height > lastEligibleHeight
+                    || proven.RawTransaction.Length == 0) continue;
+                Transaction tx;
+                try { tx = Transaction.Load(proven.RawTransaction, _network); }
+                catch (Exception e) when (e is FormatException or ArgumentException or EndOfStreamException or InvalidDataException)
+                { continue; }
+                if (new TxId(tx.GetHash().ToBytes()) != record.TxId) continue;
+                foreach (var input in tx.Inputs) remaining.Remove((new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N));
+                if (remaining.Count == 0) return true;
+            }
+            if (page.Count < pageSize) return false;
+        }
+    }
+
+    private static uint LeaseReleaseConfirmations(string purpose)
+    {
+        var parts = purpose.Split(':');
+        return parts.Length == 4 && uint.TryParse(parts[3], out var confirmations) ? confirmations : 0;
+    }
+
     /// <summary>Ends the leases whose outputs have all been spent in a block and releases the expired ones.</summary>
     private async Task SweepLockedAsync(CancellationToken cancellationToken)
     {
@@ -958,12 +1040,16 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
             if (!TryParseLease(reservation.Purpose, out _, out var expiration))
                 continue;
 
-            if (reservation.Inputs.All(i => !_utxoMemoryRepository.TryGetUtxo(i.TxId, i.Index, out _)))
+            if (reservation.Inputs.All(i => !_utxoMemoryRepository.TryGetUtxo(i.TxId, i.Index, out _)) &&
+                await HasConfirmedLeaseSpendAsync(reservation, cancellationToken))
             {
                 await _feeInputSelector.ConfirmAsync(reservation.Id, cancellationToken);
                 continue;
             }
 
+            if (LeaseReleaseConfirmations(reservation.Purpose) > 0 &&
+                await HasConfirmedLeaseSpendAsync(reservation, cancellationToken, 1))
+                continue; // The configured confirmation hold survives ordinary lease expiry.
             if (expiration > now)
                 continue;
 
@@ -1004,11 +1090,13 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
         type == AddressType.P2Tr ? 330 : WalletWeights.P2WpkhDustLimitSat;
 
     /// <summary>A fresh change address of <paramref name="type"/> (handed out once, NL-280).</summary>
-    private async Task<Script> NewChangeScriptAsync(AddressType type)
+    private async Task<Script> NewChangeScriptAsync(AddressType type, string account = "default")
     {
         await using var scope = _scopeFactory.CreateAsyncScope();
         var wallet = scope.ServiceProvider.GetRequiredService<IBitcoinWalletService>();
-        var address = await wallet.GetUnusedAddressAsync(type, true);
+        var address = account == "default" || account.Length == 0
+            ? await wallet.GetUnusedAddressAsync(type, true)
+            : await scope.ServiceProvider.GetRequiredService<WalletAccountService>().NextAsync(account, type, true, CancellationToken.None);
         return BitcoinAddress.Create(address.Address, _network).ScriptPubKey;
     }
 

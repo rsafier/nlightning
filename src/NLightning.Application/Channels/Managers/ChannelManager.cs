@@ -127,11 +127,25 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
     private async Task RegisterExistingChannelLockedAsync(IServiceScope scope, ChannelModel channel)
     {
+        // Workflow ownership must be checked before startup repair or rollback can change its signing inputs.
+        // Load only the authoritative DB snapshot; the remote signer loads signing info lazily within capture.
+        var recovery = _serviceProvider.GetService<Domain.Signing.Recovery.IRemoteSigningWorkflowCoordinator>();
+        var provisionallyLoaded = recovery is not null
+                               && (await recovery.GetPendingAsync(channel.ChannelId)).Count != 0;
+        if (provisionallyLoaded)
+        {
+            _channelMemoryRepository.LoadChannel(channel);
+            await scope.ServiceProvider.GetRequiredService<ChannelStateTransitionService>()
+                       .ResumeSigningWorkflowsAsync(channel);
+        }
         if (!await ResumeStartupStateAsync(scope, channel))
+        {
+            if (provisionallyLoaded) _channelMemoryRepository.TryRemoveChannel(channel.ChannelId);
             return;
+        }
 
         // Startup registrations are not new pending-open notifications.
-        _channelMemoryRepository.LoadChannel(channel);
+        if (!provisionallyLoaded) _channelMemoryRepository.LoadChannel(channel);
 
         // A signer with an IChannelSigningInfoSource loads the channel from the database on first use, with its
         // commitment number and the S1 mark of a persisted commitment broadcast (NL-067, NL-343). One without a source
@@ -320,6 +334,13 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     /// </summary>
     private async Task RevertUncommittedAsync(ChannelModel channel)
     {
+        // A disconnection must not rewrite the authoritative inputs of an unfinished remote signing operation.
+        if (_serviceProvider.GetService<Domain.Signing.Recovery.IRemoteSigningWorkflowCoordinator>() is { } recovery
+         && (await recovery.GetPendingAsync(channel.ChannelId)).Count != 0)
+        {
+            _logger.LogWarning("Preserving channel {ChannelId} until its signing workflow is recovered", channel.ChannelId);
+            return;
+        }
         var result = channel.Commitments!.RevertUncommitted();
         if (result.Transition.IsEmpty)
             return;
@@ -630,7 +651,11 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                       or ChannelState.Closing:
                         if (channel.State is ChannelState.Open or ChannelState.ShuttingDown
                          && channel.Commitments is not null)
+                        {
+                            await scope.ServiceProvider.GetRequiredService<ChannelStateTransitionService>()
+                                       .ResumeSigningWorkflowsAsync(channel);
                             await RevertUncommittedAsync(channel);
+                        }
 
                         var reestablishService = scope.ServiceProvider.GetRequiredService<ReestablishService>();
                         var reestablish = await reestablishService.CreateOwnAsync(channel);
