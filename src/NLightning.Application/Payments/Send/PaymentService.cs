@@ -1516,12 +1516,17 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     private sealed record BlindedCandidate(int Index, BlindedPaymentPath Path, SelfIntroducedBlindedPath? Self);
 
     /// <summary>
-    /// The one round a <c>payroute</c> session makes (NL-1082): build every supplied route's onion, persist the round
-    /// and offer the parts in order. A refused offer ends that route (its part is marked failed with the refusal);
-    /// nothing is re-planned — when no part is in flight afterwards the payment is decided here, else the parts'
-    /// outcomes complete it.
+    /// A round of caller-supplied routes (NL-1082): the one a <c>payroute</c> session starts with, or one attached to
+    /// it while parts are in flight (NL-1276). Builds every route's onion, persists the round (the first round creates
+    /// the row; an attached one keeps it) and offers the parts in order. A refused offer ends that route (its part is
+    /// marked failed with the refusal); nothing is re-planned — when no part is in flight afterwards the payment is
+    /// decided here, else the parts' outcomes complete it.
     /// </summary>
-    private async Task RunManualRoundAsync(PaymentSession session, IReadOnlyList<SuppliedRoutePart> suppliedRoutes)
+    /// <returns>The round's parts in the routes' order, every route included (one left unoffered after an offer
+    /// whose outcome is unknown is failed).</returns>
+    private async Task<IReadOnlyList<PaymentPart>> RunManualRoundAsync(PaymentSession session,
+                                                                       IReadOnlyList<SuppliedRoutePart> suppliedRoutes,
+                                                                       string roundName = "caller route")
     {
         var round = new List<(PaymentPart Part, OnionPacket Packet)>(suppliedRoutes.Count);
         for (var i = 0; i < suppliedRoutes.Count; i++)
@@ -1531,18 +1536,27 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             round.Add((new PaymentPart(suppliedPart.Channel, suppliedPart.Route,
                                        BuildHops(suppliedPart.Route, onion.SharedSecrets,
                                                  suppliedPart.Channel.ShortChannelId, session.PayeeNodeId, false),
-                                       $"caller route {i + 1} of {suppliedRoutes.Count}"),
+                                       $"{roundName} {i + 1} of {suppliedRoutes.Count}"),
                        onion.Packet));
         }
 
         await PersistRoundAsync(session, round.Select(r => r.Part).ToList());
 
+        var stopped = false;
         foreach (var (part, packet) in round)
         {
             session.Parts.Add(part);
+            if (stopped)
+            {
+                // Not offered: an earlier offer's outcome is unknown, so the round stops there
+                part.Status = PaymentPartStatus.Failed;
+                part.Failure = (null, null, "Not offered: an earlier route's offer failed with an unknown outcome.");
+                continue;
+            }
+
             session.Attempts++;
             if (await OfferPartAsync(session, part, packet) == OfferOutcome.Error)
-                break;
+                stopped = true;
         }
 
         // The engine refused the round's recorded part while others were offered: the row follows a live one
@@ -1554,6 +1568,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                                     session.TerminalReason
                                     ?? session.LastFailure?.Reason
                                     ?? "the HTLC could not be offered");
+        session.SignalPartsChanged();
+        return round.Select(r => r.Part).ToList();
     }
 
     private string? GetStopReason(PaymentSession session)
@@ -1675,6 +1691,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         }
 
         part.HtlcId = htlcId;
+        part.OfferedAt = _timeProvider.GetUtcNow();
         await PersistPartAsync(session, part);
         if (ReferenceEquals(part, session.PrimaryPart))
             await RecordPrimaryHtlcAsync(session, part);
@@ -2193,6 +2210,9 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                                         attribution.IsPresent ? ToDurations(attribution) : null);
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
         }
+
+        // A payroute shard call waiting for its own routes answers now (NL-1276)
+        session.SignalPartsChanged();
 
         if (session.HasPartsInFlight)
         {

@@ -59,4 +59,35 @@ public sealed class PayRouteRequest
 
     /// <summary>The routes to offer, our peer first on each; 1 to 128 of them.</summary>
     public required IReadOnlyList<PayRouteRoute> Routes { get; init; }
+
+    /// <summary>
+    /// How the call relates to a <c>payroute</c> payment of the same hash still in flight (phase C, NL-1276):
+    /// <see cref="PayRouteAttachMode.Never"/> (default) starts a payment and is refused while one is in flight,
+    /// <see cref="PayRouteAttachMode.Required"/> adds the routes to the in-flight one (<c>payroute --attach</c>) and
+    /// <see cref="PayRouteAttachMode.IfInFlight"/> does either (LND <c>SendToRouteV2</c>).
+    /// </summary>
+    public PayRouteAttachMode Attach { get; init; }
+
+    /// <summary>
+    /// The call is one shard attempt of a set the caller assembles over several calls (LND <c>SendToRouteV2</c>,
+    /// NL-1276): its routes may deliver less than the total, the parts in flight may never deliver more than it
+    /// together, and the call answers once its own routes are resolved instead of when the payment is.
+    /// </summary>
+    public bool IndependentShards { get; init; }
+}
+
+/// <summary>
+/// How a <c>payroute</c> call relates to a <c>payroute</c> payment of the same hash still in flight (NL-1276).
+/// </summary>
+public enum PayRouteAttachMode
+{
+    /// <summary>Start a payment; refused while one of the hash is in flight.</summary>
+    Never = 0,
+
+    /// <summary>Add the routes to the in-flight <c>payroute</c> payment of the hash; refused when there is none.</summary>
+    Required = 1,
+
+    /// <summary>Add the routes to the in-flight <c>payroute</c> payment of the hash when there is one, else start
+    /// one.</summary>
+    IfInFlight = 2
 }

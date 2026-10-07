@@ -29,6 +29,10 @@ public sealed partial class RouterService
     /// A failed HTLC is an <c>HTLCAttempt</c> with LND's <c>failure</c> (<c>code</c>, <c>failure_source_index</c>: 0
     /// is this node, 1 our peer, the hop count the destination); our channel unable to carry the HTLC is
     /// <c>TEMPORARY_CHANNEL_FAILURE</c> at index 0, as LND reports it. The attempt goes on if the caller leaves.
+    /// A call with the hash of a <c>payroute</c> payment in flight is one more shard of it (NL-1276, LND's MPP
+    /// <c>SendToRouteV2</c> over several calls): it must carry the same <c>mpp_record</c> (payment address and total;
+    /// a mismatch is <c>InvalidArgument</c>), the shards in flight may not deliver more than the total together, and
+    /// each call answers with its own HTLC's outcome (a held shard resolves when the payee settles or fails the set).
     /// Refused: <c>first_hop_custom_records</c>, AMP, blinded hops, a route back to this node; <c>skip_temp_err</c>
     /// changes nothing (the node never retries a supplied route). Not filled: <c>failure.channel_update</c>.
     /// </summary>
@@ -183,7 +187,12 @@ public sealed partial class RouterService
             Routes =
             [
                 new PayRouteRoute(OutgoingChannel(route.Hops[0].ChanId), firstHopAmount, route.TotalTimeLock, hops)
-            ]
+            ],
+            // NL-1276: an MPP set sent over several calls (ln-service's multi-path pay sends its shards in parallel
+            // and replaces a failed one) joins the payroute payment of the hash in flight, as LND registers each
+            // call as one more attempt of the payment
+            Attach = PayRouteAttachMode.IfInFlight,
+            IndependentShards = true
         };
     }
 

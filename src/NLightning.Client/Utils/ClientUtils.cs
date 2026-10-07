@@ -88,7 +88,7 @@ public static class ClientUtils
         Console.WriteLine("                               65536 or more, repeatable); exit code 1 if it failed; the");
         Console.WriteLine("                               limits are those of payinvoice, never split");
         Console.WriteLine("  payroute <bolt11> | --payment-hash <64hex> [--payment-secret <64hex>] [--total-msat <msat>]");
-        Console.WriteLine("           --routes <file|-> [--max-fee-msat <msat>] [--timeout <seconds>]");
+        Console.WriteLine("           --routes <file|-> [--max-fee-msat <msat>] [--timeout <seconds>] [--attach]");
         Console.WriteLine("                               Pay exactly the supplied route(s), never re-planned (alias:");
         Console.WriteLine("                               pay-route); --routes reads a JSON array from a file or");
         Console.WriteLine("                               standard input (-), keys camelCase, case-insensitive:");
@@ -109,6 +109,10 @@ public static class ClientUtils
         Console.WriteLine("                                     .amountMsat,firstHopCltv:.cltvExpiry,hops:[.hops[]|");
         Console.WriteLine("                                     {nodeId,outgoingShortChannelId,amountToForwardMsat,");
         Console.WriteLine("                                     outgoingCltvValue}]}|.hops[-1]|=del(.outgoingShortChannelId)]'");
+        Console.WriteLine("                               --attach adds the routes to the payroute payment of the");
+        Console.WriteLine("                               hash still in flight (replacement shards: same invoice or");
+        Console.WriteLine("                               hash, secret and total) within 60 s of its oldest part in");
+        Console.WriteLine("                               flight; with those parts they must deliver the total");
         Console.WriteLine("  fetchinvoice <offer> [msat] [--quantity <n>] [--note <text>]");
         Console.WriteLine("                               Fetch and check an invoice for a BOLT 12 offer without");
         Console.WriteLine("                               paying it (alias: fetch-invoice)");

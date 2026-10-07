@@ -234,6 +234,43 @@ internal sealed class PaymentSession
 
     public PaymentPart? FindPart(ChannelId channelId, ulong htlcId) =>
         Parts.FirstOrDefault(p => p.HtlcId == htlcId && p.Channel.ChannelId == channelId);
+
+    private readonly List<(IReadOnlyList<PaymentPart> Parts, TaskCompletionSource Resolved)> _partWaiters = [];
+
+    /// <summary>
+    /// Completes when none of <paramref name="parts"/> is in flight any more, or the session ends (NL-1276: a
+    /// <c>payroute</c> shard call of an LND <c>SendToRouteV2</c> set answers with its own routes' outcomes).
+    /// <see cref="SignalPartsChanged"/> wakes it after a part is resolved.
+    /// </summary>
+    public Task WhenPartsResolvedAsync(IReadOnlyList<PaymentPart> parts)
+    {
+        lock (_partWaiters)
+        {
+            if (IsCompleted || parts.All(p => p.Status != PaymentPartStatus.InFlight))
+                return Task.CompletedTask;
+
+            var resolved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _partWaiters.Add((parts, resolved));
+            return Task.WhenAny(resolved.Task, Completion.Task);
+        }
+    }
+
+    /// <summary>Completes the <see cref="WhenPartsResolvedAsync"/> waits whose parts are all resolved.</summary>
+    public void SignalPartsChanged()
+    {
+        lock (_partWaiters)
+        {
+            for (var i = _partWaiters.Count - 1; i >= 0; i--)
+            {
+                var (parts, resolved) = _partWaiters[i];
+                if (parts.Any(p => p.Status == PaymentPartStatus.InFlight))
+                    continue;
+
+                resolved.TrySetResult();
+                _partWaiters.RemoveAt(i);
+            }
+        }
+    }
 }
 
 internal enum PaymentPartStatus
@@ -277,6 +314,10 @@ internal sealed class PaymentPart
     /// description — what a <c>payroute</c> call reports per route. Null while in flight or when fulfilled.
     /// </summary>
     public (FailureCode? Code, int? SourceIndex, string? Reason)? Failure { get; set; }
+
+    /// <summary>When the part's HTLC was offered (null until then); a <c>payroute --attach</c> must come within the
+    /// payee's <c>mpp_timeout</c> of the oldest part still in flight (NL-1276).</summary>
+    public DateTimeOffset? OfferedAt { get; set; }
 
     /// <summary>For a payment through a trampoline node: the attempt whose trampoline onion the part carries.</summary>
     public int? TrampolineAttempt { get; init; }
