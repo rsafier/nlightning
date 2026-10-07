@@ -22,16 +22,20 @@ using OutPoint = Lnrpc.OutPoint;
 using WalletAddressType = Walletrpc.AddressType;
 
 /// <summary>
-/// LND's <c>walletrpc.WalletKit</c> subset over this node's wallet (<c>LND_GRPC_PLAN.md</c> wave 3, NL-1184):
+/// LND's <c>walletrpc.WalletKit</c> over this node's wallet (<c>LND_GRPC_PLAN.md</c> wave 3, NL-1184; NL-1186):
 /// <c>ListUnspent</c>, <c>NextAddr</c>, <c>EstimateFee</c>, <c>LeaseOutput</c>/<c>ReleaseOutput</c>/<c>ListLeases</c>,
-/// <c>FundPsbt</c> (raw template or PSBT), <c>FinalizePsbt</c> and <c>PublishTransaction</c> through
-/// <see cref="IWalletPsbtService"/>. Every other method answers <c>UNIMPLEMENTED</c> after the macaroon check.
+/// <c>FundPsbt</c> (raw template or PSBT), <c>SignPsbt</c>, <c>FinalizePsbt</c>, <c>PublishTransaction</c>,
+/// <c>SubmitPackage</c>, <c>SendOutputs</c>, <c>GetTransaction</c>, <c>LabelTransaction</c>, <c>RemoveTransaction</c>,
+/// <c>RequiredReserve</c>, <c>SignMessageWithAddr</c>/<c>VerifyMessageWithAddr</c>, <c>ImportPublicKey</c>,
+/// <c>ImportTapscript</c>, <c>BumpFee</c>/<c>BumpForceCloseFee</c>, the accounts, keys and sweeps. Every other method
+/// (<c>ImportAccount</c>, <c>XCreateAccount</c>) answers <c>UNIMPLEMENTED</c> after the macaroon check.
 /// </summary>
 /// <remarks>
-/// Only the default account exists (another name is <c>NOT_FOUND</c>). FundPsbt's inputs must be wallet outputs, and
-/// FinalizePsbt signs only PSBTs whose every input is a wallet output leased here (LND also signs PSBTs with foreign
-/// inputs it leaves unsigned; we refuse those). <c>coin_select</c> templates, <c>spend_unconfirmed</c>, a P2TR change and
-/// the coin selection strategy and fee ratio limits are refused.
+/// Only the default account exists (another name is <c>NOT_FOUND</c>). Only wallet outputs leased here are ever signed
+/// (NL-1184): SignPsbt and FinalizePsbt refuse a PSBT with a wallet input that is not leased, and never touch other
+/// parties' inputs (FinalizePsbt needs them finalized). Refused: <c>coin_select</c> templates, <c>spend_unconfirmed</c>,
+/// the random coin selection strategy and the confirmation-controlled lease release (<c>release_after_spend_confs</c>,
+/// <c>input_release_after_spend_confs</c>), as an LND wallet that cannot apply them refuses them.
 /// </remarks>
 public sealed partial class WalletKitService : WalletKit.WalletKitBase
 {
@@ -39,6 +43,9 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
 
     /// <summary>bitcoind's default minimum relay fee, 1 sat/vB, in sat/kw.</summary>
     private const long MinRelayFeePerKw = 253;
+
+    /// <summary>LND's <c>chanfunding.DefaultMaxFeeRatio</c>: FundPsbt's fee cap when <c>max_fee_ratio</c> is unset.</summary>
+    internal const double DefaultMaxFeeRatio = 0.2;
 
     private readonly IFeeService _feeService;
     private readonly Network _network;
@@ -86,7 +93,7 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
                 if (confirmations < min || confirmations > max) continue;
                 response.Utxos.Add(new Lnrpc.Utxo
                 {
-                    AddressType = LnrpcAddressType.TaprootPubkey,
+                    AddressType = ImportedAddressType(output.Output.ScriptPubKey),
                     Address = output.Output.ScriptPubKey.GetDestinationAddress(_network)!.ToString(),
                     AmountSat = output.Output.Value.Satoshi,
                     PkScript = Convert.ToHexStringLower(output.Output.ScriptPubKey.ToBytes()),
@@ -97,6 +104,12 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
         }
         return response;
     }
+
+    /// <summary>The LND address type of an imported output's script (NL-1186: P2TR, P2WPKH or nested P2WPKH).</summary>
+    private static LnrpcAddressType ImportedAddressType(Script script) =>
+        script.IsScriptType(ScriptType.P2WPKH) ? LnrpcAddressType.WitnessPubkeyHash
+        : script.IsScriptType(ScriptType.P2SH) ? LnrpcAddressType.NestedPubkeyHash
+        : LnrpcAddressType.TaprootPubkey;
 
     /// <inheritdoc />
     public override async Task<AddrResponse> NextAddr(AddrRequest request, ServerCallContext context)
@@ -179,12 +192,12 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
         CheckAccount(request.Account);
         if (request.SpendUnconfirmed)
             throw new RpcException(new Status(StatusCode.Unimplemented, "spend_unconfirmed is not supported"));
-        if (request.ChangeType == ChangeAddressType.P2Tr)
-            throw new RpcException(new Status(StatusCode.Unimplemented, "only P2WPKH change is supported"));
-        if (request.CoinSelectionStrategy != Lnrpc.CoinSelectionStrategy.StrategyUseGlobalConfig)
-            throw new RpcException(new Status(StatusCode.Unimplemented, "coin_selection_strategy is not supported"));
-        if (request.MaxFeeRatio != 0)
-            throw new RpcException(new Status(StatusCode.Unimplemented, "max_fee_ratio is not supported"));
+        CheckCoinSelectionStrategy(request.CoinSelectionStrategy);
+        if (double.IsNaN(request.MaxFeeRatio) || request.MaxFeeRatio is < 0 or > 1)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                                              $"max fee ratio {request.MaxFeeRatio} must be between 0 and 1"));
+        // LND v0.21: an unset max_fee_ratio is chanfunding.DefaultMaxFeeRatio, and sanityCheckFee always applies
+        var maxFeeRatio = request.MaxFeeRatio == 0 ? DefaultMaxFeeRatio : request.MaxFeeRatio;
         if (request.InputReleaseAfterSpendConfs != 0)
             throw new RpcException(new Status(StatusCode.Unimplemented,
                                               "input_release_after_spend_confs is not supported"));
@@ -234,9 +247,11 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
                 throw new RpcException(new Status(StatusCode.InvalidArgument, "no template given"));
         }
 
+        var changeType = request.ChangeType == ChangeAddressType.P2Tr ? AddressType.P2Tr : AddressType.P2Wpkh;
         var result = await Run(() => Psbt.FundPsbtAsync(new PsbtFundRequest(outputs, inputs, feeRatePerKw,
                                                                             request.MinConfs, lockId, duration,
-                                                                            lockTime, version),
+                                                                            lockTime, version, changeType,
+                                                                            maxFeeRatio),
                                                         context.CancellationToken));
         var response = new FundPsbtResponse
         {
@@ -267,12 +282,25 @@ public sealed partial class WalletKitService : WalletKit.WalletKitBase
     {
         if (request.TxHex.IsEmpty)
             throw new RpcException(new Status(StatusCode.InvalidArgument, "need to provide a transaction"));
-        if (request.Label.Length > 500)
-            throw new RpcException(new Status(StatusCode.InvalidArgument, "label too long"));
+        if (request.Label.Length > 0)
+            CheckLabel(request.Label);
 
         // LND: a refused publish is an RPC error (UNKNOWN, LND's plain error text); publish_error stays empty on success
         await Run(() => Psbt.PublishAsync(request.TxHex.ToByteArray(), request.Label, context.CancellationToken));
         return new PublishResponse();
+    }
+
+    /// <summary>
+    /// The coin selection strategies the wallet has: largest first (its only one, so also the global configuration);
+    /// LND's random selection is refused.
+    /// </summary>
+    internal static void CheckCoinSelectionStrategy(Lnrpc.CoinSelectionStrategy strategy)
+    {
+        if (strategy is not (Lnrpc.CoinSelectionStrategy.StrategyUseGlobalConfig
+                          or Lnrpc.CoinSelectionStrategy.StrategyLargest))
+            throw new RpcException(new Status(StatusCode.Unimplemented,
+                                              $"coin selection strategy {strategy} is not supported; the wallet selects "
+                                            + "the largest outputs first"));
     }
 
     /// <summary>LND's <c>ParseConfs</c>.</summary>

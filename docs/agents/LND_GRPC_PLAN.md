@@ -334,7 +334,7 @@ run when registered (`AddLndGrpc` does).
   lndclient ignores `publish_error`, so a refusal reported there would look published) and keeps nothing; an accepted or
   already-known spend of leased outputs is then stored as a `WalletSend` row (rebroadcast, booked as a wallet send), a
   transaction without wallet inputs is sent once. EstimateFee's `min_relay_fee_sat_per_kw` is bitcoind's
-  `mempoolminfee` (at least 253). Refused or UNIMPLEMENTED: NL-1186.
+  `mempoolminfee` (at least 253). The rest of walletrpc: NL-1186 (below).
 - **GetTransactions (NL-1185).** The accounting feed (sealed first): `WalletReceived` by creating transaction and
   `WalletOutputSpent` by its `spentBy`, reorg reversals removed; pending broadcasts and unconfirmed deposits as
   unconfirmed entries; label and fee from our broadcast rows; the raw transaction from the row, else from bitcoind (out of its block, no
@@ -404,6 +404,24 @@ gaps, closed on `wip/lnd-gaps` (ledger NL-1242..NL-1249; details and validation 
   `LndGrpc:AllowChannelBackupRestore` (default off).
 - **NL-1249** ListPeers traffic, ping, errors, sync type and flaps, ListChannels lifetime, uptime and sent/received
   totals (memory tracking since the server's start; totals from the stored history).
+- **NL-1186** the rest of walletrpc. `SignPsbt` (partial P2WPKH signatures, P2TR key path signatures) and
+  `FinalizePsbt` of mixed PSBTs: only wallet outputs leased here are signed, other parties' inputs are never touched
+  (FinalizePsbt needs them finalized with their UTXO and verifies the whole transaction); FundPsbt and SignPsbt add the
+  BIP 32 derivation and the P2TR internal key. A published spend with other parties' inputs is a `WalletCollaborative`
+  row (purpose 13: rebroadcast; booked by its wallet movements and one `WalletSent` of our net flow, fee unknown, so
+  the clearing account nets to zero). FundPsbt: P2TR change, `max_fee_ratio` (LND's `sanityCheckFee` text; unset is
+  LND's default 0.2), strategy LARGEST. `GetTransaction` (GetTransactions' entry), `LabelTransaction` (our broadcast
+  rows only; LND's 500 characters and our 256 UTF-8 bytes), `RemoveTransaction` (an unconfirmed `WalletSend` held by
+  walletrpc leases or withdraw reservations, or a `WalletCollaborative` row, abandoned; never the anchor CPFP reclaim), `RequiredReserve` (`IAnchorReserveService`), `SubmitPackage` (bitcoind's
+  `submitpackage` as given, `maxfeerate` from `sat_per_vbyte`), `SignMessageWithAddr`/`VerifyMessageWithAddr` (Bitcoin
+  Core's message format, signed inside the signer with the address's key, P2TR untweaked; Core's `rpc_signmessage.py`
+  vector byte-exact), `ImportPublicKey` (P2WPKH, nested P2WPKH, BIP 86 P2TR through the imported-script tracker),
+  `BumpForceCloseFee` and `BumpFee` (operator parameters in memory, `Application/Onchain/Fees/OperatorFeeBumps`: our
+  anchor CPFP child, or the sweep, claim or penalty of a resolution output; a fresh request replaces at once; a
+  budget never lowers the cap that protects an output with a deadline, an HTLC claim or a penalty).
+  Remaining: `ImportAccount`, `XCreateAccount`, `coin_select` templates, unconfirmed spends (`spend_unconfirmed`,
+  leases of unconfirmed outputs, a CPFP of an unconfirmed wallet output), the confirmation-controlled lease release,
+  labels of deposits, BumpFee of anchors HTLC transactions (see the ledger entry).
 
 Still unimplemented (answered `unknown method`): `GetDebugInfo`, `ListPermissions`, `GetNodeMetrics`, `ListAliases`,
 routerrpc `QueryMissionControl`/`GetMissionControlConfig`, and the `chainrpc.ChainKit`, `autopilotrpc`,

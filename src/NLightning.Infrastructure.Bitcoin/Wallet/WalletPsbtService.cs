@@ -18,6 +18,7 @@ using Domain.Node.Options;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.Interfaces;
 using Interfaces;
 using Networks;
 
@@ -31,10 +32,14 @@ using Networks;
 /// outputs. Only confirmed P2WPKH/P2TR wallet outputs that no channel funding, other reservation or pending broadcast of
 /// ours holds can be leased. Expired leases are released, and leases whose outputs have all left the wallet (their spend
 /// was processed in a block) are ended, by every call and by a timer every minute.</para>
-/// <para>FundPsbt keeps the anchors reserve as <c>withdraw</c> does; FinalizePsbt signs a PSBT only when every input is a
-/// leased wallet output (<c>SignWalletTransaction</c> refuses any wallet input not reserved, and we refuse any input not
-/// leased here); PublishTransaction stores a spend of leased wallet outputs as a <see cref="BroadcastPurpose.WalletSend"/>
-/// row (rebroadcast until it confirms) and sends a transaction that spends no wallet output once.</para>
+/// <para>FundPsbt keeps the anchors reserve as <c>withdraw</c> does, with a P2WPKH or P2TR change and LND's
+/// <c>max_fee_ratio</c> (NL-1186). SignPsbt and FinalizePsbt sign only wallet inputs leased here
+/// (<c>SignWalletTransaction</c> refuses any wallet input not reserved, and we refuse any reserved for another spend or
+/// locked to a channel funding); other parties' inputs are never touched: SignPsbt leaves them as they are, FinalizePsbt
+/// needs them finalized with their UTXO (we are the last signer) and verifies the whole transaction (NL-1186).
+/// PublishTransaction stores a spend of leased wallet outputs as a <see cref="BroadcastPurpose.WalletSend"/> row, one
+/// that also spends others' outputs as a <see cref="BroadcastPurpose.WalletCollaborative"/> row (both rebroadcast until
+/// they confirm), and sends a transaction that spends no wallet output once.</para>
 /// </remarks>
 public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
 {
@@ -60,13 +65,16 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
     private readonly TimeProvider _timeProvider;
     private readonly ITimer _sweepTimer;
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
+    private readonly ISecureKeyManager? _secureKeyManager;
 
     public WalletPsbtService(IFeeInputSelector feeInputSelector, IAnchorReserveService anchorReserveService,
                              IUtxoMemoryRepository utxoMemoryRepository, ILightningSigner lightningSigner,
                              IBlockchainMonitor blockchainMonitor, IServiceScopeFactory scopeFactory,
                              IOptions<NodeOptions> nodeOptions, ILogger<WalletPsbtService> logger,
-                             IBitcoinChainService? bitcoinChainService = null, TimeProvider? timeProvider = null)
+                             IBitcoinChainService? bitcoinChainService = null, TimeProvider? timeProvider = null,
+                             ISecureKeyManager? secureKeyManager = null)
     {
+        _secureKeyManager = secureKeyManager;
         _feeInputSelector = feeInputSelector;
         _anchorReserveService = anchorReserveService;
         _utxoMemoryRepository = utxoMemoryRepository;
@@ -217,6 +225,11 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
         CheckLockId(request.LockId);
         if (request.Outputs.Count == 0)
             throw new WalletPsbtException(WalletPsbtError.InvalidArgument, "the template has no output");
+        if (request.ChangeAddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
+            throw new WalletPsbtException(WalletPsbtError.InvalidArgument, "the change must be P2WPKH or P2TR");
+        if (double.IsNaN(request.MaxFeeRatio) || request.MaxFeeRatio is < 0 or > 1)
+            throw new WalletPsbtException(WalletPsbtError.InvalidArgument,
+                                          $"max fee ratio {request.MaxFeeRatio} must be between 0 and 1");
         if (request.FeeRatePerKw is < WalletSpendService.MinFeeRatePerKw or > WalletSpendService.MaxFeeRatePerKw)
             throw new WalletPsbtException(WalletPsbtError.InvalidArgument,
                                           $"the fee rate must be {WalletSpendService.MinFeeRatePerKw} to "
@@ -269,6 +282,25 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
                 inputs = selection.Inputs;
                 changeSat = selection.ChangeAmount.Satoshi;
                 changeScript = selection.ChangeScript is { } script ? new Script((byte[])script) : null;
+                if (changeScript is not null && request.ChangeAddressType == AddressType.P2Tr)
+                {
+                    try
+                    {
+                        // The selector priced a P2WPKH change: the larger P2TR output pays its extra weight (NL-1186)
+                        changeSat -= FeeSat(request.FeeRatePerKw, ChangeOutputWeight(AddressType.P2Tr)
+                                                                - WalletWeights.P2WpkhOutputWeight);
+                        changeScript = changeSat >= ChangeDustLimit(AddressType.P2Tr)
+                                           ? await NewChangeScriptAsync(AddressType.P2Tr)
+                                           : null;
+                        if (changeScript is null)
+                            changeSat = 0;
+                    }
+                    catch
+                    {
+                        await _feeInputSelector.ReleaseAsync(selection.Id, CancellationToken.None);
+                        throw;
+                    }
+                }
             }
             else
             {
@@ -285,7 +317,8 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
                 try
                 {
                     (changeSat, changeScript) = await GetChangeAsync(inputs, outputsSat, extraWeight,
-                                                                     request.FeeRatePerKw);
+                                                                     request.FeeRatePerKw,
+                                                                     request.ChangeAddressType);
                 }
                 catch
                 {
@@ -328,10 +361,15 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
 
                 var psbt = PSBT.FromTransaction(tx, _network);
                 for (var i = 0; i < inputs.Count; i++)
+                {
                     psbt.Inputs[i].WitnessUtxo = new TxOut(Money.Satoshis(inputs[i].Amount.Satoshi),
                                                            new Script((byte[])inputs[i].ScriptPubKey));
+                    if (_utxoMemoryRepository.TryGetUtxo(inputs[i].TxId, inputs[i].Index, out var walletUtxo))
+                        AddKeyInfo(psbt.Inputs[i], walletUtxo);
+                }
 
                 var fee = inputs.Sum(i => i.Amount.Satoshi) - outputsSat - (changeIndex >= 0 ? changeSat : 0);
+                CheckFeeRatio(fee, outputsSat, request.MaxFeeRatio);
                 _logger.LogInformation("Funded a PSBT of {Outputs} output(s) with {Inputs} leased wallet input(s) "
                                      + "(fee {Fee} sat, change {Change} sat)", outputs.Count, inputs.Count, fee,
                                        changeIndex >= 0 ? changeSat : 0);
@@ -357,57 +395,116 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
     /// <inheritdoc />
     public async Task<PsbtFinalizeResult> FinalizePsbtAsync(byte[] psbt, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(psbt);
-        PSBT parsed;
-        try
-        {
-            parsed = PSBT.Load(psbt, _network);
-        }
-        catch (FormatException e)
-        {
-            throw new WalletPsbtException(WalletPsbtError.InvalidArgument, $"the PSBT does not parse: {e.Message}");
-        }
-
+        var parsed = LoadPsbt(psbt);
         var tx = parsed.GetGlobalTransaction();
-        var spent = await RequireLeasedWalletInputsAsync(tx, cancellationToken);
-        if (spent.Count == 0)
+        if (tx.Inputs.Count == 0)
             throw new WalletPsbtException(WalletPsbtError.InvalidArgument, "the PSBT has no input");
 
-        var signed = new SignedTransaction(new TxId(tx.GetHash().ToBytes()), tx.ToBytes());
-        bool any;
-        try
+        var inputs = await ClassifyInputsAsync(tx, parsed, cancellationToken);
+        for (var i = 0; i < tx.Inputs.Count; i++)
         {
-            any = _lightningSigner.SignWalletTransaction(signed, []);
-        }
-        catch (SignerException e)
-        {
-            throw new WalletPsbtException(WalletPsbtError.FailedPrecondition, $"cannot sign: {e.Message}");
+            if (inputs.Ours[i])
+                continue;
+
+            // LND: we must be the last signer; another party's input is complete already
+            if (inputs.Spent[i] is null)
+                throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
+                                              $"input {i} ({tx.Inputs[i].PrevOut}) is not a wallet output and has no "
+                                            + "UTXO information");
+            if (!IsFinalized(parsed.Inputs[i]))
+                throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
+                                              $"input {i} ({tx.Inputs[i].PrevOut}) is not a wallet output and is not "
+                                            + "finalized");
         }
 
-        if (!any)
-            throw new WalletPsbtException(WalletPsbtError.FailedPrecondition, "no wallet input was signed");
+        var signed = SignWalletInputs(tx, inputs);
+        var final = tx.Clone();
+        for (var i = 0; i < final.Inputs.Count; i++)
+        {
+            if (inputs.Ours[i])
+            {
+                final.Inputs[i].WitScript = signed.Inputs[i].WitScript;
+                continue;
+            }
 
-        var result = Transaction.Load(signed.RawTxBytes, _network);
-        var validator = result.CreateValidator(spent.ToArray());
-        for (var i = 0; i < result.Inputs.Count; i++)
+            final.Inputs[i].ScriptSig = parsed.Inputs[i].FinalScriptSig ?? Script.Empty;
+            final.Inputs[i].WitScript = parsed.Inputs[i].FinalScriptWitness ?? WitScript.Empty;
+        }
+
+        var spent = inputs.Spent.Select(o => o!).ToArray();
+        var validator = final.CreateValidator(spent);
+        for (var i = 0; i < final.Inputs.Count; i++)
         {
             var check = validator.ValidateInput(i);
             if (check.Error is not (null or ScriptError.OK))
-                throw new InvalidOperationException($"Input {i} of {result.GetHash()} does not verify: {check.Error}");
+                throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
+                                              $"input {i} of {final.GetHash()} does not verify: {check.Error}");
         }
 
-        if (result.GetHash() != tx.GetHash())
+        if (final.GetHash() != tx.GetHash())
             throw new InvalidOperationException("The signer changed the transaction's id");
 
-        for (var i = 0; i < result.Inputs.Count; i++)
+        for (var i = 0; i < final.Inputs.Count; i++)
         {
+            if (!inputs.Ours[i])
+                continue;
+
             parsed.Inputs[i].WitnessUtxo = spent[i];
-            parsed.Inputs[i].FinalScriptWitness = result.Inputs[i].WitScript;
+            parsed.Inputs[i].PartialSigs.Clear();
+            parsed.Inputs[i].FinalScriptWitness = final.Inputs[i].WitScript;
         }
 
-        _logger.LogInformation("Finalized PSBT {TxId} ({Inputs} leased wallet input(s))", result.GetHash(),
-                               result.Inputs.Count);
-        return new PsbtFinalizeResult(parsed.ToBytes(), result.ToBytes());
+        _logger.LogInformation("Finalized PSBT {TxId} ({Ours} leased wallet input(s), {Others} other input(s))",
+                               final.GetHash(), inputs.Ours.Count(o => o), inputs.Ours.Count(o => !o));
+        return new PsbtFinalizeResult(parsed.ToBytes(), final.ToBytes());
+    }
+
+    /// <inheritdoc />
+    public async Task<PsbtSignResult> SignPsbtAsync(byte[] psbt, CancellationToken cancellationToken = default)
+    {
+        var parsed = LoadPsbt(psbt);
+        var tx = parsed.GetGlobalTransaction();
+        if (tx.Inputs.Count == 0)
+            throw new WalletPsbtException(WalletPsbtError.InvalidArgument, "the PSBT has no input");
+
+        var inputs = await ClassifyInputsAsync(tx, parsed, cancellationToken);
+        var toSign = Enumerable.Range(0, tx.Inputs.Count)
+                               .Where(i => inputs.Ours[i] && !IsFinalized(parsed.Inputs[i]))
+                               .ToList();
+        if (toSign.Count == 0)
+            return new PsbtSignResult(parsed.ToBytes(), []);
+
+        var signed = SignWalletInputs(tx, inputs);
+        var signedInputs = new List<uint>();
+        foreach (var i in toSign)
+        {
+            var pushes = signed.Inputs[i].WitScript.Pushes.ToArray();
+            var input = parsed.Inputs[i];
+            input.WitnessUtxo = inputs.Spent[i];
+            var prevOut = tx.Inputs[i].PrevOut;
+            if (_utxoMemoryRepository.TryGetUtxo(new TxId(prevOut.Hash.ToBytes()), prevOut.N, out var walletUtxo))
+                AddKeyInfo(input, walletUtxo);
+            if (inputs.Spent[i]!.ScriptPubKey.IsScriptType(ScriptType.Taproot))
+            {
+                if (pushes.Length != 1 || !TaprootSignature.TryParse(pushes[0], out var taprootSignature))
+                    throw new InvalidOperationException($"The signer gave input {i} an unexpected P2TR witness");
+
+                input.TaprootKeySignature = taprootSignature;
+            }
+            else
+            {
+                if (pushes.Length != 2)
+                    throw new InvalidOperationException($"The signer gave input {i} an unexpected P2WPKH witness");
+
+                input.PartialSigs[new PubKey(pushes[1])] = new TransactionSignature(pushes[0]);
+            }
+
+            signedInputs.Add((uint)i);
+        }
+
+        _logger.LogInformation("Signed {Count} leased wallet input(s) of PSBT {TxId}", signedInputs.Count,
+                               tx.GetHash());
+        return new PsbtSignResult(parsed.ToBytes(), signedInputs);
     }
 
     /// <inheritdoc />
@@ -443,27 +540,38 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
             return true;
         }
 
-        var spent = await RequireLeasedWalletInputsAsync(tx, cancellationToken);
-        var feeSat = spent.Sum(o => o.Value.Satoshi) - tx.Outputs.Sum(o => o.Value.Satoshi);
-        if (feeSat < 0)
-            throw new WalletPsbtException(WalletPsbtError.InvalidArgument, "the outputs exceed the inputs");
+        var inputs = await ClassifyInputsAsync(tx, null, cancellationToken);
+        var collaborative = inputs.Ours.Any(o => !o);
+        long? feeSat = null;
+        if (!collaborative)
+        {
+            feeSat = inputs.Spent.Sum(o => o!.Value.Satoshi) - tx.Outputs.Sum(o => o.Value.Satoshi);
+            if (feeSat < 0)
+                throw new WalletPsbtException(WalletPsbtError.InvalidArgument, "the outputs exceed the inputs");
+        }
 
         // LND (btcwallet PublishTransaction): a transaction bitcoind refuses is an error and nothing is kept. So it is sent
-        // first; only an accepted (or already known) one gets the WalletSend row that rebroadcasts it until it confirms
+        // first; only an accepted (or already known) one gets the row that rebroadcasts it until it confirms
         if (_bitcoinChainService is not null)
             await SendOrRefuseAsync(tx);
 
+        // A collaborative transaction (others' inputs too, NL-1186): its fee and what it pays away are not ours alone, so
+        // it is no withdrawal; the chain monitor books its wallet movements only
         var weight = WalletSpendService.GetWeight(tx);
         var row = new BroadcastTransactionModel(new SignedTransaction(new TxId(tx.GetHash().ToBytes()), tx.ToBytes()),
-                                                BroadcastPurpose.WalletSend, null,
+                                                collaborative
+                                                    ? BroadcastPurpose.WalletCollaborative
+                                                    : BroadcastPurpose.WalletSend, null,
                                                 _blockchainMonitor.LastProcessedBlockHeight,
-                                                (uint)(feeSat * 1000 / Math.Max(1, weight)),
-                                                fee: LightningMoney.Satoshis(feeSat))
+                                                feeSat is { } fee ? (uint)(fee * 1000 / Math.Max(1, weight)) : 0,
+                                                fee: feeSat is { } known ? LightningMoney.Satoshis(known) : null)
         {
             Label = string.IsNullOrWhiteSpace(label) ? null : label
         };
         var published = await _blockchainMonitor.SaveAndPublishAsync(row);
-        _logger.LogInformation("Published wallet spend {TxId} (fee {Fee} sat): {Outcome}", tx.GetHash(), feeSat,
+        _logger.LogInformation("Published {Kind} {TxId} (fee {Fee}): {Outcome}",
+                               collaborative ? "collaborative wallet transaction" : "wallet spend", tx.GetHash(),
+                               feeSat is { } paid ? $"{paid} sat" : "shared",
                                published ? "accepted" : "refused now, resent after every block");
         return published;
     }
@@ -607,20 +715,36 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
                                rest.Count - again.Count, reservation.Purpose);
     }
 
-    /// <summary>The spent outputs of <paramref name="tx"/>, every one of which must be a leased wallet output.</summary>
-    private async Task<List<TxOut>> RequireLeasedWalletInputsAsync(Transaction tx, CancellationToken cancellationToken)
+    /// <summary>
+    /// Each input of <paramref name="tx"/>: a wallet output (which must be leased here: never a channel funding's, never
+    /// one reserved for another spend of this node) or another party's, whose spent output comes from the PSBT's UTXO
+    /// fields when there is a PSBT.
+    /// </summary>
+    private async Task<ClassifiedInputs> ClassifyInputsAsync(Transaction tx, PSBT? psbt,
+                                                             CancellationToken cancellationToken)
     {
-        var spent = new List<TxOut>();
+        var spent = new TxOut?[tx.Inputs.Count];
+        var ours = new bool[tx.Inputs.Count];
         var purposes = new Dictionary<Guid, string?>();
-        foreach (var input in tx.Inputs)
+        for (var i = 0; i < tx.Inputs.Count; i++)
         {
-            var txId = new TxId(input.PrevOut.Hash.ToBytes());
-            if (!_utxoMemoryRepository.TryGetUtxo(txId, input.PrevOut.N, out var utxo) || utxo.WalletAddress is null)
+            var prevOut = tx.Inputs[i].PrevOut;
+            var txId = new TxId(prevOut.Hash.ToBytes());
+            if (!_utxoMemoryRepository.TryGetUtxo(txId, prevOut.N, out var utxo))
+            {
+                spent[i] = psbt is null ? null : ForeignSpentOutput(psbt.Inputs[i], prevOut);
+                continue;
+            }
+
+            if (utxo.LockedToChannelId is not null)
                 throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
-                                              $"input {input.PrevOut} is not a wallet output");
-            if (!_utxoMemoryRepository.TryGetFeeReservation(txId, input.PrevOut.N, out var reservationId))
+                                              $"input {prevOut} is locked to a channel funding");
+            if (utxo.WalletAddress is null)
                 throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
-                                              $"input {input.PrevOut} is not leased");
+                                              $"input {prevOut} is not a wallet output");
+            if (!_utxoMemoryRepository.TryGetFeeReservation(txId, prevOut.N, out var reservationId))
+                throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
+                                              $"input {prevOut} is not leased");
             if (!purposes.TryGetValue(reservationId, out var purpose))
             {
                 purpose = (await _feeInputSelector.GetAsync(reservationId, cancellationToken))?.Purpose;
@@ -629,31 +753,131 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
 
             if (purpose is null || !purpose.StartsWith(LeasePurposePrefix, StringComparison.Ordinal))
                 throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
-                                              $"input {input.PrevOut} is reserved for another spend of this node");
+                                              $"input {prevOut} is reserved for another spend of this node");
 
-            spent.Add(new TxOut(Money.Satoshis(utxo.Amount.Satoshi),
-                                BitcoinAddress.Create(utxo.WalletAddress.Address, _network).ScriptPubKey));
+            spent[i] = new TxOut(Money.Satoshis(utxo.Amount.Satoshi),
+                                 BitcoinAddress.Create(utxo.WalletAddress.Address, _network).ScriptPubKey);
+            ours[i] = true;
         }
 
-        return spent;
+        return new ClassifiedInputs(spent, ours);
     }
 
-    /// <summary>The change of a spend of the given inputs: a fresh P2WPKH change address when it is not dust.</summary>
+    /// <summary>
+    /// The signed copy of <paramref name="tx"/> with every wallet input signed (the others untouched, their spent outputs
+    /// given to the signer for BIP 341), or <paramref name="tx"/> itself when it has no wallet input.
+    /// </summary>
+    private Transaction SignWalletInputs(Transaction tx, ClassifiedInputs inputs)
+    {
+        if (!inputs.Ours.Any(o => o))
+            return tx;
+
+        var others = new List<SpentOutput>();
+        for (var i = 0; i < tx.Inputs.Count; i++)
+        {
+            if (inputs.Ours[i] || inputs.Spent[i] is not { } output)
+                continue;
+
+            var prevOut = tx.Inputs[i].PrevOut;
+            others.Add(new SpentOutput(new TxId(prevOut.Hash.ToBytes()), prevOut.N,
+                                       LightningMoney.Satoshis(output.Value.Satoshi), output.ScriptPubKey.ToBytes()));
+        }
+
+        var signed = new SignedTransaction(new TxId(tx.GetHash().ToBytes()), tx.ToBytes());
+        bool any;
+        try
+        {
+            any = _lightningSigner.SignWalletTransaction(signed, others);
+        }
+        catch (SignerException e)
+        {
+            throw new WalletPsbtException(WalletPsbtError.FailedPrecondition, $"cannot sign: {e.Message}");
+        }
+
+        if (!any)
+            throw new WalletPsbtException(WalletPsbtError.FailedPrecondition, "no wallet input was signed");
+
+        var result = Transaction.Load(signed.RawTxBytes, _network);
+        if (result.GetHash() != tx.GetHash())
+            throw new InvalidOperationException("The signer changed the transaction's id");
+        return result;
+    }
+
+    /// <summary>The output another party's PSBT input spends: its witness UTXO, else its previous transaction's.</summary>
+    private static TxOut? ForeignSpentOutput(PSBTInput input, OutPoint prevOut)
+    {
+        if (input.WitnessUtxo is { } witnessUtxo)
+            return witnessUtxo;
+
+        return input.NonWitnessUtxo is { } previous && previous.GetHash() == prevOut.Hash
+                                                    && prevOut.N < previous.Outputs.Count
+                   ? previous.Outputs[(int)prevOut.N]
+                   : null;
+    }
+
+    /// <summary>
+    /// The public key data of a wallet input, as LND adds it (BIP 174): the derivation path from the master key's
+    /// fingerprint and, for P2TR, the internal key a finalizer needs for the key path. Nothing without the key manager.
+    /// </summary>
+    private void AddKeyInfo(PSBTInput input, UtxoModel utxo)
+    {
+        if (_secureKeyManager?.GetDepositAccount(utxo.AddressType) is not { } account)
+            return;
+
+        try
+        {
+            var branch = utxo.IsAddressChange ? 1u : 0u;
+            var pubKey = ExtPubKey.Parse(account.ExtendedPublicKey, _network).Derive(branch).Derive(utxo.AddressIndex)
+                                  .PubKey;
+            var path = new RootedKeyPath(new HDFingerprint(account.MasterFingerprint),
+                                         KeyPath.Parse($"{account.DerivationPath}/{branch}/{utxo.AddressIndex}"));
+            if (utxo.AddressType == AddressType.P2Tr)
+            {
+                input.TaprootInternalKey = pubKey.TaprootInternalKey;
+                input.HDTaprootKeyPaths[new TaprootPubKey(pubKey.TaprootInternalKey.ToBytes())] =
+                    new TaprootKeyPath(path);
+            }
+            else
+            {
+                input.AddKeyPath(pubKey, path);
+            }
+        }
+        catch (Exception e) when (e is FormatException or ArgumentException)
+        {
+            _logger.LogDebug(e, "No key path for wallet output {TxId}:{Index}", utxo.TxId, utxo.Index);
+        }
+    }
+
+    private static bool IsFinalized(PSBTInput input) => input.FinalScriptWitness is not null
+                                                     || input.FinalScriptSig is not null;
+
+    private PSBT LoadPsbt(byte[] psbt)
+    {
+        ArgumentNullException.ThrowIfNull(psbt);
+        try
+        {
+            return PSBT.Load(psbt, _network);
+        }
+        catch (Exception e) when (e is FormatException or ArgumentException or EndOfStreamException)
+        {
+            throw new WalletPsbtException(WalletPsbtError.InvalidArgument, $"the PSBT does not parse: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// The change of a spend of the given inputs: a fresh change address of <paramref name="changeType"/> when it is not
+    /// dust.
+    /// </summary>
     private async Task<(long ChangeSat, Script? ChangeScript)> GetChangeAsync(IReadOnlyList<WalletInput> inputs,
                                                                              long outputsSat, int extraWeight,
-                                                                             long feeRatePerKw)
+                                                                             long feeRatePerKw,
+                                                                             AddressType changeType)
     {
         var totalSat = inputs.Sum(i => i.Amount.Satoshi);
         var weight = extraWeight + inputs.Sum(i => i.InputWeight);
-        var feeWithChange = FeeSat(feeRatePerKw, weight + WalletWeights.P2WpkhOutputWeight);
-        if (totalSat - outputsSat - feeWithChange >= WalletWeights.P2WpkhDustLimitSat)
-        {
-            await using var scope = _scopeFactory.CreateAsyncScope();
-            var wallet = scope.ServiceProvider.GetRequiredService<IBitcoinWalletService>();
-            var address = await wallet.GetUnusedAddressAsync(AddressType.P2Wpkh, true);
-            return (totalSat - outputsSat - feeWithChange,
-                    BitcoinAddress.Create(address.Address, _network).ScriptPubKey);
-        }
+        var feeWithChange = FeeSat(feeRatePerKw, weight + ChangeOutputWeight(changeType));
+        if (totalSat - outputsSat - feeWithChange >= ChangeDustLimit(changeType))
+            return (totalSat - outputsSat - feeWithChange, await NewChangeScriptAsync(changeType));
 
         if (totalSat - outputsSat < FeeSat(feeRatePerKw, weight))
             throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
@@ -756,4 +980,44 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
     }
 
     private static long FeeSat(long feeRatePerKw, long weight) => (feeRatePerKw * weight + 999) / 1000;
+
+    /// <summary>The spent output of each input (null: another party's, unknown) and whether it is a leased wallet
+    /// output.</summary>
+    private sealed record ClassifiedInputs(TxOut?[] Spent, bool[] Ours);
+
+    /// <summary>The weight of a change output of <paramref name="type"/>: P2WPKH 124, P2TR 172.</summary>
+    private static int ChangeOutputWeight(AddressType type) =>
+        type == AddressType.P2Tr ? (8 + 1 + 34) * 4 : WalletWeights.P2WpkhOutputWeight;
+
+    /// <summary>The dust limit of a change output of <paramref name="type"/>: P2WPKH 294, P2TR 330.</summary>
+    private static long ChangeDustLimit(AddressType type) =>
+        type == AddressType.P2Tr ? 330 : WalletWeights.P2WpkhDustLimitSat;
+
+    /// <summary>A fresh change address of <paramref name="type"/> (handed out once, NL-280).</summary>
+    private async Task<Script> NewChangeScriptAsync(AddressType type)
+    {
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var wallet = scope.ServiceProvider.GetRequiredService<IBitcoinWalletService>();
+        var address = await wallet.GetUnusedAddressAsync(type, true);
+        return BitcoinAddress.Create(address.Address, _network).ScriptPubKey;
+    }
+
+    /// <summary>
+    /// LND's <c>sanityCheckFee</c> (<c>max_fee_ratio</c>): the fee may be at most <paramref name="maxFeeRatio"/> of the
+    /// outputs' total; 0 is no limit.
+    /// </summary>
+    internal static void CheckFeeRatio(long feeSat, long outputsSat, double maxFeeRatio)
+    {
+        if (maxFeeRatio <= 0)
+            return;
+
+        var maxFee = (long)(outputsSat * maxFeeRatio);
+        if (feeSat > maxFee)
+            throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
+                                          $"fee {FormatBtc(feeSat)} on total output value {FormatBtc(outputsSat)} with "
+                                        + $"max fee ratio of {maxFeeRatio.ToString(CultureInfo.InvariantCulture)}");
+    }
+
+    private static string FormatBtc(long sat) =>
+        (sat / 100_000_000m).ToString("0.########", CultureInfo.InvariantCulture) + " BTC";
 }

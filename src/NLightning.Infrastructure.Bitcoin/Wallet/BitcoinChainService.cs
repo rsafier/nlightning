@@ -529,6 +529,59 @@ public class BitcoinChainService : IBitcoinChainService
         }
     }
 
+    /// <inheritdoc />
+    public async Task<RawPackageSubmitResult> SubmitRawPackageAsync(IReadOnlyList<Transaction> transactions,
+                                                                    decimal? maxFeeRateBtcPerKvb)
+    {
+        ArgumentNullException.ThrowIfNull(transactions);
+        var response = await _rpcClient.SendCommandAsync(CreateRawSubmitPackageRequest(transactions,
+                                                                                        maxFeeRateBtcPerKvb),
+                                                         CancellationToken.None);
+        return ParseRawSubmitPackageResponse(response.Result);
+    }
+
+    /// <summary>
+    /// The raw <c>submitpackage</c> request: the raw transactions in the order given and, when given, <c>maxfeerate</c>
+    /// (BTC/kvB).
+    /// </summary>
+    internal static RPCRequest CreateRawSubmitPackageRequest(IReadOnlyList<Transaction> transactions,
+                                                             decimal? maxFeeRateBtcPerKvb)
+    {
+        var hexes = new JArray(transactions.Select(t => (object)t.ToHex()).ToArray());
+        return maxFeeRateBtcPerKvb is { } rate
+                   ? new RPCRequest("submitpackage", [hexes, rate])
+                   : new RPCRequest("submitpackage", [hexes]);
+    }
+
+    /// <summary>
+    /// bitcoind's whole <c>submitpackage</c> answer: <c>package_msg</c>, <c>tx-results</c> by wtxid (<c>txid</c>,
+    /// <c>error</c>, <c>other-wtxid</c>) and <c>replaced-transactions</c>.
+    /// </summary>
+    internal static RawPackageSubmitResult ParseRawSubmitPackageResponse(JToken? result)
+    {
+        if (result is not JObject answer)
+            throw new FormatException("submitpackage returned no result");
+
+        var transactions = new List<RawPackageTransactionResult>();
+        if (answer["tx-results"] is JObject txResults)
+        {
+            foreach (var (wtxid, value) in txResults)
+            {
+                if (value is not JObject entry)
+                    continue;
+
+                transactions.Add(new RawPackageTransactionResult(wtxid, entry["txid"]?.Value<string>() ?? "",
+                                                                 entry["error"]?.Value<string>(),
+                                                                 entry["other-wtxid"]?.Value<string>()));
+            }
+        }
+
+        var replaced = answer["replaced-transactions"] is JArray array
+                           ? array.Select(t => t.Value<string>()).OfType<string>().ToList()
+                           : [];
+        return new RawPackageSubmitResult(answer["package_msg"]?.Value<string>() ?? "", transactions, replaced);
+    }
+
     /// <summary>The <c>submitpackage</c> request: one parameter, the array of raw transactions, parent first.</summary>
     internal static RPCRequest CreateSubmitPackageRequest(Transaction parent, Transaction child) =>
         new("submitpackage", [new JArray(parent.ToHex(), child.ToHex())]);

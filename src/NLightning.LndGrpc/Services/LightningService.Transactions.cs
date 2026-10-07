@@ -332,7 +332,8 @@ public sealed partial class LightningService
     /// <summary>Transactions that can move wallet outputs: our sends, fundings, CPFP children and sweeps.</summary>
     private static bool IsWalletMovement(BroadcastTransactionModel row) =>
         row.Purpose is BroadcastPurpose.WalletSend or BroadcastPurpose.Funding or BroadcastPurpose.AnchorCpfp
-                    or BroadcastPurpose.HtlcTransaction or BroadcastPurpose.Splice or BroadcastPurpose.Unspecified;
+                    or BroadcastPurpose.HtlcTransaction or BroadcastPurpose.Splice or BroadcastPurpose.Unspecified
+                    or BroadcastPurpose.WalletCollaborative;
 
     private static HistoryEntry Entry(Dictionary<TxId, HistoryEntry> entries, TxId txId,
                                       AccountingEventModel accountingEvent)

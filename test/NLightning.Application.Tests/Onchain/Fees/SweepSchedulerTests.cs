@@ -275,6 +275,59 @@ public sealed class SweepSchedulerTests
     }
 
     [Fact]
+    public async Task Given_AnOperatorBudgetBelowThePenaltyCap_When_ThePenaltyNearsItsDeadline_Then_TheCapStillApplies()
+    {
+        // Arrange (NL-1186 review): a breach whose penalty stays unconfirmed; the operator asks for a high rate with a
+        // budget of twice the old fee, and the round runs one block before the penalty's earliest deadline (inside
+        // SecurityDelay, where a penalty may pay up to PenaltyMaxFeePerMille of its inputs)
+        using var kit = new RevokedBreachKit();
+        var pair = kit.Pair;
+        pair.Add(pair.Bob, 50_000_000, RealSigningCommitmentPair.Preimage(0xB1), 600);
+        pair.Add(pair.Alice, 40_000_000, RealSigningCommitmentPair.Preimage(0xA1), 650);
+        pair.Settle(pair.Bob);
+        kit.CaptureRevokedState();
+        pair.UpdateFee(3_000);
+        pair.Settle(pair.Alice);
+        kit.Breach();
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
+        var penalty = kit.Broadcasts.Values.First(b =>
+        {
+            var deadlines = kit.Rows.Where(r => r.ResolvingTransactionId == b.TransactionId)
+                               .Select(r => r.DeadlineHeight).ToList();
+            return b.Purpose == BroadcastPurpose.Penalty && deadlines.Count > 0
+                && deadlines.All(d => d is null || d > RevokedBreachKit.SpentAtHeight + 2)
+                && deadlines.Any(d => d is not null);
+        });
+        var spentRows = kit.Rows.Where(r => r.ResolvingTransactionId == penalty.TransactionId).ToList();
+        var height = spentRows.Where(r => r.DeadlineHeight is not null).Min(r => r.DeadlineHeight!.Value) - 1;
+        var oldTx = kit.LoadBroadcast(penalty.TransactionId);
+        var inputValue = spentRows.Sum(r => (long)OutputDescriptorData.TryDecode(r)!.AmountSat);
+        var oldFee = inputValue - oldTx.Outputs.Sum(o => o.Value.Satoshi);
+        var budget = (ulong)oldFee * 2;
+        var bumps = new OperatorFeeBumps();
+        foreach (var row in spentRows)
+            bumps.SetOutput(row.TransactionId, row.OutputIndex,
+                            new OperatorFeeBumpRequest(5_000_000, budget, null, null, false));
+        var secret = kit.DataSource.Context!.PerCommitmentSecret;
+        var scheduler = new SweepScheduler(CreateFeeService(RevokedBreachKit.FeeratePerKw).Object, kit.Victim.Signer,
+                                           NullLogger<SweepScheduler>.Instance, new SweepFeePolicy(s_policy),
+                                           CreateShachain(secret).Object, bumps);
+
+        // Act
+        var actions = await scheduler.PlanAsync(kit.Close, kit.Rows.ToList(), height, CreateUnitOfWork(kit),
+                                                TestContext.Current.CancellationToken);
+        await kit.ApplyAsync(actions);
+
+        // Assert: the replacement pays above the budget and above the sweep cap (half the inputs): the penalty cap
+        var replacement = Assert.Single(actions.OfType<BroadcastAction>().Select(a => a.Transaction),
+                                        r => r.ReplacesTransactionId == penalty.TransactionId);
+        kit.AssertVerifies(replacement.TransactionId);
+        var newFee = inputValue - kit.LoadBroadcast(replacement.TransactionId).Outputs.Sum(o => o.Value.Satoshi);
+        Assert.True(newFee > (long)budget, $"fee {newFee} <= budget {budget}");
+        Assert.True(newFee > inputValue / 2, $"fee {newFee} of {inputValue} is not the penalty cap");
+    }
+
+    [Fact]
     public async Task Given_TaprootRevokedHtlcRowsRecordedWithoutALeaf_When_AResolverRoundRuns_Then_ThePenaltyIsBumped()
     {
         // Arrange (NL-1051): the watcher of a t02 build wrote the revoked commitment's HTLC rows without a leaf and
