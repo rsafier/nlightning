@@ -42,19 +42,26 @@ public static class Program
                 Options.Create(new SilentPaymentsOptions { Enabled = true, Receive = true, RecoveryLabelCount = labels }),
                 NullLogger<SilentPaymentScanner>.Instance);
             var measurements = new List<double>();
+            var allocations = new List<long>();
             var expected = adversarial ? 2323 : 0;
             for (var index = 0; index < warmup + samples; index++)
             {
                 using var lease = await scanner.EnterAsync();
+                var allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
                 var timer = Stopwatch.StartNew();
                 var found = await scanner.PrepareAsync(block, 200, []);
                 timer.Stop();
+                var allocated = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
                 Console.Error.WriteLine($"Round {index + 1}/{warmup + samples}: {timer.Elapsed.TotalMilliseconds:F1} ms, {found.Count} matches");
                 try
                 {
                     if (found.Count != expected)
                         throw new InvalidOperationException($"Expected {expected} matches, got {found.Count}.");
-                    if (index >= warmup) measurements.Add(timer.Elapsed.TotalMilliseconds);
+                    if (index >= warmup)
+                    {
+                        measurements.Add(timer.Elapsed.TotalMilliseconds);
+                        allocations.Add(allocated);
+                    }
                 }
                 finally
                 {
@@ -75,10 +82,11 @@ public static class Program
                 sample_rounds = samples,
                 matched_outputs_per_round = expected,
                 min_ms = measurements[0],
-                median_ms = measurements[(measurements.Count - 1) / 2],
+                median_ms = (measurements[(measurements.Count - 1) / 2] + measurements[measurements.Count / 2]) / 2,
                 p95_ms = measurements[(int)Math.Ceiling(measurements.Count * 0.95) - 1],
                 max_ms = measurements[^1],
                 samples_ms = measurements,
+                allocated_bytes_per_sample = allocations,
                 limitation = "Preloaded prevouts; includes block parsing and scanner maths, excludes RPC/storage. Cloud timing does not certify the Mac reference-machine budget."
             }, new JsonSerializerOptions { WriteIndented = true }));
         }

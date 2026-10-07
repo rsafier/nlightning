@@ -17,6 +17,7 @@ using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Protocol.ValueObjects;
+using Domain.Protocol.Interfaces;
 using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Crypto.SilentPayments;
 using Infrastructure.Bitcoin.Managers;
@@ -28,6 +29,7 @@ public sealed class LocalLightningSignerSilentPaymentTests : IDisposable
 {
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "nltg-sp-signer-" + Guid.NewGuid().ToString("N"));
     private readonly SecureKeyManager _keys;
+    private readonly TrackingSignerKeys _signingKeys;
     private readonly FakeWalletUtxoRepository _utxos = new();
     private readonly LocalLightningSigner _signer;
 
@@ -37,8 +39,9 @@ public sealed class LocalLightningSignerSilentPaymentTests : IDisposable
         _keys = SecureKeyManager.FromMnemonic(
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
             string.Empty, BitcoinNetwork.Regtest, Path.Combine(_directory, "keys.json"));
+        _signingKeys = new TrackingSignerKeys(_keys);
         _signer = new LocalLightningSigner(new FundingOutputBuilder(), Mock.Of<IKeyDerivationService>(),
-            NullLogger<LocalLightningSigner>.Instance, new NodeOptions { BitcoinNetwork = "regtest" }, _keys, _utxos);
+            NullLogger<LocalLightningSigner>.Instance, new NodeOptions { BitcoinNetwork = "regtest" }, _signingKeys, _utxos);
     }
 
     [Theory]
@@ -56,13 +59,14 @@ public sealed class LocalLightningSignerSilentPaymentTests : IDisposable
         var signed = ToSigned(tx);
 
         // Act
-        Assert.True(_signer.SignWalletTransaction(signed, [], reservation));
+        Assert.True(_signer.SignWalletTransaction(signed, reservation, []));
 
         // Assert: an accidental BIP86 tweak fails the independent script interpreter.
         var result = Transaction.Load(signed.RawTxBytes, Network.RegTest);
         var validator = result.CreateValidator([silent.PrevOut, deposit.PrevOut]);
         Assert.All(Enumerable.Range(0, 2), index => Assert.True(validator.ValidateInput(index).Error is null or ScriptError.OK));
         Assert.All(result.Inputs, input => Assert.Single(input.WitScript.Pushes));
+        AssertWipedSignerScalars();
     }
 
     [Theory]
@@ -109,8 +113,9 @@ public sealed class LocalLightningSignerSilentPaymentTests : IDisposable
         var before = signed.RawTxBytes.ToArray();
 
         // Act / Assert
-        Assert.Throws<SignerException>(() => _signer.SignWalletTransaction(signed, [], reservation));
+        Assert.Throws<SignerException>(() => _signer.SignWalletTransaction(signed, reservation, []));
         Assert.Equal(before, signed.RawTxBytes);
+        AssertWipedSignerScalars();
     }
 
     [Theory]
@@ -239,6 +244,32 @@ public sealed class LocalLightningSignerSilentPaymentTests : IDisposable
     }
 
     private static SignedTransaction ToSigned(Transaction tx) => new(tx.GetHash().ToBytes(), tx.ToBytes());
+
+    private void AssertWipedSignerScalars()
+    {
+        Assert.NotEmpty(_signingKeys.ReturnedScalars);
+        Assert.All(_signingKeys.ReturnedScalars, scalar => Assert.All(scalar, value => Assert.Equal(0, value)));
+    }
+
+    private sealed class TrackingSignerKeys(SecureKeyManager inner) : Domain.Protocol.Interfaces.ISecureKeyManager
+    {
+        public List<byte[]> ReturnedScalars { get; } = [];
+        public byte[] GetSilentPaymentSpendKey(ReadOnlySpan<byte> tweak32, uint? label)
+        {
+            var scalar = inner.GetSilentPaymentSpendKey(tweak32, label);
+            ReturnedScalars.Add(scalar);
+            return scalar;
+        }
+        public BitcoinKeyPath ChannelKeyPath => inner.ChannelKeyPath;
+        public uint HeightOfBirth => inner.HeightOfBirth;
+        public ExtPrivKey GetNextChannelKey(out uint index) => inner.GetNextChannelKey(out index);
+        public ExtPrivKey GetChannelKeyAtIndex(uint index) => inner.GetChannelKeyAtIndex(index);
+        public ExtPrivKey GetDepositP2TrKeyAtIndex(uint index, bool isChange) => inner.GetDepositP2TrKeyAtIndex(index, isChange);
+        public ExtPrivKey GetDepositP2WpkhKeyAtIndex(uint index, bool isChange) => inner.GetDepositP2WpkhKeyAtIndex(index, isChange);
+        public CryptoKeyPair GetNodeKeyPair() => inner.GetNodeKeyPair();
+        public CompactPubKey GetNodePubKey() => inner.GetNodePubKey();
+        public void ComputeNodeSharedSecret(ReadOnlySpan<byte> publicKey, Span<byte> sharedSecret) => inner.ComputeNodeSharedSecret(publicKey, sharedSecret);
+    }
 
     public void Dispose()
     {
