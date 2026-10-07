@@ -63,6 +63,7 @@ public class NLightningDbContext : DbContext
     public DbSet<OutputResolutionEntity> OutputResolutions { get; set; }
 
     public DbSet<ImportedTapscriptEntity> ImportedTapscripts { get; set; }
+    public DbSet<ImportedWatchIndexEntity> ImportedWatchIndexes { get; set; }
     public DbSet<KeyRingKeyEntity> KeyRingKeys { get; set; }
 
     // Node DbSets

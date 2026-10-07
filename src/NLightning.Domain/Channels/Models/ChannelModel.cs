@@ -609,6 +609,9 @@ public class ChannelModel
         LocalFundingKeyIndex = localFundingKeyIndex;
     }
 
+    /// <summary>The current recovery funding has no verified funding-key pair.</summary>
+    public bool FundingKeysUnknown { get; set; }
+
     /// <summary>
     /// The signer's view of the channel. Contract (NL-495, wave spr): the funding fields are the <b>current</b>
     /// funding's (<see cref="FundingOutput"/>'s outpoint, capacity and keys, <see cref="LocalFundingPubKey"/>/
@@ -627,6 +630,7 @@ public class ChannelModel
             ShortChannelId = ((byte[]?)ShortChannelId)?.Length > 0 ? ShortChannelId : (ShortChannelId?)null,
             AnnounceChannel = AnnounceChannel,
             LocalFundingKeyIndex = LocalFundingKeyIndex,
+            FundingKeysUnknown = FundingKeysUnknown,
             IsSimpleTaproot = ChannelParams.OptionSimpleTaproot,
             IsDualFunded = Version == ChannelVersion.V2
         };
