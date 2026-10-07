@@ -237,7 +237,7 @@ public sealed class BlockPrevoutSource : IBlockPrevoutSource
 
     // Core 31 rest.cpp SerializeBlockUndo: CompactSize tx count (coinbase included), then per-tx
     // CompactSize input count and ordinary CTxOut serialization (int64 satoshis, CompactSize script bytes).
-    internal static IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>>> ParseRest(Stream stream, Block block)
+    internal static IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>> ParseRest(Stream stream, Block block)
     {
         using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
         if (ReadSize(reader) != (ulong)block.Transactions.Count)
@@ -248,6 +248,7 @@ public sealed class BlockPrevoutSource : IBlockPrevoutSource
             var count = ReadSize(reader);
             if (count != (ulong)(tx.IsCoinBase ? 0 : tx.Inputs.Count))
                 throw new InvalidDataException("REST spenttxouts input count mismatch.");
+            var candidate = IsCandidate(tx);
             List<BitcoinPrevout> previous = [];
             for (ulong i = 0; i < count; i++)
             {
@@ -258,10 +259,10 @@ public sealed class BlockPrevoutSource : IBlockPrevoutSource
                 var script = reader.ReadBytes((int)length);
                 if (script.Length != (int)length)
                     throw new EndOfStreamException("Truncated REST previous output script.");
-                if (IsCandidate(tx))
+                if (candidate)
                     previous.Add(new BitcoinPrevout((ulong)amount, new BitcoinScript(script)));
             }
-            if (IsCandidate(tx))
+            if (candidate)
                 result.Add(new TxId(tx.GetHash().ToBytes()), previous);
         }
         if (stream.ReadByte() != -1)
