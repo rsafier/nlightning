@@ -117,6 +117,22 @@ public partial class BlockchainMonitorService
             if (source.Source == ExternalSource) source = new WalletTransactionSource(WalletSource, null, null);
             CollectWalletOutputSpent(coin, transaction, source, memory, effects, block.Header.BlockTime);
         }
+        if (spends.Any(spend => !spend.Output.Ignored))
+        {
+            var observations = new Dictionary<OutPoint, UtxoModel>(effects.StagedDeposits);
+            foreach (var (output, _) in spends.Where(spend => !spend.Output.Ignored))
+                observations[new OutPoint(new uint256((byte[])output.TransactionId), output.Index)] =
+                    new UtxoModel(output with { SpentByTransactionId = null, SpentAtHeight = null });
+            foreach (var spender in spends.Where(spend => !spend.Output.Ignored).Select(spend => spend.Spender).Distinct())
+            {
+                var transaction = block.Transactions.Single(transaction => new TxId(transaction.GetHash().ToBytes()) == spender);
+                if (DescribeWalletTransaction(transaction, height, block.GetHash().ToString(), observations,
+                        timestamp: block.Header.BlockTime) is not { } observed) continue;
+                var existing = effects.WalletTransactions.FindIndex(item => item.TxHash == observed.TxHash);
+                if (existing >= 0) effects.WalletTransactions[existing] = observed;
+                else effects.WalletTransactions.Add(observed);
+            }
+        }
         if (prepared.AdvanceLiveCursor && (prepared.State.LiveCursorHeight is null || height >= prepared.State.LiveCursorHeight))
             await unitOfWork.SilentPaymentDbRepository.SetScanStateAsync(prepared.State with
             {
