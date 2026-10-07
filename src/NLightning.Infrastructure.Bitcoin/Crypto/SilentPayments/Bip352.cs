@@ -167,7 +167,7 @@ internal static class Bip352
     {
         var scalar = CheckedScalar(scanSecret);
         Scalar.Clear(ref scalar);
-        return HashScalar("BIP0352/Label", scanSecret, label);
+        return HashScalar("BIP0352/Label", scanSecret, label, requireValidScalar: false);
     }
 
     public static byte[] AddPublicTweak(ReadOnlySpan<byte> key, ReadOnlySpan<byte> tweak) => Compressed(AddTweak(Point(key), tweak));
@@ -194,53 +194,61 @@ internal static class Bip352
         if (remaining.Select(x => x.candidate.OutputIndex).Distinct().Count() != remaining.Count)
             throw new ArgumentException("Duplicate output indexes.");
         var matches = new List<SilentPaymentScanMatch>();
-        for (uint k = 0; k < MaxRecipients && remaining.Count != 0; k++)
+        try
         {
-            var tweak = SharedSecretTweak(sharedSecret, k);
-            try
+            for (uint k = 0; k < MaxRecipients && remaining.Count != 0; k++)
             {
-                var expected = AddTweak(spend, tweak);
-                var expectedX = XOnly(expected);
-                // Check the unlabelled key first. Avoid point subtraction for every unrelated output when a plain
-                // receipt exists later in the transaction (important for the K_max case).
-                var plainIndex = remaining.FindIndex(row => expectedX.AsSpan().SequenceEqual(row.candidate.OutputKey32));
-                if (plainIndex >= 0)
+                var tweak = SharedSecretTweak(sharedSecret, k);
+                try
                 {
-                    var plain = remaining[plainIndex].candidate;
-                    matches.Add(new SilentPaymentScanMatch(plain.OutputIndex, plain.OutputKey32.ToArray(), tweak.ToArray(), null));
-                    remaining.RemoveAt(plainIndex);
-                    continue;
-                }
-                var found = false;
-                for (var i = 0; i < remaining.Count; i++)
-                {
-                    var (candidate, output) = remaining[i];
-                    uint? matchedLabel = null;
-                    var matchesPlain = expectedX.AsSpan().SequenceEqual(candidate.OutputKey32);
-                    var matchesLabel = false;
-                    if (!matchesPlain && labels.Count != 0)
+                    var expected = AddTweak(spend, tweak);
+                    var expectedX = XOnly(expected);
+                    // Check the unlabelled key first. Avoid point subtraction for every unrelated output when a plain
+                    // receipt exists later in the transaction (important for the K_max case).
+                    var plainIndex = remaining.FindIndex(row => expectedX.AsSpan().SequenceEqual(row.candidate.OutputKey32));
+                    if (plainIndex >= 0)
                     {
-                        for (var parity = 0; parity < 2; parity++)
-                        {
-                            var difference = (parity == 0 ? output : output.Negate()).ToGroupElementJacobian()
-                                .AddVariable(expected.Negate());
-                            if (!difference.IsInfinity && labels.TryGetValue(
-                                    Convert.ToHexString(Compressed(difference.ToGroupElementVariable())), out var label))
-                            { matchedLabel = label; matchesLabel = true; break; }
-                        }
+                        var plain = remaining[plainIndex].candidate;
+                        matches.Add(new SilentPaymentScanMatch(plain.OutputIndex, plain.OutputKey32.ToArray(), tweak.ToArray(), null));
+                        remaining.RemoveAt(plainIndex);
+                        continue;
                     }
-                    if (!matchesPlain && !matchesLabel) continue;
-                    matches.Add(new SilentPaymentScanMatch(candidate.OutputIndex, candidate.OutputKey32.ToArray(),
-                                                           tweak.ToArray(), matchedLabel));
-                    remaining.RemoveAt(i);
-                    found = true;
-                    break;
+                    var found = false;
+                    for (var i = 0; i < remaining.Count; i++)
+                    {
+                        var (candidate, output) = remaining[i];
+                        uint? matchedLabel = null;
+                        var matchesPlain = expectedX.AsSpan().SequenceEqual(candidate.OutputKey32);
+                        var matchesLabel = false;
+                        if (!matchesPlain && labels.Count != 0)
+                        {
+                            for (var parity = 0; parity < 2; parity++)
+                            {
+                                var difference = (parity == 0 ? output : output.Negate()).ToGroupElementJacobian()
+                                    .AddVariable(expected.Negate());
+                                if (!difference.IsInfinity && labels.TryGetValue(
+                                        Convert.ToHexString(Compressed(difference.ToGroupElementVariable())), out var label))
+                                { matchedLabel = label; matchesLabel = true; break; }
+                            }
+                        }
+                        if (!matchesPlain && !matchesLabel) continue;
+                        matches.Add(new SilentPaymentScanMatch(candidate.OutputIndex, candidate.OutputKey32.ToArray(),
+                                                               tweak.ToArray(), matchedLabel));
+                        remaining.RemoveAt(i);
+                        found = true;
+                        break;
+                    }
+                    if (!found) break;
                 }
-                if (!found) break;
+                finally { CryptographicOperations.ZeroMemory(tweak); }
             }
-            finally { CryptographicOperations.ZeroMemory(tweak); }
+            return matches;
         }
-        return matches;
+        catch
+        {
+            foreach (var match in matches) CryptographicOperations.ZeroMemory(match.Tweak32);
+            throw;
+        }
     }
 
     public static byte[] DeriveSpendPrivateKey(ReadOnlySpan<byte> spendSecret, ReadOnlySpan<byte> tweak,
@@ -252,7 +260,13 @@ internal static class Bip352
         try
         {
             t = CheckedScalar(tweak);
-            if (!labelTweak.IsEmpty) label = CheckedScalar(labelTweak);
+            if (!labelTweak.IsEmpty)
+            {
+                if (labelTweak.Length != 32) throw new ArgumentException("A 32-byte label tweak is required.");
+                // BIP 352 labels are integer tweaks reduced modulo n. Unlike input_hash and t_k, zero and >= n
+                // are allowed for this optional addend.
+                label = new Scalar(labelTweak, out _);
+            }
             secret = secret.Add(t).Add(label);
             if (secret.IsZero) throw new ArgumentException("Derived spend key is zero.");
             var point = Ctx.EcMultGenContext.MultGen(secret).ToGroupElement();
@@ -268,18 +282,24 @@ internal static class Bip352
                                   ReadOnlySpan<byte> labelTweak, ReadOnlySpan<byte> message, ReadOnlySpan<byte> auxiliary)
     {
         var secret = DeriveSpendPrivateKey(spendSecret, tweak, labelTweak);
+        byte[]? auxiliaryCopy = null;
         try
         {
+            auxiliaryCopy = auxiliary.ToArray();
             using var key = ECPrivKey.Create(secret, Ctx);
-            var signature = key.SignBIP340(message, auxiliary.ToArray());
+            var signature = key.SignBIP340(message, auxiliaryCopy);
             var bytes = new byte[64];
             signature.WriteToSpan(bytes);
             return bytes;
         }
-        finally { CryptographicOperations.ZeroMemory(secret); }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(secret);
+            if (auxiliaryCopy is not null) CryptographicOperations.ZeroMemory(auxiliaryCopy);
+        }
     }
 
-    private static byte[] HashScalar(string tag, ReadOnlySpan<byte> secret, uint index)
+    private static byte[] HashScalar(string tag, ReadOnlySpan<byte> secret, uint index, bool requireValidScalar = true)
     {
         Span<byte> encoded = stackalloc byte[4];
         BinaryPrimitives.WriteUInt32BigEndian(encoded, index);
@@ -288,8 +308,11 @@ internal static class Bip352
         {
             using var sha = WipingSha256.CreateTagged(tag);
             sha.Write(secret); sha.Write(encoded); sha.GetHash(result);
-            var scalar = CheckedScalar(result);
-            Scalar.Clear(ref scalar);
+            if (requireValidScalar)
+            {
+                var scalar = CheckedScalar(result);
+                Scalar.Clear(ref scalar);
+            }
             return result;
         }
         catch { CryptographicOperations.ZeroMemory(result); throw; }
