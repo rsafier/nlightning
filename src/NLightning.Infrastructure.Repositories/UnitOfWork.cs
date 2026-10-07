@@ -53,6 +53,7 @@ public class UnitOfWork : IUnitOfWork
     private WatchedTransactionDbRepository? _watchedTransactionDbRepository;
     private WalletAddressesDbRepository? _walletAddressesDbRepository;
     private UtxoDbRepository? _utxoDbRepository;
+    private SilentPaymentDbRepository? _silentPaymentDbRepository;
     private FeeInputReservationDbRepository? _feeInputReservationDbRepository;
 
     // On-chain repositories
@@ -125,6 +126,8 @@ public class UnitOfWork : IUnitOfWork
         _walletAddressesDbRepository ??= new WalletAddressesDbRepository(_context);
 
     public IUtxoDbRepository UtxoDbRepository => _utxoDbRepository ??= new UtxoDbRepository(_context);
+    public ISilentPaymentDbRepository SilentPaymentDbRepository =>
+        _silentPaymentDbRepository ??= new SilentPaymentDbRepository(_context);
 
     public IFeeInputReservationDbRepository FeeInputReservationDbRepository =>
         _feeInputReservationDbRepository ??= new FeeInputReservationDbRepository(_context);

@@ -477,6 +477,18 @@ public class PostgresTests
             book, failedTable);
     }
 
+    [Fact]
+    public async Task Given_PostgresWallet_When_SilentPaymentsMigrateAndSpend_Then_RecoveryMetadataRoundTrips()
+    {
+        // Arrange
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_silent_payments");
+        var provider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await SilentPaymentSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, provider),
+            DatabaseType.PostgreSql, TestContext.Current.CancellationToken);
+    }
+
     private async Task<DbContextOptions<NLightningDbContext>> CreateOwnDatabaseOptionsAsync(string database)
     {
         var connectionString = _fixture.DbConnectionString!.Replace("Database=nlightning", $"Database={database}",

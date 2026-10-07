@@ -20,10 +20,10 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
         public static extern ref uint Index(UtxoEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<AddressIndex>k__BackingField")]
-        public static extern ref uint AddressIndex(UtxoEntity @this);
+        public static extern ref uint? AddressIndex(UtxoEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<AddressType>k__BackingField")]
-        public static extern ref AddressType AddressType(UtxoEntity @this);
+        public static extern ref AddressType? AddressType(UtxoEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<AmountSats>k__BackingField")]
         public static extern ref long AmountSats(UtxoEntity @this);
@@ -32,13 +32,22 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
         public static extern ref uint BlockHeight(UtxoEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<IsAddressChange>k__BackingField")]
-        public static extern ref bool IsAddressChange(UtxoEntity @this);
+        public static extern ref bool? IsAddressChange(UtxoEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<LockedToChannelId>k__BackingField")]
         public static extern ref ChannelId? LockedToChannelId(UtxoEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<SilentPaymentIndex>k__BackingField")]
+        public static extern ref uint? SilentPaymentIndex(UtxoEntity @this);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<SilentPaymentTransactionId>k__BackingField")]
+        public static extern ref TxId? SilentPaymentTransactionId(UtxoEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<UsedInTransactionId>k__BackingField")]
         public static extern ref TxId? UsedInTransactionId(UtxoEntity @this);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<SilentPayment>k__BackingField")]
+        public static extern ref SilentPaymentOutputEntity SilentPayment(UtxoEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<WalletAddress>k__BackingField")]
         public static extern ref WalletAddressEntity WalletAddress(UtxoEntity @this);

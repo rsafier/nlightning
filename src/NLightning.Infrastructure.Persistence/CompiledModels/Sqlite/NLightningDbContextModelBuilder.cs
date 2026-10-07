@@ -16,7 +16,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
     public partial class NLightningDbContextModel
     {
         private NLightningDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("0576f2a7-8913-40ef-84c6-6a91bacba79b"), entityTypeCount: 60)
+            : base(skipDetectChanges: false, modelId: new Guid("8e298f86-9ecd-47ed-9ea9-f7cef8d1da6c"), entityTypeCount: 63)
         {
         }
 
@@ -40,6 +40,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var feeInputReservationInputEntity = FeeInputReservationInputEntityEntityType.Create(this);
             var importedTapscriptEntity = ImportedTapscriptEntityEntityType.Create(this);
             var importedWatchIndexEntity = ImportedWatchIndexEntityEntityType.Create(this);
+            var silentPaymentLabelEntity = SilentPaymentLabelEntityEntityType.Create(this);
+            var silentPaymentOutputEntity = SilentPaymentOutputEntityEntityType.Create(this);
+            var silentPaymentScanStateEntity = SilentPaymentScanStateEntityEntityType.Create(this);
             var utxoEntity = UtxoEntityEntityType.Create(this);
             var walletAddressEntity = WalletAddressEntityEntityType.Create(this);
             var watchedOutpointEntity = WatchedOutpointEntityEntityType.Create(this);
@@ -88,7 +91,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             AccountingPostingEntityEntityType.CreateForeignKey1(accountingPostingEntity, accountingPriceEntity);
             AccountingPostingEntityEntityType.CreateForeignKey2(accountingPostingEntity, accountingEntryEntity);
             FeeInputReservationInputEntityEntityType.CreateForeignKey1(feeInputReservationInputEntity, feeInputReservationEntity);
-            UtxoEntityEntityType.CreateForeignKey1(utxoEntity, walletAddressEntity);
+            UtxoEntityEntityType.CreateForeignKey1(utxoEntity, silentPaymentOutputEntity);
+            UtxoEntityEntityType.CreateForeignKey2(utxoEntity, walletAddressEntity);
             WatchedTransactionEntityEntityType.CreateForeignKey1(watchedTransactionEntity, channelEntity);
             ChannelConfigEntityEntityType.CreateForeignKey1(channelConfigEntity, channelEntity);
             ChannelEntityEntityType.CreateForeignKey1(channelEntity, walletAddressEntity);
@@ -127,6 +131,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             FeeInputReservationInputEntityEntityType.CreateAnnotations(feeInputReservationInputEntity);
             ImportedTapscriptEntityEntityType.CreateAnnotations(importedTapscriptEntity);
             ImportedWatchIndexEntityEntityType.CreateAnnotations(importedWatchIndexEntity);
+            SilentPaymentLabelEntityEntityType.CreateAnnotations(silentPaymentLabelEntity);
+            SilentPaymentOutputEntityEntityType.CreateAnnotations(silentPaymentOutputEntity);
+            SilentPaymentScanStateEntityEntityType.CreateAnnotations(silentPaymentScanStateEntity);
             UtxoEntityEntityType.CreateAnnotations(utxoEntity);
             WalletAddressEntityEntityType.CreateAnnotations(walletAddressEntity);
             WatchedOutpointEntityEntityType.CreateAnnotations(watchedOutpointEntity);
@@ -2328,30 +2335,379 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.GetOrCreateUniqueConstraints(pK_ImportedWatchIndexesKey).Add(pK_ImportedWatchIndexes);
             importedWatchIndexesTable.UniqueConstraints.Add("PK_ImportedWatchIndexes", pK_ImportedWatchIndexes);
 
-            var utxoEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity")!;
+            var silentPaymentLabelEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentLabelEntity")!;
 
             var defaultTableMappings17 = new List<TableMappingBase<ColumnMappingBase>>();
-            utxoEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings17);
+            silentPaymentLabelEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings17);
+            var nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentLabelEntity", null, relationalModel);
+            var createdAtHeightColumnBase = new ColumnBase<ColumnMappingBase>("CreatedAtHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityTableBase.Columns.Add("CreatedAtHeight", createdAtHeightColumnBase);
+            var mColumnBase = new ColumnBase<ColumnMappingBase>("M", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityTableBase.Columns.Add("M", mColumnBase);
+            var nameColumnBase = new ColumnBase<ColumnMappingBase>("Name", "TEXT", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityTableBase.Columns.Add("Name", nameColumnBase);
+            relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentLabelEntity", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityTableBase);
+            var nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityMappingBase = new TableMappingBase<ColumnMappingBase>(silentPaymentLabelEntity, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityTableBase, null);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityMappingBase, false);
+            defaultTableMappings17.Add(nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)mColumnBase, silentPaymentLabelEntity.FindProperty("M")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)createdAtHeightColumnBase, silentPaymentLabelEntity.FindProperty("CreatedAtHeight")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nameColumnBase, silentPaymentLabelEntity.FindProperty("Name")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentLabelEntityMappingBase);
+
+            var tableMappings17 = new List<TableMapping>();
+            silentPaymentLabelEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings17);
+            var silentPaymentLabelsTable = new Table("SilentPaymentLabels", null, relationalModel);
+            var mColumn = new Column("M", "INTEGER", silentPaymentLabelsTable);
+            silentPaymentLabelsTable.Columns.Add("M", mColumn);
+            mColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(mColumn);
+            var createdAtHeightColumn = new Column("CreatedAtHeight", "INTEGER", silentPaymentLabelsTable);
+            silentPaymentLabelsTable.Columns.Add("CreatedAtHeight", createdAtHeightColumn);
+            createdAtHeightColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(createdAtHeightColumn);
+            var nameColumn = new Column("Name", "TEXT", silentPaymentLabelsTable);
+            silentPaymentLabelsTable.Columns.Add("Name", nameColumn);
+            nameColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<string>(nameColumn);
+            relationalModel.Tables.Add(("SilentPaymentLabels", null), silentPaymentLabelsTable);
+            var silentPaymentLabelsTableMapping = new TableMapping(silentPaymentLabelEntity, silentPaymentLabelsTable, null);
+            silentPaymentLabelsTable.AddTypeMapping(silentPaymentLabelsTableMapping, false);
+            tableMappings17.Add(silentPaymentLabelsTableMapping);
+            RelationalModel.CreateColumnMapping(mColumn, silentPaymentLabelEntity.FindProperty("M")!, silentPaymentLabelsTableMapping);
+            RelationalModel.CreateColumnMapping(createdAtHeightColumn, silentPaymentLabelEntity.FindProperty("CreatedAtHeight")!, silentPaymentLabelsTableMapping);
+            RelationalModel.CreateColumnMapping(nameColumn, silentPaymentLabelEntity.FindProperty("Name")!, silentPaymentLabelsTableMapping);
+            var pK_SilentPaymentLabels = new UniqueConstraint("PK_SilentPaymentLabels", silentPaymentLabelsTable, new[] { mColumn });
+            silentPaymentLabelsTable.PrimaryKey = pK_SilentPaymentLabels;
+            pK_SilentPaymentLabels.SetRowKeyValueFactory(new SimpleRowKeyValueFactory<uint>(pK_SilentPaymentLabels));
+            var pK_SilentPaymentLabelsKey = RelationalModel.GetKey(this,
+                "NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentLabelEntity",
+                new[] { "M" });
+            pK_SilentPaymentLabels.MappedKeys.Add(pK_SilentPaymentLabelsKey);
+            RelationalModel.GetOrCreateUniqueConstraints(pK_SilentPaymentLabelsKey).Add(pK_SilentPaymentLabels);
+            silentPaymentLabelsTable.UniqueConstraints.Add("PK_SilentPaymentLabels", pK_SilentPaymentLabels);
+            var iX_SilentPaymentLabels_Name = new TableIndex(
+            "IX_SilentPaymentLabels_Name", silentPaymentLabelsTable, new[] { nameColumn }, true);
+            iX_SilentPaymentLabels_Name.SetRowIndexValueFactory(new SimpleRowIndexValueFactory<string>(iX_SilentPaymentLabels_Name));
+            var iX_SilentPaymentLabels_NameIx = RelationalModel.GetIndex(this,
+                "NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentLabelEntity",
+                new[] { "Name" });
+            iX_SilentPaymentLabels_Name.MappedIndexes.Add(iX_SilentPaymentLabels_NameIx);
+            RelationalModel.GetOrCreateTableIndexes(iX_SilentPaymentLabels_NameIx).Add(iX_SilentPaymentLabels_Name);
+            silentPaymentLabelsTable.Indexes.Add("IX_SilentPaymentLabels_Name", iX_SilentPaymentLabels_Name);
+
+            var silentPaymentOutputEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentOutputEntity")!;
+
+            var defaultTableMappings18 = new List<TableMappingBase<ColumnMappingBase>>();
+            silentPaymentOutputEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings18);
+            var nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentOutputEntity", null, relationalModel);
+            var amountSatsColumnBase0 = new ColumnBase<ColumnMappingBase>("AmountSats", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase.Columns.Add("AmountSats", amountSatsColumnBase0);
+            var blockHashColumnBase1 = new ColumnBase<ColumnMappingBase>("BlockHash", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase.Columns.Add("BlockHash", blockHashColumnBase1);
+            var blockHeightColumnBase0 = new ColumnBase<ColumnMappingBase>("BlockHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase.Columns.Add("BlockHeight", blockHeightColumnBase0);
+            var ignoredColumnBase = new ColumnBase<ColumnMappingBase>("Ignored", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase.Columns.Add("Ignored", ignoredColumnBase);
+            var indexColumnBase1 = new ColumnBase<ColumnMappingBase>("Index", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase.Columns.Add("Index", indexColumnBase1);
+            var labelColumnBase0 = new ColumnBase<ColumnMappingBase>("Label", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase.Columns.Add("Label", labelColumnBase0);
+            var outputKeyColumnBase = new ColumnBase<ColumnMappingBase>("OutputKey", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase.Columns.Add("OutputKey", outputKeyColumnBase);
+            var spentAtHeightColumnBase = new ColumnBase<ColumnMappingBase>("SpentAtHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase.Columns.Add("SpentAtHeight", spentAtHeightColumnBase);
+            var spentByTransactionIdColumnBase = new ColumnBase<ColumnMappingBase>("SpentByTransactionId", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase.Columns.Add("SpentByTransactionId", spentByTransactionIdColumnBase);
+            var transactionIdColumnBase1 = new ColumnBase<ColumnMappingBase>("TransactionId", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase.Columns.Add("TransactionId", transactionIdColumnBase1);
+            var tweakColumnBase = new ColumnBase<ColumnMappingBase>("Tweak", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase.Columns.Add("Tweak", tweakColumnBase);
+            relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentOutputEntity", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase);
+            var nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityMappingBase = new TableMappingBase<ColumnMappingBase>(silentPaymentOutputEntity, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase, null);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityMappingBase, false);
+            defaultTableMappings18.Add(nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)indexColumnBase1, silentPaymentOutputEntity.FindProperty("Index")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)transactionIdColumnBase1, silentPaymentOutputEntity.FindProperty("TransactionId")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountSatsColumnBase0, silentPaymentOutputEntity.FindProperty("AmountSats")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blockHashColumnBase1, silentPaymentOutputEntity.FindProperty("BlockHash")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blockHeightColumnBase0, silentPaymentOutputEntity.FindProperty("BlockHeight")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)ignoredColumnBase, silentPaymentOutputEntity.FindProperty("Ignored")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)labelColumnBase0, silentPaymentOutputEntity.FindProperty("Label")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)outputKeyColumnBase, silentPaymentOutputEntity.FindProperty("OutputKey")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)spentAtHeightColumnBase, silentPaymentOutputEntity.FindProperty("SpentAtHeight")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)spentByTransactionIdColumnBase, silentPaymentOutputEntity.FindProperty("SpentByTransactionId")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)tweakColumnBase, silentPaymentOutputEntity.FindProperty("Tweak")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentOutputEntityMappingBase);
+
+            var tableMappings18 = new List<TableMapping>();
+            silentPaymentOutputEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings18);
+            var silentPaymentOutputsTable = new Table("SilentPaymentOutputs", null, relationalModel);
+            var transactionIdColumn1 = new Column("TransactionId", "BLOB", silentPaymentOutputsTable);
+            silentPaymentOutputsTable.Columns.Add("TransactionId", transactionIdColumn1);
+            transactionIdColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(transactionIdColumn1);
+            var indexColumn1 = new Column("Index", "INTEGER", silentPaymentOutputsTable);
+            silentPaymentOutputsTable.Columns.Add("Index", indexColumn1);
+            indexColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(indexColumn1);
+            var amountSatsColumn0 = new Column("AmountSats", "INTEGER", silentPaymentOutputsTable);
+            silentPaymentOutputsTable.Columns.Add("AmountSats", amountSatsColumn0);
+            amountSatsColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(amountSatsColumn0);
+            var blockHashColumn1 = new Column("BlockHash", "BLOB", silentPaymentOutputsTable);
+            silentPaymentOutputsTable.Columns.Add("BlockHash", blockHashColumn1);
+            blockHashColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(blockHashColumn1);
+            var blockHeightColumn0 = new Column("BlockHeight", "INTEGER", silentPaymentOutputsTable);
+            silentPaymentOutputsTable.Columns.Add("BlockHeight", blockHeightColumn0);
+            blockHeightColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(blockHeightColumn0);
+            var ignoredColumn = new Column("Ignored", "INTEGER", silentPaymentOutputsTable);
+            silentPaymentOutputsTable.Columns.Add("Ignored", ignoredColumn);
+            ignoredColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<bool>(ignoredColumn);
+            var labelColumn0 = new Column("Label", "INTEGER", silentPaymentOutputsTable)
+            {
+                IsNullable = true
+            };
+            silentPaymentOutputsTable.Columns.Add("Label", labelColumn0);
+            labelColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(labelColumn0);
+            var outputKeyColumn = new Column("OutputKey", "BLOB", silentPaymentOutputsTable);
+            silentPaymentOutputsTable.Columns.Add("OutputKey", outputKeyColumn);
+            outputKeyColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(outputKeyColumn);
+            var spentAtHeightColumn = new Column("SpentAtHeight", "INTEGER", silentPaymentOutputsTable)
+            {
+                IsNullable = true
+            };
+            silentPaymentOutputsTable.Columns.Add("SpentAtHeight", spentAtHeightColumn);
+            spentAtHeightColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(spentAtHeightColumn);
+            var spentByTransactionIdColumn = new Column("SpentByTransactionId", "BLOB", silentPaymentOutputsTable)
+            {
+                IsNullable = true
+            };
+            silentPaymentOutputsTable.Columns.Add("SpentByTransactionId", spentByTransactionIdColumn);
+            spentByTransactionIdColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(spentByTransactionIdColumn);
+            var tweakColumn = new Column("Tweak", "BLOB", silentPaymentOutputsTable);
+            silentPaymentOutputsTable.Columns.Add("Tweak", tweakColumn);
+            tweakColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(tweakColumn);
+            relationalModel.Tables.Add(("SilentPaymentOutputs", null), silentPaymentOutputsTable);
+            var silentPaymentOutputsTableMapping = new TableMapping(silentPaymentOutputEntity, silentPaymentOutputsTable, null);
+            silentPaymentOutputsTable.AddTypeMapping(silentPaymentOutputsTableMapping, false);
+            tableMappings18.Add(silentPaymentOutputsTableMapping);
+            RelationalModel.CreateColumnMapping(indexColumn1, silentPaymentOutputEntity.FindProperty("Index")!, silentPaymentOutputsTableMapping);
+            RelationalModel.CreateColumnMapping(transactionIdColumn1, silentPaymentOutputEntity.FindProperty("TransactionId")!, silentPaymentOutputsTableMapping);
+            RelationalModel.CreateColumnMapping(amountSatsColumn0, silentPaymentOutputEntity.FindProperty("AmountSats")!, silentPaymentOutputsTableMapping);
+            RelationalModel.CreateColumnMapping(blockHashColumn1, silentPaymentOutputEntity.FindProperty("BlockHash")!, silentPaymentOutputsTableMapping);
+            RelationalModel.CreateColumnMapping(blockHeightColumn0, silentPaymentOutputEntity.FindProperty("BlockHeight")!, silentPaymentOutputsTableMapping);
+            RelationalModel.CreateColumnMapping(ignoredColumn, silentPaymentOutputEntity.FindProperty("Ignored")!, silentPaymentOutputsTableMapping);
+            RelationalModel.CreateColumnMapping(labelColumn0, silentPaymentOutputEntity.FindProperty("Label")!, silentPaymentOutputsTableMapping);
+            RelationalModel.CreateColumnMapping(outputKeyColumn, silentPaymentOutputEntity.FindProperty("OutputKey")!, silentPaymentOutputsTableMapping);
+            RelationalModel.CreateColumnMapping(spentAtHeightColumn, silentPaymentOutputEntity.FindProperty("SpentAtHeight")!, silentPaymentOutputsTableMapping);
+            RelationalModel.CreateColumnMapping(spentByTransactionIdColumn, silentPaymentOutputEntity.FindProperty("SpentByTransactionId")!, silentPaymentOutputsTableMapping);
+            RelationalModel.CreateColumnMapping(tweakColumn, silentPaymentOutputEntity.FindProperty("Tweak")!, silentPaymentOutputsTableMapping);
+            var pK_SilentPaymentOutputs = new UniqueConstraint("PK_SilentPaymentOutputs", silentPaymentOutputsTable, new[] { transactionIdColumn1, indexColumn1 });
+            silentPaymentOutputsTable.PrimaryKey = pK_SilentPaymentOutputs;
+            pK_SilentPaymentOutputs.SetRowKeyValueFactory(new CompositeRowKeyValueFactory(pK_SilentPaymentOutputs));
+            var pK_SilentPaymentOutputsKey = RelationalModel.GetKey(this,
+                "NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentOutputEntity",
+                new[] { "TransactionId", "Index" });
+            pK_SilentPaymentOutputs.MappedKeys.Add(pK_SilentPaymentOutputsKey);
+            RelationalModel.GetOrCreateUniqueConstraints(pK_SilentPaymentOutputsKey).Add(pK_SilentPaymentOutputs);
+            silentPaymentOutputsTable.UniqueConstraints.Add("PK_SilentPaymentOutputs", pK_SilentPaymentOutputs);
+            var iX_SilentPaymentOutputs_BlockHeight = new TableIndex(
+            "IX_SilentPaymentOutputs_BlockHeight", silentPaymentOutputsTable, new[] { blockHeightColumn0 }, false);
+            iX_SilentPaymentOutputs_BlockHeight.SetRowIndexValueFactory(new SimpleRowIndexValueFactory<uint>(iX_SilentPaymentOutputs_BlockHeight));
+            var iX_SilentPaymentOutputs_BlockHeightIx = RelationalModel.GetIndex(this,
+                "NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentOutputEntity",
+                new[] { "BlockHeight" });
+            iX_SilentPaymentOutputs_BlockHeight.MappedIndexes.Add(iX_SilentPaymentOutputs_BlockHeightIx);
+            RelationalModel.GetOrCreateTableIndexes(iX_SilentPaymentOutputs_BlockHeightIx).Add(iX_SilentPaymentOutputs_BlockHeight);
+            silentPaymentOutputsTable.Indexes.Add("IX_SilentPaymentOutputs_BlockHeight", iX_SilentPaymentOutputs_BlockHeight);
+            var iX_SilentPaymentOutputs_SpentByTransactionId = new TableIndex(
+            "IX_SilentPaymentOutputs_SpentByTransactionId", silentPaymentOutputsTable, new[] { spentByTransactionIdColumn }, false);
+            iX_SilentPaymentOutputs_SpentByTransactionId.SetRowIndexValueFactory(new SimpleRowIndexValueFactory<byte[]>(iX_SilentPaymentOutputs_SpentByTransactionId));
+            var iX_SilentPaymentOutputs_SpentByTransactionIdIx = RelationalModel.GetIndex(this,
+                "NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentOutputEntity",
+                new[] { "SpentByTransactionId" });
+            iX_SilentPaymentOutputs_SpentByTransactionId.MappedIndexes.Add(iX_SilentPaymentOutputs_SpentByTransactionIdIx);
+            RelationalModel.GetOrCreateTableIndexes(iX_SilentPaymentOutputs_SpentByTransactionIdIx).Add(iX_SilentPaymentOutputs_SpentByTransactionId);
+            silentPaymentOutputsTable.Indexes.Add("IX_SilentPaymentOutputs_SpentByTransactionId", iX_SilentPaymentOutputs_SpentByTransactionId);
+
+            var silentPaymentScanStateEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentScanStateEntity")!;
+
+            var defaultTableMappings19 = new List<TableMappingBase<ColumnMappingBase>>();
+            silentPaymentScanStateEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings19);
+            var nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentScanStateEntity", null, relationalModel);
+            var birthdayHeightColumnBase = new ColumnBase<ColumnMappingBase>("BirthdayHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase.Columns.Add("BirthdayHeight", birthdayHeightColumnBase);
+            var idColumnBase8 = new ColumnBase<ColumnMappingBase>("Id", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase.Columns.Add("Id", idColumnBase8);
+            var liveCursorHashColumnBase = new ColumnBase<ColumnMappingBase>("LiveCursorHash", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase.Columns.Add("LiveCursorHash", liveCursorHashColumnBase);
+            var liveCursorHeightColumnBase = new ColumnBase<ColumnMappingBase>("LiveCursorHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase.Columns.Add("LiveCursorHeight", liveCursorHeightColumnBase);
+            var liveFromHeightColumnBase = new ColumnBase<ColumnMappingBase>("LiveFromHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase.Columns.Add("LiveFromHeight", liveFromHeightColumnBase);
+            var prevoutSourceColumnBase = new ColumnBase<ColumnMappingBase>("PrevoutSource", "TEXT", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase.Columns.Add("PrevoutSource", prevoutSourceColumnBase);
+            var recoveryLabelCountColumnBase = new ColumnBase<ColumnMappingBase>("RecoveryLabelCount", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase.Columns.Add("RecoveryLabelCount", recoveryLabelCountColumnBase);
+            var rescanCursorHashColumnBase = new ColumnBase<ColumnMappingBase>("RescanCursorHash", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase.Columns.Add("RescanCursorHash", rescanCursorHashColumnBase);
+            var rescanCursorHeightColumnBase = new ColumnBase<ColumnMappingBase>("RescanCursorHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase.Columns.Add("RescanCursorHeight", rescanCursorHeightColumnBase);
+            var rescanTargetHeightColumnBase = new ColumnBase<ColumnMappingBase>("RescanTargetHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase.Columns.Add("RescanTargetHeight", rescanTargetHeightColumnBase);
+            relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentScanStateEntity", nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase);
+            var nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityMappingBase = new TableMappingBase<ColumnMappingBase>(silentPaymentScanStateEntity, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase, null);
+            nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityMappingBase, false);
+            defaultTableMappings19.Add(nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)idColumnBase8, silentPaymentScanStateEntity.FindProperty("Id")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)birthdayHeightColumnBase, silentPaymentScanStateEntity.FindProperty("BirthdayHeight")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)liveCursorHashColumnBase, silentPaymentScanStateEntity.FindProperty("LiveCursorHash")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)liveCursorHeightColumnBase, silentPaymentScanStateEntity.FindProperty("LiveCursorHeight")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)liveFromHeightColumnBase, silentPaymentScanStateEntity.FindProperty("LiveFromHeight")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)prevoutSourceColumnBase, silentPaymentScanStateEntity.FindProperty("PrevoutSource")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)recoveryLabelCountColumnBase, silentPaymentScanStateEntity.FindProperty("RecoveryLabelCount")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)rescanCursorHashColumnBase, silentPaymentScanStateEntity.FindProperty("RescanCursorHash")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)rescanCursorHeightColumnBase, silentPaymentScanStateEntity.FindProperty("RescanCursorHeight")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)rescanTargetHeightColumnBase, silentPaymentScanStateEntity.FindProperty("RescanTargetHeight")!, nLightningInfrastructurePersistenceEntitiesBitcoinSilentPaymentScanStateEntityMappingBase);
+
+            var tableMappings19 = new List<TableMapping>();
+            silentPaymentScanStateEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings19);
+            var silentPaymentScanStateTable = new Table("SilentPaymentScanState", null, relationalModel);
+            var idColumn8 = new Column("Id", "INTEGER", silentPaymentScanStateTable);
+            silentPaymentScanStateTable.Columns.Add("Id", idColumn8);
+            idColumn8.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(idColumn8);
+            var birthdayHeightColumn = new Column("BirthdayHeight", "INTEGER", silentPaymentScanStateTable);
+            silentPaymentScanStateTable.Columns.Add("BirthdayHeight", birthdayHeightColumn);
+            birthdayHeightColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(birthdayHeightColumn);
+            var liveCursorHashColumn = new Column("LiveCursorHash", "BLOB", silentPaymentScanStateTable)
+            {
+                IsNullable = true
+            };
+            silentPaymentScanStateTable.Columns.Add("LiveCursorHash", liveCursorHashColumn);
+            liveCursorHashColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(liveCursorHashColumn);
+            var liveCursorHeightColumn = new Column("LiveCursorHeight", "INTEGER", silentPaymentScanStateTable)
+            {
+                IsNullable = true
+            };
+            silentPaymentScanStateTable.Columns.Add("LiveCursorHeight", liveCursorHeightColumn);
+            liveCursorHeightColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(liveCursorHeightColumn);
+            var liveFromHeightColumn = new Column("LiveFromHeight", "INTEGER", silentPaymentScanStateTable);
+            silentPaymentScanStateTable.Columns.Add("LiveFromHeight", liveFromHeightColumn);
+            liveFromHeightColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(liveFromHeightColumn);
+            var prevoutSourceColumn = new Column("PrevoutSource", "TEXT", silentPaymentScanStateTable)
+            {
+                IsNullable = true
+            };
+            silentPaymentScanStateTable.Columns.Add("PrevoutSource", prevoutSourceColumn);
+            prevoutSourceColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<string>(prevoutSourceColumn);
+            var recoveryLabelCountColumn = new Column("RecoveryLabelCount", "INTEGER", silentPaymentScanStateTable);
+            silentPaymentScanStateTable.Columns.Add("RecoveryLabelCount", recoveryLabelCountColumn);
+            recoveryLabelCountColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(recoveryLabelCountColumn);
+            var rescanCursorHashColumn = new Column("RescanCursorHash", "BLOB", silentPaymentScanStateTable)
+            {
+                IsNullable = true
+            };
+            silentPaymentScanStateTable.Columns.Add("RescanCursorHash", rescanCursorHashColumn);
+            rescanCursorHashColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(rescanCursorHashColumn);
+            var rescanCursorHeightColumn = new Column("RescanCursorHeight", "INTEGER", silentPaymentScanStateTable)
+            {
+                IsNullable = true
+            };
+            silentPaymentScanStateTable.Columns.Add("RescanCursorHeight", rescanCursorHeightColumn);
+            rescanCursorHeightColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(rescanCursorHeightColumn);
+            var rescanTargetHeightColumn = new Column("RescanTargetHeight", "INTEGER", silentPaymentScanStateTable)
+            {
+                IsNullable = true
+            };
+            silentPaymentScanStateTable.Columns.Add("RescanTargetHeight", rescanTargetHeightColumn);
+            rescanTargetHeightColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(rescanTargetHeightColumn);
+            relationalModel.Tables.Add(("SilentPaymentScanState", null), silentPaymentScanStateTable);
+            var silentPaymentScanStateTableMapping = new TableMapping(silentPaymentScanStateEntity, silentPaymentScanStateTable, null);
+            silentPaymentScanStateTable.AddTypeMapping(silentPaymentScanStateTableMapping, false);
+            tableMappings19.Add(silentPaymentScanStateTableMapping);
+            RelationalModel.CreateColumnMapping(idColumn8, silentPaymentScanStateEntity.FindProperty("Id")!, silentPaymentScanStateTableMapping);
+            RelationalModel.CreateColumnMapping(birthdayHeightColumn, silentPaymentScanStateEntity.FindProperty("BirthdayHeight")!, silentPaymentScanStateTableMapping);
+            RelationalModel.CreateColumnMapping(liveCursorHashColumn, silentPaymentScanStateEntity.FindProperty("LiveCursorHash")!, silentPaymentScanStateTableMapping);
+            RelationalModel.CreateColumnMapping(liveCursorHeightColumn, silentPaymentScanStateEntity.FindProperty("LiveCursorHeight")!, silentPaymentScanStateTableMapping);
+            RelationalModel.CreateColumnMapping(liveFromHeightColumn, silentPaymentScanStateEntity.FindProperty("LiveFromHeight")!, silentPaymentScanStateTableMapping);
+            RelationalModel.CreateColumnMapping(prevoutSourceColumn, silentPaymentScanStateEntity.FindProperty("PrevoutSource")!, silentPaymentScanStateTableMapping);
+            RelationalModel.CreateColumnMapping(recoveryLabelCountColumn, silentPaymentScanStateEntity.FindProperty("RecoveryLabelCount")!, silentPaymentScanStateTableMapping);
+            RelationalModel.CreateColumnMapping(rescanCursorHashColumn, silentPaymentScanStateEntity.FindProperty("RescanCursorHash")!, silentPaymentScanStateTableMapping);
+            RelationalModel.CreateColumnMapping(rescanCursorHeightColumn, silentPaymentScanStateEntity.FindProperty("RescanCursorHeight")!, silentPaymentScanStateTableMapping);
+            RelationalModel.CreateColumnMapping(rescanTargetHeightColumn, silentPaymentScanStateEntity.FindProperty("RescanTargetHeight")!, silentPaymentScanStateTableMapping);
+            var pK_SilentPaymentScanState = new UniqueConstraint("PK_SilentPaymentScanState", silentPaymentScanStateTable, new[] { idColumn8 });
+            silentPaymentScanStateTable.PrimaryKey = pK_SilentPaymentScanState;
+            pK_SilentPaymentScanState.SetRowKeyValueFactory(new SimpleRowKeyValueFactory<byte>(pK_SilentPaymentScanState));
+            var pK_SilentPaymentScanStateKey = RelationalModel.GetKey(this,
+                "NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentScanStateEntity",
+                new[] { "Id" });
+            pK_SilentPaymentScanState.MappedKeys.Add(pK_SilentPaymentScanStateKey);
+            RelationalModel.GetOrCreateUniqueConstraints(pK_SilentPaymentScanStateKey).Add(pK_SilentPaymentScanState);
+            silentPaymentScanStateTable.UniqueConstraints.Add("PK_SilentPaymentScanState", pK_SilentPaymentScanState);
+
+            var utxoEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity")!;
+
+            var defaultTableMappings20 = new List<TableMappingBase<ColumnMappingBase>>();
+            utxoEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings20);
             var nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity", null, relationalModel);
-            var addressIndexColumnBase = new ColumnBase<ColumnMappingBase>("AddressIndex", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase);
+            var addressIndexColumnBase = new ColumnBase<ColumnMappingBase>("AddressIndex", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase)
+            {
+                IsNullable = true
+            };
             nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase.Columns.Add("AddressIndex", addressIndexColumnBase);
-            var addressTypeColumnBase0 = new ColumnBase<ColumnMappingBase>("AddressType", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase);
+            var addressTypeColumnBase0 = new ColumnBase<ColumnMappingBase>("AddressType", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase)
+            {
+                IsNullable = true
+            };
             nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase.Columns.Add("AddressType", addressTypeColumnBase0);
-            var amountSatsColumnBase0 = new ColumnBase<ColumnMappingBase>("AmountSats", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase);
-            nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase.Columns.Add("AmountSats", amountSatsColumnBase0);
-            var blockHeightColumnBase0 = new ColumnBase<ColumnMappingBase>("BlockHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase);
-            nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase.Columns.Add("BlockHeight", blockHeightColumnBase0);
-            var indexColumnBase1 = new ColumnBase<ColumnMappingBase>("Index", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase);
-            nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase.Columns.Add("Index", indexColumnBase1);
-            var isAddressChangeColumnBase = new ColumnBase<ColumnMappingBase>("IsAddressChange", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase);
+            var amountSatsColumnBase1 = new ColumnBase<ColumnMappingBase>("AmountSats", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase.Columns.Add("AmountSats", amountSatsColumnBase1);
+            var blockHeightColumnBase1 = new ColumnBase<ColumnMappingBase>("BlockHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase.Columns.Add("BlockHeight", blockHeightColumnBase1);
+            var indexColumnBase2 = new ColumnBase<ColumnMappingBase>("Index", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase.Columns.Add("Index", indexColumnBase2);
+            var isAddressChangeColumnBase = new ColumnBase<ColumnMappingBase>("IsAddressChange", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase)
+            {
+                IsNullable = true
+            };
             nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase.Columns.Add("IsAddressChange", isAddressChangeColumnBase);
             var lockedToChannelIdColumnBase = new ColumnBase<ColumnMappingBase>("LockedToChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase)
             {
                 IsNullable = true
             };
             nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase.Columns.Add("LockedToChannelId", lockedToChannelIdColumnBase);
-            var transactionIdColumnBase1 = new ColumnBase<ColumnMappingBase>("TransactionId", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase);
-            nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase.Columns.Add("TransactionId", transactionIdColumnBase1);
+            var silentPaymentIndexColumnBase = new ColumnBase<ColumnMappingBase>("SilentPaymentIndex", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase.Columns.Add("SilentPaymentIndex", silentPaymentIndexColumnBase);
+            var silentPaymentTransactionIdColumnBase = new ColumnBase<ColumnMappingBase>("SilentPaymentTransactionId", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase.Columns.Add("SilentPaymentTransactionId", silentPaymentTransactionIdColumnBase);
+            var transactionIdColumnBase2 = new ColumnBase<ColumnMappingBase>("TransactionId", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase.Columns.Add("TransactionId", transactionIdColumnBase2);
             var usedInTransactionIdColumnBase = new ColumnBase<ColumnMappingBase>("UsedInTransactionId", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase)
             {
                 IsNullable = true
@@ -2360,39 +2716,50 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity", nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase = new TableMappingBase<ColumnMappingBase>(utxoEntity, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase, false);
-            defaultTableMappings17.Add(nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)indexColumnBase1, utxoEntity.FindProperty("Index")!, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)transactionIdColumnBase1, utxoEntity.FindProperty("TransactionId")!, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
+            defaultTableMappings20.Add(nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)indexColumnBase2, utxoEntity.FindProperty("Index")!, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)transactionIdColumnBase2, utxoEntity.FindProperty("TransactionId")!, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)addressIndexColumnBase, utxoEntity.FindProperty("AddressIndex")!, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)addressTypeColumnBase0, utxoEntity.FindProperty("AddressType")!, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountSatsColumnBase0, utxoEntity.FindProperty("AmountSats")!, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blockHeightColumnBase0, utxoEntity.FindProperty("BlockHeight")!, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountSatsColumnBase1, utxoEntity.FindProperty("AmountSats")!, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blockHeightColumnBase1, utxoEntity.FindProperty("BlockHeight")!, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)isAddressChangeColumnBase, utxoEntity.FindProperty("IsAddressChange")!, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lockedToChannelIdColumnBase, utxoEntity.FindProperty("LockedToChannelId")!, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)silentPaymentIndexColumnBase, utxoEntity.FindProperty("SilentPaymentIndex")!, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)silentPaymentTransactionIdColumnBase, utxoEntity.FindProperty("SilentPaymentTransactionId")!, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)usedInTransactionIdColumnBase, utxoEntity.FindProperty("UsedInTransactionId")!, nLightningInfrastructurePersistenceEntitiesBitcoinUtxoEntityMappingBase);
 
-            var tableMappings17 = new List<TableMapping>();
-            utxoEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings17);
+            var tableMappings20 = new List<TableMapping>();
+            utxoEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings20);
             var utxosTable = new Table("Utxos", null, relationalModel);
-            var transactionIdColumn1 = new Column("TransactionId", "BLOB", utxosTable);
-            utxosTable.Columns.Add("TransactionId", transactionIdColumn1);
-            transactionIdColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(transactionIdColumn1);
-            var indexColumn1 = new Column("Index", "INTEGER", utxosTable);
-            utxosTable.Columns.Add("Index", indexColumn1);
-            indexColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(indexColumn1);
-            var addressIndexColumn = new Column("AddressIndex", "INTEGER", utxosTable);
+            var transactionIdColumn2 = new Column("TransactionId", "BLOB", utxosTable);
+            utxosTable.Columns.Add("TransactionId", transactionIdColumn2);
+            transactionIdColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(transactionIdColumn2);
+            var indexColumn2 = new Column("Index", "INTEGER", utxosTable);
+            utxosTable.Columns.Add("Index", indexColumn2);
+            indexColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(indexColumn2);
+            var addressIndexColumn = new Column("AddressIndex", "INTEGER", utxosTable)
+            {
+                IsNullable = true
+            };
             utxosTable.Columns.Add("AddressIndex", addressIndexColumn);
             addressIndexColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(addressIndexColumn);
-            var addressTypeColumn0 = new Column("AddressType", "INTEGER", utxosTable);
+            var addressTypeColumn0 = new Column("AddressType", "INTEGER", utxosTable)
+            {
+                IsNullable = true
+            };
             utxosTable.Columns.Add("AddressType", addressTypeColumn0);
             addressTypeColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(addressTypeColumn0);
-            var amountSatsColumn0 = new Column("AmountSats", "INTEGER", utxosTable);
-            utxosTable.Columns.Add("AmountSats", amountSatsColumn0);
-            amountSatsColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(amountSatsColumn0);
-            var blockHeightColumn0 = new Column("BlockHeight", "INTEGER", utxosTable);
-            utxosTable.Columns.Add("BlockHeight", blockHeightColumn0);
-            blockHeightColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(blockHeightColumn0);
-            var isAddressChangeColumn = new Column("IsAddressChange", "INTEGER", utxosTable);
+            var amountSatsColumn1 = new Column("AmountSats", "INTEGER", utxosTable);
+            utxosTable.Columns.Add("AmountSats", amountSatsColumn1);
+            amountSatsColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(amountSatsColumn1);
+            var blockHeightColumn1 = new Column("BlockHeight", "INTEGER", utxosTable);
+            utxosTable.Columns.Add("BlockHeight", blockHeightColumn1);
+            blockHeightColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(blockHeightColumn1);
+            var isAddressChangeColumn = new Column("IsAddressChange", "INTEGER", utxosTable)
+            {
+                IsNullable = true
+            };
             utxosTable.Columns.Add("IsAddressChange", isAddressChangeColumn);
             isAddressChangeColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<bool>(isAddressChangeColumn);
             var lockedToChannelIdColumn = new Column("LockedToChannelId", "BLOB", utxosTable)
@@ -2401,6 +2768,18 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             };
             utxosTable.Columns.Add("LockedToChannelId", lockedToChannelIdColumn);
             lockedToChannelIdColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(lockedToChannelIdColumn);
+            var silentPaymentIndexColumn = new Column("SilentPaymentIndex", "INTEGER", utxosTable)
+            {
+                IsNullable = true
+            };
+            utxosTable.Columns.Add("SilentPaymentIndex", silentPaymentIndexColumn);
+            silentPaymentIndexColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(silentPaymentIndexColumn);
+            var silentPaymentTransactionIdColumn = new Column("SilentPaymentTransactionId", "BLOB", utxosTable)
+            {
+                IsNullable = true
+            };
+            utxosTable.Columns.Add("SilentPaymentTransactionId", silentPaymentTransactionIdColumn);
+            silentPaymentTransactionIdColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(silentPaymentTransactionIdColumn);
             var usedInTransactionIdColumn = new Column("UsedInTransactionId", "BLOB", utxosTable)
             {
                 IsNullable = true
@@ -2410,17 +2789,19 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("Utxos", null), utxosTable);
             var utxosTableMapping = new TableMapping(utxoEntity, utxosTable, null);
             utxosTable.AddTypeMapping(utxosTableMapping, false);
-            tableMappings17.Add(utxosTableMapping);
-            RelationalModel.CreateColumnMapping(indexColumn1, utxoEntity.FindProperty("Index")!, utxosTableMapping);
-            RelationalModel.CreateColumnMapping(transactionIdColumn1, utxoEntity.FindProperty("TransactionId")!, utxosTableMapping);
+            tableMappings20.Add(utxosTableMapping);
+            RelationalModel.CreateColumnMapping(indexColumn2, utxoEntity.FindProperty("Index")!, utxosTableMapping);
+            RelationalModel.CreateColumnMapping(transactionIdColumn2, utxoEntity.FindProperty("TransactionId")!, utxosTableMapping);
             RelationalModel.CreateColumnMapping(addressIndexColumn, utxoEntity.FindProperty("AddressIndex")!, utxosTableMapping);
             RelationalModel.CreateColumnMapping(addressTypeColumn0, utxoEntity.FindProperty("AddressType")!, utxosTableMapping);
-            RelationalModel.CreateColumnMapping(amountSatsColumn0, utxoEntity.FindProperty("AmountSats")!, utxosTableMapping);
-            RelationalModel.CreateColumnMapping(blockHeightColumn0, utxoEntity.FindProperty("BlockHeight")!, utxosTableMapping);
+            RelationalModel.CreateColumnMapping(amountSatsColumn1, utxoEntity.FindProperty("AmountSats")!, utxosTableMapping);
+            RelationalModel.CreateColumnMapping(blockHeightColumn1, utxoEntity.FindProperty("BlockHeight")!, utxosTableMapping);
             RelationalModel.CreateColumnMapping(isAddressChangeColumn, utxoEntity.FindProperty("IsAddressChange")!, utxosTableMapping);
             RelationalModel.CreateColumnMapping(lockedToChannelIdColumn, utxoEntity.FindProperty("LockedToChannelId")!, utxosTableMapping);
+            RelationalModel.CreateColumnMapping(silentPaymentIndexColumn, utxoEntity.FindProperty("SilentPaymentIndex")!, utxosTableMapping);
+            RelationalModel.CreateColumnMapping(silentPaymentTransactionIdColumn, utxoEntity.FindProperty("SilentPaymentTransactionId")!, utxosTableMapping);
             RelationalModel.CreateColumnMapping(usedInTransactionIdColumn, utxoEntity.FindProperty("UsedInTransactionId")!, utxosTableMapping);
-            var pK_Utxos = new UniqueConstraint("PK_Utxos", utxosTable, new[] { transactionIdColumn1, indexColumn1 });
+            var pK_Utxos = new UniqueConstraint("PK_Utxos", utxosTable, new[] { transactionIdColumn2, indexColumn2 });
             utxosTable.PrimaryKey = pK_Utxos;
             pK_Utxos.SetRowKeyValueFactory(new CompositeRowKeyValueFactory(pK_Utxos));
             var pK_UtxosKey = RelationalModel.GetKey(this,
@@ -2456,6 +2837,15 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             iX_Utxos_LockedToChannelId.MappedIndexes.Add(iX_Utxos_LockedToChannelIdIx);
             RelationalModel.GetOrCreateTableIndexes(iX_Utxos_LockedToChannelIdIx).Add(iX_Utxos_LockedToChannelId);
             utxosTable.Indexes.Add("IX_Utxos_LockedToChannelId", iX_Utxos_LockedToChannelId);
+            var iX_Utxos_SilentPaymentTransactionId_SilentPaymentIndex = new TableIndex(
+            "IX_Utxos_SilentPaymentTransactionId_SilentPaymentIndex", utxosTable, new[] { silentPaymentTransactionIdColumn, silentPaymentIndexColumn }, true);
+            iX_Utxos_SilentPaymentTransactionId_SilentPaymentIndex.SetRowIndexValueFactory(new CompositeRowIndexValueFactory(iX_Utxos_SilentPaymentTransactionId_SilentPaymentIndex));
+            var iX_Utxos_SilentPaymentTransactionId_SilentPaymentIndexIx = RelationalModel.GetIndex(this,
+                "NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity",
+                new[] { "SilentPaymentTransactionId", "SilentPaymentIndex" });
+            iX_Utxos_SilentPaymentTransactionId_SilentPaymentIndex.MappedIndexes.Add(iX_Utxos_SilentPaymentTransactionId_SilentPaymentIndexIx);
+            RelationalModel.GetOrCreateTableIndexes(iX_Utxos_SilentPaymentTransactionId_SilentPaymentIndexIx).Add(iX_Utxos_SilentPaymentTransactionId_SilentPaymentIndex);
+            utxosTable.Indexes.Add("IX_Utxos_SilentPaymentTransactionId_SilentPaymentIndex", iX_Utxos_SilentPaymentTransactionId_SilentPaymentIndex);
             var iX_Utxos_UsedInTransactionId = new TableIndex(
             "IX_Utxos_UsedInTransactionId", utxosTable, new[] { usedInTransactionIdColumn }, false);
             iX_Utxos_UsedInTransactionId.SetRowIndexValueFactory(new SimpleRowIndexValueFactory<byte[]>(iX_Utxos_UsedInTransactionId));
@@ -2468,15 +2858,15 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var walletAddressEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletAddressEntity")!;
 
-            var defaultTableMappings18 = new List<TableMappingBase<ColumnMappingBase>>();
-            walletAddressEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings18);
+            var defaultTableMappings21 = new List<TableMappingBase<ColumnMappingBase>>();
+            walletAddressEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings21);
             var nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletAddressEntity", null, relationalModel);
             var addressColumnBase = new ColumnBase<ColumnMappingBase>("Address", "TEXT", nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityTableBase.Columns.Add("Address", addressColumnBase);
             var addressTypeColumnBase1 = new ColumnBase<ColumnMappingBase>("AddressType", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityTableBase.Columns.Add("AddressType", addressTypeColumnBase1);
-            var indexColumnBase2 = new ColumnBase<ColumnMappingBase>("Index", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityTableBase);
-            nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityTableBase.Columns.Add("Index", indexColumnBase2);
+            var indexColumnBase3 = new ColumnBase<ColumnMappingBase>("Index", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityTableBase.Columns.Add("Index", indexColumnBase3);
             var isChangeColumnBase = new ColumnBase<ColumnMappingBase>("IsChange", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityTableBase.Columns.Add("IsChange", isChangeColumnBase);
             var isReservedColumnBase = new ColumnBase<ColumnMappingBase>("IsReserved", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityTableBase);
@@ -2484,19 +2874,19 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletAddressEntity", nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityMappingBase = new TableMappingBase<ColumnMappingBase>(walletAddressEntity, nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityMappingBase, false);
-            defaultTableMappings18.Add(nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityMappingBase);
+            defaultTableMappings21.Add(nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)addressTypeColumnBase1, walletAddressEntity.FindProperty("AddressType")!, nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)indexColumnBase2, walletAddressEntity.FindProperty("Index")!, nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)indexColumnBase3, walletAddressEntity.FindProperty("Index")!, nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)isChangeColumnBase, walletAddressEntity.FindProperty("IsChange")!, nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)addressColumnBase, walletAddressEntity.FindProperty("Address")!, nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)isReservedColumnBase, walletAddressEntity.FindProperty("IsReserved")!, nLightningInfrastructurePersistenceEntitiesBitcoinWalletAddressEntityMappingBase);
 
-            var tableMappings18 = new List<TableMapping>();
-            walletAddressEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings18);
+            var tableMappings21 = new List<TableMapping>();
+            walletAddressEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings21);
             var walletAddressesTable = new Table("WalletAddresses", null, relationalModel);
-            var indexColumn2 = new Column("Index", "INTEGER", walletAddressesTable);
-            walletAddressesTable.Columns.Add("Index", indexColumn2);
-            indexColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(indexColumn2);
+            var indexColumn3 = new Column("Index", "INTEGER", walletAddressesTable);
+            walletAddressesTable.Columns.Add("Index", indexColumn3);
+            indexColumn3.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(indexColumn3);
             var isChangeColumn = new Column("IsChange", "INTEGER", walletAddressesTable);
             walletAddressesTable.Columns.Add("IsChange", isChangeColumn);
             isChangeColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<bool>(isChangeColumn);
@@ -2512,13 +2902,13 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("WalletAddresses", null), walletAddressesTable);
             var walletAddressesTableMapping = new TableMapping(walletAddressEntity, walletAddressesTable, null);
             walletAddressesTable.AddTypeMapping(walletAddressesTableMapping, false);
-            tableMappings18.Add(walletAddressesTableMapping);
+            tableMappings21.Add(walletAddressesTableMapping);
             RelationalModel.CreateColumnMapping(addressTypeColumn1, walletAddressEntity.FindProperty("AddressType")!, walletAddressesTableMapping);
-            RelationalModel.CreateColumnMapping(indexColumn2, walletAddressEntity.FindProperty("Index")!, walletAddressesTableMapping);
+            RelationalModel.CreateColumnMapping(indexColumn3, walletAddressEntity.FindProperty("Index")!, walletAddressesTableMapping);
             RelationalModel.CreateColumnMapping(isChangeColumn, walletAddressEntity.FindProperty("IsChange")!, walletAddressesTableMapping);
             RelationalModel.CreateColumnMapping(addressColumn, walletAddressEntity.FindProperty("Address")!, walletAddressesTableMapping);
             RelationalModel.CreateColumnMapping(isReservedColumn, walletAddressEntity.FindProperty("IsReserved")!, walletAddressesTableMapping);
-            var pK_WalletAddresses = new UniqueConstraint("PK_WalletAddresses", walletAddressesTable, new[] { indexColumn2, isChangeColumn, addressTypeColumn1 });
+            var pK_WalletAddresses = new UniqueConstraint("PK_WalletAddresses", walletAddressesTable, new[] { indexColumn3, isChangeColumn, addressTypeColumn1 });
             walletAddressesTable.PrimaryKey = pK_WalletAddresses;
             pK_WalletAddresses.SetRowKeyValueFactory(new CompositeRowKeyValueFactory(pK_WalletAddresses));
             var pK_WalletAddressesKey = RelationalModel.GetKey(this,
@@ -2530,8 +2920,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var watchedOutpointEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedOutpointEntity")!;
 
-            var defaultTableMappings19 = new List<TableMappingBase<ColumnMappingBase>>();
-            watchedOutpointEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings19);
+            var defaultTableMappings22 = new List<TableMappingBase<ColumnMappingBase>>();
+            watchedOutpointEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings22);
             var nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedOutpointEntity", null, relationalModel);
             var channelIdColumnBase3 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase3);
@@ -2541,42 +2931,42 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase.Columns.Add("OutputIndex", outputIndexColumnBase0);
             var purposeColumnBase1 = new ColumnBase<ColumnMappingBase>("Purpose", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase.Columns.Add("Purpose", purposeColumnBase1);
-            var spentAtHeightColumnBase = new ColumnBase<ColumnMappingBase>("SpentAtHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase)
+            var spentAtHeightColumnBase0 = new ColumnBase<ColumnMappingBase>("SpentAtHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase)
             {
                 IsNullable = true
             };
-            nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase.Columns.Add("SpentAtHeight", spentAtHeightColumnBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase.Columns.Add("SpentAtHeight", spentAtHeightColumnBase0);
             var spentBlockHashColumnBase = new ColumnBase<ColumnMappingBase>("SpentBlockHash", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase)
             {
                 IsNullable = true
             };
             nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase.Columns.Add("SpentBlockHash", spentBlockHashColumnBase);
-            var spentByTransactionIdColumnBase = new ColumnBase<ColumnMappingBase>("SpentByTransactionId", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase)
+            var spentByTransactionIdColumnBase0 = new ColumnBase<ColumnMappingBase>("SpentByTransactionId", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase)
             {
                 IsNullable = true
             };
-            nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase.Columns.Add("SpentByTransactionId", spentByTransactionIdColumnBase);
-            var transactionIdColumnBase2 = new ColumnBase<ColumnMappingBase>("TransactionId", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase);
-            nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase.Columns.Add("TransactionId", transactionIdColumnBase2);
+            nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase.Columns.Add("SpentByTransactionId", spentByTransactionIdColumnBase0);
+            var transactionIdColumnBase3 = new ColumnBase<ColumnMappingBase>("TransactionId", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase.Columns.Add("TransactionId", transactionIdColumnBase3);
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedOutpointEntity", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityMappingBase = new TableMappingBase<ColumnMappingBase>(watchedOutpointEntity, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityMappingBase, false);
-            defaultTableMappings19.Add(nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityMappingBase);
+            defaultTableMappings22.Add(nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)outputIndexColumnBase0, watchedOutpointEntity.FindProperty("OutputIndex")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)transactionIdColumnBase2, watchedOutpointEntity.FindProperty("TransactionId")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)transactionIdColumnBase3, watchedOutpointEntity.FindProperty("TransactionId")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase3, watchedOutpointEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)createdAtColumnBase3, watchedOutpointEntity.FindProperty("CreatedAt")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)purposeColumnBase1, watchedOutpointEntity.FindProperty("Purpose")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)spentAtHeightColumnBase, watchedOutpointEntity.FindProperty("SpentAtHeight")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)spentAtHeightColumnBase0, watchedOutpointEntity.FindProperty("SpentAtHeight")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)spentBlockHashColumnBase, watchedOutpointEntity.FindProperty("SpentBlockHash")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)spentByTransactionIdColumnBase, watchedOutpointEntity.FindProperty("SpentByTransactionId")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)spentByTransactionIdColumnBase0, watchedOutpointEntity.FindProperty("SpentByTransactionId")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedOutpointEntityMappingBase);
 
-            var tableMappings19 = new List<TableMapping>();
-            watchedOutpointEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings19);
+            var tableMappings22 = new List<TableMapping>();
+            watchedOutpointEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings22);
             var watchedOutpointsTable = new Table("WatchedOutpoints", null, relationalModel);
-            var transactionIdColumn2 = new Column("TransactionId", "BLOB", watchedOutpointsTable);
-            watchedOutpointsTable.Columns.Add("TransactionId", transactionIdColumn2);
-            transactionIdColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(transactionIdColumn2);
+            var transactionIdColumn3 = new Column("TransactionId", "BLOB", watchedOutpointsTable);
+            watchedOutpointsTable.Columns.Add("TransactionId", transactionIdColumn3);
+            transactionIdColumn3.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(transactionIdColumn3);
             var outputIndexColumn0 = new Column("OutputIndex", "INTEGER", watchedOutpointsTable);
             watchedOutpointsTable.Columns.Add("OutputIndex", outputIndexColumn0);
             outputIndexColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(outputIndexColumn0);
@@ -2589,37 +2979,37 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var purposeColumn1 = new Column("Purpose", "INTEGER", watchedOutpointsTable);
             watchedOutpointsTable.Columns.Add("Purpose", purposeColumn1);
             purposeColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(purposeColumn1);
-            var spentAtHeightColumn = new Column("SpentAtHeight", "INTEGER", watchedOutpointsTable)
+            var spentAtHeightColumn0 = new Column("SpentAtHeight", "INTEGER", watchedOutpointsTable)
             {
                 IsNullable = true
             };
-            watchedOutpointsTable.Columns.Add("SpentAtHeight", spentAtHeightColumn);
-            spentAtHeightColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(spentAtHeightColumn);
+            watchedOutpointsTable.Columns.Add("SpentAtHeight", spentAtHeightColumn0);
+            spentAtHeightColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(spentAtHeightColumn0);
             var spentBlockHashColumn = new Column("SpentBlockHash", "BLOB", watchedOutpointsTable)
             {
                 IsNullable = true
             };
             watchedOutpointsTable.Columns.Add("SpentBlockHash", spentBlockHashColumn);
             spentBlockHashColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(spentBlockHashColumn);
-            var spentByTransactionIdColumn = new Column("SpentByTransactionId", "BLOB", watchedOutpointsTable)
+            var spentByTransactionIdColumn0 = new Column("SpentByTransactionId", "BLOB", watchedOutpointsTable)
             {
                 IsNullable = true
             };
-            watchedOutpointsTable.Columns.Add("SpentByTransactionId", spentByTransactionIdColumn);
-            spentByTransactionIdColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(spentByTransactionIdColumn);
+            watchedOutpointsTable.Columns.Add("SpentByTransactionId", spentByTransactionIdColumn0);
+            spentByTransactionIdColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(spentByTransactionIdColumn0);
             relationalModel.Tables.Add(("WatchedOutpoints", null), watchedOutpointsTable);
             var watchedOutpointsTableMapping = new TableMapping(watchedOutpointEntity, watchedOutpointsTable, null);
             watchedOutpointsTable.AddTypeMapping(watchedOutpointsTableMapping, false);
-            tableMappings19.Add(watchedOutpointsTableMapping);
+            tableMappings22.Add(watchedOutpointsTableMapping);
             RelationalModel.CreateColumnMapping(outputIndexColumn0, watchedOutpointEntity.FindProperty("OutputIndex")!, watchedOutpointsTableMapping);
-            RelationalModel.CreateColumnMapping(transactionIdColumn2, watchedOutpointEntity.FindProperty("TransactionId")!, watchedOutpointsTableMapping);
+            RelationalModel.CreateColumnMapping(transactionIdColumn3, watchedOutpointEntity.FindProperty("TransactionId")!, watchedOutpointsTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn3, watchedOutpointEntity.FindProperty("ChannelId")!, watchedOutpointsTableMapping);
             RelationalModel.CreateColumnMapping(createdAtColumn3, watchedOutpointEntity.FindProperty("CreatedAt")!, watchedOutpointsTableMapping);
             RelationalModel.CreateColumnMapping(purposeColumn1, watchedOutpointEntity.FindProperty("Purpose")!, watchedOutpointsTableMapping);
-            RelationalModel.CreateColumnMapping(spentAtHeightColumn, watchedOutpointEntity.FindProperty("SpentAtHeight")!, watchedOutpointsTableMapping);
+            RelationalModel.CreateColumnMapping(spentAtHeightColumn0, watchedOutpointEntity.FindProperty("SpentAtHeight")!, watchedOutpointsTableMapping);
             RelationalModel.CreateColumnMapping(spentBlockHashColumn, watchedOutpointEntity.FindProperty("SpentBlockHash")!, watchedOutpointsTableMapping);
-            RelationalModel.CreateColumnMapping(spentByTransactionIdColumn, watchedOutpointEntity.FindProperty("SpentByTransactionId")!, watchedOutpointsTableMapping);
-            var pK_WatchedOutpoints = new UniqueConstraint("PK_WatchedOutpoints", watchedOutpointsTable, new[] { transactionIdColumn2, outputIndexColumn0 });
+            RelationalModel.CreateColumnMapping(spentByTransactionIdColumn0, watchedOutpointEntity.FindProperty("SpentByTransactionId")!, watchedOutpointsTableMapping);
+            var pK_WatchedOutpoints = new UniqueConstraint("PK_WatchedOutpoints", watchedOutpointsTable, new[] { transactionIdColumn3, outputIndexColumn0 });
             watchedOutpointsTable.PrimaryKey = pK_WatchedOutpoints;
             pK_WatchedOutpoints.SetRowKeyValueFactory(new CompositeRowKeyValueFactory(pK_WatchedOutpoints));
             var pK_WatchedOutpointsKey = RelationalModel.GetKey(this,
@@ -2638,7 +3028,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.GetOrCreateTableIndexes(iX_WatchedOutpoints_ChannelIdIx).Add(iX_WatchedOutpoints_ChannelId);
             watchedOutpointsTable.Indexes.Add("IX_WatchedOutpoints_ChannelId", iX_WatchedOutpoints_ChannelId);
             var iX_WatchedOutpoints_SpentAtHeight = new TableIndex(
-            "IX_WatchedOutpoints_SpentAtHeight", watchedOutpointsTable, new[] { spentAtHeightColumn }, false);
+            "IX_WatchedOutpoints_SpentAtHeight", watchedOutpointsTable, new[] { spentAtHeightColumn0 }, false);
             iX_WatchedOutpoints_SpentAtHeight.SetRowIndexValueFactory(new SimpleRowIndexValueFactory<uint>(iX_WatchedOutpoints_SpentAtHeight));
             var iX_WatchedOutpoints_SpentAtHeightIx = RelationalModel.GetIndex(this,
                 "NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedOutpointEntity",
@@ -2649,8 +3039,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var watchedTransactionEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedTransactionEntity")!;
 
-            var defaultTableMappings20 = new List<TableMappingBase<ColumnMappingBase>>();
-            watchedTransactionEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings20);
+            var defaultTableMappings23 = new List<TableMappingBase<ColumnMappingBase>>();
+            watchedTransactionEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings23);
             var nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedTransactionEntity", null, relationalModel);
             var channelIdColumnBase4 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase4);
@@ -2668,8 +3058,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityTableBase.Columns.Add("FirstSeenAtHeight", firstSeenAtHeightColumnBase);
             var requiredDepthColumnBase = new ColumnBase<ColumnMappingBase>("RequiredDepth", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityTableBase.Columns.Add("RequiredDepth", requiredDepthColumnBase);
-            var transactionIdColumnBase3 = new ColumnBase<ColumnMappingBase>("TransactionId", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityTableBase);
-            nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityTableBase.Columns.Add("TransactionId", transactionIdColumnBase3);
+            var transactionIdColumnBase4 = new ColumnBase<ColumnMappingBase>("TransactionId", "BLOB", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityTableBase.Columns.Add("TransactionId", transactionIdColumnBase4);
             var transactionIndexColumnBase = new ColumnBase<ColumnMappingBase>("TransactionIndex", "INTEGER", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityTableBase)
             {
                 IsNullable = true
@@ -2678,8 +3068,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedTransactionEntity", nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityMappingBase = new TableMappingBase<ColumnMappingBase>(watchedTransactionEntity, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityMappingBase, false);
-            defaultTableMappings20.Add(nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)transactionIdColumnBase3, watchedTransactionEntity.FindProperty("TransactionId")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityMappingBase);
+            defaultTableMappings23.Add(nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)transactionIdColumnBase4, watchedTransactionEntity.FindProperty("TransactionId")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase4, watchedTransactionEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)completedAtColumnBase, watchedTransactionEntity.FindProperty("CompletedAt")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)createdAtColumnBase4, watchedTransactionEntity.FindProperty("CreatedAt")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityMappingBase);
@@ -2687,12 +3077,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)requiredDepthColumnBase, watchedTransactionEntity.FindProperty("RequiredDepth")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)transactionIndexColumnBase, watchedTransactionEntity.FindProperty("TransactionIndex")!, nLightningInfrastructurePersistenceEntitiesBitcoinWatchedTransactionEntityMappingBase);
 
-            var tableMappings20 = new List<TableMapping>();
-            watchedTransactionEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings20);
+            var tableMappings23 = new List<TableMapping>();
+            watchedTransactionEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings23);
             var watchedTransactionsTable = new Table("WatchedTransactions", null, relationalModel);
-            var transactionIdColumn3 = new Column("TransactionId", "BLOB", watchedTransactionsTable);
-            watchedTransactionsTable.Columns.Add("TransactionId", transactionIdColumn3);
-            transactionIdColumn3.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(transactionIdColumn3);
+            var transactionIdColumn4 = new Column("TransactionId", "BLOB", watchedTransactionsTable);
+            watchedTransactionsTable.Columns.Add("TransactionId", transactionIdColumn4);
+            transactionIdColumn4.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(transactionIdColumn4);
             var channelIdColumn4 = new Column("ChannelId", "BLOB", watchedTransactionsTable);
             watchedTransactionsTable.Columns.Add("ChannelId", channelIdColumn4);
             channelIdColumn4.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(channelIdColumn4);
@@ -2723,15 +3113,15 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("WatchedTransactions", null), watchedTransactionsTable);
             var watchedTransactionsTableMapping = new TableMapping(watchedTransactionEntity, watchedTransactionsTable, null);
             watchedTransactionsTable.AddTypeMapping(watchedTransactionsTableMapping, false);
-            tableMappings20.Add(watchedTransactionsTableMapping);
-            RelationalModel.CreateColumnMapping(transactionIdColumn3, watchedTransactionEntity.FindProperty("TransactionId")!, watchedTransactionsTableMapping);
+            tableMappings23.Add(watchedTransactionsTableMapping);
+            RelationalModel.CreateColumnMapping(transactionIdColumn4, watchedTransactionEntity.FindProperty("TransactionId")!, watchedTransactionsTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn4, watchedTransactionEntity.FindProperty("ChannelId")!, watchedTransactionsTableMapping);
             RelationalModel.CreateColumnMapping(completedAtColumn, watchedTransactionEntity.FindProperty("CompletedAt")!, watchedTransactionsTableMapping);
             RelationalModel.CreateColumnMapping(createdAtColumn4, watchedTransactionEntity.FindProperty("CreatedAt")!, watchedTransactionsTableMapping);
             RelationalModel.CreateColumnMapping(firstSeenAtHeightColumn, watchedTransactionEntity.FindProperty("FirstSeenAtHeight")!, watchedTransactionsTableMapping);
             RelationalModel.CreateColumnMapping(requiredDepthColumn, watchedTransactionEntity.FindProperty("RequiredDepth")!, watchedTransactionsTableMapping);
             RelationalModel.CreateColumnMapping(transactionIndexColumn, watchedTransactionEntity.FindProperty("TransactionIndex")!, watchedTransactionsTableMapping);
-            var pK_WatchedTransactions = new UniqueConstraint("PK_WatchedTransactions", watchedTransactionsTable, new[] { transactionIdColumn3 });
+            var pK_WatchedTransactions = new UniqueConstraint("PK_WatchedTransactions", watchedTransactionsTable, new[] { transactionIdColumn4 });
             watchedTransactionsTable.PrimaryKey = pK_WatchedTransactions;
             pK_WatchedTransactions.SetRowKeyValueFactory(new SimpleRowKeyValueFactory<byte[]>(pK_WatchedTransactions));
             var pK_WatchedTransactionsKey = RelationalModel.GetKey(this,
@@ -2752,13 +3142,13 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var cashuDepositEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Cashu.CashuDepositEntity")!;
 
-            var defaultTableMappings21 = new List<TableMappingBase<ColumnMappingBase>>();
-            cashuDepositEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings21);
+            var defaultTableMappings24 = new List<TableMappingBase<ColumnMappingBase>>();
+            cashuDepositEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings24);
             var nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Cashu.CashuDepositEntity", null, relationalModel);
             var amountSatColumnBase = new ColumnBase<ColumnMappingBase>("AmountSat", "INTEGER", nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityTableBase.Columns.Add("AmountSat", amountSatColumnBase);
-            var blockHeightColumnBase1 = new ColumnBase<ColumnMappingBase>("BlockHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityTableBase);
-            nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityTableBase.Columns.Add("BlockHeight", blockHeightColumnBase1);
+            var blockHeightColumnBase2 = new ColumnBase<ColumnMappingBase>("BlockHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityTableBase.Columns.Add("BlockHeight", blockHeightColumnBase2);
             var outputIndexColumnBase1 = new ColumnBase<ColumnMappingBase>("OutputIndex", "INTEGER", nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityTableBase.Columns.Add("OutputIndex", outputIndexColumnBase1);
             var quoteIdColumnBase = new ColumnBase<ColumnMappingBase>("QuoteId", "TEXT", nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityTableBase);
@@ -2773,16 +3163,16 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Cashu.CashuDepositEntity", nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityMappingBase = new TableMappingBase<ColumnMappingBase>(cashuDepositEntity, nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityMappingBase, false);
-            defaultTableMappings21.Add(nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityMappingBase);
+            defaultTableMappings24.Add(nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)outputIndexColumnBase1, cashuDepositEntity.FindProperty("OutputIndex")!, nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)txIdColumnBase0, cashuDepositEntity.FindProperty("TxId")!, nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountSatColumnBase, cashuDepositEntity.FindProperty("AmountSat")!, nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blockHeightColumnBase1, cashuDepositEntity.FindProperty("BlockHeight")!, nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blockHeightColumnBase2, cashuDepositEntity.FindProperty("BlockHeight")!, nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)quoteIdColumnBase, cashuDepositEntity.FindProperty("QuoteId")!, nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)reportedAtColumnBase, cashuDepositEntity.FindProperty("ReportedAt")!, nLightningInfrastructurePersistenceEntitiesCashuCashuDepositEntityMappingBase);
 
-            var tableMappings21 = new List<TableMapping>();
-            cashuDepositEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings21);
+            var tableMappings24 = new List<TableMapping>();
+            cashuDepositEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings24);
             var cashuDepositsTable = new Table("CashuDeposits", null, relationalModel);
             var txIdColumn0 = new Column("TxId", "BLOB", cashuDepositsTable);
             cashuDepositsTable.Columns.Add("TxId", txIdColumn0);
@@ -2793,9 +3183,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var amountSatColumn = new Column("AmountSat", "INTEGER", cashuDepositsTable);
             cashuDepositsTable.Columns.Add("AmountSat", amountSatColumn);
             amountSatColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(amountSatColumn);
-            var blockHeightColumn1 = new Column("BlockHeight", "INTEGER", cashuDepositsTable);
-            cashuDepositsTable.Columns.Add("BlockHeight", blockHeightColumn1);
-            blockHeightColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(blockHeightColumn1);
+            var blockHeightColumn2 = new Column("BlockHeight", "INTEGER", cashuDepositsTable);
+            cashuDepositsTable.Columns.Add("BlockHeight", blockHeightColumn2);
+            blockHeightColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(blockHeightColumn2);
             var quoteIdColumn = new Column("QuoteId", "TEXT", cashuDepositsTable);
             cashuDepositsTable.Columns.Add("QuoteId", quoteIdColumn);
             quoteIdColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<string>(quoteIdColumn);
@@ -2808,11 +3198,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("CashuDeposits", null), cashuDepositsTable);
             var cashuDepositsTableMapping = new TableMapping(cashuDepositEntity, cashuDepositsTable, null);
             cashuDepositsTable.AddTypeMapping(cashuDepositsTableMapping, false);
-            tableMappings21.Add(cashuDepositsTableMapping);
+            tableMappings24.Add(cashuDepositsTableMapping);
             RelationalModel.CreateColumnMapping(outputIndexColumn1, cashuDepositEntity.FindProperty("OutputIndex")!, cashuDepositsTableMapping);
             RelationalModel.CreateColumnMapping(txIdColumn0, cashuDepositEntity.FindProperty("TxId")!, cashuDepositsTableMapping);
             RelationalModel.CreateColumnMapping(amountSatColumn, cashuDepositEntity.FindProperty("AmountSat")!, cashuDepositsTableMapping);
-            RelationalModel.CreateColumnMapping(blockHeightColumn1, cashuDepositEntity.FindProperty("BlockHeight")!, cashuDepositsTableMapping);
+            RelationalModel.CreateColumnMapping(blockHeightColumn2, cashuDepositEntity.FindProperty("BlockHeight")!, cashuDepositsTableMapping);
             RelationalModel.CreateColumnMapping(quoteIdColumn, cashuDepositEntity.FindProperty("QuoteId")!, cashuDepositsTableMapping);
             RelationalModel.CreateColumnMapping(reportedAtColumn, cashuDepositEntity.FindProperty("ReportedAt")!, cashuDepositsTableMapping);
             var pK_CashuDeposits = new UniqueConstraint("PK_CashuDeposits", cashuDepositsTable, new[] { txIdColumn0, outputIndexColumn1 });
@@ -2845,8 +3235,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var cashuQuoteEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Cashu.CashuQuoteEntity")!;
 
-            var defaultTableMappings22 = new List<TableMappingBase<ColumnMappingBase>>();
-            cashuQuoteEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings22);
+            var defaultTableMappings25 = new List<TableMappingBase<ColumnMappingBase>>();
+            cashuQuoteEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings25);
             var nLightningInfrastructurePersistenceEntitiesCashuCashuQuoteEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Cashu.CashuQuoteEntity", null, relationalModel);
             var addressColumnBase0 = new ColumnBase<ColumnMappingBase>("Address", "TEXT", nLightningInfrastructurePersistenceEntitiesCashuCashuQuoteEntityTableBase)
             {
@@ -2910,7 +3300,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Cashu.CashuQuoteEntity", nLightningInfrastructurePersistenceEntitiesCashuCashuQuoteEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesCashuCashuQuoteEntityMappingBase = new TableMappingBase<ColumnMappingBase>(cashuQuoteEntity, nLightningInfrastructurePersistenceEntitiesCashuCashuQuoteEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesCashuCashuQuoteEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesCashuCashuQuoteEntityMappingBase, false);
-            defaultTableMappings22.Add(nLightningInfrastructurePersistenceEntitiesCashuCashuQuoteEntityMappingBase);
+            defaultTableMappings25.Add(nLightningInfrastructurePersistenceEntitiesCashuCashuQuoteEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)quoteIdColumnBase0, cashuQuoteEntity.FindProperty("QuoteId")!, nLightningInfrastructurePersistenceEntitiesCashuCashuQuoteEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)addressColumnBase0, cashuQuoteEntity.FindProperty("Address")!, nLightningInfrastructurePersistenceEntitiesCashuCashuQuoteEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountMsatColumnBase1, cashuQuoteEntity.FindProperty("AmountMsat")!, nLightningInfrastructurePersistenceEntitiesCashuCashuQuoteEntityMappingBase);
@@ -2928,8 +3318,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)txIdColumnBase1, cashuQuoteEntity.FindProperty("TxId")!, nLightningInfrastructurePersistenceEntitiesCashuCashuQuoteEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)updatedAtColumnBase, cashuQuoteEntity.FindProperty("UpdatedAt")!, nLightningInfrastructurePersistenceEntitiesCashuCashuQuoteEntityMappingBase);
 
-            var tableMappings22 = new List<TableMapping>();
-            cashuQuoteEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings22);
+            var tableMappings25 = new List<TableMapping>();
+            cashuQuoteEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings25);
             var cashuQuotesTable = new Table("CashuQuotes", null, relationalModel);
             var quoteIdColumn0 = new Column("QuoteId", "TEXT", cashuQuotesTable);
             cashuQuotesTable.Columns.Add("QuoteId", quoteIdColumn0);
@@ -3009,7 +3399,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("CashuQuotes", null), cashuQuotesTable);
             var cashuQuotesTableMapping = new TableMapping(cashuQuoteEntity, cashuQuotesTable, null);
             cashuQuotesTable.AddTypeMapping(cashuQuotesTableMapping, false);
-            tableMappings22.Add(cashuQuotesTableMapping);
+            tableMappings25.Add(cashuQuotesTableMapping);
             RelationalModel.CreateColumnMapping(quoteIdColumn0, cashuQuoteEntity.FindProperty("QuoteId")!, cashuQuotesTableMapping);
             RelationalModel.CreateColumnMapping(addressColumn0, cashuQuoteEntity.FindProperty("Address")!, cashuQuotesTableMapping);
             RelationalModel.CreateColumnMapping(amountMsatColumn1, cashuQuoteEntity.FindProperty("AmountMsat")!, cashuQuotesTableMapping);
@@ -3065,8 +3455,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var channelConfigEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelConfigEntity")!;
 
-            var defaultTableMappings23 = new List<TableMappingBase<ColumnMappingBase>>();
-            channelConfigEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings23);
+            var defaultTableMappings26 = new List<TableMappingBase<ColumnMappingBase>>();
+            channelConfigEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings26);
             var nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelConfigEntity", null, relationalModel);
             var announceChannelColumnBase = new ColumnBase<ColumnMappingBase>("AnnounceChannel", "INTEGER", nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityTableBase.Columns.Add("AnnounceChannel", announceChannelColumnBase);
@@ -3121,7 +3511,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelConfigEntity", nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase = new TableMappingBase<ColumnMappingBase>(channelConfigEntity, nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase, false);
-            defaultTableMappings23.Add(nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase);
+            defaultTableMappings26.Add(nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase5, channelConfigEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)announceChannelColumnBase, channelConfigEntity.FindProperty("AnnounceChannel")!, nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)feeRatePerKwSatoshisColumnBase, channelConfigEntity.FindProperty("FeeRatePerKwSatoshis")!, nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase);
@@ -3145,8 +3535,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)remoteUpfrontShutdownScriptColumnBase, channelConfigEntity.FindProperty("RemoteUpfrontShutdownScript")!, nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)useScidAliasColumnBase, channelConfigEntity.FindProperty("UseScidAlias")!, nLightningInfrastructurePersistenceEntitiesChannelChannelConfigEntityMappingBase);
 
-            var tableMappings23 = new List<TableMapping>();
-            channelConfigEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings23);
+            var tableMappings26 = new List<TableMapping>();
+            channelConfigEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings26);
             var channelConfigsTable = new Table("ChannelConfigs", null, relationalModel);
             var channelIdColumn5 = new Column("ChannelId", "BLOB", channelConfigsTable);
             channelConfigsTable.Columns.Add("ChannelId", channelIdColumn5);
@@ -3223,7 +3613,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("ChannelConfigs", null), channelConfigsTable);
             var channelConfigsTableMapping = new TableMapping(channelConfigEntity, channelConfigsTable, null);
             channelConfigsTable.AddTypeMapping(channelConfigsTableMapping, false);
-            tableMappings23.Add(channelConfigsTableMapping);
+            tableMappings26.Add(channelConfigsTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn5, channelConfigEntity.FindProperty("ChannelId")!, channelConfigsTableMapping);
             RelationalModel.CreateColumnMapping(announceChannelColumn, channelConfigEntity.FindProperty("AnnounceChannel")!, channelConfigsTableMapping);
             RelationalModel.CreateColumnMapping(feeRatePerKwSatoshisColumn, channelConfigEntity.FindProperty("FeeRatePerKwSatoshis")!, channelConfigsTableMapping);
@@ -3258,8 +3648,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var channelEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity")!;
 
-            var defaultTableMappings24 = new List<TableMappingBase<ColumnMappingBase>>();
-            channelEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings24);
+            var defaultTableMappings27 = new List<TableMappingBase<ColumnMappingBase>>();
+            channelEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings27);
             var nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null, relationalModel);
             var changeAddressAddressTypeColumnBase = new ColumnBase<ColumnMappingBase>("ChangeAddressAddressType", "INTEGER", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
             {
@@ -3317,11 +3707,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("IsDualFunded", isDualFundedColumnBase);
             var isInitiatorColumnBase = new ColumnBase<ColumnMappingBase>("IsInitiator", "INTEGER", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("IsInitiator", isInitiatorColumnBase);
-            var labelColumnBase0 = new ColumnBase<ColumnMappingBase>("Label", "TEXT", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
+            var labelColumnBase1 = new ColumnBase<ColumnMappingBase>("Label", "TEXT", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
             {
                 IsNullable = true
             };
-            nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("Label", labelColumnBase0);
+            nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.Columns.Add("Label", labelColumnBase1);
             var lastReceivedPartialSignatureColumnBase = new ColumnBase<ColumnMappingBase>("LastReceivedPartialSignature", "BLOB", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase)
             {
                 IsNullable = true
@@ -3449,7 +3839,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase = new TableMappingBase<ColumnMappingBase>(channelEntity, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesChannelChannelEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase, false);
-            defaultTableMappings24.Add(nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
+            defaultTableMappings27.Add(nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase6, channelEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)changeAddressAddressTypeColumnBase, channelEntity.FindProperty("ChangeAddressAddressType")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)changeAddressIndexColumnBase, channelEntity.FindProperty("ChangeAddressIndex")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
@@ -3466,7 +3856,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)fundingTxIdColumnBase, channelEntity.FindProperty("FundingTxId")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)isDualFundedColumnBase, channelEntity.FindProperty("IsDualFunded")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)isInitiatorColumnBase, channelEntity.FindProperty("IsInitiator")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)labelColumnBase0, channelEntity.FindProperty("Label")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)labelColumnBase1, channelEntity.FindProperty("Label")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lastReceivedPartialSignatureColumnBase, channelEntity.FindProperty("LastReceivedPartialSignature")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lastReceivedSignatureColumnBase, channelEntity.FindProperty("LastReceivedSignature")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)lastSentOrderColumnBase, channelEntity.FindProperty("LastSentOrder")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
@@ -3500,8 +3890,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)tagsColumnBase0, channelEntity.FindProperty("Tags")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)versionColumnBase, channelEntity.FindProperty("Version")!, nLightningInfrastructurePersistenceEntitiesChannelChannelEntityMappingBase);
 
-            var tableMappings24 = new List<TableMapping>();
-            channelEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings24);
+            var tableMappings27 = new List<TableMapping>();
+            channelEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings27);
             var channelsTable = new Table("Channels", null, relationalModel);
             var channelIdColumn6 = new Column("ChannelId", "BLOB", channelsTable);
             channelsTable.Columns.Add("ChannelId", channelIdColumn6);
@@ -3575,12 +3965,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var isInitiatorColumn = new Column("IsInitiator", "INTEGER", channelsTable);
             channelsTable.Columns.Add("IsInitiator", isInitiatorColumn);
             isInitiatorColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<bool>(isInitiatorColumn);
-            var labelColumn0 = new Column("Label", "TEXT", channelsTable)
+            var labelColumn1 = new Column("Label", "TEXT", channelsTable)
             {
                 IsNullable = true
             };
-            channelsTable.Columns.Add("Label", labelColumn0);
-            labelColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<string>(labelColumn0);
+            channelsTable.Columns.Add("Label", labelColumn1);
+            labelColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<string>(labelColumn1);
             var lastReceivedPartialSignatureColumn = new Column("LastReceivedPartialSignature", "BLOB", channelsTable)
             {
                 IsNullable = true
@@ -3740,7 +4130,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("Channels", null), channelsTable);
             var channelsTableMapping = new TableMapping(channelEntity, channelsTable, null);
             channelsTable.AddTypeMapping(channelsTableMapping, false);
-            tableMappings24.Add(channelsTableMapping);
+            tableMappings27.Add(channelsTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn6, channelEntity.FindProperty("ChannelId")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(changeAddressAddressTypeColumn, channelEntity.FindProperty("ChangeAddressAddressType")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(changeAddressIndexColumn, channelEntity.FindProperty("ChangeAddressIndex")!, channelsTableMapping);
@@ -3757,7 +4147,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping(fundingTxIdColumn, channelEntity.FindProperty("FundingTxId")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(isDualFundedColumn, channelEntity.FindProperty("IsDualFunded")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(isInitiatorColumn, channelEntity.FindProperty("IsInitiator")!, channelsTableMapping);
-            RelationalModel.CreateColumnMapping(labelColumn0, channelEntity.FindProperty("Label")!, channelsTableMapping);
+            RelationalModel.CreateColumnMapping(labelColumn1, channelEntity.FindProperty("Label")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(lastReceivedPartialSignatureColumn, channelEntity.FindProperty("LastReceivedPartialSignature")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(lastReceivedSignatureColumn, channelEntity.FindProperty("LastReceivedSignature")!, channelsTableMapping);
             RelationalModel.CreateColumnMapping(lastSentOrderColumn, channelEntity.FindProperty("LastSentOrder")!, channelsTableMapping);
@@ -3811,8 +4201,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var channelFundingEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelFundingEntity")!;
 
-            var defaultTableMappings25 = new List<TableMappingBase<ColumnMappingBase>>();
-            channelFundingEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings25);
+            var defaultTableMappings28 = new List<TableMappingBase<ColumnMappingBase>>();
+            channelFundingEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings28);
             var nLightningInfrastructurePersistenceEntitiesChannelChannelFundingEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelFundingEntity", null, relationalModel);
             var announcementSignaturesReceivedColumnBase = new ColumnBase<ColumnMappingBase>("AnnouncementSignaturesReceived", "INTEGER", nLightningInfrastructurePersistenceEntitiesChannelChannelFundingEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelChannelFundingEntityTableBase.Columns.Add("AnnouncementSignaturesReceived", announcementSignaturesReceivedColumnBase);
@@ -3874,7 +4264,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelFundingEntity", nLightningInfrastructurePersistenceEntitiesChannelChannelFundingEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesChannelChannelFundingEntityMappingBase = new TableMappingBase<ColumnMappingBase>(channelFundingEntity, nLightningInfrastructurePersistenceEntitiesChannelChannelFundingEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesChannelChannelFundingEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesChannelChannelFundingEntityMappingBase, false);
-            defaultTableMappings25.Add(nLightningInfrastructurePersistenceEntitiesChannelChannelFundingEntityMappingBase);
+            defaultTableMappings28.Add(nLightningInfrastructurePersistenceEntitiesChannelChannelFundingEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase7, channelFundingEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesChannelChannelFundingEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)fundingTxIdColumnBase0, channelFundingEntity.FindProperty("FundingTxId")!, nLightningInfrastructurePersistenceEntitiesChannelChannelFundingEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)announcementSignaturesReceivedColumnBase, channelFundingEntity.FindProperty("AnnouncementSignaturesReceived")!, nLightningInfrastructurePersistenceEntitiesChannelChannelFundingEntityMappingBase);
@@ -3897,8 +4287,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)spliceLockedSentColumnBase, channelFundingEntity.FindProperty("SpliceLockedSent")!, nLightningInfrastructurePersistenceEntitiesChannelChannelFundingEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)statusColumnBase, channelFundingEntity.FindProperty("Status")!, nLightningInfrastructurePersistenceEntitiesChannelChannelFundingEntityMappingBase);
 
-            var tableMappings25 = new List<TableMapping>();
-            channelFundingEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings25);
+            var tableMappings28 = new List<TableMapping>();
+            channelFundingEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings28);
             var channelFundingsTable = new Table("ChannelFundings", null, relationalModel);
             var channelIdColumn7 = new Column("ChannelId", "BLOB", channelFundingsTable);
             channelFundingsTable.Columns.Add("ChannelId", channelIdColumn7);
@@ -3981,7 +4371,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("ChannelFundings", null), channelFundingsTable);
             var channelFundingsTableMapping = new TableMapping(channelFundingEntity, channelFundingsTable, null);
             channelFundingsTable.AddTypeMapping(channelFundingsTableMapping, false);
-            tableMappings25.Add(channelFundingsTableMapping);
+            tableMappings28.Add(channelFundingsTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn7, channelFundingEntity.FindProperty("ChannelId")!, channelFundingsTableMapping);
             RelationalModel.CreateColumnMapping(fundingTxIdColumn0, channelFundingEntity.FindProperty("FundingTxId")!, channelFundingsTableMapping);
             RelationalModel.CreateColumnMapping(announcementSignaturesReceivedColumn, channelFundingEntity.FindProperty("AnnouncementSignaturesReceived")!, channelFundingsTableMapping);
@@ -4015,8 +4405,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var channelKeySetEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelKeySetEntity")!;
 
-            var defaultTableMappings26 = new List<TableMappingBase<ColumnMappingBase>>();
-            channelKeySetEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings26);
+            var defaultTableMappings29 = new List<TableMappingBase<ColumnMappingBase>>();
+            channelKeySetEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings29);
             var nLightningInfrastructurePersistenceEntitiesChannelChannelKeySetEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelKeySetEntity", null, relationalModel);
             var channelIdColumnBase8 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesChannelChannelKeySetEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelChannelKeySetEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase8);
@@ -4041,7 +4431,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelKeySetEntity", nLightningInfrastructurePersistenceEntitiesChannelChannelKeySetEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesChannelChannelKeySetEntityMappingBase = new TableMappingBase<ColumnMappingBase>(channelKeySetEntity, nLightningInfrastructurePersistenceEntitiesChannelChannelKeySetEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesChannelChannelKeySetEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesChannelChannelKeySetEntityMappingBase, false);
-            defaultTableMappings26.Add(nLightningInfrastructurePersistenceEntitiesChannelChannelKeySetEntityMappingBase);
+            defaultTableMappings29.Add(nLightningInfrastructurePersistenceEntitiesChannelChannelKeySetEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase8, channelKeySetEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesChannelChannelKeySetEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)isLocalColumnBase, channelKeySetEntity.FindProperty("IsLocal")!, nLightningInfrastructurePersistenceEntitiesChannelChannelKeySetEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)currentPerCommitmentIndexColumnBase, channelKeySetEntity.FindProperty("CurrentPerCommitmentIndex")!, nLightningInfrastructurePersistenceEntitiesChannelChannelKeySetEntityMappingBase);
@@ -4053,8 +4443,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)paymentBasepointColumnBase, channelKeySetEntity.FindProperty("PaymentBasepoint")!, nLightningInfrastructurePersistenceEntitiesChannelChannelKeySetEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)revocationBasepointColumnBase, channelKeySetEntity.FindProperty("RevocationBasepoint")!, nLightningInfrastructurePersistenceEntitiesChannelChannelKeySetEntityMappingBase);
 
-            var tableMappings26 = new List<TableMapping>();
-            channelKeySetEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings26);
+            var tableMappings29 = new List<TableMapping>();
+            channelKeySetEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings29);
             var channelKeySetsTable = new Table("ChannelKeySets", null, relationalModel);
             var channelIdColumn8 = new Column("ChannelId", "BLOB", channelKeySetsTable);
             channelKeySetsTable.Columns.Add("ChannelId", channelIdColumn8);
@@ -4089,7 +4479,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("ChannelKeySets", null), channelKeySetsTable);
             var channelKeySetsTableMapping = new TableMapping(channelKeySetEntity, channelKeySetsTable, null);
             channelKeySetsTable.AddTypeMapping(channelKeySetsTableMapping, false);
-            tableMappings26.Add(channelKeySetsTableMapping);
+            tableMappings29.Add(channelKeySetsTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn8, channelKeySetEntity.FindProperty("ChannelId")!, channelKeySetsTableMapping);
             RelationalModel.CreateColumnMapping(isLocalColumn, channelKeySetEntity.FindProperty("IsLocal")!, channelKeySetsTableMapping);
             RelationalModel.CreateColumnMapping(currentPerCommitmentIndexColumn, channelKeySetEntity.FindProperty("CurrentPerCommitmentIndex")!, channelKeySetsTableMapping);
@@ -4112,8 +4502,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var channelLocalAliasEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelLocalAliasEntity")!;
 
-            var defaultTableMappings27 = new List<TableMappingBase<ColumnMappingBase>>();
-            channelLocalAliasEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings27);
+            var defaultTableMappings30 = new List<TableMappingBase<ColumnMappingBase>>();
+            channelLocalAliasEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings30);
             var nLightningInfrastructurePersistenceEntitiesChannelChannelLocalAliasEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelLocalAliasEntity", null, relationalModel);
             var aliasColumnBase = new ColumnBase<ColumnMappingBase>("Alias", "BLOB", nLightningInfrastructurePersistenceEntitiesChannelChannelLocalAliasEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelChannelLocalAliasEntityTableBase.Columns.Add("Alias", aliasColumnBase);
@@ -4122,12 +4512,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelLocalAliasEntity", nLightningInfrastructurePersistenceEntitiesChannelChannelLocalAliasEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesChannelChannelLocalAliasEntityMappingBase = new TableMappingBase<ColumnMappingBase>(channelLocalAliasEntity, nLightningInfrastructurePersistenceEntitiesChannelChannelLocalAliasEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesChannelChannelLocalAliasEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesChannelChannelLocalAliasEntityMappingBase, false);
-            defaultTableMappings27.Add(nLightningInfrastructurePersistenceEntitiesChannelChannelLocalAliasEntityMappingBase);
+            defaultTableMappings30.Add(nLightningInfrastructurePersistenceEntitiesChannelChannelLocalAliasEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)aliasColumnBase, channelLocalAliasEntity.FindProperty("Alias")!, nLightningInfrastructurePersistenceEntitiesChannelChannelLocalAliasEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase9, channelLocalAliasEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesChannelChannelLocalAliasEntityMappingBase);
 
-            var tableMappings27 = new List<TableMapping>();
-            channelLocalAliasEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings27);
+            var tableMappings30 = new List<TableMapping>();
+            channelLocalAliasEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings30);
             var channelLocalAliasesTable = new Table("ChannelLocalAliases", null, relationalModel);
             var aliasColumn = new Column("Alias", "BLOB", channelLocalAliasesTable);
             channelLocalAliasesTable.Columns.Add("Alias", aliasColumn);
@@ -4138,7 +4528,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("ChannelLocalAliases", null), channelLocalAliasesTable);
             var channelLocalAliasesTableMapping = new TableMapping(channelLocalAliasEntity, channelLocalAliasesTable, null);
             channelLocalAliasesTable.AddTypeMapping(channelLocalAliasesTableMapping, false);
-            tableMappings27.Add(channelLocalAliasesTableMapping);
+            tableMappings30.Add(channelLocalAliasesTableMapping);
             RelationalModel.CreateColumnMapping(aliasColumn, channelLocalAliasEntity.FindProperty("Alias")!, channelLocalAliasesTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn9, channelLocalAliasEntity.FindProperty("ChannelId")!, channelLocalAliasesTableMapping);
             var pK_ChannelLocalAliases = new UniqueConstraint("PK_ChannelLocalAliases", channelLocalAliasesTable, new[] { aliasColumn });
@@ -4162,8 +4552,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var channelPolicyEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelPolicyEntity")!;
 
-            var defaultTableMappings28 = new List<TableMappingBase<ColumnMappingBase>>();
-            channelPolicyEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings28);
+            var defaultTableMappings31 = new List<TableMappingBase<ColumnMappingBase>>();
+            channelPolicyEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings31);
             var nLightningInfrastructurePersistenceEntitiesChannelChannelPolicyEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelPolicyEntity", null, relationalModel);
             var channelIdColumnBase10 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesChannelChannelPolicyEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelChannelPolicyEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase10);
@@ -4197,7 +4587,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelPolicyEntity", nLightningInfrastructurePersistenceEntitiesChannelChannelPolicyEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesChannelChannelPolicyEntityMappingBase = new TableMappingBase<ColumnMappingBase>(channelPolicyEntity, nLightningInfrastructurePersistenceEntitiesChannelChannelPolicyEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesChannelChannelPolicyEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesChannelChannelPolicyEntityMappingBase, false);
-            defaultTableMappings28.Add(nLightningInfrastructurePersistenceEntitiesChannelChannelPolicyEntityMappingBase);
+            defaultTableMappings31.Add(nLightningInfrastructurePersistenceEntitiesChannelChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase10, channelPolicyEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesChannelChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)cltvExpiryDeltaColumnBase, channelPolicyEntity.FindProperty("CltvExpiryDelta")!, nLightningInfrastructurePersistenceEntitiesChannelChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)feeBaseMsatColumnBase, channelPolicyEntity.FindProperty("FeeBaseMsat")!, nLightningInfrastructurePersistenceEntitiesChannelChannelPolicyEntityMappingBase);
@@ -4206,8 +4596,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)htlcMinimumMsatColumnBase, channelPolicyEntity.FindProperty("HtlcMinimumMsat")!, nLightningInfrastructurePersistenceEntitiesChannelChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)updatedAtColumnBase0, channelPolicyEntity.FindProperty("UpdatedAt")!, nLightningInfrastructurePersistenceEntitiesChannelChannelPolicyEntityMappingBase);
 
-            var tableMappings28 = new List<TableMapping>();
-            channelPolicyEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings28);
+            var tableMappings31 = new List<TableMapping>();
+            channelPolicyEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings31);
             var channelPoliciesTable = new Table("ChannelPolicies", null, relationalModel);
             var channelIdColumn10 = new Column("ChannelId", "BLOB", channelPoliciesTable);
             channelPoliciesTable.Columns.Add("ChannelId", channelIdColumn10);
@@ -4248,7 +4638,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("ChannelPolicies", null), channelPoliciesTable);
             var channelPoliciesTableMapping = new TableMapping(channelPolicyEntity, channelPoliciesTable, null);
             channelPoliciesTable.AddTypeMapping(channelPoliciesTableMapping, false);
-            tableMappings28.Add(channelPoliciesTableMapping);
+            tableMappings31.Add(channelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn10, channelPolicyEntity.FindProperty("ChannelId")!, channelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(cltvExpiryDeltaColumn, channelPolicyEntity.FindProperty("CltvExpiryDelta")!, channelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(feeBaseMsatColumn, channelPolicyEntity.FindProperty("FeeBaseMsat")!, channelPoliciesTableMapping);
@@ -4268,8 +4658,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var commitmentEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Channel.CommitmentEntity")!;
 
-            var defaultTableMappings29 = new List<TableMappingBase<ColumnMappingBase>>();
-            commitmentEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings29);
+            var defaultTableMappings32 = new List<TableMappingBase<ColumnMappingBase>>();
+            commitmentEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings32);
             var nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Channel.CommitmentEntity", null, relationalModel);
             var channelIdColumnBase11 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase11);
@@ -4315,7 +4705,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Channel.CommitmentEntity", nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase = new TableMappingBase<ColumnMappingBase>(commitmentEntity, nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase, false);
-            defaultTableMappings29.Add(nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase);
+            defaultTableMappings32.Add(nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase11, commitmentEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)fundingTxIdColumnBase1, commitmentEntity.FindProperty("FundingTxId")!, nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)slotColumnBase, commitmentEntity.FindProperty("Slot")!, nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase);
@@ -4330,8 +4720,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)signatureColumnBase0, commitmentEntity.FindProperty("Signature")!, nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)signedOnFundingsColumnBase, commitmentEntity.FindProperty("SignedOnFundings")!, nLightningInfrastructurePersistenceEntitiesChannelCommitmentEntityMappingBase);
 
-            var tableMappings29 = new List<TableMapping>();
-            commitmentEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings29);
+            var tableMappings32 = new List<TableMapping>();
+            commitmentEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings32);
             var commitmentsTable = new Table("Commitments", null, relationalModel);
             var channelIdColumn11 = new Column("ChannelId", "BLOB", commitmentsTable);
             commitmentsTable.Columns.Add("ChannelId", channelIdColumn11);
@@ -4390,7 +4780,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("Commitments", null), commitmentsTable);
             var commitmentsTableMapping = new TableMapping(commitmentEntity, commitmentsTable, null);
             commitmentsTable.AddTypeMapping(commitmentsTableMapping, false);
-            tableMappings29.Add(commitmentsTableMapping);
+            tableMappings32.Add(commitmentsTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn11, commitmentEntity.FindProperty("ChannelId")!, commitmentsTableMapping);
             RelationalModel.CreateColumnMapping(fundingTxIdColumn1, commitmentEntity.FindProperty("FundingTxId")!, commitmentsTableMapping);
             RelationalModel.CreateColumnMapping(slotColumn, commitmentEntity.FindProperty("Slot")!, commitmentsTableMapping);
@@ -4416,8 +4806,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var feeUpdateEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Channel.FeeUpdateEntity")!;
 
-            var defaultTableMappings30 = new List<TableMappingBase<ColumnMappingBase>>();
-            feeUpdateEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings30);
+            var defaultTableMappings33 = new List<TableMappingBase<ColumnMappingBase>>();
+            feeUpdateEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings33);
             var nLightningInfrastructurePersistenceEntitiesChannelFeeUpdateEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Channel.FeeUpdateEntity", null, relationalModel);
             var channelIdColumnBase12 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesChannelFeeUpdateEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelFeeUpdateEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase12);
@@ -4430,14 +4820,14 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Channel.FeeUpdateEntity", nLightningInfrastructurePersistenceEntitiesChannelFeeUpdateEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesChannelFeeUpdateEntityMappingBase = new TableMappingBase<ColumnMappingBase>(feeUpdateEntity, nLightningInfrastructurePersistenceEntitiesChannelFeeUpdateEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesChannelFeeUpdateEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesChannelFeeUpdateEntityMappingBase, false);
-            defaultTableMappings30.Add(nLightningInfrastructurePersistenceEntitiesChannelFeeUpdateEntityMappingBase);
+            defaultTableMappings33.Add(nLightningInfrastructurePersistenceEntitiesChannelFeeUpdateEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase12, feeUpdateEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesChannelFeeUpdateEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)sequenceColumnBase0, feeUpdateEntity.FindProperty("Sequence")!, nLightningInfrastructurePersistenceEntitiesChannelFeeUpdateEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)feeratePerKwColumnBase2, feeUpdateEntity.FindProperty("FeeratePerKw")!, nLightningInfrastructurePersistenceEntitiesChannelFeeUpdateEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)stateColumnBase3, feeUpdateEntity.FindProperty("State")!, nLightningInfrastructurePersistenceEntitiesChannelFeeUpdateEntityMappingBase);
 
-            var tableMappings30 = new List<TableMapping>();
-            feeUpdateEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings30);
+            var tableMappings33 = new List<TableMapping>();
+            feeUpdateEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings33);
             var feeUpdatesTable = new Table("FeeUpdates", null, relationalModel);
             var channelIdColumn12 = new Column("ChannelId", "BLOB", feeUpdatesTable);
             feeUpdatesTable.Columns.Add("ChannelId", channelIdColumn12);
@@ -4454,7 +4844,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("FeeUpdates", null), feeUpdatesTable);
             var feeUpdatesTableMapping = new TableMapping(feeUpdateEntity, feeUpdatesTable, null);
             feeUpdatesTable.AddTypeMapping(feeUpdatesTableMapping, false);
-            tableMappings30.Add(feeUpdatesTableMapping);
+            tableMappings33.Add(feeUpdatesTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn12, feeUpdateEntity.FindProperty("ChannelId")!, feeUpdatesTableMapping);
             RelationalModel.CreateColumnMapping(sequenceColumn0, feeUpdateEntity.FindProperty("Sequence")!, feeUpdatesTableMapping);
             RelationalModel.CreateColumnMapping(feeratePerKwColumn2, feeUpdateEntity.FindProperty("FeeratePerKw")!, feeUpdatesTableMapping);
@@ -4471,8 +4861,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var htlcEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Channel.HtlcEntity")!;
 
-            var defaultTableMappings31 = new List<TableMappingBase<ColumnMappingBase>>();
-            htlcEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings31);
+            var defaultTableMappings34 = new List<TableMappingBase<ColumnMappingBase>>();
+            htlcEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings34);
             var nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Channel.HtlcEntity", null, relationalModel);
             var addedAtColumnBase = new ColumnBase<ColumnMappingBase>("AddedAt", "INTEGER", nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityTableBase)
             {
@@ -4568,7 +4958,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Channel.HtlcEntity", nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityMappingBase = new TableMappingBase<ColumnMappingBase>(htlcEntity, nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityMappingBase, false);
-            defaultTableMappings31.Add(nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityMappingBase);
+            defaultTableMappings34.Add(nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase13, htlcEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)directionColumnBase0, htlcEntity.FindProperty("Direction")!, nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)htlcIdColumnBase, htlcEntity.FindProperty("HtlcId")!, nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityMappingBase);
@@ -4593,8 +4983,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)sha256OfOnionColumnBase, htlcEntity.FindProperty("Sha256OfOnion")!, nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)stateColumnBase4, htlcEntity.FindProperty("State")!, nLightningInfrastructurePersistenceEntitiesChannelHtlcEntityMappingBase);
 
-            var tableMappings31 = new List<TableMapping>();
-            htlcEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings31);
+            var tableMappings34 = new List<TableMapping>();
+            htlcEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings34);
             var htlcsTable = new Table("Htlcs", null, relationalModel);
             var channelIdColumn13 = new Column("ChannelId", "BLOB", htlcsTable);
             htlcsTable.Columns.Add("ChannelId", channelIdColumn13);
@@ -4713,7 +5103,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("Htlcs", null), htlcsTable);
             var htlcsTableMapping = new TableMapping(htlcEntity, htlcsTable, null);
             htlcsTable.AddTypeMapping(htlcsTableMapping, false);
-            tableMappings31.Add(htlcsTableMapping);
+            tableMappings34.Add(htlcsTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn13, htlcEntity.FindProperty("ChannelId")!, htlcsTableMapping);
             RelationalModel.CreateColumnMapping(directionColumn0, htlcEntity.FindProperty("Direction")!, htlcsTableMapping);
             RelationalModel.CreateColumnMapping(htlcIdColumn, htlcEntity.FindProperty("HtlcId")!, htlcsTableMapping);
@@ -4767,8 +5157,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var interactiveTxSessionEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Channel.InteractiveTxSessionEntity")!;
 
-            var defaultTableMappings32 = new List<TableMappingBase<ColumnMappingBase>>();
-            interactiveTxSessionEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings32);
+            var defaultTableMappings35 = new List<TableMappingBase<ColumnMappingBase>>();
+            interactiveTxSessionEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings35);
             var nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Channel.InteractiveTxSessionEntity", null, relationalModel);
             var channelIdColumnBase14 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase14);
@@ -4853,7 +5243,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Channel.InteractiveTxSessionEntity", nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase = new TableMappingBase<ColumnMappingBase>(interactiveTxSessionEntity, nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase, false);
-            defaultTableMappings32.Add(nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase);
+            defaultTableMappings35.Add(nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase14, interactiveTxSessionEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)sessionIdColumnBase, interactiveTxSessionEntity.FindProperty("SessionId")!, nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)commitmentSignedReceivedColumnBase, interactiveTxSessionEntity.FindProperty("CommitmentSignedReceived")!, nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase);
@@ -4880,8 +5270,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)txSignaturesReceivedColumnBase, interactiveTxSessionEntity.FindProperty("TxSignaturesReceived")!, nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)txSignaturesSentColumnBase, interactiveTxSessionEntity.FindProperty("TxSignaturesSent")!, nLightningInfrastructurePersistenceEntitiesChannelInteractiveTxSessionEntityMappingBase);
 
-            var tableMappings32 = new List<TableMapping>();
-            interactiveTxSessionEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings32);
+            var tableMappings35 = new List<TableMapping>();
+            interactiveTxSessionEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings35);
             var interactiveTxSessionsTable = new Table("InteractiveTxSessions", null, relationalModel);
             var channelIdColumn14 = new Column("ChannelId", "BLOB", interactiveTxSessionsTable);
             interactiveTxSessionsTable.Columns.Add("ChannelId", channelIdColumn14);
@@ -4991,7 +5381,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("InteractiveTxSessions", null), interactiveTxSessionsTable);
             var interactiveTxSessionsTableMapping = new TableMapping(interactiveTxSessionEntity, interactiveTxSessionsTable, null);
             interactiveTxSessionsTable.AddTypeMapping(interactiveTxSessionsTableMapping, false);
-            tableMappings32.Add(interactiveTxSessionsTableMapping);
+            tableMappings35.Add(interactiveTxSessionsTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn14, interactiveTxSessionEntity.FindProperty("ChannelId")!, interactiveTxSessionsTableMapping);
             RelationalModel.CreateColumnMapping(sessionIdColumn, interactiveTxSessionEntity.FindProperty("SessionId")!, interactiveTxSessionsTableMapping);
             RelationalModel.CreateColumnMapping(commitmentSignedReceivedColumn, interactiveTxSessionEntity.FindProperty("CommitmentSignedReceived")!, interactiveTxSessionsTableMapping);
@@ -5038,28 +5428,28 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var remoteShachainEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Channel.RemoteShachainEntity")!;
 
-            var defaultTableMappings33 = new List<TableMappingBase<ColumnMappingBase>>();
-            remoteShachainEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings33);
+            var defaultTableMappings36 = new List<TableMappingBase<ColumnMappingBase>>();
+            remoteShachainEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings36);
             var nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Channel.RemoteShachainEntity", null, relationalModel);
             var bucketColumnBase = new ColumnBase<ColumnMappingBase>("Bucket", "INTEGER", nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityTableBase.Columns.Add("Bucket", bucketColumnBase);
             var channelIdColumnBase15 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase15);
-            var indexColumnBase3 = new ColumnBase<ColumnMappingBase>("Index", "INTEGER", nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityTableBase);
-            nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityTableBase.Columns.Add("Index", indexColumnBase3);
+            var indexColumnBase4 = new ColumnBase<ColumnMappingBase>("Index", "INTEGER", nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityTableBase.Columns.Add("Index", indexColumnBase4);
             var secretColumnBase = new ColumnBase<ColumnMappingBase>("Secret", "BLOB", nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityTableBase.Columns.Add("Secret", secretColumnBase);
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Channel.RemoteShachainEntity", nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityMappingBase = new TableMappingBase<ColumnMappingBase>(remoteShachainEntity, nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityMappingBase, false);
-            defaultTableMappings33.Add(nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityMappingBase);
+            defaultTableMappings36.Add(nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)bucketColumnBase, remoteShachainEntity.FindProperty("Bucket")!, nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase15, remoteShachainEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)indexColumnBase3, remoteShachainEntity.FindProperty("Index")!, nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)indexColumnBase4, remoteShachainEntity.FindProperty("Index")!, nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)secretColumnBase, remoteShachainEntity.FindProperty("Secret")!, nLightningInfrastructurePersistenceEntitiesChannelRemoteShachainEntityMappingBase);
 
-            var tableMappings33 = new List<TableMapping>();
-            remoteShachainEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings33);
+            var tableMappings36 = new List<TableMapping>();
+            remoteShachainEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings36);
             var remoteShachainsTable = new Table("RemoteShachains", null, relationalModel);
             var channelIdColumn15 = new Column("ChannelId", "BLOB", remoteShachainsTable);
             remoteShachainsTable.Columns.Add("ChannelId", channelIdColumn15);
@@ -5067,19 +5457,19 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var bucketColumn = new Column("Bucket", "INTEGER", remoteShachainsTable);
             remoteShachainsTable.Columns.Add("Bucket", bucketColumn);
             bucketColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(bucketColumn);
-            var indexColumn3 = new Column("Index", "INTEGER", remoteShachainsTable);
-            remoteShachainsTable.Columns.Add("Index", indexColumn3);
-            indexColumn3.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(indexColumn3);
+            var indexColumn4 = new Column("Index", "INTEGER", remoteShachainsTable);
+            remoteShachainsTable.Columns.Add("Index", indexColumn4);
+            indexColumn4.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(indexColumn4);
             var secretColumn = new Column("Secret", "BLOB", remoteShachainsTable);
             remoteShachainsTable.Columns.Add("Secret", secretColumn);
             secretColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(secretColumn);
             relationalModel.Tables.Add(("RemoteShachains", null), remoteShachainsTable);
             var remoteShachainsTableMapping = new TableMapping(remoteShachainEntity, remoteShachainsTable, null);
             remoteShachainsTable.AddTypeMapping(remoteShachainsTableMapping, false);
-            tableMappings33.Add(remoteShachainsTableMapping);
+            tableMappings36.Add(remoteShachainsTableMapping);
             RelationalModel.CreateColumnMapping(bucketColumn, remoteShachainEntity.FindProperty("Bucket")!, remoteShachainsTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn15, remoteShachainEntity.FindProperty("ChannelId")!, remoteShachainsTableMapping);
-            RelationalModel.CreateColumnMapping(indexColumn3, remoteShachainEntity.FindProperty("Index")!, remoteShachainsTableMapping);
+            RelationalModel.CreateColumnMapping(indexColumn4, remoteShachainEntity.FindProperty("Index")!, remoteShachainsTableMapping);
             RelationalModel.CreateColumnMapping(secretColumn, remoteShachainEntity.FindProperty("Secret")!, remoteShachainsTableMapping);
             var pK_RemoteShachains = new UniqueConstraint("PK_RemoteShachains", remoteShachainsTable, new[] { channelIdColumn15, bucketColumn });
             remoteShachainsTable.PrimaryKey = pK_RemoteShachains;
@@ -5093,8 +5483,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var revokedCommitmentEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Channel.RevokedCommitmentEntity")!;
 
-            var defaultTableMappings34 = new List<TableMappingBase<ColumnMappingBase>>();
-            revokedCommitmentEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings34);
+            var defaultTableMappings37 = new List<TableMappingBase<ColumnMappingBase>>();
+            revokedCommitmentEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings37);
             var nLightningInfrastructurePersistenceEntitiesChannelRevokedCommitmentEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Channel.RevokedCommitmentEntity", null, relationalModel);
             var channelIdColumnBase16 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesChannelRevokedCommitmentEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesChannelRevokedCommitmentEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase16);
@@ -5113,7 +5503,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Channel.RevokedCommitmentEntity", nLightningInfrastructurePersistenceEntitiesChannelRevokedCommitmentEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesChannelRevokedCommitmentEntityMappingBase = new TableMappingBase<ColumnMappingBase>(revokedCommitmentEntity, nLightningInfrastructurePersistenceEntitiesChannelRevokedCommitmentEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesChannelRevokedCommitmentEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesChannelRevokedCommitmentEntityMappingBase, false);
-            defaultTableMappings34.Add(nLightningInfrastructurePersistenceEntitiesChannelRevokedCommitmentEntityMappingBase);
+            defaultTableMappings37.Add(nLightningInfrastructurePersistenceEntitiesChannelRevokedCommitmentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase16, revokedCommitmentEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesChannelRevokedCommitmentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)fundingTxIdColumnBase2, revokedCommitmentEntity.FindProperty("FundingTxId")!, nLightningInfrastructurePersistenceEntitiesChannelRevokedCommitmentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)numberColumnBase0, revokedCommitmentEntity.FindProperty("Number")!, nLightningInfrastructurePersistenceEntitiesChannelRevokedCommitmentEntityMappingBase);
@@ -5122,8 +5512,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)localMsatColumnBase0, revokedCommitmentEntity.FindProperty("LocalMsat")!, nLightningInfrastructurePersistenceEntitiesChannelRevokedCommitmentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)remoteMsatColumnBase0, revokedCommitmentEntity.FindProperty("RemoteMsat")!, nLightningInfrastructurePersistenceEntitiesChannelRevokedCommitmentEntityMappingBase);
 
-            var tableMappings34 = new List<TableMapping>();
-            revokedCommitmentEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings34);
+            var tableMappings37 = new List<TableMapping>();
+            revokedCommitmentEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings37);
             var revokedCommitmentsTable = new Table("RevokedCommitments", null, relationalModel);
             var channelIdColumn16 = new Column("ChannelId", "BLOB", revokedCommitmentsTable);
             revokedCommitmentsTable.Columns.Add("ChannelId", channelIdColumn16);
@@ -5149,7 +5539,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("RevokedCommitments", null), revokedCommitmentsTable);
             var revokedCommitmentsTableMapping = new TableMapping(revokedCommitmentEntity, revokedCommitmentsTable, null);
             revokedCommitmentsTable.AddTypeMapping(revokedCommitmentsTableMapping, false);
-            tableMappings34.Add(revokedCommitmentsTableMapping);
+            tableMappings37.Add(revokedCommitmentsTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn16, revokedCommitmentEntity.FindProperty("ChannelId")!, revokedCommitmentsTableMapping);
             RelationalModel.CreateColumnMapping(fundingTxIdColumn2, revokedCommitmentEntity.FindProperty("FundingTxId")!, revokedCommitmentsTableMapping);
             RelationalModel.CreateColumnMapping(numberColumn0, revokedCommitmentEntity.FindProperty("Number")!, revokedCommitmentsTableMapping);
@@ -5169,8 +5559,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var graphBannedNodeEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphBannedNodeEntity")!;
 
-            var defaultTableMappings35 = new List<TableMappingBase<ColumnMappingBase>>();
-            graphBannedNodeEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings35);
+            var defaultTableMappings38 = new List<TableMappingBase<ColumnMappingBase>>();
+            graphBannedNodeEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings38);
             var nLightningInfrastructurePersistenceEntitiesGossipGraphBannedNodeEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphBannedNodeEntity", null, relationalModel);
             var nodeIdColumnBase = new ColumnBase<ColumnMappingBase>("NodeId", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphBannedNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphBannedNodeEntityTableBase.Columns.Add("NodeId", nodeIdColumnBase);
@@ -5181,13 +5571,13 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphBannedNodeEntity", nLightningInfrastructurePersistenceEntitiesGossipGraphBannedNodeEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesGossipGraphBannedNodeEntityMappingBase = new TableMappingBase<ColumnMappingBase>(graphBannedNodeEntity, nLightningInfrastructurePersistenceEntitiesGossipGraphBannedNodeEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesGossipGraphBannedNodeEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesGossipGraphBannedNodeEntityMappingBase, false);
-            defaultTableMappings35.Add(nLightningInfrastructurePersistenceEntitiesGossipGraphBannedNodeEntityMappingBase);
+            defaultTableMappings38.Add(nLightningInfrastructurePersistenceEntitiesGossipGraphBannedNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nodeIdColumnBase, graphBannedNodeEntity.FindProperty("NodeId")!, nLightningInfrastructurePersistenceEntitiesGossipGraphBannedNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)reasonColumnBase, graphBannedNodeEntity.FindProperty("Reason")!, nLightningInfrastructurePersistenceEntitiesGossipGraphBannedNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)untilColumnBase, graphBannedNodeEntity.FindProperty("Until")!, nLightningInfrastructurePersistenceEntitiesGossipGraphBannedNodeEntityMappingBase);
 
-            var tableMappings35 = new List<TableMapping>();
-            graphBannedNodeEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings35);
+            var tableMappings38 = new List<TableMapping>();
+            graphBannedNodeEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings38);
             var graphBannedNodesTable = new Table("GraphBannedNodes", null, relationalModel);
             var nodeIdColumn = new Column("NodeId", "BLOB", graphBannedNodesTable);
             graphBannedNodesTable.Columns.Add("NodeId", nodeIdColumn);
@@ -5201,7 +5591,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("GraphBannedNodes", null), graphBannedNodesTable);
             var graphBannedNodesTableMapping = new TableMapping(graphBannedNodeEntity, graphBannedNodesTable, null);
             graphBannedNodesTable.AddTypeMapping(graphBannedNodesTableMapping, false);
-            tableMappings35.Add(graphBannedNodesTableMapping);
+            tableMappings38.Add(graphBannedNodesTableMapping);
             RelationalModel.CreateColumnMapping(nodeIdColumn, graphBannedNodeEntity.FindProperty("NodeId")!, graphBannedNodesTableMapping);
             RelationalModel.CreateColumnMapping(reasonColumn, graphBannedNodeEntity.FindProperty("Reason")!, graphBannedNodesTableMapping);
             RelationalModel.CreateColumnMapping(untilColumn, graphBannedNodeEntity.FindProperty("Until")!, graphBannedNodesTableMapping);
@@ -5217,8 +5607,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var graphChannelEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelEntity")!;
 
-            var defaultTableMappings36 = new List<TableMappingBase<ColumnMappingBase>>();
-            graphChannelEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings36);
+            var defaultTableMappings39 = new List<TableMappingBase<ColumnMappingBase>>();
+            graphChannelEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings39);
             var nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelEntity", null, relationalModel);
             var bitcoinKey1ColumnBase = new ColumnBase<ColumnMappingBase>("BitcoinKey1", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase)
             {
@@ -5256,17 +5646,17 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("ReceivedAt", receivedAtColumnBase);
             var shortChannelIdColumnBase2 = new ColumnBase<ColumnMappingBase>("ShortChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("ShortChannelId", shortChannelIdColumnBase2);
-            var spentAtHeightColumnBase0 = new ColumnBase<ColumnMappingBase>("SpentAtHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase)
+            var spentAtHeightColumnBase1 = new ColumnBase<ColumnMappingBase>("SpentAtHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase)
             {
                 IsNullable = true
             };
-            nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("SpentAtHeight", spentAtHeightColumnBase0);
+            nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("SpentAtHeight", spentAtHeightColumnBase1);
             var verificationColumnBase = new ColumnBase<ColumnMappingBase>("Verification", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.Columns.Add("Verification", verificationColumnBase);
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelEntity", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase = new TableMappingBase<ColumnMappingBase>(graphChannelEntity, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase, false);
-            defaultTableMappings36.Add(nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
+            defaultTableMappings39.Add(nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)shortChannelIdColumnBase2, graphChannelEntity.FindProperty("ShortChannelId")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)bitcoinKey1ColumnBase, graphChannelEntity.FindProperty("BitcoinKey1")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)bitcoinKey2ColumnBase, graphChannelEntity.FindProperty("BitcoinKey2")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
@@ -5279,11 +5669,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)rawAnnouncementColumnBase, graphChannelEntity.FindProperty("RawAnnouncement")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)rawAnnouncement2ColumnBase, graphChannelEntity.FindProperty("RawAnnouncement2")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)receivedAtColumnBase, graphChannelEntity.FindProperty("ReceivedAt")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)spentAtHeightColumnBase0, graphChannelEntity.FindProperty("SpentAtHeight")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)spentAtHeightColumnBase1, graphChannelEntity.FindProperty("SpentAtHeight")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)verificationColumnBase, graphChannelEntity.FindProperty("Verification")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelEntityMappingBase);
 
-            var tableMappings36 = new List<TableMapping>();
-            graphChannelEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings36);
+            var tableMappings39 = new List<TableMapping>();
+            graphChannelEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings39);
             var graphChannelsTable = new Table("GraphChannels", null, relationalModel);
             var shortChannelIdColumn2 = new Column("ShortChannelId", "BLOB", graphChannelsTable);
             graphChannelsTable.Columns.Add("ShortChannelId", shortChannelIdColumn2);
@@ -5333,19 +5723,19 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var receivedAtColumn = new Column("ReceivedAt", "INTEGER", graphChannelsTable);
             graphChannelsTable.Columns.Add("ReceivedAt", receivedAtColumn);
             receivedAtColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(receivedAtColumn);
-            var spentAtHeightColumn0 = new Column("SpentAtHeight", "INTEGER", graphChannelsTable)
+            var spentAtHeightColumn1 = new Column("SpentAtHeight", "INTEGER", graphChannelsTable)
             {
                 IsNullable = true
             };
-            graphChannelsTable.Columns.Add("SpentAtHeight", spentAtHeightColumn0);
-            spentAtHeightColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(spentAtHeightColumn0);
+            graphChannelsTable.Columns.Add("SpentAtHeight", spentAtHeightColumn1);
+            spentAtHeightColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(spentAtHeightColumn1);
             var verificationColumn = new Column("Verification", "INTEGER", graphChannelsTable);
             graphChannelsTable.Columns.Add("Verification", verificationColumn);
             verificationColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(verificationColumn);
             relationalModel.Tables.Add(("GraphChannels", null), graphChannelsTable);
             var graphChannelsTableMapping = new TableMapping(graphChannelEntity, graphChannelsTable, null);
             graphChannelsTable.AddTypeMapping(graphChannelsTableMapping, false);
-            tableMappings36.Add(graphChannelsTableMapping);
+            tableMappings39.Add(graphChannelsTableMapping);
             RelationalModel.CreateColumnMapping(shortChannelIdColumn2, graphChannelEntity.FindProperty("ShortChannelId")!, graphChannelsTableMapping);
             RelationalModel.CreateColumnMapping(bitcoinKey1Column, graphChannelEntity.FindProperty("BitcoinKey1")!, graphChannelsTableMapping);
             RelationalModel.CreateColumnMapping(bitcoinKey2Column, graphChannelEntity.FindProperty("BitcoinKey2")!, graphChannelsTableMapping);
@@ -5358,7 +5748,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping(rawAnnouncementColumn, graphChannelEntity.FindProperty("RawAnnouncement")!, graphChannelsTableMapping);
             RelationalModel.CreateColumnMapping(rawAnnouncement2Column, graphChannelEntity.FindProperty("RawAnnouncement2")!, graphChannelsTableMapping);
             RelationalModel.CreateColumnMapping(receivedAtColumn, graphChannelEntity.FindProperty("ReceivedAt")!, graphChannelsTableMapping);
-            RelationalModel.CreateColumnMapping(spentAtHeightColumn0, graphChannelEntity.FindProperty("SpentAtHeight")!, graphChannelsTableMapping);
+            RelationalModel.CreateColumnMapping(spentAtHeightColumn1, graphChannelEntity.FindProperty("SpentAtHeight")!, graphChannelsTableMapping);
             RelationalModel.CreateColumnMapping(verificationColumn, graphChannelEntity.FindProperty("Verification")!, graphChannelsTableMapping);
             var pK_GraphChannels = new UniqueConstraint("PK_GraphChannels", graphChannelsTable, new[] { shortChannelIdColumn2 });
             graphChannelsTable.PrimaryKey = pK_GraphChannels;
@@ -5388,7 +5778,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.GetOrCreateTableIndexes(iX_GraphChannels_NodeId2Ix).Add(iX_GraphChannels_NodeId2);
             graphChannelsTable.Indexes.Add("IX_GraphChannels_NodeId2", iX_GraphChannels_NodeId2);
             var iX_GraphChannels_SpentAtHeight = new TableIndex(
-            "IX_GraphChannels_SpentAtHeight", graphChannelsTable, new[] { spentAtHeightColumn0 }, false);
+            "IX_GraphChannels_SpentAtHeight", graphChannelsTable, new[] { spentAtHeightColumn1 }, false);
             iX_GraphChannels_SpentAtHeight.SetRowIndexValueFactory(new SimpleRowIndexValueFactory<uint>(iX_GraphChannels_SpentAtHeight));
             var iX_GraphChannels_SpentAtHeightIx = RelationalModel.GetIndex(this,
                 "NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelEntity",
@@ -5399,8 +5789,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var graphChannelPolicyEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelPolicyEntity")!;
 
-            var defaultTableMappings37 = new List<TableMappingBase<ColumnMappingBase>>();
-            graphChannelPolicyEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings37);
+            var defaultTableMappings40 = new List<TableMappingBase<ColumnMappingBase>>();
+            graphChannelPolicyEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings40);
             var nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelPolicyEntity", null, relationalModel);
             var channelFlagsColumnBase = new ColumnBase<ColumnMappingBase>("ChannelFlags", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.Columns.Add("ChannelFlags", channelFlagsColumnBase);
@@ -5433,7 +5823,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelPolicyEntity", nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase = new TableMappingBase<ColumnMappingBase>(graphChannelPolicyEntity, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase, false);
-            defaultTableMappings37.Add(nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
+            defaultTableMappings40.Add(nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)directionColumnBase1, graphChannelPolicyEntity.FindProperty("Direction")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)shortChannelIdColumnBase3, graphChannelPolicyEntity.FindProperty("ShortChannelId")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)versionColumnBase0, graphChannelPolicyEntity.FindProperty("Version")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
@@ -5449,8 +5839,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)rawUpdateColumnBase, graphChannelPolicyEntity.FindProperty("RawUpdate")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)timestampColumnBase, graphChannelPolicyEntity.FindProperty("Timestamp")!, nLightningInfrastructurePersistenceEntitiesGossipGraphChannelPolicyEntityMappingBase);
 
-            var tableMappings37 = new List<TableMapping>();
-            graphChannelPolicyEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings37);
+            var tableMappings40 = new List<TableMapping>();
+            graphChannelPolicyEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings40);
             var graphChannelPoliciesTable = new Table("GraphChannelPolicies", null, relationalModel);
             var shortChannelIdColumn3 = new Column("ShortChannelId", "BLOB", graphChannelPoliciesTable);
             graphChannelPoliciesTable.Columns.Add("ShortChannelId", shortChannelIdColumn3);
@@ -5497,7 +5887,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("GraphChannelPolicies", null), graphChannelPoliciesTable);
             var graphChannelPoliciesTableMapping = new TableMapping(graphChannelPolicyEntity, graphChannelPoliciesTable, null);
             graphChannelPoliciesTable.AddTypeMapping(graphChannelPoliciesTableMapping, false);
-            tableMappings37.Add(graphChannelPoliciesTableMapping);
+            tableMappings40.Add(graphChannelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(directionColumn1, graphChannelPolicyEntity.FindProperty("Direction")!, graphChannelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(shortChannelIdColumn3, graphChannelPolicyEntity.FindProperty("ShortChannelId")!, graphChannelPoliciesTableMapping);
             RelationalModel.CreateColumnMapping(versionColumn0, graphChannelPolicyEntity.FindProperty("Version")!, graphChannelPoliciesTableMapping);
@@ -5524,18 +5914,18 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var graphNodeEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphNodeEntity")!;
 
-            var defaultTableMappings38 = new List<TableMappingBase<ColumnMappingBase>>();
-            graphNodeEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings38);
+            var defaultTableMappings41 = new List<TableMappingBase<ColumnMappingBase>>();
+            graphNodeEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings41);
             var nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphNodeEntity", null, relationalModel);
             var addressesColumnBase = new ColumnBase<ColumnMappingBase>("Addresses", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("Addresses", addressesColumnBase);
             var aliasColumnBase0 = new ColumnBase<ColumnMappingBase>("Alias", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("Alias", aliasColumnBase0);
-            var blockHeightColumnBase2 = new ColumnBase<ColumnMappingBase>("BlockHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase)
+            var blockHeightColumnBase3 = new ColumnBase<ColumnMappingBase>("BlockHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase)
             {
                 IsNullable = true
             };
-            nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("BlockHeight", blockHeightColumnBase2);
+            nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("BlockHeight", blockHeightColumnBase3);
             var colorColumnBase = new ColumnBase<ColumnMappingBase>("Color", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.Columns.Add("Color", colorColumnBase);
             var featuresColumnBase0 = new ColumnBase<ColumnMappingBase>("Features", "BLOB", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
@@ -5558,11 +5948,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphNodeEntity", nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase = new TableMappingBase<ColumnMappingBase>(graphNodeEntity, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase, false);
-            defaultTableMappings38.Add(nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
+            defaultTableMappings41.Add(nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nodeIdColumnBase0, graphNodeEntity.FindProperty("NodeId")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)addressesColumnBase, graphNodeEntity.FindProperty("Addresses")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)aliasColumnBase0, graphNodeEntity.FindProperty("Alias")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blockHeightColumnBase2, graphNodeEntity.FindProperty("BlockHeight")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blockHeightColumnBase3, graphNodeEntity.FindProperty("BlockHeight")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)colorColumnBase, graphNodeEntity.FindProperty("Color")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)featuresColumnBase0, graphNodeEntity.FindProperty("Features")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)gossipVersionsColumnBase0, graphNodeEntity.FindProperty("GossipVersions")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
@@ -5571,8 +5961,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)receivedAtColumnBase0, graphNodeEntity.FindProperty("ReceivedAt")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)timestampColumnBase0, graphNodeEntity.FindProperty("Timestamp")!, nLightningInfrastructurePersistenceEntitiesGossipGraphNodeEntityMappingBase);
 
-            var tableMappings38 = new List<TableMapping>();
-            graphNodeEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings38);
+            var tableMappings41 = new List<TableMapping>();
+            graphNodeEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings41);
             var graphNodesTable = new Table("GraphNodes", null, relationalModel);
             var nodeIdColumn0 = new Column("NodeId", "BLOB", graphNodesTable);
             graphNodesTable.Columns.Add("NodeId", nodeIdColumn0);
@@ -5583,12 +5973,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var aliasColumn0 = new Column("Alias", "BLOB", graphNodesTable);
             graphNodesTable.Columns.Add("Alias", aliasColumn0);
             aliasColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(aliasColumn0);
-            var blockHeightColumn2 = new Column("BlockHeight", "INTEGER", graphNodesTable)
+            var blockHeightColumn3 = new Column("BlockHeight", "INTEGER", graphNodesTable)
             {
                 IsNullable = true
             };
-            graphNodesTable.Columns.Add("BlockHeight", blockHeightColumn2);
-            blockHeightColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(blockHeightColumn2);
+            graphNodesTable.Columns.Add("BlockHeight", blockHeightColumn3);
+            blockHeightColumn3.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(blockHeightColumn3);
             var colorColumn = new Column("Color", "BLOB", graphNodesTable);
             graphNodesTable.Columns.Add("Color", colorColumn);
             colorColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(colorColumn);
@@ -5616,11 +6006,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("GraphNodes", null), graphNodesTable);
             var graphNodesTableMapping = new TableMapping(graphNodeEntity, graphNodesTable, null);
             graphNodesTable.AddTypeMapping(graphNodesTableMapping, false);
-            tableMappings38.Add(graphNodesTableMapping);
+            tableMappings41.Add(graphNodesTableMapping);
             RelationalModel.CreateColumnMapping(nodeIdColumn0, graphNodeEntity.FindProperty("NodeId")!, graphNodesTableMapping);
             RelationalModel.CreateColumnMapping(addressesColumn, graphNodeEntity.FindProperty("Addresses")!, graphNodesTableMapping);
             RelationalModel.CreateColumnMapping(aliasColumn0, graphNodeEntity.FindProperty("Alias")!, graphNodesTableMapping);
-            RelationalModel.CreateColumnMapping(blockHeightColumn2, graphNodeEntity.FindProperty("BlockHeight")!, graphNodesTableMapping);
+            RelationalModel.CreateColumnMapping(blockHeightColumn3, graphNodeEntity.FindProperty("BlockHeight")!, graphNodesTableMapping);
             RelationalModel.CreateColumnMapping(colorColumn, graphNodeEntity.FindProperty("Color")!, graphNodesTableMapping);
             RelationalModel.CreateColumnMapping(featuresColumn0, graphNodeEntity.FindProperty("Features")!, graphNodesTableMapping);
             RelationalModel.CreateColumnMapping(gossipVersionsColumn0, graphNodeEntity.FindProperty("GossipVersions")!, graphNodesTableMapping);
@@ -5640,8 +6030,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var liquidityPurchaseEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.LiquidityAds.LiquidityPurchaseEntity")!;
 
-            var defaultTableMappings39 = new List<TableMappingBase<ColumnMappingBase>>();
-            liquidityPurchaseEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings39);
+            var defaultTableMappings42 = new List<TableMappingBase<ColumnMappingBase>>();
+            liquidityPurchaseEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings42);
             var nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.LiquidityAds.LiquidityPurchaseEntity", null, relationalModel);
             var channelIdColumnBase17 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase17);
@@ -5660,8 +6050,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase.Columns.Add("FundingScript", fundingScriptColumnBase);
             var fundingTxIdColumnBase4 = new ColumnBase<ColumnMappingBase>("FundingTxId", "BLOB", nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase.Columns.Add("FundingTxId", fundingTxIdColumnBase4);
-            var idColumnBase8 = new ColumnBase<ColumnMappingBase>("Id", "INTEGER", nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase);
-            nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase.Columns.Add("Id", idColumnBase8);
+            var idColumnBase9 = new ColumnBase<ColumnMappingBase>("Id", "INTEGER", nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase.Columns.Add("Id", idColumnBase9);
             var kindColumnBase3 = new ColumnBase<ColumnMappingBase>("Kind", "INTEGER", nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase.Columns.Add("Kind", kindColumnBase3);
             var leaseBlocksColumnBase = new ColumnBase<ColumnMappingBase>("LeaseBlocks", "INTEGER", nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase);
@@ -5707,8 +6097,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.LiquidityAds.LiquidityPurchaseEntity", nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase = new TableMappingBase<ColumnMappingBase>(liquidityPurchaseEntity, nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase, false);
-            defaultTableMappings39.Add(nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)idColumnBase8, liquidityPurchaseEntity.FindProperty("Id")!, nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
+            defaultTableMappings42.Add(nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)idColumnBase9, liquidityPurchaseEntity.FindProperty("Id")!, nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase17, liquidityPurchaseEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)closedAtHeightColumnBase, liquidityPurchaseEntity.FindProperty("ClosedAtHeight")!, nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)closedEarlyColumnBase, liquidityPurchaseEntity.FindProperty("ClosedEarly")!, nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
@@ -5735,12 +6125,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)signatureColumnBase1, liquidityPurchaseEntity.FindProperty("Signature")!, nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)statusColumnBase0, liquidityPurchaseEntity.FindProperty("Status")!, nLightningInfrastructurePersistenceEntitiesLiquidityAdsLiquidityPurchaseEntityMappingBase);
 
-            var tableMappings39 = new List<TableMapping>();
-            liquidityPurchaseEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings39);
+            var tableMappings42 = new List<TableMapping>();
+            liquidityPurchaseEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings42);
             var liquidityPurchasesTable = new Table("LiquidityPurchases", null, relationalModel);
-            var idColumn8 = new Column("Id", "INTEGER", liquidityPurchasesTable);
-            liquidityPurchasesTable.Columns.Add("Id", idColumn8);
-            idColumn8.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(idColumn8);
+            var idColumn9 = new Column("Id", "INTEGER", liquidityPurchasesTable);
+            liquidityPurchasesTable.Columns.Add("Id", idColumn9);
+            idColumn9.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(idColumn9);
             var channelIdColumn17 = new Column("ChannelId", "BLOB", liquidityPurchasesTable);
             liquidityPurchasesTable.Columns.Add("ChannelId", channelIdColumn17);
             channelIdColumn17.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(channelIdColumn17);
@@ -5828,8 +6218,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("LiquidityPurchases", null), liquidityPurchasesTable);
             var liquidityPurchasesTableMapping = new TableMapping(liquidityPurchaseEntity, liquidityPurchasesTable, null);
             liquidityPurchasesTable.AddTypeMapping(liquidityPurchasesTableMapping, false);
-            tableMappings39.Add(liquidityPurchasesTableMapping);
-            RelationalModel.CreateColumnMapping(idColumn8, liquidityPurchaseEntity.FindProperty("Id")!, liquidityPurchasesTableMapping);
+            tableMappings42.Add(liquidityPurchasesTableMapping);
+            RelationalModel.CreateColumnMapping(idColumn9, liquidityPurchaseEntity.FindProperty("Id")!, liquidityPurchasesTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn17, liquidityPurchaseEntity.FindProperty("ChannelId")!, liquidityPurchasesTableMapping);
             RelationalModel.CreateColumnMapping(closedAtHeightColumn, liquidityPurchaseEntity.FindProperty("ClosedAtHeight")!, liquidityPurchasesTableMapping);
             RelationalModel.CreateColumnMapping(closedEarlyColumn, liquidityPurchaseEntity.FindProperty("ClosedEarly")!, liquidityPurchasesTableMapping);
@@ -5855,7 +6245,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping(serviceFeeSatColumn, liquidityPurchaseEntity.FindProperty("ServiceFeeSat")!, liquidityPurchasesTableMapping);
             RelationalModel.CreateColumnMapping(signatureColumn1, liquidityPurchaseEntity.FindProperty("Signature")!, liquidityPurchasesTableMapping);
             RelationalModel.CreateColumnMapping(statusColumn0, liquidityPurchaseEntity.FindProperty("Status")!, liquidityPurchasesTableMapping);
-            var pK_LiquidityPurchases = new UniqueConstraint("PK_LiquidityPurchases", liquidityPurchasesTable, new[] { idColumn8 });
+            var pK_LiquidityPurchases = new UniqueConstraint("PK_LiquidityPurchases", liquidityPurchasesTable, new[] { idColumn9 });
             liquidityPurchasesTable.PrimaryKey = pK_LiquidityPurchases;
             pK_LiquidityPurchases.SetRowKeyValueFactory(new SimpleRowKeyValueFactory<long>(pK_LiquidityPurchases));
             var pK_LiquidityPurchasesKey = RelationalModel.GetKey(this,
@@ -5894,35 +6284,35 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var keyRingKeyEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Node.KeyRingKeyEntity")!;
 
-            var defaultTableMappings40 = new List<TableMappingBase<ColumnMappingBase>>();
-            keyRingKeyEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings40);
+            var defaultTableMappings43 = new List<TableMappingBase<ColumnMappingBase>>();
+            keyRingKeyEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings43);
             var nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Node.KeyRingKeyEntity", null, relationalModel);
             var createdAtColumnBase8 = new ColumnBase<ColumnMappingBase>("CreatedAt", "INTEGER", nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityTableBase.Columns.Add("CreatedAt", createdAtColumnBase8);
             var familyColumnBase = new ColumnBase<ColumnMappingBase>("Family", "INTEGER", nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityTableBase.Columns.Add("Family", familyColumnBase);
-            var indexColumnBase4 = new ColumnBase<ColumnMappingBase>("Index", "INTEGER", nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityTableBase);
-            nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityTableBase.Columns.Add("Index", indexColumnBase4);
+            var indexColumnBase5 = new ColumnBase<ColumnMappingBase>("Index", "INTEGER", nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityTableBase.Columns.Add("Index", indexColumnBase5);
             var publicKeyColumnBase = new ColumnBase<ColumnMappingBase>("PublicKey", "BLOB", nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityTableBase.Columns.Add("PublicKey", publicKeyColumnBase);
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Node.KeyRingKeyEntity", nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityMappingBase = new TableMappingBase<ColumnMappingBase>(keyRingKeyEntity, nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityMappingBase, false);
-            defaultTableMappings40.Add(nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityMappingBase);
+            defaultTableMappings43.Add(nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)familyColumnBase, keyRingKeyEntity.FindProperty("Family")!, nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)indexColumnBase4, keyRingKeyEntity.FindProperty("Index")!, nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)indexColumnBase5, keyRingKeyEntity.FindProperty("Index")!, nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)createdAtColumnBase8, keyRingKeyEntity.FindProperty("CreatedAt")!, nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)publicKeyColumnBase, keyRingKeyEntity.FindProperty("PublicKey")!, nLightningInfrastructurePersistenceEntitiesNodeKeyRingKeyEntityMappingBase);
 
-            var tableMappings40 = new List<TableMapping>();
-            keyRingKeyEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings40);
+            var tableMappings43 = new List<TableMapping>();
+            keyRingKeyEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings43);
             var keyRingKeysTable = new Table("KeyRingKeys", null, relationalModel);
             var familyColumn = new Column("Family", "INTEGER", keyRingKeysTable);
             keyRingKeysTable.Columns.Add("Family", familyColumn);
             familyColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<int>(familyColumn);
-            var indexColumn4 = new Column("Index", "INTEGER", keyRingKeysTable);
-            keyRingKeysTable.Columns.Add("Index", indexColumn4);
-            indexColumn4.Accessors = ColumnAccessorsFactory.CreateGeneric<int>(indexColumn4);
+            var indexColumn5 = new Column("Index", "INTEGER", keyRingKeysTable);
+            keyRingKeysTable.Columns.Add("Index", indexColumn5);
+            indexColumn5.Accessors = ColumnAccessorsFactory.CreateGeneric<int>(indexColumn5);
             var createdAtColumn8 = new Column("CreatedAt", "INTEGER", keyRingKeysTable);
             keyRingKeysTable.Columns.Add("CreatedAt", createdAtColumn8);
             createdAtColumn8.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(createdAtColumn8);
@@ -5932,12 +6322,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("KeyRingKeys", null), keyRingKeysTable);
             var keyRingKeysTableMapping = new TableMapping(keyRingKeyEntity, keyRingKeysTable, null);
             keyRingKeysTable.AddTypeMapping(keyRingKeysTableMapping, false);
-            tableMappings40.Add(keyRingKeysTableMapping);
+            tableMappings43.Add(keyRingKeysTableMapping);
             RelationalModel.CreateColumnMapping(familyColumn, keyRingKeyEntity.FindProperty("Family")!, keyRingKeysTableMapping);
-            RelationalModel.CreateColumnMapping(indexColumn4, keyRingKeyEntity.FindProperty("Index")!, keyRingKeysTableMapping);
+            RelationalModel.CreateColumnMapping(indexColumn5, keyRingKeyEntity.FindProperty("Index")!, keyRingKeysTableMapping);
             RelationalModel.CreateColumnMapping(createdAtColumn8, keyRingKeyEntity.FindProperty("CreatedAt")!, keyRingKeysTableMapping);
             RelationalModel.CreateColumnMapping(publicKeyColumn, keyRingKeyEntity.FindProperty("PublicKey")!, keyRingKeysTableMapping);
-            var pK_KeyRingKeys = new UniqueConstraint("PK_KeyRingKeys", keyRingKeysTable, new[] { familyColumn, indexColumn4 });
+            var pK_KeyRingKeys = new UniqueConstraint("PK_KeyRingKeys", keyRingKeysTable, new[] { familyColumn, indexColumn5 });
             keyRingKeysTable.PrimaryKey = pK_KeyRingKeys;
             pK_KeyRingKeys.SetRowKeyValueFactory(new CompositeRowKeyValueFactory(pK_KeyRingKeys));
             var pK_KeyRingKeysKey = RelationalModel.GetKey(this,
@@ -5958,8 +6348,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var peerEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity")!;
 
-            var defaultTableMappings41 = new List<TableMappingBase<ColumnMappingBase>>();
-            peerEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings41);
+            var defaultTableMappings44 = new List<TableMappingBase<ColumnMappingBase>>();
+            peerEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings44);
             var nLightningInfrastructurePersistenceEntitiesNodePeerEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", null, relationalModel);
             var hostColumnBase = new ColumnBase<ColumnMappingBase>("Host", "TEXT", nLightningInfrastructurePersistenceEntitiesNodePeerEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesNodePeerEntityTableBase.Columns.Add("Host", hostColumnBase);
@@ -5976,7 +6366,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", nLightningInfrastructurePersistenceEntitiesNodePeerEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesNodePeerEntityMappingBase = new TableMappingBase<ColumnMappingBase>(peerEntity, nLightningInfrastructurePersistenceEntitiesNodePeerEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesNodePeerEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesNodePeerEntityMappingBase, false);
-            defaultTableMappings41.Add(nLightningInfrastructurePersistenceEntitiesNodePeerEntityMappingBase);
+            defaultTableMappings44.Add(nLightningInfrastructurePersistenceEntitiesNodePeerEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nodeIdColumnBase1, peerEntity.FindProperty("NodeId")!, nLightningInfrastructurePersistenceEntitiesNodePeerEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)hostColumnBase, peerEntity.FindProperty("Host")!, nLightningInfrastructurePersistenceEntitiesNodePeerEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)isInboundOnlyColumnBase, peerEntity.FindProperty("IsInboundOnly")!, nLightningInfrastructurePersistenceEntitiesNodePeerEntityMappingBase);
@@ -5984,8 +6374,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)portColumnBase, peerEntity.FindProperty("Port")!, nLightningInfrastructurePersistenceEntitiesNodePeerEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)typeColumnBase, peerEntity.FindProperty("Type")!, nLightningInfrastructurePersistenceEntitiesNodePeerEntityMappingBase);
 
-            var tableMappings41 = new List<TableMapping>();
-            peerEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings41);
+            var tableMappings44 = new List<TableMapping>();
+            peerEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings44);
             var peersTable = new Table("Peers", null, relationalModel);
             var nodeIdColumn1 = new Column("NodeId", "BLOB", peersTable);
             peersTable.Columns.Add("NodeId", nodeIdColumn1);
@@ -6008,7 +6398,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("Peers", null), peersTable);
             var peersTableMapping = new TableMapping(peerEntity, peersTable, null);
             peersTable.AddTypeMapping(peersTableMapping, false);
-            tableMappings41.Add(peersTableMapping);
+            tableMappings44.Add(peersTableMapping);
             RelationalModel.CreateColumnMapping(nodeIdColumn1, peerEntity.FindProperty("NodeId")!, peersTableMapping);
             RelationalModel.CreateColumnMapping(hostColumn, peerEntity.FindProperty("Host")!, peersTableMapping);
             RelationalModel.CreateColumnMapping(isInboundOnlyColumn, peerEntity.FindProperty("IsInboundOnly")!, peersTableMapping);
@@ -6027,8 +6417,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var peerStorageBlobEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Node.PeerStorageBlobEntity")!;
 
-            var defaultTableMappings42 = new List<TableMappingBase<ColumnMappingBase>>();
-            peerStorageBlobEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings42);
+            var defaultTableMappings45 = new List<TableMappingBase<ColumnMappingBase>>();
+            peerStorageBlobEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings45);
             var nLightningInfrastructurePersistenceEntitiesNodePeerStorageBlobEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Node.PeerStorageBlobEntity", null, relationalModel);
             var blobColumnBase = new ColumnBase<ColumnMappingBase>("Blob", "BLOB", nLightningInfrastructurePersistenceEntitiesNodePeerStorageBlobEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesNodePeerStorageBlobEntityTableBase.Columns.Add("Blob", blobColumnBase);
@@ -6039,13 +6429,13 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Node.PeerStorageBlobEntity", nLightningInfrastructurePersistenceEntitiesNodePeerStorageBlobEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesNodePeerStorageBlobEntityMappingBase = new TableMappingBase<ColumnMappingBase>(peerStorageBlobEntity, nLightningInfrastructurePersistenceEntitiesNodePeerStorageBlobEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesNodePeerStorageBlobEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesNodePeerStorageBlobEntityMappingBase, false);
-            defaultTableMappings42.Add(nLightningInfrastructurePersistenceEntitiesNodePeerStorageBlobEntityMappingBase);
+            defaultTableMappings45.Add(nLightningInfrastructurePersistenceEntitiesNodePeerStorageBlobEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nodeIdColumnBase2, peerStorageBlobEntity.FindProperty("NodeId")!, nLightningInfrastructurePersistenceEntitiesNodePeerStorageBlobEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blobColumnBase, peerStorageBlobEntity.FindProperty("Blob")!, nLightningInfrastructurePersistenceEntitiesNodePeerStorageBlobEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)updatedAtColumnBase1, peerStorageBlobEntity.FindProperty("UpdatedAt")!, nLightningInfrastructurePersistenceEntitiesNodePeerStorageBlobEntityMappingBase);
 
-            var tableMappings42 = new List<TableMapping>();
-            peerStorageBlobEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings42);
+            var tableMappings45 = new List<TableMapping>();
+            peerStorageBlobEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings45);
             var peerStorageBlobsTable = new Table("PeerStorageBlobs", null, relationalModel);
             var nodeIdColumn2 = new Column("NodeId", "BLOB", peerStorageBlobsTable);
             peerStorageBlobsTable.Columns.Add("NodeId", nodeIdColumn2);
@@ -6059,7 +6449,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("PeerStorageBlobs", null), peerStorageBlobsTable);
             var peerStorageBlobsTableMapping = new TableMapping(peerStorageBlobEntity, peerStorageBlobsTable, null);
             peerStorageBlobsTable.AddTypeMapping(peerStorageBlobsTableMapping, false);
-            tableMappings42.Add(peerStorageBlobsTableMapping);
+            tableMappings45.Add(peerStorageBlobsTableMapping);
             RelationalModel.CreateColumnMapping(nodeIdColumn2, peerStorageBlobEntity.FindProperty("NodeId")!, peerStorageBlobsTableMapping);
             RelationalModel.CreateColumnMapping(blobColumn, peerStorageBlobEntity.FindProperty("Blob")!, peerStorageBlobsTableMapping);
             RelationalModel.CreateColumnMapping(updatedAtColumn1, peerStorageBlobEntity.FindProperty("UpdatedAt")!, peerStorageBlobsTableMapping);
@@ -6075,8 +6465,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var peerStorageRetrievalEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Node.PeerStorageRetrievalEntity")!;
 
-            var defaultTableMappings43 = new List<TableMappingBase<ColumnMappingBase>>();
-            peerStorageRetrievalEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings43);
+            var defaultTableMappings46 = new List<TableMappingBase<ColumnMappingBase>>();
+            peerStorageRetrievalEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings46);
             var nLightningInfrastructurePersistenceEntitiesNodePeerStorageRetrievalEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Node.PeerStorageRetrievalEntity", null, relationalModel);
             var blobColumnBase0 = new ColumnBase<ColumnMappingBase>("Blob", "BLOB", nLightningInfrastructurePersistenceEntitiesNodePeerStorageRetrievalEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesNodePeerStorageRetrievalEntityTableBase.Columns.Add("Blob", blobColumnBase0);
@@ -6094,15 +6484,15 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Node.PeerStorageRetrievalEntity", nLightningInfrastructurePersistenceEntitiesNodePeerStorageRetrievalEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesNodePeerStorageRetrievalEntityMappingBase = new TableMappingBase<ColumnMappingBase>(peerStorageRetrievalEntity, nLightningInfrastructurePersistenceEntitiesNodePeerStorageRetrievalEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesNodePeerStorageRetrievalEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesNodePeerStorageRetrievalEntityMappingBase, false);
-            defaultTableMappings43.Add(nLightningInfrastructurePersistenceEntitiesNodePeerStorageRetrievalEntityMappingBase);
+            defaultTableMappings46.Add(nLightningInfrastructurePersistenceEntitiesNodePeerStorageRetrievalEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nodeIdColumnBase3, peerStorageRetrievalEntity.FindProperty("NodeId")!, nLightningInfrastructurePersistenceEntitiesNodePeerStorageRetrievalEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blobColumnBase0, peerStorageRetrievalEntity.FindProperty("Blob")!, nLightningInfrastructurePersistenceEntitiesNodePeerStorageRetrievalEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)matchesLastSentColumnBase, peerStorageRetrievalEntity.FindProperty("MatchesLastSent")!, nLightningInfrastructurePersistenceEntitiesNodePeerStorageRetrievalEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)receivedAtColumnBase1, peerStorageRetrievalEntity.FindProperty("ReceivedAt")!, nLightningInfrastructurePersistenceEntitiesNodePeerStorageRetrievalEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)unknownChannelIdsColumnBase, peerStorageRetrievalEntity.FindProperty("UnknownChannelIds")!, nLightningInfrastructurePersistenceEntitiesNodePeerStorageRetrievalEntityMappingBase);
 
-            var tableMappings43 = new List<TableMapping>();
-            peerStorageRetrievalEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings43);
+            var tableMappings46 = new List<TableMapping>();
+            peerStorageRetrievalEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings46);
             var peerStorageRetrievalsTable = new Table("PeerStorageRetrievals", null, relationalModel);
             var nodeIdColumn3 = new Column("NodeId", "BLOB", peerStorageRetrievalsTable);
             peerStorageRetrievalsTable.Columns.Add("NodeId", nodeIdColumn3);
@@ -6125,7 +6515,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("PeerStorageRetrievals", null), peerStorageRetrievalsTable);
             var peerStorageRetrievalsTableMapping = new TableMapping(peerStorageRetrievalEntity, peerStorageRetrievalsTable, null);
             peerStorageRetrievalsTable.AddTypeMapping(peerStorageRetrievalsTableMapping, false);
-            tableMappings43.Add(peerStorageRetrievalsTableMapping);
+            tableMappings46.Add(peerStorageRetrievalsTableMapping);
             RelationalModel.CreateColumnMapping(nodeIdColumn3, peerStorageRetrievalEntity.FindProperty("NodeId")!, peerStorageRetrievalsTableMapping);
             RelationalModel.CreateColumnMapping(blobColumn0, peerStorageRetrievalEntity.FindProperty("Blob")!, peerStorageRetrievalsTableMapping);
             RelationalModel.CreateColumnMapping(matchesLastSentColumn, peerStorageRetrievalEntity.FindProperty("MatchesLastSent")!, peerStorageRetrievalsTableMapping);
@@ -6143,11 +6533,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var channelCloseEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Onchain.ChannelCloseEntity")!;
 
-            var defaultTableMappings44 = new List<TableMappingBase<ColumnMappingBase>>();
-            channelCloseEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings44);
+            var defaultTableMappings47 = new List<TableMappingBase<ColumnMappingBase>>();
+            channelCloseEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings47);
             var nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Onchain.ChannelCloseEntity", null, relationalModel);
-            var blockHashColumnBase1 = new ColumnBase<ColumnMappingBase>("BlockHash", "BLOB", nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase);
-            nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase.Columns.Add("BlockHash", blockHashColumnBase1);
+            var blockHashColumnBase2 = new ColumnBase<ColumnMappingBase>("BlockHash", "BLOB", nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase.Columns.Add("BlockHash", blockHashColumnBase2);
             var channelIdColumnBase18 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase18);
             var commitmentNumberColumnBase0 = new ColumnBase<ColumnMappingBase>("CommitmentNumber", "INTEGER", nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase)
@@ -6161,29 +6551,29 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase.Columns.Add("CreatedAt", createdAtColumnBase9);
             var kindColumnBase4 = new ColumnBase<ColumnMappingBase>("Kind", "INTEGER", nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase.Columns.Add("Kind", kindColumnBase4);
-            var spentAtHeightColumnBase1 = new ColumnBase<ColumnMappingBase>("SpentAtHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase);
-            nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase.Columns.Add("SpentAtHeight", spentAtHeightColumnBase1);
+            var spentAtHeightColumnBase2 = new ColumnBase<ColumnMappingBase>("SpentAtHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase.Columns.Add("SpentAtHeight", spentAtHeightColumnBase2);
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Onchain.ChannelCloseEntity", nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityMappingBase = new TableMappingBase<ColumnMappingBase>(channelCloseEntity, nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityMappingBase, false);
-            defaultTableMappings44.Add(nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityMappingBase);
+            defaultTableMappings47.Add(nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase18, channelCloseEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blockHashColumnBase1, channelCloseEntity.FindProperty("BlockHash")!, nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blockHashColumnBase2, channelCloseEntity.FindProperty("BlockHash")!, nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)commitmentNumberColumnBase0, channelCloseEntity.FindProperty("CommitmentNumber")!, nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)commitmentTxIdColumnBase, channelCloseEntity.FindProperty("CommitmentTxId")!, nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)createdAtColumnBase9, channelCloseEntity.FindProperty("CreatedAt")!, nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)kindColumnBase4, channelCloseEntity.FindProperty("Kind")!, nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)spentAtHeightColumnBase1, channelCloseEntity.FindProperty("SpentAtHeight")!, nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)spentAtHeightColumnBase2, channelCloseEntity.FindProperty("SpentAtHeight")!, nLightningInfrastructurePersistenceEntitiesOnchainChannelCloseEntityMappingBase);
 
-            var tableMappings44 = new List<TableMapping>();
-            channelCloseEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings44);
+            var tableMappings47 = new List<TableMapping>();
+            channelCloseEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings47);
             var channelClosesTable = new Table("ChannelCloses", null, relationalModel);
             var channelIdColumn18 = new Column("ChannelId", "BLOB", channelClosesTable);
             channelClosesTable.Columns.Add("ChannelId", channelIdColumn18);
             channelIdColumn18.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(channelIdColumn18);
-            var blockHashColumn1 = new Column("BlockHash", "BLOB", channelClosesTable);
-            channelClosesTable.Columns.Add("BlockHash", blockHashColumn1);
-            blockHashColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(blockHashColumn1);
+            var blockHashColumn2 = new Column("BlockHash", "BLOB", channelClosesTable);
+            channelClosesTable.Columns.Add("BlockHash", blockHashColumn2);
+            blockHashColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(blockHashColumn2);
             var commitmentNumberColumn0 = new Column("CommitmentNumber", "INTEGER", channelClosesTable)
             {
                 IsNullable = true
@@ -6199,20 +6589,20 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var kindColumn4 = new Column("Kind", "INTEGER", channelClosesTable);
             channelClosesTable.Columns.Add("Kind", kindColumn4);
             kindColumn4.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(kindColumn4);
-            var spentAtHeightColumn1 = new Column("SpentAtHeight", "INTEGER", channelClosesTable);
-            channelClosesTable.Columns.Add("SpentAtHeight", spentAtHeightColumn1);
-            spentAtHeightColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(spentAtHeightColumn1);
+            var spentAtHeightColumn2 = new Column("SpentAtHeight", "INTEGER", channelClosesTable);
+            channelClosesTable.Columns.Add("SpentAtHeight", spentAtHeightColumn2);
+            spentAtHeightColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(spentAtHeightColumn2);
             relationalModel.Tables.Add(("ChannelCloses", null), channelClosesTable);
             var channelClosesTableMapping = new TableMapping(channelCloseEntity, channelClosesTable, null);
             channelClosesTable.AddTypeMapping(channelClosesTableMapping, false);
-            tableMappings44.Add(channelClosesTableMapping);
+            tableMappings47.Add(channelClosesTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn18, channelCloseEntity.FindProperty("ChannelId")!, channelClosesTableMapping);
-            RelationalModel.CreateColumnMapping(blockHashColumn1, channelCloseEntity.FindProperty("BlockHash")!, channelClosesTableMapping);
+            RelationalModel.CreateColumnMapping(blockHashColumn2, channelCloseEntity.FindProperty("BlockHash")!, channelClosesTableMapping);
             RelationalModel.CreateColumnMapping(commitmentNumberColumn0, channelCloseEntity.FindProperty("CommitmentNumber")!, channelClosesTableMapping);
             RelationalModel.CreateColumnMapping(commitmentTxIdColumn, channelCloseEntity.FindProperty("CommitmentTxId")!, channelClosesTableMapping);
             RelationalModel.CreateColumnMapping(createdAtColumn9, channelCloseEntity.FindProperty("CreatedAt")!, channelClosesTableMapping);
             RelationalModel.CreateColumnMapping(kindColumn4, channelCloseEntity.FindProperty("Kind")!, channelClosesTableMapping);
-            RelationalModel.CreateColumnMapping(spentAtHeightColumn1, channelCloseEntity.FindProperty("SpentAtHeight")!, channelClosesTableMapping);
+            RelationalModel.CreateColumnMapping(spentAtHeightColumn2, channelCloseEntity.FindProperty("SpentAtHeight")!, channelClosesTableMapping);
             var pK_ChannelCloses = new UniqueConstraint("PK_ChannelCloses", channelClosesTable, new[] { channelIdColumn18 });
             channelClosesTable.PrimaryKey = pK_ChannelCloses;
             pK_ChannelCloses.SetRowKeyValueFactory(new SimpleRowKeyValueFactory<byte[]>(pK_ChannelCloses));
@@ -6225,8 +6615,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var onchainHtlcObservationEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Onchain.OnchainHtlcObservationEntity")!;
 
-            var defaultTableMappings45 = new List<TableMappingBase<ColumnMappingBase>>();
-            onchainHtlcObservationEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings45);
+            var defaultTableMappings48 = new List<TableMappingBase<ColumnMappingBase>>();
+            onchainHtlcObservationEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings48);
             var nLightningInfrastructurePersistenceEntitiesOnchainOnchainHtlcObservationEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Onchain.OnchainHtlcObservationEntity", null, relationalModel);
             var channelIdColumnBase19 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesOnchainOnchainHtlcObservationEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesOnchainOnchainHtlcObservationEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase19);
@@ -6241,15 +6631,15 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Onchain.OnchainHtlcObservationEntity", nLightningInfrastructurePersistenceEntitiesOnchainOnchainHtlcObservationEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesOnchainOnchainHtlcObservationEntityMappingBase = new TableMappingBase<ColumnMappingBase>(onchainHtlcObservationEntity, nLightningInfrastructurePersistenceEntitiesOnchainOnchainHtlcObservationEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesOnchainOnchainHtlcObservationEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesOnchainOnchainHtlcObservationEntityMappingBase, false);
-            defaultTableMappings45.Add(nLightningInfrastructurePersistenceEntitiesOnchainOnchainHtlcObservationEntityMappingBase);
+            defaultTableMappings48.Add(nLightningInfrastructurePersistenceEntitiesOnchainOnchainHtlcObservationEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase19, onchainHtlcObservationEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesOnchainOnchainHtlcObservationEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)directionColumnBase2, onchainHtlcObservationEntity.FindProperty("Direction")!, nLightningInfrastructurePersistenceEntitiesOnchainOnchainHtlcObservationEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)htlcIdColumnBase0, onchainHtlcObservationEntity.FindProperty("HtlcId")!, nLightningInfrastructurePersistenceEntitiesOnchainOnchainHtlcObservationEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)settledColumnBase, onchainHtlcObservationEntity.FindProperty("Settled")!, nLightningInfrastructurePersistenceEntitiesOnchainOnchainHtlcObservationEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)observedAtColumnBase, onchainHtlcObservationEntity.FindProperty("ObservedAt")!, nLightningInfrastructurePersistenceEntitiesOnchainOnchainHtlcObservationEntityMappingBase);
 
-            var tableMappings45 = new List<TableMapping>();
-            onchainHtlcObservationEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings45);
+            var tableMappings48 = new List<TableMapping>();
+            onchainHtlcObservationEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings48);
             var onchainHtlcObservationsTable = new Table("OnchainHtlcObservations", null, relationalModel);
             var channelIdColumn19 = new Column("ChannelId", "BLOB", onchainHtlcObservationsTable);
             onchainHtlcObservationsTable.Columns.Add("ChannelId", channelIdColumn19);
@@ -6269,7 +6659,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("OnchainHtlcObservations", null), onchainHtlcObservationsTable);
             var onchainHtlcObservationsTableMapping = new TableMapping(onchainHtlcObservationEntity, onchainHtlcObservationsTable, null);
             onchainHtlcObservationsTable.AddTypeMapping(onchainHtlcObservationsTableMapping, false);
-            tableMappings45.Add(onchainHtlcObservationsTableMapping);
+            tableMappings48.Add(onchainHtlcObservationsTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn19, onchainHtlcObservationEntity.FindProperty("ChannelId")!, onchainHtlcObservationsTableMapping);
             RelationalModel.CreateColumnMapping(directionColumn2, onchainHtlcObservationEntity.FindProperty("Direction")!, onchainHtlcObservationsTableMapping);
             RelationalModel.CreateColumnMapping(htlcIdColumn0, onchainHtlcObservationEntity.FindProperty("HtlcId")!, onchainHtlcObservationsTableMapping);
@@ -6287,8 +6677,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var outputResolutionEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Onchain.OutputResolutionEntity")!;
 
-            var defaultTableMappings46 = new List<TableMappingBase<ColumnMappingBase>>();
-            outputResolutionEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings46);
+            var defaultTableMappings49 = new List<TableMappingBase<ColumnMappingBase>>();
+            outputResolutionEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings49);
             var nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Onchain.OutputResolutionEntity", null, relationalModel);
             var channelIdColumnBase20 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase20);
@@ -6327,8 +6717,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityTableBase.Columns.Add("ResolvingTxId", resolvingTxIdColumnBase);
             var stateColumnBase6 = new ColumnBase<ColumnMappingBase>("State", "INTEGER", nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityTableBase.Columns.Add("State", stateColumnBase6);
-            var transactionIdColumnBase4 = new ColumnBase<ColumnMappingBase>("TransactionId", "BLOB", nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityTableBase);
-            nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityTableBase.Columns.Add("TransactionId", transactionIdColumnBase4);
+            var transactionIdColumnBase5 = new ColumnBase<ColumnMappingBase>("TransactionId", "BLOB", nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityTableBase.Columns.Add("TransactionId", transactionIdColumnBase5);
             var waitUntilHeightColumnBase = new ColumnBase<ColumnMappingBase>("WaitUntilHeight", "INTEGER", nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityTableBase)
             {
                 IsNullable = true
@@ -6337,9 +6727,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Onchain.OutputResolutionEntity", nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityMappingBase = new TableMappingBase<ColumnMappingBase>(outputResolutionEntity, nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityMappingBase, false);
-            defaultTableMappings46.Add(nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityMappingBase);
+            defaultTableMappings49.Add(nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)outputIndexColumnBase4, outputResolutionEntity.FindProperty("OutputIndex")!, nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)transactionIdColumnBase4, outputResolutionEntity.FindProperty("TransactionId")!, nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)transactionIdColumnBase5, outputResolutionEntity.FindProperty("TransactionId")!, nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase20, outputResolutionEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)createdAtColumnBase10, outputResolutionEntity.FindProperty("CreatedAt")!, nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)deadlineHeightColumnBase, outputResolutionEntity.FindProperty("DeadlineHeight")!, nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityMappingBase);
@@ -6352,12 +6742,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)stateColumnBase6, outputResolutionEntity.FindProperty("State")!, nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)waitUntilHeightColumnBase, outputResolutionEntity.FindProperty("WaitUntilHeight")!, nLightningInfrastructurePersistenceEntitiesOnchainOutputResolutionEntityMappingBase);
 
-            var tableMappings46 = new List<TableMapping>();
-            outputResolutionEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings46);
+            var tableMappings49 = new List<TableMapping>();
+            outputResolutionEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings49);
             var outputResolutionsTable = new Table("OutputResolutions", null, relationalModel);
-            var transactionIdColumn4 = new Column("TransactionId", "BLOB", outputResolutionsTable);
-            outputResolutionsTable.Columns.Add("TransactionId", transactionIdColumn4);
-            transactionIdColumn4.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(transactionIdColumn4);
+            var transactionIdColumn5 = new Column("TransactionId", "BLOB", outputResolutionsTable);
+            outputResolutionsTable.Columns.Add("TransactionId", transactionIdColumn5);
+            transactionIdColumn5.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(transactionIdColumn5);
             var outputIndexColumn4 = new Column("OutputIndex", "INTEGER", outputResolutionsTable);
             outputResolutionsTable.Columns.Add("OutputIndex", outputIndexColumn4);
             outputIndexColumn4.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(outputIndexColumn4);
@@ -6415,9 +6805,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("OutputResolutions", null), outputResolutionsTable);
             var outputResolutionsTableMapping = new TableMapping(outputResolutionEntity, outputResolutionsTable, null);
             outputResolutionsTable.AddTypeMapping(outputResolutionsTableMapping, false);
-            tableMappings46.Add(outputResolutionsTableMapping);
+            tableMappings49.Add(outputResolutionsTableMapping);
             RelationalModel.CreateColumnMapping(outputIndexColumn4, outputResolutionEntity.FindProperty("OutputIndex")!, outputResolutionsTableMapping);
-            RelationalModel.CreateColumnMapping(transactionIdColumn4, outputResolutionEntity.FindProperty("TransactionId")!, outputResolutionsTableMapping);
+            RelationalModel.CreateColumnMapping(transactionIdColumn5, outputResolutionEntity.FindProperty("TransactionId")!, outputResolutionsTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn20, outputResolutionEntity.FindProperty("ChannelId")!, outputResolutionsTableMapping);
             RelationalModel.CreateColumnMapping(createdAtColumn10, outputResolutionEntity.FindProperty("CreatedAt")!, outputResolutionsTableMapping);
             RelationalModel.CreateColumnMapping(deadlineHeightColumn, outputResolutionEntity.FindProperty("DeadlineHeight")!, outputResolutionsTableMapping);
@@ -6429,7 +6819,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping(resolvingTxIdColumn, outputResolutionEntity.FindProperty("ResolvingTxId")!, outputResolutionsTableMapping);
             RelationalModel.CreateColumnMapping(stateColumn6, outputResolutionEntity.FindProperty("State")!, outputResolutionsTableMapping);
             RelationalModel.CreateColumnMapping(waitUntilHeightColumn, outputResolutionEntity.FindProperty("WaitUntilHeight")!, outputResolutionsTableMapping);
-            var pK_OutputResolutions = new UniqueConstraint("PK_OutputResolutions", outputResolutionsTable, new[] { transactionIdColumn4, outputIndexColumn4 });
+            var pK_OutputResolutions = new UniqueConstraint("PK_OutputResolutions", outputResolutionsTable, new[] { transactionIdColumn5, outputIndexColumn4 });
             outputResolutionsTable.PrimaryKey = pK_OutputResolutions;
             pK_OutputResolutions.SetRowKeyValueFactory(new CompositeRowKeyValueFactory(pK_OutputResolutions));
             var pK_OutputResolutionsKey = RelationalModel.GetKey(this,
@@ -6459,8 +6849,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var forwardCircuitEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.ForwardCircuitEntity")!;
 
-            var defaultTableMappings47 = new List<TableMappingBase<ColumnMappingBase>>();
-            forwardCircuitEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings47);
+            var defaultTableMappings50 = new List<TableMappingBase<ColumnMappingBase>>();
+            forwardCircuitEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings50);
             var nLightningInfrastructurePersistenceEntitiesPaymentForwardCircuitEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.ForwardCircuitEntity", null, relationalModel);
             var createdAtColumnBase11 = new ColumnBase<ColumnMappingBase>("CreatedAt", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentForwardCircuitEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentForwardCircuitEntityTableBase.Columns.Add("CreatedAt", createdAtColumnBase11);
@@ -6512,7 +6902,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Payment.ForwardCircuitEntity", nLightningInfrastructurePersistenceEntitiesPaymentForwardCircuitEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesPaymentForwardCircuitEntityMappingBase = new TableMappingBase<ColumnMappingBase>(forwardCircuitEntity, nLightningInfrastructurePersistenceEntitiesPaymentForwardCircuitEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesPaymentForwardCircuitEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentForwardCircuitEntityMappingBase, false);
-            defaultTableMappings47.Add(nLightningInfrastructurePersistenceEntitiesPaymentForwardCircuitEntityMappingBase);
+            defaultTableMappings50.Add(nLightningInfrastructurePersistenceEntitiesPaymentForwardCircuitEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)incomingChannelIdColumnBase, forwardCircuitEntity.FindProperty("IncomingChannelId")!, nLightningInfrastructurePersistenceEntitiesPaymentForwardCircuitEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)incomingHtlcIdColumnBase, forwardCircuitEntity.FindProperty("IncomingHtlcId")!, nLightningInfrastructurePersistenceEntitiesPaymentForwardCircuitEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)createdAtColumnBase11, forwardCircuitEntity.FindProperty("CreatedAt")!, nLightningInfrastructurePersistenceEntitiesPaymentForwardCircuitEntityMappingBase);
@@ -6530,8 +6920,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)resolvedAtColumnBase0, forwardCircuitEntity.FindProperty("ResolvedAt")!, nLightningInfrastructurePersistenceEntitiesPaymentForwardCircuitEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)statusColumnBase1, forwardCircuitEntity.FindProperty("Status")!, nLightningInfrastructurePersistenceEntitiesPaymentForwardCircuitEntityMappingBase);
 
-            var tableMappings47 = new List<TableMapping>();
-            forwardCircuitEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings47);
+            var tableMappings50 = new List<TableMapping>();
+            forwardCircuitEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings50);
             var forwardCircuitsTable = new Table("ForwardCircuits", null, relationalModel);
             var incomingChannelIdColumn = new Column("IncomingChannelId", "BLOB", forwardCircuitsTable);
             forwardCircuitsTable.Columns.Add("IncomingChannelId", incomingChannelIdColumn);
@@ -6599,7 +6989,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("ForwardCircuits", null), forwardCircuitsTable);
             var forwardCircuitsTableMapping = new TableMapping(forwardCircuitEntity, forwardCircuitsTable, null);
             forwardCircuitsTable.AddTypeMapping(forwardCircuitsTableMapping, false);
-            tableMappings47.Add(forwardCircuitsTableMapping);
+            tableMappings50.Add(forwardCircuitsTableMapping);
             RelationalModel.CreateColumnMapping(incomingChannelIdColumn, forwardCircuitEntity.FindProperty("IncomingChannelId")!, forwardCircuitsTableMapping);
             RelationalModel.CreateColumnMapping(incomingHtlcIdColumn, forwardCircuitEntity.FindProperty("IncomingHtlcId")!, forwardCircuitsTableMapping);
             RelationalModel.CreateColumnMapping(createdAtColumn11, forwardCircuitEntity.FindProperty("CreatedAt")!, forwardCircuitsTableMapping);
@@ -6646,8 +7036,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var invoiceEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.InvoiceEntity")!;
 
-            var defaultTableMappings48 = new List<TableMappingBase<ColumnMappingBase>>();
-            invoiceEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings48);
+            var defaultTableMappings51 = new List<TableMappingBase<ColumnMappingBase>>();
+            invoiceEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings51);
             var nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.InvoiceEntity", null, relationalModel);
             var addIndexColumnBase = new ColumnBase<ColumnMappingBase>("AddIndex", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase)
             {
@@ -6700,11 +7090,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.Columns.Add("InvoiceRequestPayerId", invoiceRequestPayerIdColumnBase);
             var kindColumnBase5 = new ColumnBase<ColumnMappingBase>("Kind", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.Columns.Add("Kind", kindColumnBase5);
-            var labelColumnBase1 = new ColumnBase<ColumnMappingBase>("Label", "TEXT", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase)
+            var labelColumnBase2 = new ColumnBase<ColumnMappingBase>("Label", "TEXT", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase)
             {
                 IsNullable = true
             };
-            nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.Columns.Add("Label", labelColumnBase1);
+            nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.Columns.Add("Label", labelColumnBase2);
             var minFinalCltvExpiryColumnBase = new ColumnBase<ColumnMappingBase>("MinFinalCltvExpiry", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.Columns.Add("MinFinalCltvExpiry", minFinalCltvExpiryColumnBase);
             var offerIdColumnBase0 = new ColumnBase<ColumnMappingBase>("OfferId", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase)
@@ -6751,7 +7141,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Payment.InvoiceEntity", nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase = new TableMappingBase<ColumnMappingBase>(invoiceEntity, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase, false);
-            defaultTableMappings48.Add(nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
+            defaultTableMappings51.Add(nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)paymentHashColumnBase4, invoiceEntity.FindProperty("PaymentHash")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)addIndexColumnBase, invoiceEntity.FindProperty("AddIndex")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountMsatColumnBase3, invoiceEntity.FindProperty("AmountMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
@@ -6765,7 +7155,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)htlcsColumnBase1, invoiceEntity.FindProperty("Htlcs")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)invoiceRequestPayerIdColumnBase, invoiceEntity.FindProperty("InvoiceRequestPayerId")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)kindColumnBase5, invoiceEntity.FindProperty("Kind")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)labelColumnBase1, invoiceEntity.FindProperty("Label")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)labelColumnBase2, invoiceEntity.FindProperty("Label")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)minFinalCltvExpiryColumnBase, invoiceEntity.FindProperty("MinFinalCltvExpiry")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)offerIdColumnBase0, invoiceEntity.FindProperty("OfferId")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)payerNoteColumnBase, invoiceEntity.FindProperty("PayerNote")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
@@ -6777,8 +7167,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)statusColumnBase2, invoiceEntity.FindProperty("Status")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)tagsColumnBase1, invoiceEntity.FindProperty("Tags")!, nLightningInfrastructurePersistenceEntitiesPaymentInvoiceEntityMappingBase);
 
-            var tableMappings48 = new List<TableMapping>();
-            invoiceEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings48);
+            var tableMappings51 = new List<TableMapping>();
+            invoiceEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings51);
             var invoicesTable = new Table("Invoices", null, relationalModel);
             var paymentHashColumn4 = new Column("PaymentHash", "BLOB", invoicesTable);
             invoicesTable.Columns.Add("PaymentHash", paymentHashColumn4);
@@ -6846,12 +7236,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var kindColumn5 = new Column("Kind", "INTEGER", invoicesTable);
             invoicesTable.Columns.Add("Kind", kindColumn5);
             kindColumn5.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(kindColumn5);
-            var labelColumn1 = new Column("Label", "TEXT", invoicesTable)
+            var labelColumn2 = new Column("Label", "TEXT", invoicesTable)
             {
                 IsNullable = true
             };
-            invoicesTable.Columns.Add("Label", labelColumn1);
-            labelColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<string>(labelColumn1);
+            invoicesTable.Columns.Add("Label", labelColumn2);
+            labelColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<string>(labelColumn2);
             var minFinalCltvExpiryColumn = new Column("MinFinalCltvExpiry", "INTEGER", invoicesTable);
             invoicesTable.Columns.Add("MinFinalCltvExpiry", minFinalCltvExpiryColumn);
             minFinalCltvExpiryColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<ushort>(minFinalCltvExpiryColumn);
@@ -6906,7 +7296,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("Invoices", null), invoicesTable);
             var invoicesTableMapping = new TableMapping(invoiceEntity, invoicesTable, null);
             invoicesTable.AddTypeMapping(invoicesTableMapping, false);
-            tableMappings48.Add(invoicesTableMapping);
+            tableMappings51.Add(invoicesTableMapping);
             RelationalModel.CreateColumnMapping(paymentHashColumn4, invoiceEntity.FindProperty("PaymentHash")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(addIndexColumn, invoiceEntity.FindProperty("AddIndex")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(amountMsatColumn3, invoiceEntity.FindProperty("AmountMsat")!, invoicesTableMapping);
@@ -6920,7 +7310,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping(htlcsColumn1, invoiceEntity.FindProperty("Htlcs")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(invoiceRequestPayerIdColumn, invoiceEntity.FindProperty("InvoiceRequestPayerId")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(kindColumn5, invoiceEntity.FindProperty("Kind")!, invoicesTableMapping);
-            RelationalModel.CreateColumnMapping(labelColumn1, invoiceEntity.FindProperty("Label")!, invoicesTableMapping);
+            RelationalModel.CreateColumnMapping(labelColumn2, invoiceEntity.FindProperty("Label")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(minFinalCltvExpiryColumn, invoiceEntity.FindProperty("MinFinalCltvExpiry")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(offerIdColumn0, invoiceEntity.FindProperty("OfferId")!, invoicesTableMapping);
             RelationalModel.CreateColumnMapping(payerNoteColumn, invoiceEntity.FindProperty("PayerNote")!, invoicesTableMapping);
@@ -6979,8 +7369,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var offerEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.OfferEntity")!;
 
-            var defaultTableMappings49 = new List<TableMappingBase<ColumnMappingBase>>();
-            offerEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings49);
+            var defaultTableMappings52 = new List<TableMappingBase<ColumnMappingBase>>();
+            offerEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings52);
             var nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.OfferEntity", null, relationalModel);
             var absoluteExpiryColumnBase = new ColumnBase<ColumnMappingBase>("AbsoluteExpiry", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityTableBase)
             {
@@ -7020,11 +7410,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityTableBase.Columns.Add("Issuer", issuerColumnBase);
             var issuerKindColumnBase = new ColumnBase<ColumnMappingBase>("IssuerKind", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityTableBase.Columns.Add("IssuerKind", issuerKindColumnBase);
-            var labelColumnBase2 = new ColumnBase<ColumnMappingBase>("Label", "TEXT", nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityTableBase)
+            var labelColumnBase3 = new ColumnBase<ColumnMappingBase>("Label", "TEXT", nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityTableBase)
             {
                 IsNullable = true
             };
-            nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityTableBase.Columns.Add("Label", labelColumnBase2);
+            nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityTableBase.Columns.Add("Label", labelColumnBase3);
             var metadataColumnBase = new ColumnBase<ColumnMappingBase>("Metadata", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityTableBase.Columns.Add("Metadata", metadataColumnBase);
             var offerBytesColumnBase = new ColumnBase<ColumnMappingBase>("OfferBytes", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityTableBase);
@@ -7046,7 +7436,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Payment.OfferEntity", nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase = new TableMappingBase<ColumnMappingBase>(offerEntity, nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase, false);
-            defaultTableMappings49.Add(nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase);
+            defaultTableMappings52.Add(nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)offerIdColumnBase1, offerEntity.FindProperty("OfferId")!, nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)absoluteExpiryColumnBase, offerEntity.FindProperty("AbsoluteExpiry")!, nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountMsatColumnBase4, offerEntity.FindProperty("AmountMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase);
@@ -7058,15 +7448,15 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)hasPathsColumnBase, offerEntity.FindProperty("HasPaths")!, nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)issuerColumnBase, offerEntity.FindProperty("Issuer")!, nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)issuerKindColumnBase, offerEntity.FindProperty("IssuerKind")!, nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)labelColumnBase2, offerEntity.FindProperty("Label")!, nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)labelColumnBase3, offerEntity.FindProperty("Label")!, nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)metadataColumnBase, offerEntity.FindProperty("Metadata")!, nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)offerBytesColumnBase, offerEntity.FindProperty("OfferBytes")!, nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)quantityMaxColumnBase, offerEntity.FindProperty("QuantityMax")!, nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)statusColumnBase3, offerEntity.FindProperty("Status")!, nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)tagsColumnBase2, offerEntity.FindProperty("Tags")!, nLightningInfrastructurePersistenceEntitiesPaymentOfferEntityMappingBase);
 
-            var tableMappings49 = new List<TableMapping>();
-            offerEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings49);
+            var tableMappings52 = new List<TableMapping>();
+            offerEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings52);
             var offersTable = new Table("Offers", null, relationalModel);
             var offerIdColumn1 = new Column("OfferId", "BLOB", offersTable);
             offersTable.Columns.Add("OfferId", offerIdColumn1);
@@ -7119,12 +7509,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var issuerKindColumn = new Column("IssuerKind", "INTEGER", offersTable);
             offersTable.Columns.Add("IssuerKind", issuerKindColumn);
             issuerKindColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(issuerKindColumn);
-            var labelColumn2 = new Column("Label", "TEXT", offersTable)
+            var labelColumn3 = new Column("Label", "TEXT", offersTable)
             {
                 IsNullable = true
             };
-            offersTable.Columns.Add("Label", labelColumn2);
-            labelColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<string>(labelColumn2);
+            offersTable.Columns.Add("Label", labelColumn3);
+            labelColumn3.Accessors = ColumnAccessorsFactory.CreateGeneric<string>(labelColumn3);
             var metadataColumn = new Column("Metadata", "BLOB", offersTable);
             offersTable.Columns.Add("Metadata", metadataColumn);
             metadataColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(metadataColumn);
@@ -7149,7 +7539,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("Offers", null), offersTable);
             var offersTableMapping = new TableMapping(offerEntity, offersTable, null);
             offersTable.AddTypeMapping(offersTableMapping, false);
-            tableMappings49.Add(offersTableMapping);
+            tableMappings52.Add(offersTableMapping);
             RelationalModel.CreateColumnMapping(offerIdColumn1, offerEntity.FindProperty("OfferId")!, offersTableMapping);
             RelationalModel.CreateColumnMapping(absoluteExpiryColumn, offerEntity.FindProperty("AbsoluteExpiry")!, offersTableMapping);
             RelationalModel.CreateColumnMapping(amountMsatColumn4, offerEntity.FindProperty("AmountMsat")!, offersTableMapping);
@@ -7161,7 +7551,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping(hasPathsColumn, offerEntity.FindProperty("HasPaths")!, offersTableMapping);
             RelationalModel.CreateColumnMapping(issuerColumn, offerEntity.FindProperty("Issuer")!, offersTableMapping);
             RelationalModel.CreateColumnMapping(issuerKindColumn, offerEntity.FindProperty("IssuerKind")!, offersTableMapping);
-            RelationalModel.CreateColumnMapping(labelColumn2, offerEntity.FindProperty("Label")!, offersTableMapping);
+            RelationalModel.CreateColumnMapping(labelColumn3, offerEntity.FindProperty("Label")!, offersTableMapping);
             RelationalModel.CreateColumnMapping(metadataColumn, offerEntity.FindProperty("Metadata")!, offersTableMapping);
             RelationalModel.CreateColumnMapping(offerBytesColumn, offerEntity.FindProperty("OfferBytes")!, offersTableMapping);
             RelationalModel.CreateColumnMapping(quantityMaxColumn, offerEntity.FindProperty("QuantityMax")!, offersTableMapping);
@@ -7197,8 +7587,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var onionReplayEntryEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.OnionReplayEntryEntity")!;
 
-            var defaultTableMappings50 = new List<TableMappingBase<ColumnMappingBase>>();
-            onionReplayEntryEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings50);
+            var defaultTableMappings53 = new List<TableMappingBase<ColumnMappingBase>>();
+            onionReplayEntryEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings53);
             var nLightningInfrastructurePersistenceEntitiesPaymentOnionReplayEntryEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.OnionReplayEntryEntity", null, relationalModel);
             var channelIdColumnBase21 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentOnionReplayEntryEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentOnionReplayEntryEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase21);
@@ -7211,14 +7601,14 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Payment.OnionReplayEntryEntity", nLightningInfrastructurePersistenceEntitiesPaymentOnionReplayEntryEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesPaymentOnionReplayEntryEntityMappingBase = new TableMappingBase<ColumnMappingBase>(onionReplayEntryEntity, nLightningInfrastructurePersistenceEntitiesPaymentOnionReplayEntryEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesPaymentOnionReplayEntryEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentOnionReplayEntryEntityMappingBase, false);
-            defaultTableMappings50.Add(nLightningInfrastructurePersistenceEntitiesPaymentOnionReplayEntryEntityMappingBase);
+            defaultTableMappings53.Add(nLightningInfrastructurePersistenceEntitiesPaymentOnionReplayEntryEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)hmacColumnBase, onionReplayEntryEntity.FindProperty("Hmac")!, nLightningInfrastructurePersistenceEntitiesPaymentOnionReplayEntryEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase21, onionReplayEntryEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesPaymentOnionReplayEntryEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)expiryHeightColumnBase, onionReplayEntryEntity.FindProperty("ExpiryHeight")!, nLightningInfrastructurePersistenceEntitiesPaymentOnionReplayEntryEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)htlcIdColumnBase2, onionReplayEntryEntity.FindProperty("HtlcId")!, nLightningInfrastructurePersistenceEntitiesPaymentOnionReplayEntryEntityMappingBase);
 
-            var tableMappings50 = new List<TableMapping>();
-            onionReplayEntryEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings50);
+            var tableMappings53 = new List<TableMapping>();
+            onionReplayEntryEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings53);
             var onionReplayEntriesTable = new Table("OnionReplayEntries", null, relationalModel);
             var hmacColumn = new Column("Hmac", "BLOB", onionReplayEntriesTable);
             onionReplayEntriesTable.Columns.Add("Hmac", hmacColumn);
@@ -7235,7 +7625,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("OnionReplayEntries", null), onionReplayEntriesTable);
             var onionReplayEntriesTableMapping = new TableMapping(onionReplayEntryEntity, onionReplayEntriesTable, null);
             onionReplayEntriesTable.AddTypeMapping(onionReplayEntriesTableMapping, false);
-            tableMappings50.Add(onionReplayEntriesTableMapping);
+            tableMappings53.Add(onionReplayEntriesTableMapping);
             RelationalModel.CreateColumnMapping(hmacColumn, onionReplayEntryEntity.FindProperty("Hmac")!, onionReplayEntriesTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn21, onionReplayEntryEntity.FindProperty("ChannelId")!, onionReplayEntriesTableMapping);
             RelationalModel.CreateColumnMapping(expiryHeightColumn, onionReplayEntryEntity.FindProperty("ExpiryHeight")!, onionReplayEntriesTableMapping);
@@ -7261,8 +7651,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var paymentEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentEntity")!;
 
-            var defaultTableMappings51 = new List<TableMappingBase<ColumnMappingBase>>();
-            paymentEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings51);
+            var defaultTableMappings54 = new List<TableMappingBase<ColumnMappingBase>>();
+            paymentEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings54);
             var nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentEntity", null, relationalModel);
             var amountMsatColumnBase5 = new ColumnBase<ColumnMappingBase>("AmountMsat", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase.Columns.Add("AmountMsat", amountMsatColumnBase5);
@@ -7312,11 +7702,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase.Columns.Add("InvoiceRequestMetadata", invoiceRequestMetadataColumnBase);
             var isTrampolineRelayColumnBase = new ColumnBase<ColumnMappingBase>("IsTrampolineRelay", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase.Columns.Add("IsTrampolineRelay", isTrampolineRelayColumnBase);
-            var labelColumnBase3 = new ColumnBase<ColumnMappingBase>("Label", "TEXT", nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase)
+            var labelColumnBase4 = new ColumnBase<ColumnMappingBase>("Label", "TEXT", nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase)
             {
                 IsNullable = true
             };
-            nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase.Columns.Add("Label", labelColumnBase3);
+            nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase.Columns.Add("Label", labelColumnBase4);
             var offerBolt12ColumnBase = new ColumnBase<ColumnMappingBase>("OfferBolt12", "TEXT", nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase)
             {
                 IsNullable = true
@@ -7361,7 +7751,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentEntity", nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase = new TableMappingBase<ColumnMappingBase>(paymentEntity, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase, false);
-            defaultTableMappings51.Add(nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
+            defaultTableMappings54.Add(nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)paymentHashColumnBase5, paymentEntity.FindProperty("PaymentHash")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountMsatColumnBase5, paymentEntity.FindProperty("AmountMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)bolt11ColumnBase0, paymentEntity.FindProperty("Bolt11")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
@@ -7375,7 +7765,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)feeMsatColumnBase1, paymentEntity.FindProperty("FeeMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)invoiceRequestMetadataColumnBase, paymentEntity.FindProperty("InvoiceRequestMetadata")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)isTrampolineRelayColumnBase, paymentEntity.FindProperty("IsTrampolineRelay")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
-            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)labelColumnBase3, paymentEntity.FindProperty("Label")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)labelColumnBase4, paymentEntity.FindProperty("Label")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)offerBolt12ColumnBase, paymentEntity.FindProperty("OfferBolt12")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)outgoingChannelIdColumnBase0, paymentEntity.FindProperty("OutgoingChannelId")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)outgoingHtlcIdColumnBase0, paymentEntity.FindProperty("OutgoingHtlcId")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
@@ -7386,8 +7776,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)statusColumnBase4, paymentEntity.FindProperty("Status")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)tagsColumnBase3, paymentEntity.FindProperty("Tags")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
 
-            var tableMappings51 = new List<TableMapping>();
-            paymentEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings51);
+            var tableMappings54 = new List<TableMapping>();
+            paymentEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings54);
             var paymentsTable = new Table("Payments", null, relationalModel);
             var paymentHashColumn5 = new Column("PaymentHash", "BLOB", paymentsTable);
             paymentsTable.Columns.Add("PaymentHash", paymentHashColumn5);
@@ -7452,12 +7842,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var isTrampolineRelayColumn = new Column("IsTrampolineRelay", "INTEGER", paymentsTable);
             paymentsTable.Columns.Add("IsTrampolineRelay", isTrampolineRelayColumn);
             isTrampolineRelayColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<bool>(isTrampolineRelayColumn);
-            var labelColumn3 = new Column("Label", "TEXT", paymentsTable)
+            var labelColumn4 = new Column("Label", "TEXT", paymentsTable)
             {
                 IsNullable = true
             };
-            paymentsTable.Columns.Add("Label", labelColumn3);
-            labelColumn3.Accessors = ColumnAccessorsFactory.CreateGeneric<string>(labelColumn3);
+            paymentsTable.Columns.Add("Label", labelColumn4);
+            labelColumn4.Accessors = ColumnAccessorsFactory.CreateGeneric<string>(labelColumn4);
             var offerBolt12Column = new Column("OfferBolt12", "TEXT", paymentsTable)
             {
                 IsNullable = true
@@ -7509,7 +7899,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("Payments", null), paymentsTable);
             var paymentsTableMapping = new TableMapping(paymentEntity, paymentsTable, null);
             paymentsTable.AddTypeMapping(paymentsTableMapping, false);
-            tableMappings51.Add(paymentsTableMapping);
+            tableMappings54.Add(paymentsTableMapping);
             RelationalModel.CreateColumnMapping(paymentHashColumn5, paymentEntity.FindProperty("PaymentHash")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(amountMsatColumn5, paymentEntity.FindProperty("AmountMsat")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(bolt11Column0, paymentEntity.FindProperty("Bolt11")!, paymentsTableMapping);
@@ -7523,7 +7913,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping(feeMsatColumn1, paymentEntity.FindProperty("FeeMsat")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(invoiceRequestMetadataColumn, paymentEntity.FindProperty("InvoiceRequestMetadata")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(isTrampolineRelayColumn, paymentEntity.FindProperty("IsTrampolineRelay")!, paymentsTableMapping);
-            RelationalModel.CreateColumnMapping(labelColumn3, paymentEntity.FindProperty("Label")!, paymentsTableMapping);
+            RelationalModel.CreateColumnMapping(labelColumn4, paymentEntity.FindProperty("Label")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(offerBolt12Column, paymentEntity.FindProperty("OfferBolt12")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(outgoingChannelIdColumn0, paymentEntity.FindProperty("OutgoingChannelId")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(outgoingHtlcIdColumn0, paymentEntity.FindProperty("OutgoingHtlcId")!, paymentsTableMapping);
@@ -7572,8 +7962,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var paymentHopEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentHopEntity")!;
 
-            var defaultTableMappings52 = new List<TableMappingBase<ColumnMappingBase>>();
-            paymentHopEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings52);
+            var defaultTableMappings55 = new List<TableMappingBase<ColumnMappingBase>>();
+            paymentHopEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings55);
             var nLightningInfrastructurePersistenceEntitiesPaymentPaymentHopEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentHopEntity", null, relationalModel);
             var amountMsatColumnBase6 = new ColumnBase<ColumnMappingBase>("AmountMsat", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentPaymentHopEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentPaymentHopEntityTableBase.Columns.Add("AmountMsat", amountMsatColumnBase6);
@@ -7597,7 +7987,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentHopEntity", nLightningInfrastructurePersistenceEntitiesPaymentPaymentHopEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesPaymentPaymentHopEntityMappingBase = new TableMappingBase<ColumnMappingBase>(paymentHopEntity, nLightningInfrastructurePersistenceEntitiesPaymentPaymentHopEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesPaymentPaymentHopEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentPaymentHopEntityMappingBase, false);
-            defaultTableMappings52.Add(nLightningInfrastructurePersistenceEntitiesPaymentPaymentHopEntityMappingBase);
+            defaultTableMappings55.Add(nLightningInfrastructurePersistenceEntitiesPaymentPaymentHopEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)hopIndexColumnBase, paymentHopEntity.FindProperty("HopIndex")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentHopEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)paymentHashColumnBase6, paymentHopEntity.FindProperty("PaymentHash")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentHopEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountMsatColumnBase6, paymentHopEntity.FindProperty("AmountMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentHopEntityMappingBase);
@@ -7607,8 +7997,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)sharedSecretColumnBase, paymentHopEntity.FindProperty("SharedSecret")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentHopEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)shortChannelIdColumnBase4, paymentHopEntity.FindProperty("ShortChannelId")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentHopEntityMappingBase);
 
-            var tableMappings52 = new List<TableMapping>();
-            paymentHopEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings52);
+            var tableMappings55 = new List<TableMapping>();
+            paymentHopEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings55);
             var paymentHopsTable = new Table("PaymentHops", null, relationalModel);
             var paymentHashColumn6 = new Column("PaymentHash", "BLOB", paymentHopsTable);
             paymentHopsTable.Columns.Add("PaymentHash", paymentHashColumn6);
@@ -7640,7 +8030,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("PaymentHops", null), paymentHopsTable);
             var paymentHopsTableMapping = new TableMapping(paymentHopEntity, paymentHopsTable, null);
             paymentHopsTable.AddTypeMapping(paymentHopsTableMapping, false);
-            tableMappings52.Add(paymentHopsTableMapping);
+            tableMappings55.Add(paymentHopsTableMapping);
             RelationalModel.CreateColumnMapping(hopIndexColumn, paymentHopEntity.FindProperty("HopIndex")!, paymentHopsTableMapping);
             RelationalModel.CreateColumnMapping(paymentHashColumn6, paymentHopEntity.FindProperty("PaymentHash")!, paymentHopsTableMapping);
             RelationalModel.CreateColumnMapping(amountMsatColumn6, paymentHopEntity.FindProperty("AmountMsat")!, paymentHopsTableMapping);
@@ -7661,8 +8051,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var paymentPartEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartEntity")!;
 
-            var defaultTableMappings53 = new List<TableMappingBase<ColumnMappingBase>>();
-            paymentPartEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings53);
+            var defaultTableMappings56 = new List<TableMappingBase<ColumnMappingBase>>();
+            paymentPartEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings56);
             var nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartEntity", null, relationalModel);
             var channelIdColumnBase22 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase22);
@@ -7677,15 +8067,15 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartEntity", nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartEntityMappingBase = new TableMappingBase<ColumnMappingBase>(paymentPartEntity, nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartEntityMappingBase, false);
-            defaultTableMappings53.Add(nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartEntityMappingBase);
+            defaultTableMappings56.Add(nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)partIndexColumnBase, paymentPartEntity.FindProperty("PartIndex")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)paymentHashColumnBase7, paymentPartEntity.FindProperty("PaymentHash")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase22, paymentPartEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)htlcIdColumnBase3, paymentPartEntity.FindProperty("HtlcId")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)stateColumnBase7, paymentPartEntity.FindProperty("State")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartEntityMappingBase);
 
-            var tableMappings53 = new List<TableMapping>();
-            paymentPartEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings53);
+            var tableMappings56 = new List<TableMapping>();
+            paymentPartEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings56);
             var paymentPartsTable = new Table("PaymentParts", null, relationalModel);
             var paymentHashColumn7 = new Column("PaymentHash", "BLOB", paymentPartsTable);
             paymentPartsTable.Columns.Add("PaymentHash", paymentHashColumn7);
@@ -7705,7 +8095,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("PaymentParts", null), paymentPartsTable);
             var paymentPartsTableMapping = new TableMapping(paymentPartEntity, paymentPartsTable, null);
             paymentPartsTable.AddTypeMapping(paymentPartsTableMapping, false);
-            tableMappings53.Add(paymentPartsTableMapping);
+            tableMappings56.Add(paymentPartsTableMapping);
             RelationalModel.CreateColumnMapping(partIndexColumn, paymentPartEntity.FindProperty("PartIndex")!, paymentPartsTableMapping);
             RelationalModel.CreateColumnMapping(paymentHashColumn7, paymentPartEntity.FindProperty("PaymentHash")!, paymentPartsTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn22, paymentPartEntity.FindProperty("ChannelId")!, paymentPartsTableMapping);
@@ -7723,8 +8113,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var paymentPartHopEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartHopEntity")!;
 
-            var defaultTableMappings54 = new List<TableMappingBase<ColumnMappingBase>>();
-            paymentPartHopEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings54);
+            var defaultTableMappings57 = new List<TableMappingBase<ColumnMappingBase>>();
+            paymentPartHopEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings57);
             var nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartHopEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartHopEntity", null, relationalModel);
             var amountMsatColumnBase7 = new ColumnBase<ColumnMappingBase>("AmountMsat", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartHopEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartHopEntityTableBase.Columns.Add("AmountMsat", amountMsatColumnBase7);
@@ -7750,7 +8140,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartHopEntity", nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartHopEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartHopEntityMappingBase = new TableMappingBase<ColumnMappingBase>(paymentPartHopEntity, nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartHopEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartHopEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartHopEntityMappingBase, false);
-            defaultTableMappings54.Add(nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartHopEntityMappingBase);
+            defaultTableMappings57.Add(nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartHopEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)hopIndexColumnBase0, paymentPartHopEntity.FindProperty("HopIndex")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartHopEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)partIndexColumnBase0, paymentPartHopEntity.FindProperty("PartIndex")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartHopEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)paymentHashColumnBase8, paymentPartHopEntity.FindProperty("PaymentHash")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartHopEntityMappingBase);
@@ -7761,8 +8151,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)sharedSecretColumnBase0, paymentPartHopEntity.FindProperty("SharedSecret")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartHopEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)shortChannelIdColumnBase5, paymentPartHopEntity.FindProperty("ShortChannelId")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentPartHopEntityMappingBase);
 
-            var tableMappings54 = new List<TableMapping>();
-            paymentPartHopEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings54);
+            var tableMappings57 = new List<TableMapping>();
+            paymentPartHopEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings57);
             var paymentPartHopsTable = new Table("PaymentPartHops", null, relationalModel);
             var paymentHashColumn8 = new Column("PaymentHash", "BLOB", paymentPartHopsTable);
             paymentPartHopsTable.Columns.Add("PaymentHash", paymentHashColumn8);
@@ -7797,7 +8187,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("PaymentPartHops", null), paymentPartHopsTable);
             var paymentPartHopsTableMapping = new TableMapping(paymentPartHopEntity, paymentPartHopsTable, null);
             paymentPartHopsTable.AddTypeMapping(paymentPartHopsTableMapping, false);
-            tableMappings54.Add(paymentPartHopsTableMapping);
+            tableMappings57.Add(paymentPartHopsTableMapping);
             RelationalModel.CreateColumnMapping(hopIndexColumn0, paymentPartHopEntity.FindProperty("HopIndex")!, paymentPartHopsTableMapping);
             RelationalModel.CreateColumnMapping(partIndexColumn0, paymentPartHopEntity.FindProperty("PartIndex")!, paymentPartHopsTableMapping);
             RelationalModel.CreateColumnMapping(paymentHashColumn8, paymentPartHopEntity.FindProperty("PaymentHash")!, paymentPartHopsTableMapping);
@@ -7819,8 +8209,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var paymentTrampolineHopEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentTrampolineHopEntity")!;
 
-            var defaultTableMappings55 = new List<TableMappingBase<ColumnMappingBase>>();
-            paymentTrampolineHopEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings55);
+            var defaultTableMappings58 = new List<TableMappingBase<ColumnMappingBase>>();
+            paymentTrampolineHopEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings58);
             var nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentTrampolineHopEntity", null, relationalModel);
             var amountMsatColumnBase8 = new ColumnBase<ColumnMappingBase>("AmountMsat", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase.Columns.Add("AmountMsat", amountMsatColumnBase8);
@@ -7839,7 +8229,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentTrampolineHopEntity", nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase = new TableMappingBase<ColumnMappingBase>(paymentTrampolineHopEntity, nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase, false);
-            defaultTableMappings55.Add(nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase);
+            defaultTableMappings58.Add(nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)attemptColumnBase, paymentTrampolineHopEntity.FindProperty("Attempt")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)hopIndexColumnBase1, paymentTrampolineHopEntity.FindProperty("HopIndex")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)paymentHashColumnBase9, paymentTrampolineHopEntity.FindProperty("PaymentHash")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase);
@@ -7848,8 +8238,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nodeIdColumnBase6, paymentTrampolineHopEntity.FindProperty("NodeId")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)sharedSecretColumnBase1, paymentTrampolineHopEntity.FindProperty("SharedSecret")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase);
 
-            var tableMappings55 = new List<TableMapping>();
-            paymentTrampolineHopEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings55);
+            var tableMappings58 = new List<TableMapping>();
+            paymentTrampolineHopEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings58);
             var paymentTrampolineHopsTable = new Table("PaymentTrampolineHops", null, relationalModel);
             var paymentHashColumn9 = new Column("PaymentHash", "BLOB", paymentTrampolineHopsTable);
             paymentTrampolineHopsTable.Columns.Add("PaymentHash", paymentHashColumn9);
@@ -7875,7 +8265,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("PaymentTrampolineHops", null), paymentTrampolineHopsTable);
             var paymentTrampolineHopsTableMapping = new TableMapping(paymentTrampolineHopEntity, paymentTrampolineHopsTable, null);
             paymentTrampolineHopsTable.AddTypeMapping(paymentTrampolineHopsTableMapping, false);
-            tableMappings55.Add(paymentTrampolineHopsTableMapping);
+            tableMappings58.Add(paymentTrampolineHopsTableMapping);
             RelationalModel.CreateColumnMapping(attemptColumn, paymentTrampolineHopEntity.FindProperty("Attempt")!, paymentTrampolineHopsTableMapping);
             RelationalModel.CreateColumnMapping(hopIndexColumn1, paymentTrampolineHopEntity.FindProperty("HopIndex")!, paymentTrampolineHopsTableMapping);
             RelationalModel.CreateColumnMapping(paymentHashColumn9, paymentTrampolineHopEntity.FindProperty("PaymentHash")!, paymentTrampolineHopsTableMapping);
@@ -7895,8 +8285,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var trampolineRelayAttemptEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayAttemptEntity")!;
 
-            var defaultTableMappings56 = new List<TableMappingBase<ColumnMappingBase>>();
-            trampolineRelayAttemptEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings56);
+            var defaultTableMappings59 = new List<TableMappingBase<ColumnMappingBase>>();
+            trampolineRelayAttemptEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings59);
             var nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayAttemptEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayAttemptEntity", null, relationalModel);
             var amountOutMsatColumnBase = new ColumnBase<ColumnMappingBase>("AmountOutMsat", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayAttemptEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayAttemptEntityTableBase.Columns.Add("AmountOutMsat", amountOutMsatColumnBase);
@@ -7939,7 +8329,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayAttemptEntity", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayAttemptEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayAttemptEntityMappingBase = new TableMappingBase<ColumnMappingBase>(trampolineRelayAttemptEntity, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayAttemptEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayAttemptEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayAttemptEntityMappingBase, false);
-            defaultTableMappings56.Add(nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayAttemptEntityMappingBase);
+            defaultTableMappings59.Add(nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayAttemptEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)attemptColumnBase0, trampolineRelayAttemptEntity.FindProperty("Attempt")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayAttemptEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)paymentHashColumnBase10, trampolineRelayAttemptEntity.FindProperty("PaymentHash")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayAttemptEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountOutMsatColumnBase, trampolineRelayAttemptEntity.FindProperty("AmountOutMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayAttemptEntityMappingBase);
@@ -7954,8 +8344,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nextNodeIdColumnBase, trampolineRelayAttemptEntity.FindProperty("NextNodeId")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayAttemptEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)partsColumnBase, trampolineRelayAttemptEntity.FindProperty("Parts")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayAttemptEntityMappingBase);
 
-            var tableMappings56 = new List<TableMapping>();
-            trampolineRelayAttemptEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings56);
+            var tableMappings59 = new List<TableMapping>();
+            trampolineRelayAttemptEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings59);
             var trampolineRelayAttemptsTable = new Table("TrampolineRelayAttempts", null, relationalModel);
             var paymentHashColumn10 = new Column("PaymentHash", "BLOB", trampolineRelayAttemptsTable);
             trampolineRelayAttemptsTable.Columns.Add("PaymentHash", paymentHashColumn10);
@@ -8011,7 +8401,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("TrampolineRelayAttempts", null), trampolineRelayAttemptsTable);
             var trampolineRelayAttemptsTableMapping = new TableMapping(trampolineRelayAttemptEntity, trampolineRelayAttemptsTable, null);
             trampolineRelayAttemptsTable.AddTypeMapping(trampolineRelayAttemptsTableMapping, false);
-            tableMappings56.Add(trampolineRelayAttemptsTableMapping);
+            tableMappings59.Add(trampolineRelayAttemptsTableMapping);
             RelationalModel.CreateColumnMapping(attemptColumn0, trampolineRelayAttemptEntity.FindProperty("Attempt")!, trampolineRelayAttemptsTableMapping);
             RelationalModel.CreateColumnMapping(paymentHashColumn10, trampolineRelayAttemptEntity.FindProperty("PaymentHash")!, trampolineRelayAttemptsTableMapping);
             RelationalModel.CreateColumnMapping(amountOutMsatColumn, trampolineRelayAttemptEntity.FindProperty("AmountOutMsat")!, trampolineRelayAttemptsTableMapping);
@@ -8046,8 +8436,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var trampolineRelayEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity")!;
 
-            var defaultTableMappings57 = new List<TableMappingBase<ColumnMappingBase>>();
-            trampolineRelayEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings57);
+            var defaultTableMappings60 = new List<TableMappingBase<ColumnMappingBase>>();
+            trampolineRelayEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings60);
             var nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity", null, relationalModel);
             var amountOutMsatColumnBase0 = new ColumnBase<ColumnMappingBase>("AmountOutMsat", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("AmountOutMsat", amountOutMsatColumnBase0);
@@ -8129,7 +8519,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase = new TableMappingBase<ColumnMappingBase>(trampolineRelayEntity, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase, false);
-            defaultTableMappings57.Add(nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            defaultTableMappings60.Add(nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)paymentHashColumnBase11, trampolineRelayEntity.FindProperty("PaymentHash")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountOutMsatColumnBase0, trampolineRelayEntity.FindProperty("AmountOutMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)blindedKeptCltvExpiryDeltaColumnBase, trampolineRelayEntity.FindProperty("BlindedKeptCltvExpiryDelta")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
@@ -8150,8 +8540,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)recipientFeaturesColumnBase, trampolineRelayEntity.FindProperty("RecipientFeatures")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)statusColumnBase5, trampolineRelayEntity.FindProperty("Status")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
 
-            var tableMappings57 = new List<TableMapping>();
-            trampolineRelayEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings57);
+            var tableMappings60 = new List<TableMapping>();
+            trampolineRelayEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings60);
             var trampolineRelaysTable = new Table("TrampolineRelays", null, relationalModel);
             var paymentHashColumn11 = new Column("PaymentHash", "BLOB", trampolineRelaysTable);
             trampolineRelaysTable.Columns.Add("PaymentHash", paymentHashColumn11);
@@ -8252,7 +8642,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("TrampolineRelays", null), trampolineRelaysTable);
             var trampolineRelaysTableMapping = new TableMapping(trampolineRelayEntity, trampolineRelaysTable, null);
             trampolineRelaysTable.AddTypeMapping(trampolineRelaysTableMapping, false);
-            tableMappings57.Add(trampolineRelaysTableMapping);
+            tableMappings60.Add(trampolineRelaysTableMapping);
             RelationalModel.CreateColumnMapping(paymentHashColumn11, trampolineRelayEntity.FindProperty("PaymentHash")!, trampolineRelaysTableMapping);
             RelationalModel.CreateColumnMapping(amountOutMsatColumn0, trampolineRelayEntity.FindProperty("AmountOutMsat")!, trampolineRelaysTableMapping);
             RelationalModel.CreateColumnMapping(blindedKeptCltvExpiryDeltaColumn, trampolineRelayEntity.FindProperty("BlindedKeptCltvExpiryDelta")!, trampolineRelaysTableMapping);
@@ -8302,8 +8692,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var trampolineRelayPartEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayPartEntity")!;
 
-            var defaultTableMappings58 = new List<TableMappingBase<ColumnMappingBase>>();
-            trampolineRelayPartEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings58);
+            var defaultTableMappings61 = new List<TableMappingBase<ColumnMappingBase>>();
+            trampolineRelayPartEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings61);
             var nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayPartEntity", null, relationalModel);
             var amountMsatColumnBase9 = new ColumnBase<ColumnMappingBase>("AmountMsat", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase);
             nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase.Columns.Add("AmountMsat", amountMsatColumnBase9);
@@ -8327,7 +8717,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayPartEntity", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase);
             var nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase = new TableMappingBase<ColumnMappingBase>(trampolineRelayPartEntity, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase, null);
             nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase, false);
-            defaultTableMappings58.Add(nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
+            defaultTableMappings61.Add(nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase23, trampolineRelayPartEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)htlcIdColumnBase4, trampolineRelayPartEntity.FindProperty("HtlcId")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountMsatColumnBase9, trampolineRelayPartEntity.FindProperty("AmountMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
@@ -8337,8 +8727,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)paymentHashColumnBase12, trampolineRelayPartEntity.FindProperty("PaymentHash")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)trampolineSharedSecretColumnBase, trampolineRelayPartEntity.FindProperty("TrampolineSharedSecret")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
 
-            var tableMappings58 = new List<TableMapping>();
-            trampolineRelayPartEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings58);
+            var tableMappings61 = new List<TableMapping>();
+            trampolineRelayPartEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings61);
             var trampolineRelayPartsTable = new Table("TrampolineRelayParts", null, relationalModel);
             var channelIdColumn23 = new Column("ChannelId", "BLOB", trampolineRelayPartsTable);
             trampolineRelayPartsTable.Columns.Add("ChannelId", channelIdColumn23);
@@ -8370,7 +8760,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             relationalModel.Tables.Add(("TrampolineRelayParts", null), trampolineRelayPartsTable);
             var trampolineRelayPartsTableMapping = new TableMapping(trampolineRelayPartEntity, trampolineRelayPartsTable, null);
             trampolineRelayPartsTable.AddTypeMapping(trampolineRelayPartsTableMapping, false);
-            tableMappings58.Add(trampolineRelayPartsTableMapping);
+            tableMappings61.Add(trampolineRelayPartsTableMapping);
             RelationalModel.CreateColumnMapping(channelIdColumn23, trampolineRelayPartEntity.FindProperty("ChannelId")!, trampolineRelayPartsTableMapping);
             RelationalModel.CreateColumnMapping(htlcIdColumn4, trampolineRelayPartEntity.FindProperty("HtlcId")!, trampolineRelayPartsTableMapping);
             RelationalModel.CreateColumnMapping(amountMsatColumn9, trampolineRelayPartEntity.FindProperty("AmountMsat")!, trampolineRelayPartsTableMapping);
@@ -8719,6 +9109,20 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.GetOrCreateForeignKeyConstraints(fK_TrampolineRelayParts_TrampolineRelays_PaymentHashFk).Add(fK_TrampolineRelayParts_TrampolineRelays_PaymentHash);
             trampolineRelayPartsTable.ForeignKeyConstraints.Add(fK_TrampolineRelayParts_TrampolineRelays_PaymentHash);
             trampolineRelaysTable.ReferencingForeignKeyConstraints.Add(fK_TrampolineRelayParts_TrampolineRelays_PaymentHash);
+            var fK_Utxos_SilentPaymentOutputs_SilentPaymentTransactionId_SilentPaymentIndex = new ForeignKeyConstraint(
+                "FK_Utxos_SilentPaymentOutputs_SilentPaymentTransactionId_SilentPaymentIndex", utxosTable, silentPaymentOutputsTable,
+                new[] { silentPaymentTransactionIdColumn, silentPaymentIndexColumn },
+                silentPaymentOutputsTable.FindUniqueConstraint("PK_SilentPaymentOutputs")!, ReferentialAction.Restrict);
+            fK_Utxos_SilentPaymentOutputs_SilentPaymentTransactionId_SilentPaymentIndex.SetRowForeignKeyValueFactory(new CompositeRowForeignKeyValueFactory(fK_Utxos_SilentPaymentOutputs_SilentPaymentTransactionId_SilentPaymentIndex));
+            var fK_Utxos_SilentPaymentOutputs_SilentPaymentTransactionId_SilentPaymentIndexFk = RelationalModel.GetForeignKey(this,
+                "NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity",
+                new[] { "SilentPaymentTransactionId", "SilentPaymentIndex" },
+                "NLightning.Infrastructure.Persistence.Entities.Bitcoin.SilentPaymentOutputEntity",
+                new[] { "TransactionId", "Index" });
+            fK_Utxos_SilentPaymentOutputs_SilentPaymentTransactionId_SilentPaymentIndex.MappedForeignKeys.Add(fK_Utxos_SilentPaymentOutputs_SilentPaymentTransactionId_SilentPaymentIndexFk);
+            RelationalModel.GetOrCreateForeignKeyConstraints(fK_Utxos_SilentPaymentOutputs_SilentPaymentTransactionId_SilentPaymentIndexFk).Add(fK_Utxos_SilentPaymentOutputs_SilentPaymentTransactionId_SilentPaymentIndex);
+            utxosTable.ForeignKeyConstraints.Add(fK_Utxos_SilentPaymentOutputs_SilentPaymentTransactionId_SilentPaymentIndex);
+            silentPaymentOutputsTable.ReferencingForeignKeyConstraints.Add(fK_Utxos_SilentPaymentOutputs_SilentPaymentTransactionId_SilentPaymentIndex);
             var fK_Utxos_WalletAddresses_AddressIndex_IsAddressChange_AddressType = new ForeignKeyConstraint(
                 "FK_Utxos_WalletAddresses_AddressIndex_IsAddressChange_AddressType", utxosTable, walletAddressesTable,
                 new[] { addressIndexColumn, isAddressChangeColumn, addressTypeColumn0 },
