@@ -90,17 +90,18 @@ public class Bip352VectorTests
         Assert.Equal(Bip352.IndividualPublicKey(aggregate), (byte[])sum);
         var smallest = inputs.Select(x => x.Outpoint36).OrderBy(Hex, StringComparer.Ordinal).First();
         var inputHash = _crypto.ComputeInputHash(smallest, sum);
+        if (recipients.GroupBy(x => x.ScanKey).Any(group => group.Count() > Bip352.MaxRecipients))
+        {
+            Assert.All(expected.GetProperty("outputs").EnumerateArray(), set => Assert.Empty(set.EnumerateArray()));
+            Assert.Throws<ArgumentException>(() => _crypto.DeriveOutputs(inputs, recipients));
+            return;
+        }
+
         var secrets = expected.GetProperty("shared_secrets").EnumerateArray().ToArray();
         for (var i = 0; i < secrets.Length; i++)
         {
             var tweakedScanKey = Bip352.TweakInputPublicKey(recipients[i].ScanKey, inputHash);
             Assert.Equal(Hex(secrets[i]), Bip352.ComputeSharedSecret(tweakedScanKey, aggregate));
-        }
-
-        if (recipients.GroupBy(x => x.ScanKey).Any(group => group.Count() > Bip352.MaxRecipients))
-        {
-            Assert.Throws<ArgumentException>(() => _crypto.DeriveOutputs(inputs, recipients));
-            return;
         }
 
         var derived = _crypto.DeriveOutputs(inputs, recipients);
