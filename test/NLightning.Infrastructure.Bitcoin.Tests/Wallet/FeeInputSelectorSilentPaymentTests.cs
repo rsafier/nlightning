@@ -2,9 +2,11 @@ using NBitcoin;
 
 namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
 
+using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Crypto.ValueObjects;
+using Domain.Exceptions;
 using Domain.Money;
 
 public partial class FeeInputSelectorTests
@@ -69,6 +71,47 @@ public partial class FeeInputSelectorTests
         // Assert
         Assert.Equal(3, reservation.Inputs.Count);
         Assert.Equal(2, reservation.Inputs.Count(i => i.IsSilentPayment));
+    }
+
+    [Fact]
+    public async Task Given_TheSilentCoinChosen_When_OrdinaryCoinsCouldPay_Then_ExactlyTheChosenCoinIsReserved()
+    {
+        // Arrange (NL-1296: the explicit opt-in that AvoidMixing otherwise overrides)
+        AddUtxo(300_000);
+        var silent = AddSilentCoin(100_000, 7);
+        var policy = new WalletSelectionPolicy { Inputs = [(silent.TxId, silent.Index)] };
+        // Act
+        var reservation = await _selector.ReserveAsync(LightningMoney.Satoshis(20_000), s_feeRate, 200,
+            "withdraw", policy, TestContext.Current.CancellationToken);
+        // Assert
+        var input = Assert.Single(reservation.Inputs);
+        Assert.Equal(silent.TxId, input.TxId);
+        Assert.True(input.IsSilentPayment);
+        Assert.True(reservation.ChangeAmount.Satoshi > 0);
+        Assert.True(_utxos.TryGetFeeReservation(silent.TxId, silent.Index, out _));
+    }
+
+    [Fact]
+    public async Task Given_AChosenCoinListedTwiceOrReserved_When_Selecting_Then_RefusedAndNothingReserved()
+    {
+        // Arrange
+        var silent = AddSilentCoin(100_000, 7);
+        var reserved = AddUtxo(50_000);
+        Assert.True(_utxos.TryReserveForFee([(reserved.TxId, reserved.Index)], Guid.NewGuid()));
+        // Act / Assert
+        foreach (var inputs in new[]
+                 {
+                     new[] { (silent.TxId, silent.Index), (silent.TxId, silent.Index) },
+                     new[] { (silent.TxId, silent.Index), (reserved.TxId, reserved.Index) }
+                 })
+        {
+            var failure = await Assert.ThrowsAsync<WalletSpendException>(() => _selector.ReserveAsync(
+                LightningMoney.Satoshis(20_000), s_feeRate, 200, "withdraw",
+                new WalletSelectionPolicy { Inputs = inputs }, TestContext.Current.CancellationToken));
+            Assert.Equal(WalletSpendError.InputUnavailable, failure.Error);
+        }
+
+        Assert.False(_utxos.TryGetFeeReservation(silent.TxId, silent.Index, out _));
     }
 
     private UtxoModel AddSilentCoin(long satoshis, uint label)

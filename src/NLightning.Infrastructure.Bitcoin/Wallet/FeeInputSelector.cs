@@ -83,8 +83,12 @@ public sealed class FeeInputSelector : IFeeInputSelector
 
             for (var attempt = 1; attempt <= MaxReserveAttempts; attempt++)
             {
-                var selection = SelectWithPolicy(GetCandidates(spentByPendingBroadcasts), CeilSatoshis(targetFee),
-                                                 feeRatePerKw.Satoshi, extraWeight, policy);
+                var candidates = GetCandidates(spentByPendingBroadcasts);
+                var selection = policy.Inputs is { } required
+                                    ? SelectExact(candidates, required, CeilSatoshis(targetFee), feeRatePerKw.Satoshi,
+                                                  extraWeight, policy.PreferP2TrChange)
+                                    : SelectWithPolicy(candidates, CeilSatoshis(targetFee), feeRatePerKw.Satoshi,
+                                                       extraWeight, policy);
                 var reservationId = Guid.NewGuid();
                 var outpoints = selection.Inputs.Select(i => (i.TxId, i.Index)).ToList();
 
@@ -227,6 +231,62 @@ public sealed class FeeInputSelector : IFeeInputSelector
         var required = targetFeeSat + FeeSat(feeRatePerKw, extraWeight + inputWeight
                                                          + (inputs.Count == 0 ? WalletWeights.P2WpkhInputWeight : 0));
         throw new InsufficientFundsException(LightningMoney.Satoshis(required), LightningMoney.Satoshis(total));
+    }
+
+    /// <summary>
+    /// The operator's explicit choice (NL-1296): exactly the <paramref name="required"/> outputs, all of them, in the
+    /// order given. A change output is added when what is left after it is at least the change dust limit, otherwise
+    /// the excess goes to the fee. Silent payment coins among them are spent (the operator opted in); linking several
+    /// coins is logged like any other linkage.
+    /// </summary>
+    /// <exception cref="WalletSpendException"><see cref="WalletSpendError.InputUnavailable"/>: an output is not among
+    /// the selectable wallet outputs (not in the wallet, not mined, of an unknown script, locked to a channel, reserved
+    /// or spent by a pending broadcast), or one is listed twice.</exception>
+    /// <exception cref="InsufficientFundsException">They cannot pay the target and the fee.</exception>
+    internal Selection SelectExact(IReadOnlyList<WalletInput> candidates,
+                                   IReadOnlyList<(TxId TxId, uint Index)> required, long targetFeeSat,
+                                   long feeRatePerKw, int extraWeight, bool preferP2TrChange)
+    {
+        if (required.Count == 0)
+            throw new WalletSpendException(WalletSpendError.InputUnavailable, "No input given.");
+
+        var byOutpoint = candidates.ToDictionary(c => (c.TxId, c.Index));
+        var inputs = new List<WalletInput>(required.Count);
+        var seen = new HashSet<(TxId, uint)>();
+        foreach (var outpoint in required)
+        {
+            if (!seen.Add(outpoint))
+                throw new WalletSpendException(WalletSpendError.InputUnavailable,
+                                               $"Input {outpoint.TxId}:{outpoint.Index} is listed twice.");
+            if (!byOutpoint.TryGetValue(outpoint, out var input))
+                throw new WalletSpendException(WalletSpendError.InputUnavailable,
+                                               $"Input {outpoint.TxId}:{outpoint.Index} is not a spendable wallet "
+                                             + "output: unknown, not mined, locked to a channel, reserved or spent by a "
+                                             + "pending broadcast.");
+            inputs.Add(input);
+        }
+
+        var changeWeight = preferP2TrChange ? 172 : WalletWeights.P2WpkhOutputWeight;
+        var changeDust = preferP2TrChange ? 330 : WalletWeights.P2WpkhDustLimitSat;
+        var total = inputs.Sum(i => i.Amount.Satoshi);
+        var inputWeight = inputs.Sum(i => (long)i.InputWeight);
+        var feeWithChange = targetFeeSat + FeeSat(feeRatePerKw, extraWeight + inputWeight + changeWeight);
+        Selection selection;
+        if (total - feeWithChange >= changeDust)
+        {
+            selection = new Selection(inputs, feeWithChange, total - feeWithChange);
+        }
+        else
+        {
+            var feeWithoutChange = targetFeeSat + FeeSat(feeRatePerKw, extraWeight + inputWeight);
+            if (total < feeWithoutChange)
+                throw new InsufficientFundsException(LightningMoney.Satoshis(feeWithoutChange),
+                                                     LightningMoney.Satoshis(total));
+            selection = new Selection(inputs, total, 0);
+        }
+
+        LogSilentPaymentLinkage(selection);
+        return selection;
     }
 
     private Selection SelectWithPolicy(IReadOnlyList<WalletInput> candidates, long target, long rate, int weight,

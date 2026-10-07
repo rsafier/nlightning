@@ -29,5 +29,12 @@ public enum WalletSpendError
     /// The signed transaction's fee is above <see cref="Wallet.Models.WalletWithdrawRequest.MaxFee"/> (NL-997: a Cashu
     /// melt's fee reserve); nothing was stored or broadcast and the inputs were released.
     /// </summary>
-    FeeAboveLimit
+    FeeAboveLimit,
+
+    /// <summary>
+    /// An output named in <see cref="Wallet.Models.WalletWithdrawRequest.Inputs"/> is not a spendable wallet output: not
+    /// in the wallet, not mined, locked to a channel funding, reserved for a fee or spent by a pending broadcast
+    /// (NL-1296).
+    /// </summary>
+    InputUnavailable
 }

@@ -447,7 +447,8 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     public Task<WithdrawIpcResponse> WithdrawAsync(string address, ulong? amountSat, ulong? satPerVbyte,
-                                                   CancellationToken ct = default, LabelArguments? labels = null)
+                                                   CancellationToken ct = default, LabelArguments? labels = null,
+                                                   IReadOnlyList<string>? utxos = null)
     {
         var req = new WithdrawIpcRequest
         {
@@ -455,7 +456,8 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
             AmountSat = amountSat,
             SatPerVbyte = satPerVbyte,
             Label = labels?.Label,
-            Tags = labels?.TagsOrNull
+            Tags = labels?.TagsOrNull,
+            Utxos = utxos is { Count: > 0 } ? [.. utxos] : null
         };
         return SendRequestAsync<WithdrawIpcRequest, WithdrawIpcResponse>(ClientCommand.Withdraw, req, ct);
     }

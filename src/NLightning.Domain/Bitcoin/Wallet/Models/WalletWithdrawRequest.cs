@@ -2,6 +2,7 @@ namespace NLightning.Domain.Bitcoin.Wallet.Models;
 
 using Accounting.Labels;
 using Money;
+using ValueObjects;
 
 /// <summary>
 /// An on-chain payment from the wallet to an external address (<c>withdraw</c>).
@@ -26,4 +27,12 @@ public sealed record WalletWithdrawRequest(string Address, LightningMoney? Amoun
     /// before it is stored or broadcast (<see cref="Enums.WalletSpendError.FeeAboveLimit"/>; NL-997).
     /// </summary>
     public LightningMoney? MaxFee { get; init; }
+
+    /// <summary>
+    /// The exact wallet outputs to spend (NL-1296, <c>withdraw --utxo</c>), or null to let the coin selector choose.
+    /// Every listed output is spent, silent payment coins included (the explicit opt-in that
+    /// <c>SilentPayments:AvoidMixing</c> otherwise keeps them out of a spend that does not need them); "all" sends
+    /// their whole value minus the fee, with no change, and the anchors reserve must stay backed by the other outputs.
+    /// </summary>
+    public IReadOnlyList<(TxId TxId, uint Index)>? Inputs { get; init; }
 }

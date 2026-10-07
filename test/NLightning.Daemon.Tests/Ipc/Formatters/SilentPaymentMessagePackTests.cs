@@ -42,6 +42,31 @@ public class SilentPaymentMessagePackTests
     }
 
     [Fact]
+    public void Given_UnspentOutputs_When_RoundTrippedAndPrinted_Then_EachOutpointIsListedForWithdrawUtxo()
+    {
+        // Arrange (NL-1296: spstatus names the outpoints withdraw --utxo takes)
+        const string txid = "154499a7c742719609d35ae6021fb39a4c0f34ce8863ad06ed6988ad861e6fb0";
+        var status = new SilentPaymentStatus(true, true, true, true, 10, 20, 30, null, null, 0, "GetBlock", 2, 0, 2,
+                                             null, null)
+        {
+            Unspent = [new SilentPaymentUnspentOutput(txid, 0, 40_000, 3_487_066, 1),
+                       new SilentPaymentUnspentOutput(txid, 1, 5_000, 3_487_067, null)]
+        };
+        var wire = SilentPaymentIpcResponse.FromClientResponse(new SilentPaymentClientResponse(null, null, status));
+        var output = new StringWriter();
+
+        // Act
+        var bytes = MessagePackSerializer.Serialize(wire, NLightningMessagePackOptions.Options, TestContext.Current.CancellationToken);
+        var restored = MessagePackSerializer.Deserialize<SilentPaymentIpcResponse>(bytes, NLightningMessagePackOptions.Options, TestContext.Current.CancellationToken);
+        new NLightning.Client.Printers.SilentPaymentPrinter(output).Print(restored);
+
+        // Assert
+        var text = output.ToString().ReplaceLineEndings("\n");
+        Assert.Contains($"  {txid}:0 40000 sat, block 3487066, label 1\n", text);
+        Assert.Contains($"  {txid}:1 5000 sat, block 3487067, no label\n", text);
+    }
+
+    [Fact]
     public void Given_RescanRequest_When_MessagePackRoundTrip_Then_RangeAndRecoveryLabelsReachDomain()
     {
         // Arrange

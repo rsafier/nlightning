@@ -29,9 +29,16 @@ public sealed class WithdrawIpcRequest
     /// </summary>
     [Key(4)] public List<string>? Tags { get; init; }
 
+    /// <summary>
+    /// The wallet outputs to spend as <c>txid:vout</c> (NL-1296, <c>--utxo</c>), or null to let the wallet choose; an
+    /// older client sends none.
+    /// </summary>
+    [Key(5)] public List<string>? Utxos { get; init; }
+
     public WithdrawClientRequest ToClientRequest() => new(Address, AmountSat, SatPerVbyte)
     {
         Label = Label,
-        Tags = Tags ?? []
+        Tags = Tags ?? [],
+        Utxos = Utxos ?? []
     };
 }

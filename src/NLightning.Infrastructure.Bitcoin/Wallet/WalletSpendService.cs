@@ -148,8 +148,15 @@ public sealed class WalletSpendService : IWalletSpendService
                                            ChainProcessingHalt.Refusal("withdraw"));
 
         if (IsSilentPaymentAddress(request.Address))
+        {
+            if (request.Inputs is { Count: > 0 })
+                throw new WalletSpendException(WalletSpendError.InputUnavailable,
+                                               "Choosing the inputs of a payment to a silent payment address is not "
+                                             + "supported; withdraw to an ordinary address.");
+
             return await SendAsync([new WalletRecipient(request.Address, request.Amount)], request.FeeRatePerKw,
                                    request.MaxFee, request.Labels, cancellationToken);
+        }
         var destination = ParseAddress(request.Address, _network).ScriptPubKey;
         var feeRatePerKw = await GetFeeRatePerKwAsync(request.FeeRatePerKw, cancellationToken);
 
@@ -410,14 +417,39 @@ public sealed class WalletSpendService : IWalletSpendService
                                                $"{amountSat} sat is below the dust limit of the destination "
                                              + $"({dustLimit} sat).");
         }
+        else if (request.Inputs is { Count: > 0 } chosen)
+        {
+            // NL-1296: everything in the chosen outputs minus the fee, no change; the anchors reserve stays backed by
+            // the other outputs (checked below)
+            amountSat = await GetSendAllAmountOfInputsAsync(chosen, extraWeight, feeRatePerKw, dustLimit);
+        }
         else
         {
             amountSat = await GetSendAllAmountAsync(extraWeight, feeRatePerKw, reserve, dustLimit);
         }
 
-        var reservation = await _feeInputSelector.ReserveAsync(LightningMoney.Satoshis(amountSat),
-                                                               LightningMoney.Satoshis(feeRatePerKw), extraWeight,
-                                                               ReservationPurpose, cancellationToken);
+        // NL-1296: with explicit inputs exactly those are spent, silent payment coins included (the opt-in that
+        // SilentPayments:AvoidMixing otherwise keeps them out of a withdraw that does not need them)
+        var reservation = request.Inputs is { Count: > 0 } inputs
+                              ? await _feeInputSelector.ReserveAsync(LightningMoney.Satoshis(amountSat),
+                                                                     LightningMoney.Satoshis(feeRatePerKw),
+                                                                     extraWeight, ReservationPurpose,
+                                                                     WalletSelectionPolicy.Default with
+                                                                     {
+                                                                         Inputs = inputs
+                                                                     }, cancellationToken)
+                              : await _feeInputSelector.ReserveAsync(LightningMoney.Satoshis(amountSat),
+                                                                     LightningMoney.Satoshis(feeRatePerKw),
+                                                                     extraWeight, ReservationPurpose,
+                                                                     cancellationToken);
+        if (request.Inputs is { Count: > 0 }
+         && !reservation.Inputs.Select(i => (i.TxId, i.Index)).SequenceEqual(request.Inputs))
+        {
+            // A selector that ignores the chosen inputs (the interface default) must never spend other coins
+            await _feeInputSelector.ReleaseAsync(reservation.Id, CancellationToken.None);
+            throw new WalletSpendException(WalletSpendError.InputUnavailable,
+                                           "The wallet could not reserve exactly the chosen inputs.");
+        }
         var stored = false;
         try
         {
@@ -620,10 +652,49 @@ public sealed class WalletSpendService : IWalletSpendService
     }
 
     /// <summary>
+    /// "All" of the chosen outputs (NL-1296): their whole value minus the fee of spending exactly them to the
+    /// destination, with no change output.
+    /// </summary>
+    private async Task<long> GetSendAllAmountOfInputsAsync(IReadOnlyList<(TxId TxId, uint Index)> chosen,
+                                                           int extraWeight, long feeRatePerKw, long dustLimit)
+    {
+        var spendable = (await GetSpendableUtxosAsync()).ToDictionary(u => (u.TxId, u.Index));
+        long totalSat = 0;
+        long weight = extraWeight;
+        var seen = new HashSet<(TxId, uint)>();
+        foreach (var outpoint in chosen)
+        {
+            if (!seen.Add(outpoint))
+                throw new WalletSpendException(WalletSpendError.InputUnavailable,
+                                               $"Input {outpoint.TxId}:{outpoint.Index} is listed twice.");
+            if (!spendable.TryGetValue(outpoint, out var utxo))
+                throw new WalletSpendException(WalletSpendError.InputUnavailable,
+                                               $"Input {outpoint.TxId}:{outpoint.Index} is not a spendable wallet "
+                                             + "output: unknown, not mined, locked to a channel, reserved or spent by a "
+                                             + "pending broadcast.");
+            totalSat += utxo.Amount.Satoshi;
+            weight += WalletWeights.GetInputWeight(utxo.AddressType);
+        }
+
+        var feeSat = FeeSat(feeRatePerKw, weight);
+        var amountSat = totalSat - feeSat;
+        if (amountSat >= dustLimit)
+            return amountSat;
+
+        throw new InsufficientFundsException(LightningMoney.Satoshis(feeSat + dustLimit),
+                                             LightningMoney.Satoshis(totalSat));
+    }
+
+    /// <summary>
     /// The outputs <see cref="FeeInputSelector"/> would consider: unreserved, mined, of a known P2WPKH or P2TR wallet
     /// address, and not spent by one of our pending broadcasts.
     /// </summary>
-    private async Task<List<(long AmountSat, int InputWeight)>> GetSpendableOutputsAsync()
+    private async Task<List<(long AmountSat, int InputWeight)>> GetSpendableOutputsAsync() =>
+        (await GetSpendableUtxosAsync())
+       .Select(utxo => (utxo.Amount.Satoshi, WalletWeights.GetInputWeight(utxo.AddressType)))
+       .ToList();
+
+    private async Task<List<UtxoModel>> GetSpendableUtxosAsync()
     {
         HashSet<(TxId TxId, uint Index)> excluded;
         using (var scope = _scopeFactory.CreateScope())
@@ -632,14 +703,14 @@ public sealed class WalletSpendService : IWalletSpendService
             excluded = await PendingBroadcastOutpoints.GetAsync(uow, _network, _logger);
         }
 
-        var outputs = new List<(long AmountSat, int InputWeight)>();
+        var outputs = new List<UtxoModel>();
         foreach (var utxo in _utxoMemoryRepository.GetUnreservedUtxos())
         {
             if (excluded.Contains((utxo.TxId, utxo.Index)) || utxo.BlockHeight == 0 || (utxo.WalletAddress is null && utxo.SilentPayment is null)
              || utxo.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
                 continue;
 
-            outputs.Add((utxo.Amount.Satoshi, WalletWeights.GetInputWeight(utxo.AddressType)));
+            outputs.Add(utxo);
         }
 
         return outputs;

@@ -40,12 +40,16 @@ public static class ClientUtils
         Console.WriteLine("                               Recover silent payments from the birthday using full blocks;");
         Console.WriteLine("                               retained blocks and a prevout source are required");
         Console.WriteLine("  spstatus                     Show silent payment configuration, cursors and scan progress");
-        Console.WriteLine("  withdraw <address> <amount_sat|all> [--sat-per-vb <n>]");
+        Console.WriteLine("  withdraw <address> <amount_sat|all> [--sat-per-vb <n>] [--utxo <txid:vout>]...");
         Console.WriteLine("                               Send on-chain funds to a Bitcoin or silent payment address");
         Console.WriteLine("                               from the wallet (aliases: sendcoins,");
         Console.WriteLine("                               send-coins); all sends every confirmed output minus the");
         Console.WriteLine("                               fee and keeps the anchors reserve as change; fee rate");
-        Console.WriteLine("                               1-1000 sat/vB [default: the node's estimate]");
+        Console.WriteLine("                               1-1000 sat/vB [default: the node's estimate]; silent");
+        Console.WriteLine("                               payment coins are left out unless the amount needs them;");
+        Console.WriteLine("                               --utxo (repeatable) spends exactly those outputs, silent");
+        Console.WriteLine("                               payment coins included (spstatus lists them), and all");
+        Console.WriteLine("                               then sends their whole value minus the fee");
         Console.WriteLine("  openchannel <node> <sats> [push_sats] [--public] [--dual-fund|--v1] [--no-wait]");
         Console.WriteLine("                               Open a channel to peer, optionally giving it push_sats;");
         Console.WriteLine("                               --public announces it once 6 blocks deep [default: private];");

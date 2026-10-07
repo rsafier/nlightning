@@ -1,8 +1,10 @@
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Daemon.Handlers;
 
 using Domain.Bitcoin.Enums;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Client.Constants;
@@ -64,6 +66,7 @@ public sealed class WithdrawClientHandler : IClientCommandHandler<WithdrawClient
                                     + $"{MaxSatPerVbyte} sat/vB.");
 
         var labels = SourceLabelsGuard.Check(request.Label, request.Tags);
+        var inputs = ParseUtxos(request.Utxos);
         var spendRequest = new WalletWithdrawRequest(
             request.Address,
             request.AmountSat is { } amount ? LightningMoney.Satoshis((long)amount) : null,
@@ -71,7 +74,8 @@ public sealed class WithdrawClientHandler : IClientCommandHandler<WithdrawClient
                 ? LightningMoney.Satoshis(FeeRateConverter.SatPerVByteToSatPerKw(satPerVbyte))
                 : null)
         {
-            Labels = labels
+            Labels = labels,
+            Inputs = inputs
         };
 
         WalletWithdrawResult result;
@@ -103,5 +107,61 @@ public sealed class WithdrawClientHandler : IClientCommandHandler<WithdrawClient
         return new WithdrawClientResponse(result.TxId, result.Amount.Satoshi, result.Fee.Satoshi,
                                           result.Change.Satoshi, result.FeeRatePerKw.Satoshi, result.Weight,
                                           result.InputCount, result.AnchorReserve.Satoshi, result.Published);
+    }
+
+    /// <summary>The most outputs one withdraw may name (<c>--utxo</c>).</summary>
+    internal const int MaxUtxos = 500;
+
+    /// <summary>
+    /// The chosen outputs (NL-1296): <c>txid:vout</c>, the txid in display order (as bitcoind and explorers print it);
+    /// null when none is given.
+    /// </summary>
+    internal static IReadOnlyList<(TxId TxId, uint Index)>? ParseUtxos(IReadOnlyList<string>? utxos)
+    {
+        if (utxos is null || utxos.Count == 0)
+            return null;
+        if (utxos.Count > MaxUtxos)
+            throw new ClientException(ErrorCodes.InvalidOperation, $"At most {MaxUtxos} --utxo outputs may be given.");
+
+        var outpoints = new List<(TxId, uint)>(utxos.Count);
+        foreach (var text in utxos)
+        {
+            if (!TryParseOutpoint(text, out var outpoint))
+                throw new ClientException(ErrorCodes.InvalidOperation,
+                                          $"Invalid output '{text}': expected <txid>:<vout>.");
+            if (outpoints.Contains(outpoint))
+                throw new ClientException(ErrorCodes.InvalidOperation, $"Output '{text}' is given twice.");
+            outpoints.Add(outpoint);
+        }
+
+        return outpoints;
+    }
+
+    internal static bool TryParseOutpoint(string? text, out (TxId TxId, uint Index) outpoint)
+    {
+        outpoint = default;
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var separator = text.LastIndexOf(':');
+        if (separator != 64
+         || !uint.TryParse(text.AsSpan(separator + 1), NumberStyles.None, CultureInfo.InvariantCulture,
+                           out var index))
+            return false;
+
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromHexString(text.AsSpan(0, separator));
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+
+        // Display order is the reverse of the internal byte order TxId holds
+        Array.Reverse(bytes);
+        outpoint = (new TxId(bytes), index);
+        return true;
     }
 }

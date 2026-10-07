@@ -29,6 +29,10 @@ public sealed class SilentPaymentPrinter
                 ? $"Rescan: {status.RescanCursorHeight?.ToString() ?? "not started"} / {target}; recovery labels: {status.RecoveryLabelCount}"
                 : "Rescan: idle");
             _output.WriteLine($"Outputs: {status.FoundOutputs} found, {status.UnspentOutputs} unspent, {status.IgnoredOutputs} ignored");
+            if (status.Unspent is { Count: > 0 } unspent)
+                foreach (var output in unspent)
+                    _output.WriteLine($"  {output.TxId}:{output.Index} {output.AmountSats} sat, block {output.BlockHeight}"
+                                    + (output.Label is { } m ? $", label {m}" : ", no label"));
             if (status.LastScanMilliseconds is { } milliseconds)
                 _output.WriteLine($"Last scan: {milliseconds:F2} ms");
             if (status.LastError is { } error)

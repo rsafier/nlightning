@@ -403,7 +403,15 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
             _options.Enabled && _options.Receive, keys.RecoverableElsewhere, state?.BirthdayHeight, state?.LiveFromHeight,
             state?.LiveCursorHeight, state?.RescanCursorHeight, state?.RescanTargetHeight, state?.RecoveryLabelCount ?? 0,
             state?.PrevoutSource, outputs.Count(output => !output.Ignored), outputs.Count(output => output.Ignored),
-            outputs.Count(output => !output.Ignored && output.SpentByTransactionId is null), scanner.LastScanMilliseconds, _lastError);
+            outputs.Count(output => !output.Ignored && output.SpentByTransactionId is null), scanner.LastScanMilliseconds, _lastError)
+        {
+            Unspent = outputs.Where(output => !output.Ignored && output.SpentByTransactionId is null)
+                             .OrderBy(output => output.BlockHeight)
+                             .Select(output => new SilentPaymentUnspentOutput(output.TransactionId.ToString(),
+                                                                              output.Index, output.AmountSats,
+                                                                              output.BlockHeight, output.Label))
+                             .ToList()
+        };
     }
 
     private string EncodeAddress(uint? label)

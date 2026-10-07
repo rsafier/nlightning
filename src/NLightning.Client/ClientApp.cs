@@ -150,7 +150,8 @@ internal static class ClientApp
                 case "sendcoins":
                     var withdrawArgs = ParseWithdrawOptions(commandArgs, out _)!;
                     var withdrawal = await client.WithdrawAsync(withdrawArgs.Address, withdrawArgs.AmountSat,
-                                                                withdrawArgs.SatPerVbyte, cancellationToken, labels);
+                                                                withdrawArgs.SatPerVbyte, cancellationToken, labels,
+                                                                withdrawArgs.Utxos);
                     new WithdrawPrinter().Print(withdrawal);
                     break;
                 case "openchannel":
@@ -837,44 +838,69 @@ internal static class ClientApp
     }
 
     /// <summary>The arguments of withdraw.</summary>
-    internal const string WithdrawUsage = "<address> <amount_sat|all> [--sat-per-vb <n>]";
+    internal const string WithdrawUsage = "<address> <amount_sat|all> [--sat-per-vb <n>] [--utxo <txid:vout>]...";
 
     /// <summary>
-    /// <c>&lt;address&gt; &lt;amount_sat|all&gt; [--sat-per-vb &lt;n&gt;]</c> of withdraw; the option (also as
-    /// <c>--sat-per-vb=n</c>) may come anywhere.
+    /// <c>&lt;address&gt; &lt;amount_sat|all&gt; [--sat-per-vb &lt;n&gt;] [--utxo &lt;txid:vout&gt;]...</c> of withdraw;
+    /// the options (also as <c>--option=value</c>) may come anywhere. <c>--utxo</c> (NL-1296, repeatable) names the
+    /// wallet outputs to spend, exactly those (silent payment coins included); the daemon checks them.
     /// </summary>
     /// <returns>The parsed arguments (a null amount is "all"), or null with <paramref name="error"/> set.</returns>
     internal static WithdrawArguments? ParseWithdrawOptions(string[] commandArgs, out string? error)
     {
         error = null;
         ulong? satPerVbyte = null;
+        var utxos = new List<string>();
         var positional = new List<string>();
         for (var i = 0; i < commandArgs.Length; i++)
         {
             var argument = commandArgs[i];
+            string? option = null;
             string? value = null;
-            if (string.Equals(argument, "--sat-per-vb", StringComparison.OrdinalIgnoreCase))
+            foreach (var name in (string[])["--sat-per-vb", "--utxo"])
             {
-                if (i + 1 >= commandArgs.Length)
+                if (string.Equals(argument, name, StringComparison.OrdinalIgnoreCase))
                 {
-                    error = "Missing value for --sat-per-vb.";
+                    if (i + 1 >= commandArgs.Length)
+                    {
+                        error = $"Missing value for {name}.";
+                        return null;
+                    }
+
+                    option = name;
+                    value = commandArgs[++i];
+                    break;
+                }
+
+                if (argument.StartsWith(name + "=", StringComparison.OrdinalIgnoreCase))
+                {
+                    option = name;
+                    value = argument[(name.Length + 1)..];
+                    break;
+                }
+            }
+
+            if (option is null)
+            {
+                if (argument.StartsWith("--", StringComparison.Ordinal))
+                {
+                    error = $"Unknown option '{argument}'.";
                     return null;
                 }
 
-                value = commandArgs[++i];
-            }
-            else if (argument.StartsWith("--sat-per-vb=", StringComparison.OrdinalIgnoreCase))
-            {
-                value = argument["--sat-per-vb=".Length..];
-            }
-            else if (argument.StartsWith("--", StringComparison.Ordinal))
-            {
-                error = $"Unknown option '{argument}'.";
-                return null;
-            }
-            else
-            {
                 positional.Add(argument);
+                continue;
+            }
+
+            if (option == "--utxo")
+            {
+                if (!IsOutpoint(value!))
+                {
+                    error = $"Invalid output '{value}': expected <txid>:<vout>.";
+                    return null;
+                }
+
+                utxos.Add(value!);
                 continue;
             }
 
@@ -913,7 +939,14 @@ internal static class ClientApp
             amountSat = sats;
         }
 
-        return new WithdrawArguments(positional[0], amountSat, satPerVbyte);
+        return new WithdrawArguments(positional[0], amountSat, satPerVbyte) { Utxos = utxos };
+
+        static bool IsOutpoint(string text)
+        {
+            var separator = text.LastIndexOf(':');
+            return separator == 64 && text[..separator].All(Uri.IsHexDigit)
+                && uint.TryParse(text.AsSpan(separator + 1), NumberStyles.None, CultureInfo.InvariantCulture, out _);
+        }
     }
 
     /// <summary>A node id: 66 hex characters of a compressed public key (02 or 03 first).</summary>
@@ -2170,4 +2203,8 @@ public sealed record PayRouteHopArguments(CompactPubKey NodeId, ulong? OutgoingS
 /// <summary>
 /// The parsed arguments of withdraw (a null amount is "all").
 /// </summary>
-internal sealed record WithdrawArguments(string Address, ulong? AmountSat, ulong? SatPerVbyte);
+internal sealed record WithdrawArguments(string Address, ulong? AmountSat, ulong? SatPerVbyte)
+{
+    /// <summary>The outputs to spend as <c>txid:vout</c> (NL-1296, <c>--utxo</c>); empty lets the wallet choose.</summary>
+    public IReadOnlyList<string> Utxos { get; init; } = [];
+}
