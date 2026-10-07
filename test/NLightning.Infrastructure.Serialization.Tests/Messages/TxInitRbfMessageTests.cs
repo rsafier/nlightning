@@ -16,7 +16,7 @@ public class TxInitRbfMessageTests
     public TxInitRbfMessageTests()
     {
         _txInitRbfMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxInitRbfMessage>()!;
+            SerializerHelper.WireRegistry.Get<TxInitRbfMessage>()!;
     }
 
     #region Deserialize

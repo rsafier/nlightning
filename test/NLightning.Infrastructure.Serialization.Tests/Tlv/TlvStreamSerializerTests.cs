@@ -23,7 +23,7 @@ public class TlvStreamSerializerTests
 
     public TlvStreamSerializerTests()
     {
-        _tlvStreamSerializer = new TlvStreamSerializer(SerializerHelper.TlvConverterFactory,
+        _tlvStreamSerializer = new TlvStreamSerializer(SerializerHelper.WireRegistry,
                                                        SerializerHelper.TlvSerializer);
     }
 
@@ -80,7 +80,7 @@ public class TlvStreamSerializerTests
     public async Task Given_EveryRegisteredConverter_When_SerializedThroughTlvStream_Then_BytesMatchConverterOutput()
     {
         // Arrange
-        var registeredTypes = SerializerHelper.TlvConverterFactory.RegisteredTlvTypes;
+        var registeredTypes = SerializerHelper.WireRegistry.TlvTypes;
         var samples = CreateSampleTlvs();
         var missing = registeredTypes.Where(t => !samples.ContainsKey(t)).Select(t => t.Name).ToList();
         Assert.True(missing.Count == 0,
@@ -89,9 +89,9 @@ public class TlvStreamSerializerTests
         foreach (var type in registeredTypes)
         {
             var sample = samples[type];
-            var converter = SerializerHelper.TlvConverterFactory.GetConverter(type);
+            var converter = SerializerHelper.WireRegistry.GetTlvDefinition(type);
             Assert.NotNull(converter);
-            var expectedBase = converter.ConvertToBase(sample);
+            var expectedBase = converter.Encode(sample);
             using var expectedStream = new MemoryStream();
             await SerializerHelper.TlvSerializer.SerializeAsync(expectedBase, expectedStream);
 
@@ -110,7 +110,7 @@ public class TlvStreamSerializerTests
             Assert.True(deserialized.TryGetTlv(sample.Type, out var rawTlv));
             Assert.NotNull(rawTlv);
             Assert.Equal(expectedBase.Value, rawTlv.Value);
-            var roundTripped = converter.ConvertFromBase(rawTlv);
+            var roundTripped = converter.Decode(rawTlv);
             Assert.IsType(type, roundTripped);
         }
     }

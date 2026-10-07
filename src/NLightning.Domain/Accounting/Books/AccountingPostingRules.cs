@@ -56,6 +56,7 @@ public static class AccountingPostingRules
             note = accountingEvent.Kind switch
             {
                 AccountingEventKind.InvoiceSettled => PostInvoiceSettled(accountingEvent, lines),
+                AccountingEventKind.InterceptedHtlcSettled => PostInterceptedHtlcSettled(accountingEvent, lines),
                 AccountingEventKind.PaymentSucceeded => PostPaymentSucceeded(accountingEvent, lines),
                 AccountingEventKind.PaymentFailed => null,
                 AccountingEventKind.ForwardSettled => PostForwardSettled(accountingEvent, lines),
@@ -114,6 +115,8 @@ public static class AccountingPostingRules
                                                                        : "Payment sent", description),
             AccountingEventKind.PaymentFailed => WithDetail("Payment failed",
                                                             Text(accountingEvent, AccountingDetailKeys.Reason)),
+            AccountingEventKind.InterceptedHtlcSettled =>
+                WithDetail("Intercepted HTLC settled", Route(accountingEvent)),
             AccountingEventKind.ForwardSettled => WithDetail("Forward settled", Route(accountingEvent)),
             AccountingEventKind.TrampolineRelaySettled => WithDetail("Trampoline relay settled", Route(accountingEvent)),
             AccountingEventKind.ForwardLostOnchain => WithDetail("Forward lost on chain", Route(accountingEvent)),
@@ -184,6 +187,15 @@ public static class AccountingPostingRules
 
         lines.Add(AccountRole.Sent, amount);
         lines.Add(AccountRole.RoutingFees, fee);
+        return null;
+    }
+
+    /// <summary>A forward settled by the HTLC interceptor (NL-1182), AmountMsat = the incoming HTLC's amount: Dr
+    /// Channels a; Cr Received a, as an invoice of ours (no outgoing leg took anything out of the channels).</summary>
+    private static string? PostInterceptedHtlcSettled(AccountingEventModel e, Lines lines)
+    {
+        lines.Add(AccountRole.Channels, e.AmountMsat);
+        lines.Add(AccountRole.Received, -e.AmountMsat);
         return null;
     }
 
@@ -388,10 +400,11 @@ public static class AccountingPostingRules
     }
 
     /// <summary>AmountMsat = −x (what left to outputs that are not ours): Dr TransfersOut x; Dr FeeWithdraw fee; Cr
-    /// Clearing (x + fee).</summary>
+    /// Clearing (x + fee). A collaborative transaction's net flow (NL-1186) can be positive (it paid us more than our
+    /// inputs, a payjoin we received): Dr Clearing; Cr TransfersIn.</summary>
     private static string? PostWalletSent(AccountingEventModel e, Lines lines)
     {
-        lines.Add(AccountRole.TransfersOut, -e.AmountMsat);
+        lines.Add(e.AmountMsat > 0 ? AccountRole.TransfersIn : AccountRole.TransfersOut, -e.AmountMsat);
         lines.Add(AccountRole.FeeWithdraw, e.FeeMsat);
         lines.Add(AccountRole.Clearing, checked(e.AmountMsat - e.FeeMsat));
         return null;

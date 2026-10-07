@@ -43,6 +43,13 @@ public sealed class FakeBitcoinChain : IBitcoinChainService
     /// confirmed transactions (answers 0).</summary>
     public bool HasTxIndex { get; set; } = true;
 
+    /// <summary>False: like a node without <c>gettxspendingprevout</c>, <see cref="GetMempoolSpendersAsync"/> answers
+    /// null.</summary>
+    public bool HasMempoolSpenders { get; set; } = true;
+
+    /// <summary>How many times <see cref="GetMempoolSpendersAsync"/> was called.</summary>
+    public int MempoolSpenderQueries { get; private set; }
+
     public Block this[uint height] => _blocks[(int)height];
 
     /// <summary>Appends a block holding <paramref name="transactions"/> (and, by default, the mempool).</summary>
@@ -108,21 +115,40 @@ public sealed class FakeBitcoinChain : IBitcoinChainService
     public Task<Block?> GetBlockAsync(uint256 blockHash) =>
         Task.FromResult(_blocks.Concat(_staleBlocks).FirstOrDefault(b => b.GetHash() == blockHash));
 
-    public Task<(TxOut Output, uint Height)?> GetUnspentOutputAsync(OutPoint outPoint)
+    public Task<(TxOut Output, uint Height)?> GetUnspentOutputAsync(OutPoint outPoint) =>
+        FindUnspentAsync(outPoint, includeMempool: true);
+
+    public Task<(TxOut Output, uint Height)?> GetConfirmedUnspentOutputAsync(OutPoint outPoint) =>
+        FindUnspentAsync(outPoint, includeMempool: false);
+
+    private Task<(TxOut Output, uint Height)?> FindUnspentAsync(OutPoint outPoint, bool includeMempool)
     {
         for (var height = 0; height < _blocks.Count; height++)
         {
             var tx = _blocks[height].Transactions.FirstOrDefault(t => t.GetHash() == outPoint.Hash);
             if (tx is null || outPoint.N >= tx.Outputs.Count)
                 continue;
-
-            // gettxout with the mempool: a mempool spend counts
-            var spent = _blocks.SelectMany(b => b.Transactions).Concat(Mempool).SelectMany(t => t.Inputs)
-                               .Any(i => i.PrevOut == outPoint);
+            var transactions = _blocks.SelectMany(b => b.Transactions);
+            if (includeMempool)
+                transactions = transactions.Concat(Mempool);
+            var spent = transactions.SelectMany(t => t.Inputs).Any(i => i.PrevOut == outPoint);
             return Task.FromResult<(TxOut Output, uint Height)?>(spent ? null : (tx.Outputs[outPoint.N], (uint)height));
         }
-
         return Task.FromResult<(TxOut Output, uint Height)?>(null);
+    }
+
+    public Task<IReadOnlyDictionary<OutPoint, uint256>?> GetMempoolSpendersAsync(IReadOnlyCollection<OutPoint> outPoints)
+    {
+        MempoolSpenderQueries++;
+        if (!HasMempoolSpenders)
+            return Task.FromResult<IReadOnlyDictionary<OutPoint, uint256>?>(null);
+
+        var spenders = new Dictionary<OutPoint, uint256>();
+        foreach (var outPoint in outPoints)
+            if (Mempool.FirstOrDefault(t => t.Inputs.Any(i => i.PrevOut == outPoint)) is { } spender)
+                spenders[outPoint] = spender.GetHash();
+
+        return Task.FromResult<IReadOnlyDictionary<OutPoint, uint256>?>(spenders);
     }
 
     public Task<uint> GetTransactionConfirmationsAsync(uint256 txId)

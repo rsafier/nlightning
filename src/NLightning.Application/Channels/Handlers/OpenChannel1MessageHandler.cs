@@ -8,13 +8,11 @@ using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Acceptance;
-using Domain.Channels.Closing;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
-using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Node.Constants;
 using Domain.Node.Interfaces;
@@ -149,8 +147,9 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
         // Create the channel
         var channel = await _channelFactory.CreateChannelV1AsNonInitiatorAsync(message, negotiatedFeatures, peerPubKey);
 
-        // The acceptor's values replace the ones we would announce (a value that cannot apply refuses the open)
-        if (decision is { HasOverrides: true })
+        // The acceptor's values replace the ones we would announce (a value that cannot apply refuses the open). Also
+        // without values: an acceptance must allow the opener's zero-conf channel_type (LND, NL-1181)
+        if (decision is not null)
             ApplyOpenDecision(channel, decision, openRequest!, negotiatedFeatures);
 
         _logger.LogTrace("Created Channel with fundingPubKey: {fundingPubKey}",
@@ -258,21 +257,10 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
                                    ChannelOpenRequest request, FeatureOptions negotiatedFeatures)
     {
         var channelId = request.PendingChannelId;
-        if (decision.UpfrontShutdownScript is { } script)
-        {
-            // LND: an upfront_shutdown for a peer without the feature fails the open
-            if (negotiatedFeatures.UpfrontShutdownScript == FeatureSupport.No)
-                throw new ChannelErrorException("A channel acceptor set upfront_shutdown, but "
-                                              + "option_upfront_shutdown_script is not negotiated", channelId,
-                                                ChannelOpenDecision.GenericRejection);
-            if (!ShutdownScriptValidator.IsValidUpfront(script, negotiatedFeatures))
-                throw new ChannelErrorException("A channel acceptor's upfront_shutdown is not a valid shutdown script",
-                                                channelId, ChannelOpenDecision.GenericRejection);
-        }
-
-        if (ChannelOpenDecisionRules.TryApply(decision, request, channel.ChannelParams.Local,
-                                              channel.ChannelParams.MinimumDepth, request.FundingAmount,
-                                              out var local, out var minimumDepth) is { } error)
+        var error = ChannelOpenDecisionRules.TryApply(decision, request, channel.ChannelParams.Local,
+                                                      channel.ChannelParams.MinimumDepth, request.FundingAmount,
+                                                      out var local, out var minimumDepth, negotiatedFeatures);
+        if (error is not null)
         {
             _logger.LogWarning("Refusing open_channel {TemporaryChannelId}: the channel acceptor's answer cannot apply "
                              + "({Error})", channelId, error);

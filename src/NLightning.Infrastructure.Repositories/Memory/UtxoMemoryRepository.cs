@@ -53,6 +53,14 @@ public class UtxoMemoryRepository : IUtxoMemoryRepository
                                                .Sum(x => x.Amount.Satoshi));
     }
 
+    public LightningMoney GetBalanceWithConfirmations(uint currentBlockHeight, uint minConfirmations)
+    {
+        return LightningMoney.Satoshis(_utxoSet.Values
+                                               .Where(x => Confirmations(x.BlockHeight, currentBlockHeight)
+                                                        >= minConfirmations)
+                                               .Sum(x => x.Amount.Satoshi));
+    }
+
     public LightningMoney GetLockedBalance()
     {
         lock (_reservationLock)
@@ -266,6 +274,12 @@ public class UtxoMemoryRepository : IUtxoMemoryRepository
         }
     }
 
+    public IReadOnlyList<(TxId TxId, uint Index)> GetFeeReservedOutpoints(Guid reservationId)
+    {
+        lock (_reservationLock)
+            return _feeReservations.Where(pair => pair.Value == reservationId).Select(pair => pair.Key).ToArray();
+    }
+
     public bool TryGetFeeReservation(TxId txId, uint index, out Guid reservationId)
     {
         lock (_reservationLock)
@@ -406,4 +420,7 @@ public class UtxoMemoryRepository : IUtxoMemoryRepository
 
         return null; // Insufficient funds
     }
+
+    private static uint Confirmations(uint blockHeight, uint tipHeight) =>
+        blockHeight == 0 || blockHeight > tipHeight ? 0 : tipHeight - blockHeight + 1;
 }

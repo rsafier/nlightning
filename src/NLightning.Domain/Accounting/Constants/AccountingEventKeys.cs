@@ -31,6 +31,11 @@ public static class AccountingEventKeys
     /// (at most one relay per payment hash).</summary>
     public static string TrampolineRelaySettled(Hash paymentHash) => $"tramp:{paymentHash}:settled";
 
+    /// <summary>The held forward of incoming HTLC <paramref name="incomingHtlcId"/> of
+    /// <paramref name="incomingChannelId"/> was settled by the HTLC interceptor (NL-1182): one key per incoming HTLC.</summary>
+    public static string InterceptedHtlcSettled(ChannelId incomingChannelId, ulong incomingHtlcId) =>
+        $"icpt:{incomingChannelId}:{incomingHtlcId}:settled";
+
     /// <summary>The loss of one incoming HTLC of our settled invoice <paramref name="paymentHash"/> on chain
     /// (NL-688): one key per HTLC, so the parts of a multi-part payment are told apart.</summary>
     public static string InvoiceLostOnchain(Hash paymentHash, ChannelId incomingChannelId, ulong incomingHtlcId) =>

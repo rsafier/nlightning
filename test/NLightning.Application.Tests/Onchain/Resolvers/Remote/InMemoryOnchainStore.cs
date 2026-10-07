@@ -1,5 +1,6 @@
 namespace NLightning.Application.Tests.Onchain.Resolvers.Remote;
 
+using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Interfaces;
@@ -29,6 +30,10 @@ internal sealed class InMemoryOnchainStore
     public List<ForwardCircuitModel> Circuits { get; } = [];
     public Dictionary<Hash, PaymentModel> Payments { get; } = [];
     public Dictionary<Hash, InvoiceModel> Invoices { get; } = [];
+
+    /// <summary>The keys of the saved accounting events (<c>IAccountingEventDbRepository.ExistsAsync</c>).</summary>
+    public HashSet<string> AccountingEventKeys { get; } = [];
+
     public int Saves { get; private set; }
 
     public (IUnitOfWork UnitOfWork, Func<Task> Save) CreateUnitOfWork()
@@ -78,6 +83,11 @@ internal sealed class InMemoryOnchainStore
         invoices.Setup(i => i.GetByPaymentHashAsync(It.IsAny<Hash>()))
                 .ReturnsAsync((Hash hash) => Invoices.GetValueOrDefault(hash));
         unitOfWork.SetupGet(u => u.InvoiceDbRepository).Returns(invoices.Object);
+
+        var accountingEvents = new Mock<IAccountingEventDbRepository>();
+        accountingEvents.Setup(r => r.ExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                        .ReturnsAsync((string key, CancellationToken _) => AccountingEventKeys.Contains(key));
+        unitOfWork.SetupGet(u => u.AccountingEventDbRepository).Returns(accountingEvents.Object);
 
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(SaveAsync);
         return (unitOfWork.Object, SaveAsync);

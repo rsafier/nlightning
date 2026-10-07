@@ -30,7 +30,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// <see cref="LocalLightningSigner"/>, an in-memory UTXO set, a mocked unit of work and a mocked anchors reserve. Every
 /// signed transaction is checked here with NBitcoin's script interpreter, independently of the service's own check.
 /// </summary>
-public class WalletSpendServiceTests
+public partial class WalletSpendServiceTests
 {
     private const uint Height = 200;
     private const long FeeRatePerKw = 1_000;
@@ -121,9 +121,94 @@ public class WalletSpendServiceTests
     }
 
     /// <summary>A service over the same wallet and database: a restarted node's.</summary>
-    private WalletSpendService CreateService() =>
+    private WalletSpendService CreateService(IWalletPsbtService? psbt = null) =>
         new(_selector, _anchorReserve.Object, _utxos, _signer, _monitor.Object, _feeService.Object, _scopeFactory,
-            Microsoft.Extensions.Options.Options.Create(_nodeOptions), NullLogger<WalletSpendService>.Instance);
+            Microsoft.Extensions.Options.Options.Create(_nodeOptions), NullLogger<WalletSpendService>.Instance, psbt: psbt);
+
+    [Fact]
+    public async Task Given_ProductionWalletRegistration_When_SendingOutputs_Then_ThePsbtBackendIsWired()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var psbt = new Mock<IWalletPsbtService>();
+        psbt.Setup(p => p.FundPsbtAsync(It.Is<PsbtFundRequest>(r => r.Outputs.Count == 2), ct))
+            .ReturnsAsync(new PsbtFundResult([1], -1, [], LightningMoney.Satoshis(1000)));
+        psbt.Setup(p => p.FinalizePsbtAsync(It.IsAny<byte[]>(), ct)).ReturnsAsync(new PsbtFinalizeResult([2], [3]));
+        psbt.Setup(p => p.PublishAsync(It.IsAny<byte[]>(), "Loop", ct)).ReturnsAsync(true);
+        var services = new ServiceCollection();
+        services.AddSingleton<IWalletPsbtService>(psbt.Object);
+        services.AddSingleton<IFeeInputSelector>(_selector);
+        services.AddSingleton(_anchorReserve.Object);
+        services.AddSingleton<IUtxoMemoryRepository>(_utxos);
+        services.AddSingleton<ILightningSigner>(_signer);
+        services.AddSingleton(_monitor.Object);
+        services.AddSingleton(_feeService.Object);
+        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(_nodeOptions));
+        services.AddSingleton<Microsoft.Extensions.Logging.ILogger<WalletSpendService>>(NullLogger<WalletSpendService>.Instance);
+        services.AddWalletSpendServices();
+        using var provider = services.BuildServiceProvider();
+        // Act
+        var raw = await provider.GetRequiredService<IWalletSpendService>().SendOutputsAsync([
+            (s_destination.ScriptPubKey.ToBytes(), LightningMoney.Satoshis(10_000)),
+            (_changeAddress.ScriptPubKey.ToBytes(), LightningMoney.Satoshis(20_000))], FeeRatePerKw, 1, "Loop", ct);
+        // Assert
+        Assert.Equal(new byte[] { 3 }, raw);
+        psbt.VerifyAll();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_AFundedSendOutputs_When_SigningOrPublicationFails_Then_OnlySafeToReleaseLeasesAreReleased(bool publishFailure)
+    {
+        // Arrange: publication may have reached bitcoind; signing failure cannot have published anything.
+        var ct = TestContext.Current.CancellationToken;
+        var psbt = new Mock<IWalletPsbtService>();
+        var txid = new TxId(new byte[32]);
+        PsbtFundRequest? request = null;
+        var lease = new WalletLease(new byte[32], txid, 0, DateTimeOffset.UtcNow.AddMinutes(10),
+            LightningMoney.Satoshis(100_000), new byte[] { 0x51 });
+        psbt.Setup(p => p.FundPsbtAsync(It.IsAny<PsbtFundRequest>(), ct))
+            .Callback<PsbtFundRequest, CancellationToken>((r, _) => request = r)
+            .ReturnsAsync(new PsbtFundResult([1], -1, [lease], LightningMoney.Satoshis(1000)));
+        if (publishFailure)
+        {
+            psbt.Setup(p => p.FinalizePsbtAsync(It.IsAny<byte[]>(), ct)).ReturnsAsync(new PsbtFinalizeResult([2], [3]));
+            psbt.Setup(p => p.PublishAsync(It.IsAny<byte[]>(), It.IsAny<string>(), ct)).ThrowsAsync(new IOException("unknown outcome"));
+        }
+        else psbt.Setup(p => p.FinalizePsbtAsync(It.IsAny<byte[]>(), ct)).ThrowsAsync(new IOException("signing failed"));
+        var service = CreateService(psbt.Object);
+        // Act / Assert
+        await Assert.ThrowsAsync<IOException>(() => service.SendOutputsAsync([
+            (new byte[] { 0x51 }, LightningMoney.Satoshis(10_000)),
+            (new byte[] { 0x51 }, LightningMoney.Satoshis(20_000))
+        ], FeeRatePerKw, 1, "loop", ct));
+        Assert.NotNull(request);
+        Assert.Equal(2, request.Outputs.Count);
+        Assert.Equal(32, request.LockId.Length);
+        psbt.Verify(p => p.ReleaseAsync(It.IsAny<byte[]>(), txid, 0, CancellationToken.None),
+            publishFailure ? Times.Never() : Times.Once());
+        psbt.Verify(p => p.PublishAsync(It.IsAny<byte[]>(), It.IsAny<string>(), ct),
+            publishFailure ? Times.Once() : Times.Never());
+    }
+
+    [Fact]
+    public async Task Given_AFullySignedSendOutputs_When_PublicationReturnsFalse_Then_ItFailsAndRetainsLeases()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var psbt = new Mock<IWalletPsbtService>();
+        var lease = new WalletLease(new byte[32], new TxId(new byte[32]), 0, DateTimeOffset.UtcNow.AddMinutes(10),
+            LightningMoney.Satoshis(100_000), new byte[] { 0x51 });
+        psbt.Setup(p => p.FundPsbtAsync(It.IsAny<PsbtFundRequest>(), ct))
+            .ReturnsAsync(new PsbtFundResult([1], -1, [lease], LightningMoney.Satoshis(1000)));
+        psbt.Setup(p => p.FinalizePsbtAsync(It.IsAny<byte[]>(), ct)).ReturnsAsync(new PsbtFinalizeResult([2], [3]));
+        psbt.Setup(p => p.PublishAsync(It.IsAny<byte[]>(), It.IsAny<string>(), ct)).ReturnsAsync(false);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => CreateService(psbt.Object).SendOutputsAsync(
+            [(new byte[] { 0x51 }, LightningMoney.Satoshis(10_000))], FeeRatePerKw, 1, "loop", ct));
+        psbt.Verify(p => p.ReleaseAsync(It.IsAny<byte[]>(), It.IsAny<TxId>(), It.IsAny<uint>(),
+            It.IsAny<CancellationToken>()), Times.Never());
+    }
 
     [Fact]
     public async Task Given_ALabelAndTags_When_Withdrawing_Then_TheWalletSendRowCarriesThem()
@@ -202,6 +287,24 @@ public class WalletSpendServiceTests
         Assert.Equal(LightningMoney.Satoshis(FeeRatePerKw), estimate.FeeRatePerKw);
         Assert.InRange(estimate.Fee.Satoshi - result.Fee.Satoshi, -2, 8);
         Assert.Equal(0u, result.DestinationOutputIndex);
+    }
+
+    [Fact]
+    public async Task Given_AZeroTaprootProgram_When_Quoted_Then_OnlyItsScriptWeightMattersAndNothingIsReserved()
+    {
+        // Arrange
+        AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
+        var script = new byte[34];
+        script[0] = 0x51;
+        script[1] = 32;
+        // Act
+        var normal = await _service.EstimateWithdrawFeeAsync(Request(40_000), TestContext.Current.CancellationToken);
+        var quote = await _service.EstimateOutputFeeAsync(script, LightningMoney.Satoshis(40_000), null,
+            TestContext.Current.CancellationToken);
+        // Assert
+        Assert.Equal(normal.Weight + 48, quote.Weight);
+        Assert.Equal(1, quote.InputCount);
+        Assert.Empty(_stored);
     }
 
     [Fact]

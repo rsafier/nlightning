@@ -16,6 +16,7 @@ using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Onchain.Enums;
@@ -121,6 +122,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ISweepDestinationProvider _sweepDestinationProvider;
     private readonly ICommitmentKeyDerivationService? _keyDerivation;
+    private readonly ISecretStorageServiceFactory? _secretStorageServiceFactory;
+    private readonly OperatorFeeBumps? _operatorFeeBumps;
 
     private readonly SemaphoreSlim _roundLock = new(1, 1);
     private readonly HashSet<string> _loggedOnce = [];
@@ -151,9 +154,13 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
                              IAnchorFeeInputSource? feeInputSource = null, AnchorCpfpOptions? options = null,
                              IBitcoinChainService? chainService = null,
                              ICommitmentOutputMapper? commitmentOutputMapper = null,
-                             ICommitmentKeyDerivationService? keyDerivation = null)
+                             ICommitmentKeyDerivationService? keyDerivation = null,
+                             ISecretStorageServiceFactory? secretStorageServiceFactory = null,
+                             OperatorFeeBumps? operatorFeeBumps = null)
     {
+        _operatorFeeBumps = operatorFeeBumps;
         _keyDerivation = keyDerivation;
+        _secretStorageServiceFactory = secretStorageServiceFactory;
         _blockchainMonitor = blockchainMonitor;
         _chainService = chainService;
         _commitmentOutputMapper = commitmentOutputMapper;
@@ -525,6 +532,10 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         // commitment can confirm any more (once per process: also a reservation a crash left without its child row)
         result.Release = (local == PathState.Done || peer == PathState.Done)
                       && local != PathState.Active && peer != PathState.Active;
+
+        // The operator's request ends with the channel's last pending commitment (NL-1186)
+        if (local != PathState.Active && peer != PathState.Active)
+            _operatorFeeBumps?.ClearAnchor(channel.ChannelId);
 
         if (result.Sweep is { } sweep)
             await StoreSweepAsync(channel.ChannelId, unitOfWork, sweep, result);
@@ -958,7 +969,13 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         var commitmentWeight = GetWeight(commitmentTx);
         var deadline = parent.Deadline;
         var stakeSat = parent.StakeSat;
-        if (deadline is null && (stakeSat == 0 || parent.IsPeers))
+
+        // The operator's request (walletrpc BumpForceCloseFee/BumpFee, NL-1186): its deadline tightens ours, its budget
+        // lets a commitment without stake or HTLCs get a child
+        var (bump, bumpFresh) = GetOperatorBump(channelId);
+        if (bump?.DeadlineHeight is { } operatorDeadline)
+            deadline = deadline is { } own ? Math.Min(own, operatorDeadline) : operatorDeadline;
+        if (deadline is null && (stakeSat == 0 || parent.IsPeers) && bump?.BudgetSat is not > 0)
         {
             // The peer's commitment is its to pay for; we bump it only for HTLCs that must be resolved in time
             LogOnce($"{channelId}:{parent.TxId}:nostake",
@@ -967,15 +984,25 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
             return null;
         }
 
-        var target = _policy.GetConfirmationTarget(height, deadline);
+        var target = bump?.ConfTarget is { } confTarget and > 0
+                         ? confTarget
+                         : _policy.GetConfirmationTarget(height, deadline);
         var estimate = await FeeEstimates.GetForTargetAsync(_feeService, target, _logger, cancellationToken);
         estimate = await FloorAtMempoolMinimumAsync(estimate);
-        var cap = _policy.GetFeeCap(stakeSat, deadline is not null);
+        if (bump?.StartingFeeratePerKw is { } starting && starting > estimate)
+            estimate = starting;
+        var cap = ApplyBudget(_policy.GetFeeCap(stakeSat, deadline is not null), bump?.BudgetSat,
+                              parent.Deadline is not null);
 
         var latest = LatestChild(pendingChildren);
         if (latest is null)
-            return await PlanFirstChildAsync(channel, anchor, commitmentFee, commitmentWeight, estimate, cap, deadline,
-                                             mayRelease, height, cancellationToken);
+        {
+            var first = await PlanFirstChildAsync(channel, anchor, commitmentFee, commitmentWeight, estimate, cap,
+                                                  deadline, mayRelease, height, cancellationToken);
+            if (first is not null && bumpFresh)
+                _operatorFeeBumps!.MarkAnchorApplied(channelId);
+            return first;
+        }
 
         // A package bitcoind refused for its fee is in no mempool: waiting for the RBF interval gains nothing, and the
         // estimate it paid is below what the mempool takes (NL-380)
@@ -984,7 +1011,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         // Past the deadline the commitment still has to confirm (to_local, the HTLC transactions): keep bumping every
         // RbfIntervalBlocks, as just before it (SweepFeePolicy stops at a sweep's deadline)
         var bumpDeadline = deadline is { } d && height >= d ? height + 1 : deadline;
-        if (!refusedForFee && !_policy.FeePolicy.ShouldBump(latest.FirstBroadcastHeight, height, bumpDeadline))
+        if (!refusedForFee && !bumpFresh
+                           && !_policy.FeePolicy.ShouldBump(latest.FirstBroadcastHeight, height, bumpDeadline))
             return null;
 
         var oldTx = Transaction.Load(latest.RawTransaction, Network.Main);
@@ -995,7 +1023,11 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         // blocks keep leaving the package out, and the cap bounds the escalation. Without one it is kept while it pays
         if (!refusedForFee && deadline is null
                            && _policy.PackagePays(commitmentFee, commitmentWeight, oldFeeLower, oldWeight, estimate))
+        {
+            if (bumpFresh)
+                _operatorFeeBumps!.MarkAnchorApplied(channelId);
             return null;
+        }
 
         var oldFeeUpper = ((ulong)latest.FeeratePerKw + 1) * (ulong)oldWeight / 1000 + 1;
         var changeScript = oldTx.Outputs[0].ScriptPubKey.ToBytes();
@@ -1028,6 +1060,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         var row = new BroadcastTransactionModel(signed.Value.Transaction, BroadcastPurpose.AnchorCpfp, channelId,
                                                 height, signed.Value.FeeratePerKw, latest.TransactionId,
                                                 fee: LightningMoney.Satoshis(decision.FeeSat));
+        if (bumpFresh)
+            _operatorFeeBumps!.MarkAnchorApplied(channelId);
         return new PlannedChild(row, latest.TransactionId, false);
     }
 
@@ -1236,7 +1270,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
                                                                 byte[] commitmentTransaction, bool isPeers,
                                                                 ulong? ourCommitmentNumber, uint confirmedHeight,
                                                                 bool anyChild, uint height,
-                                                                CancellationToken cancellationToken)
+                                                                CancellationToken cancellationToken,
+                                                                CompactPubKey? peerCommitmentPoint = null)
     {
         if (!IsSweepDue(confirmedHeight, height))
             return null;
@@ -1251,7 +1286,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         var ours = FindOurAnchor(channel, commitmentTxId, commitmentTransaction, isPeers, ourCommitmentNumber);
         if (ours is not null)
             anchors.Add(ours);
-        if (FindPeerAnchor(channel, commitmentTxId, commitmentTransaction, isPeers) is { } theirs)
+        if (FindPeerAnchor(channel, commitmentTxId, commitmentTransaction, isPeers, peerCommitmentPoint) is { } theirs)
             anchors.Add(theirs);
 
         // One spent input invalidates the whole sweep: keep only the anchors nobody spent (a child of ours, also a

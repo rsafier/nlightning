@@ -33,7 +33,8 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// <para><c>Xpay</c> maps onto <see cref="IPaymentService.PayInvoiceAsync(string, LightningMoney?,
 /// PayInvoiceOptions, CancellationToken)"/>: <c>amount_msat</c> is passed only when the invoice is amountless (CLN
 /// does not tip), <c>maxfee</c> becomes <see cref="PayInvoiceOptions.MaxFee"/> and <c>retry_for</c> (seconds, clamped
-/// to 1..300, 60 when unset) the <see cref="PayInvoiceOptions.Timeout"/>. The outcome maps by the returned
+/// to <see cref="LnBackendOptions.MaxXpayRetryFor"/>, at most 60 when unset) the
+/// <see cref="PayInvoiceOptions.Timeout"/>. The outcome maps by the returned
 /// <see cref="PaymentModel.Status"/>: <see cref="PaymentStatus.Succeeded"/> answers with the
 /// <c>payment_preimage</c>; <see cref="PaymentStatus.InFlight"/> (the wait ended while an HTLC was still pending)
 /// answers <c>DEADLINE_EXCEEDED</c> — the caller keeps waiting on <c>ListPays</c>, where the row reports
@@ -70,6 +71,7 @@ public sealed class ClnNodeBackendService : Cln.Node.NodeBase
     private readonly ILogger<ClnNodeBackendService> _logger;
     private readonly ISecureKeyManager _keyManager;
     private readonly NodeOptions _nodeOptions;
+    private readonly LnBackendOptions _backendOptions;
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly IPaymentService _paymentService;
     private readonly IServiceScopeFactory _scopeFactory;
@@ -78,9 +80,11 @@ public sealed class ClnNodeBackendService : Cln.Node.NodeBase
     public ClnNodeBackendService(ILogger<ClnNodeBackendService> logger, ISecureKeyManager keyManager,
                                  IOptions<NodeOptions> nodeOptions, IBlockchainMonitor blockchainMonitor,
                                  IPaymentService paymentService, IServiceScopeFactory scopeFactory,
-                                 IOfferPaymentService? offerPaymentService = null)
+                                 IOfferPaymentService? offerPaymentService = null,
+                                 IOptions<LnBackendOptions>? backendOptions = null)
     {
         _offerPaymentService = offerPaymentService;
+        _backendOptions = backendOptions?.Value ?? new LnBackendOptions();
         _logger = logger;
         _keyManager = keyManager;
         _nodeOptions = nodeOptions.Value;
@@ -112,7 +116,8 @@ public sealed class ClnNodeBackendService : Cln.Node.NodeBase
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                                               "invstring must be the BOLT 11 invoice to pay"));
 
-        var seconds = request.HasRetryFor && request.RetryFor > 0 ? Math.Clamp(request.RetryFor, 1, 300) : 60;
+        var seconds = Math.Min(request.HasRetryFor && request.RetryFor > 0 ? request.RetryFor : 60u,
+                               (uint)_backendOptions.MaxXpayRetryFor);
         var options = new PayInvoiceOptions
         {
             MaxFee = request.Maxfee is { } maxFee ? LightningMoney.MilliSatoshis(maxFee.Msat) : null,

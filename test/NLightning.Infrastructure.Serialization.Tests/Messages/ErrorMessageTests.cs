@@ -15,7 +15,7 @@ public class ErrorMessageTests
     public ErrorMessageTests()
     {
         _errorMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ErrorMessage>()!;
+            SerializerHelper.WireRegistry.Get<ErrorMessage>()!;
     }
 
     [Fact]

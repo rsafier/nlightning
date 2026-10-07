@@ -44,7 +44,7 @@ public sealed class SignerRpcService(ILightningSigner signer, ISecureKeyManager 
                     return Task.FromResult(known.Response);
                 var args = SignerWire.Decode(request.Payload.ToByteArray());
                 if (args.Length != SignerOperations.ArgumentCount(request.Operation)) throw new ArgumentException("Unexpected number of signer arguments.");
-                if (request.Operation is >= 27 and <= 30)
+                if (request.Operation is >= 27 and <= 30 or SignerOperations.ComputeSilentPaymentOutputs)
                 {
                     _walletContext?.Clear(wallet);
                     _walletContext = SignerWire.Read<WalletSnapshot>(args[^1]); _walletContext.Apply(wallet);
@@ -128,6 +128,7 @@ public sealed class SignerRpcService(ILightningSigner signer, ISecureKeyManager 
         105 => [keys.ComputeOfferPathId(SignerWire.Read<byte[]>(a[0]))],
         106 => [keys.ReserveChannelKeyIndex()],
         107 => [keys.EnsureLastUsedChannelIndexAtLeast(SignerWire.Read<uint>(a[0]))],
+        SignerOperations.GetDepositAccount => [keys.GetDepositAccount(SignerWire.Read<AddressType>(a[0]))],
         _ => throw new ArgumentException("Unknown key operation.")
     };
     private byte[] ComputeSharedSecret(byte[] publicKey) { var result = new byte[32]; keys.ComputeNodeSharedSecret(publicKey, result); return result; }

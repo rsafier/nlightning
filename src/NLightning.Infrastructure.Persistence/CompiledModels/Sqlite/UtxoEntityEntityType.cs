@@ -35,10 +35,10 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                 "NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity",
                 typeof(UtxoEntity),
                 baseEntityType,
-                propertyCount: 9,
-                navigationCount: 1,
-                foreignKeyCount: 1,
-                unnamedIndexCount: 4,
+                propertyCount: 11,
+                navigationCount: 2,
+                foreignKeyCount: 2,
+                unnamedIndexCount: 5,
                 keyCount: 1);
 
             var transactionId = runtimeEntityType.AddProperty(
@@ -150,30 +150,30 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var addressIndex = runtimeEntityType.AddProperty(
                 "AddressIndex",
-                typeof(uint),
+                typeof(uint?),
                 propertyInfo: typeof(UtxoEntity).GetProperty("AddressIndex", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(UtxoEntity).GetField("<AddressIndex>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
-                sentinel: 0u);
+                nullable: true);
             addressIndex.SetGetter(
-                uint (UtxoEntity instance) => UtxoEntityUnsafeAccessors.AddressIndex(instance),
-                bool (UtxoEntity instance) => UtxoEntityUnsafeAccessors.AddressIndex(instance) == 0U);
+                uint? (UtxoEntity instance) => UtxoEntityUnsafeAccessors.AddressIndex(instance),
+                bool (UtxoEntity instance) => !(UtxoEntityUnsafeAccessors.AddressIndex(instance).HasValue));
             addressIndex.SetSetter(
-                UtxoEntity (UtxoEntity instance, uint value) =>
+                UtxoEntity (UtxoEntity instance, uint? value) =>
                 {
                     UtxoEntityUnsafeAccessors.AddressIndex(instance) = value;
                     return instance;
                 });
             addressIndex.SetMaterializationSetter(
-                UtxoEntity (UtxoEntity instance, uint value) =>
+                UtxoEntity (UtxoEntity instance, uint? value) =>
                 {
                     UtxoEntityUnsafeAccessors.AddressIndex(instance) = value;
                     return instance;
                 });
             addressIndex.SetAccessors(
-                uint (IInternalEntry entry) => (entry.FlaggedAsStoreGenerated(2) ? entry.ReadStoreGeneratedValue<uint>(0) : (entry.FlaggedAsTemporary(2) && UtxoEntityUnsafeAccessors.AddressIndex(((UtxoEntity)(entry.Entity))) == 0U ? entry.ReadTemporaryValue<uint>(0) : UtxoEntityUnsafeAccessors.AddressIndex(((UtxoEntity)(entry.Entity))))),
-                uint (IInternalEntry entry) => UtxoEntityUnsafeAccessors.AddressIndex(((UtxoEntity)(entry.Entity))),
-                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(addressIndex, 2),
-                uint (IInternalEntry entry) => ((InternalEntityEntry)entry).ReadRelationshipSnapshotValue<uint>(addressIndex, 2));
+                uint? (IInternalEntry entry) => (entry.FlaggedAsStoreGenerated(2) ? entry.ReadStoreGeneratedValue<uint?>(0) : (entry.FlaggedAsTemporary(2) && !(UtxoEntityUnsafeAccessors.AddressIndex(((UtxoEntity)(entry.Entity))).HasValue) ? entry.ReadTemporaryValue<uint?>(0) : UtxoEntityUnsafeAccessors.AddressIndex(((UtxoEntity)(entry.Entity))))),
+                uint? (IInternalEntry entry) => UtxoEntityUnsafeAccessors.AddressIndex(((UtxoEntity)(entry.Entity))),
+                uint? (IInternalEntry entry) => entry.ReadOriginalValue<uint?>(addressIndex, 2),
+                uint? (IInternalEntry entry) => ((InternalEntityEntry)entry).ReadRelationshipSnapshotValue<uint?>(addressIndex, 2));
             addressIndex.SetPropertyIndexes(
                 index: 2,
                 originalValueIndex: 2,
@@ -195,33 +195,36 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                     uint (uint v) => v),
                 mappingInfo: new RelationalTypeMappingInfo(
                     storeTypeName: "INTEGER"));
-            addressIndex.SetCurrentValueComparer(new EntryCurrentValueComparer<uint>(addressIndex));
+            addressIndex.SetCurrentValueComparer(new EntryCurrentValueComparer<uint?>(addressIndex));
+            addressIndex.SetComparer(new NullableValueComparer<uint>(addressIndex.TypeMapping.Comparer));
+            addressIndex.SetKeyComparer(new NullableValueComparer<uint>(addressIndex.TypeMapping.KeyComparer));
 
             var addressType = runtimeEntityType.AddProperty(
                 "AddressType",
-                typeof(AddressType),
+                typeof(AddressType?),
                 propertyInfo: typeof(UtxoEntity).GetProperty("AddressType", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
-                fieldInfo: typeof(UtxoEntity).GetField("<AddressType>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly));
+                fieldInfo: typeof(UtxoEntity).GetField("<AddressType>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
             addressType.SetGetter(
-                AddressType (UtxoEntity instance) => UtxoEntityUnsafeAccessors.AddressType(instance),
-                bool (UtxoEntity instance) => object.Equals(((object)(UtxoEntityUnsafeAccessors.AddressType(instance))), ((object)((AddressType)0UL))));
+                AddressType? (UtxoEntity instance) => UtxoEntityUnsafeAccessors.AddressType(instance),
+                bool (UtxoEntity instance) => !(UtxoEntityUnsafeAccessors.AddressType(instance).HasValue));
             addressType.SetSetter(
-                UtxoEntity (UtxoEntity instance, AddressType value) =>
+                UtxoEntity (UtxoEntity instance, AddressType? value) =>
                 {
-                    UtxoEntityUnsafeAccessors.AddressType(instance) = value;
+                    UtxoEntityUnsafeAccessors.AddressType(instance) = (value == null ? value : ((AddressType? )(((AddressType)value))));
                     return instance;
                 });
             addressType.SetMaterializationSetter(
-                UtxoEntity (UtxoEntity instance, AddressType value) =>
+                UtxoEntity (UtxoEntity instance, AddressType? value) =>
                 {
-                    UtxoEntityUnsafeAccessors.AddressType(instance) = value;
+                    UtxoEntityUnsafeAccessors.AddressType(instance) = (value == null ? value : ((AddressType? )(((AddressType)value))));
                     return instance;
                 });
             addressType.SetAccessors(
-                AddressType (IInternalEntry entry) => (entry.FlaggedAsStoreGenerated(3) ? entry.ReadStoreGeneratedValue<AddressType>(1) : (entry.FlaggedAsTemporary(3) && object.Equals(((object)(UtxoEntityUnsafeAccessors.AddressType(((UtxoEntity)(entry.Entity))))), ((object)((AddressType)0UL))) ? entry.ReadTemporaryValue<AddressType>(1) : UtxoEntityUnsafeAccessors.AddressType(((UtxoEntity)(entry.Entity))))),
-                AddressType (IInternalEntry entry) => UtxoEntityUnsafeAccessors.AddressType(((UtxoEntity)(entry.Entity))),
-                AddressType (IInternalEntry entry) => entry.ReadOriginalValue<AddressType>(addressType, 3),
-                AddressType (IInternalEntry entry) => ((InternalEntityEntry)entry).ReadRelationshipSnapshotValue<AddressType>(addressType, 3));
+                AddressType? (IInternalEntry entry) => (entry.FlaggedAsStoreGenerated(3) ? entry.ReadStoreGeneratedValue<AddressType?>(1) : (entry.FlaggedAsTemporary(3) && !(UtxoEntityUnsafeAccessors.AddressType(((UtxoEntity)(entry.Entity))).HasValue) ? entry.ReadTemporaryValue<AddressType?>(1) : UtxoEntityUnsafeAccessors.AddressType(((UtxoEntity)(entry.Entity))))),
+                AddressType? (IInternalEntry entry) => UtxoEntityUnsafeAccessors.AddressType(((UtxoEntity)(entry.Entity))),
+                AddressType? (IInternalEntry entry) => entry.ReadOriginalValue<AddressType?>(addressType, 3),
+                AddressType? (IInternalEntry entry) => ((InternalEntityEntry)entry).ReadRelationshipSnapshotValue<AddressType?>(addressType, 3));
             addressType.SetPropertyIndexes(
                 index: 3,
                 originalValueIndex: 3,
@@ -251,8 +254,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                     new ValueConverter<AddressType, byte>(
                         byte (AddressType value) => ((byte)value),
                         AddressType (byte value) => ((AddressType)value))));
-            addressType.SetCurrentValueComparer(new EntryCurrentValueComparer<AddressType>(addressType));
-            addressType.SetSentinelFromProviderValue((byte)0);
+            addressType.SetCurrentValueComparer(new EntryCurrentValueComparer<AddressType?>(addressType));
+            addressType.SetComparer(new NullableValueComparer<AddressType>(addressType.TypeMapping.Comparer));
+            addressType.SetKeyComparer(new NullableValueComparer<AddressType>(addressType.TypeMapping.KeyComparer));
 
             var amountSats = runtimeEntityType.AddProperty(
                 "AmountSats",
@@ -352,30 +356,30 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
             var isAddressChange = runtimeEntityType.AddProperty(
                 "IsAddressChange",
-                typeof(bool),
+                typeof(bool?),
                 propertyInfo: typeof(UtxoEntity).GetProperty("IsAddressChange", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(UtxoEntity).GetField("<IsAddressChange>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
-                sentinel: false);
+                nullable: true);
             isAddressChange.SetGetter(
-                bool (UtxoEntity instance) => UtxoEntityUnsafeAccessors.IsAddressChange(instance),
-                bool (UtxoEntity instance) => UtxoEntityUnsafeAccessors.IsAddressChange(instance) == false);
+                bool? (UtxoEntity instance) => UtxoEntityUnsafeAccessors.IsAddressChange(instance),
+                bool (UtxoEntity instance) => !(UtxoEntityUnsafeAccessors.IsAddressChange(instance).HasValue));
             isAddressChange.SetSetter(
-                UtxoEntity (UtxoEntity instance, bool value) =>
+                UtxoEntity (UtxoEntity instance, bool? value) =>
                 {
                     UtxoEntityUnsafeAccessors.IsAddressChange(instance) = value;
                     return instance;
                 });
             isAddressChange.SetMaterializationSetter(
-                UtxoEntity (UtxoEntity instance, bool value) =>
+                UtxoEntity (UtxoEntity instance, bool? value) =>
                 {
                     UtxoEntityUnsafeAccessors.IsAddressChange(instance) = value;
                     return instance;
                 });
             isAddressChange.SetAccessors(
-                bool (IInternalEntry entry) => (entry.FlaggedAsStoreGenerated(6) ? entry.ReadStoreGeneratedValue<bool>(2) : (entry.FlaggedAsTemporary(6) && UtxoEntityUnsafeAccessors.IsAddressChange(((UtxoEntity)(entry.Entity))) == false ? entry.ReadTemporaryValue<bool>(2) : UtxoEntityUnsafeAccessors.IsAddressChange(((UtxoEntity)(entry.Entity))))),
-                bool (IInternalEntry entry) => UtxoEntityUnsafeAccessors.IsAddressChange(((UtxoEntity)(entry.Entity))),
-                bool (IInternalEntry entry) => entry.ReadOriginalValue<bool>(isAddressChange, 6),
-                bool (IInternalEntry entry) => ((InternalEntityEntry)entry).ReadRelationshipSnapshotValue<bool>(isAddressChange, 4));
+                bool? (IInternalEntry entry) => (entry.FlaggedAsStoreGenerated(6) ? entry.ReadStoreGeneratedValue<bool?>(2) : (entry.FlaggedAsTemporary(6) && !(UtxoEntityUnsafeAccessors.IsAddressChange(((UtxoEntity)(entry.Entity))).HasValue) ? entry.ReadTemporaryValue<bool?>(2) : UtxoEntityUnsafeAccessors.IsAddressChange(((UtxoEntity)(entry.Entity))))),
+                bool? (IInternalEntry entry) => UtxoEntityUnsafeAccessors.IsAddressChange(((UtxoEntity)(entry.Entity))),
+                bool? (IInternalEntry entry) => entry.ReadOriginalValue<bool?>(isAddressChange, 6),
+                bool? (IInternalEntry entry) => ((InternalEntityEntry)entry).ReadRelationshipSnapshotValue<bool?>(isAddressChange, 4));
             isAddressChange.SetPropertyIndexes(
                 index: 6,
                 originalValueIndex: 6,
@@ -397,7 +401,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                     bool (bool v) => v),
                 mappingInfo: new RelationalTypeMappingInfo(
                     storeTypeName: "INTEGER"));
-            isAddressChange.SetCurrentValueComparer(new EntryCurrentValueComparer<bool>(isAddressChange));
+            isAddressChange.SetCurrentValueComparer(new EntryCurrentValueComparer<bool?>(isAddressChange));
+            isAddressChange.SetComparer(new NullableValueComparer<bool>(isAddressChange.TypeMapping.Comparer));
+            isAddressChange.SetKeyComparer(new NullableValueComparer<bool>(isAddressChange.TypeMapping.KeyComparer));
 
             var lockedToChannelId = runtimeEntityType.AddProperty(
                 "LockedToChannelId",
@@ -456,6 +462,115 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             lockedToChannelId.SetComparer(new NullableValueComparer<ChannelId>(lockedToChannelId.TypeMapping.Comparer));
             lockedToChannelId.SetKeyComparer(new NullableValueComparer<ChannelId>(lockedToChannelId.TypeMapping.KeyComparer));
 
+            var silentPaymentIndex = runtimeEntityType.AddProperty(
+                "SilentPaymentIndex",
+                typeof(uint?),
+                propertyInfo: typeof(UtxoEntity).GetProperty("SilentPaymentIndex", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(UtxoEntity).GetField("<SilentPaymentIndex>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            silentPaymentIndex.SetGetter(
+                uint? (UtxoEntity instance) => UtxoEntityUnsafeAccessors.SilentPaymentIndex(instance),
+                bool (UtxoEntity instance) => !(UtxoEntityUnsafeAccessors.SilentPaymentIndex(instance).HasValue));
+            silentPaymentIndex.SetSetter(
+                UtxoEntity (UtxoEntity instance, uint? value) =>
+                {
+                    UtxoEntityUnsafeAccessors.SilentPaymentIndex(instance) = value;
+                    return instance;
+                });
+            silentPaymentIndex.SetMaterializationSetter(
+                UtxoEntity (UtxoEntity instance, uint? value) =>
+                {
+                    UtxoEntityUnsafeAccessors.SilentPaymentIndex(instance) = value;
+                    return instance;
+                });
+            silentPaymentIndex.SetAccessors(
+                uint? (IInternalEntry entry) => (entry.FlaggedAsStoreGenerated(8) ? entry.ReadStoreGeneratedValue<uint?>(3) : (entry.FlaggedAsTemporary(8) && !(UtxoEntityUnsafeAccessors.SilentPaymentIndex(((UtxoEntity)(entry.Entity))).HasValue) ? entry.ReadTemporaryValue<uint?>(3) : UtxoEntityUnsafeAccessors.SilentPaymentIndex(((UtxoEntity)(entry.Entity))))),
+                uint? (IInternalEntry entry) => UtxoEntityUnsafeAccessors.SilentPaymentIndex(((UtxoEntity)(entry.Entity))),
+                uint? (IInternalEntry entry) => entry.ReadOriginalValue<uint?>(silentPaymentIndex, 8),
+                uint? (IInternalEntry entry) => ((InternalEntityEntry)entry).ReadRelationshipSnapshotValue<uint?>(silentPaymentIndex, 5));
+            silentPaymentIndex.SetPropertyIndexes(
+                index: 8,
+                originalValueIndex: 8,
+                shadowIndex: -1,
+                relationshipIndex: 5,
+                storeGenerationIndex: 3);
+            silentPaymentIndex.TypeMapping = UIntTypeMapping.Default.Clone(
+                comparer: new ValueComparer<uint>(
+                    bool (uint v1, uint v2) => v1 == v2,
+                    int (uint v) => ((int)v),
+                    uint (uint v) => v),
+                keyComparer: new ValueComparer<uint>(
+                    bool (uint v1, uint v2) => v1 == v2,
+                    int (uint v) => ((int)v),
+                    uint (uint v) => v),
+                providerValueComparer: new ValueComparer<uint>(
+                    bool (uint v1, uint v2) => v1 == v2,
+                    int (uint v) => ((int)v),
+                    uint (uint v) => v),
+                mappingInfo: new RelationalTypeMappingInfo(
+                    storeTypeName: "INTEGER"));
+            silentPaymentIndex.SetCurrentValueComparer(new EntryCurrentValueComparer<uint?>(silentPaymentIndex));
+            silentPaymentIndex.SetComparer(new NullableValueComparer<uint>(silentPaymentIndex.TypeMapping.Comparer));
+            silentPaymentIndex.SetKeyComparer(new NullableValueComparer<uint>(silentPaymentIndex.TypeMapping.KeyComparer));
+
+            var silentPaymentTransactionId = runtimeEntityType.AddProperty(
+                "SilentPaymentTransactionId",
+                typeof(TxId?),
+                propertyInfo: typeof(UtxoEntity).GetProperty("SilentPaymentTransactionId", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(UtxoEntity).GetField("<SilentPaymentTransactionId>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true,
+                valueConverter: new TxIdConverter());
+            silentPaymentTransactionId.SetGetter(
+                TxId? (UtxoEntity instance) => UtxoEntityUnsafeAccessors.SilentPaymentTransactionId(instance),
+                bool (UtxoEntity instance) => !(UtxoEntityUnsafeAccessors.SilentPaymentTransactionId(instance).HasValue));
+            silentPaymentTransactionId.SetSetter(
+                UtxoEntity (UtxoEntity instance, TxId? value) =>
+                {
+                    UtxoEntityUnsafeAccessors.SilentPaymentTransactionId(instance) = value;
+                    return instance;
+                });
+            silentPaymentTransactionId.SetMaterializationSetter(
+                UtxoEntity (UtxoEntity instance, TxId? value) =>
+                {
+                    UtxoEntityUnsafeAccessors.SilentPaymentTransactionId(instance) = value;
+                    return instance;
+                });
+            silentPaymentTransactionId.SetAccessors(
+                TxId? (IInternalEntry entry) => (entry.FlaggedAsStoreGenerated(9) ? entry.ReadStoreGeneratedValue<TxId?>(4) : (entry.FlaggedAsTemporary(9) && !(UtxoEntityUnsafeAccessors.SilentPaymentTransactionId(((UtxoEntity)(entry.Entity))).HasValue) ? entry.ReadTemporaryValue<TxId?>(4) : UtxoEntityUnsafeAccessors.SilentPaymentTransactionId(((UtxoEntity)(entry.Entity))))),
+                TxId? (IInternalEntry entry) => UtxoEntityUnsafeAccessors.SilentPaymentTransactionId(((UtxoEntity)(entry.Entity))),
+                TxId? (IInternalEntry entry) => entry.ReadOriginalValue<TxId?>(silentPaymentTransactionId, 9),
+                TxId? (IInternalEntry entry) => ((InternalEntityEntry)entry).ReadRelationshipSnapshotValue<TxId?>(silentPaymentTransactionId, 6));
+            silentPaymentTransactionId.SetPropertyIndexes(
+                index: 9,
+                originalValueIndex: 9,
+                shadowIndex: -1,
+                relationshipIndex: 6,
+                storeGenerationIndex: 4);
+            silentPaymentTransactionId.TypeMapping = SqliteByteArrayTypeMapping.Default.Clone(
+                comparer: new ValueComparer<TxId>(
+                    bool (TxId v1, TxId v2) => v1.Equals(v2),
+                    int (TxId v) => ((object)v).GetHashCode(),
+                    TxId (TxId v) => v),
+                keyComparer: new ValueComparer<TxId>(
+                    bool (TxId v1, TxId v2) => v1.Equals(v2),
+                    int (TxId v) => ((object)v).GetHashCode(),
+                    TxId (TxId v) => v),
+                providerValueComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()),
+                converter: new ValueConverter<TxId, byte[]>(
+                    byte[] (TxId txId) => ((byte[])txId),
+                    TxId (byte[] bytes) => new TxId(bytes)),
+                jsonValueReaderWriter: new JsonConvertedValueReaderWriter<TxId, byte[]>(
+                    SqliteJsonByteArrayReaderWriter.Instance,
+                    new ValueConverter<TxId, byte[]>(
+                        byte[] (TxId txId) => ((byte[])txId),
+                        TxId (byte[] bytes) => new TxId(bytes))));
+            silentPaymentTransactionId.SetCurrentValueComparer(new StructuralEntryCurrentProviderValueComparer(silentPaymentTransactionId));
+            silentPaymentTransactionId.SetComparer(new NullableValueComparer<TxId>(silentPaymentTransactionId.TypeMapping.Comparer));
+            silentPaymentTransactionId.SetKeyComparer(new NullableValueComparer<TxId>(silentPaymentTransactionId.TypeMapping.KeyComparer));
+
             var usedInTransactionId = runtimeEntityType.AddProperty(
                 "UsedInTransactionId",
                 typeof(TxId?),
@@ -481,11 +596,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             usedInTransactionId.SetAccessors(
                 TxId? (IInternalEntry entry) => UtxoEntityUnsafeAccessors.UsedInTransactionId(((UtxoEntity)(entry.Entity))),
                 TxId? (IInternalEntry entry) => UtxoEntityUnsafeAccessors.UsedInTransactionId(((UtxoEntity)(entry.Entity))),
-                TxId? (IInternalEntry entry) => entry.ReadOriginalValue<TxId?>(usedInTransactionId, 8),
+                TxId? (IInternalEntry entry) => entry.ReadOriginalValue<TxId?>(usedInTransactionId, 10),
                 TxId? (IInternalEntry entry) => entry.GetCurrentValue<TxId?>(usedInTransactionId));
             usedInTransactionId.SetPropertyIndexes(
-                index: 8,
-                originalValueIndex: 8,
+                index: 10,
+                originalValueIndex: 10,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -527,6 +642,10 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                 new[] { usedInTransactionId });
 
             var index3 = runtimeEntityType.AddIndex(
+                new[] { silentPaymentTransactionId, silentPaymentIndex },
+                unique: true);
+
+            var index4 = runtimeEntityType.AddIndex(
                 new[] { addressIndex, isAddressChange, addressType });
 
             return runtimeEntityType;
@@ -534,11 +653,87 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
 
         public static RuntimeForeignKey CreateForeignKey1(RuntimeEntityType declaringEntityType, RuntimeEntityType principalEntityType)
         {
+            var runtimeForeignKey = declaringEntityType.AddForeignKey(new[] { declaringEntityType.FindProperty("SilentPaymentTransactionId"), declaringEntityType.FindProperty("SilentPaymentIndex") },
+                principalEntityType.FindKey(new[] { principalEntityType.FindProperty("TransactionId"), principalEntityType.FindProperty("Index") }),
+                principalEntityType,
+                deleteBehavior: DeleteBehavior.Restrict,
+                unique: true);
+
+            var silentPayment = declaringEntityType.AddNavigation("SilentPayment",
+                runtimeForeignKey,
+                onDependent: true,
+                typeof(SilentPaymentOutputEntity),
+                propertyInfo: typeof(UtxoEntity).GetProperty("SilentPayment", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(UtxoEntity).GetField("<SilentPayment>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly));
+
+            silentPayment.SetGetter(
+                SilentPaymentOutputEntity (UtxoEntity instance) => UtxoEntityUnsafeAccessors.SilentPayment(instance),
+                bool (UtxoEntity instance) => UtxoEntityUnsafeAccessors.SilentPayment(instance) == null);
+            silentPayment.SetSetter(
+                UtxoEntity (UtxoEntity instance, SilentPaymentOutputEntity value) =>
+                {
+                    UtxoEntityUnsafeAccessors.SilentPayment(instance) = value;
+                    return instance;
+                });
+            silentPayment.SetMaterializationSetter(
+                UtxoEntity (UtxoEntity instance, SilentPaymentOutputEntity value) =>
+                {
+                    UtxoEntityUnsafeAccessors.SilentPayment(instance) = value;
+                    return instance;
+                });
+            silentPayment.SetAccessors(
+                SilentPaymentOutputEntity (IInternalEntry entry) => UtxoEntityUnsafeAccessors.SilentPayment(((UtxoEntity)(entry.Entity))),
+                SilentPaymentOutputEntity (IInternalEntry entry) => UtxoEntityUnsafeAccessors.SilentPayment(((UtxoEntity)(entry.Entity))),
+                null,
+                SilentPaymentOutputEntity (IInternalEntry entry) => entry.GetCurrentValue<SilentPaymentOutputEntity>(silentPayment));
+            silentPayment.SetPropertyIndexes(
+                index: 0,
+                originalValueIndex: -1,
+                shadowIndex: -1,
+                relationshipIndex: 7,
+                storeGenerationIndex: -1);
+            var utxo = principalEntityType.AddNavigation("Utxo",
+                runtimeForeignKey,
+                onDependent: false,
+                typeof(UtxoEntity),
+                propertyInfo: typeof(SilentPaymentOutputEntity).GetProperty("Utxo", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(SilentPaymentOutputEntity).GetField("<Utxo>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly));
+
+            utxo.SetGetter(
+                UtxoEntity (SilentPaymentOutputEntity instance) => SilentPaymentOutputEntityUnsafeAccessors.Utxo(instance),
+                bool (SilentPaymentOutputEntity instance) => SilentPaymentOutputEntityUnsafeAccessors.Utxo(instance) == null);
+            utxo.SetSetter(
+                SilentPaymentOutputEntity (SilentPaymentOutputEntity instance, UtxoEntity value) =>
+                {
+                    SilentPaymentOutputEntityUnsafeAccessors.Utxo(instance) = value;
+                    return instance;
+                });
+            utxo.SetMaterializationSetter(
+                SilentPaymentOutputEntity (SilentPaymentOutputEntity instance, UtxoEntity value) =>
+                {
+                    SilentPaymentOutputEntityUnsafeAccessors.Utxo(instance) = value;
+                    return instance;
+                });
+            utxo.SetAccessors(
+                UtxoEntity (IInternalEntry entry) => SilentPaymentOutputEntityUnsafeAccessors.Utxo(((SilentPaymentOutputEntity)(entry.Entity))),
+                UtxoEntity (IInternalEntry entry) => SilentPaymentOutputEntityUnsafeAccessors.Utxo(((SilentPaymentOutputEntity)(entry.Entity))),
+                null,
+                UtxoEntity (IInternalEntry entry) => entry.GetCurrentValue<UtxoEntity>(utxo));
+            utxo.SetPropertyIndexes(
+                index: 0,
+                originalValueIndex: -1,
+                shadowIndex: -1,
+                relationshipIndex: 2,
+                storeGenerationIndex: -1);
+            return runtimeForeignKey;
+        }
+
+        public static RuntimeForeignKey CreateForeignKey2(RuntimeEntityType declaringEntityType, RuntimeEntityType principalEntityType)
+        {
             var runtimeForeignKey = declaringEntityType.AddForeignKey(new[] { declaringEntityType.FindProperty("AddressIndex"), declaringEntityType.FindProperty("IsAddressChange"), declaringEntityType.FindProperty("AddressType") },
                 principalEntityType.FindKey(new[] { principalEntityType.FindProperty("Index"), principalEntityType.FindProperty("IsChange"), principalEntityType.FindProperty("AddressType") }),
                 principalEntityType,
-                deleteBehavior: DeleteBehavior.Cascade,
-                required: true);
+                deleteBehavior: DeleteBehavior.Cascade);
 
             var walletAddress = declaringEntityType.AddNavigation("WalletAddress",
                 runtimeForeignKey,
@@ -568,10 +763,10 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                 null,
                 WalletAddressEntity (IInternalEntry entry) => entry.GetCurrentValue<WalletAddressEntity>(walletAddress));
             walletAddress.SetPropertyIndexes(
-                index: 0,
+                index: 1,
                 originalValueIndex: -1,
                 shadowIndex: -1,
-                relationshipIndex: 5,
+                relationshipIndex: 8,
                 storeGenerationIndex: -1);
             var utxos = principalEntityType.AddNavigation("Utxos",
                 runtimeForeignKey,
@@ -625,21 +820,24 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var blockHeight = runtimeEntityType.FindProperty("BlockHeight");
             var isAddressChange = runtimeEntityType.FindProperty("IsAddressChange");
             var lockedToChannelId = runtimeEntityType.FindProperty("LockedToChannelId");
+            var silentPaymentIndex = runtimeEntityType.FindProperty("SilentPaymentIndex");
+            var silentPaymentTransactionId = runtimeEntityType.FindProperty("SilentPaymentTransactionId");
             var usedInTransactionId = runtimeEntityType.FindProperty("UsedInTransactionId");
             var key = runtimeEntityType.FindKey(new[] { transactionId, index });
             key.SetPrincipalKeyValueFactory(KeyValueFactoryFactory.CreateCompositeFactory(key));
             key.SetIdentityMapFactory(IdentityMapFactoryFactory.CreateFactory<IReadOnlyList<object>>(key));
+            var silentPayment = runtimeEntityType.FindNavigation("SilentPayment");
             var walletAddress = runtimeEntityType.FindNavigation("WalletAddress");
             runtimeEntityType.SetOriginalValuesFactory(
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType = ((UtxoEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<TxId, uint, uint, AddressType, long, uint, bool, ChannelId?, TxId?>(((ValueComparer<TxId>)(((IProperty)transactionId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId>(transactionId)), ((ValueComparer<uint>)(((IProperty)index).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(index)), ((ValueComparer<uint>)(((IProperty)addressIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(addressIndex)), ((ValueComparer<AddressType>)(((IProperty)addressType).GetValueComparer())).Snapshot(source.GetCurrentValue<AddressType>(addressType)), ((ValueComparer<long>)(((IProperty)amountSats).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(amountSats)), ((ValueComparer<uint>)(((IProperty)blockHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(blockHeight)), ((ValueComparer<bool>)(((IProperty)isAddressChange).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(isAddressChange)), (source.GetCurrentValue<ChannelId?>(lockedToChannelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)lockedToChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(lockedToChannelId))), (source.GetCurrentValue<TxId?>(usedInTransactionId) == null ? null : ((ValueComparer<TxId?>)(((IProperty)usedInTransactionId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId?>(usedInTransactionId))))));
+                    return ((ISnapshot)(new Snapshot<TxId, uint, uint?, AddressType?, long, uint, bool?, ChannelId?, uint?, TxId?, TxId?>(((ValueComparer<TxId>)(((IProperty)transactionId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId>(transactionId)), ((ValueComparer<uint>)(((IProperty)index).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(index)), (source.GetCurrentValue<uint?>(addressIndex) == null ? null : ((ValueComparer<uint?>)(((IProperty)addressIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(addressIndex))), (source.GetCurrentValue<AddressType?>(addressType) == null ? null : ((ValueComparer<AddressType?>)(((IProperty)addressType).GetValueComparer())).Snapshot(source.GetCurrentValue<AddressType?>(addressType))), ((ValueComparer<long>)(((IProperty)amountSats).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(amountSats)), ((ValueComparer<uint>)(((IProperty)blockHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(blockHeight)), (source.GetCurrentValue<bool?>(isAddressChange) == null ? null : ((ValueComparer<bool?>)(((IProperty)isAddressChange).GetValueComparer())).Snapshot(source.GetCurrentValue<bool?>(isAddressChange))), (source.GetCurrentValue<ChannelId?>(lockedToChannelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)lockedToChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(lockedToChannelId))), (source.GetCurrentValue<uint?>(silentPaymentIndex) == null ? null : ((ValueComparer<uint?>)(((IProperty)silentPaymentIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(silentPaymentIndex))), (source.GetCurrentValue<TxId?>(silentPaymentTransactionId) == null ? null : ((ValueComparer<TxId?>)(((IProperty)silentPaymentTransactionId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId?>(silentPaymentTransactionId))), (source.GetCurrentValue<TxId?>(usedInTransactionId) == null ? null : ((ValueComparer<TxId?>)(((IProperty)usedInTransactionId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId?>(usedInTransactionId))))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
-                ISnapshot () => ((ISnapshot)(new Snapshot<uint, AddressType, bool>(((ValueComparer<uint>)(((IProperty)addressIndex).GetValueComparer())).Snapshot(default(uint)), ((ValueComparer<AddressType>)(((IProperty)addressType).GetValueComparer())).Snapshot(default(AddressType)), ((ValueComparer<bool>)(((IProperty)isAddressChange).GetValueComparer())).Snapshot(default(bool))))));
+                ISnapshot () => ((ISnapshot)(new Snapshot<uint?, AddressType?, bool?, uint?, TxId?>((default(uint? ) == null ? null : ((ValueComparer<uint?>)(((IProperty)addressIndex).GetValueComparer())).Snapshot(default(uint? ))), (default(AddressType? ) == null ? null : ((ValueComparer<AddressType?>)(((IProperty)addressType).GetValueComparer())).Snapshot(default(AddressType? ))), (default(bool? ) == null ? null : ((ValueComparer<bool?>)(((IProperty)isAddressChange).GetValueComparer())).Snapshot(default(bool? ))), (default(uint? ) == null ? null : ((ValueComparer<uint?>)(((IProperty)silentPaymentIndex).GetValueComparer())).Snapshot(default(uint? ))), (default(TxId? ) == null ? null : ((ValueComparer<TxId?>)(((IProperty)silentPaymentTransactionId).GetValueComparer())).Snapshot(default(TxId? )))))));
             runtimeEntityType.SetTemporaryValuesFactory(
-                ISnapshot (IInternalEntry source) => ((ISnapshot)(new Snapshot<uint, AddressType, bool>(default(uint), default(AddressType), default(bool)))));
+                ISnapshot (IInternalEntry source) => ((ISnapshot)(new Snapshot<uint?, AddressType?, bool?, uint?, TxId?>(default(uint? ), default(AddressType? ), default(bool? ), default(uint? ), default(TxId? )))));
             runtimeEntityType.SetShadowValuesFactory(
                 ISnapshot (IDictionary<string, object> source) => Snapshot.Empty);
             runtimeEntityType.SetEmptyShadowValuesFactory(
@@ -648,17 +846,17 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType = ((UtxoEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<TxId, uint, uint, AddressType, bool, object>(((ValueComparer<TxId>)(((IProperty)transactionId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<TxId>(transactionId)), ((ValueComparer<uint>)(((IProperty)index).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<uint>(index)), ((ValueComparer<uint>)(((IProperty)addressIndex).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<uint>(addressIndex)), ((ValueComparer<AddressType>)(((IProperty)addressType).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<AddressType>(addressType)), ((ValueComparer<bool>)(((IProperty)isAddressChange).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<bool>(isAddressChange)), source.GetCurrentValue<WalletAddressEntity>(walletAddress))));
+                    return ((ISnapshot)(new Snapshot<TxId, uint, uint?, AddressType?, bool?, uint?, TxId?, object, object>(((ValueComparer<TxId>)(((IProperty)transactionId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<TxId>(transactionId)), ((ValueComparer<uint>)(((IProperty)index).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<uint>(index)), (source.GetCurrentValue<uint?>(addressIndex) == null ? null : ((ValueComparer<uint?>)(((IProperty)addressIndex).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<uint?>(addressIndex))), (source.GetCurrentValue<AddressType?>(addressType) == null ? null : ((ValueComparer<AddressType?>)(((IProperty)addressType).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<AddressType?>(addressType))), (source.GetCurrentValue<bool?>(isAddressChange) == null ? null : ((ValueComparer<bool?>)(((IProperty)isAddressChange).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<bool?>(isAddressChange))), (source.GetCurrentValue<uint?>(silentPaymentIndex) == null ? null : ((ValueComparer<uint?>)(((IProperty)silentPaymentIndex).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<uint?>(silentPaymentIndex))), (source.GetCurrentValue<TxId?>(silentPaymentTransactionId) == null ? null : ((ValueComparer<TxId?>)(((IProperty)silentPaymentTransactionId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<TxId?>(silentPaymentTransactionId))), source.GetCurrentValue<SilentPaymentOutputEntity>(silentPayment), source.GetCurrentValue<WalletAddressEntity>(walletAddress))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 9,
-                navigationCount: 1,
+                propertyCount: 11,
+                navigationCount: 2,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 9,
+                originalValueCount: 11,
                 shadowCount: 0,
-                relationshipCount: 6,
-                storeGeneratedCount: 3));
+                relationshipCount: 9,
+                storeGeneratedCount: 5));
             runtimeEntityType.AddAnnotation("Relational:FunctionName", null);
             runtimeEntityType.AddAnnotation("Relational:Schema", null);
             runtimeEntityType.AddAnnotation("Relational:SqlQuery", null);

@@ -13,7 +13,7 @@ public sealed class OnchainOptions
 
     /// <summary>
     /// The depth at which an upstream HTLC is failed after its on-chain resolution (<c>Onchain:ReasonableDepth</c>,
-    /// D9). For the resolvers; the executor does not use it.
+    /// D9). Also bounds passive final failures for positively identified trimmed incoming HTLCs.
     /// </summary>
     public uint ReasonableDepth { get; set; } = OutputResolutionFacts.DefaultReasonableDepth;
 

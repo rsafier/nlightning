@@ -239,6 +239,7 @@ public sealed partial class PaymentService
             RecordedPayeeNodeId = payeeNodeId,
             ShadowCltvOffset = 0,
             OutgoingChannelId = options.OutgoingChannelId,
+            OutgoingChannelIds = options.OutgoingChannelIds?.ToHashSet(),
             Bolt12 = bolt12,
             Labels = options.Labels
         };

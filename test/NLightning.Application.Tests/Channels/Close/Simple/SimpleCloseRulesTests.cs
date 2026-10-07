@@ -192,6 +192,26 @@ public class SimpleCloseRulesTests
     }
 
     [Fact]
+    public void Given_ATaprootChannel_When_ChooseFee_Then_KeyPathWitnessWeightTimesFeerate()
+    {
+        // Act: NL-968, the funding output is spent by key path (568 WU with a P2WPKH and a P2WSH output, not 724)
+        var fee = SimpleCloseRules.ChooseFee(600_000_000, 400_000_000, s_p2Wpkh, s_p2Wsh, 2_500, taproot: true);
+
+        // Assert
+        Assert.Equal(1_420UL, fee); // 2,500 x 568 / 1,000
+    }
+
+    [Fact]
+    public void Given_ATaprootChannelBelowTheFloor_When_ChooseFee_Then_TaprootFloor()
+    {
+        // Act
+        var fee = SimpleCloseRules.ChooseFee(600_000_000, 400_000_000, s_p2Wpkh, s_p2Wsh, 1, taproot: true);
+
+        // Assert
+        Assert.Equal(143UL, fee); // 253 x 568 / 1,000 = 143.7
+    }
+
+    [Fact]
     public void Given_FeerateBelowFloor_When_ChooseFee_Then_Floor()
     {
         // Act

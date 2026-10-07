@@ -22,6 +22,8 @@ internal sealed class TransportService : ITransportService
     private readonly TimeSpan _networkTimeout;
     private readonly SemaphoreSlim _networkWriteSemaphore = new(1, 1);
     private readonly TcpClient _tcpClient;
+    private long _bytesSent;
+    private long _bytesReceived;
     private readonly TaskCompletionSource<bool> _tcs = new();
 
     /// <summary>
@@ -65,6 +67,12 @@ internal sealed class TransportService : ITransportService
 
     public bool IsInitiator { get; }
     public bool IsConnected => _tcpClient.Connected;
+
+    /// <inheritdoc />
+    public long BytesSent => Interlocked.Read(ref _bytesSent);
+
+    /// <inheritdoc />
+    public long BytesReceived => Interlocked.Read(ref _bytesReceived);
     public CompactPubKey? RemoteStaticPublicKey { get; private set; }
 
     public TransportService(IEcdh ecdh, ILogger logger, IMessageSerializer messageSerializer, TimeSpan networkTimeout,
@@ -140,6 +148,10 @@ internal sealed class TransportService : ITransportService
                                                     out _transport);
                 await stream.WriteAsync(writeBuffer.AsMemory()[..len], CancellationToken.None);
                 await stream.FlushAsync(CancellationToken.None);
+
+                // BOLT 8: acts one (50) and three (66) out, act two (50) in
+                Interlocked.Add(ref _bytesSent, 50 + 66);
+                Interlocked.Add(ref _bytesReceived, 50);
             }
             catch (Exception e)
             {
@@ -187,6 +199,10 @@ internal sealed class TransportService : ITransportService
                 // Read Act Three
                 _ = _handshakeService.PerformStep(readBuffer.AsSpan()[..66], writeBuffer.AsSpan()[..50],
                                                   out _transport);
+
+                // BOLT 8: acts one (50) and three (66) in, act two (50) out
+                Interlocked.Add(ref _bytesSent, 50);
+                Interlocked.Add(ref _bytesReceived, 50 + 66);
             }
             catch (TaskCanceledException tce)
             {
@@ -284,6 +300,7 @@ internal sealed class TransportService : ITransportService
                 var stream = _tcpClient.GetStream();
                 await stream.WriteAsync(buffer.AsMemory()[..size], _cts.Token);
                 await stream.FlushAsync(_cts.Token);
+                Interlocked.Add(ref _bytesSent, size);
             }
             catch (Exception e)
             {
@@ -358,6 +375,8 @@ internal sealed class TransportService : ITransportService
                     await stream.ReadExactlyAsync(memoryBuffer[..messageLen], _cts.Token);
                     if (_cts.IsCancellationRequested)
                         break;
+
+                    Interlocked.Add(ref _bytesReceived, ProtocolConstants.MessageHeaderSize + messageLen);
 
                     messageLen = _transport.ReadMessagePayload(memoryBuffer[..messageLen].Span, buffer);
 

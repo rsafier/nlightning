@@ -9,13 +9,35 @@ using Protocol.Enums;
 
 public interface ISecureKeyManager
 {
+    /// <summary>Derives an isolated swap key, preserving the key file's master derivation version.</summary>
+    /// <remarks>Only Infrastructure.Bitcoin consumers may use this private material; RPCs expose public keys only.</remarks>
+    ExtPrivKey GetKeyRingKeyAtIndex(int family, int index) =>
+        throw new NotSupportedException("This key manager has no isolated key ring.");
+
+    /// <summary>Returns a fresh raw BIP 352 output private scalar for the local signer, without a BIP86 tweak.</summary>
+    /// <remarks>The caller must zero the returned array after use. The scan private key is never returned.</remarks>
+    byte[] GetSilentPaymentSpendKey(ReadOnlySpan<byte> tweak32, uint? label) =>
+        throw new NotSupportedException("This key manager has no silent payment keys.");
+
     BitcoinKeyPath ChannelKeyPath { get; }
     uint HeightOfBirth { get; }
 
     ExtPrivKey GetNextChannelKey(out uint index);
+    /// <summary>
+    /// The extended channel key at <paramref name="index"/>, as a fresh copy on every call: the signer zeroes it once
+    /// it has derived what it needs (NL-911), so an implementation must never hand out an array it keeps.
+    /// </summary>
     ExtPrivKey GetChannelKeyAtIndex(uint index);
     ExtPrivKey GetDepositP2TrKeyAtIndex(uint index, bool isChange);
     ExtPrivKey GetDepositP2WpkhKeyAtIndex(uint index, bool isChange);
+
+    /// <summary>
+    /// The deposit wallet's account of <paramref name="addressType"/> (P2WPKH or P2TR): its extended public key
+    /// serialized for the node's network (BIP32 <c>xpub</c>/<c>tpub</c>), its derivation path and the master key
+    /// fingerprint (big-endian, as BIP32 serializes it); null when this manager keeps no such account. Public data only
+    /// (LND's <c>ListAccounts</c>, NL-1247).
+    /// </summary>
+    DepositAccountInfo? GetDepositAccount(Bitcoin.Enums.AddressType addressType) => null;
 
     /// <summary>
     /// Returns the node key pair.
@@ -89,3 +111,9 @@ public interface ISecureKeyManager
     bool EnsureLastUsedChannelIndexAtLeast(uint highestUsedIndex) =>
         throw new NotSupportedException("This key manager does not support index reconciliation.");
 }
+
+/// <summary>A deposit wallet account's public description (<see cref="ISecureKeyManager.GetDepositAccount"/>).</summary>
+/// <param name="ExtendedPublicKey">The account's extended public key (BIP32 serialization for the network).</param>
+/// <param name="DerivationPath">The account's path from the master key, e.g. <c>m/84'/0'/0'</c>.</param>
+/// <param name="MasterFingerprint">The master key's fingerprint, big-endian.</param>
+public sealed record DepositAccountInfo(string ExtendedPublicKey, string DerivationPath, byte[] MasterFingerprint);

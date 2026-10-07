@@ -12,12 +12,15 @@ using Domain.Onchain.Enums;
 /// <para>A refusal is permanent when resending the same bytes can never succeed: the inputs are missing or already
 /// spent (<c>bad-txns-inputs-missingorspent</c>, <c>missing-inputs</c>), or the transaction is invalid by consensus
 /// or by script (<c>bad-txns-*</c> other than the premature coinbase spend, <c>mandatory-script-verify-flag-failed</c>,
-/// <c>non-mandatory-script-verify-flag</c>). Everything else (fees, <c>non-final</c>, <c>non-BIP68-final</c>, mempool
-/// limits or conflicts, a node that is down) is temporary and resets the count.</para>
+/// <c>non-mandatory-script-verify-flag</c>, and Core 31's <c>mempool-script-verify-flag-failed</c>, NL-1096).
+/// Everything else (fees, <c>non-final</c>, <c>non-BIP68-final</c>, mempool limits or conflicts, a node that is down)
+/// is temporary and resets the count.</para>
 /// <para>The chain monitor abandons only a transaction that spends wallet outputs alone: a channel funding
 /// (<see cref="BroadcastPurpose.Funding"/>, and <see cref="BroadcastPurpose.Unspecified"/>, the legacy funding path)
 /// and a <see cref="BroadcastPurpose.WalletSend"/>, plus our anchor sweep (<see cref="BroadcastPurpose.AnchorSweep"/>,
-/// NL-611: anyone may take anchors, so its inputs are often spent by someone else). Nothing about a channel's safety
+/// NL-611: anyone may take anchors, so its inputs are often spent by someone else) and a collaborative wallet
+/// transaction (<see cref="BroadcastPurpose.WalletCollaborative"/>, NL-1186: leased wallet outputs spent with others'
+/// outputs through LND's walletrpc PSBT methods). Nothing about a channel's safety
 /// depends on those; abandoning one releases its wallet inputs. A commitment, penalty, HTLC transaction, sweep, claim, CPFP child or mutual close spends
 /// a channel output: it is never abandoned for refusals, however many, because an input that is merely not confirmed
 /// yet (a parent still in flight, evicted or reorged out) is refused as missing too, and giving up would lose funds.
@@ -33,8 +36,11 @@ internal static class BroadcastRefusalRules
     // bitcoind's answers for a transaction whose outputs are already in its UTXO set: a confirmed transaction
     private static readonly string[] s_inChain = ["already in block chain", "already in utxo set", "txn-already-known"];
 
+    // Core 29 and older: mandatory-/non-mandatory-script-verify-flag; Core 31.1 (and rbitcoin) only
+    // mempool-script-verify-flag-failed (NL-1096: the 31.1 binary holds only the new text, the 29.0 one only the old)
     private static readonly string[] s_invalid = ["mandatory-script-verify-flag-failed",
-                                                  "non-mandatory-script-verify-flag"];
+                                                  "non-mandatory-script-verify-flag",
+                                                  "mempool-script-verify-flag-failed"];
 
     private static readonly string[] s_temporaryBadTxns = ["bad-txns-premature-spend-of-coinbase",
                                                            "bad-txns-nonfinal"];
@@ -102,7 +108,8 @@ internal static class BroadcastRefusalRules
     /// <remarks>A <see cref="BroadcastPurpose.Splice"/> is treated as a funding, as it was while splices were saved as
     /// <see cref="BroadcastPurpose.Funding"/> (NL-626 changed only the label).</remarks>
     public static bool MayAbandon(BroadcastPurpose purpose) =>
-        IsFunding(purpose) || purpose is BroadcastPurpose.WalletSend or BroadcastPurpose.AnchorSweep;
+        IsFunding(purpose) || purpose is BroadcastPurpose.WalletSend or BroadcastPurpose.AnchorSweep
+                                                  or BroadcastPurpose.WalletCollaborative;
 
     /// <summary>
     /// True when abandoning a transaction of this purpose releases its channel's wallet UTXO locks: a funding, the legacy

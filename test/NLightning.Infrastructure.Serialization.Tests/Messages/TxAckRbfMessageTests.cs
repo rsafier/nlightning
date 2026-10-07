@@ -17,7 +17,7 @@ public class TxAckRbfMessageTests
     public TxAckRbfMessageTests()
     {
         _txAckRbfMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<TxAckRbfMessage>()!;
+            SerializerHelper.WireRegistry.Get<TxAckRbfMessage>()!;
     }
 
     #region Deserialize

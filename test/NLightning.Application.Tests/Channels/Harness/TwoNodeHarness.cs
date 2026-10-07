@@ -1087,6 +1087,8 @@ internal sealed class InMemoryChannelRepository : IChannelMemoryRepository
     public event EventHandler<ChannelUpgradedEventArgs>? OnChannelUpgraded;
     public event EventHandler<ChannelUpdatedEventArgs>? OnChannelUpdated;
     public event EventHandler<ChannelUpdatedEventArgs>? OnChannelOpened;
+    public event EventHandler<ChannelUpdatedEventArgs>? OnChannelAdded;
+    public event EventHandler<ChannelUpdatedEventArgs>? OnChannelRemoved;
 
     public bool TryGetChannel(ChannelId channelId, [MaybeNullWhen(false)] out ChannelModel channel) =>
         _channels.TryGetValue(channelId, out channel);
@@ -1100,7 +1102,13 @@ internal sealed class InMemoryChannelRepository : IChannelMemoryRepository
         return channel is not null;
     }
 
-    public void AddChannel(ChannelModel channel) => _channels[channel.ChannelId] = channel;
+    public void LoadChannel(ChannelModel channel) => _channels[channel.ChannelId] = channel;
+
+    public void AddChannel(ChannelModel channel)
+    {
+        _channels[channel.ChannelId] = channel;
+        OnChannelAdded?.Invoke(this, new ChannelUpdatedEventArgs(channel));
+    }
 
     public void UpdateChannel(ChannelModel channel)
     {
@@ -1113,7 +1121,13 @@ internal sealed class InMemoryChannelRepository : IChannelMemoryRepository
             OnChannelOpened?.Invoke(this, new ChannelUpdatedEventArgs(channel));
     }
 
-    public bool TryRemoveChannel(ChannelId channelId) => _channels.Remove(channelId);
+    public bool TryRemoveChannel(ChannelId channelId)
+    {
+        if (!_channels.Remove(channelId, out var channel))
+            return false;
+        OnChannelRemoved?.Invoke(this, new ChannelUpdatedEventArgs(channel));
+        return true;
+    }
 
     public bool TryGetTemporaryChannel(CompactPubKey compactPubKey, ChannelId channelId,
                                        [MaybeNullWhen(false)] out ChannelModel channel)

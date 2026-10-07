@@ -411,7 +411,7 @@ public class LocalLightningSignerBroadcastTests
     {
         var keyManager = new Mock<ISecureKeyManager>();
         if (withChannelKey)
-            keyManager.Setup(k => k.GetChannelKeyAtIndex(0)).Returns(ExtKey.CreateFromSeed(new byte[32]).ToBytes());
+            keyManager.Setup(k => k.GetChannelKeyAtIndex(0)).Returns(() => ExtKey.CreateFromSeed(new byte[32]).ToBytes());
         return keyManager.Object;
     }
 

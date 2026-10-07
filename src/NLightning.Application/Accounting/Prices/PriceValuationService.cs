@@ -671,6 +671,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
             using var writeLock = await _adjustmentSink.EnterAsync(cancellationToken);
             var closedNow = await GetClosedPeriodsAsync(unitOfWork, cancellationToken);
             long? replayFrom = null;
+            var adjustedOnPage = new List<AccountingPostingKey>();
             foreach (var posting in postings)
             {
                 if (resolved[posting.Key] is not { } price)
@@ -706,9 +707,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                             unitOfWork, new AccountingLateValuation(ownPosting, price, fiat), cancellationToken))
                     {
                         late++;
-                        if (_adjusted.Count >= MaxRememberedAdjustments)
-                            _adjusted.Clear();
-                        _adjusted.Add(posting.Key);
+                        adjustedOnPage.Add(posting.Key);
                     }
                     else
                     {
@@ -753,6 +752,13 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
             }
 
             await unitOfWork.SaveChangesAsync();
+            // Remember only durable adjustments: a failed save must leave the next round free to retry them.
+            foreach (var key in adjustedOnPage)
+            {
+                if (_adjusted.Count >= MaxRememberedAdjustments)
+                    _adjusted.Clear();
+                _adjusted.Add(key);
+            }
             if (postings.Count < PageSize)
                 break;
         }

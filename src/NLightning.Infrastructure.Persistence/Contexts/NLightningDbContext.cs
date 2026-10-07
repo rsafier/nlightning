@@ -38,6 +38,9 @@ public class NLightningDbContext : DbContext
     public DbSet<WatchedTransactionEntity> WatchedTransactions { get; set; }
     public DbSet<WalletAddressEntity> WalletAddresses { get; set; }
     public DbSet<UtxoEntity> Utxos { get; set; }
+    public DbSet<SilentPaymentOutputEntity> SilentPaymentOutputs { get; set; }
+    public DbSet<SilentPaymentLabelEntity> SilentPaymentLabels { get; set; }
+    public DbSet<SilentPaymentScanStateEntity> SilentPaymentScanState { get; set; }
     public DbSet<WatchedOutpointEntity> WatchedOutpoints { get; set; }
     public DbSet<BroadcastTransactionEntity> BroadcastTransactions { get; set; }
     public DbSet<BlockHeaderEntity> BlockHeaders { get; set; }
@@ -61,6 +64,12 @@ public class NLightningDbContext : DbContext
     // On-chain resolution DbSets
     public DbSet<ChannelCloseEntity> ChannelCloses { get; set; }
     public DbSet<OutputResolutionEntity> OutputResolutions { get; set; }
+    public DbSet<OnchainHtlcObservationEntity> OnchainHtlcObservations { get; set; }
+
+    public DbSet<ImportedTapscriptEntity> ImportedTapscripts { get; set; }
+    public DbSet<ImportedWatchIndexEntity> ImportedWatchIndexes { get; set; }
+    public DbSet<WalletTransactionEntity> WalletTransactions { get; set; }
+    public DbSet<KeyRingKeyEntity> KeyRingKeys { get; set; }
 
     // Node DbSets
     public DbSet<PeerEntity> Peers { get; set; }
@@ -120,10 +129,12 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureWatchedTransactionEntity(_databaseType);
         modelBuilder.ConfigureWalletAddressEntity(_databaseType);
         modelBuilder.ConfigureUtxoEntity(_databaseType);
+        modelBuilder.ConfigureSilentPaymentEntities(_databaseType);
         modelBuilder.ConfigureWatchedOutpointEntity(_databaseType);
         modelBuilder.ConfigureBroadcastTransactionEntity(_databaseType);
         modelBuilder.ConfigureBlockHeaderEntity(_databaseType);
         modelBuilder.ConfigureFeeInputReservationEntity(_databaseType);
+        modelBuilder.ConfigureWalletTransactionEntity(_databaseType);
 
         // Channel entities
         modelBuilder.ConfigureChannelEntity(_databaseType);
@@ -142,9 +153,12 @@ public class NLightningDbContext : DbContext
         // On-chain resolution entities
         modelBuilder.ConfigureChannelCloseEntity(_databaseType);
         modelBuilder.ConfigureOutputResolutionEntity(_databaseType);
+        modelBuilder.ConfigureOnchainHtlcObservationEntity(_databaseType);
 
         // Node entities
         modelBuilder.ConfigurePeerEntity(_databaseType);
+        modelBuilder.ConfigureImportedTapscriptEntity(_databaseType);
+        modelBuilder.ConfigureKeyRingKeyEntity(_databaseType);
         modelBuilder.ConfigurePeerStorageBlobEntity(_databaseType);
         modelBuilder.ConfigurePeerStorageRetrievalEntity(_databaseType);
 

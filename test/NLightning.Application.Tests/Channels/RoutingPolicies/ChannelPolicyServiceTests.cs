@@ -27,6 +27,38 @@ public class ChannelPolicyServiceTests : IAsyncDisposable
     private ChannelId ChannelId => _channels[0].ChannelId;
 
     [Fact]
+    public async Task Given_GlobalDefaults_When_RestartedAndANewChannelOpens_Then_ItUsesThemAndKeepsItsOwnLimits()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (service, store) = CreateService();
+        await service.SetDefaultAsync(2_500, 300, 72, ct);
+        var future = ChannelPolicyTestKit.CreateChannel(9);
+        Assert.Equal(2_500u, store.GetEffectivePolicy(future).FeeBaseMsat);
+        await using var restarted = ChannelPolicyTestKit.CreateProvider(_table);
+        var restored = ChannelPolicyTestKit.CreateStore(restarted, _nodeOptions);
+        var policy = restored.GetEffectivePolicy(future);
+        Assert.Equal(2_500u, policy.FeeBaseMsat);
+        Assert.Equal(300u, policy.FeeProportionalMillionths);
+        Assert.Equal((ushort)72, policy.CltvExpiryDelta);
+        Assert.Equal(800_000_000ul, policy.HtlcMaximumMsat);
+        Assert.Null(policy.Override);
+        await restored.SaveAsync(new ChannelPolicyOverride(future.ChannelId, FeeBaseMsat: 7), ct);
+        Assert.Equal(7u, restored.GetEffectivePolicy(future).FeeBaseMsat);
+        Assert.Equal(300u, restored.GetEffectivePolicy(future).FeeProportionalMillionths);
+        await restored.DeleteAsync(future.ChannelId, ct);
+        Assert.Equal(2_500u, restored.GetEffectivePolicy(future).FeeBaseMsat);
+    }
+
+    [Fact]
+    public async Task Given_InvalidDefault_When_Set_Then_NothingIsPersisted()
+    {
+        var (service, _) = CreateService();
+        await Assert.ThrowsAsync<ArgumentException>(() => service.SetDefaultAsync(1, 1, 1,
+                                                                                 TestContext.Current.CancellationToken));
+        Assert.Empty(_table.Rows);
+    }
+
+    [Fact]
     public async Task Given_APatch_When_Set_Then_ItIsSavedAndAChannelUpdateIsSentOnce()
     {
         // Arrange

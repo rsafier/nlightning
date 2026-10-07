@@ -26,9 +26,11 @@ using Domain.Onchain.Enums;
 using Domain.Onchain.Events;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.ValueObjects;
 using Interfaces;
 using Networks;
 using Options;
+using SilentPayments;
 
 /// <summary>
 /// Follows the chain: ZMQ <c>rawblock</c> for new blocks, RPC to catch up, one unit of work per block.
@@ -61,6 +63,11 @@ using Options;
 /// <c>rawtx</c> and raises <see cref="OnWatchedOutpointSpentInMempool"/> for a transaction that spends a watched
 /// outpoint, or an output of a transaction it reported before. Nothing is saved or marked spent for it: only a
 /// processed block confirms a spend.</para>
+/// <para>Poll mode (<see cref="ChainNotificationMode.Poll"/>, NL-1094): no ZMQ socket is opened. Every
+/// <see cref="BitcoinOptions.GetPollInterval"/> the monitor reads bitcoind's tip and hands a tip it has not processed to
+/// <see cref="ProcessNewBlockAsync"/>, exactly as a ZMQ <c>rawblock</c> would arrive (<see cref="PollChainAsync"/>), and,
+/// when the mempool is watched, asks <c>gettxspendingprevout</c> for the watched outputs and feeds each new spender to
+/// the same mempool path (<see cref="PollMempoolAsync"/>).</para>
 /// </remarks>
 public partial class BlockchainMonitorService : IBlockchainMonitor
 {
@@ -112,6 +119,13 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     // The tip poll: our last processed height when a poll first found bitcoind's tip above it, null otherwise
     private uint? _tipPollBehindAt;
     private long _tipPollCatchUps;
+
+    // Poll mode (NL-1094): the last tip the poll handed to block processing, and the outputs of transactions the
+    // mempool poll reported (a spend of one is reported too, as ZMQ rawtx reports it), oldest first
+    private uint256? _polledTipHash;
+    private readonly Dictionary<uint256, int> _polledMempoolParents = [];
+    private readonly Queue<uint256> _polledMempoolParentOrder = new();
+    private readonly BitcoinNetwork _bitcoinNetwork;
 
     public event EventHandler<NewBlockEventArgs>? OnNewBlockDetected;
     public event EventHandler<BlockInputsEventArgs>? OnBlockInputs;
@@ -186,7 +200,11 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         _serviceProvider = serviceProvider;
         // Fails on an unknown network; signet and custom signets (Mutinynet) map to NBitcoin's signet (W4-D)
         _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
+        _bitcoinNetwork = nodeOptions.Value.BitcoinNetwork;
     }
+
+    /// <summary>True when blocks come from the RPC poll only (<see cref="ChainNotificationMode.Poll"/>, NL-1094).</summary>
+    public bool IsPollMode => _bitcoinOptions.Notifications == ChainNotificationMode.Poll;
 
     /// <inheritdoc />
     public async Task LoadWalletAsync(CancellationToken cancellationToken = default)
@@ -289,6 +307,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         }
 
         var currentBlockHeight = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+        await InitializeSilentPaymentsAsync(currentBlockHeight, cancellationToken);
         if (currentBlockHeight < _lastProcessedBlockHeight && _headers.Count > 0)
         {
             // The chain is shorter than what we processed (reorg or invalidateblock while we were down)
@@ -314,8 +333,19 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         else
             await RebroadcastPendingAsync(); // A halt must not keep our pending transactions off the chain
 
-        // Initialize ZMQ sockets
-        InitializeZmqSockets();
+        // ZMQ sockets, unless blocks come from the RPC poll only (NL-1094)
+        if (IsPollMode)
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+                _logger.LogInformation(
+                    "Chain notifications: RPC poll every {Interval} (no ZMQ); mempool {Mempool}",
+                    _bitcoinOptions.GetPollInterval(_bitcoinNetwork),
+                    _bitcoinOptions.IsMempoolWatched ? "polled with gettxspendingprevout" : "not watched");
+        }
+        else
+        {
+            InitializeZmqSockets();
+        }
 
         // Start monitoring task
         _monitoringTask = MonitorBlockchainAsync(_cts.Token);
@@ -389,6 +419,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
 
         // Publish the tx; a refusal is the caller's to handle, the stored row keeps it for rebroadcast
         await _bitcoinChainService.SendTransactionAsync(transaction);
+        ObserveUnconfirmedWalletTransaction(transaction, broadcast);
     }
 
     public async Task WatchTransactionAsync(ChannelId channelId, TxId txId, uint requiredDepth)
@@ -428,7 +459,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Publishing transaction {TxId}", signedTransaction.TxId);
 
-        await _bitcoinChainService.SendTransactionAsync(Transaction.Load(signedTransaction.RawTxBytes, _network));
+        var transaction = Transaction.Load(signedTransaction.RawTxBytes, _network);
+        await _bitcoinChainService.SendTransactionAsync(transaction);
+        ObserveUnconfirmedWalletTransaction(transaction);
     }
 
     /// <inheritdoc />
@@ -442,7 +475,10 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Publishing {Purpose} transaction {TxId}", Enum.GetName(transaction.Purpose), txId);
 
-        return await TrySendAsync(transaction);
+        var accepted = await TrySendAsync(transaction);
+        if (accepted && transaction.State == BroadcastState.Pending)
+            ObserveUnconfirmedWalletTransaction(Transaction.Load(transaction.RawTransaction, _network), transaction);
+        return accepted;
     }
 
     /// <inheritdoc />
@@ -588,7 +624,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Starting blockchain monitoring loop");
 
-        var tipPollInterval = _bitcoinOptions.TipPollInterval;
+        // Poll mode (NL-1094): the poll is the block source, at its own interval
+        var tipPollInterval = IsPollMode ? _bitcoinOptions.GetPollInterval(_bitcoinNetwork) : _bitcoinOptions.TipPollInterval;
         var nextTipPoll = _timeProvider.GetUtcNow() + tipPollInterval;
         try
         {
@@ -600,7 +637,16 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                     if (tipPollInterval > TimeSpan.Zero && _timeProvider.GetUtcNow() >= nextTipPoll)
                     {
                         nextTipPoll = _timeProvider.GetUtcNow() + tipPollInterval;
-                        await PollTipAsync();
+                        if (IsPollMode)
+                        {
+                            await PollChainAsync();
+                            if (_bitcoinOptions.IsMempoolWatched)
+                                await PollMempoolAsync();
+                        }
+                        else
+                        {
+                            await PollTipAsync();
+                        }
                     }
 
                     // Check for new blocks
@@ -713,6 +759,118 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         }
     }
 
+    /// <summary>
+    /// One poll of <see cref="ChainNotificationMode.Poll"/> (NL-1094): reads bitcoind's tip and, when it is not the block
+    /// we processed at its height, hands it to <see cref="ProcessNewBlockAsync"/> as a ZMQ <c>rawblock</c> would, so
+    /// the same path queues every missed block below it in order, detects a reorg against the header ring (a tip at our
+    /// height with another hash included) and processes one unit of work per block. Returns true when a block was
+    /// handed over.
+    /// </summary>
+    /// <remarks>
+    /// Several blocks mined between two polls are the normal case here, so nothing is logged as a lost notification.
+    /// While processing is halted the queue is retried only when the tip changes, as a halted ZMQ monitor waits for the
+    /// next block. A tip below our last processed block that is still a block we processed (an
+    /// <c>invalidateblock</c> with nothing mined since) is left until the next block, as with ZMQ. An RPC failure is
+    /// logged and the next poll tries again.
+    /// </remarks>
+    internal async Task<bool> PollChainAsync()
+    {
+        try
+        {
+            var tip = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+            var tipHash = await _bitcoinChainService.GetBlockHashAsync(tip);
+            if (TryGetKnownHash(tip, out var known) && known.Equals(new Hash(tipHash.ToBytes())))
+            {
+                _polledTipHash = tipHash;
+                return false;
+            }
+
+            if (IsChainProcessingHalted && tipHash == _polledTipHash)
+                return false;
+
+            var block = await _bitcoinChainService.GetBlockAsync(tipHash);
+            if (block is null)
+                return false;
+
+            _polledTipHash = tipHash;
+            await ProcessNewBlockAsync(block, tip);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "The chain poll failed; the next poll tries again");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The mempool poll of <see cref="ChainNotificationMode.Poll"/> (BOLT 5 plan O8 without ZMQ, NL-1094): asks
+    /// <c>gettxspendingprevout</c> which mempool transactions spend the watched outpoints and the outputs of
+    /// transactions it reported before, fetches each spender not seen yet and hands it to
+    /// <see cref="ProcessMempoolTransaction"/>, the path of a ZMQ <c>rawtx</c>. Returns the number of events raised.
+    /// </summary>
+    /// <remarks>
+    /// A spender that is replaced or mined between two polls may be missed (blocks still see the spend); this only
+    /// lowers latency. A node without the call is reported once by the chain service and the poll then does nothing.
+    /// An RPC failure is logged and the next poll tries again.
+    /// </remarks>
+    internal async Task<int> PollMempoolAsync()
+    {
+        try
+        {
+            var outPoints = _watchedOutpoints.Keys.ToList();
+            lock (_mempoolLock)
+            {
+                foreach (var (parent, outputs) in _polledMempoolParents)
+                    for (var index = 0u; index < outputs; index++)
+                        outPoints.Add(new OutPoint(parent, index));
+            }
+
+            if (outPoints.Count == 0)
+                return 0;
+
+            var spenders = await _bitcoinChainService.GetMempoolSpendersAsync(outPoints);
+            if (spenders is null || spenders.Count == 0)
+                return 0;
+
+            var raised = 0;
+            foreach (var spender in spenders.Values.Distinct())
+            {
+                lock (_mempoolLock)
+                {
+                    if (_seenMempoolTransactions.Contains(spender))
+                        continue;
+                }
+
+                var transaction = await _bitcoinChainService.GetTransactionAsync(spender);
+                if (transaction is null)
+                    continue; // mined or evicted since; a block will tell
+
+                var events = ProcessMempoolTransaction(transaction);
+                if (events == 0)
+                    continue;
+
+                raised += events;
+                lock (_mempoolLock)
+                {
+                    if (_polledMempoolParents.TryAdd(spender, transaction.Outputs.Count))
+                    {
+                        _polledMempoolParentOrder.Enqueue(spender);
+                        while (_polledMempoolParentOrder.Count > MaxRememberedMempoolTransactions)
+                            _polledMempoolParents.Remove(_polledMempoolParentOrder.Dequeue());
+                    }
+                }
+            }
+
+            return raised;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "The mempool poll failed; the next poll tries again");
+            return 0;
+        }
+    }
+
     private void InitializeZmqSockets()
     {
         try
@@ -723,7 +881,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             _blockSocket.Subscribe("rawblock");
 
             // BOLT 5 plan O8: unconfirmed spends of watched outputs (optional; blocks alone are enough)
-            if (_bitcoinOptions.WatchMempool)
+            if (_bitcoinOptions.IsMempoolWatched)
             {
                 _txSocket = new SubscriberSocket();
                 _txSocket.Connect($"tcp://{_bitcoinOptions.ZmqHost}:{_bitcoinOptions.ZmqTxPort}");
@@ -733,7 +891,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             if (_logger.IsEnabled(LogLevel.Information))
                 _logger.LogInformation("ZMQ sockets initialized - Block: {BlockPort}, Tx: {TxPort} (mempool {Mempool})",
                                        _bitcoinOptions.ZmqBlockPort, _bitcoinOptions.ZmqTxPort,
-                                       _bitcoinOptions.WatchMempool ? "watched" : "not watched");
+                                       _bitcoinOptions.IsMempoolWatched ? "watched" : "not watched");
         }
         catch (Exception ex)
         {
@@ -776,6 +934,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     {
         ArgumentNullException.ThrowIfNull(transaction);
         var txId = transaction.GetHash();
+        ObserveUnconfirmedWalletTransaction(transaction);
         var spends = new List<MempoolSpendEventArgs>();
         lock (_mempoolLock)
         {
@@ -1045,15 +1204,18 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     private async Task<bool> TryProcessBlockWithRetriesAsync(Block block, uint height,
                                                              CancellationToken cancellationToken)
     {
+        using var silentPaymentLease = _silentPaymentScanner is { } scanner
+            ? await scanner.EnterAsync(cancellationToken) : null;
         var delay = BlockRetryBaseDelay;
         for (var attempt = 1; attempt <= MaxBlockProcessingAttempts; attempt++)
         {
             BlockEffects? effects = null;
             try
             {
+                var prepared = await PrepareSilentPaymentBlockAsync(block, height, cancellationToken);
                 using var scope = _serviceProvider.CreateScope();
                 using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-                effects = await StageBlockAsync(block, height, uow);
+                effects = await StageBlockAsync(block, height, uow, prepared);
                 await uow.SaveChangesAsync();
             }
             catch (Exception ex)
@@ -1065,6 +1227,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
 
             if (effects is not null)
             {
+                Raise(() => OnWalletTransactionsProcessing?.Invoke(this, EventArgs.Empty), "wallet transactions processing");
                 ApplyBlock(effects);
                 RaiseBlockEvents(effects, block);
                 return true;
@@ -1084,13 +1247,18 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     /// Stages everything one block changes in <paramref name="uow"/> without touching memory, and returns what to
     /// apply and raise once the unit of work is saved.
     /// </summary>
-    private async Task<BlockEffects> StageBlockAsync(Block block, uint height, IUnitOfWork uow)
+    private async Task<BlockEffects> StageBlockAsync(Block block, uint height, IUnitOfWork uow,
+                                                    PreparedSilentPaymentBlock? silentPayments = null)
     {
         var blockHash = new Hash(block.GetHash().ToBytes());
         var effects = new BlockEffects(height, blockHash,
                                        new BlockHeaderModel(height, blockHash,
                                                             new Hash(block.Header.HashPrevBlock.ToBytes())));
         var transactions = block.Transactions;
+        if (silentPayments is not null)
+            foreach (var output in silentPayments.Matches.Where(output => !output.Ignored))
+                effects.SilentPaymentOutputs.Add(new OutPoint(new uint256((byte[])output.TransactionId), output.Index));
+        await StageSilentPaymentInputOwnershipAsync(silentPayments, uow, effects, block);
         Dictionary<uint256, uint256>? replacedMembers = null;
 
         if (_logger.IsEnabled(LogLevel.Debug))
@@ -1147,8 +1315,14 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             }
         }
 
-        StageWalletMovements(transactions, height, uow, effects);
+        await StageSilentPaymentReceiptsAsync(silentPayments, uow, effects, block);
+        StageWalletMovements(transactions, height, block.Header.BlockTime, uow, effects);
+        await StageSilentPaymentSpendsAndStateAsync(silentPayments, height, uow, effects, block);
+        await StageWalletHistoryAsync(transactions, block.Header.BlockTime, uow, effects);
         await StageAccountingAsync(uow, effects);
+        await StageSilentPaymentSettlementsAsync(silentPayments, uow, effects, block);
+        if (silentPayments is not null)
+            await WalletRecoveryAccounting.StageWalletHistoryAsync(uow, block, height, CancellationToken.None);
         await StageWatchedSpendsAsync(transactions, height, blockHash, uow, effects);
         StageWatchedTransactionDepths(height, uow, effects);
 
@@ -1207,10 +1381,10 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         }
     }
 
-    private void StageWalletMovements(List<Transaction> transactions, uint blockHeight, IUnitOfWork uow,
+    private void StageWalletMovements(List<Transaction> transactions, uint blockHeight, DateTimeOffset blockTime, IUnitOfWork uow,
                                       BlockEffects effects)
     {
-        if (_watchedAddresses.IsEmpty)
+        if (_watchedAddresses.IsEmpty && _silentPaymentScanner is null)
             return;
 
         if (_logger.IsEnabled(LogLevel.Debug))
@@ -1222,6 +1396,13 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         {
             var txId = transaction.GetHash();
             WalletTransactionSource? source = null;
+            // The wallet's change of this transaction as the feed records it (deposits minus spends, NL-1186 review: a
+            // collaborative transaction books its net flow against the clearing account the movements post to)
+            long recordedWalletDeltaMsat = 0;
+            var recordedMovement = false;
+            if (DescribeWalletTransaction(transaction, blockHeight, new uint256((byte[])effects.BlockHash).ToString(),
+                                          effects.StagedDeposits, timestamp: blockTime) is { } observed)
+                effects.WalletTransactions.Add(observed);
 
             // Check each output for deposits
             for (var i = 0; i < transaction.Outputs.Count; i++)
@@ -1259,6 +1440,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 // NL-602/NL-603: the deposit in the accounting feed (memory guard above: once per output)
                 source ??= ClassifyWalletTransaction(transaction, utxoMemoryRepository, effects);
                 CollectWalletReceived(utxo, watchedAddress, source, effects);
+                recordedWalletDeltaMsat += checked((long)utxo.Amount.MilliSatoshi);
+                recordedMovement = true;
 
                 // The address stays watched (as after a restart, which reloads every wallet address): the wallet hands
                 // an address out again once its deposits are spent, and two channels closing at once can get the
@@ -1286,8 +1469,87 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                     continue;
 
                 source ??= ClassifyWalletTransaction(transaction, utxoMemoryRepository, effects);
-                CollectWalletOutputSpent(spent, transaction, source, utxoMemoryRepository, effects);
+                CollectWalletOutputSpent(spent, transaction, source, utxoMemoryRepository, effects,
+                    spent.SilentPayment is not null ? blockTime : null);
+                recordedWalletDeltaMsat -= checked((long)spent.Amount.MilliSatoshi);
+                recordedMovement = true;
             }
+
+            if (_silentPaymentScanner is null && recordedMovement && source is { Purpose: BroadcastPurpose.WalletCollaborative })
+                CollectWalletCollaborativeFlow(transaction, source, recordedWalletDeltaMsat, effects);
+        }
+    }
+
+    /// <summary>
+    /// Stages the block's wallet transactions in the wallet's durable history (NL-1187), in the block's own save: the
+    /// raw transaction, the block and the wallet's outputs and inputs as <see cref="DescribeWalletTransaction"/> found
+    /// them (the same description <c>SubscribeTransactions</c> publishes). A stored transaction a reorg unconfirmed is
+    /// confirmed again by any block that holds it, whatever the description finds (a spend without a wallet output whose
+    /// inputs the rollback could not restore, because bitcoind's mempool still spends them, is described as nothing),
+    /// and is removed once a block confirms a conflicting spend of one of its inputs.
+    /// </summary>
+    private async Task StageWalletHistoryAsync(List<Transaction> transactions, DateTimeOffset blockTime,
+                                               IUnitOfWork uow, BlockEffects effects)
+    {
+        if (uow.WalletTransactionDbRepository is not { } history)
+            return;
+
+        var staged = new HashSet<TxId>();
+        foreach (var observed in effects.WalletTransactions)
+        {
+            var inputs = new List<WalletTransactionInput>(observed.OurInputs.Count);
+            for (var i = 0; i < observed.OurInputs.Count && i < observed.OurInputAmounts.Count; i++)
+                inputs.Add(new WalletTransactionInput(observed.OurInputs[i], observed.OurInputAmounts[i]));
+
+            var txId = new TxId(uint256.Parse(observed.TxHash).ToBytes());
+            staged.Add(txId);
+            await history.StageConfirmedAsync(new WalletTransactionRecord(
+                txId, Convert.FromHexString(observed.RawTransactionHex), effects.Height, effects.BlockHash,
+                observed.Timestamp, observed.OurOutputs.ToList(), inputs));
+        }
+
+        var unconfirmed = await history.GetUnconfirmedAsync(CancellationToken.None);
+        if (unconfirmed.Count == 0)
+            return;
+
+        var inBlock = new Dictionary<TxId, Transaction>(transactions.Count);
+        var spentInBlock = new Dictionary<OutPoint, uint256>();
+        foreach (var transaction in transactions)
+        {
+            var hash = transaction.GetHash();
+            inBlock[new TxId(hash.ToBytes())] = transaction;
+            if (transaction.IsCoinBase)
+                continue;
+
+            foreach (var input in transaction.Inputs)
+                spentInBlock.TryAdd(input.PrevOut, hash);
+        }
+
+        foreach (var record in unconfirmed)
+        {
+            if (staged.Contains(record.TxId))
+                continue;
+
+            if (inBlock.TryGetValue(record.TxId, out var confirmed))
+            {
+                // Its stored ownership is kept (the record carries none to add)
+                await history.StageConfirmedAsync(new WalletTransactionRecord(
+                    record.TxId, confirmed.ToBytes(), effects.Height, effects.BlockHash, blockTime, [], []));
+                continue;
+            }
+
+            Transaction stored;
+            try
+            {
+                stored = Transaction.Load(record.RawTransaction, _network);
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+
+            if (!stored.IsCoinBase && stored.Inputs.Any(i => spentInBlock.ContainsKey(i.PrevOut)))
+                await history.StageRemoveAsync(record.TxId);
         }
     }
 
@@ -1377,6 +1639,11 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             Raise(() => OnTransactionConfirmed?.Invoke(this, new TransactionConfirmedEventArgs(confirmed,
                                                           effects.Height)), "transaction confirmation");
 
+        foreach (var observed in effects.WalletTransactions)
+            RaiseWalletTransaction(observed);
+
+        Raise(() => OnWalletTransactionsProcessed?.Invoke(this, new NewBlockEventArgs(effects.Height, effects.BlockHash)), "wallet transactions processed");
+
         foreach (var movement in effects.Movements)
             Raise(() => OnWalletMovementDetected?.Invoke(this, movement), "wallet movement");
 
@@ -1404,6 +1671,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     /// </summary>
     private async Task<bool> TryRewindAsync(uint searchFrom)
     {
+        using var silentPaymentLease = _silentPaymentScanner is { } scanner
+            ? await scanner.EnterAsync() : null;
         try
         {
             uint? fork = null;
@@ -1434,6 +1703,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 disconnected.Insert(0, new BlockHeaderModel(_lastProcessedBlockHeight,
                                                             _blockchainState.LastProcessedBlockHash, Hash.Empty));
 
+            var disconnectedWalletTransactions = await DescribeDisconnectedWalletTransactionsAsync(disconnected);
             var rewoundState = new BlockchainState(forkHeight, forkHash, DateTime.UtcNow) { Id = _blockchainState.Id };
 
             // NL-293: wallet outputs spent in the disconnected blocks that are unspent in the active chain again (a
@@ -1467,6 +1737,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
 
                 var clearedSpends = await uow.WatchedOutpointDbRepository.ClearSpendsAboveAsync(forkHeight);
                 var unconfirmed = await uow.BroadcastTransactionDbRepository.UnconfirmAboveAsync(forkHeight);
+                // NL-1187: the wallet's history follows the rewind in the same save
+                if (uow.WalletTransactionDbRepository is { } walletHistory)
+                    await walletHistory.UnconfirmAboveAsync(forkHeight);
                 var (removedDeposits, restoredSpends) = await StageWalletRollbackAsync(uow, forkHeight, restoredUtxos);
                 await StageReorgReversalsAsync(uow, forkHeight, removedDeposits, restoredSpends);
                 await uow.BlockHeaderDbRepository.DeleteAboveAsync(forkHeight);
@@ -1485,10 +1758,17 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                     "Transaction {TxId} of channel {ChannelId} had reached its depth in block {Height}, which was disconnected; it is watched again from the new branch",
                     watch.TransactionId, watch.ChannelId, watch.FirstSeenAtHeight);
 
+            Raise(() => OnWalletTransactionsProcessing?.Invoke(this, EventArgs.Empty), "wallet transactions processing");
             foreach (var header in disconnected)
                 _headers.Remove(header.Height);
             _blockchainState = rewoundState;
             _lastProcessedBlockHeight = forkHeight;
+
+            // The rewind is committed. Publish before any subsequent reload or chain RPC can fail.
+            foreach (var observed in disconnectedWalletTransactions)
+                RaiseWalletTransaction(observed);
+
+            Raise(() => OnWalletTransactionsProcessed?.Invoke(this, new NewBlockEventArgs(forkHeight, forkHash)), "wallet transactions processed");
 
             // Memory follows the saved rows
             using (var scope = _serviceProvider.CreateScope())
@@ -1632,6 +1912,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             restoredUtxos.Add((utxo, spentHeight));
         }
 
+        await StageSilentPaymentRollbackAsync(uow, forkHeight, removed, restoredUtxos);
         return (removed, restoredUtxos);
     }
 
@@ -2153,6 +2434,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         /// movement of one of them comes from our broadcast.</summary>
         public Dictionary<uint256, BroadcastTransactionModel> ConfirmedReplacedMembers { get; } = [];
         public List<WalletMovementEventArgs> Movements { get; } = [];
+        public List<WalletTransactionEventArgs> WalletTransactions { get; } = [];
+        public HashSet<OutPoint> SilentPaymentOutputs { get; } = [];
+        public HashSet<OutPoint> SilentPaymentInputs { get; } = [];
         public List<OutpointSpentEventArgs> Spends { get; } = [];
 
         /// <summary>The wallet outputs this block deposited (a later transaction of the block may spend one).</summary>

@@ -14,7 +14,7 @@ public class UpdateFailMalformedHtlcMessageTests
     public UpdateFailMalformedHtlcMessageTests()
     {
         _updateFailMalformedHtlcMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<UpdateFailMalformedHtlcMessage>()!;
+            SerializerHelper.WireRegistry.Get<UpdateFailMalformedHtlcMessage>()!;
     }
 
     #region Deserialize

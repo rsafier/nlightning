@@ -37,6 +37,13 @@ public interface IGraphStore
     event EventHandler<GraphChannel>? ChannelAdded;
 
     /// <summary>
+    /// Ordered immutable changes to the authoritative in-memory graph. No startup replay; persistence remains
+    /// write-behind. Observers must only enqueue without blocking, since publication holds the writer lock.
+    /// Spent edges emit removal immediately; a reorg emits their restored edges. Node removals have no LND event.
+    /// </summary>
+    event EventHandler<GraphChange>? GraphChanged;
+
+    /// <summary>
     /// Loads the persisted graph (once; later calls return at once). Changes made before the load are kept and win.
     /// </summary>
     Task LoadAsync(CancellationToken cancellationToken = default);

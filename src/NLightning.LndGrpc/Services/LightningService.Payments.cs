@@ -4,6 +4,7 @@ namespace NLightning.LndGrpc.Services;
 
 using Domain.Channels.ValueObjects;
 using Domain.Gossip.Graph;
+using Domain.Money;
 using Domain.Payments.Enums;
 using Domain.Payments.Models;
 using Domain.Protocol.Onion.Enums;
@@ -11,7 +12,7 @@ using Lnrpc;
 
 public sealed partial class LightningService
 {
-    /// <summary>LND's default page of <c>ListPayments</c> (lncli's) and of <c>ForwardingHistory</c>.</summary>
+    /// <summary>LND's default page of <c>ForwardingHistory</c> (and lncli's of <c>ListPayments</c>).</summary>
     private const ulong DefaultPaymentPage = 100;
 
     /// <summary>LND's largest <c>ForwardingHistory</c> page.</summary>
@@ -20,13 +21,16 @@ public sealed partial class LightningService
     /// <summary>
     /// <c>ListPayments</c> with LND's paging: <c>payment_index</c> is dense (NL-1165); forward after
     /// <c>index_offset</c> oldest first, <c>reversed</c> before it (0: from the newest), answered oldest first;
-    /// without <c>include_incomplete</c> only succeeded payments (LND). Trampoline relay legs are never listed. The
-    /// recorded route is one HTLC attempt unless <c>omit_hops</c>.
+    /// without <c>include_incomplete</c> only succeeded payments (LND). Without <c>max_payments</c> LND's RPC returns
+    /// every payment (lncli's 100 is the client's default, not the server's): this one returns up to its page cap
+    /// (10,000; NL-1239). <c>creation_date_start</c>/<c>creation_date_end</c> bound the creation time in Unix seconds,
+    /// both inclusive. Amounts in sat are the msat values truncated, as LND's <c>ToSatoshis</c>. Trampoline relay legs
+    /// are never listed. The recorded route is one HTLC attempt unless <c>omit_hops</c>.
     /// </summary>
     public override async Task<ListPaymentsResponse> ListPayments(ListPaymentsRequest request,
                                                                   ServerCallContext context)
     {
-        var query = PageQuery(request.IndexOffset, request.Reversed, request.MaxPayments, DefaultPaymentPage,
+        var query = PageQuery(request.IndexOffset, request.Reversed, request.MaxPayments, MaxPage,
                               request.CreationDateStart, request.CreationDateEnd);
         await using var scope = CreateScope();
         var repository = UnitOfWork(scope).PaymentDbRepository;
@@ -122,6 +126,12 @@ public sealed partial class LightningService
             ? node.AliasText
             : string.Empty;
 
+    /// <summary>
+    /// An amount in whole sat as LND's <c>MilliSatoshi.ToSatoshis</c> gives it: truncated (<c>LightningMoney.Satoshi</c>
+    /// rounds to the nearest, which made 1,600 msat 2 sat; NL-1239).
+    /// </summary>
+    internal static long Sat(LightningMoney amount) => (long)(amount.MilliSatoshi / 1000);
+
     /// <summary>LND's <c>payment_index</c> (dense, NL-1165); 0 for a row saved without one.</summary>
     internal static ulong PaymentIndex(PaymentModel payment) => payment.PaymentIndex ?? 0;
 
@@ -133,17 +143,21 @@ public sealed partial class LightningService
             PaymentStatus.Failed => Payment.Types.PaymentStatus.Failed,
             _ => Payment.Types.PaymentStatus.InFlight
         };
-        var preimage = payment.Preimage is { } secret ? Convert.ToHexStringLower((byte[])secret) : string.Empty;
+        // LND reports a payment without a preimage (failed or in flight) as 32 zero bytes; ln-service requires the hex
+        // (NL-1252)
+        var preimage = payment.Preimage is { } secret
+                           ? Convert.ToHexStringLower((byte[])secret)
+                           : new string('0', 64);
         var item = new Payment
         {
             PaymentHash = payment.PaymentHash.ToString(),
-            Value = payment.Amount.Satoshi,
-            ValueSat = payment.Amount.Satoshi,
+            Value = Sat(payment.Amount),
+            ValueSat = Sat(payment.Amount),
             ValueMsat = (long)payment.Amount.MilliSatoshi,
             CreationDate = payment.CreatedAt.ToUnixTimeSeconds(),
             CreationTimeNs = UnixNanos(payment.CreatedAt),
-            Fee = payment.Fee.Satoshi,
-            FeeSat = payment.Fee.Satoshi,
+            Fee = Sat(payment.Fee),
+            FeeSat = Sat(payment.Fee),
             FeeMsat = (long)payment.Fee.MilliSatoshi,
             PaymentPreimage = preimage,
             PaymentRequest = payment.Bolt11 ?? string.Empty,
@@ -165,9 +179,9 @@ public sealed partial class LightningService
         var route = new Route
         {
             TotalTimeLock = payment.Route[0].CltvExpiry,
-            TotalAmt = payment.Route[0].Amount.Satoshi,
+            TotalAmt = Sat(payment.Route[0].Amount),
             TotalAmtMsat = (long)payment.Route[0].Amount.MilliSatoshi,
-            TotalFees = payment.Fee.Satoshi,
+            TotalFees = Sat(payment.Fee),
             TotalFeesMsat = (long)payment.Fee.MilliSatoshi,
             FirstHopAmountMsat = (long)payment.Route[0].Amount.MilliSatoshi
         };
@@ -180,7 +194,7 @@ public sealed partial class LightningService
                 ChanId = ToChanId(hop.ShortChannelId),
                 PubKey = hop.NodeId.ToString(),
                 Expiry = next.CltvExpiry,
-                AmtToForward = next.Amount.Satoshi,
+                AmtToForward = Sat(next.Amount),
                 AmtToForwardMsat = (long)next.Amount.MilliSatoshi,
                 Fee = (long)((hop.Amount.MilliSatoshi - next.Amount.MilliSatoshi) / 1000),
                 FeeMsat = (long)(hop.Amount.MilliSatoshi - next.Amount.MilliSatoshi),

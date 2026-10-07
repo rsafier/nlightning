@@ -28,7 +28,7 @@ public class WirePropertyTests
 
     private readonly NLightning.Infrastructure.Serialization.Messages.MessageSerializer _serializer =
         new(NullLogger<NLightning.Infrastructure.Serialization.Messages.MessageSerializer>.Instance,
-            SerializerHelper.MessageTypeSerializerFactory);
+            SerializerHelper.WireRegistry);
 
     private async Task<(IMessage Decoded, byte[] Bytes)> RoundTripAsync(IMessage message)
     {
@@ -258,7 +258,7 @@ public class WirePropertyTests
     {
         try
         {
-            await SerializerHelper.MessageTypeSerializerFactory.GetSerializer<RevokeAndAckMessage>()!
+            await SerializerHelper.WireRegistry.Get<RevokeAndAckMessage>()!
                .DeserializeAsync(new MemoryStream(Convert.FromHexString(bodyHex)));
             return new InvalidOperationException("expected a failure");
         }
@@ -285,7 +285,7 @@ public class WirePropertyTests
     public async Task Given_UnknownOddExtensionTlv_When_Deserialized_Then_Ignored()
     {
         // type 0xC9 (odd, unknown) is ignored: the message still parses
-        var message = await SerializerHelper.MessageTypeSerializerFactory.GetSerializer<RevokeAndAckMessage>()!
+        var message = await SerializerHelper.WireRegistry.Get<RevokeAndAckMessage>()!
            .DeserializeAsync(new MemoryStream(Convert.FromHexString(RevokeAndAckBody + "C9012A")));
         Assert.IsType<RevokeAndAckMessage>(message);
         Assert.NotNull(message);

@@ -69,6 +69,9 @@ using Services;
 /// <seealso cref="IPeerManager" />
 public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMessageOutbox
 {
+    /// <inheritdoc />
+    public event EventHandler<PeerStateChangedEventArgs>? OnPeerStateChanged;
+
     /// <summary>
     /// Channel messages waiting for the inbound loop of one peer. When full, the peer's receive path (the message
     /// service's consumer, and behind it the transport read loop) waits, which pushes back on a peer that sends
@@ -981,6 +984,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
                     return InstallResult.KeptExisting;
 
                 replaced = existing;
+                NotifyPeerState(peerId, false);
                 replaced.SuppressReconnect();
                 replaced.Close();
             }
@@ -988,6 +992,8 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             // None of the peer's channels is reestablished on the new connection (BOLT 2), before it is visible
             _channelManager.OnPeerConnectionChanged(peerId);
             _peers[peerId] = session;
+            if (!session.IsDisconnected)
+                NotifyPeerState(peerId, true);
 
             var previousLoop = _inboundLoops.GetValueOrDefault(peerId) ?? Task.CompletedTask;
             session.StartInboundLoop(previousLoop, ProcessInboundMessagesAsync);
@@ -1066,7 +1072,27 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     private bool TryRemoveSession(PeerSession session)
     {
         lock (_sessionLock)
-            return _peers.TryRemove(new KeyValuePair<CompactPubKey, PeerSession>(session.Peer.NodeId, session));
+        {
+            var removed = _peers.TryRemove(new KeyValuePair<CompactPubKey, PeerSession>(session.Peer.NodeId, session));
+            if (removed)
+                NotifyPeerState(session.Peer.NodeId, false);
+            return removed;
+        }
+    }
+
+    private void NotifyPeerState(CompactPubKey peerId, bool online)
+    {
+        if (OnPeerStateChanged is not { } handlers)
+            return;
+        foreach (var callback in handlers.GetInvocationList().Cast<EventHandler<PeerStateChangedEventArgs>>())
+            try
+            {
+                callback(this, new PeerStateChangedEventArgs(peerId, online));
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(exception, "Peer lifecycle observer failed for {PeerId}", peerId);
+            }
     }
 
     private void ForgetInboundLoop(PeerSession session)

@@ -11,7 +11,7 @@ using Cluster.Run;
 using static FaultClusterTestSupport;
 
 /// <summary>
-/// The fault injector on two regtest bitcoinds (Polar's 29.0 image, the LND fixture's chain): the chain survives a
+/// The fault injector on two regtest bitcoinds (Core 31.1, the default image): the chain survives a
 /// restart and a crash on the PVC, a paused node stops answering RPC, and a partition holds blocks back once the
 /// established P2P connection is dropped. Explicit, <c>Category=Cluster</c>.
 /// </summary>

@@ -6,6 +6,8 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Infrastructure.Bitcoin.Wallet;
 
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.SilentPayments;
+using Domain.Bitcoin.SilentPayments.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Node.Options;
 using Interfaces;
@@ -29,7 +31,11 @@ public static class WalletSpendServiceCollectionExtensions
                                                           sp.GetRequiredService<IServiceScopeFactory>(),
                                                           sp.GetRequiredService<IOptions<NodeOptions>>(),
                                                           sp.GetRequiredService<ILogger<WalletSpendService>>(),
-                                                          sp.GetService<IBitcoinChainService>()));
+                                                          sp.GetService<IBitcoinChainService>(),
+                                                          sp.GetRequiredService<IWalletPsbtService>(),
+                                                          sp.GetService<IOptions<SilentPaymentsOptions>>(),
+                                                          sp.GetService<ISilentPaymentCrypto>(),
+                                                          sp.GetService<ISilentPaymentKeySource>()));
         // The walletrpc PSBT and lease surface (LND gRPC wave 3, NL-1184) goes with withdraw
         services.TryAddSingleton<IWalletPsbtService>(sp => new WalletPsbtService(
                                                          sp.GetRequiredService<IFeeInputSelector>(),
@@ -41,7 +47,8 @@ public static class WalletSpendServiceCollectionExtensions
                                                          sp.GetRequiredService<IOptions<NodeOptions>>(),
                                                          sp.GetRequiredService<ILogger<WalletPsbtService>>(),
                                                          sp.GetService<IBitcoinChainService>(),
-                                                         sp.GetService<TimeProvider>()));
+                                                         sp.GetService<TimeProvider>(),
+                                                         sp.GetService<Domain.Protocol.Interfaces.ISecureKeyManager>()));
         return services;
     }
 }

@@ -284,7 +284,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         // ephemeral key and carries no payment secret), so it is paid over the paths
         if (invoice.BlindedPaymentPaths.Count > 0)
         {
-            if (options.OutgoingChannelId is not null || options.IncomingChannelId is not null)
+            if (options.OutgoingChannelId is not null || options.OutgoingChannelIds is not null || options.IncomingChannelId is not null)
                 throw new ArgumentException("Channel pins are not supported for an invoice with blinded paths.",
                                             nameof(options));
             return await PayBlindedInvoiceAsync(invoice, bolt11, amount, options, cancellationToken);
@@ -310,6 +310,12 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         if (circular && options.TrampolineNode is not null)
             throw new ArgumentException("A rebalance is not sent through a trampoline node.", nameof(options));
 
+        if (options.OutgoingChannelIds is { } allowed)
+        {
+            if (allowed.Count == 0 || options.OutgoingChannelId is not null)
+                throw new ArgumentException("Specify a nonempty outgoing channel set or a single channel, not both.");
+            foreach (var channelId in allowed) ThrowUnlessOurChannel(channelId, "outgoing");
+        }
         ThrowUnlessOurChannel(options.OutgoingChannelId, "outgoing");
         ThrowUnlessOurChannel(options.IncomingChannelId, "incoming");
         if (_blockchainMonitor.LastProcessedBlockHeight == 0)
@@ -345,6 +351,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         {
             IsCircular = circular,
             OutgoingChannelId = options.OutgoingChannelId,
+            OutgoingChannelIds = options.OutgoingChannelIds is null ? null : new HashSet<ChannelId>(options.OutgoingChannelIds),
             IncomingChannelId = options.IncomingChannelId,
             Labels = options.Labels
         };
@@ -468,12 +475,26 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         if (request.Destination == _secureKeyManager.GetNodePubKey())
             throw new ArgumentException("The destination is this node; a node cannot pay itself.", nameof(request));
 
+        if (options.OutgoingChannelIds is { } allowed)
+        {
+            if (allowed.Count == 0 || options.OutgoingChannelId is not null)
+                throw new ArgumentException("Specify a nonempty outgoing channel set or a single channel, not both.");
+            foreach (var channelId in allowed) ThrowUnlessOurChannel(channelId, "outgoing");
+        }
+        ThrowUnlessOurChannel(options.OutgoingChannelId, "outgoing");
+        if (options.IncomingChannelId is not null || options.TrampolineNode is not null)
+            throw new ArgumentException("Keysend does not support an incoming channel or trampoline node.");
+
         var customRecords = CustomRecordCodec.Validate(request.CustomRecords);
         if (_blockchainMonitor.LastProcessedBlockHeight == 0)
             throw new InvalidOperationException("No block has been processed yet; cannot set the HTLC expiry.");
 
         // Our preimage (CSPRNG) and its hash; the payee learns the preimage from the onion and reveals it to settle
-        var preimageBytes = RandomNumberGenerator.GetBytes(32);
+        var preimageBytes = request.Preimage is { } supplied
+                                ? ((ReadOnlySpan<byte>)supplied).ToArray()
+                                : RandomNumberGenerator.GetBytes(32);
+        if (preimageBytes.Length != 32)
+            throw new ArgumentException("The keysend preimage must be 32 bytes.", nameof(request));
         var preimage = new Secret(preimageBytes);
         var paymentHash = new Hash(SHA256.HashData(preimageBytes));
 
@@ -499,6 +520,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                                          Math.Max(1, sendOptions.MaxAttempts), deadline, now)
         {
             Keysend = keysend,
+            OutgoingChannelId = options.OutgoingChannelId,
+            OutgoingChannelIds = options.OutgoingChannelIds?.ToHashSet(),
             Labels = options.Labels
         };
 
@@ -696,6 +719,21 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
 
             if (payment.Status == PaymentStatus.Succeeded)
             {
+                // Another part of a settled set, fulfilled after its session ended: its row follows the payment
+                // (NL-1276; nothing to do when it has no row or is already resolved)
+                try
+                {
+                    await UpdateStoredPartAsync(scope, payment.PaymentHash, fulfilled.ChannelId, fulfilled.HtlcId,
+                                                PaymentPartState.Succeeded);
+                    await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
+                }
+                catch (Exception e)
+                {
+                    _logger.LogError(e, "Could not store the fulfill of the part of payment {PaymentHash} offered as "
+                                      + "HTLC {HtlcId} on channel {ChannelId}", payment.PaymentHash,
+                                     fulfilled.HtlcId, fulfilled.ChannelId);
+                }
+
                 // A relay leg's fulfill replayed (a restart before the relay recorded it): report it again
                 if (payment.IsTrampolineRelay)
                     ReportLegSucceeded(null, payment.PaymentHash, fulfilled.PaymentPreimage,
@@ -1090,7 +1128,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                                        : null;
             var outgoingChannels = session.OutgoingChannelId is { } outPin
                                        ? channels.Where(c => c.ChannelId == outPin).ToList()
-                                       : channels;
+                                       : session.OutgoingChannelIds is { } allowed
+                                           ? channels.Where(c => allowed.Contains(c.ChannelId)).ToList() : channels;
             GraphRoutingContext? graph = null;
             if (_graphPathSource is { IsAvailable: true })
             {
@@ -1492,12 +1531,18 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     private sealed record BlindedCandidate(int Index, BlindedPaymentPath Path, SelfIntroducedBlindedPath? Self);
 
     /// <summary>
-    /// The one round a <c>payroute</c> session makes (NL-1082): build every supplied route's onion, persist the round
-    /// and offer the parts in order. A refused offer ends that route (its part is marked failed with the refusal);
-    /// nothing is re-planned — when no part is in flight afterwards the payment is decided here, else the parts'
-    /// outcomes complete it.
+    /// A round of caller-supplied routes (NL-1082): the one a <c>payroute</c> session starts with, or one attached to
+    /// it while parts are in flight (NL-1276). Builds every route's onion, persists the round (the first round creates
+    /// the row; an attached one keeps it) and offers the parts in order. A refused offer ends that route (its part is
+    /// marked failed with the refusal); nothing is re-planned — when no part is in flight afterwards the payment is
+    /// decided here, else the parts' outcomes complete it.
     /// </summary>
-    private async Task RunManualRoundAsync(PaymentSession session, IReadOnlyList<SuppliedRoutePart> suppliedRoutes)
+    /// <returns>The round's parts in the routes' order, every route included (one left unoffered after an offer
+    /// whose outcome is unknown is failed).</returns>
+    private async Task<IReadOnlyList<PaymentPart>> RunManualRoundAsync(PaymentSession session,
+                                                                       IReadOnlyList<SuppliedRoutePart> suppliedRoutes,
+                                                                       string roundName = "caller route",
+                                                                       bool failsPaymentOnFailure = false)
     {
         var round = new List<(PaymentPart Part, OnionPacket Packet)>(suppliedRoutes.Count);
         for (var i = 0; i < suppliedRoutes.Count; i++)
@@ -1507,19 +1552,36 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             round.Add((new PaymentPart(suppliedPart.Channel, suppliedPart.Route,
                                        BuildHops(suppliedPart.Route, onion.SharedSecrets,
                                                  suppliedPart.Channel.ShortChannelId, session.PayeeNodeId, false),
-                                       $"caller route {i + 1} of {suppliedRoutes.Count}"),
-                       onion.Packet));
+                                       $"{roundName} {i + 1} of {suppliedRoutes.Count}")
+            {
+                FailsPaymentOnFailure = failsPaymentOnFailure
+            }, onion.Packet));
         }
 
         await PersistRoundAsync(session, round.Select(r => r.Part).ToList());
 
+        var stopped = false;
         foreach (var (part, packet) in round)
         {
             session.Parts.Add(part);
+            if (stopped)
+            {
+                // Not offered: an earlier offer's outcome is unknown, so the round stops there
+                part.Status = PaymentPartStatus.Failed;
+                part.Failure = (null, null, "Not offered: an earlier route's offer failed with an unknown outcome.");
+                part.ResolvedAt = _timeProvider.GetUtcNow();
+                continue;
+            }
+
             session.Attempts++;
             if (await OfferPartAsync(session, part, packet) == OfferOutcome.Error)
-                break;
+                stopped = true;
         }
+
+        // NL-1276: an LND shard sent without skip_temp_err fails the payment pending when its offer failed
+        if (round.FirstOrDefault(r => r.Part is { FailsPaymentOnFailure: true, Status: PaymentPartStatus.Failed })
+                .Part is { } refused)
+            session.PendingFailure ??= refused.Failure?.Reason ?? "a shard's HTLC could not be offered";
 
         // The engine refused the round's recorded part while others were offered: the row follows a live one
         await MovePrimaryPartAsync(session);
@@ -1530,6 +1592,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                                     session.TerminalReason
                                     ?? session.LastFailure?.Reason
                                     ?? "the HTLC could not be offered");
+        session.SignalPartsChanged();
+        return round.Select(r => r.Part).ToList();
     }
 
     private string? GetStopReason(PaymentSession session)
@@ -1583,7 +1647,15 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                    .DeleteForPaymentAsync(session.PaymentHash);
         await repository.AddAsync(row);
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
+        var firstSave = !session.RowCreated;
         session.RowCreated = true;
+        if (firstSave && !session.IsTrampolineRelay)
+        {
+            var recorded = await repository.GetByPaymentHashAsync(session.PaymentHash) ?? row;
+            _paymentEventPublisher?.Publish(new PaymentStartedEvent(recorded.PaymentHash, recorded.Amount,
+                                                                    recorded.Bolt11, recorded.PaymentIndex ?? 0,
+                                                                    recorded.CreatedAt));
+        }
         session.NextPartIndex = 0;
         session.PrimaryPart = first;
     }
@@ -1608,6 +1680,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             // channel; any other (link down, HTLCs disabled, channel failed or shutting down, data loss, HTLC count)
             // refuses every HTLC on it, so it is not tried again
             part.Status = PaymentPartStatus.Failed;
+            part.ResolvedAt = _timeProvider.GetUtcNow();
             if (e is CommitmentRefusedException { RequirementId: var rule } && s_liquidityRules.Contains(rule))
                 session.Constraints.BoundLocalLiquidity(channelId, route.FirstHopAmount.MilliSatoshi);
             else if (e is CommitmentRefusedException { RequirementId: HtlcMinimumRule })
@@ -1632,6 +1705,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             if (FindUnrecordedPartHtlc(session, part) is not { } found)
             {
                 part.Status = PaymentPartStatus.Failed;
+                part.ResolvedAt = _timeProvider.GetUtcNow();
                 var reason = $"The HTLC could not be offered on channel {channelId}: {e.Message}";
                 part.Failure = (null, null, reason);
                 session.TerminalReason = reason;
@@ -1643,6 +1717,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         }
 
         part.HtlcId = htlcId;
+        part.OfferedAt = _timeProvider.GetUtcNow();
         await PersistPartAsync(session, part);
         if (ReferenceEquals(part, session.PrimaryPart))
             await RecordPrimaryHtlcAsync(session, part);
@@ -2092,6 +2167,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         await StagePaymentSucceededAsync(scope, payment, session.InFlightParts.Count());
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
         part?.Status = PaymentPartStatus.Succeeded;
+        part?.ResolvedAt = now;
         if (part is not null)
             _graphPathSource?.MissionControl.RecordSuccess(part.Route);
         LogSucceeded(payment);
@@ -2113,6 +2189,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         }
 
         part.Status = PaymentPartStatus.Failed;
+        part.ResolvedAt = _timeProvider.GetUtcNow();
         var (code, sourceIndex, reason, interpretation, attribution) = DescribeFailure(part.Hops, failed.Removal);
         bool retry;
         string note;
@@ -2140,7 +2217,14 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         // NL-1082: a manual payroute session never re-plans — the failure ends this route, mission control still
         // learns from it (the same Decide call), and the caller decides what is next
         if (session.ManualRoutes)
+        {
+            // NL-1276: as LND's SendToRouteV2 fails the payment (FailPayment) on a shard failure without
+            // skip_temp_err, and on a terminal failure (one the node would never retry) whatever the flag, the payment
+            // is failed pending: nothing more may attach, and it fails once its other parts are resolved
+            if (!retry || part.FailsPaymentOnFailure)
+                session.PendingFailure ??= reason;
             retry = false;
+        }
 
         session.LastFailureMessage = interpretation?.Message;
         session.LastFailure = (code, sourceIndex, $"{reason} ({note}).");
@@ -2161,6 +2245,9 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                                         attribution.IsPresent ? ToDurations(attribution) : null);
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
         }
+
+        // A payroute shard call waiting for its own routes answers now (NL-1276)
+        session.SignalPartsChanged();
 
         if (session.HasPartsInFlight)
         {

@@ -27,11 +27,30 @@ public interface IBitcoinChainService
         Task.FromResult(PackageSubmitResult.Unsupported("this chain service has no package relay"));
 
     /// <summary>
+    /// bitcoind's <c>submitpackage</c> of <paramref name="transactions"/> as given (parents first, the child last) with
+    /// its optional <c>maxfeerate</c> in BTC/kvB (0 = no limit), answered as bitcoind does: the package message, each
+    /// transaction's result by wtxid and the transactions package RBF replaced (LND's walletrpc <c>SubmitPackage</c>,
+    /// NL-1186). bitcoind's JSON-RPC errors are thrown (<c>RPCException</c>). The default supports no package.
+    /// </summary>
+    /// <exception cref="NotSupportedException">This chain service has no <c>submitpackage</c>.</exception>
+    Task<RawPackageSubmitResult> SubmitRawPackageAsync(IReadOnlyList<Transaction> transactions,
+                                                       decimal? maxFeeRateBtcPerKvb) =>
+        throw new NotSupportedException("this chain service has no package relay");
+
+    /// <summary>
     /// bitcoind's current mempool minimum feerate (<c>getmempoolinfo</c> <c>mempoolminfee</c>, BTC/kvB) in sat per
     /// 1000 weight units, rounded up: a transaction (or package) paying less is refused. Null when unknown; the default
     /// knows none.
     /// </summary>
     Task<uint?> GetMempoolMinFeeRatePerKwAsync() => Task.FromResult<uint?>(null);
+
+    /// <summary>
+    /// The mempool transactions spending each of <paramref name="outPoints"/> (<c>gettxspendingprevout</c>, Bitcoin
+    /// Core 24+ and rbitcoin; NL-1094): an entry per outpoint a mempool transaction spends, none for an unspent one or
+    /// one spent only on chain. Null when the node has no such call; the default knows none.
+    /// </summary>
+    Task<IReadOnlyDictionary<OutPoint, uint256>?> GetMempoolSpendersAsync(IReadOnlyCollection<OutPoint> outPoints) =>
+        Task.FromResult<IReadOnlyDictionary<OutPoint, uint256>?>(null);
 
     /// <summary>
     /// The block with <paramref name="blockHash"/>, also when it is no longer in the active chain (a disconnected

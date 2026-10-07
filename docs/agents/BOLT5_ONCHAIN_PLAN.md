@@ -184,6 +184,24 @@ All verified in code unless marked. "Gate" = the task that fixes it.
 4. **Resolve:** on each block the planner runs for every unresolved output of every closing channel; actions are persisted first, then broadcast (persist-before-broadcast, like I1), then switch events are raised after the save (idempotent, replayed at startup like the BOLT2 events).
 5. **Finish:** when every output is irrevocably resolved (100 blocks), the channel becomes `Closed`, its watches are dropped and its revoked-commitment log is deleted.
 
+
+**Passive LND observations (NL-1231):** the executor stages a durable
+`OnchainHtlcObservations` checkpoint in the same unit of work as each first known
+outgoing fulfill/fail and ordinary incoming terminal resolution. Only after the save
+and outside the channel lock does it publish to the passive HTLC source; operational
+switch callbacks still replay on every resolver round that needs recovery. The key is
+channel + HTLC direction + id + settled outcome, independent of a commitment txid or
+block. Reorgs and replacement closes retain it, so reconfirmation and restart do not
+relabel recovery as new activity; a later newly known preimage can publish a separate
+settle after a failure. Ordinary incoming finals report `Offchain=false`, with settled
+true for our confirmed claim and false for a peer timeout or an ignored output.
+Authoritatively identified dust-trimmed incoming HTLCs from the close's accounting
+metadata fail at `ReasonableDepth`. Missing metadata, unmapped/future data-loss outputs,
+revocation penalties and second-level sweeps never imply an invented ordinary incoming
+outcome. This is a live feed checkpoint, not an outbox or historical payload store;
+commit-before-fanout crashes can miss a notification, and prior notifications are not
+retracted by a reorg. ChainNotifier remains the chain fact feed. Validation on 2026-10-07: affected Application tests 1,697/1,697 and Integration 1,214/1,214; cluster proof `fixes-waves-proof1` passed all 35 inner tests and the real confirmed final-hop claim/same-database restart dedup check (`WAVES_ONCHAIN_RESTART_OK`). All test namespaces were cleaned.
+
 ### 3.3 Output descriptors per case
 Keys: *ours* = derived from our basepoint secrets (signer); *point* = the per-commitment point of the commitment on chain (ours for a local commitment, the peer's stored point for a remote one, `secret·G` for a revoked one).
 
@@ -411,6 +429,7 @@ Lane M1 chain safety (no migration); lane SHAs mapped to `wip/fafo` through the 
 - **O8 done, NL-098 fixed** (567197f/30fde1f, 7fde9bf/e2445a2, d51f6ec/8e8bacc, 99ba3ac/054b545): the chain monitor follows ZMQ `rawtx` on its own loop (`Bitcoin:WatchMempool`, default on) and raises `OnWatchedOutpointSpentInMempool` once per transaction (nothing saved or marked spent). `MempoolReactor` (`AddOnchainMempoolServices`, started before the chain monitor): a witness preimage of one of our offered HTLCs is staged into the record (`KnownPreimage`, one save under the channel lock) and `OutgoingHtlcFulfilled` goes to the switch at once; a funding spend is classified as the watcher does, and a revoked commitment gets its penalties prepared (`RevokedCommitResolver.PrepareUnconfirmedPenaltiesAsync`), stored as pending broadcasts and published. The watcher links a prepared penalty (also one mined in the same block as the commitment) as the resolving transaction, abandons one after `Node:Onchain:Mempool:EvictionGraceBlocks` (3) blocks without its commitment (counted only at bitcoind's tip) and revives it when the commitment returns or a resolver rebuilds it.
 - **NL-216 fixed** (567197f): `chainstatus` (`ClientCommand` 16); while halted the node refuses `openchannel`/`payinvoice`, a peer's `open_channel`, every HTLC offer and new final-hop acceptances; fulfills, fails, fee updates, closes and broadcasts continue.
 - **Proof** (d51f6ec): Docker `Onchain/OnchainMempoolTests` (a) upstream fulfilled from david's unconfirmed preimage claim, (b) the victim's penalty in the mempool behind k before any block, one block confirms both, no second penalty. Integration seam (2138eae): `OnchainO6Tests` (b) runs its victim with `WatchMempool = false` so its penalty stays unconfirmed until the restart; any proof that needs an unconfirmed penalty or claim behind a mempool commitment must do the same.
+- **O8 without ZMQ (NL-1094, 2026-10-06):** with `Bitcoin:Notifications=Poll` (a node without ZMQ, e.g. rbitcoin) blocks come from an RPC tip poll through the same block path, and the mempool reaction runs only with `Bitcoin:WatchMempool=true`, by polling `gettxspendingprevout` for the watched outputs (and the outputs of spenders it reported) every `Bitcoin:PollInterval`; a spender replaced or mined between two polls can be missed (blocks still see the spend). Proof: the `onchain` and `anchors` suites green with every test node in poll mode (`NLTG_CHAIN_NOTIFICATIONS=Poll`), `OnchainMempoolTests` and `AnchorsMempoolPenaltyTests` included.
 - Also this wave (lane A2): NL-067 first half, the signer reloads channel signing data from the DB (a49e166, 709030c, 910d085); `SignWalletTransaction` remains for O7-T1.
 
 Next (superseded by the G-B status line): O6-T4 after NL-311, NL-320, NL-337; follow-ups NL-307..NL-309, NL-312..NL-315, NL-318, NL-329, NL-330, NL-335, NL-336; O7 anchors (NL-314, NL-067 second half).

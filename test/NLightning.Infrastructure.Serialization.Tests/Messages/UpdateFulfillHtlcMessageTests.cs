@@ -19,7 +19,7 @@ public class UpdateFulfillHtlcMessageTests
     public UpdateFulfillHtlcMessageTests()
     {
         _fulfillHtlcMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<UpdateFulfillHtlcMessage>()!;
+            SerializerHelper.WireRegistry.Get<UpdateFulfillHtlcMessage>()!;
     }
 
     #region Deserialize

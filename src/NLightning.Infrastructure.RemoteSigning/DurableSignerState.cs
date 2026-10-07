@@ -147,7 +147,8 @@ public sealed class DurableSignerState : IDisposable
              && operation is not (SignerOperations.GetChannelBasepoints or SignerOperations.GetPerCommitmentPoint
                                   or SignerOperations.SignNodeMessage or SignerOperations.SignNodeMessageBip340
                                   or SignerOperations.SignLightningMessage or SignerOperations.VerifyNodeMessage
-                                  or SignerOperations.GetBolt12PayerId or SignerOperations.SignBolt12))
+                                  or SignerOperations.GetBolt12PayerId or SignerOperations.SignBolt12
+                                  or SignerOperations.ComputeSilentPaymentOutputs))
             {
                 var channel = SignerWire.Read<ChannelId>(args[0]);
                 if (_retired.Contains(channel))

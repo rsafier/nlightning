@@ -62,5 +62,15 @@ public enum BroadcastPurpose : byte
     /// resolution of our anchor as ours. Anyone may take anchors first, so it is never bumped and the chain monitor may
     /// abandon it after permanent refusals, like a wallet spend (nothing of the channel's safety depends on it).
     /// </summary>
-    AnchorSweep = 12
+    AnchorSweep = 12,
+
+    /// <summary>
+    /// A transaction that spends leased wallet outputs together with outputs of others, signed by the wallet through
+    /// LND's walletrpc PSBT methods (<c>FinalizePsbt</c> of a PSBT with foreign inputs) and published with
+    /// <c>PublishTransaction</c> (NL-1186). Rebroadcast until it confirms and abandoned after permanent refusals like a
+    /// <see cref="WalletSend"/>. Booked through its wallet movements and one <c>WalletSent</c> event of our net flow (our
+    /// spent inputs minus our outputs: transfers out, or in when the transaction pays us more than we put in), fee
+    /// unknown: its outputs to others are not all paid by us and its fee is shared.
+    /// </summary>
+    WalletCollaborative = 13
 }

@@ -146,6 +146,34 @@ public partial class PeerManagerTests
     }
 
     [Fact]
+    public async Task Given_InitPending_When_ConnectedAndDisconnected_Then_OnlyInitializedSessionPublishesEvents()
+    {
+        var manager = CreatePeerManager();
+        var changes = new List<PeerStateChangedEventArgs>();
+        manager.OnPeerStateChanged += (_, change) => changes.Add(change);
+        var initEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var init = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockPeerService.Setup(p => p.WaitForInitAsync(It.IsAny<CancellationToken>()))
+            .Returns((CancellationToken ct) =>
+            {
+                initEntered.SetResult();
+                return init.Task.WaitAsync(ct);
+            });
+        var connected = new ConnectedPeer(_compactPubKey, ExpectedHost, ExpectedPort, new Mock<TcpClient>().Object);
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>())).ReturnsAsync(connected);
+        var dialing = manager.ConnectToPeerAsync(new PeerAddressInfo($"{_compactPubKey}@127.0.0.1:9735"));
+        await initEntered.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+        Assert.Empty(changes);
+        init.SetResult();
+        await dialing;
+        Assert.True(Assert.Single(changes).Online);
+        _mockPeerService.Raise(p => p.OnDisconnect += null, new PeerDisconnectedEventArgs(_compactPubKey));
+        Assert.Equal([true, false], changes.Select(c => c.Online));
+        Assert.All(changes, change => Assert.Equal(_compactPubKey, change.PeerPubKey));
+        Assert.Empty(manager.ListPeers());
+    }
+
+    [Fact]
     public async Task Given_ValidPeerAddress_When_ConnectToPeerAsync_IsCalled_Then_PeerIsAdded()
     {
         // Given

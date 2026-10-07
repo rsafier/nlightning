@@ -71,7 +71,17 @@ public sealed class PayRouteClientHandler
     /// succeeded (<see cref="ErrorCodes.InvalidOperation"/>). Nothing was sent in those cases. Any other failure of
     /// the payment service is <see cref="ErrorCodes.ServerError"/>: the payment may be stored <c>InFlight</c> with its
     /// HTLCs offered, so the message asks the user to check <c>ListPayments</c>.</exception>
-    public async Task<PayRouteClientResponse> HandleAsync(PayRouteClientRequest request, CancellationToken ct)
+    public Task<PayRouteClientResponse> HandleAsync(PayRouteClientRequest request, CancellationToken ct) =>
+        HandleAsync(request, PayRouteAttachMode.Never, ct);
+
+    /// <summary>
+    /// <see cref="HandleAsync(PayRouteClientRequest, CancellationToken)"/> with the call's relation to a payment of the
+    /// hash in flight: <see cref="PayRouteAttachMode.Required"/> for <c>payroute --attach</c> (NL-1276, ClientCommand
+    /// 56), whose refusals (nothing in flight to attach to, a mismatched identity, too late) are
+    /// <see cref="ErrorCodes.InvalidOperation"/> with nothing sent.
+    /// </summary>
+    internal async Task<PayRouteClientResponse> HandleAsync(PayRouteClientRequest request, PayRouteAttachMode attach,
+                                                            CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
         var hasInvoice = !string.IsNullOrWhiteSpace(request.Bolt11);
@@ -96,7 +106,8 @@ public sealed class PayRouteClientHandler
             PaymentHash = request.PaymentHash,
             PaymentSecret = request.PaymentSecret,
             TotalAmount = request.TotalMsatMsat is { } totalMsat ? LightningMoney.MilliSatoshis(totalMsat) : null,
-            Routes = request.Routes.Select(ToServiceRoute).ToList()
+            Routes = request.Routes.Select(ToServiceRoute).ToList(),
+            Attach = attach
         };
         var options = new PayInvoiceOptions
         {

@@ -113,3 +113,12 @@ synchronous adapters do not persist pending envelopes or automatically reconcile
 node-database transitions. This API and its process-failure tests establish the
 signer boundary; automatic application recovery, external state freshness and cloned
 writer fencing remain separate work.
+
+
+FAFO integration at `e47ae080` adds remote wallet message signing, public deposit
+account metadata and silent-payment output derivation with the complete frozen
+reservation context. Silent-payment scanning/receiving and isolated key-ring/swap
+operations remain unsupported in remote mode. `SilentPayments:Enabled=true` is
+rejected at configuration checking and startup; private key-ring and silent-payment
+spend-key export methods throw. This does not restrict the local backend's upstream
+features.

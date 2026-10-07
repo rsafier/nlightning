@@ -36,6 +36,14 @@ public enum AccountingEventKind
     /// </summary>
     TrampolineRelaySettled = 7,
 
+    /// <summary>
+    /// A forward held for the HTLC interceptor (LND's <c>routerrpc.HtlcInterceptor</c>, NL-1183) was settled by the
+    /// interceptor with the preimage (NL-1182): the incoming HTLC was fulfilled without an outgoing leg, so its whole
+    /// amount is ours, received on behalf of whoever runs the interceptor (an LSP, a swap service). One event per incoming
+    /// HTLC; <c>AmountMsat</c> is the HTLC's amount. Booked as a payment received, like an invoice of ours.
+    /// </summary>
+    InterceptedHtlcSettled = 8,
+
     /// <summary>A channel's funding confirmed: our contribution moved from the wallet into the channel.</summary>
     ChannelFunded = 10,
 

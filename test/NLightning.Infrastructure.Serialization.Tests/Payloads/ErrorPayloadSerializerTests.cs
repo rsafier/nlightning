@@ -14,7 +14,7 @@ public class ErrorPayloadSerializerTests
     {
         // Given
         var errorMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ErrorMessage>()!;
+            SerializerHelper.WireRegistry.Get<ErrorMessage>()!;
         var errorPayload = new ErrorPayload(ChannelId.Zero);
         using var memoryStream = new MemoryStream();
 

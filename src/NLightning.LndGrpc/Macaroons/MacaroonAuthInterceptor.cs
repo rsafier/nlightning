@@ -59,6 +59,9 @@ internal sealed class MacaroonAuthInterceptor : Interceptor
 
     private void Authorize(ServerCallContext context)
     {
+        // LND exposes State before the wallet and macaroon service are unlocked.
+        if (context.Method is "/lnrpc.State/GetState" or "/lnrpc.State/SubscribeState")
+            return;
         var required = LndPermissions.ForMethod(context.Method)
                     ?? throw new RpcException(new Status(StatusCode.PermissionDenied,
                                                          "unknown permissions required for method"));

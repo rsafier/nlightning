@@ -32,4 +32,10 @@ public interface IMessageService : IDisposable
     /// Gets a value indicating whether the transport service is connected.
     /// </summary>
     bool IsConnected { get; }
+
+    /// <summary>The bytes the connection wrote so far (its transport's count; 0 when it keeps none).</summary>
+    long BytesSent => 0;
+
+    /// <summary>The bytes the connection read so far (its transport's count; 0 when it keeps none).</summary>
+    long BytesReceived => 0;
 }

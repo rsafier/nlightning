@@ -12,9 +12,11 @@ using Application.Onchain.Anchors;
 using Application.Onchain.Resolvers.Local;
 using Channels.Services;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -28,6 +30,7 @@ using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Models;
 using Infrastructure.Bitcoin;
 using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Builders.Interfaces;
@@ -63,6 +66,7 @@ public sealed class AnchorPeerCpfpTests : IDisposable
     private ILightningSigner _signer;
     private ServiceProvider _provider;
     private ChannelCloseModel? _close;
+    private IReadOnlyList<ShachainEntry> _remoteShachain = [];
     private uint _estimate = 10_000;
 
     private delegate bool TryGetChannelCallback(ChannelId channelId, out ChannelModel? channel);
@@ -168,6 +172,67 @@ public sealed class AnchorPeerCpfpTests : IDisposable
             Assert.Equal(2, i.WitScript.PushCount);
         });
         AnchorTx.AssertAllScriptsValid(sweep, peer, _wallet);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_PeersRevokedTaprootCommitmentConfirmed_When_Swept_Then_HisAnchorFoundFromTheRevealedSecret(
+        bool secretHeld)
+    {
+        // Arrange (NL-1050): Bob broadcast a taproot commitment he has since revoked; its point is neither his current
+        // nor his next one, so his anchor (keyed to his local_delayedpubkey of that commitment) is found only from the
+        // secret he revealed, which our copy of his shachain holds
+        UseSimpleTaproot();
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), HtlcExpiry);
+        _pair.Settle(_pair.Alice);
+        var old = _pair.Alice.State.RemoteCommit;
+        var number = old.Number;
+        _pair.Add(_pair.Alice, 15_000_000, RealSigningCommitmentPair.Preimage(2), HtlcExpiry);
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        Assert.True(_pair.Alice.State.RemoteCommit.Number > number);
+        Assert.True(_pair.Alice.State.RemoteNextCommit is null);
+
+        // Bob's revoked commitment as it went on chain (its outputs are what the sweep reads; left unsigned here)
+        var model = _provider.GetRequiredService<ICommitmentTransactionModelFactory>()
+                             .CreateCommitmentTransactionModel(_channel, CommitmentTxSpec.FromCommitmentSpec(old.Spec),
+                                                               CommitmentSide.Remote, number, old.PerCommitmentPoint);
+        var revoked = Transaction.Load(_provider.GetRequiredService<ICommitmentTransactionBuilder>().Build(model)
+                                                .RawTxBytes, Network.Main);
+        _chain.Transactions[revoked.GetHash()] = revoked;
+        if (secretHeld)
+        {
+            using var storage = new SecretStorageServiceFactory().CreatePerCommitmentStorage();
+            storage.InsertSecret(_pair.Bob.Signer.RevealPerCommitmentSecret(RealSigningCommitmentPair.ChannelId, number),
+                                 PerCommitmentIndex.From(number));
+            _remoteShachain = storage.Export();
+        }
+
+        Confirm(revoked, 510, ChannelCloseKind.RevokedCommitment, number);
+        var block = Network.Main.Consensus.ConsensusFactory.CreateBlock();
+        block.Transactions.Add(revoked);
+        _chain.Blocks[510] = block;
+        _estimate = 253;
+
+        // Act
+        await Service.RunOnceAsync(525, TestContext.Current.CancellationToken);
+
+        // Assert: both anchors by the leaf with the secret; ours alone without it (a lone anchor is not economical)
+        if (!secretHeld)
+        {
+            Assert.Empty(_sweeps);
+            return;
+        }
+
+        var sweep = Transaction.Load(Assert.Single(_sweeps).RawTxBytes, Network.Main);
+        Assert.Equal(2, sweep.Inputs.Count);
+        Assert.All(sweep.Inputs, i =>
+        {
+            Assert.Equal(revoked.GetHash(), i.PrevOut.Hash);
+            Assert.Equal(16u, i.Sequence.Value);
+        });
+        AnchorTx.AssertAllScriptsValid(sweep, revoked, _wallet);
     }
 
     [Fact]
@@ -657,6 +722,9 @@ public sealed class AnchorPeerCpfpTests : IDisposable
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.BroadcastTransactionDbRepository).Returns(_store);
         unitOfWork.SetupGet(u => u.OnchainResolutionDbRepository).Returns(_resolutions.Object);
+        var shachain = new Mock<IRemoteShachainDbRepository>();
+        shachain.Setup(r => r.GetByChannelIdAsync(It.IsAny<ChannelId>())).ReturnsAsync(() => _remoteShachain);
+        unitOfWork.SetupGet(u => u.RemoteShachainDbRepository).Returns(shachain.Object);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {
             _store.Saves++;
@@ -689,6 +757,7 @@ public sealed class AnchorPeerCpfpTests : IDisposable
         services.AddSingleton(destination.Object);
         services.AddSingleton<IAnchorFeeInputSource>(_wallet);
         services.AddSingleton(new SweepFeePolicy());
+        services.AddSingleton<ISecretStorageServiceFactory, SecretStorageServiceFactory>();
         services.AddScoped(_ => unitOfWork.Object);
         services.AddAnchorCpfpServices();
         var provider = services.BuildServiceProvider();
@@ -733,11 +802,12 @@ public sealed class AnchorPeerCpfpTests : IDisposable
     }
 
     /// <summary>The watcher recorded Bob's commitment confirmed at <paramref name="height"/>.</summary>
-    private void Confirm(Transaction peer, uint height)
+    private void Confirm(Transaction peer, uint height, ChannelCloseKind kind = ChannelCloseKind.RemoteCommitment,
+                         ulong? number = null)
     {
-        _close = new ChannelCloseModel(_channel.ChannelId, ChannelCloseKind.RemoteCommitment,
-                                       new TxId(peer.GetHash().ToBytes()), _pair.Alice.State.RemoteCommit.Number,
-                                       height, new Hash(new byte[32]), DateTimeOffset.UtcNow);
+        _close = new ChannelCloseModel(_channel.ChannelId, kind, new TxId(peer.GetHash().ToBytes()),
+                                       number ?? _pair.Alice.State.RemoteCommit.Number, height,
+                                       new Hash(new byte[32]), DateTimeOffset.UtcNow);
         if (_channel.State != ChannelState.Failed)
             _channel.UpdateState(ChannelState.Failed);
         _channel.UpdateState(ChannelState.OnchainResolving);

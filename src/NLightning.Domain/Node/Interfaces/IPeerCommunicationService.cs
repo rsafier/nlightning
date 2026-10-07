@@ -24,6 +24,21 @@ public interface IPeerCommunicationService : IDisposable
     /// </summary>
     DateTimeOffset? LastMessageReceivedAt { get; }
 
+    /// <summary>When this connection was made (UTC), or null when unknown.</summary>
+    DateTimeOffset? ConnectedAt => null;
+
+    /// <summary>The bytes this connection wrote so far.</summary>
+    long BytesSent => 0;
+
+    /// <summary>The bytes this connection read so far.</summary>
+    long BytesReceived => 0;
+
+    /// <summary>The round trip of our latest answered ping, or null before the first pong.</summary>
+    TimeSpan? PingRoundTrip => null;
+
+    /// <summary>The <c>ignored</c> bytes of the latest ping the peer sent us (empty before one).</summary>
+    ReadOnlyMemory<byte> LastPeerPingPayload => ReadOnlyMemory<byte>.Empty;
+
     /// <summary>
     /// Sends a <c>ping</c> (or joins the one in flight) and waits for its <c>pong</c>. A timeout closes the
     /// connection (BOLT 1 MAY).

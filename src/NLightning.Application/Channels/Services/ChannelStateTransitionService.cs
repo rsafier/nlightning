@@ -15,6 +15,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Payments.Keysend;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -23,6 +24,7 @@ using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Domain.Serialization.Interfaces;
 using Interfaces;
+using Payments.Events;
 using Quiescence;
 using Taproot;
 
@@ -63,6 +65,7 @@ public sealed class ChannelStateTransitionService
     private readonly ISecretStorageServiceFactory _secretStorageServiceFactory;
     private readonly IStfuReleaseScheduler? _stfuReleaseScheduler;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly HtlcEventMonitor? _htlcMonitor;
 
     public ChannelStateTransitionService(IChannelMemoryRepository channelMemoryRepository,
                                          ChannelDomainEventQueue eventQueue, ICommitmentSigner commitmentSigner,
@@ -72,8 +75,9 @@ public sealed class ChannelStateTransitionService
                                          ISecretStorageServiceFactory secretStorageServiceFactory,
                                          IUnitOfWork unitOfWork, IStfuReleaseScheduler? stfuReleaseScheduler = null,
                                          ICommitmentVerifier? commitmentVerifier = null,
-                                         ICommitScheduler? commitScheduler = null)
+                                         ICommitScheduler? commitScheduler = null, HtlcEventMonitor? htlcMonitor = null)
     {
+        _htlcMonitor = htlcMonitor;
         _stfuReleaseScheduler = stfuReleaseScheduler;
         _commitmentVerifier = commitmentVerifier;
         _commitScheduler = commitScheduler;
@@ -203,6 +207,7 @@ public sealed class ChannelStateTransitionService
         channel.UpdateCommitments(result.Next, extras);
         _channelMemoryRepository.UpdateChannel(channel);
         _eventQueue.Enqueue(result.Events);
+        _htlcMonitor?.ObserveCommitted(channel, result);
         _stfuReleaseScheduler?.ScheduleRelease(channel.ChannelId);
     }
 
@@ -484,11 +489,13 @@ public sealed class ChannelStateTransitionService
         var channelId = channel.ChannelId;
         return outbound switch
         {
-            OutboundAddHtlc { Htlc: var htlc } when htlc.PathKey is { } pathKey =>
+            // NL-1182: the add's custom records (an interceptor's RESUME_MODIFIED) go out with every transmission
+            OutboundAddHtlc { Htlc: var htlc } when htlc.PathKey is not null || !htlc.WireCustomRecords.IsEmpty =>
                 new UpdateAddHtlcMessage(new UpdateAddHtlcPayload(LightningMoney.MilliSatoshis(htlc.AmountMsat), channelId,
                                                                   htlc.CltvExpiry, htlc.Id, htlc.PaymentHash,
                                                                   htlc.OnionRoutingPacket),
-                                         new BlindedPathTlv(pathKey)),
+                                         htlc.PathKey is { } pathKey ? new BlindedPathTlv(pathKey) : null,
+                                         WireCustomRecordCodec.Decode(htlc.WireCustomRecords)),
             OutboundAddHtlc { Htlc: var htlc } =>
                 _messageFactory.CreateUpdateAddHtlcMessage(channelId, htlc.Id, htlc.AmountMsat, htlc.PaymentHash,
                                                            htlc.CltvExpiry, htlc.OnionRoutingPacket),

@@ -5,9 +5,13 @@ using NBitcoin;
 
 namespace NLightning.Infrastructure.Bitcoin.Wallet;
 
+using Crypto.SilentPayments;
+using Domain.Accounting.Labels;
 using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.SilentPayments;
+using Domain.Bitcoin.SilentPayments.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Constants;
 using Domain.Bitcoin.Wallet.Interfaces;
@@ -60,6 +64,7 @@ public sealed class WalletSpendService : IWalletSpendService
     /// </summary>
     internal const int BaseWeight = (4 + 4 + 1 + 1) * 4 + 2;
 
+    private readonly IWalletPsbtService? _psbt;
     private readonly IAnchorReserveService _anchorReserveService;
     private readonly IBitcoinChainService? _bitcoinChainService;
     private readonly IBlockchainMonitor _blockchainMonitor;
@@ -69,6 +74,10 @@ public sealed class WalletSpendService : IWalletSpendService
     private readonly ILightningSigner _lightningSigner;
     private readonly ILogger<WalletSpendService> _logger;
     private readonly Network _network;
+    private readonly Domain.Protocol.ValueObjects.BitcoinNetwork _bitcoinNetwork;
+    private readonly SilentPaymentsOptions _silentPayments;
+    private readonly ISilentPaymentCrypto _silentPaymentCrypto;
+    private readonly ISilentPaymentKeySource? _silentPaymentKeys;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
 
@@ -76,8 +85,16 @@ public sealed class WalletSpendService : IWalletSpendService
                               IUtxoMemoryRepository utxoMemoryRepository, ILightningSigner lightningSigner,
                               IBlockchainMonitor blockchainMonitor, IFeeService feeService,
                               IServiceScopeFactory scopeFactory, IOptions<NodeOptions> nodeOptions,
-                              ILogger<WalletSpendService> logger, IBitcoinChainService? bitcoinChainService = null)
+                              ILogger<WalletSpendService> logger, IBitcoinChainService? bitcoinChainService = null,
+                              IWalletPsbtService? psbt = null, IOptions<SilentPaymentsOptions>? silentPayments = null,
+                              ISilentPaymentCrypto? silentPaymentCrypto = null,
+                              ISilentPaymentKeySource? silentPaymentKeys = null)
     {
+        _psbt = psbt;
+        _silentPayments = silentPayments?.Value ?? new SilentPaymentsOptions();
+        _silentPaymentCrypto = silentPaymentCrypto ?? new SilentPaymentCrypto();
+        _silentPaymentKeys = silentPaymentKeys;
+        _bitcoinNetwork = nodeOptions.Value.BitcoinNetwork;
         _feeInputSelector = feeInputSelector;
         _anchorReserveService = anchorReserveService;
         _utxoMemoryRepository = utxoMemoryRepository;
@@ -91,6 +108,36 @@ public sealed class WalletSpendService : IWalletSpendService
     }
 
     /// <inheritdoc />
+    public async Task<byte[]> SendOutputsAsync(IReadOnlyList<(BitcoinScript Script, LightningMoney Amount)> outputs,
+                                               long feeRatePerKw, int minConfirmations, string label,
+                                               CancellationToken cancellationToken = default)
+    {
+        var psbt = _psbt ?? throw new NotSupportedException("No wallet PSBT service.");
+        if (outputs.Count is 0 or > 100 || minConfirmations < 1 || label.Length > 500)
+            throw new ArgumentException("Invalid output count, confirmations or label.");
+        var rate = await GetFeeRatePerKwAsync(LightningMoney.Satoshis(feeRatePerKw), cancellationToken);
+        var lockId = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+        var funded = await psbt.FundPsbtAsync(new PsbtFundRequest(outputs, [], rate, minConfirmations, lockId,
+            TimeSpan.FromMinutes(10)), cancellationToken);
+        PsbtFinalizeResult final;
+        try
+        {
+            final = await psbt.FinalizePsbtAsync(funded.Psbt, cancellationToken);
+        }
+        catch
+        {
+            foreach (var lease in funded.Leases)
+                await psbt.ReleaseAsync(lockId, lease.TxId, lease.Index, CancellationToken.None);
+            throw;
+        }
+        // PublishAsync persists the accepted wallet transaction and keeps the leases until its inputs are spent.
+        // On an ambiguous publish failure retain the leases: releasing could enable a conflicting wallet spend.
+        if (!await psbt.PublishAsync(final.RawFinalTx, label, cancellationToken))
+            throw new InvalidOperationException("Wallet transaction publication was rejected.");
+        return final.RawFinalTx;
+    }
+
+    /// <inheritdoc />
     public async Task<WalletWithdrawResult> WithdrawAsync(WalletWithdrawRequest request,
                                                           CancellationToken cancellationToken = default)
     {
@@ -100,6 +147,16 @@ public sealed class WalletSpendService : IWalletSpendService
             throw new WalletSpendException(WalletSpendError.ChainProcessingHalted,
                                            ChainProcessingHalt.Refusal("withdraw"));
 
+        if (IsSilentPaymentAddress(request.Address))
+        {
+            if (request.Inputs is { Count: > 0 })
+                throw new WalletSpendException(WalletSpendError.InputUnavailable,
+                                               "Choosing the inputs of a payment to a silent payment address is not "
+                                             + "supported; withdraw to an ordinary address.");
+
+            return await SendAsync([new WalletRecipient(request.Address, request.Amount)], request.FeeRatePerKw,
+                                   request.MaxFee, request.Labels, cancellationToken);
+        }
         var destination = ParseAddress(request.Address, _network).ScriptPubKey;
         var feeRatePerKw = await GetFeeRatePerKwAsync(request.FeeRatePerKw, cancellationToken);
 
@@ -119,21 +176,193 @@ public sealed class WalletSpendService : IWalletSpendService
     }
 
     /// <inheritdoc />
-    public async Task<WalletWithdrawEstimate> EstimateWithdrawFeeAsync(WalletWithdrawRequest request,
+    public async Task<WalletWithdrawResult> SendAsync(IReadOnlyList<WalletRecipient> recipients,
+                                                     LightningMoney? feeRatePerKw = null,
+                                                     LightningMoney? maxFee = null, SourceLabels? labels = null,
+                                                     CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(recipients);
+        if (recipients.Count is 0 or > 100 || (recipients.Count > 1 && recipients.Any(r => r.Amount is null)))
+            throw new ArgumentException("Send needs 1 to 100 recipients; send-all needs a single recipient.", nameof(recipients));
+        if (_blockchainMonitor.IsChainProcessingHalted)
+            throw new WalletSpendException(WalletSpendError.ChainProcessingHalted, ChainProcessingHalt.Refusal("withdraw"));
+        var addresses = recipients.ToArray();
+        var destinations = new Script[addresses.Length];
+        var silentAddresses = new List<SilentPaymentAddress>();
+        var silentIndices = new List<int>();
+        for (var i = 0; i < addresses.Length; i++)
+        {
+            var recipient = addresses[i];
+            if (IsSilentPaymentAddress(recipient.Address))
+            {
+                var silent = ParseSilentPayment(recipient.Address);
+                silentAddresses.Add(silent);
+                silentIndices.Add(i);
+                destinations[i] = new Script(new byte[] { 0x51, 0x20 }.Concat(new byte[32]).ToArray());
+            }
+            else
+                destinations[i] = ParseAddress(recipient.Address, _network).ScriptPubKey;
+            var minimum = silentIndices.Contains(i) ? Math.Max(330, _silentPayments.MinSendSat)
+                                                    : GetDustThreshold(destinations[i]);
+            if (recipient.Amount is { } amount && (amount.MilliSatoshi % 1000 != 0 || amount.Satoshi < minimum))
+                throw new WalletSpendException(WalletSpendError.DustAmount, $"Recipient amount must be whole satoshis and at least {minimum} sat.");
+        }
+        var rate = await GetFeeRatePerKwAsync(feeRatePerKw, cancellationToken);
+        var silentChange = silentAddresses.Count > 0 && _silentPayments.ChangeToSilentPayment;
+        if (silentChange && (!_silentPayments.Receive || _silentPaymentKeys is null))
+            throw new WalletSpendException(WalletSpendError.InvalidAddress,
+                "Silent payment change requires Receive=true and the local silent payment keys.");
+        var policy = new WalletSelectionPolicy(silentAddresses.Count > 0, silentAddresses.Count > 0,
+            _silentPayments.AvoidMixing, silentChange, Math.Max(330, _silentPayments.MinReceiveSat));
+        var extraWeight = BaseWeight + destinations.Sum(GetOutputWeight);
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await EndStaleReservationsLockedAsync(cancellationToken);
+            var reserve = _anchorReserveService.GetRequiredReserve();
+            var amounts = addresses.Select(r => r.Amount?.Satoshi ?? 0).ToArray();
+            if (addresses[0].Amount is null)
+                amounts[0] = await GetSendAllAmountAsync(extraWeight, rate, reserve,
+                    silentAddresses.Count > 0 ? Math.Max(330, _silentPayments.MinSendSat) : GetDustThreshold(destinations[0]),
+                    policy.PreferP2TrChange);
+            var total = checked(amounts.Sum());
+            var reservation = await _feeInputSelector.ReserveAsync(LightningMoney.Satoshis(total),
+                LightningMoney.Satoshis(rate), extraWeight, ReservationPurpose, policy, cancellationToken);
+            var stored = false;
+            try
+            {
+                await EnsureReserveKeptAsync(reservation, total, cancellationToken);
+                var frozenInputs = reservation.Inputs.Select(i => (i.TxId, i.Index)).ToArray();
+                Script? silentChangeScript = null;
+                var deriveSilentChange = policy.ChangeToSilentPayment &&
+                    reservation.ChangeAmount.Satoshi >= policy.MinimumSilentChangeSat;
+                if (deriveSilentChange)
+                    silentAddresses.Add(GetSilentPaymentChangeAddress());
+                if (policy.SilentPaymentSend)
+                {
+                    if (reservation.Inputs.Count == 0 || reservation.Inputs.Any(i =>
+                        i.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr)))
+                        throw new WalletSpendException(WalletSpendError.InvalidAddress, "Silent payment requires eligible wallet inputs.");
+                    var scripts = _lightningSigner.ComputeSilentPaymentOutputs(reservation.Id, silentAddresses.ToArray(), frozenInputs);
+                    if (scripts.Count != silentIndices.Count + (deriveSilentChange ? 1 : 0))
+                        throw new InvalidOperationException("Signer returned an incorrect silent payment output count.");
+                    for (var i = 0; i < scripts.Count; i++)
+                    {
+                        var script = (byte[])scripts[i];
+                        if (script.Length != 34 || script[0] != 0x51 || script[1] != 0x20)
+                            throw new InvalidOperationException("Signer returned an invalid silent payment output.");
+                        if (i < silentIndices.Count)
+                            destinations[silentIndices[i]] = new Script(script);
+                        else
+                            silentChangeScript = new Script(script);
+                    }
+                }
+                var signed = BuildAndSign(reservation, destinations.Zip(amounts, (script, amount) =>
+                    (Script: script, AmountSat: amount)).ToArray(), frozenInputs, silentChangeScript,
+                    shuffleOutputs: policy.SilentPaymentSend);
+                var fee = reservation.Total.Satoshi - total - reservation.ChangeAmount.Satoshi;
+                if (maxFee is not null && LightningMoney.Satoshis(fee) > maxFee)
+                    throw new WalletSpendException(WalletSpendError.FeeAboveLimit, "The transaction fee exceeds the requested maximum.");
+                labels ??= SourceLabels.None;
+                var row = new BroadcastTransactionModel(signed.Signed, BroadcastPurpose.WalletSend, null,
+                    _blockchainMonitor.LastProcessedBlockHeight, (uint)rate, fee: LightningMoney.Satoshis(fee))
+                {
+                    Label = labels.Label,
+                    Tags = labels.CanonicalTags
+                };
+                bool published;
+                try
+                {
+                    published = await _blockchainMonitor.SaveAndPublishAsync(row);
+                    stored = true;
+                }
+                catch
+                {
+                    stored = await IsStoredAsync(row.TransactionId);
+                    throw;
+                }
+                return new WalletWithdrawResult(signed.Signed.TxId, LightningMoney.Satoshis(total),
+                    LightningMoney.Satoshis(fee), reservation.ChangeAmount, LightningMoney.Satoshis(rate),
+                    GetWeight(signed.Transaction), reservation.Inputs.Count, reserve, published)
+                {
+                    DestinationOutputIndex = checked((uint)signed.Transaction.Outputs.ToList().FindIndex(output =>
+                        output.Value.Satoshi == amounts[0] && output.ScriptPubKey == destinations[0]))
+                };
+            }
+            catch
+            {
+                if (!stored)
+                    await _feeInputSelector.ReleaseAsync(reservation.Id, CancellationToken.None);
+                throw;
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private SilentPaymentAddress GetSilentPaymentChangeAddress()
+    {
+        var keys = _silentPaymentKeys ?? throw new InvalidOperationException("Silent payment change keys are unavailable.");
+        if (!_silentPaymentCrypto.TrySumPublicKeys([keys.SpendPubKey, keys.GetLabelPoint(0)], out var labeledSpend))
+            throw new InvalidOperationException("Silent payment change label produces an invalid public key.");
+        return new SilentPaymentAddress(0, keys.ScanPubKey, labeledSpend, SilentPaymentAddressCodec.GetHrp(_bitcoinNetwork));
+    }
+
+    private static bool IsSilentPaymentAddress(string? text) => text is not null &&
+        (text.StartsWith("sp1", StringComparison.OrdinalIgnoreCase) ||
+         text.StartsWith("tsp1", StringComparison.OrdinalIgnoreCase) ||
+         text.StartsWith("sprt1", StringComparison.OrdinalIgnoreCase));
+
+    private SilentPaymentAddress ParseSilentPayment(string text)
+    {
+        if (!_silentPayments.Enabled || !_silentPayments.Send)
+            throw new WalletSpendException(WalletSpendError.InvalidAddress, "Silent payment sending is disabled.");
+        if (_bitcoinNetwork.Name == "mainnet" && !_silentPayments.AllowMainnet)
+            throw new WalletSpendException(WalletSpendError.InvalidAddress, "Silent payment sending on mainnet requires AllowMainnet.");
+        if (!SilentPaymentAddressCodec.TryDecode(text, _bitcoinNetwork, out var address, out var reason))
+            throw new WalletSpendException(WalletSpendError.InvalidAddress, reason);
+        if (!_silentPaymentCrypto.IsValidPoint(address.ScanKey) || !_silentPaymentCrypto.IsValidPoint(address.SpendKey))
+            throw new WalletSpendException(WalletSpendError.InvalidAddress, "Silent payment address contains an invalid curve point.");
+        return address;
+    }
+
+    /// <inheritdoc />
+    public Task<WalletWithdrawEstimate> EstimateWithdrawFeeAsync(WalletWithdrawRequest request,
                                                                        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (request.Amount is not { } requested)
             throw new ArgumentException("An estimate needs an amount.", nameof(request));
 
-        var destination = ParseAddress(request.Address, _network).ScriptPubKey;
+        Script destination;
+        if (IsSilentPaymentAddress(request.Address))
+        {
+            ParseSilentPayment(request.Address);
+            if (requested.Satoshi < _silentPayments.MinSendSat)
+                throw new WalletSpendException(WalletSpendError.DustAmount, "Silent payment amount is below MinSendSat.");
+            destination = new Script(new byte[] { 0x51, 0x20 }.Concat(new byte[32]).ToArray());
+        }
+        else
+            destination = ParseAddress(request.Address, _network).ScriptPubKey;
+        return EstimateOutputFeeAsync(destination.ToBytes(), requested, request.FeeRatePerKw, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<WalletWithdrawEstimate> EstimateOutputFeeAsync(BitcoinScript script, LightningMoney requested,
+        LightningMoney? requestedFeeRate, CancellationToken cancellationToken = default)
+    {
+        var destination = new Script((byte[])script);
+        if (script.Length is 0 or > 10_000)
+            throw new ArgumentException("Invalid quote script size.");
         var dustLimit = GetDustThreshold(destination);
         if (requested.MilliSatoshi % 1_000 != 0 || requested.Satoshi < dustLimit)
             throw new WalletSpendException(WalletSpendError.DustAmount,
                                            $"{requested.MilliSatoshi / 1_000.0:0.###} sat is not a whole amount at or "
                                          + $"above the dust limit of the destination ({dustLimit} sat).");
 
-        var feeRatePerKw = await GetFeeRatePerKwAsync(request.FeeRatePerKw, cancellationToken);
+        var feeRatePerKw = await GetFeeRatePerKwAsync(requestedFeeRate, cancellationToken);
         var amountSat = requested.Satoshi;
         var weight = BaseWeight + GetOutputWeight(destination) + WalletWeights.P2WpkhOutputWeight;
         long totalSat = 0;
@@ -188,14 +417,39 @@ public sealed class WalletSpendService : IWalletSpendService
                                                $"{amountSat} sat is below the dust limit of the destination "
                                              + $"({dustLimit} sat).");
         }
+        else if (request.Inputs is { Count: > 0 } chosen)
+        {
+            // NL-1296: everything in the chosen outputs minus the fee, no change; the anchors reserve stays backed by
+            // the other outputs (checked below)
+            amountSat = await GetSendAllAmountOfInputsAsync(chosen, extraWeight, feeRatePerKw, dustLimit);
+        }
         else
         {
             amountSat = await GetSendAllAmountAsync(extraWeight, feeRatePerKw, reserve, dustLimit);
         }
 
-        var reservation = await _feeInputSelector.ReserveAsync(LightningMoney.Satoshis(amountSat),
-                                                               LightningMoney.Satoshis(feeRatePerKw), extraWeight,
-                                                               ReservationPurpose, cancellationToken);
+        // NL-1296: with explicit inputs exactly those are spent, silent payment coins included (the opt-in that
+        // SilentPayments:AvoidMixing otherwise keeps them out of a withdraw that does not need them)
+        var reservation = request.Inputs is { Count: > 0 } inputs
+                              ? await _feeInputSelector.ReserveAsync(LightningMoney.Satoshis(amountSat),
+                                                                     LightningMoney.Satoshis(feeRatePerKw),
+                                                                     extraWeight, ReservationPurpose,
+                                                                     WalletSelectionPolicy.Default with
+                                                                     {
+                                                                         Inputs = inputs
+                                                                     }, cancellationToken)
+                              : await _feeInputSelector.ReserveAsync(LightningMoney.Satoshis(amountSat),
+                                                                     LightningMoney.Satoshis(feeRatePerKw),
+                                                                     extraWeight, ReservationPurpose,
+                                                                     cancellationToken);
+        if (request.Inputs is { Count: > 0 }
+         && !reservation.Inputs.Select(i => (i.TxId, i.Index)).SequenceEqual(request.Inputs))
+        {
+            // A selector that ignores the chosen inputs (the interface default) must never spend other coins
+            await _feeInputSelector.ReleaseAsync(reservation.Id, CancellationToken.None);
+            throw new WalletSpendException(WalletSpendError.InputUnavailable,
+                                           "The wallet could not reserve exactly the chosen inputs.");
+        }
         var stored = false;
         try
         {
@@ -374,13 +628,13 @@ public sealed class WalletSpendService : IWalletSpendService
     /// reserve, the reserve (at least a non-dust change output) that returns as change.
     /// </summary>
     private async Task<long> GetSendAllAmountAsync(int extraWeight, long feeRatePerKw, LightningMoney reserve,
-                                                   long dustLimit)
+                                                   long dustLimit, bool preferP2TrChange = false)
     {
         var candidates = await GetSpendableOutputsAsync();
         var totalSat = candidates.Sum(c => c.AmountSat);
-        var keepSat = reserve.IsZero ? 0 : Math.Max(reserve.Satoshi, WalletWeights.P2WpkhDustLimitSat);
+        var keepSat = reserve.IsZero ? 0 : Math.Max(reserve.Satoshi, preferP2TrChange ? 330 : WalletWeights.P2WpkhDustLimitSat);
         var weight = extraWeight + candidates.Sum(c => (long)c.InputWeight)
-                   + (keepSat > 0 ? WalletWeights.P2WpkhOutputWeight : 0);
+                   + (keepSat > 0 ? (preferP2TrChange ? 172 : WalletWeights.P2WpkhOutputWeight) : 0);
         var feeSat = FeeSat(feeRatePerKw, weight);
         var amountSat = totalSat - feeSat - keepSat;
         if (amountSat >= dustLimit)
@@ -398,10 +652,49 @@ public sealed class WalletSpendService : IWalletSpendService
     }
 
     /// <summary>
+    /// "All" of the chosen outputs (NL-1296): their whole value minus the fee of spending exactly them to the
+    /// destination, with no change output.
+    /// </summary>
+    private async Task<long> GetSendAllAmountOfInputsAsync(IReadOnlyList<(TxId TxId, uint Index)> chosen,
+                                                           int extraWeight, long feeRatePerKw, long dustLimit)
+    {
+        var spendable = (await GetSpendableUtxosAsync()).ToDictionary(u => (u.TxId, u.Index));
+        long totalSat = 0;
+        long weight = extraWeight;
+        var seen = new HashSet<(TxId, uint)>();
+        foreach (var outpoint in chosen)
+        {
+            if (!seen.Add(outpoint))
+                throw new WalletSpendException(WalletSpendError.InputUnavailable,
+                                               $"Input {outpoint.TxId}:{outpoint.Index} is listed twice.");
+            if (!spendable.TryGetValue(outpoint, out var utxo))
+                throw new WalletSpendException(WalletSpendError.InputUnavailable,
+                                               $"Input {outpoint.TxId}:{outpoint.Index} is not a spendable wallet "
+                                             + "output: unknown, not mined, locked to a channel, reserved or spent by a "
+                                             + "pending broadcast.");
+            totalSat += utxo.Amount.Satoshi;
+            weight += WalletWeights.GetInputWeight(utxo.AddressType);
+        }
+
+        var feeSat = FeeSat(feeRatePerKw, weight);
+        var amountSat = totalSat - feeSat;
+        if (amountSat >= dustLimit)
+            return amountSat;
+
+        throw new InsufficientFundsException(LightningMoney.Satoshis(feeSat + dustLimit),
+                                             LightningMoney.Satoshis(totalSat));
+    }
+
+    /// <summary>
     /// The outputs <see cref="FeeInputSelector"/> would consider: unreserved, mined, of a known P2WPKH or P2TR wallet
     /// address, and not spent by one of our pending broadcasts.
     /// </summary>
-    private async Task<List<(long AmountSat, int InputWeight)>> GetSpendableOutputsAsync()
+    private async Task<List<(long AmountSat, int InputWeight)>> GetSpendableOutputsAsync() =>
+        (await GetSpendableUtxosAsync())
+       .Select(utxo => (utxo.Amount.Satoshi, WalletWeights.GetInputWeight(utxo.AddressType)))
+       .ToList();
+
+    private async Task<List<UtxoModel>> GetSpendableUtxosAsync()
     {
         HashSet<(TxId TxId, uint Index)> excluded;
         using (var scope = _scopeFactory.CreateScope())
@@ -410,14 +703,14 @@ public sealed class WalletSpendService : IWalletSpendService
             excluded = await PendingBroadcastOutpoints.GetAsync(uow, _network, _logger);
         }
 
-        var outputs = new List<(long AmountSat, int InputWeight)>();
+        var outputs = new List<UtxoModel>();
         foreach (var utxo in _utxoMemoryRepository.GetUnreservedUtxos())
         {
-            if (excluded.Contains((utxo.TxId, utxo.Index)) || utxo.BlockHeight == 0 || utxo.WalletAddress is null
+            if (excluded.Contains((utxo.TxId, utxo.Index)) || utxo.BlockHeight == 0 || (utxo.WalletAddress is null && utxo.SilentPayment is null)
              || utxo.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
                 continue;
 
-            outputs.Add((utxo.Amount.Satoshi, WalletWeights.GetInputWeight(utxo.AddressType)));
+            outputs.Add(utxo);
         }
 
         return outputs;
@@ -453,6 +746,15 @@ public sealed class WalletSpendService : IWalletSpendService
     private (SignedTransaction Signed, Transaction Transaction) BuildAndSign(FeeInputReservation reservation,
                                                                            Script destination, long amountSat)
     {
+        return BuildAndSign(reservation, [(destination, amountSat)], reservation.Inputs.Select(i => (i.TxId, i.Index)).ToArray());
+    }
+
+    private (SignedTransaction Signed, Transaction Transaction) BuildAndSign(FeeInputReservation reservation,
+        IReadOnlyList<(Script Script, long AmountSat)> outputs, IReadOnlyList<(TxId TxId, uint Index)> frozenInputs,
+        Script? silentChangeScript = null, bool shuffleOutputs = false)
+    {
+        if (!reservation.Inputs.Select(i => (i.TxId, i.Index)).SequenceEqual(frozenInputs))
+            throw new InvalidOperationException("Wallet inputs changed after silent payment derivation; derive again before signing.");
         var tx = _network.CreateTransaction();
         tx.Version = 2;
         tx.LockTime = LockTime.Zero;
@@ -463,9 +765,18 @@ public sealed class WalletSpendService : IWalletSpendService
                 Sequence = new Sequence(0xFFFFFFFD)
             });
 
-        tx.Outputs.Add(Money.Satoshis(amountSat), destination);
-        if (reservation.ChangeScript is { } changeScript)
+        foreach (var output in outputs)
+            tx.Outputs.Add(Money.Satoshis(output.AmountSat), output.Script);
+        if (silentChangeScript is not null)
+            tx.Outputs.Add(Money.Satoshis(reservation.ChangeAmount.Satoshi), silentChangeScript);
+        else if (reservation.ChangeScript is { } changeScript)
             tx.Outputs.Add(Money.Satoshis(reservation.ChangeAmount.Satoshi), new Script((byte[])changeScript));
+        if (shuffleOutputs)
+            for (var i = tx.Outputs.Count - 1; i > 0; i--)
+            {
+                var swap = System.Security.Cryptography.RandomNumberGenerator.GetInt32(i + 1);
+                (tx.Outputs[i], tx.Outputs[swap]) = (tx.Outputs[swap], tx.Outputs[i]);
+            }
 
         var signed = new SignedTransaction(new TxId(tx.GetHash().ToBytes()), tx.ToBytes());
         if (!_lightningSigner.SignWalletTransaction(signed, reservation.Id, []))
@@ -473,6 +784,8 @@ public sealed class WalletSpendService : IWalletSpendService
 
         // Check every input with the script interpreter, independently of the signer's own check
         var result = Transaction.Load(signed.RawTxBytes, _network);
+        if (!result.Inputs.Select(i => (new TxId(i.PrevOut.Hash.ToBytes()), i.PrevOut.N)).SequenceEqual(frozenInputs))
+            throw new InvalidOperationException("Signer changed the frozen inputs; silent payment derivation must be repeated.");
         var spentOutputs = reservation.Inputs
                                       .Select(i => new TxOut(Money.Satoshis(i.Amount.Satoshi),
                                                              new Script((byte[])i.ScriptPubKey)))

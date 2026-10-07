@@ -1,0 +1,39 @@
+{
+  "source_commit": "f92c75a2",
+  "base_commit": "27c4ebc2",
+  "run_id": "sp-core-merged1-2",
+  "acceptance": "One complete successful run, per owner instruction on 2026-10-07",
+  "exit_record": "0 164 1791388053",
+  "outer_tests": {
+    "passed": 2,
+    "failed": 0,
+    "errors": 0
+  },
+  "inner_core_tests": {
+    "passed": 4,
+    "failed": 0,
+    "errors": 0
+  },
+  "inner_postgresql_tests": {
+    "passed": 1,
+    "failed": 0,
+    "errors": 0
+  },
+  "modes": [
+    "Zmq",
+    "Poll"
+  ],
+  "flow_markers": {
+    "independent interoperability": 2,
+    "reorg": 2,
+    "restore": 2,
+    "proof": 2
+  },
+  "restored_total_custody_sats_each_mode": 2398697,
+  "runner_image": "nltg-spike-runner:silentpayments-core-merged1",
+  "runner_config_digest": "sha256:d001bee4e54aa776631b169f92b5c742593e05dece53d5f0786a914422693b94",
+  "bitcoin_core_image": "bitcoin/bitcoin:31.1@sha256:da25cedc66b1daefff9f412ee196c901a899c3fa68a33b20849c3e08b5c40d63",
+  "independent_oracle": "Pinned upstream BIP 352 v1.1.1 Python reference",
+  "output_log_sha256": "13bbf19e3672f68c28130e30e931bd4de88bd9be664b143e0200f019f13301d8",
+  "owned_namespaces_cleaned": true
+}

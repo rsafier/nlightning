@@ -77,6 +77,9 @@ public sealed class SpliceNegotiationHost : IInteractiveTxHost
         Task.FromResult<CompactSignature?>(_service.SignSharedInput(_negotiation, transaction));
 
     /// <inheritdoc />
+    public bool WantsCommitNonces => _negotiation.IsSimpleTaproot;
+
+    /// <inheritdoc />
     public CommitNoncesTlv? GetLocalCommitNonces(TxId fundingTxId) =>
         _service.GetLocalCommitNonces(_negotiation, fundingTxId);
 

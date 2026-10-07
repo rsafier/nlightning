@@ -13,6 +13,7 @@ using Domain.Accounting.Services;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Offers.Constants;
 using Domain.Offers.Encoding;
@@ -201,6 +202,144 @@ internal static class PaymentAccountingEvents
             FeeMsat = 0,
             Finality = AccountingFinality.Final,
             Details = ForwardDetails(circuit, incoming, outgoing)
+        };
+    }
+
+    /// <summary>The detail <c>kind</c> of an <see cref="AccountingEventKind.InterceptedHtlcSettled"/> (NL-1182).</summary>
+    public const string InterceptedKind = "intercepted";
+
+    /// <summary>
+    /// A forward held for the HTLC interceptor was settled by it with the preimage (NL-1182): the incoming HTLC was
+    /// fulfilled without an outgoing leg, so its whole amount is ours. Keyed by the incoming HTLC
+    /// (<see cref="AccountingEventKeys.InterceptedHtlcSettled"/>); the details keep what the onion asked us to forward.
+    /// </summary>
+    /// <param name="incomingChannelId">The incoming channel.</param>
+    /// <param name="incomingHtlcId">The incoming HTLC.</param>
+    /// <param name="paymentHash">Its payment hash.</param>
+    /// <param name="amount">Its amount (what we received).</param>
+    /// <param name="incoming">The incoming channel, when loaded.</param>
+    /// <param name="outgoingScid">The channel the onion named for the forward, if it named one.</param>
+    /// <param name="nextNodeId">The next node a blinded route named instead, if any.</param>
+    /// <param name="amountToForward">What the onion asked us to forward.</param>
+    /// <param name="occurredAt">When the fulfill was staged.</param>
+    /// <param name="blockHeight">The current height, when known (0 = unknown).</param>
+    public static AccountingEventModel InterceptedHtlcSettled(ChannelId incomingChannelId, ulong incomingHtlcId,
+                                                              Hash paymentHash, LightningMoney amount,
+                                                              ChannelModel? incoming, ShortChannelId? outgoingScid,
+                                                              CompactPubKey? nextNodeId, LightningMoney amountToForward,
+                                                              DateTimeOffset occurredAt, uint blockHeight)
+    {
+        var details = AccountingDetailsCodec.Create(
+        [
+            (AccountingDetailKeys.Kind, InterceptedKind),
+            ("incomingChannelId", incomingChannelId.ToString()),
+            ("incomingHtlcId", incomingHtlcId.ToString(CultureInfo.InvariantCulture)),
+            (AccountingDetailKeys.IncomingScid, ScidOf(incoming)?.ToString()),
+            ("incomingAmountMsat", Msat(amount)),
+            (AccountingDetailKeys.OutgoingScid, outgoingScid?.ToString()),
+            ("nextNodeId", nextNodeId?.ToString()),
+            ("amountToForwardMsat", Msat(amountToForward)),
+            ("settledBy", "interceptor")
+        ]);
+
+        return new AccountingEventModel
+        {
+            EventKey = AccountingEventKeys.InterceptedHtlcSettled(incomingChannelId, incomingHtlcId),
+            Kind = AccountingEventKind.InterceptedHtlcSettled,
+            OccurredAt = occurredAt,
+            BlockHeight = blockHeight > 0 ? blockHeight : null,
+            ChannelId = incomingChannelId,
+            ShortChannelId = ScidOf(incoming),
+            PaymentHash = paymentHash,
+            Counterparty = incoming?.RemoteNodeId,
+            AmountMsat = checked((long)amount.MilliSatoshi),
+            FeeMsat = 0,
+            Finality = AccountingFinality.Final,
+            Details = details
+        };
+    }
+
+    /// <summary>
+    /// Stages the <see cref="InterceptedHtlcSettled"/> event <paramref name="build"/> returns on
+    /// <paramref name="unitOfWork"/>, for the switch to call in the save of the interceptor's fulfill: once per incoming
+    /// HTLC (nothing when the key is in the feed already). Never throws (a failure is logged and the fulfill is saved
+    /// without its event).
+    /// </summary>
+    public static async Task StageInterceptedHtlcSettledAsync(IUnitOfWork unitOfWork, ChannelId incomingChannelId,
+                                                              ulong incomingHtlcId, Func<AccountingEventModel> build,
+                                                              ILogger logger,
+                                                              CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var events = unitOfWork.AccountingEventDbRepository;
+            if (await events.ExistsAsync(AccountingEventKeys.InterceptedHtlcSettled(incomingChannelId, incomingHtlcId),
+                                         cancellationToken))
+                return;
+
+            events.Add(build());
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            logger.LogError(e, "Could not record the accounting event of intercepted HTLC {HtlcId} of channel "
+                             + "{ChannelId}; the fulfill is saved without it", incomingHtlcId, incomingChannelId);
+        }
+    }
+
+    /// <summary>
+    /// An HTLC settled by the interceptor (<see cref="AccountingEventKind.InterceptedHtlcSettled"/>) that we then lost on
+    /// chain (NL-1182, as NL-608 for a forward): the fulfill never got through and the peer took the HTLC output by its
+    /// timeout, or we gave it up, or it had no output (trimmed). A <see cref="AccountingEventKind.ForwardLostOnchain"/>
+    /// with the <see cref="UpstreamOnchainCause"/>, keyed by the incoming HTLC
+    /// (<see cref="AccountingEventKeys.ForwardLostOnchain"/>), so a reorg reverses it as a forward's.
+    /// </summary>
+    /// <param name="key">The event key (the generation of <see cref="AccountingEventKeys.ForwardLostOnchain"/>).</param>
+    /// <param name="settled">The standing <see cref="AccountingEventKind.InterceptedHtlcSettled"/>.</param>
+    /// <param name="incoming">The incoming channel.</param>
+    /// <param name="closeTxId">The commitment the HTLC output belongs to.</param>
+    /// <param name="spenderTxId">The peer's transaction that took it; null when we gave it up or it was trimmed.</param>
+    /// <param name="occurredAt">When the resolution was recorded.</param>
+    /// <param name="blockHeight">The block of the spend (or of the round that gave it up, or of the close).</param>
+    /// <param name="trimmed">The HTLC had no output on the commitment that confirmed (below dust, NL-760).</param>
+    public static AccountingEventModel InterceptedHtlcLostOnchain(string key, AccountingEventModel settled,
+                                                                  ChannelModel? incoming, TxId closeTxId,
+                                                                  TxId? spenderTxId, DateTimeOffset occurredAt,
+                                                                  uint blockHeight, bool trimmed = false)
+    {
+        var details = AccountingDetailsCodec.Create(
+        [
+            (AccountingDetailKeys.Kind, InterceptedKind),
+            ("incomingChannelId", settled.Details.GetValueOrDefault("incomingChannelId")),
+            ("incomingHtlcId", settled.Details.GetValueOrDefault("incomingHtlcId")),
+            (AccountingDetailKeys.IncomingScid, ScidOf(incoming)?.ToString()),
+            ("incomingAmountMsat", settled.AmountMsat.ToString(CultureInfo.InvariantCulture)),
+            ("settledKey", settled.EventKey),
+            ("cause", UpstreamOnchainCause),
+            (AccountingDetailKeys.CloseTxId, closeTxId.ToString()),
+            ("spenderTxId", spenderTxId?.ToString()),
+            (TrimmedDetail, trimmed ? "true" : null),
+            (AccountingDetailKeys.Reason,
+             trimmed
+                 ? "An HTLC settled by the interceptor was trimmed (below dust) on the commitment that confirmed"
+                 : spenderTxId is null
+                     ? "An HTLC settled by the interceptor was given up on chain"
+                     : "An HTLC settled by the interceptor was taken back by the peer on chain (its timeout)")
+        ]);
+
+        return new AccountingEventModel
+        {
+            EventKey = key,
+            Kind = AccountingEventKind.ForwardLostOnchain,
+            OccurredAt = occurredAt,
+            BlockHeight = blockHeight,
+            ChannelId = settled.ChannelId,
+            ShortChannelId = ScidOf(incoming) ?? settled.ShortChannelId,
+            PaymentHash = settled.PaymentHash,
+            Counterparty = incoming?.RemoteNodeId ?? settled.Counterparty,
+            AmountMsat = -settled.AmountMsat,
+            FeeMsat = 0,
+            Finality = AccountingFinality.Confirmed,
+            Details = details
         };
     }
 

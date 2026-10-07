@@ -185,6 +185,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
     private readonly ISecureKeyManager? _secureKeyManager;
     private readonly ITrampolineFailureOnionService? _trampolineFailureOnionService;
     private readonly IPaymentEventPublisher? _paymentEventPublisher;
+    private readonly Events.HtlcEventMonitor? _htlcMonitor;
     private readonly IHtlcForwardInterceptor? _forwardInterceptor;
     private volatile bool _disposed;
 
@@ -204,8 +205,9 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
                       ITrampolineHtlcHandler? trampolineHandler = null,
                       ITrampolineFailureOnionService? trampolineFailureOnionService = null,
                       IPaymentEventPublisher? paymentEventPublisher = null,
-                      IHtlcForwardInterceptor? forwardInterceptor = null)
+                      IHtlcForwardInterceptor? forwardInterceptor = null, Events.HtlcEventMonitor? htlcMonitor = null)
     {
+        _htlcMonitor = htlcMonitor;
         _forwardInterceptor = forwardInterceptor;
         _trampolineHandler = trampolineHandler;
         _paymentEventPublisher = paymentEventPublisher;
@@ -304,6 +306,9 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
                     await HandleOutgoingSettledAsync(settled, cancellationToken);
                     break;
                 case IncomingHtlcSettled incomingSettled:
+                    _htlcMonitor?.ForgetIncoming(incomingSettled.ChannelId, incomingSettled.HtlcId);
+                    // NL-1182: a forward still held for the interceptor (on chain, its timeout) is gone
+                    _forwardInterceptor?.Release(incomingSettled.ChannelId, incomingSettled.HtlcId);
                     await PruneAsync(incomingSettled.ChannelId,
                                      new HtlcKey(HtlcDirection.Incoming, incomingSettled.HtlcId), cancellationToken);
                     // NL-995: losing any part of a held set (the deadline monitor's fail-back is the guard) cancels
@@ -344,6 +349,8 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
             return;
         }
 
+        // Before a final-hop onion is decoded, a local link refusal belongs to the incoming forwarding link.
+        _htlcMonitor?.ClassifyIncoming(channelId, htlcId, Domain.Payments.Events.HtlcActivityRole.Forward);
         ForwardCircuitModel? circuit;
         Secret? storedSecret;
         TrampolineRelayPartModel? relayPart = null;
@@ -388,6 +395,12 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
         // A channel that can no longer carry an update (failed, or its commitment is on chain): its HTLC can only be
         // claimed on chain, and only as our final hop (NL-316, B5-LCL-RO-02). Nothing is forwarded from it, and a
         // failure cannot be sent: such an HTLC is left to time out on chain
+        // NL-1182 (LND's on-chain interception): a forward on such a channel is held for an interceptor's settle, whose
+        // preimage the resolvers claim it with
+        if (IsOnchain(channelId) && result is IncomingOnionForward onchainForward
+                                 && TryInterceptOnChain(channelId, htlc, onchainForward))
+            return;
+
         if (IsOnchain(channelId) && result is not (IncomingOnionFinal or IncomingOnionTrampolineFinal))
         {
             _logger.LogInformation("Incoming HTLC {HtlcId} of channel {ChannelId}, which is closing on chain, does not "
@@ -520,6 +533,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
                                     bool firstHandling, CancellationToken cancellationToken,
                                     TrampolineFailureKeys? trampoline = null)
     {
+        _htlcMonitor?.ClassifyIncoming(channelId, htlc.Id, Domain.Payments.Events.HtlcActivityRole.Receive);
         var amount = LightningMoney.MilliSatoshis(htlc.AmountMsat);
         using var paymentHashLock = await _paymentHashLocks.AcquireAsync(htlc.PaymentHash, cancellationToken);
 
@@ -1167,9 +1181,14 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
     /// <summary>
     /// Forward (M4-T4): resolve, check the policy, persist the circuit, offer, record the offer.
     /// </summary>
+    /// <param name="modification">An interceptor's <c>RESUME_MODIFIED</c> (NL-1182): its incoming amount is what the
+    /// policy checks the forward against (never what the circuit records: the books follow the channel), its outgoing
+    /// amount and custom records go on the <c>update_add_htlc</c>.</param>
     private async Task ForwardAsync(ChannelId incomingChannelId, HtlcRecord htlc, IncomingOnionForward forward,
-                                    bool firstHandling, CancellationToken cancellationToken, bool intercept = true)
+                                    bool firstHandling, CancellationToken cancellationToken, bool intercept = true,
+                                    ForwardInterceptResolution? modification = null)
     {
+        _htlcMonitor?.ClassifyIncoming(incomingChannelId, htlc.Id, Domain.Payments.Events.HtlcActivityRole.Forward);
         var height = CurrentHeight;
         var introduction = forward.Blinded?.IsIntroduction ?? false;
 
@@ -1192,8 +1211,12 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
 
         // NL-1183: a connected interceptor (LND's HtlcInterceptor) holds the forward before the outgoing channel and the
         // policy are looked at; its resolution continues below (resume) or fails/settles the incoming HTLC
-        if (intercept && await TryInterceptAsync(incomingChannelId, htlc, forward, height, cancellationToken))
+        if (intercept && await TryInterceptAsync(incomingChannelId, htlc, forward, height, !firstHandling,
+                                                 cancellationToken))
             return;
+
+        var amountToForward = modification?.OutAmount ?? forward.AmountToForward;
+        var outWireCustomRecords = modification?.OutWireCustomRecords ?? [];
 
         // Inside a blinded route the recipient names the next hop by short_channel_id or by next_node_id (M5)
         ChannelModel? outgoing;
@@ -1208,13 +1231,13 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
         else
         {
             (outgoing, outgoingInfo) = await SelectOutgoingChannelAsync(forward.NextNodeId!.Value,
-                                                                        forward.AmountToForward, cancellationToken);
+                                                                        amountToForward, cancellationToken);
             requestedScid = outgoing is null ? default : ScidOf(outgoing);
         }
 
         var incomingAmount = LightningMoney.MilliSatoshis(htlc.AmountMsat);
-        var decision = _forwardingPolicy.Evaluate(new ForwardingRequest(incomingAmount, htlc.CltvExpiry,
-                                                                        forward.AmountToForward,
+        var decision = _forwardingPolicy.Evaluate(new ForwardingRequest(modification?.InAmount ?? incomingAmount,
+                                                                        htlc.CltvExpiry, amountToForward,
                                                                         forward.OutgoingCltvValue, height,
                                                                         outgoingInfo,
                                                                         forward.Blinded?.RecipientData.PaymentRelay));
@@ -1230,9 +1253,23 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
         }
 
         var outgoingChannel = outgoing!;
+
+        // NL-1182: an interceptor's incoming amount only stands in for the forwarding checks (LND's custom channels);
+        // this node has no custom channels, so it never sends more than the incoming HTLC brings in
+        if (amountToForward > incomingAmount)
+        {
+            _logger.LogWarning("Interceptor's modified forward of HTLC {HtlcId} of channel {ChannelId} would send "
+                             + "{OutMsat} msat for an incoming {InMsat} msat: failed back", htlc.Id,
+                               incomingChannelId, amountToForward.MilliSatoshi, incomingAmount.MilliSatoshi);
+            await FailBackAsync(incomingChannelId, htlc, forward.SharedSecret,
+                                FailureMessage.TemporaryChannelFailure(UpdateFor(outgoingChannel, requestedScid)),
+                                cancellationToken, introduction);
+            return;
+        }
+
         var circuit = new ForwardCircuitModel(incomingChannelId, htlc.Id, incomingAmount, htlc.CltvExpiry,
                                               htlc.PaymentHash, forward.SharedSecret, requestedScid,
-                                              forward.AmountToForward, forward.OutgoingCltvValue,
+                                              amountToForward, forward.OutgoingCltvValue,
                                               _timeProvider.GetUtcNow());
         using (var scope = _serviceScopeFactory.CreateScope())
         {
@@ -1241,14 +1278,32 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
             await unitOfWork.SaveChangesAsync();
         }
 
+        _htlcMonitor?.CaptureForward(circuit);
+
+        // NL-1182: like LND we send even custom record types too, but a peer that does not know one (CLN, Eclair,
+        // LDK, NLightning) refuses the add with a warning and disconnects; the add is persisted, so every
+        // reconnection retransmits it until the HTLC deadline monitor fails the channel (NL-1283)
+        if (outWireCustomRecords.Any(r => r.Type % 2 == 0))
+            _logger.LogWarning("Interceptor's modified forward of HTLC {HtlcId} of channel {ChannelId} carries even "
+                             + "update_add_htlc custom record types ({Types}); a peer that does not understand them "
+                             + "will refuse the add", htlc.Id, incomingChannelId,
+                               string.Join(", ", outWireCustomRecords.Where(r => r.Type % 2 == 0).Select(r => r.Type)));
+
         ulong outgoingHtlcId;
         try
         {
             // Inside a blinded route the next hop gets the next path_key in update_add_htlc (BOLT 2, BOLT 4 M5)
             var nextPathKey = forward.Blinded is { } blinded ? new BlindedPathTlv(blinded.NextPathKey) : null;
-            outgoingHtlcId = await _channelOperations.OfferHtlcAsync(
-                outgoingChannel.ChannelId, forward.AmountToForward, htlc.PaymentHash, forward.OutgoingCltvValue,
-                forward.NextPacket, nextPathKey, HtlcOrigin.Forwarded(incomingChannelId, htlc.Id), cancellationToken);
+            outgoingHtlcId = outWireCustomRecords.Count == 0
+                                 ? await _channelOperations.OfferHtlcAsync(
+                                       outgoingChannel.ChannelId, amountToForward, htlc.PaymentHash,
+                                       forward.OutgoingCltvValue, forward.NextPacket, nextPathKey,
+                                       HtlcOrigin.Forwarded(incomingChannelId, htlc.Id), cancellationToken)
+                                 : await _channelOperations.OfferHtlcAsync(
+                                       outgoingChannel.ChannelId, amountToForward, htlc.PaymentHash,
+                                       forward.OutgoingCltvValue, forward.NextPacket, nextPathKey,
+                                       HtlcOrigin.Forwarded(incomingChannelId, htlc.Id), outWireCustomRecords,
+                                       cancellationToken);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -1284,7 +1339,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
         _logger.LogInformation("Forwarded HTLC {HtlcId} of channel {ChannelId} as HTLC {OutgoingHtlcId} of channel "
                              + "{OutgoingChannelId} ({AmountMsat} msat, fee {FeeMsat} msat)", htlc.Id,
                                incomingChannelId, outgoingHtlcId, outgoingChannel.ChannelId,
-                               forward.AmountToForward.MilliSatoshi, circuit.Fee.MilliSatoshi);
+                               amountToForward.MilliSatoshi, circuit.Fee.MilliSatoshi);
     }
 
     /// <summary>
@@ -1479,6 +1534,8 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
     private async Task HandleOutgoingFulfilledAsync(OutgoingHtlcFulfilled fulfilled,
                                                     CancellationToken cancellationToken)
     {
+        if (IsOnchain(fulfilled.ChannelId))
+            _htlcMonitor?.ForgetOutgoing(fulfilled.ChannelId, fulfilled.HtlcId);
         var origin = await GetOriginAsync(fulfilled.ChannelId, fulfilled.HtlcId);
         switch (origin)
         {
@@ -1522,6 +1579,8 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
 
     private async Task HandleOutgoingFailedAsync(OutgoingHtlcFailed failed, CancellationToken cancellationToken)
     {
+        if (IsOnchain(failed.ChannelId))
+            _htlcMonitor?.ForgetOutgoing(failed.ChannelId, failed.HtlcId);
         var origin = await GetOriginAsync(failed.ChannelId, failed.HtlcId);
         switch (origin)
         {
@@ -1970,6 +2029,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
         if (failure.Code == FailureCode.InvalidOnionBlinding)
             await DelayBlindedErrorAsync(cancellationToken);
 
+        using var observedFailure = _htlcMonitor?.WithLocalFailure((ushort)failure.Code);
         if (AddsAttribution(incoming))
         {
             var holdTime = await _channelOperations.GetHoldTimeAsync(channelId, htlcId, cancellationToken);

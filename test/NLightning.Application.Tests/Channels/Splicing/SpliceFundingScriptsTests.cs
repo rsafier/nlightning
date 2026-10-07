@@ -83,4 +83,23 @@ public class SpliceFundingScriptsTests
         Assert.Equal(expected.ToDER(), der);
         Assert.True(ECDSASignature.IsValidDER(der));
     }
+
+    [Fact]
+    public void Given_ClnsWeightOfTheSharedInput_When_WePayAsSpliceInitiator_Then_WePayForAtLeastIt()
+    {
+        // Arrange: NL-1292, CLN v26.06.9's accepter refused our splice-out to a P2WPKH address at 2,500 sat/kw: "Your
+        // fee (1810000msat) was too low, must be at least 1812sat weight: 725". CLN counts the 2-of-2 shared input as
+        // 387 wu (bitcoin_tx_input_weight: 1 + 222 + 164, the witness item count twice); we counted 386
+        const int clnSharedInputWeight = 387;
+        const long clnWeight = 725;
+
+        // Act
+        var ourWeight = Domain.Protocol.InteractiveTx.CollaborativeFeeCalculator.CommonFieldsWeight
+                      + SpliceFundingScripts.GetSharedInputFeeWeight(false) + (8 + 1 + 34) * 4 + (8 + 1 + 22) * 4;
+
+        // Assert
+        Assert.Equal(clnSharedInputWeight, SpliceFundingScripts.SharedInputFeeWeight);
+        Assert.Equal(clnWeight, ourWeight);
+        Assert.Equal(SpliceFundingScripts.TaprootSharedInputWeight, SpliceFundingScripts.GetSharedInputFeeWeight(true));
+    }
 }

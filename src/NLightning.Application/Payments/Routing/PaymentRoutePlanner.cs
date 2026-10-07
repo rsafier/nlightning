@@ -718,6 +718,7 @@ public sealed class PaymentRoutePlanner
             MaxFeeMsat = request.MaxFeeMsat,
             ExcludedNodes = excludedNodes,
             ExcludedChannels = constraints.ExcludedChannels,
+            ExcludedEdges = constraints.ExcludedEdges,
             PolicyOverrides = constraints.GraphPolicyOverrides,
             ExtraEdges = extraEdges,
             // The peer's htlc_minimum_msat (and what a refusal taught this payment) bounds our first hop (NL-924)
@@ -854,6 +855,7 @@ public sealed class PaymentRoutePlanner
                 MaxFeeMsat = request.MaxFeeMsat - lastHopFee,
                 ExcludedNodes = excludedNodes,
                 ExcludedChannels = excludedChannels,
+                ExcludedEdges = constraints.ExcludedEdges,
                 PolicyOverrides = constraints.GraphPolicyOverrides,
                 ExtraEdges = OwnFirstHopEdges(request, locals),
                 LocalChannels = locals.ToDictionary(pair => pair.Key,

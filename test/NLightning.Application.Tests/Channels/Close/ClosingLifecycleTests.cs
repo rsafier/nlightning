@@ -498,7 +498,7 @@ public class ClosingLifecycleTests
         await manager.RegisterExistingChannelAsync(channel);
 
         // Assert
-        _memory.Verify(m => m.AddChannel(channel), Times.Once);
+        _memory.Verify(m => m.LoadChannel(channel), Times.Once);
         _chain.Verify(c => c.SendTransactionAsync(It.Is<Transaction>(t => t.ToBytes().SequenceEqual(s_closingTx.RawTxBytes))),
                       Times.Once);
         _monitor.Verify(m => m.WatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<TxId>(), It.IsAny<uint>()),
@@ -804,7 +804,7 @@ public class ClosingLifecycleTests
         await manager.OnPeerConnectedAsync(NormalOperationTestContext.PeerNodeId);
 
         // Assert: registered unchanged, and the connection state of the close was reset (B2-RE-29)
-        _memory.Verify(m => m.AddChannel(channel), Times.Once);
+        _memory.Verify(m => m.LoadChannel(channel), Times.Once);
         Assert.Equal(state, channel.State);
         Assert.False(registryEntry.ShutdownReceivedOnConnection);
         Assert.Empty(raised);

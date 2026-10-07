@@ -1,6 +1,8 @@
 using NLightning.Domain.Bitcoin.Interfaces;
+using NLightning.Domain.Bitcoin.SilentPayments;
 using NLightning.Domain.Bitcoin.Transactions.Models;
 using NLightning.Domain.Bitcoin.ValueObjects;
+using NLightning.Domain.Bitcoin.Wallet.Models;
 using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Domain.Crypto.ValueObjects;
 using NLightning.Domain.Money;
@@ -356,6 +358,21 @@ public sealed class RemoteLightningSigner : ILightningSigner
     public byte[] SignBolt12(Offers.Models.Bolt12SigningKey key, string tag, Hash merkleRoot)
     {
         var result = _connection.Invoke(SignerOperations.SignBolt12, key, tag, merkleRoot);
+        return SignerWire.Read<byte[]>(result[0]);
+    }
+    public IReadOnlyList<BitcoinScript> ComputeSilentPaymentOutputs(Guid reservationId,
+        IReadOnlyList<SilentPaymentAddress> recipients, IReadOnlyList<(TxId TxId, uint Index)> allInputs)
+    {
+        ArgumentNullException.ThrowIfNull(recipients);
+        ArgumentNullException.ThrowIfNull(allInputs);
+        var outpoints = allInputs.Select(input => new WalletOutpoint(input.TxId, input.Index)).ToArray();
+        var result = _connection.Invoke(SignerOperations.ComputeSilentPaymentOutputs, reservationId, recipients,
+            outpoints, WalletSnapshot.CreateReservation(_wallet, reservationId, outpoints));
+        return SignerWire.Read<IReadOnlyList<BitcoinScript>>(result[0]);
+    }
+    public byte[] SignWalletMessage(WalletAddressModel address, byte[] message)
+    {
+        var result = _connection.Invoke(SignerOperations.SignWalletMessage, address, message);
         return SignerWire.Read<byte[]>(result[0]);
     }
     private void EnsureChannel(ChannelId id) { if (_source is not null && _source.TryGet(id, out var info)) RegisterChannel(id, info); }

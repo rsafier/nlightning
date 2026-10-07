@@ -139,12 +139,19 @@ internal static class ClientApp
                     var balance = await client.GetWalletBalance(cancellationToken);
                     new WalletBalancePrinter().Print(balance);
                     break;
+                case "getspaddress":
+                case "splabels":
+                case "sprescan":
+                case "spstatus":
+                    await SilentPaymentCommands.RunAsync(cmd, commandArgs, client, cancellationToken);
+                    break;
                 case "withdraw":
                 case "send-coins":
                 case "sendcoins":
                     var withdrawArgs = ParseWithdrawOptions(commandArgs, out _)!;
                     var withdrawal = await client.WithdrawAsync(withdrawArgs.Address, withdrawArgs.AmountSat,
-                                                                withdrawArgs.SatPerVbyte, cancellationToken, labels);
+                                                                withdrawArgs.SatPerVbyte, cancellationToken, labels,
+                                                                withdrawArgs.Utxos);
                     new WithdrawPrinter().Print(withdrawal);
                     break;
                 case "openchannel":
@@ -193,10 +200,20 @@ internal static class ClientApp
                 case "payroute":
                 case "pay-route":
                     var payRouteArgs = ParsePayRouteOptions(commandArgs, out _)!;
+                    if (payRouteArgs.Attach && (labels.Label is not null || labels.Tags.Count > 0))
+                    {
+                        Console.Error.WriteLine("Error: --label and --tag belong to the payment's first payroute "
+                                              + "call; an attached call keeps them.");
+                        return Failure;
+                    }
+
                     var suppliedRoutes = await PayRouteRoutesJson.ReadAsync(payRouteArgs.RoutesPath, Console.In,
                                                                            cancellationToken);
-                    var payRoute = await client.PayRouteAsync(payRouteArgs, suppliedRoutes, cancellationToken,
-                                                             labels);
+                    var payRoute = payRouteArgs.Attach
+                                       ? await client.PayRouteAttachAsync(payRouteArgs, suppliedRoutes,
+                                                                          cancellationToken)
+                                       : await client.PayRouteAsync(payRouteArgs, suppliedRoutes, cancellationToken,
+                                                                    labels);
                     new PayRoutePrinter().Print(payRoute);
                     if (payRoute.Payment.Status == PaymentStatus.Failed)
                         return Failure;
@@ -443,6 +460,11 @@ internal static class ClientApp
             case "connect":
             case "connect-peer":
                 return commandArgs.Length < 1 ? $"Missing argument. Usage: {cmd} <node>" : null;
+            case "getspaddress":
+            case "splabels":
+            case "sprescan":
+            case "spstatus":
+                return SilentPaymentCommands.Validate(cmd, commandArgs);
             case "withdraw":
             case "send-coins":
             case "sendcoins":
@@ -816,44 +838,69 @@ internal static class ClientApp
     }
 
     /// <summary>The arguments of withdraw.</summary>
-    internal const string WithdrawUsage = "<address> <amount_sat|all> [--sat-per-vb <n>]";
+    internal const string WithdrawUsage = "<address> <amount_sat|all> [--sat-per-vb <n>] [--utxo <txid:vout>]...";
 
     /// <summary>
-    /// <c>&lt;address&gt; &lt;amount_sat|all&gt; [--sat-per-vb &lt;n&gt;]</c> of withdraw; the option (also as
-    /// <c>--sat-per-vb=n</c>) may come anywhere.
+    /// <c>&lt;address&gt; &lt;amount_sat|all&gt; [--sat-per-vb &lt;n&gt;] [--utxo &lt;txid:vout&gt;]...</c> of withdraw;
+    /// the options (also as <c>--option=value</c>) may come anywhere. <c>--utxo</c> (NL-1296, repeatable) names the
+    /// wallet outputs to spend, exactly those (silent payment coins included); the daemon checks them.
     /// </summary>
     /// <returns>The parsed arguments (a null amount is "all"), or null with <paramref name="error"/> set.</returns>
     internal static WithdrawArguments? ParseWithdrawOptions(string[] commandArgs, out string? error)
     {
         error = null;
         ulong? satPerVbyte = null;
+        var utxos = new List<string>();
         var positional = new List<string>();
         for (var i = 0; i < commandArgs.Length; i++)
         {
             var argument = commandArgs[i];
+            string? option = null;
             string? value = null;
-            if (string.Equals(argument, "--sat-per-vb", StringComparison.OrdinalIgnoreCase))
+            foreach (var name in (string[])["--sat-per-vb", "--utxo"])
             {
-                if (i + 1 >= commandArgs.Length)
+                if (string.Equals(argument, name, StringComparison.OrdinalIgnoreCase))
                 {
-                    error = "Missing value for --sat-per-vb.";
+                    if (i + 1 >= commandArgs.Length)
+                    {
+                        error = $"Missing value for {name}.";
+                        return null;
+                    }
+
+                    option = name;
+                    value = commandArgs[++i];
+                    break;
+                }
+
+                if (argument.StartsWith(name + "=", StringComparison.OrdinalIgnoreCase))
+                {
+                    option = name;
+                    value = argument[(name.Length + 1)..];
+                    break;
+                }
+            }
+
+            if (option is null)
+            {
+                if (argument.StartsWith("--", StringComparison.Ordinal))
+                {
+                    error = $"Unknown option '{argument}'.";
                     return null;
                 }
 
-                value = commandArgs[++i];
-            }
-            else if (argument.StartsWith("--sat-per-vb=", StringComparison.OrdinalIgnoreCase))
-            {
-                value = argument["--sat-per-vb=".Length..];
-            }
-            else if (argument.StartsWith("--", StringComparison.Ordinal))
-            {
-                error = $"Unknown option '{argument}'.";
-                return null;
-            }
-            else
-            {
                 positional.Add(argument);
+                continue;
+            }
+
+            if (option == "--utxo")
+            {
+                if (!IsOutpoint(value!))
+                {
+                    error = $"Invalid output '{value}': expected <txid>:<vout>.";
+                    return null;
+                }
+
+                utxos.Add(value!);
                 continue;
             }
 
@@ -892,7 +939,14 @@ internal static class ClientApp
             amountSat = sats;
         }
 
-        return new WithdrawArguments(positional[0], amountSat, satPerVbyte);
+        return new WithdrawArguments(positional[0], amountSat, satPerVbyte) { Utxos = utxos };
+
+        static bool IsOutpoint(string text)
+        {
+            var separator = text.LastIndexOf(':');
+            return separator == 64 && text[..separator].All(Uri.IsHexDigit)
+                && uint.TryParse(text.AsSpan(separator + 1), NumberStyles.None, CultureInfo.InvariantCulture, out _);
+        }
     }
 
     /// <summary>A node id: 66 hex characters of a compressed public key (02 or 03 first).</summary>
@@ -1291,7 +1345,7 @@ internal static class ClientApp
     /// <summary>The usage of payroute.</summary>
     internal const string PayRouteUsage =
         "<bolt11> | --payment-hash <64hex> [--payment-secret <64hex>] [--total-msat <msat>] --routes <file|-> "
-      + "[--max-fee-msat <msat>] [--timeout <seconds>]";
+      + "[--max-fee-msat <msat>] [--timeout <seconds>] [--attach]";
 
     /// <summary>
     /// The arguments of payroute (NL-1082): the payment identity — a BOLT 11 invoice positionally, or the raw form's
@@ -1311,12 +1365,20 @@ internal static class ClientApp
         string? routesPath = null;
         uint? timeout = null;
         ulong? maxFeeMsat = null;
+        var attach = false;
         for (var i = 0; i < commandArgs.Length; i++)
         {
             var argument = commandArgs[i];
             if (!argument.StartsWith("--", StringComparison.Ordinal))
             {
                 positional.Add(argument);
+                continue;
+            }
+
+            if (string.Equals(argument, "--attach", StringComparison.OrdinalIgnoreCase))
+            {
+                // NL-1276: a flag, no value
+                attach = true;
                 continue;
             }
 
@@ -1397,7 +1459,7 @@ internal static class ClientApp
                     break;
                 default:
                     error = $"Unknown option '{name}': expected --routes, --payment-hash, --payment-secret, "
-                          + "--total-msat, --max-fee-msat or --timeout.";
+                          + "--total-msat, --max-fee-msat, --timeout or --attach.";
                     return null;
             }
         }
@@ -1435,7 +1497,10 @@ internal static class ClientApp
         }
 
         error = null;
-        return new PayRouteArguments(bolt11, paymentHash, paymentSecret, totalMsat, routesPath, timeout, maxFeeMsat);
+        return new PayRouteArguments(bolt11, paymentHash, paymentSecret, totalMsat, routesPath, timeout, maxFeeMsat)
+        {
+            Attach = attach
+        };
     }
 
     /// <summary>The arguments of payoffer.</summary>
@@ -2112,7 +2177,14 @@ public sealed record PayRouteArguments(
     string RoutesPath,
     uint? TimeoutSeconds,
     ulong? MaxFeeMsat,
-    LabelArguments? Labels = null);
+    LabelArguments? Labels = null)
+{
+    /// <summary>
+    /// <c>--attach</c> (NL-1276): add the routes to the <c>payroute</c> payment of the hash still in flight
+    /// (ClientCommand 56) instead of starting one; the label and tags stay the first call's.
+    /// </summary>
+    public bool Attach { get; init; }
+}
 
 /// <summary>
 /// One validated route of the payroute routes file: the channel of ours the first HTLC leaves through (a channel id
@@ -2131,4 +2203,8 @@ public sealed record PayRouteHopArguments(CompactPubKey NodeId, ulong? OutgoingS
 /// <summary>
 /// The parsed arguments of withdraw (a null amount is "all").
 /// </summary>
-internal sealed record WithdrawArguments(string Address, ulong? AmountSat, ulong? SatPerVbyte);
+internal sealed record WithdrawArguments(string Address, ulong? AmountSat, ulong? SatPerVbyte)
+{
+    /// <summary>The outputs to spend as <c>txid:vout</c> (NL-1296, <c>--utxo</c>); empty lets the wallet choose.</summary>
+    public IReadOnlyList<string> Utxos { get; init; } = [];
+}

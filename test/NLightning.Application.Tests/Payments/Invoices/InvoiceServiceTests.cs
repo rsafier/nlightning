@@ -22,6 +22,25 @@ public class InvoiceServiceTests : IDisposable
     public void Dispose() => _node.Dispose();
 
     [Fact]
+    public async Task Given_ACallerPreimage_When_CreatingALongLivedInvoice_Then_ItIsPersistedWithTheCorrectHash()
+    {
+        // Arrange
+        var preimage = new Secret(Enumerable.Repeat((byte)0x72, 32).ToArray());
+        var ct = TestContext.Current.CancellationToken;
+        // Act
+        var invoice = await _node.InvoiceService.CreateInvoiceAsync(LightningMoney.Satoshis(10_000), "Loop", 31_536_000,
+            SourceLabels.None, preimage, ct);
+        var reloaded = await _node.InvoiceService.GetInvoiceAsync(invoice.PaymentHash, ct);
+        var decoded = Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest);
+        // Assert
+        Assert.NotNull(reloaded);
+        Assert.Equal((byte[])preimage, reloaded.Preimage!.Value);
+        Assert.Equal((Hash)SHA256.HashData((byte[])preimage), invoice.PaymentHash);
+        Assert.Equal(invoice.PaymentHash.ToString(), decoded.PaymentHash!.ToString());
+        Assert.Equal(31_536_000, decoded.ExpiryDate.ToUnixTimeSeconds() - decoded.Timestamp);
+    }
+
+    [Fact]
     public async Task Given_Amount_When_InvoiceCreated_Then_Bolt11DecodesAndValidatesWithEveryField()
     {
         // Arrange

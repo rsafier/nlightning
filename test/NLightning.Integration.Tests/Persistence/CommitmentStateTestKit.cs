@@ -14,6 +14,7 @@ using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
+using Domain.Payments.Keysend;
 
 /// <summary>
 /// Drives two commitment engines against each other with fake crypto ports (like the Domain simulator) and hands out
@@ -124,6 +125,13 @@ internal sealed class CommitmentDanceDriver
         throw new InvalidOperationException("The dance is stuck");
     }
 
+    /// <summary>The <c>update_add_htlc</c> custom records of every third add (NL-1182): the reload must keep them.</summary>
+    private static ReadOnlyMemory<byte> WireRecords(byte tag) =>
+        tag % 3 == 0
+            ? WireCustomRecordCodec.Encode(
+                [new CustomRecord(65_537 + (ulong)tag * 2, [tag, 0xA5])])
+            : ReadOnlyMemory<byte>.Empty;
+
     /// <summary>Our <c>update_add_htlc</c> (the peer receives it at once).</summary>
     public CommitmentsResult? TryUsAdd(ulong? amountMsat = null)
     {
@@ -132,7 +140,8 @@ internal sealed class CommitmentDanceDriver
         try
         {
             result = Us.SendAdd(amountMsat ?? (ulong)_rng.NextInt64(1_000, 30_000_000), PaymentHash(tag),
-                                (uint)_rng.Next(500, 700), Onion(tag), _rng.Next(4) == 0 ? Point(0x77, tag) : null);
+                                (uint)_rng.Next(500, 700), Onion(tag), _rng.Next(4) == 0 ? Point(0x77, tag) : null,
+                                wireCustomRecords: WireRecords(tag));
         }
         catch (CommitmentRefusedException)
         {
@@ -141,7 +150,7 @@ internal sealed class CommitmentDanceDriver
 
         var add = result.Outbound.OfType<OutboundAddHtlc>().Single().Htlc;
         Peer = Peer.ReceiveAdd(add.Id, add.AmountMsat, add.PaymentHash, add.CltvExpiry, add.OnionRoutingPacket,
-                               add.PathKey).Next;
+                               add.PathKey, add.WireCustomRecords).Next;
         _preimageTags[(HtlcDirection.Outgoing, add.Id)] = tag;
         _nextPreimageTag = (byte)(_nextPreimageTag % 250 + 1);
         Us = result.Next;
@@ -160,7 +169,7 @@ internal sealed class CommitmentDanceDriver
         try
         {
             sent = Peer.SendAdd((ulong)_rng.NextInt64(1_000, 30_000_000), PaymentHash(tag), (uint)_rng.Next(500, 700),
-                                Onion(tag));
+                                Onion(tag), wireCustomRecords: WireRecords(tag));
         }
         catch (CommitmentRefusedException)
         {
@@ -168,7 +177,8 @@ internal sealed class CommitmentDanceDriver
         }
 
         var add = sent.Outbound.OfType<OutboundAddHtlc>().Single().Htlc;
-        var result = Us.ReceiveAdd(add.Id, add.AmountMsat, add.PaymentHash, add.CltvExpiry, add.OnionRoutingPacket);
+        var result = Us.ReceiveAdd(add.Id, add.AmountMsat, add.PaymentHash, add.CltvExpiry, add.OnionRoutingPacket,
+                                   wireCustomRecords: add.WireCustomRecords);
         _preimageTags[(HtlcDirection.Incoming, add.Id)] = tag;
         _nextPreimageTag = (byte)(_nextPreimageTag % 250 + 1);
         Peer = sent.Next;
@@ -481,6 +491,7 @@ internal static class CommitmentsAssert
         Assert.Equal(expected.OnionRoutingPacket.ToArray(), actual.OnionRoutingPacket.ToArray());
         Assert.Equal(expected.PathKey, actual.PathKey);
         Assert.Equal(expected.KnownPreimage, actual.KnownPreimage);
+        Assert.Equal(expected.WireCustomRecords.ToArray(), actual.WireCustomRecords.ToArray());
         Assert.Equal(expected.Removal is null, actual.Removal is null);
         if (expected.Removal is not { } removal)
             return;

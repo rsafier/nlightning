@@ -95,12 +95,13 @@ public static class SimpleCloseRules
     /// The fee we propose as closer: <paramref name="feeratePerKw"/> (at least <see cref="MinFeeratePerKw"/>) times
     /// the weight with both outputs, capped at our balance and, when we are not the lesser side, so that our own output
     /// stays at or above its dust threshold. Null when we can't pay the fee at the floor feerate (the peer's own
-    /// <c>closing_complete</c> closes the channel then).
+    /// <c>closing_complete</c> closes the channel then). <paramref name="taproot"/>: the funding output is a simple
+    /// taproot channel's, spent by key path (NL-968).
     /// </summary>
     public static ulong? ChooseFee(ulong closerBalanceMsat, ulong closeeBalanceMsat, BitcoinScript closerScript,
-                                   BitcoinScript closeeScript, ulong feeratePerKw)
+                                   BitcoinScript closeeScript, ulong feeratePerKw, bool taproot = false)
     {
-        var weight = ClosingFeeCalculator.EstimateWeight(closerScript.Length, closeeScript.Length);
+        var weight = ClosingFeeCalculator.EstimateWeight(closerScript.Length, closeeScript.Length, taproot);
         var floorFee = ClosingFeeCalculator.FeeSat(MinFeeratePerKw, weight);
         var fee = ClosingFeeCalculator.FeeSat(Math.Max(feeratePerKw, MinFeeratePerKw), weight);
 

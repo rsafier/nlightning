@@ -285,6 +285,35 @@ public class KeysendHarnessTests
                                                       HtlcOrigin.Local(route.PaymentHash));
     }
 
+    [Fact]
+    public async Task Given_CallerPreimage_When_KeysendSettles_Then_StartIsCommittedOnceAndHashIsPreserved()
+    {
+        await using var harness = await CreateAsync();
+        var secret = new Secret(Enumerable.Repeat((byte)0x5a, 32).ToArray());
+        var hash = new Hash(SHA256.HashData((ReadOnlySpan<byte>)secret));
+        using var events = harness.Alice.Services.GetRequiredService<IPaymentEventSource>().Subscribe();
+        await using var updates = events.ReadAllAsync(TestContext.Current.CancellationToken).GetAsyncEnumerator(TestContext.Current.CancellationToken);
+        var paying = PaymentsOf(harness.Alice).PayKeysendAsync(new PayKeysendRequest(harness.Bob.NodeId,
+            LightningMoney.Satoshis(1_000))
+        { Preimage = secret }, new PayInvoiceOptions { Timeout = s_timeout },
+            TestContext.Current.CancellationToken);
+        Assert.True(await updates.MoveNextAsync());
+        var started = Assert.IsType<Domain.Payments.Events.PaymentStartedEvent>(updates.Current);
+        Assert.Equal(hash, started.PaymentHash);
+        var committed = await PaymentsOf(harness.Alice).GetPaymentAsync(hash, TestContext.Current.CancellationToken);
+        Assert.NotNull(committed);
+        Assert.Equal(PaymentStatus.InFlight, committed.Status);
+        Assert.True(started.PaymentIndex > 0);
+        Assert.Equal(committed.PaymentIndex, started.PaymentIndex);
+        await harness.PumpAsync();
+        var result = await paying;
+        Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
+        Assert.Equal(hash, result.Payment.PaymentHash);
+        Assert.Equal(secret, result.Payment.Preimage);
+        Assert.True(await updates.MoveNextAsync());
+        Assert.IsType<Domain.Payments.Events.PaymentSucceededEvent>(updates.Current);
+    }
+
     private static IPaymentService PaymentsOf(SwitchNode node) => node.Services.GetRequiredService<IPaymentService>();
 
     /// <summary>The accounting events <paramref name="node"/> saved (NL-602; none is sealed in these tests).</summary>

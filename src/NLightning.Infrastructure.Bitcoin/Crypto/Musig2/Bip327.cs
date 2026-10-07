@@ -207,22 +207,16 @@ internal static class Bip327
         if (aggPubKey is not null && aggPubKey.Length != MusigConstants.XOnlyPubKeyLen)
             throw new MusigException("The optional byte array aggpk must have length 32.");
 
-        var mixedRand = new byte[ScalarLen];
+        Span<byte> mixedRand = stackalloc byte[ScalarLen];
         var k1 = Scalar.Zero;
         var k2 = Scalar.Zero;
+        byte[]? secNonce = null;
         try
         {
             if (secretKey is not null)
-            {
-                var auxHash = TaggedHash("MuSig/aux", rand);
-                for (var i = 0; i < ScalarLen; i++)
-                    mixedRand[i] = (byte)(secretKey[i] ^ auxHash[i]);
-                CryptographicOperations.ZeroMemory(auxHash);
-            }
+                MixWithAuxHash(secretKey, rand, mixedRand);
             else
-            {
                 rand.CopyTo(mixedRand);
-            }
 
             var msgPrefixed = MessagePrefixed(msg);
             k1 = NonceHash(mixedRand, pubKey, aggPubKey ?? [], 0, msgPrefixed, extraIn ?? []);
@@ -232,12 +226,19 @@ internal static class Bip327
             if (k1.IsZero || k2.IsZero)
                 throw new InvalidOperationException("A MuSig2 nonce scalar is zero.");
 
-            var secNonce = new byte[MusigConstants.SecretNonceLen];
+            secNonce = new byte[MusigConstants.SecretNonceLen];
             k1.WriteToSpan(secNonce.AsSpan(0, ScalarLen));
             k2.WriteToSpan(secNonce.AsSpan(ScalarLen, ScalarLen));
             pubKey.CopyTo(secNonce.AsSpan(MusigConstants.SecretNonceScalarsLen));
 
-            return (secNonce, PublicNonceOf(k1, k2));
+            return (secNonce, PublicNonceOf(in k1, in k2));
+        }
+        catch
+        {
+            // The secret nonce never leaves a failed call
+            if (secNonce is not null)
+                CryptographicOperations.ZeroMemory(secNonce);
+            throw;
         }
         finally
         {
@@ -276,7 +277,8 @@ internal static class Bip327
         Span<byte> extraInLength = stackalloc byte[4];
         BinaryPrimitives.WriteUInt32BigEndian(extraInLength, (uint)extraIn.Length);
 
-        using var sha = NewTagged("MuSig/nonce");
+        // rand' is secret: a wiping hasher, and the digest only ever on the stack (NL-911)
+        using var sha = WipingSha256.CreateTagged("MuSig/nonce");
         sha.Write(rand);
         sha.Write((byte)pubKey.Length);
         sha.Write(pubKey);
@@ -286,7 +288,7 @@ internal static class Bip327
         sha.Write(extraInLength);
         sha.Write(extraIn);
         sha.Write(i);
-        return ScalarFromHash(sha.GetHash());
+        return SecretScalarFromHash(sha);
     }
 
     private static byte[] MessagePrefixed(byte[]? msg)
@@ -301,7 +303,7 @@ internal static class Bip327
         return prefixed;
     }
 
-    private static byte[] PublicNonceOf(Scalar k1, Scalar k2)
+    private static byte[] PublicNonceOf(in Scalar k1, in Scalar k2)
     {
         var pubNonce = new byte[MusigConstants.PublicNonceLen];
         Cbytes(Ctx.EcMultGenContext.MultGen(k1).ToGroupElement(), pubNonce.AsSpan(0, PointLen));
@@ -329,9 +331,16 @@ internal static class Bip327
         // Overwrite the secnonce with zeros such that subsequent calls of sign with the same secnonce fail
         CryptographicOperations.ZeroMemory(secNonce[..MusigConstants.SecretNonceScalarsLen]);
 
+        // Every secret scalar and every intermediate that mixes one in is a named local, cleared on every path (NL-911)
+        var dRaw = Scalar.Zero;
         var d = Scalar.Zero;
         var k1 = Scalar.Zero;
         var k2 = Scalar.Zero;
+        var gd = Scalar.Zero;
+        var bk2 = Scalar.Zero;
+        var ead = Scalar.Zero;
+        var k1Bk2 = Scalar.Zero;
+        var s = Scalar.Zero;
         try
         {
             if (k1Overflow != 0 || k1Raw.IsZero)
@@ -343,24 +352,25 @@ internal static class Bip327
             k1 = evenR ? k1Raw : k1Raw.Negate();
             k2 = evenR ? k2Raw : k2Raw.Negate();
 
-            var dRaw = ScalarInRange(secretKey, "secret key value is out of range.");
+            dRaw = ScalarInRange(secretKey, "secret key value is out of range.");
             var pubKey = Cbytes(Ctx.EcMultGenContext.MultGen(dRaw).ToGroupElement());
             if (!secNonce[MusigConstants.SecretNonceScalarsLen..].SequenceEqual(pubKey))
-            {
-                Scalar.Clear(ref dRaw);
                 throw new MusigException("Public key does not match nonce_gen argument");
-            }
 
             var a = GetSessionKeyAggCoeff(session, pubKey);
             var g = HasEvenY(values.Q) ? Scalar.One : Scalar.MinusOne;
-            d = g.Multiply(values.Gacc).Multiply(dRaw);
+            gd = g.Multiply(values.Gacc);
+            d = gd.Multiply(dRaw);
             Scalar.Clear(ref dRaw);
 
-            var s = k1.Add(values.B.Multiply(k2)).Add(values.E.Multiply(a).Multiply(d));
+            bk2 = values.B.Multiply(k2);
+            ead = values.E.Multiply(a).Multiply(d);
+            k1Bk2 = k1.Add(bk2);
+            s = k1Bk2.Add(ead);
             var partialSig = s.ToBytes();
 
             // Optional correctness check of the reference: the result must pass verification (a fault attack guard)
-            if (!PartialSigVerifyInternal(partialSig, PublicNonceOf(k1Raw, k2Raw), pubKey, session))
+            if (!PartialSigVerifyInternal(partialSig, PublicNonceOf(in k1Raw, in k2Raw), pubKey, session))
                 throw new InvalidOperationException("The MuSig2 partial signature does not verify.");
 
             return partialSig;
@@ -371,7 +381,13 @@ internal static class Bip327
             Scalar.Clear(ref k2Raw);
             Scalar.Clear(ref k1);
             Scalar.Clear(ref k2);
+            Scalar.Clear(ref dRaw);
             Scalar.Clear(ref d);
+            Scalar.Clear(ref gd);
+            Scalar.Clear(ref bk2);
+            Scalar.Clear(ref ead);
+            Scalar.Clear(ref k1Bk2);
+            Scalar.Clear(ref s);
         }
     }
 
@@ -469,23 +485,16 @@ internal static class Bip327
         if (rand is not null && rand.Length != ScalarLen)
             throw new MusigException("The optional byte array rand must have length 32.");
 
-        var skPrime = new byte[ScalarLen];
-        var secNonce = new byte[MusigConstants.SecretNonceLen];
+        Span<byte> skPrime = stackalloc byte[ScalarLen];
+        var secNonce = GC.AllocateArray<byte>(MusigConstants.SecretNonceLen, pinned: true);
         var k1 = Scalar.Zero;
         var k2 = Scalar.Zero;
         try
         {
             if (rand is not null)
-            {
-                var auxHash = TaggedHash("MuSig/aux", rand);
-                for (var i = 0; i < ScalarLen; i++)
-                    skPrime[i] = (byte)(secretKey[i] ^ auxHash[i]);
-                CryptographicOperations.ZeroMemory(auxHash);
-            }
+                MixWithAuxHash(secretKey, rand, skPrime);
             else
-            {
-                secretKey.CopyTo(skPrime, 0);
-            }
+                secretKey.CopyTo(skPrime);
 
             var aggPubKey = GetXOnlyPubKey(KeyAggAndTweak(pubKeys, tweaks));
             k1 = DetNonceHash(skPrime, aggOtherNonce, aggPubKey, msg, 0);
@@ -495,7 +504,7 @@ internal static class Bip327
             if (k1.IsZero || k2.IsZero)
                 throw new InvalidOperationException("A MuSig2 nonce scalar is zero.");
 
-            var pubNonce = PublicNonceOf(k1, k2);
+            var pubNonce = PublicNonceOf(in k1, in k2);
             k1.WriteToSpan(secNonce.AsSpan(0, ScalarLen));
             k2.WriteToSpan(secNonce.AsSpan(ScalarLen, ScalarLen));
             IndividualPubKey(secretKey).CopyTo(secNonce, MusigConstants.SecretNonceScalarsLen);
@@ -559,14 +568,15 @@ internal static class Bip327
         Span<byte> msgLength = stackalloc byte[8];
         BinaryPrimitives.WriteUInt64BigEndian(msgLength, (ulong)msg.Length);
 
-        using var sha = NewTagged("MuSig/deterministic/nonce");
+        // sk' is secret: a wiping hasher, and the digest only ever on the stack (NL-911)
+        using var sha = WipingSha256.CreateTagged("MuSig/deterministic/nonce");
         sha.Write(skPrime);
         sha.Write(aggOtherNonce);
         sha.Write(aggPubKey);
         sha.Write(msgLength);
         sha.Write(msg);
         sha.Write(i);
-        return ScalarFromHash(sha.GetHash());
+        return SecretScalarFromHash(sha);
     }
 
     /// <summary>
@@ -654,6 +664,48 @@ internal static class Bip327
     /// <c>int_from_bytes(hash) % n</c>.
     /// </summary>
     private static Scalar ScalarFromHash(ReadOnlySpan<byte> hash) => new(hash, out _);
+
+    /// <summary>
+    /// <see cref="ScalarFromHash"/> of a secret digest: finishes (and so wipes) <paramref name="sha"/> into a stack
+    /// buffer that is zeroed before returning.
+    /// </summary>
+    private static Scalar SecretScalarFromHash(WipingSha256 sha)
+    {
+        Span<byte> hash = stackalloc byte[WipingSha256.HashLen];
+        try
+        {
+            sha.GetHash(hash);
+            return ScalarFromHash(hash);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(hash);
+        }
+    }
+
+    /// <summary>
+    /// <c>xor(sk, tagged_hash("MuSig/aux", rand))</c> into <paramref name="destination"/>, with the aux digest only on
+    /// the stack (zeroed) and the hasher wiped (NL-903, NL-911).
+    /// </summary>
+    private static void MixWithAuxHash(ReadOnlySpan<byte> secretKey, ReadOnlySpan<byte> rand, Span<byte> destination)
+    {
+        Span<byte> auxHash = stackalloc byte[WipingSha256.HashLen];
+        try
+        {
+            using (var sha = WipingSha256.CreateTagged("MuSig/aux"))
+            {
+                sha.Write(rand);
+                sha.GetHash(auxHash);
+            }
+
+            for (var i = 0; i < ScalarLen; i++)
+                destination[i] = (byte)(secretKey[i] ^ auxHash[i]);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(auxHash);
+        }
+    }
 
     private static Scalar ScalarInRange(ReadOnlySpan<byte> bytes, string error)
     {

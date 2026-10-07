@@ -18,6 +18,7 @@ using Application.Accounting.Backfill;
 using Application.Accounting.Books;
 using Application.Accounting.Financial;
 using Application.Accounting.Prices;
+using Application.Bitcoin.SilentPayments;
 using Application.Channels.Fees;
 using Application.Channels.RoutingPolicies;
 using Application.Channels.Safety.Interfaces;
@@ -114,6 +115,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
     private CrashableTcpService? _tcpService;
     private IFeeService? _feeService;
     private GossipGraphHostedService? _gossipGraph;
+    private SilentPaymentService? _silentPayments;
     private ServiceProvider? _serviceProvider;
     private bool _started;
     private bool _disposed;
@@ -148,6 +150,27 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// <c>rawtx</c> loop, so nothing reacts to unconfirmed spends. Applied on every <see cref="StartAsync"/>.
     /// </summary>
     public bool WatchMempool { get; set; } = true;
+
+    /// <summary>
+    /// <c>Bitcoin:Notifications</c> (NL-1094): <c>Zmq</c> (default) or <c>Poll</c> (RPC only, the ZMQ settings are not
+    /// written; <see cref="WatchMempool"/> then polls <c>gettxspendingprevout</c>). The default comes from the
+    /// environment variable <see cref="ChainNotificationsVariable"/>, so a whole suite runs in poll mode
+    /// (<c>NLTG_CHAIN_NOTIFICATIONS=Poll scripts/run-cluster.sh ...</c>). Applied on every <see cref="StartAsync"/>.
+    /// </summary>
+    public string ChainNotifications { get; set; } = DefaultChainNotifications;
+
+    /// <summary>The environment variable that sets <see cref="ChainNotifications"/> for every test node.</summary>
+    public const string ChainNotificationsVariable = "NLTG_CHAIN_NOTIFICATIONS";
+
+    /// <summary><c>Poll</c> when <see cref="ChainNotificationsVariable"/> says so (any case), <c>Zmq</c> otherwise.</summary>
+    public static string DefaultChainNotifications =>
+        string.Equals(Environment.GetEnvironmentVariable(ChainNotificationsVariable), "Poll",
+                      StringComparison.OrdinalIgnoreCase)
+            ? "Poll"
+            : "Zmq";
+
+    /// <summary>True when the node follows the chain by RPC polling only (<see cref="ChainNotifications"/>).</summary>
+    public bool IsPollMode => string.Equals(ChainNotifications, "Poll", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Last changes to the node's services, applied on every <see cref="StartAsync"/> after the daemon's composition and
@@ -372,6 +395,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
             // As the daemon does: BOLT 5 O8, unconfirmed spends of our outputs (before the monitor's mempool loop)
             Services.GetRequiredService<IMempoolReactor>().Start();
             await BlockchainMonitor.StartAsync(currentHeight, cancellationToken);
+            // Hosted services are started explicitly in this in-process daemon harness. Recovery waits for the live monitor.
+            _silentPayments = Services.GetService<SilentPaymentService>();
+            if (_silentPayments is not null)
+                await _silentPayments.StartAsync(cancellationToken);
             // As the daemon does: drop the retired short channel ids that expired while the node was down (SP2-B)
             retiredScidMap?.PruneExpired(BlockchainMonitor.LastProcessedBlockHeight);
             // As the daemon does: release orphaned withdraw reservations (wave m6 W1)
@@ -422,6 +449,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
         {
             if (_started)
             {
+                if (_silentPayments is not null)
+                    await _silentPayments.StopAsync(CancellationToken.None);
                 await StopSafetyServicesAsync();
                 // As the daemon does: the back-valuation before the books, the books before the sealer (NL-602)
                 await (Services.GetService<PriceValuationService>()?.StopAsync() ?? Task.CompletedTask);
@@ -722,6 +751,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
     {
         try
         {
+            if (_silentPayments is not null)
+                await _silentPayments.StopAsync(CancellationToken.None);
             if (safetyStarted)
             {
                 await StopSafetyServicesAsync();
@@ -773,6 +804,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
         _serviceProvider = null;
         _feeService = null;
         _tcpService = null;
+        _silentPayments = null;
         if (serviceProvider is not null)
             await serviceProvider.DisposeAsync();
 
@@ -800,9 +832,6 @@ public sealed class NLightningTestNode : IAsyncDisposable
             new("Bitcoin:RpcEndpoint", bitcoin.Address.ToString()),
             new("Bitcoin:RpcUser", bitcoin.CredentialString.UserPassword.UserName),
             new("Bitcoin:RpcPassword", bitcoin.CredentialString.UserPassword.Password),
-            new("Bitcoin:ZmqHost", endpoint.ZmqHost),
-            new("Bitcoin:ZmqBlockPort", endpoint.ZmqBlockPort.ToString()),
-            new("Bitcoin:ZmqTxPort", endpoint.ZmqTxPort.ToString()),
             // A block ZMQ never announced (mined before the subscription reached bitcoind, which takes longer to a
             // cluster pod than to Docker's 127.0.0.1 port) is caught up within about 2 s instead of 60 s; the monitor
             // logs a warning each time
@@ -821,6 +850,20 @@ public sealed class NLightningTestNode : IAsyncDisposable
             new("Gossip:MaxMemoryMb", "0"),
             new("Bitcoin:WatchMempool", WatchMempool ? "true" : "false")
         ];
+        if (IsPollMode)
+        {
+            // NL-1094: RPC only, no ZMQ settings at all; polled every second (blocks and, with WatchMempool, the
+            // mempool spends of the watched outputs)
+            inMemoryConfiguration.Add(new("Bitcoin:Notifications", "Poll"));
+            inMemoryConfiguration.Add(new("Bitcoin:PollInterval", "00:00:01"));
+        }
+        else
+        {
+            inMemoryConfiguration.Add(new("Bitcoin:ZmqHost", endpoint.ZmqHost));
+            inMemoryConfiguration.Add(new("Bitcoin:ZmqBlockPort", endpoint.ZmqBlockPort.ToString()));
+            inMemoryConfiguration.Add(new("Bitcoin:ZmqTxPort", endpoint.ZmqTxPort.ToString()));
+        }
+
         // A later source overrides an earlier one, so ExtraConfiguration wins over the defaults above
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(inMemoryConfiguration)
                                                       .AddInMemoryCollection(ExtraConfiguration)

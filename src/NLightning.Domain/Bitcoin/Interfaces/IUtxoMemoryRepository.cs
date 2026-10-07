@@ -14,6 +14,16 @@ public interface IUtxoMemoryRepository
     bool TryGetUtxo(TxId txId, uint index, [MaybeNullWhen(false)] out UtxoModel utxoModel);
     LightningMoney GetConfirmedBalance(uint currentBlockHeight);
     LightningMoney GetUnconfirmedBalance(uint currentBlockHeight);
+
+    /// <summary>
+    /// The wallet outputs with at least <paramref name="minConfirmations"/> confirmations at
+    /// <paramref name="currentBlockHeight"/> (an output mined at the tip has 1; one with no block height, or above the
+    /// tip, has 0, so <paramref name="minConfirmations"/> 0 is every output). Locks and reservations are not checked.
+    /// Only for reports that follow another rule than the wallet's own (LND's 1-confirmation <c>WalletBalance</c>,
+    /// NL-1236): <see cref="GetConfirmedBalance"/> is the node's rule.
+    /// </summary>
+    LightningMoney GetBalanceWithConfirmations(uint currentBlockHeight, uint minConfirmations);
+
     LightningMoney GetLockedBalance();
     void Load(List<UtxoModel> utxoSet);
     /// <summary>
@@ -74,6 +84,10 @@ public interface IUtxoMemoryRepository
 
     /// <summary>Clears the reservation <paramref name="reservationId"/> from every outpoint that carries it.</summary>
     void ReleaseFeeReservation(Guid reservationId);
+
+    /// <summary>A snapshot of every outpoint carrying this reservation, including temporarily missing reorg outputs.</summary>
+    IReadOnlyList<(TxId TxId, uint Index)> GetFeeReservedOutpoints(Guid reservationId) =>
+        throw new NotSupportedException("This wallet repository cannot enumerate fee reservations.");
 
     /// <summary>The fee reservation of an outpoint, if any (the outpoint need not be in the UTXO set).</summary>
     bool TryGetFeeReservation(TxId txId, uint index, out Guid reservationId);

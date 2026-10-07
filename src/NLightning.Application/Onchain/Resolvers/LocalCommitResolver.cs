@@ -639,6 +639,11 @@ public sealed class LocalCommitResolver : IOutputResolver
         if (await FinalHopClaims.GetAcceptedPreimageAsync(context.UnitOfWork, record) is { } accepted)
             return accepted;
 
+        // Settled by the HTLC interceptor while the channel was closing on chain (NL-1182)
+        if (await InterceptorClaims.GetSettledPreimageAsync(context.UnitOfWork, context.Channel.ChannelId, record) is
+            { } intercepted)
+            return intercepted;
+
         var forwards = await context.UnitOfWork.ChannelStateDbRepository.FindHtlcsByOriginAsync(
                            HtlcOrigin.Forwarded(context.Channel.ChannelId, record.Id));
         foreach (var (outgoingChannelId, key) in forwards)

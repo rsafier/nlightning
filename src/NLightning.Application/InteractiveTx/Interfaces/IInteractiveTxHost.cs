@@ -68,6 +68,10 @@ public interface IInteractiveTxHost
     /// </summary>
     CommitNoncesTlv? GetLocalCommitNonces(TxId fundingTxId) => null;
 
+    /// <summary>Whether this negotiation needs commitment nonces bound to its partial funding transaction.
+    /// Hosts opt in for taproot channels; other sessions avoid constructing it on every tx_complete.</summary>
+    bool WantsCommitNonces => false;
+
     /// <summary>
     /// Simple taproot channels (BOLTs PR #1324): the transaction is constructed and the peer's last <c>tx_complete</c>
     /// carried <paramref name="remoteNonces"/> (null for none); called before <see cref="CreateCommitmentSignedAsync"/>.

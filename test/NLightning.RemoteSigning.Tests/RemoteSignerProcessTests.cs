@@ -249,8 +249,10 @@ public sealed class RemoteSignerProcessTests(SignerDaemonFixture daemon) : IClas
         Assert.Throws<RemoteSignerTransportException>(() => new RemoteSignerConnection(options));
     }
 
-    [Fact]
-    public void WholeNodeDependencyGraphUsesRemoteSignerWithoutPrivateKeyProvider()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void WholeNodeDependencyGraphUsesRemoteSignerWithoutPrivateKeyProvider(bool enableSilentPayments)
     {
         using var connection = new RemoteSignerConnection(daemon.Options());
         var keys = new RemoteSecureKeyManager(connection);
@@ -261,11 +263,19 @@ public sealed class RemoteSignerProcessTests(SignerDaemonFixture daemon) : IClas
             ["Database:ConnectionString"] = "Data Source=:memory:",
             ["Signing:Mode"] = "RemoteNative",
             ["Signing:SocketPath"] = daemon.SocketPath,
-            ["Signing:AuthTokenFile"] = Path.Combine(daemon.DirectoryPath, "token")
+            ["Signing:AuthTokenFile"] = Path.Combine(daemon.DirectoryPath, "token"),
+            ["SilentPayments:Enabled"] = enableSilentPayments.ToString()
         }).Build();
         var services = new ServiceCollection();
         services.AddNltgNodeServices(configuration, keys, connection);
         using var provider = services.BuildServiceProvider();
+        if (enableSilentPayments)
+        {
+            var failure = Assert.Throws<Microsoft.Extensions.Options.OptionsValidationException>(() =>
+                provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<NLightning.Domain.Bitcoin.SilentPayments.SilentPaymentsOptions>>().Value);
+            Assert.Contains("Silent-payment scanning and receiving are not supported by the remote signer.", failure.Failures);
+            return;
+        }
         var registeredKeys = provider.GetRequiredService<ISecureKeyManager>();
         Assert.Same(keys, registeredKeys);
         Assert.Throws<NotSupportedException>(() => registeredKeys.GetNodeKeyPair());

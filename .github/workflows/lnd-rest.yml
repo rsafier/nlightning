@@ -1,0 +1,39 @@
+name: LND REST gateway
+
+on:
+  push:
+    paths:
+      - 'tools/lnd-rest/**'
+      - '.github/workflows/lnd-rest.yml'
+  pull_request:
+    paths:
+      - 'tools/lnd-rest/**'
+      - '.github/workflows/lnd-rest.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    env:
+      GOFLAGS: -mod=readonly
+    defaults:
+      run:
+        working-directory: tools/lnd-rest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/lnd-rest/go.mod
+          cache-dependency-path: tools/lnd-rest/go.sum
+      - name: Verify formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Verify modules
+        run: go mod verify
+      - name: Vet
+        run: go vet ./...
+      - name: Test with race detector
+        run: go test -race -count=1 -timeout=5m ./...
+      - name: Build
+        run: go build -trimpath -o "$RUNNER_TEMP/nltg-lnd-rest" .

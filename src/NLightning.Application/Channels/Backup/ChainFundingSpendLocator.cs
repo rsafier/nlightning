@@ -7,6 +7,7 @@ namespace NLightning.Application.Channels.Backup;
 
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
@@ -30,16 +31,24 @@ public sealed class ChainFundingSpendLocator : IFundingSpendLocator
     /// <summary>How many blocks a background search reads between two progress logs.</summary>
     internal const uint ProgressLogBlocks = 1000;
 
+    /// <summary>
+    /// How many P2TR outputs one follow of a simple taproot splice may search for their spends (NL-1059): the chain
+    /// of unrecognized splices is walked output by output, so the search is bounded.
+    /// </summary>
+    public const int MaxTaprootOutputChecks = 32;
+
     private readonly IBitcoinChainService _chain;
     private readonly ChannelBackupOptions _options;
     private readonly ILogger<ChainFundingSpendLocator> _logger;
+    private readonly IMusig2Service? _musig2;
 
     public ChainFundingSpendLocator(IBitcoinChainService chain, IOptions<ChannelBackupOptions>? options = null,
-                                    ILogger<ChainFundingSpendLocator>? logger = null)
+                                    ILogger<ChainFundingSpendLocator>? logger = null, IMusig2Service? musig2 = null)
     {
         _chain = chain;
         _options = options?.Value ?? new ChannelBackupOptions();
         _logger = logger ?? NullLogger<ChainFundingSpendLocator>.Instance;
+        _musig2 = musig2;
     }
 
     /// <inheritdoc />
@@ -56,7 +65,11 @@ public sealed class ChainFundingSpendLocator : IFundingSpendLocator
     /// A pending splice of the backup or our next funding keys against the peer's known keys recognize the output at
     /// once (<see cref="SpliceSpendFollower.TryIdentifyNextFunding"/>); otherwise each spent P2WSH output of the splice
     /// is searched for its spend in the recent window (<see cref="ChannelBackupOptions.RestoreSpendSearchDepth"/>) and
-    /// the 2-of-2 script its witness reveals names our key and the peer's new one.
+    /// the 2-of-2 script its witness reveals names our key and the peer's new one. A simple taproot channel (NL-1059)
+    /// matches the MuSig2 P2TR output of those keys; past a splice whose peer key is unknown, each P2TR output is
+    /// followed spend by spend (at most <see cref="MaxTaprootOutputChecks"/> outputs) until a commitment of the peer
+    /// that pays us (<see cref="SpliceSpendFollower.PaysUsOnTaprootCommitment"/>) or a splice our keys recognize proves
+    /// the path; the funding keys of an output followed that way are not known and stay the last known ones.
     /// </remarks>
     public async Task<ChannelBackupEntry?> FollowSpliceAsync(ChannelBackupEntry entry, OutpointSpentEventArgs spend,
                                                              Func<uint, CompactPubKey?> deriveLocalFundingKey,
@@ -82,14 +95,16 @@ public sealed class ChainFundingSpendLocator : IFundingSpendLocator
             return null;
 
         if (SpliceSpendFollower.TryIdentifyNextFunding(entry, transaction, spend.BlockHeight, spend.TransactionIndex,
-                                                       deriveLocalFundingKey) is { } next)
+                                                       deriveLocalFundingKey, _musig2) is { } next)
             return next;
 
-        // The peer rotated its key too: the witness of the new funding output's spend shows both keys
-        foreach (var vout in SpliceSpendFollower.GetCandidateOutputs(transaction))
+        // The peer rotated its key too: the witness of the new funding output's spend shows both keys (taproot: the
+        // far end of the chain proves the path)
+        var budget = new TaprootCheckBudget();
+        foreach (var vout in SpliceSpendFollower.GetCandidateOutputs(transaction, entry.OptionSimpleTaproot))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var check = await CheckOutputAsync(entry, transaction, spend, vout, deriveLocalFundingKey,
+            var check = await CheckOutputAsync(entry, transaction, spend, vout, deriveLocalFundingKey, budget,
                                                cancellationToken);
             if (check is { Status: SpliceOutputStatus.Followed, Next: { } followed })
                 return followed;
@@ -121,28 +136,35 @@ public sealed class ChainFundingSpendLocator : IFundingSpendLocator
         }
 
         if (outputIndex >= transaction.Outputs.Count
-         || !transaction.Outputs[outputIndex].ScriptPubKey.IsScriptType(ScriptType.P2WSH))
+         || !SpliceSpendFollower.IsCandidate(transaction.Outputs[outputIndex], entry.OptionSimpleTaproot))
             return new SpliceOutputCheck(SpliceOutputStatus.NotTheChannel);
 
         return await CheckOutputAsync(entry, transaction, spend, outputIndex, deriveLocalFundingKey,
-                                      cancellationToken);
+                                      new TaprootCheckBudget(), cancellationToken);
     }
 
     /// <summary>
     /// One P2WSH output of <paramref name="transaction"/> (a spend of <paramref name="entry"/>'s funding that is no
-    /// commitment): unspent, spent with a 2-of-2 witness holding our key (followed), spent otherwise, or unknown.
+    /// commitment): unspent, spent with a 2-of-2 witness holding our key (followed), spent otherwise, or unknown. A
+    /// simple taproot channel's P2TR output goes to <see cref="CheckTaprootOutputAsync"/>.
     /// </summary>
     private async Task<SpliceOutputCheck> CheckOutputAsync(ChannelBackupEntry entry, Transaction transaction,
                                                            OutpointSpentEventArgs spend, ushort vout,
                                                            Func<uint, CompactPubKey?> deriveLocalFundingKey,
+                                                           TaprootCheckBudget budget,
                                                            CancellationToken cancellationToken)
     {
+        if (entry.OptionSimpleTaproot)
+            return await CheckTaprootOutputAsync(entry, transaction, spend, vout, deriveLocalFundingKey, budget, 0,
+                                                 cancellationToken);
+
         var txId = new TxId(transaction.GetHash().ToBytes());
         var output = transaction.Outputs[vout];
         var candidate = SpliceSpendFollower.MoveTo(entry, txId, vout, (ulong)output.Value.Satoshi,
                                                    entry.LocalFundingKeyIndex, entry.LocalFundingPubKey,
                                                    entry.RemoteFundingPubKey, spend.BlockHeight,
-                                                   spend.TransactionIndex);
+                                                   spend.TransactionIndex) with
+        { FundingKeysUnknown = true };
         var location = await SearchAsync(candidate, null, cancellationToken);
         switch (location)
         {
@@ -175,6 +197,93 @@ public sealed class ChainFundingSpendLocator : IFundingSpendLocator
             default:
                 return new SpliceOutputCheck(SpliceOutputStatus.Unknown);
         }
+    }
+
+    /// <summary>
+    /// One P2TR output of <paramref name="transaction"/>, a spend of the simple taproot channel <paramref name="entry"/>
+    /// that no key of the backup recognized (NL-1059): its spend is searched in the recent window. A commitment that pays
+    /// us (<see cref="SpliceSpendFollower.PaysUsOnTaprootCommitment"/>) proves it is the channel's funding (followed);
+    /// another commitment does not. A spend that is no commitment is a splice of ours when our keys recognize one of its
+    /// outputs, else its P2TR outputs are checked the same way (<paramref name="depth"/> + 1): one followed proves the
+    /// whole path. Unspent outputs, unreadable spends and a spent <paramref name="budget"/> leave it undecided
+    /// (<see cref="SpliceOutputStatus.Unknown"/> or <see cref="SpliceOutputStatus.Unspent"/>). The entry followed keeps
+    /// the funding keys and key index it had: a key-path spend names no key.
+    /// </summary>
+    private async Task<SpliceOutputCheck> CheckTaprootOutputAsync(ChannelBackupEntry entry, Transaction transaction,
+                                                                  OutpointSpentEventArgs spend, ushort vout,
+                                                                  Func<uint, CompactPubKey?> deriveLocalFundingKey,
+                                                                  TaprootCheckBudget budget, int depth,
+                                                                  CancellationToken cancellationToken)
+    {
+        var txId = new TxId(transaction.GetHash().ToBytes());
+        var candidate = SpliceSpendFollower.MoveTo(entry, txId, vout, (ulong)transaction.Outputs[vout].Value.Satoshi,
+                                                   entry.LocalFundingKeyIndex, entry.LocalFundingPubKey,
+                                                   entry.RemoteFundingPubKey, spend.BlockHeight,
+                                                   spend.TransactionIndex) with
+        { FundingKeysUnknown = true };
+        if (!budget.TryTake())
+            return new SpliceOutputCheck(SpliceOutputStatus.Unknown);
+
+        var location = await SearchAsync(candidate, null, cancellationToken);
+        if (location.Status == FundingSpendStatus.Unspent)
+            return new SpliceOutputCheck(SpliceOutputStatus.Unspent);
+        if (location is not { Status: FundingSpendStatus.SpentFound, Spend: { } outputSpend })
+            return new SpliceOutputCheck(SpliceOutputStatus.Unknown);
+
+        Transaction spender;
+        try
+        {
+            spender = Transaction.Load(outputSpend.SpendingTransaction.RawTxBytes, Network.Main);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "The spend of output {Vout} of {TxId} (channel {ChannelId}) can't be read", vout, txId,
+                               entry.ChannelId);
+            return new SpliceOutputCheck(SpliceOutputStatus.Unknown);
+        }
+
+        if (SpliceSpendFollower.IsCommitment(spender))
+        {
+            if (!SpliceSpendFollower.PaysUsOnTaprootCommitment(spender, entry.LocalPaymentBasepoint))
+                return new SpliceOutputCheck(SpliceOutputStatus.NotTheChannel);
+
+            _logger.LogWarning("Output {Vout} of {TxId} is the funding of simple taproot channel {ChannelId}: the peer's "
+                             + "commitment {CommitmentTxId} spends it and pays us; its funding keys are not known (a "
+                             + "key-path spend names none)", vout, txId, entry.ChannelId,
+                               outputSpend.SpendingTransaction.TxId);
+            return new SpliceOutputCheck(SpliceOutputStatus.Followed, candidate);
+        }
+
+        if (depth + 1 >= SpliceSpendFollower.MaxSplices)
+            return new SpliceOutputCheck(SpliceOutputStatus.Unknown);
+
+        // A later splice our keys recognize proves this output was the channel's
+        if (SpliceSpendFollower.TryIdentifyNextFunding(candidate, spender, outputSpend.BlockHeight,
+                                                       outputSpend.TransactionIndex, deriveLocalFundingKey, _musig2)
+            is not null)
+            return new SpliceOutputCheck(SpliceOutputStatus.Followed, candidate);
+
+        var undecided = false;
+        foreach (var next in SpliceSpendFollower.GetCandidateOutputs(spender, true))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var check = await CheckTaprootOutputAsync(candidate, spender, outputSpend, next, deriveLocalFundingKey,
+                                                      budget, depth + 1, cancellationToken);
+            if (check.Status == SpliceOutputStatus.Followed)
+                return new SpliceOutputCheck(SpliceOutputStatus.Followed, candidate);
+            if (check.Status != SpliceOutputStatus.NotTheChannel)
+                undecided = true;
+        }
+
+        return new SpliceOutputCheck(undecided ? SpliceOutputStatus.Unknown : SpliceOutputStatus.NotTheChannel);
+    }
+
+    /// <summary>The outputs one taproot follow may still search (<see cref="MaxTaprootOutputChecks"/>).</summary>
+    private sealed class TaprootCheckBudget
+    {
+        private int _left = MaxTaprootOutputChecks;
+
+        public bool TryTake() => _left-- > 0;
     }
 
     /// <summary>

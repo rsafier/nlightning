@@ -49,6 +49,29 @@ public class BitcoinChainServiceUnspentOutputTests
         Assert.Equal(0, node.Calls("getblockheader"));
     }
 
+    [Fact]
+    public void Given_RbitcoinsAsmNotation_When_TheAnswerIsParsed_Then_TheScriptComesFromItsHex()
+    {
+        // Arrange (NL-1097): rbitcoin writes rust-bitcoin's asm, which NBitcoin's GetTxOutAsync could not parse
+        var script = new Key().PubKey.WitHash.ScriptPubKey;
+        var answer = Newtonsoft.Json.Linq.JObject.Parse($$"""
+            {"bestblock":"{{BestBlock}}","confirmations":2,"value":0.01,
+             "scriptPubKey":{"hex":"{{script.ToHex()}}","asm":"OP_0 OP_PUSHBYTES_20 {{script.ToHex()[4..]}}"},
+             "coinbase":false}
+            """);
+
+        // Act
+        var parsed = Bitcoin.Wallet.BitcoinChainService.ParseTxOutResponse(answer);
+
+        // Assert
+        Assert.NotNull(parsed);
+        Assert.Equal(uint256.Parse(BestBlock), parsed.Value.BestBlock);
+        Assert.Equal(2, parsed.Value.Confirmations);
+        Assert.Equal(Money.Satoshis(1_000_000), parsed.Value.Output.Value);
+        Assert.Equal(script, parsed.Value.Output.ScriptPubKey);
+        Assert.Null(Bitcoin.Wallet.BitcoinChainService.ParseTxOutResponse(Newtonsoft.Json.Linq.JValue.CreateNull()));
+    }
+
     private static string Answer(string method) => method switch
     {
         "gettxout" => TxOut(Confirmations),

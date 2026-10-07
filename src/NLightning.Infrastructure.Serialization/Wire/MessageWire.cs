@@ -36,7 +36,6 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
     private readonly bool _strictEmptyExtension;
     private readonly bool _keepRawExtension;
     private readonly bool _wrapBodyErrors;
-    private ITlvConverterFactory? _converters;
 
     internal MessageWire(MessageTypes type, WireEncode<TMessage> encodeBody, WireDecode<TMessage> decodeBody,
                        params TlvDef[] tlvs)
@@ -74,11 +73,7 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
 
     public override Type MessageType => typeof(TMessage);
 
-    /// <summary>
-    /// Binds the TLV converter factory the registry was built with. Called once by <see cref="WireRegistry"/>
-    /// before first use; typed TLV decoding without a bound factory is a programming error.
-    /// </summary>
-    internal override void Bind(ITlvConverterFactory converters) => _converters = converters;
+    public override IEnumerable<TlvDef> TlvDefinitions => _tlvsByType.Values;
 
     /// <summary>Encodes the message (payload fields, then the extension records) straight onto the stream.</summary>
     private void Encode(TMessage message, Stream stream)
@@ -182,24 +177,14 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
                     $"TLV type {tlv.Type.Value} is not greater than the previous type {previous.Value}.");
             previousType = tlv.Type;
 
-            // Typed TLVs are converted through their registered converter, exactly as TlvStreamSerializer did —
-            // some typed TLVs (e.g. fee_range) only compute their wire bytes in ConvertToBase
-            var baseTlv = tlv.GetType() == typeof(BaseTlv) ? tlv : ConvertToBase(tlv);
+            // The message's value definition encodes typed records (fee_range computes its bytes here).
+            var baseTlv = tlv.GetType() == typeof(BaseTlv) ? tlv : _tlvsByType.TryGetValue(tlv.Type, out var def) && def.RuntimeType == tlv.GetType()
+                ? def.Encode(tlv)
+                : throw new SerializationException($"No definition found for tlv type {tlv.GetType().Name}");
             writer.BigSize(baseTlv.Type.Value);
             writer.BigSize((ulong)baseTlv.Length.Value);
             writer.Bytes(baseTlv.Value);
         }
-    }
-
-    private BaseTlv ConvertToBase(BaseTlv tlv)
-    {
-        var converters = _converters
-                      ?? throw new InvalidOperationException(
-                             $"The wire definition of {typeof(TMessage).Name} was not bound to a converter factory");
-
-        return converters.GetConverter(tlv.GetType())
-                    ?.ConvertToBase(tlv)
-               ?? throw new SerializationException($"No converter found for tlv type {tlv.GetType().Name}");
     }
 
     private WireTlvs ReadTlvs(ref WireReader reader)
@@ -216,10 +201,6 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
 
     private WireTlvs ReadTlvsCore(ref WireReader reader)
     {
-        var converters = _converters
-                      ?? throw new InvalidOperationException(
-                             $"The wire definition of {typeof(TMessage).Name} was not bound to a converter factory");
-
         var typed = new Dictionary<BigSize, object?>();
         var raws = new Dictionary<BigSize, BaseTlv>();
         ReadOnlyMemory<byte>? rawBytes = _keepRawExtension ? reader.RemainingBytes().ToArray() : null;
@@ -245,7 +226,7 @@ public sealed class MessageWire<TMessage> : MessageWireBase, IMessageTypeSeriali
             raws[type] = raw;
 
             if (_tlvsByType.TryGetValue(type, out var def))
-                typed[type] = def.Decode(raw, converters);
+                typed[type] = def.DecodeStrict(raw);
             // BOLT 1: an unknown even type MUST fail the stream; the known set is the definition's TLV table
             else if (type.Value % 2 == 0)
                 throw new SerializationException($"Unknown even TLV type {type.Value}.");
@@ -270,105 +251,6 @@ internal delegate WireConstruct<TMessage> WireDecode<TMessage>(ref WireReader re
 /// <summary>Constructs the message from the decoded extension's typed TLVs.</summary>
 internal delegate TMessage WireConstruct<TMessage>(WireTlvs tlvs)
     where TMessage : class, IMessage;
-
-/// <summary>
-/// One entry of a message's TLV table: the wire type, whether an unknown record of it is tolerated (odd advisory
-/// TLVs whose value may be malformed, like init's <c>remote_addr</c>), and how the typed TLV is built from the raw
-/// record. Typed TLVs decode through the registered <c>ITlvConverter</c> — the same code the hand-written
-/// serializers used, so the typed values cannot drift.
-/// </summary>
-public sealed class TlvDef
-{
-    private delegate object? DecodeDelegate(BaseTlv raw, ITlvConverterFactory converters);
-
-    private readonly DecodeDelegate? _decode;
-
-    private TlvDef(BigSize type, DecodeDelegate? decode)
-    {
-        Type = type;
-        _decode = decode;
-    }
-
-    public BigSize Type { get; }
-
-    public bool IsLenient { get; private init; }
-
-    /// <summary>A typed TLV decoded through its registered converter; a decode failure fails the message.</summary>
-    public static TlvDef Typed<TTlv>(BigSize type) where TTlv : BaseTlv
-    {
-        return new TlvDef(type, (raw, converters) =>
-        {
-            var converter = converters.GetConverter<TTlv>()
-                         ?? throw new SerializationException($"No converter found for tlv type {nameof(TTlv)}");
-            return converter.ConvertFromBase(raw);
-        });
-    }
-
-    /// <summary>
-    /// A raw TLV with an exact value length and no Domain type or converter: the record marks the type known
-    /// (BOLT 1 unknown-even rejection), enforces the length like the legacy hand-parsers did, and exposes the
-    /// value bytes via <c>Get&lt;byte[]&gt;</c> (the closing pair's 64/98/32-byte signatures, closing_tlvs 1-7).
-    /// </summary>
-    public static TlvDef Raw(BigSize type, int exactLength)
-    {
-        return new TlvDef(type, (raw, _) =>
-        {
-            if (raw.Value.Length != exactLength)
-                throw new SerializationException(
-                    $"TLV type {type.Value} holds {raw.Value.Length} bytes, not {exactLength}");
-            return raw.Value;
-        });
-    }
-
-    /// <summary>
-    /// A known raw record of any length with no Domain type or converter (the gossip-query TLVs: query_flags 1,
-    /// query_option 1, reply_channel_range timestamps 1 / checksums 3 — all odd, all kept as raw bytes): it marks
-    /// the type known (BOLT 1 unknown-even rejection) and exposes the value bytes via <c>Get&lt;byte[]&gt;</c>.
-    /// </summary>
-    public static TlvDef RawKnown(BigSize type)
-    {
-        return new TlvDef(type, (raw, _) => raw.Value);
-    }
-
-    /// <summary>
-    /// An advisory TLV: a decode failure leaves the typed value null and the raw record available via
-    /// <see cref="WireTlvs.RawValue"/> (init's undecodable <c>remote_addr</c> / liquidity-ads rates, NL-344).
-    /// </summary>
-    public static TlvDef Lenient<TTlv>(BigSize type) where TTlv : BaseTlv
-    {
-        return new TlvDef(type, (raw, converters) =>
-        {
-            var converter = converters.GetConverter<TTlv>()
-                         ?? throw new SerializationException($"No converter found for tlv type {nameof(TTlv)}");
-            try
-            {
-                return converter.ConvertFromBase(raw);
-            }
-            catch (Exception e) when (e is InvalidCastException or ArgumentException)
-            {
-                return null;
-            }
-        })
-        {
-            IsLenient = true
-        };
-    }
-
-    internal object? Decode(BaseTlv raw, ITlvConverterFactory converters)
-    {
-        if (_decode is null)
-            return raw;
-
-        try
-        {
-            return _decode(raw, converters);
-        }
-        catch (Exception e) when (!IsLenient && e is not SerializationException)
-        {
-            throw new SerializationException($"Error deserializing TLV type {Type.Value}", e);
-        }
-    }
-}
 
 /// <summary>
 /// The decoded extension of one message: the typed TLVs and the raw records, both keyed by wire type. The
@@ -401,6 +283,9 @@ public sealed class WireTlvs
     {
         return _typed.TryGetValue(type, out var value) ? value as T : null;
     }
+
+    /// <summary>Every record the extension carried (known and unknown odd ones), in wire order.</summary>
+    public IEnumerable<BaseTlv> RawRecords => _raws.Values.OrderBy(r => r.Type.Value);
 
     /// <summary>The raw value of the record of <paramref name="type"/>, or null when the message carried none.</summary>
     public byte[]? RawValue(BigSize type)

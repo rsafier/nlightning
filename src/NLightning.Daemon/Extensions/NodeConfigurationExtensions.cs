@@ -645,10 +645,26 @@ public static class NodeConfigurationExtensions
                    "RunMigrations": false,
                    "EnableSensitiveQueryLogging": false
                  },
+                 "SilentPayments": {
+                   "Enabled": false,
+                   "Send": true,
+                   "Receive": true,
+                   "AllowMainnet": false,
+                   "AvoidMixing": true,
+                   "ChangeToSilentPayment": false,
+                   "MinSendSat": 546,
+                   "MinReceiveSat": 1000,
+                   "MaxLabels": 1000,
+                   "RecoveryLabelCount": 100,
+                   "BirthdayHeight": null,
+                   "RescanBlocksPerSecond": 0,
+                   "PrevoutSource": "Auto"
+                 },
                  "Bitcoin": {
                    "RpcEndpoint": "http://localhost:{{RPC_PORT}}",
                    "RpcUser": "bitcoinrpc",
                    "RpcPassword": "your_rpc_password",
+                   "Notifications": "Zmq",
                    "ZmqHost": "{{ZMQ_HOST}}",
                    "ZmqBlockPort": {{ZMQ_BLOCK_PORT}},
                    "ZmqTxPort": {{ZMQ_TX_PORT}}

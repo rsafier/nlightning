@@ -236,7 +236,7 @@ public class LocalLightningSignerSweepTests
     {
         // Arrange: the default (non-overridden) basepoint derivation from the channel key
         var keyManager = new Mock<ISecureKeyManager>();
-        keyManager.Setup(k => k.GetChannelKeyAtIndex(0)).Returns(ExtKey.CreateFromSeed(new byte[32]).ToBytes());
+        keyManager.Setup(k => k.GetChannelKeyAtIndex(0)).Returns(() => ExtKey.CreateFromSeed(new byte[32]).ToBytes());
         var signer = new LocalLightningSigner(new FundingOutputBuilder(),
                                               new KeyDerivationService(new Secp256K1Math()),
                                               NullLogger<LocalLightningSigner>.Instance, new NodeOptions(),

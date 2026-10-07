@@ -23,17 +23,35 @@ public sealed class HtlcInterceptorSettings
 
     /// <summary>The most forwards held at once.</summary>
     public int MaxHeld { get; set; } = 1000;
+
+    /// <summary>
+    /// Forwards wait for an interceptor (LND's <c>requireinterceptor</c>, NL-1182): without a client a new forward is
+    /// failed with <c>temporary_channel_failure</c> and a replayed one held; a disconnect keeps every hold.
+    /// </summary>
+    public bool RequireInterceptor { get; set; }
 }
 
 /// <summary>How <see cref="HtlcInterceptorHub.ResolveAsync"/> ended.</summary>
 public enum InterceptResolveResult
 {
-    /// <summary>The resolution was carried out (or attempted: a refused channel operation is logged).</summary>
+    /// <summary>The resolution was carried out.</summary>
     Resolved,
+
+    /// <summary>The operation failed; the forward remains held and expiry protection remains active.</summary>
+    Failed,
+
+    /// <summary>Another resolution is executing for this circuit.</summary>
+    InProgress,
 
     /// <summary>No forward with that key is held (LND's <c>ErrFwdNotExists</c>).</summary>
     NotFound,
 
     /// <summary>A settle whose preimage does not match the payment hash; the forward stays held.</summary>
-    PreimageMismatch
+    PreimageMismatch,
+
+    /// <summary>
+    /// A resume or fail of a forward held on chain (its incoming channel is closing on chain): only a settle is possible
+    /// (LND's <c>ErrCannotResumeOnChain</c>/<c>ErrCannotFailOnChain</c>, NL-1182); the forward stays held.
+    /// </summary>
+    NotAllowedOnChain
 }

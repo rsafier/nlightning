@@ -53,6 +53,7 @@ public class UnitOfWork : IUnitOfWork
     private WatchedTransactionDbRepository? _watchedTransactionDbRepository;
     private WalletAddressesDbRepository? _walletAddressesDbRepository;
     private UtxoDbRepository? _utxoDbRepository;
+    private SilentPaymentDbRepository? _silentPaymentDbRepository;
     private FeeInputReservationDbRepository? _feeInputReservationDbRepository;
 
     // On-chain repositories
@@ -61,6 +62,7 @@ public class UnitOfWork : IUnitOfWork
     private BlockHeaderDbRepository? _blockHeaderDbRepository;
     private RevokedCommitmentDbRepository? _revokedCommitmentDbRepository;
     private OnchainResolutionDbRepository? _onchainResolutionDbRepository;
+    private OnchainHtlcObservationDbRepository? _onchainHtlcObservationDbRepository;
 
     // Channel repositories
     private ChannelConfigDbRepository? _channelConfigDbRepository;
@@ -124,6 +126,8 @@ public class UnitOfWork : IUnitOfWork
         _walletAddressesDbRepository ??= new WalletAddressesDbRepository(_context);
 
     public IUtxoDbRepository UtxoDbRepository => _utxoDbRepository ??= new UtxoDbRepository(_context);
+    public ISilentPaymentDbRepository SilentPaymentDbRepository =>
+        _silentPaymentDbRepository ??= new SilentPaymentDbRepository(_context);
 
     public IFeeInputReservationDbRepository FeeInputReservationDbRepository =>
         _feeInputReservationDbRepository ??= new FeeInputReservationDbRepository(_context);
@@ -142,6 +146,9 @@ public class UnitOfWork : IUnitOfWork
 
     public IOnchainResolutionDbRepository OnchainResolutionDbRepository =>
         _onchainResolutionDbRepository ??= new OnchainResolutionDbRepository(_context);
+
+    public IOnchainHtlcObservationDbRepository OnchainHtlcObservationDbRepository =>
+        _onchainHtlcObservationDbRepository ??= new OnchainHtlcObservationDbRepository(_context);
 
     public IChannelConfigDbRepository ChannelConfigDbRepository =>
         _channelConfigDbRepository ??= new ChannelConfigDbRepository(_context);
@@ -165,6 +172,18 @@ public class UnitOfWork : IUnitOfWork
 
     public IPeerDbRepository PeerDbRepository =>
         _peerDbRepository ??= new PeerDbRepository(_context);
+
+    private ImportedTapscriptDbRepository? _importedTapscriptDbRepository;
+    public Domain.Bitcoin.Wallet.Interfaces.IImportedTapscriptDbRepository ImportedTapscriptDbRepository =>
+        _importedTapscriptDbRepository ??= new ImportedTapscriptDbRepository(_context);
+
+    private WalletTransactionDbRepository? _walletTransactionDbRepository;
+    public Domain.Bitcoin.Wallet.Interfaces.IWalletTransactionDbRepository WalletTransactionDbRepository =>
+        _walletTransactionDbRepository ??= new WalletTransactionDbRepository(_context);
+
+    private KeyRingDbRepository? _keyRingDbRepository;
+    public Domain.Crypto.KeyRing.IKeyRingDbRepository KeyRingDbRepository =>
+        _keyRingDbRepository ??= new KeyRingDbRepository(_context);
 
     public IPeerStorageDbRepository PeerStorageDbRepository =>
         _peerStorageDbRepository ??= new PeerStorageDbRepository(_context);

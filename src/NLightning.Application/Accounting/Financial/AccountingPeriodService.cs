@@ -260,6 +260,9 @@ public sealed class AccountingPeriodService : IAccountingPeriods, IAccountingAdj
     public async Task<IReadOnlyList<AccountingCloseVerification>> VerifyClosesAsync(
         CancellationToken cancellationToken = default)
     {
+        // A close digest combines several reads, including remaining lots plus subsequent reliefs. Financial
+        // writers must not change those rows between queries or an intact close can appear corrupted.
+        using var held = await EnterAsync(cancellationToken);
         using var scope = _scopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var closed = (await unitOfWork.AccountingPeriodDbRepository.ListAsync(cancellationToken))

@@ -273,6 +273,29 @@ public sealed class OrphanUpdateCache
         }
     }
 
+    /// <summary>The v2 nodes waiting for their first channel, including entries awaiting refresh.</summary>
+    public IReadOnlyList<CompactPubKey> NodeIds2
+    {
+        get
+        {
+            lock (_lock)
+                return _nodes2.Keys.ToList();
+        }
+    }
+
+    /// <summary>Renews a pending v2 node's orphaned announcement until its channel promotes (NL-1146).</summary>
+    public bool RefreshNodeAnnouncement2(CompactPubKey nodeId)
+    {
+        lock (_lock)
+        {
+            if (!_nodes2.TryGetValue(nodeId, out var existing))
+                return false;
+
+            _nodes2[nodeId] = existing with { AddedAt = _timeProvider.GetUtcNow() };
+            return true;
+        }
+    }
+
     /// <summary>Drops the expired entries; returns how many.</summary>
     public int PruneExpired()
     {

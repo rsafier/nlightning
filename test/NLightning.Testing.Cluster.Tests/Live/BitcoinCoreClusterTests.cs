@@ -32,13 +32,12 @@ public class BitcoinCoreClusterTests
     private static RegtestChainOptions ChainOptions => new() { Log = Log, DefaultTimeout = s_waitTimeout };
 
     [Theory(Explicit = true)]
-    [InlineData("29.0")]
     [InlineData("31.1")]
     public async Task Given_ACluster_When_BitcoindIsDeployedAndMines101Blocks_Then_TheHostReadsTheTip(string version)
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
-        var image = version == "29.0" ? ImageVersions.BitcoinCore : ImageVersions.BitcoinCore31;
+        var image = ImageVersions.BitcoinCore;
         var watch = Stopwatch.StartNew();
         await using var run = await TestRun.StartAsync(Options($"chain-{version.Replace('.', '-')}"), ct);
 

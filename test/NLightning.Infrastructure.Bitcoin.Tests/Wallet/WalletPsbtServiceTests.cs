@@ -1,6 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
+using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
 
@@ -30,7 +32,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// work: leases are reservations, only leased wallet inputs are signed, and every signature is checked here with
 /// NBitcoin's script interpreter.
 /// </summary>
-public class WalletPsbtServiceTests : IDisposable
+public partial class WalletPsbtServiceTests : IDisposable
 {
     private const uint Height = 200;
 
@@ -56,6 +58,7 @@ public class WalletPsbtServiceTests : IDisposable
     private readonly List<FeeInputReservation> _stored = [];
     private readonly List<BroadcastTransactionModel> _published = [];
     private readonly SettableTime _time = new();
+    private readonly RecordingLogger<WalletPsbtService> _logger = new();
     private readonly FeeInputSelector _selector;
     private readonly WalletPsbtService _service;
     private long _reserveSat;
@@ -93,6 +96,13 @@ public class WalletPsbtServiceTests : IDisposable
                    .Returns((uint index, bool isChange) => GetP2WpkhExtKey(index, isChange).ToBytes());
         _keyManager.Setup(k => k.GetDepositP2TrKeyAtIndex(It.IsAny<uint>(), It.IsAny<bool>()))
                    .Returns((uint index, bool isChange) => GetP2TrExtKey(index, isChange).ToBytes());
+        // NL-1186: the accounts the PSBT key paths are derived from (P2WPKH at m, P2TR at m/2)
+        var fingerprint = s_masterKey.Neuter().PubKey.GetHDFingerPrint().ToBytes();
+        _keyManager.Setup(k => k.GetDepositAccount(AddressType.P2Wpkh))
+                   .Returns(new DepositAccountInfo(s_masterKey.Neuter().ToString(Network.RegTest), "m", fingerprint));
+        _keyManager.Setup(k => k.GetDepositAccount(AddressType.P2Tr))
+                   .Returns(new DepositAccountInfo(s_masterKey.Derive(2).Neuter().ToString(Network.RegTest), "m/2",
+                                                   fingerprint));
 
         var services = new ServiceCollection();
         services.AddScoped(_ => _unitOfWork.Object);
@@ -103,13 +113,79 @@ public class WalletPsbtServiceTests : IDisposable
         _selector = new FeeInputSelector(_utxos, scopeFactory, nodeOptions, NullLogger<FeeInputSelector>.Instance);
         var signer = new LocalLightningSigner(Mock.Of<IFundingOutputBuilder>(), Mock.Of<IKeyDerivationService>(),
                                               NullLogger<LocalLightningSigner>.Instance, nodeOptions.Value,
-                                              _keyManager.Object, _utxos);
+                                              new SilentPaymentTestKeys(_keyManager.Object), _utxos);
         _service = new WalletPsbtService(_selector, _anchorReserve.Object, _utxos, signer, _monitor.Object,
-                                         scopeFactory, nodeOptions, NullLogger<WalletPsbtService>.Instance,
-                                         _chain.Object, _time);
+                                         scopeFactory, nodeOptions, _logger,
+                                         _chain.Object, _time, _keyManager.Object);
     }
 
     public void Dispose() => _service.Dispose();
+
+    [Fact]
+    public async Task Given_ASilentPaymentCoin_When_ListUnspent_Then_ItIsShownAsAnOrdinaryTaprootOutput()
+    {
+        // Arrange
+        var (model, prevOut) = AddSilentPaymentUtxo();
+
+        // Act
+        var outputs = await _service.ListUnspentAsync(1, uint.MaxValue, Ct);
+
+        // Assert
+        var output = Assert.Single(outputs);
+        Assert.Equal(AddressType.P2Tr, output.AddressType);
+        Assert.Equal(prevOut.ScriptPubKey.ToBytes(), (byte[])output.ScriptPubKey);
+        Assert.StartsWith("bcrt1p", output.Address);
+    }
+
+    [Fact]
+    public async Task Given_AFundedSilentPaymentPsbt_When_FinalizedAndPublished_Then_TheRawKeySpendVerifies()
+    {
+        // Arrange: explicit coin selection exercises leases, PSBT signing and publishing together.
+        var (model, prevOut) = AddSilentPaymentUtxo();
+        var funded = await _service.FundPsbtAsync(Request(20_000) with
+        {
+            Inputs = [(model.TxId, model.Index)]
+        }, Ct);
+        var psbt = PSBT.Load(funded.Psbt, Network.RegTest);
+        Assert.Null(psbt.Inputs[0].TaprootInternalKey);
+        Assert.Empty(psbt.Inputs[0].HDKeyPaths);
+        Assert.Empty(psbt.Inputs[0].HDTaprootKeyPaths);
+
+        // Act
+        var finalized = await _service.FinalizePsbtAsync(funded.Psbt, Ct);
+        var tx = Transaction.Load(finalized.RawFinalTx, Network.RegTest);
+
+        // Assert: the witness spends P directly, with no BIP86 tweak.
+        Assert.True(tx.CreateValidator([prevOut]).ValidateInput(0).Error is null or ScriptError.OK);
+        await _service.PublishAsync(finalized.RawFinalTx, "silent payment", Ct);
+        Assert.Single(_published);
+    }
+
+    private (UtxoModel Model, TxOut PrevOut) AddSilentPaymentUtxo()
+    {
+        using var key = new Key(SilentPaymentTestKeys.RawScalar());
+        var outputKey = key.PubKey.ToBytes().AsSpan(1).ToArray();
+        var model = new UtxoModel(new SilentPaymentOutputModel(RandomUtils.GetUInt256().ToBytes(), 0,
+            outputKey, Convert.FromHexString(new string('0', 63) + "1"), null, 100_000, 100,
+            new Domain.Crypto.ValueObjects.Hash(new byte[32])));
+        _utxos.Add(model);
+        return (model, new TxOut(Money.Satoshis(100_000), new Script([0x51, 0x20, .. outputKey])));
+    }
+
+    private sealed class SilentPaymentTestKeys(ISecureKeyManager deposit) : ISecureKeyManager
+    {
+        public static byte[] RawScalar() => Enumerable.Repeat((byte)10, 32).ToArray();
+        public byte[] GetSilentPaymentSpendKey(ReadOnlySpan<byte> tweak32, uint? label) => RawScalar();
+        public BitcoinKeyPath ChannelKeyPath => deposit.ChannelKeyPath;
+        public uint HeightOfBirth => deposit.HeightOfBirth;
+        public ExtPrivKey GetNextChannelKey(out uint index) => deposit.GetNextChannelKey(out index);
+        public ExtPrivKey GetChannelKeyAtIndex(uint index) => deposit.GetChannelKeyAtIndex(index);
+        public ExtPrivKey GetDepositP2TrKeyAtIndex(uint index, bool isChange) => deposit.GetDepositP2TrKeyAtIndex(index, isChange);
+        public ExtPrivKey GetDepositP2WpkhKeyAtIndex(uint index, bool isChange) => deposit.GetDepositP2WpkhKeyAtIndex(index, isChange);
+        public Domain.Crypto.ValueObjects.CryptoKeyPair GetNodeKeyPair() => deposit.GetNodeKeyPair();
+        public Domain.Crypto.ValueObjects.CompactPubKey GetNodePubKey() => deposit.GetNodePubKey();
+        public void ComputeNodeSharedSecret(ReadOnlySpan<byte> publicKey, Span<byte> sharedSecret) => deposit.ComputeNodeSharedSecret(publicKey, sharedSecret);
+    }
 
     [Fact]
     public async Task Given_AWallet_When_FundingAPsbt_Then_TheInputsAreLeasedAndTheChangeAdded()
@@ -353,6 +429,50 @@ public class WalletPsbtServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ATransactionWithoutWalletInputs_When_PublishedFirst_Then_ItIsLoggedAsPublished()
+    {
+        // Arrange
+        var foreign = Network.RegTest.CreateTransaction();
+        foreign.Inputs.Add(new TxIn(new OutPoint(RandomUtils.GetUInt256(), 0)));
+        foreign.Outputs.Add(Money.Satoshis(10_000), s_destination);
+
+        // Act
+        var published = await _service.PublishAsync(foreign.ToBytes(), null, Ct);
+
+        // Assert
+        Assert.True(published);
+        Assert.Contains(_logger.At(LogLevel.Information),
+                        m => m == $"Published transaction {foreign.GetHash()} (no wallet input)");
+        Assert.DoesNotContain(_logger.Entries, e => e.Message.Contains("already known"));
+    }
+
+    [Theory]
+    [InlineData(NBitcoin.RPC.RPCErrorCode.RPC_VERIFY_ALREADY_IN_CHAIN, "Transaction outputs already in utxo set")]
+    [InlineData(NBitcoin.RPC.RPCErrorCode.RPC_VERIFY_ALREADY_IN_CHAIN, "txn-already-in-mempool")]
+    [InlineData(NBitcoin.RPC.RPCErrorCode.RPC_VERIFY_REJECTED, "txn-already-known")]
+    public async Task Given_BitcoindAlreadyHasATransactionWithoutWalletInputs_When_Republished_Then_ItSucceedsAsKnown(
+        NBitcoin.RPC.RPCErrorCode code, string reason)
+    {
+        // Arrange: loopd publishes its sweep again every block until it confirms (NL-1236)
+        var foreign = Network.RegTest.CreateTransaction();
+        foreign.Inputs.Add(new TxIn(new OutPoint(RandomUtils.GetUInt256(), 0)));
+        foreign.Outputs.Add(Money.Satoshis(10_000), s_destination);
+        _chain.Setup(c => c.SendTransactionAsync(It.IsAny<Transaction>()))
+              .ThrowsAsync(new NBitcoin.RPC.RPCException(code, reason, null!));
+
+        // Act
+        var published = await _service.PublishAsync(foreign.ToBytes(), null, Ct);
+
+        // Assert
+        Assert.True(published);
+        Assert.Empty(_published);
+        Assert.Contains(_logger.At(LogLevel.Debug),
+                        m => m == $"Transaction {foreign.GetHash()} (no wallet input) is already known to bitcoind");
+        Assert.DoesNotContain(_logger.Entries, e => e.Message.StartsWith("Published transaction"));
+        Assert.Empty(_logger.At(LogLevel.Warning));
+    }
+
+    [Fact]
     public async Task Given_BitcoindRefusesASpend_When_Published_Then_ItIsLndsErrorAndNothingIsStored()
     {
         // Arrange: LND returns an RPC error for a refused publish and keeps nothing (lndclient ignores publish_error)
@@ -440,7 +560,7 @@ public class WalletPsbtServiceTests : IDisposable
         s_masterKey.Derive(isChange ? 1u : 0u).Derive(index);
 
     private static ExtKey GetP2TrExtKey(uint index, bool isChange) =>
-        s_masterKey.Derive(isChange ? 3u : 2u).Derive(index);
+        s_masterKey.Derive(2).Derive(isChange ? 1u : 0u).Derive(index);
 
     private (UtxoModel Model, OutPoint OutPoint, TxOut TxOut) AddWalletUtxo(AddressType type, uint index,
                                                                            long amountSat, uint blockHeight = 100)

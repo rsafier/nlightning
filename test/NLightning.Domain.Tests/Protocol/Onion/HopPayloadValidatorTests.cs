@@ -125,16 +125,18 @@ public class HopPayloadValidatorTests
     }
 
     [Fact]
-    public void Given_FinalNonBlindedPayloadWithoutPaymentData_When_Validating_Then_FailsWithType8()
+    public void Given_FinalNonBlindedPayloadWithoutPaymentData_When_Validating_Then_Succeeds()
     {
-        // Arrange (BOLT 4: the final node MUST return an error if total_msat is not present)
+        // Arrange (NL-1233: the final hop processor answers it with incorrect_or_unknown_payment_details, the
+        // error LND's probes expect, not invalid_onion_payload)
         var payload = new HopPayload(Amt, Cltv);
 
         // Act
-        var exception = Assert.Throws<OnionException>(() => HopPayloadValidator.Validate(payload, true, false));
+        var isValid = HopPayloadValidator.TryValidate(payload, true, false, out var error);
 
         // Assert
-        AssertInvalidOnionPayload(exception, OnionPayloadTlvTypes.PaymentData, 0);
+        Assert.True(isValid);
+        Assert.Null(error);
     }
 
     [Fact]

@@ -12,7 +12,7 @@ public class WarningMessageTests
     public WarningMessageTests()
     {
         _warningMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<WarningMessage>()!;
+            SerializerHelper.WireRegistry.Get<WarningMessage>()!;
     }
 
     [Fact]

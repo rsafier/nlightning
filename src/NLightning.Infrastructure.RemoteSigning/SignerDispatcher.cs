@@ -1,7 +1,9 @@
 using System.Text.Json;
 using NLightning.Domain.Bitcoin.Interfaces;
+using NLightning.Domain.Bitcoin.SilentPayments;
 using NLightning.Domain.Bitcoin.Transactions.Models;
 using NLightning.Domain.Bitcoin.ValueObjects;
+using NLightning.Domain.Bitcoin.Wallet.Models;
 using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Domain.Crypto.ValueObjects;
 using NLightning.Domain.Money;
@@ -485,6 +487,20 @@ public static class SignerDispatcher
                     var merkleRoot = SignerWire.Read<Hash>(args[2]);
                     var result = signer.SignBolt12(key, tag, merkleRoot);
                     return [result];
+                }
+            case SignerOperations.ComputeSilentPaymentOutputs:
+                {
+                    var reservationId = SignerWire.Read<Guid>(args[0]);
+                    var recipients = SignerWire.Read<IReadOnlyList<SilentPaymentAddress>>(args[1]);
+                    var outpoints = SignerWire.Read<WalletOutpoint[]>(args[2]);
+                    return [signer.ComputeSilentPaymentOutputs(reservationId, recipients,
+                    outpoints.Select(input => (input.TxId, input.Index)).ToArray())];
+                }
+            case SignerOperations.SignWalletMessage:
+                {
+                    var address = SignerWire.Read<WalletAddressModel>(args[0]);
+                    var message = SignerWire.Read<byte[]>(args[1]);
+                    return [signer.SignWalletMessage(address, message)];
                 }
             default: throw new ArgumentException("Unknown signing operation.");
         }

@@ -9,6 +9,9 @@ using Splicing;
 /// </summary>
 public record struct ChannelSigningInfo
 {
+    /// <summary>Funding-key fields are historical hints of a recovery funding, not verified signing keys.</summary>
+    public bool FundingKeysUnknown { get; init; }
+
     public TxId FundingTxId { get; init; }
     public ushort FundingOutputIndex { get; init; }
     public ulong FundingSatoshis { get; init; }

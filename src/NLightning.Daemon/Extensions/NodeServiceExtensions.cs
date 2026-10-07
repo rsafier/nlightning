@@ -41,6 +41,7 @@ using Daemon.Ipc.Handlers;
 using Daemon.Ipc.Interfaces;
 using Domain.Accounting.Prices;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.SilentPayments;
 using Domain.Channels.Interfaces;
 using Domain.Client.Constants;
 using Domain.Client.Exceptions;
@@ -215,6 +216,11 @@ public static class NodeServiceExtensions
             new PayRouteClientHandler(GetPaymentLayerService<IPaymentService>(sp),
                                       sp.GetService<IBlockchainMonitor>(),
                                       sp.GetService<IChannelMemoryRepository>()));
+        // Attach replacement routes to a payroute payment in flight (NL-1276, ClientCommand 56)
+        services.AddScoped<IClientCommandHandler<PayRouteAttachClientRequest, PayRouteClientResponse>>(sp =>
+            new PayRouteAttachClientHandler(new PayRouteClientHandler(GetPaymentLayerService<IPaymentService>(sp),
+                                                                      sp.GetService<IBlockchainMonitor>(),
+                                                                      sp.GetService<IChannelMemoryRepository>())));
         services.TryAddSingleton(TimeProvider.System);
 
         // Cooperative close (ClientCommand 13, BOLT2 plan N10); IChannelCloseService comes from AddApplicationServices
@@ -279,6 +285,7 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, GetRouteIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, DescribeGraphIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, PayRouteIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, PayRouteAttachIpcHandler>();
 
         // Static channel backups and restore (wave rf1 R1, ClientCommand 21-23) and the operator commands (wave rf1
         // R4, disconnect = ClientCommand 24); each registers its client and IPC handlers once
@@ -286,6 +293,7 @@ public static class NodeServiceExtensions
         services.AddOperatorIpcServices();
         // On-chain withdraw (wave m6 W1, ClientCommand 25)
         services.AddWithdrawIpcServices();
+        services.AddSilentPaymentIpcServices();
 
         // Cashu plan C1 (NL-992): the CDK payment processor (Cashu:PaymentProcessor, off by default)
         services.AddCashuPaymentProcessor(configuration);
@@ -396,7 +404,32 @@ public static class NodeServiceExtensions
                      return true;
                  })
                 .ValidateOnStart();
-        services.AddOptions<FeeEstimationOptions>().BindConfiguration("FeeEstimation").ValidateOnStart();
+        // Checked at the start and by --check-config, not only when the fee service is first built (NL-756)
+        services.AddOptions<FeeEstimationOptions>()
+                .BindConfiguration("FeeEstimation")
+                .Validate(options =>
+                 {
+                     var errors = options.GetValidationErrors();
+                     if (errors.Count > 0)
+                         throw new OptionsValidationException("FeeEstimation", typeof(FeeEstimationOptions), errors);
+
+                     return true;
+                 })
+                .ValidateOnStart();
+        services.AddOptions<SilentPaymentsOptions>()
+                .BindConfiguration(SilentPaymentsOptions.SectionName)
+                .Validate<IOptions<NodeOptions>>((options, resolvedNodeOptions) =>
+                 {
+                     var network = resolvedNodeOptions.Value.BitcoinNetwork.Name;
+                     var errors = options.GetValidationErrors(string.Equals(network, "mainnet", StringComparison.OrdinalIgnoreCase));
+                     if (signingOptions.IsRemote && options.Enabled)
+                         throw new OptionsValidationException(SilentPaymentsOptions.SectionName, typeof(SilentPaymentsOptions),
+                             ["Silent-payment scanning and receiving are not supported by the remote signer."]);
+                     if (errors.Count > 0)
+                         throw new OptionsValidationException(SilentPaymentsOptions.SectionName, typeof(SilentPaymentsOptions), errors);
+                     return true;
+                 })
+                .ValidateOnStart();
         services.AddOptions<ChannelCloseOptions>().BindConfiguration(ChannelCloseOptions.SectionName);
         services.Configure<ChannelSafetyOptions>(configuration.GetSection(ChannelSafetyOptions.SectionName));
         services.Configure<OnchainOptions>(configuration.GetSection(OnchainOptions.SectionName));

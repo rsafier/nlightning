@@ -85,6 +85,9 @@ public sealed class GraphStore : IGraphStore
     /// <inheritdoc />
     public event EventHandler<GraphChannel>? ChannelAdded;
 
+    /// <inheritdoc />
+    public event EventHandler<GraphChange>? GraphChanged;
+
     public GraphStore(IServiceScopeFactory scopeFactory, ILogger<GraphStore> logger, TimeProvider? timeProvider = null,
                       GossipMetrics? metrics = null)
     {
@@ -399,6 +402,7 @@ public sealed class GraphStore : IGraphStore
 
             SetFundingTxIdLocked(shortChannelId, fundingTxId);
             _dirtyChannels.Add(shortChannelId);
+            PublishGraphChangeLocked(new GraphChange(_channels[shortChannelId], FundingTxId: fundingTxId));
             return true;
         }
     }
@@ -461,6 +465,7 @@ public sealed class GraphStore : IGraphStore
                     if (channel.GetPolicy(direction, version) is not null)
                         _dirtyPolicies.Add((channel.ShortChannelId, direction, version));
             _version++;
+            PublishGraphChangeLocked(new GraphChange(channel, FundingTxId: fundingTxId));
         }
 
         ChannelAdded?.Invoke(this, channel);
@@ -502,6 +507,7 @@ public sealed class GraphStore : IGraphStore
             SetChannelLocked(channel, merged);
             _dirtyChannels.Add(shortChannelId);
             _version++;
+            PublishGraphChangeLocked(ChannelChangeLocked(merged));
             return true;
         }
     }
@@ -519,9 +525,13 @@ public sealed class GraphStore : IGraphStore
             if (current is not null && current.Timestamp >= policy.Timestamp)
                 return false;
 
-            SetChannelLocked(channel, channel.WithPolicy(policy));
+            var updated = channel.WithPolicy(policy);
+            SetChannelLocked(channel, updated);
             _dirtyPolicies.Add((shortChannelId, policy.Direction, policy.GossipVersion));
             _version++;
+            // The LND view prefers the v2 slot. A v1 update hidden by it changes no exposed policy.
+            if (ReferenceEquals(updated.GetRoutingPolicy(policy.Direction), policy))
+                PublishGraphChangeLocked(ChannelChangeLocked(updated, policy));
             return true;
         }
     }
@@ -563,6 +573,7 @@ public sealed class GraphStore : IGraphStore
             else
                 _dirtyNodes.Add(node.NodeId);
             _version++;
+            PublishGraphChangeLocked(new GraphChange(Node: merged));
             return true;
         }
     }
@@ -641,6 +652,8 @@ public sealed class GraphStore : IGraphStore
             SetChannelLocked(channel, channel.WithSpentAtHeight(height));
             _dirtyChannels.Add(shortChannelId);
             _version++;
+            if (channel.SpentAtHeight is null)
+                PublishGraphChangeLocked(ChannelChangeLocked(channel, removed: true, closedHeight: height));
             return true;
         }
     }
@@ -651,14 +664,14 @@ public sealed class GraphStore : IGraphStore
         lock (_lock)
         {
             var reorged = _channels.Values.Where(c => c.SpentAtHeight > height).ToList();
+            if (reorged.Count > 0)
+                _version++;
             foreach (var channel in reorged)
             {
                 SetChannelLocked(channel, channel.WithSpentAtHeight(null));
                 _dirtyChannels.Add(channel.ShortChannelId);
+                PublishGraphChangeLocked(ChannelChangeLocked(_channels[channel.ShortChannelId]));
             }
-
-            if (reorged.Count > 0)
-                _version++;
 
             return reorged.Count;
         }
@@ -672,6 +685,8 @@ public sealed class GraphStore : IGraphStore
             if (!_channels.Remove(shortChannelId, out var channel))
                 return false;
 
+            // A spent edge already emitted its close when it left the public graph.
+            var removal = channel.SpentAtHeight is null ? ChannelChangeLocked(channel, removed: true) : null;
             Account(channel, null);
             _channelReceivedAt.Remove(shortChannelId);
             if (_fundingTxIds.Remove(shortChannelId, out var fundingTxId))
@@ -685,6 +700,8 @@ public sealed class GraphStore : IGraphStore
             }
             _deletedChannels.Add(shortChannelId);
             _version++;
+            if (removal is not null)
+                PublishGraphChangeLocked(removal);
             return true;
         }
     }
@@ -703,6 +720,31 @@ public sealed class GraphStore : IGraphStore
             _deletedNodes.Add(nodeId);
             _version++;
             return true;
+        }
+    }
+
+    private GraphChange ChannelChangeLocked(GraphChannel channel, GraphPolicy? policy = null,
+                                             bool removed = false, uint closedHeight = 0) =>
+        new(channel, Policy: policy,
+            FundingTxId: _fundingTxIds.TryGetValue(channel.ShortChannelId, out var txId) ? txId : (TxId?)null,
+            Removed: removed, ClosedHeight: closedHeight);
+
+    // Only nonblocking queue publishers subscribe. Keeping publication within the writer lock preserves the
+    // graph mutation order; observer failures must never interrupt gossip, pruning or our channel operations.
+    private void PublishGraphChangeLocked(GraphChange change)
+    {
+        if (GraphChanged is not { } handlers)
+            return;
+        foreach (EventHandler<GraphChange> handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                handler(this, change);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(exception, "A live graph observer failed");
+            }
         }
     }
 

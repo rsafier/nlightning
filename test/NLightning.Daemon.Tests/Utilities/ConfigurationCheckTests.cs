@@ -12,6 +12,27 @@ using Daemon.Utilities;
 public class ConfigurationCheckTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Given_RemoteSigning_When_CheckedOffline_Then_SilentPaymentRestrictionIsPreserved(bool enabled)
+    {
+        // Neither endpoint nor token exists: checking must stay offline while preserving startup restrictions.
+        var directory = Path.Combine(Path.GetTempPath(), "nltg-offline-" + Guid.NewGuid().ToString("N"));
+        var configuration = BuildTemplateConfiguration("regtest", ("Signing:Mode", "RemoteNative"),
+            ("Signing:SocketPath", Path.Combine(directory, "signer.sock")),
+            ("Signing:AuthTokenFile", Path.Combine(directory, "auth.token")),
+            ("SilentPayments:Enabled", enabled.ToString()));
+
+        var failures = ConfigurationCheck.Run(configuration, "regtest");
+
+        if (enabled)
+            Assert.Equal(["Silent-payment scanning and receiving are not supported by the remote signer."], failures);
+        else
+            Assert.Empty(failures);
+        Assert.False(Directory.Exists(directory));
+    }
+
+    [Theory]
     [InlineData("mainnet")]
     [InlineData("testnet")]
     [InlineData("signet")]
@@ -79,6 +100,59 @@ public class ConfigurationCheckTests
         // Assert
         Assert.Contains(failures, f => f.Contains(value, StringComparison.Ordinal)
                                     || f.Contains(key.Split(':')[^1], StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("FeeEstimation:CacheExpiration", "1h30m")]
+    [InlineData("FeeEstimation:CacheExpiration", "300")]
+    [InlineData("FeeEstimation:CacheExpiration", "5s")]
+    [InlineData("FeeEstimation:CacheMaxAge", "30d")]
+    [InlineData("FeeEstimation:Method", "PUT")]
+    public void Given_ABadFeeEstimationSetting_When_Checked_Then_ItIsReported(string key, string value)
+    {
+        // Arrange (NL-756): a malformed CacheExpiration silently became 5 minutes, and the section was checked only
+        // when the fee service was first built, never by --check-config
+        var configuration = BuildTemplateConfiguration("mainnet", (key, value));
+
+        // Act
+        var failures = ConfigurationCheck.Run(configuration, "mainnet");
+
+        // Assert
+        Assert.Contains(failures, f => f.StartsWith(key, StringComparison.Ordinal)
+                                    && f.Contains(value, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Given_PollModeWithoutZmq_When_Checked_Then_ItIsValid()
+    {
+        // Arrange (NL-1094): a node without ZMQ (rbitcoin)
+        var configuration = BuildTemplateConfiguration("regtest", ("Bitcoin:Notifications", "Poll"),
+                                                       ("Bitcoin:ZmqHost", ""), ("Bitcoin:ZmqBlockPort", "0"),
+                                                       ("Bitcoin:PollInterval", "00:00:03"));
+
+        // Act
+        var failures = ConfigurationCheck.Run(configuration, "regtest");
+
+        // Assert
+        Assert.Empty(failures);
+    }
+
+    [Theory]
+    [InlineData("Bitcoin:Notifications", "Push")]
+    [InlineData("Bitcoin:PollInterval", "00:00:00.100")]
+    public void Given_ABadNotificationSetting_When_Checked_Then_ItIsReported(string key, string value)
+    {
+        // Arrange
+        var configuration = key == "Bitcoin:Notifications"
+                                ? BuildTemplateConfiguration("regtest", (key, value))
+                                : BuildTemplateConfiguration("regtest", ("Bitcoin:Notifications", "Poll"), (key, value));
+
+        // Act
+        var failures = ConfigurationCheck.Run(configuration, "regtest");
+
+        // Assert
+        Assert.Contains(failures, f => f.Contains(key.Split(':')[^1], StringComparison.Ordinal)
+                                    || f.Contains(value, StringComparison.Ordinal));
     }
 
     [Fact]

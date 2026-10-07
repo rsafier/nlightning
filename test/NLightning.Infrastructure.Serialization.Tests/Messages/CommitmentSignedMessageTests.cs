@@ -17,7 +17,7 @@ public class CommitmentSignedMessageTests
     public CommitmentSignedMessageTests()
     {
         _commitmentSignedMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<CommitmentSignedMessage>()!;
+            SerializerHelper.WireRegistry.Get<CommitmentSignedMessage>()!;
     }
 
     [Fact]

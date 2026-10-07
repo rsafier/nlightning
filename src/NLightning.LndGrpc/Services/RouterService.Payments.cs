@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Grpc.Core;
 
 namespace NLightning.LndGrpc.Services;
@@ -8,6 +9,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Payments.Events;
 using Domain.Payments.Interfaces;
+using Domain.Payments.Keysend;
 using Domain.Payments.Models;
 using Lnrpc;
 using Routerrpc;
@@ -17,27 +19,24 @@ public sealed partial class RouterService
 {
     /// <summary>
     /// <c>SendPaymentV2</c>: pays <c>payment_request</c> (BOLT 11) with the node's payment service — retries and MPP
-    /// within <c>timeout_seconds</c> (required, as LND), <c>fee_limit_msat</c>/<c>fee_limit_sat</c> (unset: the node's
+    /// within <c>timeout_seconds</c> (defaults to 60, as LND), <c>fee_limit_msat</c>/<c>fee_limit_sat</c> (unset: the node's
     /// default limit, where LND would refuse every route that costs a fee), <c>max_parts</c>, <c>amt</c>/<c>amt_msat</c>
-    /// for an amountless invoice and one <c>outgoing_chan_ids</c> entry — and streams the payment: <c>IN_FLIGHT</c>
+    /// for an amountless invoice and an <c>outgoing_chan_ids</c> allowlist — and streams the payment: <c>IN_FLIGHT</c>
     /// once it is recorded (not with <c>no_inflight_updates</c>), then <c>SUCCEEDED</c> or <c>FAILED</c> with its
-    /// route. The payment goes on when the caller leaves. Refused: payments without an invoice (keysend: our keysend
-    /// draws its own preimage), AMP, several outgoing channels, <c>last_hop_pubkey</c>, route hints and custom records
+    /// route. Keysend accepts the caller's preimage/hash and final custom records. The payment goes on when the
+    /// caller leaves. Refused: spontaneous payments without a keysend preimage, AMP, <c>last_hop_pubkey</c>, route hints and custom records
     /// beside the invoice, <c>max_shard_size_msat</c>. A paid or in-flight payment hash is <c>ALREADY_EXISTS</c>.
     /// </summary>
     public override async Task SendPaymentV2(SendPaymentRequest request, IServerStreamWriter<Payment> responseStream,
                                              ServerCallContext context)
     {
-        if (string.IsNullOrWhiteSpace(request.PaymentRequest))
-            throw Unimplemented("payments without payment_request (keysend, spontaneous) are not supported");
-        if (request.Amp || request.DestCustomRecords.Count > 0 || request.RouteHints.Count > 0
+        var isKeysend = string.IsNullOrWhiteSpace(request.PaymentRequest);
+        if (request.Amp || (!isKeysend && request.DestCustomRecords.Count > 0) || request.RouteHints.Count > 0
          || request.LastHopPubkey.Length > 0 || request.MaxShardSizeMsat != 0 || request.FirstHopCustomRecords.Count > 0)
             throw Unimplemented("amp, dest_custom_records, route_hints, last_hop_pubkey, max_shard_size_msat and "
                               + "first_hop_custom_records are not supported");
-        if (request.OutgoingChanIds.Count > 1)
-            throw Unimplemented("one outgoing channel at most");
-        if (request.TimeoutSeconds <= 0)
-            throw InvalidArgument("timeout_seconds must be specified");
+        if (request.TimeoutSeconds < 0)
+            throw InvalidArgument("timeout_seconds cannot be negative");
         if (request.FeeLimitSat != 0 && request.FeeLimitMsat != 0)
             throw InvalidArgument("fee_limit_sat and fee_limit_msat are mutually exclusive");
         if (request.Amt != 0 && request.AmtMsat != 0)
@@ -46,13 +45,22 @@ public sealed partial class RouterService
             throw InvalidArgument("amounts cannot be negative");
 
         Hash paymentHash;
+        PayKeysendRequest? keysend = null;
         try
         {
-            var decoded = Bolt11.Models.Invoice.Decode(request.PaymentRequest.Trim(), _nodeOptions.BitcoinNetwork);
-            paymentHash = new Hash(Convert.FromHexString(decoded.PaymentHash?.ToString()
-                                                       ?? throw new FormatException("no payment hash")));
+            if (isKeysend)
+            {
+                keysend = ParseKeysend(request);
+                paymentHash = new Hash(SHA256.HashData((ReadOnlySpan<byte>)keysend.Preimage!.Value));
+            }
+            else
+            {
+                var decoded = Bolt11.Models.Invoice.Decode(request.PaymentRequest.Trim(), _nodeOptions.BitcoinNetwork);
+                paymentHash = new Hash(Convert.FromHexString(decoded.PaymentHash?.ToString()
+                                                           ?? throw new FormatException("no payment hash")));
+            }
         }
-        catch (Exception e) when (e is not OperationCanceledException)
+        catch (Exception e) when (e is not (OperationCanceledException or RpcException))
         {
             throw InvalidArgument($"invalid payment request: {e.Message}");
         }
@@ -67,11 +75,13 @@ public sealed partial class RouterService
 
         var options = new PayInvoiceOptions
         {
-            Timeout = TimeSpan.FromSeconds(request.TimeoutSeconds),
+            Timeout = TimeSpan.FromSeconds(request.TimeoutSeconds == 0 ? 60 : request.TimeoutSeconds),
             MaxFee = request.FeeLimitMsat != 0 ? LightningMoney.MilliSatoshis((ulong)request.FeeLimitMsat)
                      : request.FeeLimitSat != 0 ? LightningMoney.Satoshis(request.FeeLimitSat)
                      : null,
             MaxParts = request.MaxParts > 0 ? (int)Math.Min(request.MaxParts, int.MaxValue) : null,
+            OutgoingChannelIds = request.OutgoingChanIds.Count > 1
+                                     ? request.OutgoingChanIds.Select(OutgoingChannel).ToHashSet() : null,
             OutgoingChannelId = request.OutgoingChanIds.Count == 1
                                     ? OutgoingChannel(request.OutgoingChanIds[0])
                                     : (ChannelId?)null
@@ -81,8 +91,10 @@ public sealed partial class RouterService
                                  : null;
 
         // The payment never takes the caller's cancellation (as LND's): it retries for its window either way
-        var payment = Task.Run(() => _paymentService.PayInvoiceAsync(request.PaymentRequest.Trim(), amount, options,
-                                                                     CancellationToken.None));
+        var payment = Task.Run(() => keysend is not null
+                                         ? _paymentService.PayKeysendAsync(keysend, options, CancellationToken.None)
+                                         : _paymentService.PayInvoiceAsync(request.PaymentRequest.Trim(), amount,
+                                                                           options, CancellationToken.None));
         if (!request.NoInflightUpdates)
         {
             while (!payment.IsCompleted)
@@ -156,7 +168,7 @@ public sealed partial class RouterService
 
     /// <summary>
     /// <c>TrackPayments</c>: every payment's outcome as it happens (succeeded or failed, from the payment event bus),
-    /// until the caller leaves; in-flight updates are not sent (the bus publishes outcomes only).
+    /// until the caller leaves; started updates are omitted only with no_inflight_updates.
     /// </summary>
     public override async Task TrackPayments(TrackPaymentsRequest request, IServerStreamWriter<Payment> responseStream,
                                              ServerCallContext context)
@@ -169,6 +181,25 @@ public sealed partial class RouterService
         {
             await foreach (var paymentEvent in subscription.ReadAllAsync(context.CancellationToken))
             {
+                if (paymentEvent is PaymentStartedEvent started)
+                {
+                    if (!request.NoInflightUpdates)
+                        await responseStream.WriteAsync(new Payment
+                        {
+                            PaymentHash = started.PaymentHash.ToString(),
+                            Value = LightningService.Sat(started.Amount),
+                            ValueSat = LightningService.Sat(started.Amount),
+                            ValueMsat = (long)started.Amount.MilliSatoshi,
+                            PaymentRequest = started.PaymentRequest ?? string.Empty,
+                            PaymentIndex = started.PaymentIndex,
+                            CreationDate = started.OccurredAt.ToUnixTimeSeconds(),
+                            CreationTimeNs = LightningService.UnixNanos(started.OccurredAt),
+                            PaymentPreimage = new string('0', 64),
+                            Status = Payment.Types.PaymentStatus.InFlight
+                        }, context.CancellationToken);
+                    continue;
+                }
+
                 if (paymentEvent is not (PaymentSucceededEvent or PaymentFailedEvent))
                     continue;
 
@@ -182,6 +213,31 @@ public sealed partial class RouterService
         {
             // The caller left
         }
+    }
+
+    private static PayKeysendRequest ParseKeysend(SendPaymentRequest request)
+    {
+        if (!request.DestCustomRecords.TryGetValue(CustomRecordCodec.KeysendPreimageType, out var preimage))
+            throw Unimplemented("spontaneous payments require a keysend preimage record");
+        if (preimage.Length != 32 || request.PaymentHash.Length != 32)
+            throw InvalidArgument("keysend preimage and payment_hash must be 32 bytes");
+        if (!CryptographicOperations.FixedTimeEquals(SHA256.HashData(preimage.Span), request.PaymentHash.Span))
+            throw InvalidArgument("payment_hash does not match the keysend preimage");
+        if (request.Dest.Length != 33)
+            throw InvalidArgument("dest must be a compressed public key");
+        _ = new NBitcoin.PubKey(request.Dest.ToByteArray());
+        var amount = request.AmtMsat != 0 ? LightningMoney.MilliSatoshis((ulong)request.AmtMsat)
+                                        : LightningMoney.Satoshis(request.Amt);
+        if (amount.IsZero)
+            throw InvalidArgument("keysend amount must be positive");
+        var records = CustomRecordCodec.Validate(request.DestCustomRecords
+                .Where(pair => pair.Key != CustomRecordCodec.KeysendPreimageType)
+                .Select(pair => new CustomRecord(pair.Key, pair.Value.Span)).ToArray());
+        return new PayKeysendRequest(new CompactPubKey(request.Dest.ToByteArray()), amount)
+        {
+            Preimage = new Secret(preimage.ToByteArray()),
+            CustomRecords = records
+        };
     }
 
     /// <summary>Returns at the payment's outcome event or after a poll interval, whichever is first.</summary>

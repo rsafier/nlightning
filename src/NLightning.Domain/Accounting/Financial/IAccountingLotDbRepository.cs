@@ -78,8 +78,9 @@ public interface IAccountingLotDbRepository
                                                              CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("This repository does not list lots by origin.");
 
-    /// <summary>Deletes every lot of <paramref name="origin"/> (the parts moved from them included) with its reliefs at
-    /// once (not staged; A3-T4: an import replaces the earlier one). The default (test doubles) throws <see cref="NotSupportedException"/>.</summary>
+    /// <summary>Stages deletion of every lot of <paramref name="origin"/> (the parts moved from them included) and
+    /// its reliefs. The unit of work saves these deletions atomically with the replacement import (A3-T4).
+    /// The default (test doubles) throws <see cref="NotSupportedException"/>.</summary>
     Task<int> DeleteLotsByOriginAsync(AccountingLotOrigin origin, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("This repository does not delete lots by origin.");
 

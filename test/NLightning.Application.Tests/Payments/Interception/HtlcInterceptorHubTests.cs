@@ -19,7 +19,7 @@ public class HtlcInterceptorHubTests
     public void Given_NoClient_When_Intercepting_Then_TheForwardGoesOn()
     {
         // Act / Assert
-        Assert.Equal(ForwardInterceptOutcome.NotIntercepted, _hub.Intercept(Forward(1), 100, Record));
+        Assert.Equal(ForwardInterceptOutcome.NotIntercepted, _hub.Intercept(Forward(1), 100, false, Record));
     }
 
     [Fact]
@@ -30,8 +30,8 @@ public class HtlcInterceptorHubTests
         using var connection = _hub.Connect(client);
 
         // Act
-        var first = _hub.Intercept(Forward(1), 100, Record);
-        var replay = _hub.Intercept(Forward(1), 100, Record);
+        var first = _hub.Intercept(Forward(1), 100, false, Record);
+        var replay = _hub.Intercept(Forward(1), 100, false, Record);
 
         // Assert
         Assert.Equal(ForwardInterceptOutcome.Held, first);
@@ -47,8 +47,8 @@ public class HtlcInterceptorHubTests
         using var connection = _hub.Connect(new Client());
 
         // Act / Assert: 500 < 479 + 22
-        Assert.Equal(ForwardInterceptOutcome.ExpiryTooSoon, _hub.Intercept(Forward(1), 479, Record));
-        Assert.Equal(ForwardInterceptOutcome.Held, _hub.Intercept(Forward(2), 478, Record));
+        Assert.Equal(ForwardInterceptOutcome.ExpiryTooSoon, _hub.Intercept(Forward(1), 479, false, Record));
+        Assert.Equal(ForwardInterceptOutcome.Held, _hub.Intercept(Forward(2), 478, false, Record));
     }
 
     [Fact]
@@ -56,10 +56,10 @@ public class HtlcInterceptorHubTests
     {
         // Arrange
         using var connection = _hub.Connect(new Client(), new HtlcInterceptorSettings { MaxHeld = 1 });
-        _hub.Intercept(Forward(1), 100, Record);
+        _hub.Intercept(Forward(1), 100, false, Record);
 
         // Act / Assert
-        Assert.Equal(ForwardInterceptOutcome.Full, _hub.Intercept(Forward(2), 100, Record));
+        Assert.Equal(ForwardInterceptOutcome.Full, _hub.Intercept(Forward(2), 100, false, Record));
     }
 
     [Fact]
@@ -90,8 +90,8 @@ public class HtlcInterceptorHubTests
     {
         // Arrange
         using var connection = _hub.Connect(new Client());
-        _hub.Intercept(Forward(1), 100, Record);
-        _hub.Intercept(Forward(2) with { IncomingExpiry = 900 }, 100, Record);
+        _hub.Intercept(Forward(1), 100, false, Record);
+        _hub.Intercept(Forward(2) with { IncomingExpiry = 900 }, 100, false, Record);
 
         // Act
         _hub.ExpireHeld(481);
@@ -109,8 +109,8 @@ public class HtlcInterceptorHubTests
     {
         // Arrange
         var connection = _hub.Connect(new Client());
-        _hub.Intercept(Forward(1), 100, Record);
-        _hub.Intercept(Forward(2), 100, Record);
+        _hub.Intercept(Forward(1), 100, false, Record);
+        _hub.Intercept(Forward(2), 100, false, Record);
 
         // Act
         connection.Dispose();
@@ -119,6 +119,76 @@ public class HtlcInterceptorHubTests
         // Assert
         Assert.All(_resolutions, r => Assert.Equal(ForwardInterceptAction.Resume, r.Action));
         Assert.False(_hub.IsActive);
+        Assert.Equal(0, _hub.HeldCount);
+    }
+
+    [Fact]
+    public async Task Given_AFailedResolution_When_Retried_Then_TheHoldAndExpiryProtectionSurvive()
+    {
+        using var connection = _hub.Connect(new Client());
+        var calls = 0;
+        _hub.Intercept(Forward(1), 100, false, _ => ++calls == 1
+            ? Task.FromException(new IOException("save failed")) : Task.CompletedTask);
+
+        Assert.Equal(InterceptResolveResult.Failed,
+                     await _hub.ResolveAsync(new ShortChannelId(150, 1, 0), 1, ForwardInterceptResolution.Resume));
+        Assert.Equal(1, _hub.HeldCount);
+        Assert.Equal(InterceptResolveResult.Resolved,
+                     await _hub.ResolveAsync(new ShortChannelId(150, 1, 0), 1, ForwardInterceptResolution.Resume));
+        Assert.Equal(2, calls);
+        Assert.Equal(0, _hub.HeldCount);
+    }
+
+    [Fact]
+    public async Task Given_AFailedExpiryResolution_When_AnotherBlockArrives_Then_ItIsRetried()
+    {
+        using var connection = _hub.Connect(new Client());
+        var attempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        _hub.Intercept(Forward(1), 100, false, resolution =>
+        {
+            Assert.Equal(ForwardInterceptAction.Fail, resolution.Action);
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                attempted.SetResult();
+                throw new IOException("save failed");
+            }
+            return Task.CompletedTask;
+        });
+        _hub.ExpireHeld(481);
+        await attempted.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await WaitUntilAsync(() => _hub.HeldCount == 1);
+        // Retry after the failed callback has returned to the hub.
+        await WaitUntilAsync(() =>
+        {
+            _hub.ExpireHeld(482);
+            return _hub.HeldCount == 0;
+        });
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
+    public async Task Given_AResolutionInProgress_When_DisconnectedAndResolvedAgain_Then_NoConcurrentCallbackRuns()
+    {
+        var connection = _hub.Connect(new Client());
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var complete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        _hub.Intercept(Forward(1), 100, false, async _ =>
+        {
+            Interlocked.Increment(ref calls);
+            entered.SetResult();
+            await complete.Task;
+        });
+        var resolving = _hub.ResolveAsync(new ShortChannelId(150, 1, 0), 1, ForwardInterceptResolution.Resume);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        connection.Dispose();
+        _hub.ExpireHeld(481);
+        Assert.Equal(InterceptResolveResult.InProgress,
+                     await _hub.ResolveAsync(new ShortChannelId(150, 1, 0), 1, ForwardInterceptResolution.Resume));
+        Assert.Equal(1, calls);
+        complete.SetResult();
+        Assert.Equal(InterceptResolveResult.Resolved, await resolving);
         Assert.Equal(0, _hub.HeldCount);
     }
 

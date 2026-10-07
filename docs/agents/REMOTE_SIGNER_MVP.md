@@ -104,7 +104,7 @@ that a pending allocation remains `Unknown` and its request ID cannot execute ag
 Data-loss invalidation, exact request-ID conflicts, authenticated reconciliation and
 exclusive same-state daemon ownership are also covered. The nonce identity regression
 rejects an altered transaction after restart when the same channel is represented by
-an equivalent base64 encoding, and refuses conflicting legacy journal history (NL-1195). This does not yet prove
+an equivalent base64 encoding, and refuses conflicting legacy journal history (NL-1303). This does not yet prove
 reconciliation of a node database transition interrupted mid-payment.
 
 The live proof opens a single-funded channel with LND 0.21.4, pays both ways before
@@ -169,9 +169,46 @@ confirmed six blocks deep. The cluster runner reported one green run in 93 secon
 all owned namespaces were removed. Local logs are under
 `TestResults/cluster/rs-interop-20261007-c2/` (not committed).
 
-Production follow-ups are tracked as NL-1190..NL-1194 in the
+Production follow-ups are tracked as NL-1298..NL-1302 in the
 [issue ledger](ISSUES.md). The VLS fixture output and its pinned reproduction tooling
 are committed under `tools/vls-compat-spike/`.
+
+## FAFO branch integration
+
+Merged `wip/fafo` at `e47ae080` into `wip/remotesigner` on 2026-10-07,
+bringing 341 upstream commits into the working branch. The FAFO policy remains:
+one user, no prior-version migration requirement, and fresh VLS identities and
+channels. Upstream issue assignments are preserved; the remote-signing records
+formerly NL-1190..NL-1195 are now NL-1298..NL-1303. Historical commit messages
+retain their original IDs.
+
+The integration extends remote dispatch for wallet message signing, public deposit
+account metadata and silent-payment output computation. Wallet recovery catalogue
+derivation also uses public keys, preserving the remote key boundary. Silent-payment scan/receive
+and isolated key-ring/swap operations are not yet supported in remote mode: scan
+activation fails closed, and private-key getters remain unavailable. The earlier
+live proof above remains evidence for its recorded implementation; it is not a
+live rerun of the merged branch.
+
+Merged-branch verification (2026-10-07):
+
+| Check | Result |
+| --- | --- |
+| Release solution build (.NET 10 and .NET 11) | Passed; zero warnings/errors |
+| Full solution formatting | Passed; no changes required |
+| Remote signing tests | 42 passed; zero skips |
+| Bitcoin/key-management tests | 2,410 passed; three runner-reported skips |
+| Daemon tests | 1,765 passed; zero skips |
+| In-process node harness | 23 passed; zero skips |
+| Solution configuration mappings | 44 projects consistent |
+
+The four recovery-catalogue regressions failed against the initial merged private-key
+consumer and passed after it used public derivation. Startup and offline checking
+both reject unsupported remote silent-payment scanning without contacting a signer
+for offline checking. New surface tests cover all current signer methods, wallet
+message/account parity, frozen reservation validation and silent-output metadata.
+Local validation logs are `/workspace/scratch/remotesigner-fafo-*-final.log`; they
+are not committed.
 
 ## Prototype limits
 

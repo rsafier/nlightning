@@ -23,7 +23,13 @@ using Enums;
 /// effects of update_fulfill_htlc are not completely reversed"), so persisting an upserted record never loses it and the
 /// preimage can be used (e.g. to fulfill upstream or claim on chain) even when the fulfill is not re-sent. For an
 /// incoming HTLC it is set by the HTLC switch when we accepted the HTLC as the final node (a part of a set we committed
-/// to, NL-322/NL-323): its replay fulfills it and the on-chain resolvers claim it with this preimage.</param>
+/// to, NL-322/NL-323): its replay fulfills it and the on-chain resolvers claim it with this preimage. The HTLC
+/// interceptor's settle of a held forward whose channel is closing on chain sets it too (NL-1182, LND's on-chain
+/// interception; <c>Onchain/Resolvers/InterceptorClaims</c>).</param>
+/// <param name="WireCustomRecords">The custom records (types of 65536 or more) of the <c>update_add_htlc</c>
+/// extension, as a canonical TLV stream (LND's wire custom records, NL-1182): what the peer sent on an incoming HTLC
+/// (odd types only, BOLT 1), and what an interceptor's <c>RESUME_MODIFIED</c> asked us to send on an outgoing one, so a
+/// retransmission carries them again. Empty for none.</param>
 public sealed record HtlcRecord(
     HtlcDirection Direction,
     ulong Id,
@@ -34,7 +40,8 @@ public sealed record HtlcRecord(
     HtlcRemoval? Removal = null,
     ReadOnlyMemory<byte> OnionRoutingPacket = default,
     CompactPubKey? PathKey = null,
-    Secret? KnownPreimage = null)
+    Secret? KnownPreimage = null,
+    ReadOnlyMemory<byte> WireCustomRecords = default)
 {
     public HtlcKey Key => new(Direction, Id);
 

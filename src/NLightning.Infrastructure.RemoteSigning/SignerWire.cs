@@ -159,8 +159,14 @@ public static class SignerWire
         {
             using var doc = JsonDocument.ParseValue(ref reader); var a = doc.RootElement;
             var dto = a.Deserialize<WalletUtxo>(options)!;
-            var utxo = new NLightning.Domain.Bitcoin.Wallet.Models.UtxoModel(dto.TxId, dto.Index, dto.Amount, dto.BlockHeight, dto.AddressIndex, dto.IsAddressChange, dto.AddressType)
-            { LockedToChannelId = dto.LockedToChannelId, UsedInTransactionId = dto.UsedInTransactionId };
+            var utxo = dto.SilentPayment is { } output
+                ? new NLightning.Domain.Bitcoin.Wallet.Models.UtxoModel(output)
+                : new NLightning.Domain.Bitcoin.Wallet.Models.UtxoModel(dto.TxId, dto.Index, dto.Amount, dto.BlockHeight,
+                    dto.AddressIndex, dto.IsAddressChange, dto.AddressType);
+            if (utxo.TxId != dto.TxId || utxo.Index != dto.Index || utxo.Amount != dto.Amount
+             || utxo.BlockHeight != dto.BlockHeight || dto.SilentPayment is not null && dto.WalletAddress is not null)
+                throw new JsonException("Inconsistent silent payment output context.");
+            utxo.LockedToChannelId = dto.LockedToChannelId; utxo.UsedInTransactionId = dto.UsedInTransactionId;
             if (dto.WalletAddress is not null) utxo.SetWalletAddress(dto.WalletAddress);
             return utxo;
         }

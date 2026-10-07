@@ -510,13 +510,16 @@ public sealed record ChannelCommitments
     /// <param name="onionRoutingPacket">The onion to carry (opaque).</param>
     /// <param name="pathKey">The blinded-path <c>path_key</c>, if relaying inside a blinded route.</param>
     /// <param name="currentBlockHeight">When given, an HTLC that is already expired is refused (B2-CLTV-02).</param>
+    /// <param name="wireCustomRecords">The custom records of the add's extension (a TLV stream of types of 65536 or
+    /// more, <see cref="HtlcRecord.WireCustomRecords"/>; opaque to the engine), if any.</param>
     /// <exception cref="CommitmentRefusedException">A sender rule would be broken.</exception>
     public CommitmentsResult SendAdd(ulong amountMsat, Hash paymentHash, uint cltvExpiry,
                                      ReadOnlyMemory<byte> onionRoutingPacket, CompactPubKey? pathKey = null,
-                                     uint? currentBlockHeight = null)
+                                     uint? currentBlockHeight = null, ReadOnlyMemory<byte> wireCustomRecords = default)
     {
         var htlc = new HtlcRecord(HtlcDirection.Outgoing, LocalNextHtlcId, amountMsat, paymentHash, cltvExpiry,
-                                  HtlcStateTable.Initial(HtlcDirection.Outgoing), null, onionRoutingPacket, pathKey);
+                                  HtlcStateTable.Initial(HtlcDirection.Outgoing), null, onionRoutingPacket, pathKey,
+                                  WireCustomRecords: wireCustomRecords);
         UpdateValidator.ValidateSendAdd(this, htlc, currentBlockHeight);
 
         var next = this with
@@ -532,13 +535,15 @@ public sealed record ChannelCommitments
     /// </summary>
     /// <exception cref="CommitmentViolationException">A receiver rule is broken.</exception>
     public CommitmentsResult ReceiveAdd(ulong id, ulong amountMsat, Hash paymentHash, uint cltvExpiry,
-                                        ReadOnlyMemory<byte> onionRoutingPacket, CompactPubKey? pathKey = null)
+                                        ReadOnlyMemory<byte> onionRoutingPacket, CompactPubKey? pathKey = null,
+                                        ReadOnlyMemory<byte> wireCustomRecords = default)
     {
         if (id != RemoteNextHtlcId)
             throw Violation("B2-ADD-R07", $"update_add_htlc id {id}, expected {RemoteNextHtlcId}");
 
         var htlc = new HtlcRecord(HtlcDirection.Incoming, id, amountMsat, paymentHash, cltvExpiry,
-                                  HtlcStateTable.Initial(HtlcDirection.Incoming), null, onionRoutingPacket, pathKey);
+                                  HtlcStateTable.Initial(HtlcDirection.Incoming), null, onionRoutingPacket, pathKey,
+                                  WireCustomRecords: wireCustomRecords);
         UpdateValidator.ValidateReceiveAdd(this, htlc);
 
         var next = this with

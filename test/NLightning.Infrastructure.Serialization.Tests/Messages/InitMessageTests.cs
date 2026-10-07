@@ -17,7 +17,7 @@ public class InitMessageTests
     public InitMessageTests()
     {
         _initMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<InitMessage>()!;
+            SerializerHelper.WireRegistry.Get<InitMessage>()!;
     }
 
     [Fact]

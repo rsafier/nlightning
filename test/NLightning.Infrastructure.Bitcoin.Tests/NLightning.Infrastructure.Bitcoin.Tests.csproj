@@ -69,4 +69,13 @@
     <Content Include="Onion\Trampoline\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>
   </ItemGroup>
 
+  <!-- BIP 352 pinned official vectors; independent Python reference is kept alongside them. -->
+  <ItemGroup>
+    <Content Include="Crypto\SilentPayments\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Wallet\Fixtures\*.json" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
 </Project>

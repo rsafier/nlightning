@@ -17,10 +17,10 @@ using Domain.Protocol.ValueObjects;
 internal static class OpenChannel2Wire
 {
     public static readonly MessageWire<OpenChannel2Message> Def = new(MessageTypes.OpenChannel2, Encode, Decode,
-        TlvDef.Typed<UpfrontShutdownScriptTlv>(TlvConstants.UpfrontShutdownScript),
-        TlvDef.Typed<ChannelTypeTlv>(TlvConstants.ChannelType),
-        TlvDef.Typed<RequireConfirmedInputsTlv>(TlvConstants.RequireConfirmedInputs),
-        TlvDef.Typed<RequestFundingTlv>(TlvConstants.LiquidityAds));
+        TlvDefs.UpfrontShutdownScript,
+        TlvDefs.ChannelType,
+        TlvDefs.RequireConfirmedInputs,
+        TlvDefs.RequestFunding);
 
     private static void Encode(ref WireWriter writer, OpenChannel2Message message)
     {
@@ -84,10 +84,10 @@ internal static class OpenChannel2Wire
 internal static class AcceptChannel2Wire
 {
     public static readonly MessageWire<AcceptChannel2Message> Def = new(MessageTypes.AcceptChannel2, Encode, Decode,
-        TlvDef.Typed<UpfrontShutdownScriptTlv>(TlvConstants.UpfrontShutdownScript),
-        TlvDef.Typed<ChannelTypeTlv>(TlvConstants.ChannelType),
-        TlvDef.Typed<RequireConfirmedInputsTlv>(TlvConstants.RequireConfirmedInputs),
-        TlvDef.Typed<ProvideFundingTlv>(TlvConstants.LiquidityAds));
+        TlvDefs.UpfrontShutdownScript,
+        TlvDefs.ChannelType,
+        TlvDefs.RequireConfirmedInputs,
+        TlvDefs.ProvideFunding);
 
     private static void Encode(ref WireWriter writer, AcceptChannel2Message message)
     {

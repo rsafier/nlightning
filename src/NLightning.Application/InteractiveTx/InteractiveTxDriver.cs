@@ -745,6 +745,12 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
             var withFundingNonce = fundingNonce is null || txComplete.FundingNonceTlv is not null
                                        ? txComplete
                                        : new TxCompleteMessage(txComplete.Payload, null, fundingNonce);
+            if (!host.WantsCommitNonces)
+            {
+                decorated.Add(withFundingNonce);
+                continue;
+            }
+
             ConstructedInteractiveTx transaction;
             try
             {

@@ -12,7 +12,7 @@ public class PingMessageTests
     public PingMessageTests()
     {
         _pingMessageTypeSerializer =
-            SerializerHelper.MessageTypeSerializerFactory.GetSerializer<PingMessage>()!;
+            SerializerHelper.WireRegistry.Get<PingMessage>()!;
     }
 
     [Fact]

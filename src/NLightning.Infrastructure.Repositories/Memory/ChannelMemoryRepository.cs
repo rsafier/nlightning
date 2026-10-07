@@ -50,6 +50,9 @@ public class ChannelMemoryRepository : IChannelMemoryRepository
     /// <inheritdoc/>
     public event EventHandler<ChannelUpdatedEventArgs>? OnChannelOpened;
 
+    public event EventHandler<ChannelUpdatedEventArgs>? OnChannelAdded;
+    public event EventHandler<ChannelUpdatedEventArgs>? OnChannelRemoved;
+
     /// <summary>The longest a temporary channel is kept (<see cref="DefaultTemporaryChannelTimeout"/>).</summary>
     public TimeSpan TemporaryChannelTimeout { get; init; } = DefaultTemporaryChannelTimeout;
 
@@ -100,7 +103,15 @@ public class ChannelMemoryRepository : IChannelMemoryRepository
     }
 
     /// <inheritdoc/>
+    public void LoadChannel(ChannelModel channel) => AddChannelCore(channel);
+
     public void AddChannel(ChannelModel channel)
+    {
+        AddChannelCore(channel);
+        NotifyLifecycle(OnChannelAdded, channel);
+    }
+
+    private void AddChannelCore(ChannelModel channel)
     {
         ArgumentNullException.ThrowIfNull(channel);
 
@@ -113,7 +124,11 @@ public class ChannelMemoryRepository : IChannelMemoryRepository
     /// <inheritdoc/>
     /// <remarks>The state before the update decides <see cref="OnChannelOpened"/>: only a move into
     /// <see cref="ChannelState.Open"/> raises it, exactly once per channel (NL-054).</remarks>
-    public void UpdateChannel(ChannelModel channel)
+    public void UpdateStagedChannel(ChannelModel channel) => UpdateChannelCore(channel, false);
+
+    public void UpdateChannel(ChannelModel channel) => UpdateChannelCore(channel, true);
+
+    private void UpdateChannelCore(ChannelModel channel, bool isPersisted)
     {
         ArgumentNullException.ThrowIfNull(channel);
 
@@ -126,7 +141,7 @@ public class ChannelMemoryRepository : IChannelMemoryRepository
         _channels[channel.ChannelId] = channel;
         _channelStates[channel.ChannelId] = channel.State;
 
-        OnChannelUpdated?.Invoke(this, new ChannelUpdatedEventArgs(channel));
+        OnChannelUpdated?.Invoke(this, new ChannelUpdatedEventArgs(channel, isPersisted));
 
         // NL-054: the application notification that the channel became ready/usable (both channel_ready exchanged)
         if (!wasOpen && channel.State == ChannelState.Open)
@@ -136,8 +151,12 @@ public class ChannelMemoryRepository : IChannelMemoryRepository
     /// <inheritdoc/>
     public bool TryRemoveChannel(ChannelId channelId)
     {
-        var removed = _channels.TryRemove(channelId, out _);
-        return removed && _channelStates.TryRemove(channelId, out _);
+        var removed = _channels.TryRemove(channelId, out var channel);
+        if (!removed)
+            return false;
+        _channelStates.TryRemove(channelId, out _);
+        NotifyLifecycle(OnChannelRemoved, channel!);
+        return true;
     }
 
     /// <inheritdoc/>
@@ -223,6 +242,21 @@ public class ChannelMemoryRepository : IChannelMemoryRepository
                 oldChannelId, tempChannel.ChannelId);
 
         OnChannelUpgraded?.Invoke(this, new ChannelUpgradedEventArgs(oldChannelId, tempChannel.ChannelId));
+    }
+
+    private void NotifyLifecycle(EventHandler<ChannelUpdatedEventArgs>? handlers, ChannelModel channel)
+    {
+        if (handlers is null)
+            return;
+        foreach (var callback in handlers.GetInvocationList().Cast<EventHandler<ChannelUpdatedEventArgs>>())
+            try
+            {
+                callback(this, new ChannelUpdatedEventArgs(channel));
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(exception, "Channel lifecycle observer failed for {ChannelId}", channel.ChannelId);
+            }
     }
 
     /// <summary>

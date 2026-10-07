@@ -29,7 +29,7 @@ using Onion;
 /// This class ensures that the private key remains inaccessible from regular memory
 /// and is securely wiped when no longer needed.
 /// </summary>
-public class SecureKeyManager : ISecureKeyManager, IDisposable
+public partial class SecureKeyManager : ISecureKeyManager, IDisposable
 {
     /// <summary>
     /// BIP32 path of the node key for <see cref="KeyDerivationScheme.Bip32"/> (version 3 key files, NL-159). It follows
@@ -296,6 +296,14 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         }
     }
 
+    /// <inheritdoc />
+    public ExtPrivKey GetKeyRingKeyAtIndex(int family, int index)
+    {
+        if (family < 10 || index < 0)
+            throw new ArgumentOutOfRangeException(nameof(family), "Reserved family or negative index.");
+        return GetMasterKey().Derive(new KeyPath($"1017'/0'/{family}'/0/{index}")).ToBytes();
+    }
+
     public ExtPrivKey GetChannelKeyAtIndex(uint index)
     {
         var masterKey = GetMasterKey();
@@ -312,6 +320,23 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     {
         var masterKey = GetMasterKey();
         return masterKey.Derive(_depositP2WpkhKeyPath.Derive(isChange ? "1" : "0")).Derive(index).ToBytes();
+    }
+
+    /// <inheritdoc />
+    public DepositAccountInfo? GetDepositAccount(AddressType addressType)
+    {
+        var path = addressType switch
+        {
+            AddressType.P2Wpkh => _depositP2WpkhKeyPath,
+            AddressType.P2Tr => _depositP2TrKeyPath,
+            _ => null
+        };
+        if (path is null)
+            return null;
+
+        var masterKey = GetMasterKey();
+        return new DepositAccountInfo(masterKey.Derive(path).Neuter().ToString(_network), $"m/{path}",
+                                      masterKey.GetPublicKey().GetHDFingerPrint().ToBytes());
     }
 
     public CryptoKeyPair GetNodeKeyPair()
@@ -1097,7 +1122,11 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
 
     private void ReleaseUnmanagedResources()
     {
-        FreeSecure(ref _secureMasterKeyPtr, ref _masterKeyLength);
+        lock (_silentPaymentKeyLock)
+        {
+            FreeSecure(ref _secureScanKeyPtr, ref _scanKeyLength);
+            FreeSecure(ref _secureMasterKeyPtr, ref _masterKeyLength);
+        }
         FreeSecure(ref _secureNodeKeyPtr, ref _nodeKeyLength);
     }
 

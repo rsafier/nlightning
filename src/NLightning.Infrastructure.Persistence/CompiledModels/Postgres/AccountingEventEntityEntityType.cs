@@ -34,8 +34,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 "NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingEventEntity",
                 typeof(AccountingEventEntity),
                 baseEntityType,
-                propertyCount: 18,
-                unnamedIndexCount: 4,
+                propertyCount: 19,
+                unnamedIndexCount: 6,
                 keyCount: 1);
 
             var id = runtimeEntityType.AddProperty(
@@ -885,210 +885,272 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         paymentHash.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
         paymentHash.AddAnnotation("Relational:ColumnName", "payment_hash");
 
-        var shortChannelId = runtimeEntityType.AddProperty(
-            "ShortChannelId",
-            typeof(ShortChannelId?),
-            propertyInfo: typeof(AccountingEventEntity).GetProperty("ShortChannelId", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
-            fieldInfo: typeof(AccountingEventEntity).GetField("<ShortChannelId>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+        var reversesEventKey = runtimeEntityType.AddProperty(
+            "ReversesEventKey",
+            typeof(string),
+            propertyInfo: typeof(AccountingEventEntity).GetProperty("ReversesEventKey", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+            fieldInfo: typeof(AccountingEventEntity).GetField("<ReversesEventKey>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
             nullable: true,
-            valueConverter: new ShortChannelIdConverter());
-        shortChannelId.SetGetter(
-            ShortChannelId? (AccountingEventEntity instance) => AccountingEventEntityUnsafeAccessors.ShortChannelId(instance),
-            bool (AccountingEventEntity instance) => !(AccountingEventEntityUnsafeAccessors.ShortChannelId(instance).HasValue));
-        shortChannelId.SetSetter(
-            AccountingEventEntity (AccountingEventEntity instance, ShortChannelId? value) =>
+            maxLength: 200);
+        reversesEventKey.SetGetter(
+            string (AccountingEventEntity instance) => AccountingEventEntityUnsafeAccessors.ReversesEventKey(instance),
+            bool (AccountingEventEntity instance) => AccountingEventEntityUnsafeAccessors.ReversesEventKey(instance) == null);
+        reversesEventKey.SetSetter(
+            AccountingEventEntity (AccountingEventEntity instance, string value) =>
             {
-                AccountingEventEntityUnsafeAccessors.ShortChannelId(instance) = value;
+                AccountingEventEntityUnsafeAccessors.ReversesEventKey(instance) = value;
                 return instance;
             });
-        shortChannelId.SetMaterializationSetter(
-            AccountingEventEntity (AccountingEventEntity instance, ShortChannelId? value) =>
+        reversesEventKey.SetMaterializationSetter(
+            AccountingEventEntity (AccountingEventEntity instance, string value) =>
             {
-                AccountingEventEntityUnsafeAccessors.ShortChannelId(instance) = value;
+                AccountingEventEntityUnsafeAccessors.ReversesEventKey(instance) = value;
                 return instance;
             });
-        shortChannelId.SetAccessors(
-            ShortChannelId? (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.ShortChannelId(((AccountingEventEntity)(entry.Entity))),
-            ShortChannelId? (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.ShortChannelId(((AccountingEventEntity)(entry.Entity))),
-            ShortChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ShortChannelId?>(shortChannelId, 16),
-            ShortChannelId? (IInternalEntry entry) => entry.GetCurrentValue<ShortChannelId?>(shortChannelId));
-        shortChannelId.SetPropertyIndexes(
+        reversesEventKey.SetAccessors(
+            string (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.ReversesEventKey(((AccountingEventEntity)(entry.Entity))),
+            string (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.ReversesEventKey(((AccountingEventEntity)(entry.Entity))),
+            string (IInternalEntry entry) => entry.ReadOriginalValue<string>(reversesEventKey, 16),
+            string (IInternalEntry entry) => entry.GetCurrentValue<string>(reversesEventKey));
+        reversesEventKey.SetPropertyIndexes(
             index: 16,
             originalValueIndex: 16,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
-        shortChannelId.TypeMapping = NpgsqlByteArrayTypeMapping.Default.Clone(
-            comparer: new ValueComparer<ShortChannelId>(
-                bool (ShortChannelId v1, ShortChannelId v2) => v1.Equals(v2),
-                int (ShortChannelId v) => ((object)v).GetHashCode(),
-                ShortChannelId (ShortChannelId v) => v),
-            keyComparer: new ValueComparer<ShortChannelId>(
-                bool (ShortChannelId v1, ShortChannelId v2) => v1.Equals(v2),
-                int (ShortChannelId v) => ((object)v).GetHashCode(),
-                ShortChannelId (ShortChannelId v) => v),
-            providerValueComparer: new ValueComparer<byte[]>(
-                bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
-                int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
-                byte[] (byte[] source) => source.ToArray()),
-            converter: new ValueConverter<ShortChannelId, byte[]>(
+        reversesEventKey.TypeMapping = NpgsqlStringTypeMapping.Default.Clone(
+            comparer: new ValueComparer<string>(
+                bool (string v1, string v2) => v1 == v2,
+                int (string v) => ((object)v).GetHashCode(),
+                string (string v) => v),
+            keyComparer: new ValueComparer<string>(
+                bool (string v1, string v2) => v1 == v2,
+                int (string v) => ((object)v).GetHashCode(),
+                string (string v) => v),
+            providerValueComparer: new ValueComparer<string>(
+                bool (string v1, string v2) => v1 == v2,
+                int (string v) => ((object)v).GetHashCode(),
+                string (string v) => v),
+            mappingInfo: new RelationalTypeMappingInfo(
+                storeTypeName: "character varying(200)",
+                size: 200));
+        reversesEventKey.TypeMapping = ((NpgsqlStringTypeMapping)reversesEventKey.TypeMapping).Clone(npgsqlDbType: NpgsqlTypes.NpgsqlDbType.Varchar);
+    reversesEventKey.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
+    reversesEventKey.AddAnnotation("Relational:ColumnName", "reverses_event_key");
+
+    var shortChannelId = runtimeEntityType.AddProperty(
+        "ShortChannelId",
+        typeof(ShortChannelId?),
+        propertyInfo: typeof(AccountingEventEntity).GetProperty("ShortChannelId", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+        fieldInfo: typeof(AccountingEventEntity).GetField("<ShortChannelId>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+        nullable: true,
+        valueConverter: new ShortChannelIdConverter());
+    shortChannelId.SetGetter(
+        ShortChannelId? (AccountingEventEntity instance) => AccountingEventEntityUnsafeAccessors.ShortChannelId(instance),
+        bool (AccountingEventEntity instance) => !(AccountingEventEntityUnsafeAccessors.ShortChannelId(instance).HasValue));
+    shortChannelId.SetSetter(
+        AccountingEventEntity (AccountingEventEntity instance, ShortChannelId? value) =>
+        {
+            AccountingEventEntityUnsafeAccessors.ShortChannelId(instance) = value;
+            return instance;
+        });
+    shortChannelId.SetMaterializationSetter(
+        AccountingEventEntity (AccountingEventEntity instance, ShortChannelId? value) =>
+        {
+            AccountingEventEntityUnsafeAccessors.ShortChannelId(instance) = value;
+            return instance;
+        });
+    shortChannelId.SetAccessors(
+        ShortChannelId? (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.ShortChannelId(((AccountingEventEntity)(entry.Entity))),
+        ShortChannelId? (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.ShortChannelId(((AccountingEventEntity)(entry.Entity))),
+        ShortChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ShortChannelId?>(shortChannelId, 17),
+        ShortChannelId? (IInternalEntry entry) => entry.GetCurrentValue<ShortChannelId?>(shortChannelId));
+    shortChannelId.SetPropertyIndexes(
+        index: 17,
+        originalValueIndex: 17,
+        shadowIndex: -1,
+        relationshipIndex: -1,
+        storeGenerationIndex: -1);
+    shortChannelId.TypeMapping = NpgsqlByteArrayTypeMapping.Default.Clone(
+        comparer: new ValueComparer<ShortChannelId>(
+            bool (ShortChannelId v1, ShortChannelId v2) => v1.Equals(v2),
+            int (ShortChannelId v) => ((object)v).GetHashCode(),
+            ShortChannelId (ShortChannelId v) => v),
+        keyComparer: new ValueComparer<ShortChannelId>(
+            bool (ShortChannelId v1, ShortChannelId v2) => v1.Equals(v2),
+            int (ShortChannelId v) => ((object)v).GetHashCode(),
+            ShortChannelId (ShortChannelId v) => v),
+        providerValueComparer: new ValueComparer<byte[]>(
+            bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+            int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+            byte[] (byte[] source) => source.ToArray()),
+        converter: new ValueConverter<ShortChannelId, byte[]>(
+            byte[] (ShortChannelId shortChannelId) => ((byte[])shortChannelId),
+            ShortChannelId (byte[] bytes) => new ShortChannelId(bytes)),
+        jsonValueReaderWriter: new JsonConvertedValueReaderWriter<ShortChannelId, byte[]>(
+            JsonByteArrayReaderWriter.Instance,
+            new ValueConverter<ShortChannelId, byte[]>(
                 byte[] (ShortChannelId shortChannelId) => ((byte[])shortChannelId),
-                ShortChannelId (byte[] bytes) => new ShortChannelId(bytes)),
-            jsonValueReaderWriter: new JsonConvertedValueReaderWriter<ShortChannelId, byte[]>(
-                JsonByteArrayReaderWriter.Instance,
-                new ValueConverter<ShortChannelId, byte[]>(
-                    byte[] (ShortChannelId shortChannelId) => ((byte[])shortChannelId),
-                    ShortChannelId (byte[] bytes) => new ShortChannelId(bytes))));
-        shortChannelId.SetComparer(new NullableValueComparer<ShortChannelId>(shortChannelId.TypeMapping.Comparer));
-        shortChannelId.SetKeyComparer(new NullableValueComparer<ShortChannelId>(shortChannelId.TypeMapping.KeyComparer));
-        shortChannelId.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
-        shortChannelId.AddAnnotation("Relational:ColumnName", "short_channel_id");
+                ShortChannelId (byte[] bytes) => new ShortChannelId(bytes))));
+    shortChannelId.SetComparer(new NullableValueComparer<ShortChannelId>(shortChannelId.TypeMapping.Comparer));
+    shortChannelId.SetKeyComparer(new NullableValueComparer<ShortChannelId>(shortChannelId.TypeMapping.KeyComparer));
+    shortChannelId.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
+    shortChannelId.AddAnnotation("Relational:ColumnName", "short_channel_id");
 
-        var txId = runtimeEntityType.AddProperty(
-            "TxId",
-            typeof(TxId?),
-            propertyInfo: typeof(AccountingEventEntity).GetProperty("TxId", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
-            fieldInfo: typeof(AccountingEventEntity).GetField("<TxId>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
-            nullable: true,
-            valueConverter: new TxIdConverter());
-        txId.SetGetter(
-            TxId? (AccountingEventEntity instance) => AccountingEventEntityUnsafeAccessors.TxId(instance),
-            bool (AccountingEventEntity instance) => !(AccountingEventEntityUnsafeAccessors.TxId(instance).HasValue));
-        txId.SetSetter(
-            AccountingEventEntity (AccountingEventEntity instance, TxId? value) =>
-            {
-                AccountingEventEntityUnsafeAccessors.TxId(instance) = value;
-                return instance;
-            });
-        txId.SetMaterializationSetter(
-            AccountingEventEntity (AccountingEventEntity instance, TxId? value) =>
-            {
-                AccountingEventEntityUnsafeAccessors.TxId(instance) = value;
-                return instance;
-            });
-        txId.SetAccessors(
-            TxId? (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.TxId(((AccountingEventEntity)(entry.Entity))),
-            TxId? (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.TxId(((AccountingEventEntity)(entry.Entity))),
-            TxId? (IInternalEntry entry) => entry.ReadOriginalValue<TxId?>(txId, 17),
-            TxId? (IInternalEntry entry) => entry.GetCurrentValue<TxId?>(txId));
-        txId.SetPropertyIndexes(
-            index: 17,
-            originalValueIndex: 17,
-            shadowIndex: -1,
-            relationshipIndex: -1,
-            storeGenerationIndex: -1);
-        txId.TypeMapping = NpgsqlByteArrayTypeMapping.Default.Clone(
-            comparer: new ValueComparer<TxId>(
-                bool (TxId v1, TxId v2) => v1.Equals(v2),
-                int (TxId v) => ((object)v).GetHashCode(),
-                TxId (TxId v) => v),
-            keyComparer: new ValueComparer<TxId>(
-                bool (TxId v1, TxId v2) => v1.Equals(v2),
-                int (TxId v) => ((object)v).GetHashCode(),
-                TxId (TxId v) => v),
-            providerValueComparer: new ValueComparer<byte[]>(
-                bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
-                int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
-                byte[] (byte[] source) => source.ToArray()),
-            converter: new ValueConverter<TxId, byte[]>(
+    var txId = runtimeEntityType.AddProperty(
+        "TxId",
+        typeof(TxId?),
+        propertyInfo: typeof(AccountingEventEntity).GetProperty("TxId", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+        fieldInfo: typeof(AccountingEventEntity).GetField("<TxId>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+        nullable: true,
+        valueConverter: new TxIdConverter());
+    txId.SetGetter(
+        TxId? (AccountingEventEntity instance) => AccountingEventEntityUnsafeAccessors.TxId(instance),
+        bool (AccountingEventEntity instance) => !(AccountingEventEntityUnsafeAccessors.TxId(instance).HasValue));
+    txId.SetSetter(
+        AccountingEventEntity (AccountingEventEntity instance, TxId? value) =>
+        {
+            AccountingEventEntityUnsafeAccessors.TxId(instance) = value;
+            return instance;
+        });
+    txId.SetMaterializationSetter(
+        AccountingEventEntity (AccountingEventEntity instance, TxId? value) =>
+        {
+            AccountingEventEntityUnsafeAccessors.TxId(instance) = value;
+            return instance;
+        });
+    txId.SetAccessors(
+        TxId? (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.TxId(((AccountingEventEntity)(entry.Entity))),
+        TxId? (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.TxId(((AccountingEventEntity)(entry.Entity))),
+        TxId? (IInternalEntry entry) => entry.ReadOriginalValue<TxId?>(txId, 18),
+        TxId? (IInternalEntry entry) => entry.GetCurrentValue<TxId?>(txId));
+    txId.SetPropertyIndexes(
+        index: 18,
+        originalValueIndex: 18,
+        shadowIndex: -1,
+        relationshipIndex: -1,
+        storeGenerationIndex: -1);
+    txId.TypeMapping = NpgsqlByteArrayTypeMapping.Default.Clone(
+        comparer: new ValueComparer<TxId>(
+            bool (TxId v1, TxId v2) => v1.Equals(v2),
+            int (TxId v) => ((object)v).GetHashCode(),
+            TxId (TxId v) => v),
+        keyComparer: new ValueComparer<TxId>(
+            bool (TxId v1, TxId v2) => v1.Equals(v2),
+            int (TxId v) => ((object)v).GetHashCode(),
+            TxId (TxId v) => v),
+        providerValueComparer: new ValueComparer<byte[]>(
+            bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+            int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+            byte[] (byte[] source) => source.ToArray()),
+        converter: new ValueConverter<TxId, byte[]>(
+            byte[] (TxId txId) => ((byte[])txId),
+            TxId (byte[] bytes) => new TxId(bytes)),
+        jsonValueReaderWriter: new JsonConvertedValueReaderWriter<TxId, byte[]>(
+            JsonByteArrayReaderWriter.Instance,
+            new ValueConverter<TxId, byte[]>(
                 byte[] (TxId txId) => ((byte[])txId),
-                TxId (byte[] bytes) => new TxId(bytes)),
-            jsonValueReaderWriter: new JsonConvertedValueReaderWriter<TxId, byte[]>(
-                JsonByteArrayReaderWriter.Instance,
-                new ValueConverter<TxId, byte[]>(
-                    byte[] (TxId txId) => ((byte[])txId),
-                    TxId (byte[] bytes) => new TxId(bytes))));
-        txId.SetComparer(new NullableValueComparer<TxId>(txId.TypeMapping.Comparer));
-        txId.SetKeyComparer(new NullableValueComparer<TxId>(txId.TypeMapping.KeyComparer));
-        txId.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
-        txId.AddAnnotation("Relational:ColumnName", "tx_id");
+                TxId (byte[] bytes) => new TxId(bytes))));
+    txId.SetComparer(new NullableValueComparer<TxId>(txId.TypeMapping.Comparer));
+    txId.SetKeyComparer(new NullableValueComparer<TxId>(txId.TypeMapping.KeyComparer));
+    txId.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
+    txId.AddAnnotation("Relational:ColumnName", "tx_id");
 
-        var key = runtimeEntityType.AddKey(
-            new[] { id });
-        runtimeEntityType.SetPrimaryKey(key);
-        key.AddAnnotation("Relational:Name", "pk_accounting_events");
+    var key = runtimeEntityType.AddKey(
+        new[] { id });
+    runtimeEntityType.SetPrimaryKey(key);
+    key.AddAnnotation("Relational:Name", "pk_accounting_events");
 
-        var index = runtimeEntityType.AddIndex(
-            new[] { channelId });
-        index.AddAnnotation("Relational:Name", "ix_accounting_events_channel_id");
+    var index = runtimeEntityType.AddIndex(
+        new[] { channelId });
+    index.AddAnnotation("Relational:Name", "ix_accounting_events_channel_id");
 
-        var index0 = runtimeEntityType.AddIndex(
-            new[] { eventKey });
-        index0.AddAnnotation("Relational:Name", "ix_accounting_events_event_key");
+    var index0 = runtimeEntityType.AddIndex(
+        new[] { eventKey });
+    index0.AddAnnotation("Relational:Name", "ix_accounting_events_event_key");
 
-        var index1 = runtimeEntityType.AddIndex(
-            new[] { ledgerSeq });
-        index1.AddAnnotation("Relational:Name", "ix_accounting_events_ledger_seq");
+    var index1 = runtimeEntityType.AddIndex(
+        new[] { ledgerSeq });
+    index1.AddAnnotation("Relational:Name", "ix_accounting_events_ledger_seq");
 
-        var index2 = runtimeEntityType.AddIndex(
-            new[] { occurredAt });
-        index2.AddAnnotation("Relational:Name", "ix_accounting_events_occurred_at");
+    var index2 = runtimeEntityType.AddIndex(
+        new[] { occurredAt });
+    index2.AddAnnotation("Relational:Name", "ix_accounting_events_occurred_at");
 
-        return runtimeEntityType;
-    }
+    var index3 = runtimeEntityType.AddIndex(
+        new[] { reversesEventKey });
+    index3.AddAnnotation("Relational:Name", "ix_accounting_events_reverses_event_key");
 
-    public static void CreateAnnotations(RuntimeEntityType runtimeEntityType)
-    {
-        var id = runtimeEntityType.FindProperty("Id");
-        var amountMsat = runtimeEntityType.FindProperty("AmountMsat");
-        var blockHeight = runtimeEntityType.FindProperty("BlockHeight");
-        var channelId = runtimeEntityType.FindProperty("ChannelId");
-        var counterparty = runtimeEntityType.FindProperty("Counterparty");
-        var details = runtimeEntityType.FindProperty("Details");
-        var eventKey = runtimeEntityType.FindProperty("EventKey");
-        var feeMsat = runtimeEntityType.FindProperty("FeeMsat");
-        var finality = runtimeEntityType.FindProperty("Finality");
-        var flags = runtimeEntityType.FindProperty("Flags");
-        var hash = runtimeEntityType.FindProperty("Hash");
-        var kind = runtimeEntityType.FindProperty("Kind");
-        var ledgerSeq = runtimeEntityType.FindProperty("LedgerSeq");
-        var occurredAt = runtimeEntityType.FindProperty("OccurredAt");
-        var outputIndex = runtimeEntityType.FindProperty("OutputIndex");
-        var paymentHash = runtimeEntityType.FindProperty("PaymentHash");
-        var shortChannelId = runtimeEntityType.FindProperty("ShortChannelId");
-        var txId = runtimeEntityType.FindProperty("TxId");
-        var key = runtimeEntityType.FindKey(new[] { id });
-        key.SetPrincipalKeyValueFactory(KeyValueFactoryFactory.CreateSimpleNonNullableFactory<long>(key));
-        key.SetIdentityMapFactory(IdentityMapFactoryFactory.CreateFactory<long>(key));
-        runtimeEntityType.SetOriginalValuesFactory(
-            ISnapshot (IInternalEntry source) =>
-            {
-                var structuralType = ((AccountingEventEntity)(source.Entity));
-                return ((ISnapshot)(new Snapshot<long, long, uint?, ChannelId?, CompactPubKey?, string, string, long, byte, int, byte[], int, long?, DateTimeOffset, uint?, Hash?, ShortChannelId?, TxId?>(((ValueComparer<long>)(((IProperty)id).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(id)), ((ValueComparer<long>)(((IProperty)amountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(amountMsat)), (source.GetCurrentValue<uint?>(blockHeight) == null ? null : ((ValueComparer<uint?>)(((IProperty)blockHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(blockHeight))), (source.GetCurrentValue<ChannelId?>(channelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(channelId))), (source.GetCurrentValue<CompactPubKey?>(counterparty) == null ? null : ((ValueComparer<CompactPubKey?>)(((IProperty)counterparty).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey?>(counterparty))), (source.GetCurrentValue<string>(details) == null ? null : ((ValueComparer<string>)(((IProperty)details).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(details))), (source.GetCurrentValue<string>(eventKey) == null ? null : ((ValueComparer<string>)(((IProperty)eventKey).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(eventKey))), ((ValueComparer<long>)(((IProperty)feeMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(feeMsat)), ((ValueComparer<byte>)(((IProperty)finality).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(finality)), ((ValueComparer<int>)(((IProperty)flags).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(flags)), (source.GetCurrentValue<byte[]>(hash) == null ? null : ((ValueComparer<byte[]>)(((IProperty)hash).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(hash))), ((ValueComparer<int>)(((IProperty)kind).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(kind)), (source.GetCurrentValue<long?>(ledgerSeq) == null ? null : ((ValueComparer<long?>)(((IProperty)ledgerSeq).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(ledgerSeq))), ((ValueComparer<DateTimeOffset>)(((IProperty)occurredAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(occurredAt)), (source.GetCurrentValue<uint?>(outputIndex) == null ? null : ((ValueComparer<uint?>)(((IProperty)outputIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(outputIndex))), (source.GetCurrentValue<Hash?>(paymentHash) == null ? null : ((ValueComparer<Hash?>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash?>(paymentHash))), (source.GetCurrentValue<ShortChannelId?>(shortChannelId) == null ? null : ((ValueComparer<ShortChannelId?>)(((IProperty)shortChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId?>(shortChannelId))), (source.GetCurrentValue<TxId?>(txId) == null ? null : ((ValueComparer<TxId?>)(((IProperty)txId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId?>(txId))))));
-            });
-        runtimeEntityType.SetStoreGeneratedValuesFactory(
-            ISnapshot () => ((ISnapshot)(new Snapshot<long>(((ValueComparer<long>)(((IProperty)id).GetValueComparer())).Snapshot(default(long))))));
-        runtimeEntityType.SetTemporaryValuesFactory(
-            ISnapshot (IInternalEntry source) => ((ISnapshot)(new Snapshot<long>(default(long)))));
-        runtimeEntityType.SetShadowValuesFactory(
-            ISnapshot (IDictionary<string, object> source) => Snapshot.Empty);
-        runtimeEntityType.SetEmptyShadowValuesFactory(
-            ISnapshot () => Snapshot.Empty);
-        runtimeEntityType.SetRelationshipSnapshotFactory(
-            ISnapshot (IInternalEntry source) =>
-            {
-                var structuralType = ((AccountingEventEntity)(source.Entity));
-                return ((ISnapshot)(new Snapshot<long>(((ValueComparer<long>)(((IProperty)id).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<long>(id)))));
-            });
-        runtimeEntityType.SetCounts(new PropertyCounts(
-            propertyCount: 18,
-            navigationCount: 0,
-            complexPropertyCount: 0,
-            complexCollectionCount: 0,
-            originalValueCount: 18,
-            shadowCount: 0,
-            relationshipCount: 1,
-            storeGeneratedCount: 1));
-        runtimeEntityType.AddAnnotation("Relational:FunctionName", null);
-        runtimeEntityType.AddAnnotation("Relational:Schema", null);
-        runtimeEntityType.AddAnnotation("Relational:SqlQuery", null);
-        runtimeEntityType.AddAnnotation("Relational:TableName", "accounting_events");
-        runtimeEntityType.AddAnnotation("Relational:ViewName", null);
-        runtimeEntityType.AddAnnotation("Relational:ViewSchema", null);
+    var index4 = runtimeEntityType.AddIndex(
+        new[] { kind, blockHeight, ledgerSeq });
+    index4.AddAnnotation("Relational:Name", "ix_accounting_events_kind_block_height_ledger_seq");
 
-        Customize(runtimeEntityType);
-    }
+    return runtimeEntityType;
+}
 
-    static partial void Customize(RuntimeEntityType runtimeEntityType);
+public static void CreateAnnotations(RuntimeEntityType runtimeEntityType)
+{
+    var id = runtimeEntityType.FindProperty("Id");
+    var amountMsat = runtimeEntityType.FindProperty("AmountMsat");
+    var blockHeight = runtimeEntityType.FindProperty("BlockHeight");
+    var channelId = runtimeEntityType.FindProperty("ChannelId");
+    var counterparty = runtimeEntityType.FindProperty("Counterparty");
+    var details = runtimeEntityType.FindProperty("Details");
+    var eventKey = runtimeEntityType.FindProperty("EventKey");
+    var feeMsat = runtimeEntityType.FindProperty("FeeMsat");
+    var finality = runtimeEntityType.FindProperty("Finality");
+    var flags = runtimeEntityType.FindProperty("Flags");
+    var hash = runtimeEntityType.FindProperty("Hash");
+    var kind = runtimeEntityType.FindProperty("Kind");
+    var ledgerSeq = runtimeEntityType.FindProperty("LedgerSeq");
+    var occurredAt = runtimeEntityType.FindProperty("OccurredAt");
+    var outputIndex = runtimeEntityType.FindProperty("OutputIndex");
+    var paymentHash = runtimeEntityType.FindProperty("PaymentHash");
+    var reversesEventKey = runtimeEntityType.FindProperty("ReversesEventKey");
+    var shortChannelId = runtimeEntityType.FindProperty("ShortChannelId");
+    var txId = runtimeEntityType.FindProperty("TxId");
+    var key = runtimeEntityType.FindKey(new[] { id });
+    key.SetPrincipalKeyValueFactory(KeyValueFactoryFactory.CreateSimpleNonNullableFactory<long>(key));
+    key.SetIdentityMapFactory(IdentityMapFactoryFactory.CreateFactory<long>(key));
+    runtimeEntityType.SetOriginalValuesFactory(
+        ISnapshot (IInternalEntry source) =>
+        {
+            var structuralType = ((AccountingEventEntity)(source.Entity));
+            return ((ISnapshot)(new Snapshot<long, long, uint?, ChannelId?, CompactPubKey?, string, string, long, byte, int, byte[], int, long?, DateTimeOffset, uint?, Hash?, string, ShortChannelId?, TxId?>(((ValueComparer<long>)(((IProperty)id).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(id)), ((ValueComparer<long>)(((IProperty)amountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(amountMsat)), (source.GetCurrentValue<uint?>(blockHeight) == null ? null : ((ValueComparer<uint?>)(((IProperty)blockHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(blockHeight))), (source.GetCurrentValue<ChannelId?>(channelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(channelId))), (source.GetCurrentValue<CompactPubKey?>(counterparty) == null ? null : ((ValueComparer<CompactPubKey?>)(((IProperty)counterparty).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey?>(counterparty))), (source.GetCurrentValue<string>(details) == null ? null : ((ValueComparer<string>)(((IProperty)details).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(details))), (source.GetCurrentValue<string>(eventKey) == null ? null : ((ValueComparer<string>)(((IProperty)eventKey).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(eventKey))), ((ValueComparer<long>)(((IProperty)feeMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(feeMsat)), ((ValueComparer<byte>)(((IProperty)finality).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(finality)), ((ValueComparer<int>)(((IProperty)flags).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(flags)), (source.GetCurrentValue<byte[]>(hash) == null ? null : ((ValueComparer<byte[]>)(((IProperty)hash).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(hash))), ((ValueComparer<int>)(((IProperty)kind).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(kind)), (source.GetCurrentValue<long?>(ledgerSeq) == null ? null : ((ValueComparer<long?>)(((IProperty)ledgerSeq).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(ledgerSeq))), ((ValueComparer<DateTimeOffset>)(((IProperty)occurredAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(occurredAt)), (source.GetCurrentValue<uint?>(outputIndex) == null ? null : ((ValueComparer<uint?>)(((IProperty)outputIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(outputIndex))), (source.GetCurrentValue<Hash?>(paymentHash) == null ? null : ((ValueComparer<Hash?>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash?>(paymentHash))), (source.GetCurrentValue<string>(reversesEventKey) == null ? null : ((ValueComparer<string>)(((IProperty)reversesEventKey).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(reversesEventKey))), (source.GetCurrentValue<ShortChannelId?>(shortChannelId) == null ? null : ((ValueComparer<ShortChannelId?>)(((IProperty)shortChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId?>(shortChannelId))), (source.GetCurrentValue<TxId?>(txId) == null ? null : ((ValueComparer<TxId?>)(((IProperty)txId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId?>(txId))))));
+        });
+    runtimeEntityType.SetStoreGeneratedValuesFactory(
+        ISnapshot () => ((ISnapshot)(new Snapshot<long>(((ValueComparer<long>)(((IProperty)id).GetValueComparer())).Snapshot(default(long))))));
+    runtimeEntityType.SetTemporaryValuesFactory(
+        ISnapshot (IInternalEntry source) => ((ISnapshot)(new Snapshot<long>(default(long)))));
+    runtimeEntityType.SetShadowValuesFactory(
+        ISnapshot (IDictionary<string, object> source) => Snapshot.Empty);
+    runtimeEntityType.SetEmptyShadowValuesFactory(
+        ISnapshot () => Snapshot.Empty);
+    runtimeEntityType.SetRelationshipSnapshotFactory(
+        ISnapshot (IInternalEntry source) =>
+        {
+            var structuralType = ((AccountingEventEntity)(source.Entity));
+            return ((ISnapshot)(new Snapshot<long>(((ValueComparer<long>)(((IProperty)id).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<long>(id)))));
+        });
+    runtimeEntityType.SetCounts(new PropertyCounts(
+        propertyCount: 19,
+        navigationCount: 0,
+        complexPropertyCount: 0,
+        complexCollectionCount: 0,
+        originalValueCount: 19,
+        shadowCount: 0,
+        relationshipCount: 1,
+        storeGeneratedCount: 1));
+    runtimeEntityType.AddAnnotation("Relational:FunctionName", null);
+    runtimeEntityType.AddAnnotation("Relational:Schema", null);
+    runtimeEntityType.AddAnnotation("Relational:SqlQuery", null);
+    runtimeEntityType.AddAnnotation("Relational:TableName", "accounting_events");
+    runtimeEntityType.AddAnnotation("Relational:ViewName", null);
+    runtimeEntityType.AddAnnotation("Relational:ViewSchema", null);
+
+    Customize(runtimeEntityType);
+}
+
+static partial void Customize(RuntimeEntityType runtimeEntityType);
 }
 }

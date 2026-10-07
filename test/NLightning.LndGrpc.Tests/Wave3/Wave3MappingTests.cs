@@ -278,9 +278,13 @@ public sealed class Wave3MappingTests
             StatusCode.InvalidArgument
         },
         {
+            // NL-1182: LND's CustomRecords.Validate refuses a type below 65536
             new ForwardHtlcInterceptResponse
-                { IncomingCircuitKey = new CircuitKey(), Action = ResolveHoldForwardAction.ResumeModified },
-            StatusCode.Unimplemented
+            {
+                IncomingCircuitKey = new CircuitKey(), Action = ResolveHoldForwardAction.ResumeModified,
+                OutWireCustomRecords = { [65_535] = ByteString.CopyFrom(1) }
+            },
+            StatusCode.InvalidArgument
         }
     };
 

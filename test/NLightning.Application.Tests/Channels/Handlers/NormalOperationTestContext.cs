@@ -127,7 +127,7 @@ internal sealed class NormalOperationTestContext
 
     private delegate bool TryGetChannelDelegate(ChannelId channelId, out ChannelModel channel);
 
-    public ChannelStateTransitionService CreateTransitions()
+    public ChannelStateTransitionService CreateTransitions(Application.Payments.Events.HtlcEventMonitor? htlcMonitor = null)
     {
         var secretStorageFactory = new Mock<ISecretStorageServiceFactory>();
         secretStorageFactory.Setup(f => f.CreatePerCommitmentStorage()).Returns(Shachain.Object);
@@ -135,7 +135,7 @@ internal sealed class NormalOperationTestContext
         return new ChannelStateTransitionService(ChannelMemoryRepository.Object, Events, Ports, LightningSigner.Object,
                                                  NullLogger<ChannelStateTransitionService>.Instance, MessageFactory,
                                                  MessageSerializer.Object, Options.Create(NodeOptions),
-                                                 secretStorageFactory.Object, UnitOfWork.Object);
+                                                 secretStorageFactory.Object, UnitOfWork.Object, htlcMonitor: htlcMonitor);
     }
 
     /// <summary>Replaces the channel's snapshot, as a persisted transition would.</summary>

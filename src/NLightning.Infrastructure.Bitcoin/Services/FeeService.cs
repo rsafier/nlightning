@@ -34,6 +34,14 @@ using Options;
 /// <see cref="FeeEstimationOptions.CacheExpiration"/> is used without waiting for a fetch, and one younger than
 /// <see cref="FeeEstimationOptions.CacheMaxAge"/> replaces <see cref="FeeEstimationOptions.FallbackFeeRatePerKw"/> while
 /// the first fetch fails. An older, corrupt or other-source file is ignored and logged.</para>
+/// <para>One fetch at a time (NL-755): the node-wide estimate and each bitcoind target have at most one fetch in
+/// flight, which every caller that needs it shares; it runs on the service's lifetime token, so a caller that gives up
+/// never cancels it for the others. A caller that finds an estimate older than
+/// <see cref="FeeEstimationOptions.CacheExpiration"/> gets it at once and the refresh runs behind it
+/// (stale-while-revalidate); only a caller without any estimate waits for the fetch. After a failed fetch, callers start
+/// no new one for <see cref="FailedFetchBackoff"/> (at most <see cref="FeeEstimationOptions.CacheExpiration"/>): they get
+/// the kept estimate, or <see cref="FeeEstimationOptions.FallbackFeeRatePerKw"/> while there is none. The background
+/// refresh loop and <see cref="RefreshFeeRateAsync"/> ignore that backoff but still share the fetch in flight.</para>
 /// Register it as one singleton (<see cref="FeeServiceCollectionExtensions.AddFeeServices"/>): the host starts that
 /// instance, and every consumer must read its cache.
 /// </remarks>
@@ -43,7 +51,12 @@ public class FeeService : IFeeService
     public const int MaxResponseBytes = HttpResponseLimits.SmallResponseMaxBytes;
 
     private static readonly string[] s_httpBuckets = ["fastestFee", "halfHourFee", "hourFee", "economyFee"];
-    private static readonly TimeSpan s_defaultCacheExpiration = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// How long callers start no new fetch after one failed (NL-755), unless
+    /// <see cref="FeeEstimationOptions.CacheExpiration"/> is shorter.
+    /// </summary>
+    internal static readonly TimeSpan FailedFetchBackoff = TimeSpan.FromSeconds(30);
 
     /// <summary>How long <see cref="StartAsync"/> waits for the cache file read before going on without it.</summary>
     private static readonly TimeSpan s_cacheLoadWait = TimeSpan.FromSeconds(2);
@@ -78,6 +91,15 @@ public class FeeService : IFeeService
     private readonly Func<int, EstimateSmartFeeMode, CancellationToken, Task<decimal?>>? _bitcoindEstimator;
     private readonly ConcurrentDictionary<uint, (long FeeRatePerKw, DateTime FetchedAt)> _targetCache = new();
     private volatile IReadOnlyDictionary<string, long> _httpBuckets = new Dictionary<string, long>();
+    private readonly TimeProvider _timeProvider;
+    private readonly TimeSpan _failedFetchBackoff;
+
+    // The fetches in flight and the last failures (NL-755), under _refreshLock
+    private readonly Lock _refreshLock = new();
+    private Task? _refresh;
+    private DateTime? _lastFailedFetchTime;
+    private readonly Dictionary<uint, Task<long?>> _targetRefreshes = new();
+    private readonly Dictionary<uint, DateTime> _targetFailedFetchTimes = new();
 
     /// <remarks>
     /// <paramref name="bitcoinOptions"/> and <paramref name="nodeOptions"/> are only used by
@@ -95,14 +117,17 @@ public class FeeService : IFeeService
     /// <param name="logger">The logger.</param>
     /// <param name="bitcoindEstimator">For <see cref="FeeEstimationOptions.SourceBitcoind"/>: bitcoind's
     /// <c>estimatesmartfee</c> in sat/vB for a confirmation target and mode, or null when it has no estimate.</param>
+    /// <param name="timeProvider">The clock (tests); the system clock when null.</param>
     /// <exception cref="InvalidOperationException">The options are invalid.</exception>
     internal FeeService(FeeEstimationOptions feeOptions, HttpClient httpClient, ILogger<FeeService> logger,
-                        Func<int, EstimateSmartFeeMode, CancellationToken, Task<decimal?>>? bitcoindEstimator)
+                        Func<int, EstimateSmartFeeMode, CancellationToken, Task<decimal?>>? bitcoindEstimator,
+                        TimeProvider? timeProvider = null)
     {
         _feeEstimationOptions = feeOptions;
         _httpClient = httpClient;
         _logger = logger;
         _bitcoindEstimator = bitcoindEstimator;
+        _timeProvider = timeProvider ?? TimeProvider.System;
 
         var errors = _feeEstimationOptions.GetValidationErrors();
         if (errors.Count > 0)
@@ -114,10 +139,15 @@ public class FeeService : IFeeService
                                _feeEstimationOptions.RateMultiplier, _feeEstimationOptions.RateUnit);
 
         _cacheFilePath = ParseFilePath(_feeEstimationOptions);
-        _cacheTimeExpiration = ParseCacheTime(_feeEstimationOptions.CacheExpiration);
+        // Both durations were validated above (NL-756); CacheMaxAge only when there is a cache file
+        _cacheTimeExpiration = FeeEstimationOptions.TryParseDuration(_feeEstimationOptions.CacheExpiration,
+                                                                     out var expiration)
+                                   ? expiration
+                                   : FeeEstimationOptions.DefaultCacheExpiration;
         _cacheMaxAge = FeeEstimationOptions.TryParseDuration(_feeEstimationOptions.CacheMaxAge, out var maxAge)
                            ? maxAge
                            : TimeSpan.FromHours(1);
+        _failedFetchBackoff = _cacheTimeExpiration < FailedFetchBackoff ? _cacheTimeExpiration : FailedFetchBackoff;
         _cacheSourceKey = ComputeSourceKey(_feeEstimationOptions);
 
         // Read the saved estimate off the constructing thread; StartAsync waits for it, bounded (NL-706)
@@ -184,6 +214,23 @@ public class FeeService : IFeeService
             }
         }
 
+        // The fetch in flight ends with the lifetime token; bounded, as one started before StartAsync does not see it
+        Task? refresh;
+        lock (_refreshLock)
+            refresh = _refresh;
+        if (refresh is not null)
+        {
+            try
+            {
+                await refresh.WaitAsync(s_cacheSaveWait);
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogWarning("The fee rate fetch in flight takes more than {Wait} to stop; stopping without it",
+                                   s_cacheSaveWait);
+            }
+        }
+
         // The last estimate reaches the file before the process ends, bounded so a stuck disk never holds the stop
         try
         {
@@ -196,6 +243,12 @@ public class FeeService : IFeeService
         }
     }
 
+    /// <remarks>
+    /// A fresh estimate is answered at once. An expired one is answered at once too, while one shared refresh runs
+    /// behind it (none during the backoff after a failed fetch, NL-755). Without any estimate the caller waits for the
+    /// shared fetch, unless one failed within the backoff, and then gets the estimate or
+    /// <see cref="FeeEstimationOptions.FallbackFeeRatePerKw"/>; a cancelled wait answers the same, the fetch goes on.
+    /// </remarks>
     public async Task<LightningMoney> GetFeeRatePerKwAsync(CancellationToken cancellationToken = default)
     {
         if (IsCacheValid())
@@ -203,10 +256,11 @@ public class FeeService : IFeeService
             return GetCachedFeeRatePerKw();
         }
 
-        using var linkedCts = CancellationTokenSource
-           .CreateLinkedTokenSource(cancellationToken, _cts?.Token ?? CancellationToken.None);
+        var refresh = GetOrStartRefresh(respectBackoff: true);
+        if (Interlocked.Read(ref _cachedFeeRatePerKw) > 0 || refresh is null)
+            return GetCachedFeeRatePerKw();
 
-        await RefreshFeeRateAsync(linkedCts.Token);
+        await WaitForRefreshAsync(refresh, cancellationToken);
         return GetCachedFeeRatePerKw();
     }
 
@@ -217,29 +271,18 @@ public class FeeService : IFeeService
         var target = Math.Clamp(confirmationTarget, 1u, MaxConfirmationTarget);
         if (_feeEstimationOptions.IsSource(FeeEstimationOptions.SourceBitcoind) && _bitcoindEstimator is not null)
         {
-            if (_targetCache.TryGetValue(target, out var cached)
-             && DateTime.UtcNow - cached.FetchedAt <= _cacheTimeExpiration)
+            // Like the node-wide rate (NL-755): fresh or expired, a kept target estimate is answered at once, one shared
+            // fetch per target refreshes it, and only a caller without one waits for that fetch
+            var hasCached = _targetCache.TryGetValue(target, out var cached);
+            if (hasCached && UtcNow - cached.FetchedAt <= _cacheTimeExpiration)
                 return LightningMoney.Satoshis(cached.FeeRatePerKw);
 
-            try
-            {
-                var satPerVByte = await _bitcoindEstimator((int)target, GetEstimateMode(), cancellationToken);
-                if (satPerVByte is { } rate)
-                {
-                    var perKw = FeeRateConverter.SatPerVByteToSatPerKw(rate);
-                    _targetCache[target] = (perKw, DateTime.UtcNow);
-                    return LightningMoney.Satoshis(perKw);
-                }
+            var refresh = GetOrStartTargetRefresh(target);
+            if (hasCached)
+                return LightningMoney.Satoshis(cached.FeeRatePerKw);
 
-                if (_logger.IsEnabled(LogLevel.Debug))
-                    _logger.LogDebug("bitcoind has no fee estimate for {Target} blocks; using the node-wide rate",
-                                     target);
-            }
-            catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogWarning(e, "Fetching the fee rate for {Target} blocks from bitcoind failed; using the "
-                                    + "node-wide rate", target);
-            }
+            if (refresh is not null && await refresh.WaitAsync(cancellationToken) is { } perKw)
+                return LightningMoney.Satoshis(perKw);
 
             return await GetFeeRatePerKwAsync(cancellationToken);
         }
@@ -286,12 +329,64 @@ public class FeeService : IFeeService
         return LightningMoney.Satoshis(cached > 0 ? cached : _feeEstimationOptions.FallbackFeeRatePerKw);
     }
 
+    /// <remarks>
+    /// Joins the fetch in flight or starts one, whatever the backoff after a failed fetch (NL-755). Cancelling
+    /// <paramref name="cancellationToken"/> ends this wait only: the shared fetch goes on for the other callers.
+    /// </remarks>
     public async Task RefreshFeeRateAsync(CancellationToken cancellationToken)
+    {
+        // A caller that already gave up starts nothing
+        if (cancellationToken.IsCancellationRequested)
+            return;
+
+        await WaitForRefreshAsync(GetOrStartRefresh(respectBackoff: false)!, cancellationToken);
+    }
+
+    /// <summary>The wall clock, from the time provider.</summary>
+    private DateTime UtcNow => _timeProvider.GetUtcNow().UtcDateTime;
+
+    /// <summary>
+    /// The node-wide fetch in flight, or a new one on the service's lifetime token (never a caller's), or null when
+    /// <paramref name="respectBackoff"/> and a fetch failed less than the backoff ago.
+    /// </summary>
+    private Task? GetOrStartRefresh(bool respectBackoff)
+    {
+        lock (_refreshLock)
+        {
+            if (_refresh is { } running)
+                return running;
+
+            if (respectBackoff && _lastFailedFetchTime is { } failedAt && UtcNow - failedAt < _failedFetchBackoff)
+                return null;
+
+            // Task.Run: the fetch never starts on the caller's thread under the lock, and its end (which takes the
+            // lock) can only run once _refresh is set
+            var token = _cts?.Token ?? CancellationToken.None;
+            _refresh = Task.Run(() => RunRefreshAsync(token), CancellationToken.None);
+            return _refresh;
+        }
+    }
+
+    /// <summary>Waits for a shared fetch; a cancelled wait just ends (the fetch goes on).</summary>
+    private static async Task WaitForRefreshAsync(Task refresh, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await refresh.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The caller gave up; the shared fetch is not ours to cancel
+        }
+    }
+
+    /// <summary>One shared node-wide fetch: stores the estimate or logs the failure; never throws.</summary>
+    private async Task RunRefreshAsync(CancellationToken cancellationToken)
     {
         try
         {
             var feeRate = await FetchFeeRatePerKwAsync(cancellationToken);
-            var fetchedAt = DateTime.UtcNow;
+            var fetchedAt = UtcNow;
             lock (_stateLock)
             {
                 Interlocked.Exchange(ref _cachedFeeRatePerKw, feeRate);
@@ -299,14 +394,20 @@ public class FeeService : IFeeService
                 _fetchedOnce = true;
             }
 
+            lock (_refreshLock)
+                _lastFailedFetchTime = null;
+
             ScheduleSave(feeRate, fetchedAt);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Our own cancellation (stopping, or the caller gave up): nothing to report
+            // The service is stopping: nothing to report
         }
         catch (Exception e)
         {
+            lock (_refreshLock)
+                _lastFailedFetchTime = UtcNow;
+
             // An HttpClient timeout is an OperationCanceledException although our token is not cancelled: log it too
             var reason = e is OperationCanceledException ? "timed out" : "failed";
             if (Interlocked.Read(ref _cachedFeeRatePerKw) > 0)
@@ -321,6 +422,77 @@ public class FeeService : IFeeService
                                    _feeEstimationOptions.Source, reason, _feeEstimationOptions.FallbackFeeRatePerKw);
             }
         }
+        finally
+        {
+            lock (_refreshLock)
+                _refresh = null;
+        }
+    }
+
+    /// <summary>
+    /// The fetch in flight for <paramref name="target"/>, or a new one on the service's lifetime token, or null during
+    /// the backoff after that target's last failed fetch (NL-755).
+    /// </summary>
+    private Task<long?>? GetOrStartTargetRefresh(uint target)
+    {
+        lock (_refreshLock)
+        {
+            if (_targetRefreshes.TryGetValue(target, out var running))
+                return running;
+
+            if (_targetFailedFetchTimes.TryGetValue(target, out var failedAt) && UtcNow - failedAt < _failedFetchBackoff)
+                return null;
+
+            var token = _cts?.Token ?? CancellationToken.None;
+            var refresh = Task.Run(() => RunTargetRefreshAsync(target, token), CancellationToken.None);
+            _targetRefreshes[target] = refresh;
+            return refresh;
+        }
+    }
+
+    /// <summary>
+    /// One shared <c>estimatesmartfee</c> for a target: the rate in sat/kw, kept per target, or null (no estimate, a
+    /// failure; logged); never throws.
+    /// </summary>
+    private async Task<long?> RunTargetRefreshAsync(uint target, CancellationToken cancellationToken)
+    {
+        long? result = null;
+        try
+        {
+            var satPerVByte = await _bitcoindEstimator!((int)target, GetEstimateMode(), cancellationToken);
+            if (satPerVByte is { } rate)
+            {
+                var perKw = FeeRateConverter.SatPerVByteToSatPerKw(rate);
+                _targetCache[target] = (perKw, UtcNow);
+                result = perKw;
+            }
+            else if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("bitcoind has no fee estimate for {Target} blocks; using the node-wide rate", target);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The service is stopping: nothing to report
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Fetching the fee rate for {Target} blocks from bitcoind failed; using the kept or "
+                                + "node-wide rate", target);
+        }
+        finally
+        {
+            lock (_refreshLock)
+            {
+                _targetRefreshes.Remove(target);
+                if (result is null)
+                    _targetFailedFetchTimes[target] = UtcNow;
+                else
+                    _targetFailedFetchTimes.Remove(target);
+            }
+        }
+
+        return result;
     }
 
     private async Task<long> FetchFeeRatePerKwAsync(CancellationToken cancellationToken)
@@ -458,7 +630,7 @@ public class FeeService : IFeeService
                     await RefreshFeeRateAsync(cancellationToken);
 
                     // Wait for the cache time or until cancellation
-                    await Task.Delay(_cacheTimeExpiration, cancellationToken);
+                    await Task.Delay(_cacheTimeExpiration, _timeProvider, cancellationToken);
                 }
             }
         }
@@ -550,14 +722,14 @@ public class FeeService : IFeeService
                 return;
             }
 
-            if (GetEntryProblem(entry, DateTime.UtcNow) is { } entryProblem)
+            if (GetEntryProblem(entry, UtcNow) is { } entryProblem)
             {
                 _logger.LogWarning("Ignoring the fee rate cache file {CacheFile}: {Problem}", _cacheFilePath,
                                    entryProblem);
                 return;
             }
 
-            var now = DateTime.UtcNow;
+            var now = UtcNow;
             var fetchedAt = entry.FetchedAt.UtcDateTime > now ? now : entry.FetchedAt.UtcDateTime;
             lock (_stateLock)
             {
@@ -624,33 +796,7 @@ public class FeeService : IFeeService
 
     private bool IsCacheValid()
     {
-        return Interlocked.Read(ref _cachedFeeRatePerKw) > 0 && DateTime.UtcNow.Subtract(_lastFetchTime).CompareTo(_cacheTimeExpiration) <= 0;
-    }
-
-    private static TimeSpan ParseCacheTime(string cacheTime)
-    {
-        try
-        {
-            // Parse formats like "5m", "1hour", "30s"
-            var valueStr = new string(cacheTime.Where(char.IsDigit).ToArray());
-            var unit = new string(cacheTime.Where(char.IsLetter).ToArray()).ToLowerInvariant();
-
-            if (!int.TryParse(valueStr, out var value))
-                return s_defaultCacheExpiration;
-
-            return unit switch
-            {
-                "s" or "second" or "seconds" => TimeSpan.FromSeconds(value),
-                "m" or "minute" or "minutes" => TimeSpan.FromMinutes(value),
-                "h" or "hour" or "hours" => TimeSpan.FromHours(value),
-                "d" or "day" or "days" => TimeSpan.FromDays(value),
-                _ => TimeSpan.FromMinutes(5)
-            };
-        }
-        catch
-        {
-            return s_defaultCacheExpiration; // Default on error
-        }
+        return Interlocked.Read(ref _cachedFeeRatePerKw) > 0 && UtcNow - _lastFetchTime <= _cacheTimeExpiration;
     }
 
     /// <summary>

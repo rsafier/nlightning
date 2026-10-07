@@ -13,6 +13,9 @@ using ValueObjects;
 /// </remarks>
 public interface IReestablishTracker
 {
+    /// <summary>Live changes to the usability of a channel on its current peer connection.</summary>
+    event EventHandler<ChannelId>? OnUsabilityChanged;
+
     /// <summary>True when the channel can carry updates on the peer's current connection.</summary>
     bool IsReestablished(ChannelId channelId);
 }

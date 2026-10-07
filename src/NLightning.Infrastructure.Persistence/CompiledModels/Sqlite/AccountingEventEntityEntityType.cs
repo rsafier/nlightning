@@ -34,8 +34,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                 "NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingEventEntity",
                 typeof(AccountingEventEntity),
                 baseEntityType,
-                propertyCount: 18,
-                unnamedIndexCount: 4,
+                propertyCount: 19,
+                unnamedIndexCount: 6,
                 keyCount: 1);
 
             var id = runtimeEntityType.AddProperty(
@@ -821,6 +821,41 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             paymentHash.SetComparer(new NullableValueComparer<Hash>(paymentHash.TypeMapping.Comparer));
             paymentHash.SetKeyComparer(new NullableValueComparer<Hash>(paymentHash.TypeMapping.KeyComparer));
 
+            var reversesEventKey = runtimeEntityType.AddProperty(
+                "ReversesEventKey",
+                typeof(string),
+                propertyInfo: typeof(AccountingEventEntity).GetProperty("ReversesEventKey", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(AccountingEventEntity).GetField("<ReversesEventKey>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true,
+                maxLength: 200);
+            reversesEventKey.SetGetter(
+                string (AccountingEventEntity instance) => AccountingEventEntityUnsafeAccessors.ReversesEventKey(instance),
+                bool (AccountingEventEntity instance) => AccountingEventEntityUnsafeAccessors.ReversesEventKey(instance) == null);
+            reversesEventKey.SetSetter(
+                AccountingEventEntity (AccountingEventEntity instance, string value) =>
+                {
+                    AccountingEventEntityUnsafeAccessors.ReversesEventKey(instance) = value;
+                    return instance;
+                });
+            reversesEventKey.SetMaterializationSetter(
+                AccountingEventEntity (AccountingEventEntity instance, string value) =>
+                {
+                    AccountingEventEntityUnsafeAccessors.ReversesEventKey(instance) = value;
+                    return instance;
+                });
+            reversesEventKey.SetAccessors(
+                string (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.ReversesEventKey(((AccountingEventEntity)(entry.Entity))),
+                string (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.ReversesEventKey(((AccountingEventEntity)(entry.Entity))),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(reversesEventKey, 16),
+                string (IInternalEntry entry) => entry.GetCurrentValue<string>(reversesEventKey));
+            reversesEventKey.SetPropertyIndexes(
+                index: 16,
+                originalValueIndex: 16,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            reversesEventKey.TypeMapping = SqliteStringTypeMapping.Default;
+
             var shortChannelId = runtimeEntityType.AddProperty(
                 "ShortChannelId",
                 typeof(ShortChannelId?),
@@ -846,11 +881,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             shortChannelId.SetAccessors(
                 ShortChannelId? (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.ShortChannelId(((AccountingEventEntity)(entry.Entity))),
                 ShortChannelId? (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.ShortChannelId(((AccountingEventEntity)(entry.Entity))),
-                ShortChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ShortChannelId?>(shortChannelId, 16),
+                ShortChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ShortChannelId?>(shortChannelId, 17),
                 ShortChannelId? (IInternalEntry entry) => entry.GetCurrentValue<ShortChannelId?>(shortChannelId));
             shortChannelId.SetPropertyIndexes(
-                index: 16,
-                originalValueIndex: 16,
+                index: 17,
+                originalValueIndex: 17,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -903,11 +938,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             txId.SetAccessors(
                 TxId? (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.TxId(((AccountingEventEntity)(entry.Entity))),
                 TxId? (IInternalEntry entry) => AccountingEventEntityUnsafeAccessors.TxId(((AccountingEventEntity)(entry.Entity))),
-                TxId? (IInternalEntry entry) => entry.ReadOriginalValue<TxId?>(txId, 17),
+                TxId? (IInternalEntry entry) => entry.ReadOriginalValue<TxId?>(txId, 18),
                 TxId? (IInternalEntry entry) => entry.GetCurrentValue<TxId?>(txId));
             txId.SetPropertyIndexes(
-                index: 17,
-                originalValueIndex: 17,
+                index: 18,
+                originalValueIndex: 18,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -951,6 +986,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var index2 = runtimeEntityType.AddIndex(
                 new[] { occurredAt });
 
+            var index3 = runtimeEntityType.AddIndex(
+                new[] { reversesEventKey });
+
+            var index4 = runtimeEntityType.AddIndex(
+                new[] { kind, blockHeight, ledgerSeq });
+
             return runtimeEntityType;
         }
 
@@ -972,6 +1013,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var occurredAt = runtimeEntityType.FindProperty("OccurredAt");
             var outputIndex = runtimeEntityType.FindProperty("OutputIndex");
             var paymentHash = runtimeEntityType.FindProperty("PaymentHash");
+            var reversesEventKey = runtimeEntityType.FindProperty("ReversesEventKey");
             var shortChannelId = runtimeEntityType.FindProperty("ShortChannelId");
             var txId = runtimeEntityType.FindProperty("TxId");
             var key = runtimeEntityType.FindKey(new[] { id });
@@ -981,7 +1023,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType = ((AccountingEventEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<long, long, uint?, ChannelId?, CompactPubKey?, string, string, long, byte, int, byte[], int, long?, DateTimeOffset, uint?, Hash?, ShortChannelId?, TxId?>(((ValueComparer<long>)(((IProperty)id).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(id)), ((ValueComparer<long>)(((IProperty)amountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(amountMsat)), (source.GetCurrentValue<uint?>(blockHeight) == null ? null : ((ValueComparer<uint?>)(((IProperty)blockHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(blockHeight))), (source.GetCurrentValue<ChannelId?>(channelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(channelId))), (source.GetCurrentValue<CompactPubKey?>(counterparty) == null ? null : ((ValueComparer<CompactPubKey?>)(((IProperty)counterparty).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey?>(counterparty))), (source.GetCurrentValue<string>(details) == null ? null : ((ValueComparer<string>)(((IProperty)details).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(details))), (source.GetCurrentValue<string>(eventKey) == null ? null : ((ValueComparer<string>)(((IProperty)eventKey).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(eventKey))), ((ValueComparer<long>)(((IProperty)feeMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(feeMsat)), ((ValueComparer<byte>)(((IProperty)finality).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(finality)), ((ValueComparer<int>)(((IProperty)flags).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(flags)), (source.GetCurrentValue<byte[]>(hash) == null ? null : ((ValueComparer<byte[]>)(((IProperty)hash).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(hash))), ((ValueComparer<int>)(((IProperty)kind).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(kind)), (source.GetCurrentValue<long?>(ledgerSeq) == null ? null : ((ValueComparer<long?>)(((IProperty)ledgerSeq).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(ledgerSeq))), ((ValueComparer<DateTimeOffset>)(((IProperty)occurredAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(occurredAt)), (source.GetCurrentValue<uint?>(outputIndex) == null ? null : ((ValueComparer<uint?>)(((IProperty)outputIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(outputIndex))), (source.GetCurrentValue<Hash?>(paymentHash) == null ? null : ((ValueComparer<Hash?>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash?>(paymentHash))), (source.GetCurrentValue<ShortChannelId?>(shortChannelId) == null ? null : ((ValueComparer<ShortChannelId?>)(((IProperty)shortChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId?>(shortChannelId))), (source.GetCurrentValue<TxId?>(txId) == null ? null : ((ValueComparer<TxId?>)(((IProperty)txId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId?>(txId))))));
+                    return ((ISnapshot)(new Snapshot<long, long, uint?, ChannelId?, CompactPubKey?, string, string, long, byte, int, byte[], int, long?, DateTimeOffset, uint?, Hash?, string, ShortChannelId?, TxId?>(((ValueComparer<long>)(((IProperty)id).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(id)), ((ValueComparer<long>)(((IProperty)amountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(amountMsat)), (source.GetCurrentValue<uint?>(blockHeight) == null ? null : ((ValueComparer<uint?>)(((IProperty)blockHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(blockHeight))), (source.GetCurrentValue<ChannelId?>(channelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(channelId))), (source.GetCurrentValue<CompactPubKey?>(counterparty) == null ? null : ((ValueComparer<CompactPubKey?>)(((IProperty)counterparty).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey?>(counterparty))), (source.GetCurrentValue<string>(details) == null ? null : ((ValueComparer<string>)(((IProperty)details).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(details))), (source.GetCurrentValue<string>(eventKey) == null ? null : ((ValueComparer<string>)(((IProperty)eventKey).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(eventKey))), ((ValueComparer<long>)(((IProperty)feeMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(feeMsat)), ((ValueComparer<byte>)(((IProperty)finality).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(finality)), ((ValueComparer<int>)(((IProperty)flags).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(flags)), (source.GetCurrentValue<byte[]>(hash) == null ? null : ((ValueComparer<byte[]>)(((IProperty)hash).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(hash))), ((ValueComparer<int>)(((IProperty)kind).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(kind)), (source.GetCurrentValue<long?>(ledgerSeq) == null ? null : ((ValueComparer<long?>)(((IProperty)ledgerSeq).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(ledgerSeq))), ((ValueComparer<DateTimeOffset>)(((IProperty)occurredAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(occurredAt)), (source.GetCurrentValue<uint?>(outputIndex) == null ? null : ((ValueComparer<uint?>)(((IProperty)outputIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(outputIndex))), (source.GetCurrentValue<Hash?>(paymentHash) == null ? null : ((ValueComparer<Hash?>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash?>(paymentHash))), (source.GetCurrentValue<string>(reversesEventKey) == null ? null : ((ValueComparer<string>)(((IProperty)reversesEventKey).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(reversesEventKey))), (source.GetCurrentValue<ShortChannelId?>(shortChannelId) == null ? null : ((ValueComparer<ShortChannelId?>)(((IProperty)shortChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId?>(shortChannelId))), (source.GetCurrentValue<TxId?>(txId) == null ? null : ((ValueComparer<TxId?>)(((IProperty)txId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId?>(txId))))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => ((ISnapshot)(new Snapshot<long>(((ValueComparer<long>)(((IProperty)id).GetValueComparer())).Snapshot(default(long))))));
@@ -998,11 +1040,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                     return ((ISnapshot)(new Snapshot<long>(((ValueComparer<long>)(((IProperty)id).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<long>(id)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 18,
+                propertyCount: 19,
                 navigationCount: 0,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 18,
+                originalValueCount: 19,
                 shadowCount: 0,
                 relationshipCount: 1,
                 storeGeneratedCount: 1));

@@ -31,6 +31,30 @@ public class RebalanceHarnessTests
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(30);
 
     [Fact]
+    public async Task Given_AnAllowedOutgoingChannelSet_When_Rebalancing_Then_EveryFirstHopBelongsToTheSet()
+    {
+        // Arrange
+        await using var harness = await CreateAsync();
+        GiveBobThePeerUpdate(harness, harness.Alice, ThreeNodeHarness.AliceBobChannelId);
+        GiveBobThePeerUpdate(harness, harness.Carol, ThreeNodeHarness.BobCarolChannelId);
+        var invoice = await harness.Bob.Invoices.CreateInvoiceAsync(s_amount, "Loop channel set", null,
+            TestContext.Current.CancellationToken);
+        var allowed = new HashSet<Domain.Channels.ValueObjects.ChannelId>
+            { ThreeNodeHarness.AliceBobChannelId, ThreeNodeHarness.BobCarolChannelId };
+        // Act
+        var result = await PayAsync(harness, invoice.Bolt11!, new PayInvoiceOptions
+        {
+            Timeout = s_timeout,
+            OutgoingChannelIds = allowed,
+            IncomingChannelId = ThreeNodeHarness.BobCarolChannelId
+        });
+        // Assert
+        Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
+        Assert.Equal(ThreeNodeHarness.AliceBobChannelId, result.Payment.OutgoingChannelId);
+        Assert.Contains(result.Payment.OutgoingChannelId!.Value, allowed);
+    }
+
+    [Fact]
     public async Task Given_ATriangle_When_BobPaysHisOwnInvoice_Then_ItGoesOutToCarolAndBackFromAliceAsARebalance()
     {
         // Arrange: Bob knows Alice's policy on Alice-Bob (her channel_update) and Carol's on Carol-Alice (the graph)

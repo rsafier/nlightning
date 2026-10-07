@@ -30,9 +30,11 @@ using Domain.Payments.Interception;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
+using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.ValueObjects;
 using Google.Protobuf;
+using Infrastructure.Bitcoin.Wallet.Imports;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using LndGrpc.Macaroons;
 using LndGrpc.Services;
@@ -50,7 +52,7 @@ using ListUnspentRequest = Testing.Lnd.Walletrpc.ListUnspentRequest;
 /// interceptor against the real <see cref="HtlcInterceptorHub"/>, WalletKit over a mocked wallet PSBT service and
 /// GetTransactions over a mocked accounting feed.
 /// </summary>
-public sealed class LndGrpcWave3HostTests : IAsyncLifetime
+public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -60,6 +62,21 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
     private readonly Mock<IWalletPsbtService> _psbt = new();
     private readonly Mock<IBitcoinChainService> _chain = new();
     private readonly List<AccountingEventModel> _accountingEvents = [];
+    private readonly List<BroadcastTransactionModel> _broadcastRows = [];
+    private readonly List<FeeInputReservation> _feeReservations = [];
+    private readonly List<ChannelCloseModel> _closes = [];
+    private readonly List<OutputResolutionModel> _outputs = [];
+    private readonly List<WalletAddressModel> _walletAddresses = [];
+    private readonly List<UtxoModel> _unspent = [];
+    private readonly List<WalletTransactionRecord> _walletHistory = [];
+    private readonly Mock<ISecureKeyManager> _keys = new();
+    private readonly Mock<ILightningSigner> _signer = new();
+    private readonly Mock<IChannelMemoryRepository> _channels = new();
+    private readonly Mock<IAnchorReserveService> _reserve = new();
+    private readonly Mock<Application.Onchain.Anchors.IAnchorCpfpService> _anchors = new();
+    private readonly Mock<Application.Onchain.Interfaces.IOnchainResolutionExecutor> _executor = new();
+    private readonly Application.Onchain.Fees.OperatorFeeBumps _bumps = new();
+    private readonly List<ImportedTapscript> _imported = [];
 
     private ServiceProvider? _services;
     private LndGrpcHost? _host;
@@ -206,7 +223,7 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
         var resolved = new TaskCompletionSource<ForwardInterceptResolution>();
 
         // Act
-        var outcome = _hub.Intercept(CreateForward(1), 100, r =>
+        var outcome = _hub.Intercept(CreateForward(1), 100, false, r =>
         {
             resolved.TrySetResult(r);
             return Task.CompletedTask;
@@ -226,7 +243,9 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
         Assert.Equal(FailureCode.TemporaryChannelFailure, resolution.FailureCode);
         Assert.Equal(1UL, request.IncomingCircuitKey.HtlcId);
         Assert.Equal(500 - 19, request.AutoFailHeight);
-        Assert.Equal(0, _hub.HeldCount);
+        // The hub drops the hold only after the callback returned (NL-1234), and this callback completes `resolved`
+        // inline, so the removal may still be running here (NL-1235)
+        await WaitUntilAsync(() => _hub.HeldCount == 0);
     }
 
     [Fact]
@@ -241,7 +260,7 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
         var resolved = new TaskCompletionSource<ForwardInterceptResolution>();
 
         // Act
-        _hub.Intercept(CreateForward(2) with { PaymentHash = new Hash(hash) }, 100, r =>
+        _hub.Intercept(CreateForward(2) with { PaymentHash = new Hash(hash) }, 100, false, r =>
         {
             resolved.TrySetResult(r);
             return Task.CompletedTask;
@@ -268,7 +287,7 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
         using var stream = connection.RouterClient.HtlcInterceptor(cancellationToken: Ct);
         await WaitUntilAsync(() => _hub.IsActive);
         var resolved = new TaskCompletionSource<ForwardInterceptResolution>();
-        _hub.Intercept(CreateForward(3), 100, r =>
+        _hub.Intercept(CreateForward(3), 100, false, r =>
         {
             resolved.TrySetResult(r);
             return Task.CompletedTask;
@@ -525,6 +544,29 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
         Assert.Empty(response.Transactions);
     }
 
+    [Fact]
+    public async Task Given_MoreThanOneEventPage_When_GetTransactions_Then_NetAmountsAreAggregatedBeforePaging()
+    {
+        var spend = new TxId(Enumerable.Repeat((byte)0x06, 32).ToArray());
+        for (uint index = 0; index < 1_001; index++)
+        {
+            var previous = new TxId(Enumerable.Repeat((byte)0x05, 32).ToArray());
+            AddEvent(AccountingEventKind.WalletOutputSpent, previous, index, 120, -1_000_000,
+                     ("spentBy", spend.ToString()));
+        }
+        AddEvent(AccountingEventKind.WalletReceived, spend, 0, 120, 990_000_000);
+        using var connection = Connect(LndMacaroonFiles.ReadOnlyFileName);
+
+        var response = await connection.LightningClient.GetTransactionsAsync(
+                           new GetTransactionsRequest { StartHeight = 120, EndHeight = 120, MaxTransactions = 1 },
+                           cancellationToken: Ct);
+
+        var listed = Assert.Single(response.Transactions);
+        Assert.Equal(spend.ToString(), listed.TxHash);
+        Assert.Equal(-11_000, listed.Amount);
+        Assert.Equal(1_001, listed.PreviousOutpoints.Count);
+    }
+
     private string AddEvent(AccountingEventKind kind, TxId txId, uint index, uint height, long amountMsat,
                             params (string Key, string Value)[] details)
     {
@@ -575,8 +617,12 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
         services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
         services.AddSingleton(Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }));
-        services.AddSingleton(new Mock<ILightningSigner>().Object);
-        services.AddSingleton(new Mock<IChannelMemoryRepository>().Object);
+        services.AddSingleton(_signer.Object);
+        services.AddSingleton(_channels.Object);
+        services.AddSingleton(_reserve.Object);
+        services.AddSingleton(_anchors.Object);
+        services.AddSingleton(_executor.Object);
+        services.AddSingleton(_bumps);
         services.AddSingleton(new Mock<IPeerManager>().Object);
         services.AddSingleton(new Mock<IInvoiceService>().Object);
         services.AddSingleton<IChannelOpenDecisionGate>(_gate);
@@ -591,6 +637,7 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
         var monitor = new Mock<IBlockchainMonitor>();
         monitor.SetupGet(x => x.LastProcessedBlockHeight).Returns(150);
         services.AddSingleton(monitor.Object);
+        services.AddSingleton<ImportedTapscriptTracker>();
         var utxos = new Mock<IUtxoMemoryRepository>();
         utxos.Setup(x => x.GetUnreservedUtxos()).Returns([]);
         services.AddSingleton(utxos.Object);
@@ -598,17 +645,83 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
         services.AddScoped(_ =>
         {
             var accounting = new Mock<IAccountingEventDbRepository>();
-            accounting.Setup(x => x.ListAsync(It.IsAny<AccountingEventQuery>(), It.IsAny<CancellationToken>()))
-                      .ReturnsAsync((AccountingEventQuery query, CancellationToken _) =>
-                                        _accountingEvents.Where(e => e.LedgerSeq > query.AfterLedgerSeq
-                                                                  && (query.Kinds is null
-                                                                   || query.Kinds.Contains(e.Kind)))
-                                                         .Take(query.Take).ToList());
+            accounting.Setup(x => x.GetWalletHistoryAsync(It.IsAny<uint>(), It.IsAny<uint>(), It.IsAny<long>(),
+                                                          It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                      .ReturnsAsync((uint start, uint end, long after, int take, CancellationToken _) =>
+                      {
+                          var reversed = _accountingEvents.Where(e => e.Kind == AccountingEventKind.Reversal)
+                                                          .Select(e => e.EventKey[..e.EventKey.LastIndexOf(":rev:", StringComparison.Ordinal)])
+                                                          .ToHashSet(StringComparer.Ordinal);
+                          return _accountingEvents.Where(e => e.LedgerSeq > after
+                                                           && e.Kind is AccountingEventKind.WalletReceived or AccountingEventKind.WalletOutputSpent
+                                                           && e.BlockHeight >= start && e.BlockHeight <= end
+                                                           && !reversed.Contains(e.EventKey))
+                                                  .OrderBy(e => e.LedgerSeq).Take(take).ToList();
+                      });
             var broadcasts = new Mock<IBroadcastTransactionDbRepository>();
-            broadcasts.Setup(x => x.GetPendingAsync()).ReturnsAsync([]);
+            broadcasts.Setup(x => x.GetPendingAsync())
+                      .ReturnsAsync(() => _broadcastRows.Where(r => r.State == Domain.Onchain.Enums.BroadcastState.Pending)
+                                                        .ToList());
             broadcasts.Setup(x => x.GetByTransactionIdAsync(It.IsAny<TxId>()))
-                      .ReturnsAsync((BroadcastTransactionModel?)null);
+                      .ReturnsAsync((TxId id) => _broadcastRows.FirstOrDefault(r => r.TransactionId == id));
+            broadcasts.Setup(x => x.GetByChannelIdAsync(It.IsAny<ChannelId>()))
+                      .ReturnsAsync((ChannelId id) => _broadcastRows.Where(r => r.ChannelId == id).ToList());
+            broadcasts.Setup(x => x.SetLabelAsync(It.IsAny<TxId>(), It.IsAny<string>()))
+                      .ReturnsAsync((TxId id, string label) =>
+                      {
+                          if (_broadcastRows.FirstOrDefault(r => r.TransactionId == id) is not { } row)
+                              return false;
+                          row.Label = label;
+                          return true;
+                      });
+            broadcasts.Setup(x => x.MarkAbandonedAsync(It.IsAny<TxId>()))
+                      .ReturnsAsync((TxId id) =>
+                      {
+                          if (_broadcastRows.FirstOrDefault(r => r.TransactionId == id) is not { } row)
+                              return false;
+                          row.MarkAbandoned();
+                          return true;
+                      });
+            var resolutions = new Mock<IOnchainResolutionDbRepository>();
+            resolutions.Setup(x => x.GetClosesAsync()).ReturnsAsync(() => _closes.ToList());
+            resolutions.Setup(x => x.GetOutputsByChannelIdAsync(It.IsAny<ChannelId>()))
+                       .ReturnsAsync((ChannelId id) => _outputs.Where(o => o.ChannelId == id).ToList());
+            resolutions.Setup(x => x.GetOutputAsync(It.IsAny<TxId>(), It.IsAny<uint>()))
+                       .ReturnsAsync((TxId id, uint index) => _outputs.FirstOrDefault(o => o.TransactionId == id
+                                                                                       && o.OutputIndex == index));
+            var addresses = new Mock<IWalletAddressesDbRepository>();
+            addresses.Setup(x => x.GetAllAddresses()).Returns(() => _walletAddresses.ToList());
+            var utxoRows = new Mock<IUtxoDbRepository>();
+            utxoRows.Setup(x => x.GetUnspentAsync(It.IsAny<bool>()))
+                    .ReturnsAsync(() => _unspent.ToList());
+            var imports = new Mock<IImportedTapscriptDbRepository>();
+            imports.Setup(x => x.ListAsync()).ReturnsAsync(() => _imported.Concat(_importedScripts).ToList());
+            imports.Setup(x => x.GetAsync(It.IsAny<byte[]>()))
+                   .ReturnsAsync((byte[] script) => _imported.Concat(_importedScripts).FirstOrDefault(i => i.Script.SequenceEqual(script)));
+            imports.Setup(x => x.Add(It.IsAny<ImportedTapscript>())).Callback<ImportedTapscript>(_imported.Add);
+            imports.Setup(x => x.GetIndexAsync()).ReturnsAsync(() => _importedIndex);
+            imports.Setup(x => x.SetIndexAsync(It.IsAny<ImportedWatchIndex>()))
+                   .Callback<ImportedWatchIndex>(index => _importedIndex = index).Returns(Task.CompletedTask);
+            var reservations = new Mock<IFeeInputReservationDbRepository>();
+            reservations.Setup(x => x.GetAllAsync()).ReturnsAsync(() => _feeReservations.ToList());
+            var walletHistory = new Mock<IWalletTransactionDbRepository>();
+            walletHistory.Setup(x => x.GetHistoryAsync(It.IsAny<uint>(), It.IsAny<uint>(), It.IsAny<bool>(),
+                                                       It.IsAny<CancellationToken>()))
+                         .ReturnsAsync((uint start, uint end, bool unconfirmed, CancellationToken _) =>
+                                           _walletHistory.Where(r => r.BlockHeight is { } height
+                                                                         ? height >= start && height <= end
+                                                                         : unconfirmed)
+                                                         .ToList());
+            walletHistory.Setup(x => x.GetHeightsAsync(It.IsAny<CancellationToken>()))
+                         .ReturnsAsync(() => _walletHistory.ToDictionary(r => r.TxId, r => r.BlockHeight));
             var unitOfWork = new Mock<IUnitOfWork>();
+            unitOfWork.Setup(x => x.SaveChangesAsync()).Returns(Task.CompletedTask);
+            unitOfWork.SetupGet(x => x.WalletTransactionDbRepository).Returns(walletHistory.Object);
+            unitOfWork.SetupGet(x => x.FeeInputReservationDbRepository).Returns(reservations.Object);
+            unitOfWork.SetupGet(x => x.ImportedTapscriptDbRepository).Returns(imports.Object);
+            unitOfWork.SetupGet(x => x.WalletAddressesDbRepository).Returns(addresses.Object);
+            unitOfWork.SetupGet(x => x.UtxoDbRepository).Returns(utxoRows.Object);
+            unitOfWork.SetupGet(x => x.OnchainResolutionDbRepository).Returns(resolutions.Object);
             unitOfWork.SetupGet(x => x.AccountingEventDbRepository).Returns(accounting.Object);
             unitOfWork.SetupGet(x => x.BroadcastTransactionDbRepository).Returns(broadcasts.Object);
             return unitOfWork.Object;
@@ -617,6 +730,7 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
         services.AddSingleton<LightningService>();
         services.AddSingleton<RouterService>();
         services.AddSingleton<WalletKitService>();
+        services.AddSingleton(_keys.Object);
         return services.BuildServiceProvider();
     }
 }

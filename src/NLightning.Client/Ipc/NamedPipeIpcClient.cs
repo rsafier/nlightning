@@ -437,8 +437,18 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// <param name="satPerVbyte">The fee rate in sat/vB; null for the node's estimate.</param>
     /// <param name="ct">Cancels the call.</param>
     /// <param name="labels">The operator's label and tags (NL-602 A3-T1), or null for none.</param>
+    public Task<SilentPaymentIpcResponse> SilentPaymentAsync(ClientCommand command, SilentPaymentIpcRequest request,
+                                                              CancellationToken ct = default)
+    {
+        if (command is not (ClientCommand.GetSilentPaymentAddress or ClientCommand.SilentPaymentLabels
+            or ClientCommand.SilentPaymentRescan or ClientCommand.SilentPaymentStatus))
+            throw new ArgumentOutOfRangeException(nameof(command));
+        return SendRequestAsync<SilentPaymentIpcRequest, SilentPaymentIpcResponse>(command, request, ct);
+    }
+
     public Task<WithdrawIpcResponse> WithdrawAsync(string address, ulong? amountSat, ulong? satPerVbyte,
-                                                   CancellationToken ct = default, LabelArguments? labels = null)
+                                                   CancellationToken ct = default, LabelArguments? labels = null,
+                                                   IReadOnlyList<string>? utxos = null)
     {
         var req = new WithdrawIpcRequest
         {
@@ -446,7 +456,8 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
             AmountSat = amountSat,
             SatPerVbyte = satPerVbyte,
             Label = labels?.Label,
-            Tags = labels?.TagsOrNull
+            Tags = labels?.TagsOrNull,
+            Utxos = utxos is { Count: > 0 } ? [.. utxos] : null
         };
         return SendRequestAsync<WithdrawIpcRequest, WithdrawIpcResponse>(ClientCommand.Withdraw, req, ct);
     }
@@ -673,6 +684,34 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
             Tags = effectiveLabels?.TagsOrNull
         };
         return SendRequestAsync<PayRouteIpcRequest, PayRouteIpcResponse>(ClientCommand.PayRoute, req, ct);
+    }
+
+    /// <summary>
+    /// Attaches routes to the <c>payroute</c> payment of the identity's hash still in flight (<c>payroute --attach</c>,
+    /// ClientCommand 56, NL-1276); the response's route outcomes are these routes.
+    /// </summary>
+    /// <param name="arguments">The parsed <c>payroute</c> arguments: the payment's identity (its invoice, or its hash
+    /// with its secret and total) and the limits.</param>
+    /// <param name="routes">The validated routes of the <c>--routes</c> input.</param>
+    /// <param name="ct">Cancels the call (the payment itself keeps going in the daemon).</param>
+    public Task<PayRouteIpcResponse> PayRouteAttachAsync(PayRouteArguments arguments,
+                                                         IReadOnlyList<PayRouteRouteArguments> routes,
+                                                         CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        ArgumentNullException.ThrowIfNull(routes);
+        var req = new PayRouteAttachIpcRequest
+        {
+            Bolt11 = arguments.Bolt11,
+            PaymentHash = ToHash(arguments.PaymentHash),
+            PaymentSecret = ToSecret(arguments.PaymentSecret),
+            TotalMsatMsat = arguments.TotalMsat,
+            Routes = [.. routes.Select(ToRouteInfo)],
+            TimeoutSeconds = arguments.TimeoutSeconds ?? 60,
+            MaxFeeMsat = arguments.MaxFeeMsat
+        };
+        return SendRequestAsync<PayRouteAttachIpcRequest, PayRouteIpcResponse>(ClientCommand.PayRouteAttach, req,
+                                                                               ct);
     }
 
     /// <summary>The raw form's payment hash (64-hex, validated by the parser), or null for the invoice form.</summary>

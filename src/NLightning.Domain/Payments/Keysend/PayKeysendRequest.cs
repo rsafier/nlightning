@@ -11,6 +11,9 @@ using Money;
 /// <param name="Amount">What the payee receives.</param>
 public sealed record PayKeysendRequest(CompactPubKey Destination, LightningMoney Amount)
 {
+    /// <summary>Caller-supplied preimage; null generates a fresh random preimage.</summary>
+    public Secret? Preimage { get; init; }
+
     /// <summary>
     /// Application records for the payee (types of 65536 or more, never the keysend preimage's 5482373484).
     /// </summary>

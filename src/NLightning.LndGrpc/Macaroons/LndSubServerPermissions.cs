@@ -82,8 +82,37 @@ public static class LndSubServerPermissions
 
     /// <summary>The operations <paramref name="fullMethod"/> requires, or null when no sub-server table lists it.</summary>
     public static IReadOnlyList<MacaroonOp>? ForMethod(string fullMethod) =>
-        Router.TryGetValue(fullMethod, out var ops) || Invoices.TryGetValue(fullMethod, out ops)
+        Signer.TryGetValue(fullMethod, out var ops) || Loop.TryGetValue(fullMethod, out ops) || Router.TryGetValue(fullMethod, out ops) || Invoices.TryGetValue(fullMethod, out ops)
                                                    || WalletKit.TryGetValue(fullMethod, out ops)
             ? ops
             : null;
+
+    /// <summary>LND signrpc's permission table, including deliberately unimplemented methods.</summary>
+    public static readonly IReadOnlyDictionary<string, IReadOnlyList<MacaroonOp>> Signer =
+        new Dictionary<string, IReadOnlyList<MacaroonOp>>(StringComparer.Ordinal)
+        {
+            ["/signrpc.Signer/SignOutputRaw"] = [new("signer", "generate")],
+            ["/signrpc.Signer/ComputeInputScript"] = [new("signer", "generate")],
+            ["/signrpc.Signer/SignMessage"] = [new("signer", "generate")],
+            ["/signrpc.Signer/VerifyMessage"] = [new("signer", "read")],
+            ["/signrpc.Signer/DeriveSharedKey"] = [new("signer", "generate")],
+            ["/signrpc.Signer/MuSig2CombineKeys"] = [new("signer", "read")],
+            ["/signrpc.Signer/MuSig2CreateSession"] = [new("signer", "generate")],
+            ["/signrpc.Signer/MuSig2RegisterNonces"] = [new("signer", "generate")],
+            ["/signrpc.Signer/MuSig2Sign"] = [new("signer", "generate")],
+            ["/signrpc.Signer/MuSig2CombineSig"] = [new("signer", "generate")],
+            ["/signrpc.Signer/MuSig2Cleanup"] = [new("signer", "generate")],
+            ["/signrpc.Signer/MuSig2RegisterCombinedNonce"] = [new("signer", "generate")],
+            ["/signrpc.Signer/MuSig2GetCombinedNonce"] = [new("signer", "read")],
+        };
+
+    /// <summary>Loop startup and chain notifications (LND chainrpc/verrpc permission tables).</summary>
+    public static readonly IReadOnlyDictionary<string, IReadOnlyList<MacaroonOp>> Loop =
+        new Dictionary<string, IReadOnlyList<MacaroonOp>>(StringComparer.Ordinal)
+        {
+            ["/verrpc.Versioner/GetVersion"] = [new("info", "read")],
+            ["/chainrpc.ChainNotifier/RegisterBlockEpochNtfn"] = [new("onchain", "read")],
+            ["/chainrpc.ChainNotifier/RegisterConfirmationsNtfn"] = [new("onchain", "read")],
+            ["/chainrpc.ChainNotifier/RegisterSpendNtfn"] = [new("onchain", "read")]
+        };
 }

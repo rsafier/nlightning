@@ -97,7 +97,7 @@ public interface IPaymentService
     /// Sends a spontaneous (keysend) payment and waits for the outcome.
     /// </summary>
     /// <remarks>
-    /// A fresh CSPRNG preimage, payment hash = SHA256(preimage); the payee's hop payload carries <c>amt_to_forward</c>,
+    /// The supplied preimage or a fresh CSPRNG preimage, payment hash = SHA256(preimage); the payee's hop payload carries <c>amt_to_forward</c>,
     /// <c>outgoing_cltv_value</c>, <c>keysend_preimage</c> (5482373484) and the request's custom records, and no
     /// <c>payment_data</c> (there is no invoice, so no <c>payment_secret</c>). The route is planned like an invoice
     /// payment without route hints (a direct channel, or the graph), with <c>Node:Keysend:FinalCltvExpiryDelta</c> as
@@ -128,7 +128,16 @@ public interface IPaymentService
     /// offered in order; a refusal or a decrypted failure ends that route only. Everything else behaves like
     /// <see cref="PayInvoiceAsync(string, LightningMoney?, PayInvoiceOptions, CancellationToken)"/>: one row per
     /// hash, part rows for restart-safe failure decryption, mission control learns from failures.
+    /// <para>NL-1276: with <see cref="PayRouteRequest.Attach"/> the routes join the <c>payroute</c> payment of the
+    /// hash still in flight (the same secret, total and payee; within the attach window for
+    /// <see cref="PayRouteAttachMode.Required"/>; with the parts in flight at least the total, or at most it for
+    /// <see cref="PayRouteRequest.IndependentShards"/>; the fees of the parts in flight counted), and the result
+    /// reports only this call's routes. An <see cref="PayRouteRequest.IndependentShards"/> call answers once its own
+    /// routes are resolved.</para>
     /// </remarks>
+    /// <exception cref="InvalidOperationException">A payment for the hash is in flight (not attachable, or
+    /// <see cref="PayRouteAttachMode.Never"/>) or succeeded, or <see cref="PayRouteAttachMode.Required"/> found no
+    /// <c>payroute</c> payment in flight. Nothing was sent.</exception>
     Task<PayRouteResult> PayRouteAsync(PayRouteRequest request, PayInvoiceOptions options,
                                        CancellationToken cancellationToken = default);
 

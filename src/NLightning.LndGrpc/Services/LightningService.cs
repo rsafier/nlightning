@@ -8,10 +8,12 @@ namespace NLightning.LndGrpc.Services;
 
 using Application.Gossip.Graph;
 using Application.Gossip.Graph.Interfaces;
+using Application.Payments.Routing.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Reestablish;
+using Domain.Channels.RoutingPolicies;
 using Domain.Channels.ValueObjects;
 using Domain.Gossip.Graph;
 using Domain.Node.Interfaces;
@@ -24,7 +26,7 @@ using Macaroons;
 
 /// <summary>
 /// LND's <c>lnrpc.Lightning</c> service over this node (<c>docs/agents/LND_GRPC_PLAN.md</c> §3, NL-1161): the wave 1
-/// read surface (node, wallet, channels, peers, graph, invoices, payments, forwards), <c>AddInvoice</c>,
+/// read surface (node, wallet, channels, peers, graph, invoices, payments, forwards), live subscriptions, <c>AddInvoice</c>,
 /// <c>DecodePayReq</c> and LND's message signatures. Every method not overridden answers <c>UNIMPLEMENTED</c>.
 /// Callers are authorized before they get here (<see cref="Macaroons.MacaroonAuthInterceptor"/>).
 /// </summary>
@@ -60,6 +62,10 @@ public sealed partial class LightningService : Lnrpc.Lightning.LightningBase
     private readonly INodeCommandDispatcher? _dispatcher;
     private readonly LndRootKeyStore? _rootKeys;
     private readonly IPaymentEventSource? _paymentEvents;
+    private readonly IChannelPolicyService? _channelPolicyService;
+    private readonly IRouteQueryService? _routeQuery;
+    private readonly SemaphoreSlim _globalPolicyGate = new(1, 1);
+    private readonly PeerLivenessTracker _liveness;
 
     public LightningService(ILightningSigner signer, IOptions<NodeOptions> nodeOptions,
                             IServiceScopeFactory scopeFactory, IChannelMemoryRepository channels,
@@ -70,8 +76,11 @@ public sealed partial class LightningService : Lnrpc.Lightning.LightningBase
                             IReestablishTracker? reestablish = null, IGraphStore? graphStore = null,
                             IOptions<GossipGraphOptions>? graphOptions = null, ITcpService? tcpService = null,
                             INodeCommandDispatcher? dispatcher = null, LndRootKeyStore? rootKeys = null,
-                            IPaymentEventSource? paymentEvents = null)
+                            IPaymentEventSource? paymentEvents = null, IChannelPolicyService? channelPolicyService = null,
+                            IRouteQueryService? routeQuery = null)
     {
+        _routeQuery = routeQuery;
+        _channelPolicyService = channelPolicyService;
         _paymentEvents = paymentEvents;
         _dispatcher = dispatcher;
         _rootKeys = rootKeys;
@@ -91,6 +100,7 @@ public sealed partial class LightningService : Lnrpc.Lightning.LightningBase
         _graphStore = graphStore;
         _graphOptions = graphOptions?.Value;
         _tcpService = tcpService;
+        _liveness = new PeerLivenessTracker(peerManager, channels, _timeProvider);
     }
 
     /// <summary>The graph snapshot, or null when the node keeps no gossip graph.</summary>
@@ -115,6 +125,18 @@ public sealed partial class LightningService : Lnrpc.Lightning.LightningBase
     private static RpcException NotFound(string message) => new(new Status(StatusCode.NotFound, message));
 
     private static RpcException Unimplemented(string message) => new(new Status(StatusCode.Unimplemented, message));
+
+    /// <summary>
+    /// A block hash as LND (and bitcoind) print it: the hex of the reversed bytes. The node stores block hashes in
+    /// internal (serialized) order, whose <see cref="Domain.Crypto.ValueObjects.Hash.ToString"/> is not the display
+    /// form (NL-1244).
+    /// </summary>
+    internal static string DisplayHex(Domain.Crypto.ValueObjects.Hash hash)
+    {
+        var bytes = ((byte[])hash).ToArray();
+        Array.Reverse(bytes);
+        return Convert.ToHexStringLower(bytes);
+    }
 
     /// <summary>Unix nanoseconds (LND's <c>*_ns</c> fields).</summary>
     internal static long UnixNanos(DateTimeOffset time) =>

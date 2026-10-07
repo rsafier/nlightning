@@ -61,7 +61,7 @@ public class AccountingCommandsTests
     [InlineData(new[] { "--limit", "0" }, "Invalid limit")]
     [InlineData(new[] { "--limit", "1001" }, "Invalid limit")]
     [InlineData(new[] { "--kind", "Coffee" }, "Unknown kind 'Coffee'")]
-    [InlineData(new[] { "--kind", "8" }, "Unknown kind '8'")]
+    [InlineData(new[] { "--kind", "9" }, "Unknown kind '9'")]
     [InlineData(new[] { "--kind", "," }, "Missing value for --kind")]
     [InlineData(new[] { "--since", "yesterday" }, "Invalid since")]
     [InlineData(new[] { "--until" }, "Missing value for --until")]

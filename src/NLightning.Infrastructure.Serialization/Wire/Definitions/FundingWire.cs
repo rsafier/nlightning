@@ -15,7 +15,7 @@ using Domain.Protocol.Tlv;
 internal static class FundingWire
 {
     public static readonly MessageWire<FundingCreatedMessage> Def = new(MessageTypes.FundingCreated, Encode, Decode,
-        TlvDef.Typed<PartialSignatureWithNonceTlv>(TaprootTlvConstants.PartialSignatureWithNonce));
+        TlvDefs.PartialSignatureWithNonce);
 
     private static void Encode(ref WireWriter writer, FundingCreatedMessage message)
     {
@@ -42,7 +42,7 @@ internal static class FundingWire
 internal static class FundingSignedWire
 {
     public static readonly MessageWire<FundingSignedMessage> Def = new(MessageTypes.FundingSigned, Encode, Decode,
-        TlvDef.Typed<PartialSignatureWithNonceTlv>(TaprootTlvConstants.PartialSignatureWithNonce));
+        TlvDefs.PartialSignatureWithNonce);
 
     private static void Encode(ref WireWriter writer, FundingSignedMessage message)
     {

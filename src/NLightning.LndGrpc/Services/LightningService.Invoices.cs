@@ -24,15 +24,14 @@ public sealed partial class LightningService
 
     /// <summary>
     /// <c>AddInvoice</c>: a BOLT 11 invoice from <see cref="Domain.Payments.Interfaces.IInvoiceService"/> (the node
-    /// draws the preimage and the payment secret), labelled <c>lnd-grpc</c>. Refused: a caller preimage (hold invoices
-    /// are wave 2), <c>description_hash</c>, <c>fallback_addr</c>, a <c>cltv_expiry</c> above the node's
+    /// draws a preimage unless r_preimage is supplied, and draws the payment secret), labelled <c>lnd-grpc</c>. Refused: <c>description_hash</c>, <c>fallback_addr</c>, a <c>cltv_expiry</c> above the node's
     /// (<c>Node:Routing:InvoiceMinFinalCltvExpiry</c>), AMP and blinded invoices. <c>private</c> is accepted: the node
     /// adds route hints when its channels need them (<c>Node:Invoices:RouteHints</c>).
     /// </summary>
     public override async Task<AddInvoiceResponse> AddInvoice(Invoice request, ServerCallContext context)
     {
-        if (!request.RPreimage.IsEmpty)
-            throw Unimplemented("r_preimage: this node draws the preimage of its invoices");
+        if (!request.RPreimage.IsEmpty && request.RPreimage.Length != 32)
+            throw InvalidArgument("r_preimage must be 32 bytes");
         if (!request.DescriptionHash.IsEmpty)
             throw Unimplemented("description_hash invoices are not supported");
         if (!string.IsNullOrEmpty(request.FallbackAddr))
@@ -55,10 +54,13 @@ public sealed partial class LightningService
         InvoiceModel invoice;
         try
         {
-            invoice = await _invoiceService.CreateInvoiceAsync(msat == 0 ? null : LightningMoney.MilliSatoshis(msat),
-                                                               request.Memo ?? string.Empty,
-                                                               request.Expiry == 0 ? null : (uint)request.Expiry,
-                                                               s_invoiceLabels, context.CancellationToken);
+            var amount = msat == 0 ? null : LightningMoney.MilliSatoshis(msat);
+            var expiry = request.Expiry == 0 ? (uint?)null : (uint)request.Expiry;
+            invoice = request.RPreimage.IsEmpty
+                ? await _invoiceService.CreateInvoiceAsync(amount, request.Memo ?? string.Empty, expiry,
+                    s_invoiceLabels, context.CancellationToken)
+                : await _invoiceService.CreateInvoiceAsync(amount, request.Memo ?? string.Empty, expiry,
+                    s_invoiceLabels, new Secret(request.RPreimage.ToByteArray()), context.CancellationToken);
         }
         catch (ArgumentException e)
         {

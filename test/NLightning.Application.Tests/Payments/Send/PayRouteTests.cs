@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 namespace NLightning.Application.Tests.Payments.Send;
 
 using Application.Payments.Routing;
+using Application.Payments.Send;
 using Application.Payments.Switch;
 using Bolt11.Models;
 using Domain.Channels.ValueObjects;
@@ -23,7 +24,7 @@ using NLightning.Tests.Utils;
 /// hash+secret form, whole and split over one channel, with the per-route outcomes carrying each failure's attributed
 /// source — and every validation error refused before anything is offered.
 /// </summary>
-public class PayRouteTests
+public partial class PayRouteTests
 {
     private static readonly LightningMoney s_amount = LightningMoney.MilliSatoshis(50_000_123);
     private static readonly LightningMoney s_total = LightningMoney.MilliSatoshis(60_000_000);
@@ -126,7 +127,7 @@ public class PayRouteTests
         var invoice = await InvoiceOf(harness, beyond);
 
         // Act
-        var exception = await Assert.ThrowsAsync<ArgumentException>(
+        var exception = await Assert.ThrowsAsync<PayRouteLiquidityException>(
             () => PayRouteAsync(harness, ByInvoice(invoice.Bolt11!, ViaCarol(harness, beyond))));
 
         // Assert: the first-hop liquidity check refused it, and nothing was offered or stored
@@ -134,6 +135,88 @@ public class PayRouteTests
         Assert.Empty(harness.Bob.Switch.Events);
         Assert.Empty(harness.Carol.Switch.Events);
         Assert.Empty(harness.Bob.Payments.Payments);
+    }
+
+    [Fact]
+    public async Task Given_AKeysendPreimage_When_BobPaysTheRoute_Then_ThePayeeGetsThePreimageAndRecordsInsteadOfPaymentData()
+    {
+        // Arrange: LND SendToRouteV2's keysend form (NL-1242); David's final hop records the payload and fails it
+        using var harness = new PaymentHarness();
+        var preimage = new Secret(RandomNumberGenerator.GetBytes(32));
+        var hash = new Hash(SHA256.HashData((ReadOnlySpan<byte>)preimage));
+        Domain.Protocol.Onion.Models.HopPayload? received = null;
+        harness.David.Switch.FinalHopInterceptor = (_, final) =>
+        {
+            received = final.Payload;
+            return FailureMessage.IncorrectOrUnknownPaymentDetails(s_amount.MilliSatoshi,
+                                                                   PaymentHarness.BlockHeight);
+        };
+        var request = new PayRouteRequest
+        {
+            PaymentHash = hash,
+            KeysendPreimage = preimage,
+            CustomRecords = [new Domain.Payments.Keysend.CustomRecord(34_349_334, "hello"u8)],
+            Routes = [ViaCarol(harness, s_amount)]
+        };
+
+        // Act
+        var result = await PayRouteAsync(harness, request);
+
+        // Assert
+        Assert.NotNull(received);
+        Assert.Null(received.PaymentData);
+        Assert.Equal((byte[])preimage, received.KeysendPreimage!.Value.ToArray());
+        var record = Assert.Single(received.CustomRecords);
+        Assert.Equal(34_349_334ul, record.Type);
+        Assert.Equal(PaymentPartState.Failed, Assert.Single(result.Outcomes).Status);
+        AssertNoPendingHtlcs(harness);
+    }
+
+    [Fact]
+    public async Task Given_AKeysendPreimageThatIsNotTheHashs_When_BobPays_Then_ItIsOfferedAndFailsAtThePayee()
+    {
+        // Arrange: bos's keysend probe (NL-1251): a random hash with a real preimage record, as LND passes it through
+        using var harness = new PaymentHarness();
+        var preimage = new Secret(Enumerable.Repeat((byte)1, 32).ToArray());
+        Domain.Protocol.Onion.Models.HopPayload? received = null;
+        harness.David.Switch.FinalHopInterceptor = (_, final) =>
+        {
+            received = final.Payload;
+            return FailureMessage.IncorrectOrUnknownPaymentDetails(s_amount.MilliSatoshi,
+                                                                   PaymentHarness.BlockHeight);
+        };
+        var request = new PayRouteRequest
+        {
+            PaymentHash = new Hash(new byte[32]),
+            KeysendPreimage = preimage,
+            Routes = [ViaCarol(harness, s_amount)]
+        };
+
+        // Act
+        var result = await PayRouteAsync(harness, request);
+
+        // Assert
+        Assert.NotNull(received);
+        Assert.Equal((byte[])preimage, received.KeysendPreimage!.Value.ToArray());
+        Assert.Equal(PaymentPartState.Failed, Assert.Single(result.Outcomes).Status);
+        AssertNoPendingHtlcs(harness);
+    }
+
+    [Fact]
+    public async Task Given_CustomRecordsWithoutAKeysendPreimage_When_BobPays_Then_Refused()
+    {
+        // Arrange
+        using var harness = new PaymentHarness();
+        var recordsAlone = new PayRouteRequest
+        {
+            PaymentHash = new Hash(new byte[32]),
+            CustomRecords = [new Domain.Payments.Keysend.CustomRecord(65_537, [1])],
+            Routes = [ViaCarol(harness, s_amount)]
+        };
+
+        // Act / Assert
+        await Assert.ThrowsAsync<ArgumentException>(() => PayRouteAsync(harness, recordsAlone));
+        Assert.Empty(harness.Bob.Switch.Events);
     }
 
     [Fact]

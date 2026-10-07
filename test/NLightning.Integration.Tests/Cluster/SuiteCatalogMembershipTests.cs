@@ -39,7 +39,8 @@ public class SuiteCatalogMembershipTests
         ["tor"] = TorInteropCollection.Name,
         ["taproot"] = LndTaprootRegtestCollection.Name,
         ["cashu"] = CashuMintCollection.Name,
-        ["postgres"] = "postgres"
+        ["postgres"] = "postgres",
+        ["loop"] = "loop"
     };
 
     [Fact]
@@ -93,8 +94,9 @@ public class SuiteCatalogMembershipTests
     private static IEnumerable<Type> ContainerTestClasses() =>
         typeof(SuiteCatalogMembershipTests).Assembly.GetTypes()
                                            .Where(t => t is { IsClass: true, IsAbstract: false }
-                                                    && (t.Namespace ?? "").StartsWith(ContainerNamespace,
+                                                    && ((t.Namespace ?? "").StartsWith(ContainerNamespace,
                                                                                        StringComparison.Ordinal)
+                                                        || t == typeof(Live.LoopClusterTests))
                                                     && TestMethods(t).Count > 0)
                                            .OrderBy(t => t.FullName, StringComparer.Ordinal);
 

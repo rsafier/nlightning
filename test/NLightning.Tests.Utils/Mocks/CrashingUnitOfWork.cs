@@ -60,6 +60,7 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IBlockHeaderDbRepository BlockHeaderDbRepository => inner.BlockHeaderDbRepository;
     public IRevokedCommitmentDbRepository RevokedCommitmentDbRepository => inner.RevokedCommitmentDbRepository;
     public IOnchainResolutionDbRepository OnchainResolutionDbRepository => inner.OnchainResolutionDbRepository;
+    public IOnchainHtlcObservationDbRepository OnchainHtlcObservationDbRepository => inner.OnchainHtlcObservationDbRepository;
     public IChannelConfigDbRepository ChannelConfigDbRepository => inner.ChannelConfigDbRepository;
     public IChannelDbRepository ChannelDbRepository => inner.ChannelDbRepository;
     public IChannelKeySetDbRepository ChannelKeySetDbRepository => inner.ChannelKeySetDbRepository;
@@ -68,6 +69,9 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IChannelSigningInfoDbRepository ChannelSigningInfoDbRepository => inner.ChannelSigningInfoDbRepository;
     public IGraphDbRepository GraphDbRepository => inner.GraphDbRepository;
     public IPeerDbRepository PeerDbRepository => inner.PeerDbRepository;
+    public Domain.Crypto.KeyRing.IKeyRingDbRepository KeyRingDbRepository => inner.KeyRingDbRepository;
+    public Domain.Bitcoin.Wallet.Interfaces.IImportedTapscriptDbRepository ImportedTapscriptDbRepository => inner.ImportedTapscriptDbRepository;
+    public Domain.Bitcoin.Wallet.Interfaces.IWalletTransactionDbRepository WalletTransactionDbRepository => inner.WalletTransactionDbRepository;
     public IPeerStorageDbRepository PeerStorageDbRepository => inner.PeerStorageDbRepository;
     public IPeerStorageRetrievalDbRepository PeerStorageRetrievalDbRepository =>
         inner.PeerStorageRetrievalDbRepository;
@@ -85,6 +89,7 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
 
     public IChannelFundingDbRepository ChannelFundingDbRepository => inner.ChannelFundingDbRepository;
     public IChannelPolicyDbRepository ChannelPolicyDbRepository => inner.ChannelPolicyDbRepository;
+    public NLightning.Domain.Bitcoin.Interfaces.ISilentPaymentDbRepository SilentPaymentDbRepository => inner.SilentPaymentDbRepository;
     public IAccountingEventDbRepository AccountingEventDbRepository => inner.AccountingEventDbRepository;
     public IAccountingBooksDbRepository AccountingBooksDbRepository => inner.AccountingBooksDbRepository;
     public IAccountingPriceDbRepository AccountingPriceDbRepository => inner.AccountingPriceDbRepository;

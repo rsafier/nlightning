@@ -57,6 +57,66 @@ public sealed class SecureKeyManagerTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(1, "027ad02022a45dce6502320b0d7953eebaecff755e7174457bc6d513326f7929e6")]
+    [InlineData(2, "027ad02022a45dce6502320b0d7953eebaecff755e7174457bc6d513326f7929e6")]
+    [InlineData(3, "0211042c77e4751f35b196f75cede0efe01020f103a6b09a8b3e345b289bdd641f")]
+    public void Given_AKeyFileVersion_When_DerivingASwapKeyAcrossReload_Then_TheFrozenVectorIsPreserved(int version, string expected)
+    {
+        // Arrange: vectors computed independently with BIP32 HMAC-SHA512 and secp256k1 arithmetic.
+        if (version == 1) File.WriteAllText(_filePath, LegacyKeyFileFixture);
+        else
+        {
+            using var initial = version == 2 ? NewKeyManager() : SecureKeyManager.FromMnemonic(
+                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+                "", BitcoinNetwork.Regtest, _filePath, 123);
+            initial.SaveToFile(Password);
+        }
+        // Act
+        using var loaded = SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password);
+        var derived = ExtKey.CreateFromBytes((byte[])loaded.GetKeyRingKeyAtIndex(42060, 7));
+        using var reloaded = SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password);
+        var again = ExtKey.CreateFromBytes((byte[])reloaded.GetKeyRingKeyAtIndex(42060, 7));
+        // Assert: v1 upgrades only encryption; v2 keeps the genesis chain code; v3 uses its stored BIP32 chain code.
+        Assert.Equal(expected, derived.PrivateKey.PubKey.ToHex());
+        Assert.Equal(derived.PrivateKey.PubKey, again.PrivateKey.PubKey);
+        Assert.NotEqual((byte[])loaded.GetNodePubKey(), derived.PrivateKey.PubKey.ToBytes());
+        Assert.Throws<ArgumentOutOfRangeException>(() => loaded.GetKeyRingKeyAtIndex(6, 0));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Given_ALegacyKeyFile_When_ReloadingSilentPaymentKeys_Then_TheyRemainStableWithoutExternalRecoverability(int version)
+    {
+        // Arrange: v1 upgrades encryption, not the legacy genesis-chain-code derivation.
+        if (version == 1) File.WriteAllText(_filePath, LegacyKeyFileFixture);
+        else
+        {
+            using var initial = NewKeyManager();
+            initial.SaveToFile(Password);
+        }
+
+        // Act
+        using var first = SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password);
+        var scan = first.ScanPubKey;
+        var spend = first.SpendPubKey;
+        var label = new byte[32];
+        first.GetLabelTweak(0, label);
+        using var second = SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password);
+        var restoredLabel = new byte[32];
+        second.GetLabelTweak(0, restoredLabel);
+
+        // Assert
+        Assert.False(first.RecoverableElsewhere);
+        Assert.False(second.RecoverableElsewhere);
+        Assert.Equal(scan, second.ScanPubKey);
+        Assert.Equal(spend, second.SpendPubKey);
+        Assert.Equal(label, restoredLabel);
+        CryptographicOperations.ZeroMemory(label);
+        CryptographicOperations.ZeroMemory(restoredLabel);
+    }
+
     [Fact]
     public void Given_PublicKey_When_ComputingNodeSharedSecret_Then_MatchesEcdhWithNodeKey()
     {
@@ -656,6 +716,32 @@ public sealed class SecureKeyManagerTests : IDisposable
             var derived = ExtPubKey.Parse(xpub, Network.Main).Derive(new KeyPath(branch + "4"));
             Assert.Equal(ExtKey.CreateFromBytes(expectedKey).Neuter().PubKey, derived.PubKey);
         }
+    }
+
+    [Fact]
+    public void Given_TheBip84TestMnemonic_When_ReadingTheDepositAccounts_Then_TheyAreTheAccountXpubsWithTheirPaths()
+    {
+        // Arrange: the BIP84 test vector (NL-1247, LND's ListAccounts)
+        const string mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon " +
+                                "abandon about";
+        using var keyManager = SecureKeyManager.FromMnemonic(mnemonic, string.Empty, BitcoinNetwork.Mainnet,
+                                                             _filePath);
+
+        // Act
+        var p2Wpkh = keyManager.GetDepositAccount(Domain.Bitcoin.Enums.AddressType.P2Wpkh);
+        var p2Tr = keyManager.GetDepositAccount(Domain.Bitcoin.Enums.AddressType.P2Tr);
+
+        // Assert
+        Assert.NotNull(p2Wpkh);
+        Assert.Equal("xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V",
+                     p2Wpkh.ExtendedPublicKey);
+        Assert.Equal("m/84'/0'/0'", p2Wpkh.DerivationPath);
+        Assert.Equal(Convert.FromHexString("73c5da0a"), p2Wpkh.MasterFingerprint);
+        Assert.NotNull(p2Tr);
+        Assert.Equal("m/86'/0'/0'", p2Tr.DerivationPath);
+        Assert.Equal(ExtKey.CreateFromBytes(keyManager.GetDepositP2TrKeyAtIndex(4, false)).Neuter().PubKey,
+                     ExtPubKey.Parse(p2Tr.ExtendedPublicKey, Network.Main).Derive(new KeyPath("0/4")).PubKey);
+        Assert.Null(keyManager.GetDepositAccount(Domain.Bitcoin.Enums.AddressType.P2Tr | Domain.Bitcoin.Enums.AddressType.P2Wpkh));
     }
 
     [Fact]

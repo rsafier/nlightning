@@ -31,6 +31,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<FeeratePerKw>k__BackingField")]
         public static extern ref uint? FeeratePerKw(ChannelFundingEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<FundingKeysUnknown>k__BackingField")]
+        public static extern ref bool FundingKeysUnknown(ChannelFundingEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Kind>k__BackingField")]
         public static extern ref byte Kind(ChannelFundingEntity @this);
 

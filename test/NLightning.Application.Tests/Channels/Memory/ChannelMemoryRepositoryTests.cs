@@ -19,6 +19,52 @@ public class ChannelMemoryRepositoryTests
     private static readonly CompactPubKey s_peerB = CreatePubKey(2);
 
     [Fact]
+    public void Given_InteractiveRoundProgress_When_StagedThenCommitted_Then_ObserversCanExcludeUncommittedUpdates()
+    {
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance);
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddChannel(channel);
+        var progress = new List<bool>();
+        repository.OnChannelUpdated += (_, e) => progress.Add(e.IsPersisted);
+        repository.UpdateStagedChannel(channel);
+        repository.UpdateChannel(channel);
+        Assert.Equal([false, true], progress);
+    }
+
+    [Fact]
+    public void Given_ThrowingLifecycleObserver_When_ChannelAdded_Then_OtherObserversAndInstallationStillComplete()
+    {
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance);
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        var notified = false;
+        repository.OnChannelAdded += (_, _) => throw new InvalidOperationException("observer");
+        repository.OnChannelAdded += (_, _) => notified = true;
+        repository.AddChannel(channel);
+        Assert.True(notified);
+        Assert.True(repository.TryGetChannel(channel.ChannelId, out _));
+    }
+
+    [Fact]
+    public void Given_StartupAndNewChannels_When_InstalledAndRemoved_Then_LiveHooksExcludeStartupAndSnapshotTerminalState()
+    {
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance);
+        var loaded = CreateTemporaryChannel(s_peerA, 1);
+        var added = CreateTemporaryChannel(s_peerB, 2);
+        var additions = new List<ChannelId>();
+        var removals = new List<ChannelState>();
+        repository.OnChannelAdded += (_, e) => additions.Add(e.Channel.ChannelId);
+        repository.OnChannelRemoved += (_, e) => removals.Add(e.Channel.State);
+        repository.LoadChannel(loaded);
+        repository.AddChannel(added);
+        Assert.Equal([added.ChannelId], additions);
+        added.UpdateState(ChannelState.Closed);
+        Assert.True(repository.TryRemoveChannel(added.ChannelId));
+        Assert.False(repository.TryRemoveChannel(added.ChannelId));
+        Assert.Equal([ChannelState.Closed], removals);
+        Assert.True(repository.TryGetChannel(loaded.ChannelId, out _));
+    }
+
+    [Fact]
     public void Given_TemporaryChannelsOfTwoPeers_When_RemoveTemporaryChannels_Then_OnlyThatPeersAreRemoved()
     {
         // Arrange

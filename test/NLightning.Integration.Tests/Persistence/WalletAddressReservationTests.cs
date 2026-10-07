@@ -184,6 +184,48 @@ public class WalletAddressReservationTests
             () => uow.WalletAddressesDbRepository.ReserveAsync(SqliteTestDatabase.CreateWalletAddress(42)));
     }
 
+    [Fact]
+    public async Task Given_UnsavedRecoveryCatalogue_When_OnlyProvenReceiptIsReserved_Then_AtomicSavePreventsAddressReuse()
+    {
+        // Arrange: recovery knows these seed-derived addresses, but only index 1 actually received funds.
+        using var database = new SqliteTestDatabase();
+        var utxos = new UtxoMemoryRepository();
+        var catalogue = Enumerable.Range(0, 3).Select(i => SqliteTestDatabase.CreateWalletAddress((uint)i)).ToList();
+        using (var recovery = CreateUnitOfWork(database, utxos))
+        {
+            recovery.WalletAddressesDbRepository.AddRange(catalogue);
+            // Act: reserve the historic receipt before saving the catalogue (its UTXO may already be spent).
+            await recovery.WalletAddressesDbRepository.ReserveAsync(catalogue[1]);
+            using (var observer = CreateUnitOfWork(database, utxos))
+                Assert.Empty(observer.WalletAddressesDbRepository.GetAllAddresses());
+            await recovery.SaveChangesAsync();
+        }
+        // Assert: persisted after restart, even without a live UTXO; other catalogue entries are unreserved.
+        using var restarted = CreateUnitOfWork(database, utxos);
+        var stored = restarted.WalletAddressesDbRepository.GetAllAddresses().ToDictionary(a => a.Index);
+        Assert.False(stored[0].IsReserved);
+        Assert.True(stored[1].IsReserved);
+        Assert.False(stored[2].IsReserved);
+        var next = await restarted.WalletAddressesDbRepository.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        Assert.NotNull(next);
+        Assert.Equal(2u, next.Index);
+    }
+
+    [Fact]
+    public async Task Given_UnsavedCatalogue_When_ReservationAddressDiffersFromItsDerivation_Then_NoReservationIsWritten()
+    {
+        // Arrange
+        using var database = new SqliteTestDatabase();
+        using var uow = CreateUnitOfWork(database, new UtxoMemoryRepository());
+        var address = SqliteTestDatabase.CreateWalletAddress(0);
+        uow.WalletAddressesDbRepository.AddRange([address]);
+        var wrong = new WalletAddressModel(address.AddressType, address.Index, address.IsChange, "other-address");
+        // Act / Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(() => uow.WalletAddressesDbRepository.ReserveAsync(wrong));
+        await uow.SaveChangesAsync();
+        Assert.False(Assert.Single(uow.WalletAddressesDbRepository.GetAllAddresses()).IsReserved);
+    }
+
     private static BitcoinWalletService CreateWallet(UnitOfWork uow)
     {
         var keyManager = new Mock<ISecureKeyManager>();

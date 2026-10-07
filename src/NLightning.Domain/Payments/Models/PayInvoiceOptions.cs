@@ -37,6 +37,9 @@ public sealed record PayInvoiceOptions
     /// </summary>
     public ChannelId? OutgoingChannelId { get; init; }
 
+    /// <summary>Restricts every first hop to this set (LND outgoing_chan_ids); null allows any channel.</summary>
+    public IReadOnlySet<ChannelId>? OutgoingChannelIds { get; init; }
+
     /// <summary>
     /// For a payment of one of our own invoices (a circular rebalance, NL-609): the only channel of ours the payment may
     /// come back in through; null lets the planner choose. Refused for an invoice of another node

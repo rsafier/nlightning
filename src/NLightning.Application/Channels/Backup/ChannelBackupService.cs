@@ -573,6 +573,7 @@ public sealed class ChannelBackupService : IChannelBackupService
             IsInitiator = channel.IsInitiator,
             OptionAnchorOutputs = channel.ChannelParams.OptionAnchorOutputs,
             OptionSimpleTaproot = channel.ChannelParams.OptionSimpleTaproot,
+            FundingKeysUnknown = channel.FundingKeysUnknown,
             AnnounceChannel = channel.ChannelParams.AnnounceChannel,
             HasInferredParams = channel.ChannelParams.HasInferredParams,
             Version = channel.Version,

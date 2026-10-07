@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Infrastructure.Serialization.Wire;
 
 namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
@@ -11,7 +12,6 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Serialization.Interfaces;
 using Exceptions;
-using Factories;
 using Helpers;
 using Serialization.Messages;
 
@@ -41,13 +41,11 @@ public class ClosingCompleteMessageTests
     private const string ClosingCompleteHex = FixedHex + "0140" + Sig1Hex + "0340" + Sig3Hex;
 
     private readonly IMessageTypeSerializer<ClosingCompleteMessage> _serializer =
-        SerializerHelper.MessageTypeSerializerFactory.GetSerializer<ClosingCompleteMessage>()!;
+        SerializerHelper.WireRegistry.Get<ClosingCompleteMessage>()!;
 
     private readonly MessageSerializer _messageSerializer =
         new(NullLogger<MessageSerializer>.Instance,
-            new MessageTypeSerializerFactory(SerializerHelper.PayloadSerializerFactory,
-                                             SerializerHelper.TlvConverterFactory,
-                                             SerializerHelper.TlvStreamSerializer));
+            new WireRegistry());
 
     internal static ClosingCompletePayload Payload() =>
         new(new ChannelId(Convert.FromHexString(ChannelIdHex)), new BitcoinScript(Convert.FromHexString(CloserScriptHex)),

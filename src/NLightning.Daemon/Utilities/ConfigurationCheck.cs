@@ -27,7 +27,10 @@ internal static class ConfigurationCheck
     {
         try
         {
-            SigningOptions.Read(configuration);
+            var signingOptions = SigningOptions.Read(configuration);
+            // The offline graph uses a throwaway local key below; validate remote restrictions first.
+            if (signingOptions.IsRemote && configuration.GetValue<bool>("SilentPayments:Enabled"))
+                return ["Silent-payment scanning and receiving are not supported by the remote signer."];
         }
         catch (Exception e) when (e is InvalidOperationException or ArgumentException or FormatException)
         {

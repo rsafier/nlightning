@@ -43,10 +43,17 @@ public class WalletAddressesDbRepository(NLightningDbContext context)
     public async Task ReserveAsync(WalletAddressModel address)
     {
         ArgumentNullException.ThrowIfNull(address);
-        var entity = await DbSet.FirstOrDefaultAsync(x => x.Index == address.Index
+        // Recovery derives and reserves proven historical addresses in one atomic save; Added rows are
+        // invisible to a database query until that save. Local excludes Deleted entities.
+        var entity = DbSet.Local.FirstOrDefault(x => x.Index == address.Index
+                                                  && x.IsChange == address.IsChange
+                                                  && x.AddressType == address.AddressType)
+                  ?? await DbSet.FirstOrDefaultAsync(x => x.Index == address.Index
                                                        && x.IsChange == address.IsChange
                                                        && x.AddressType == address.AddressType)
                   ?? throw new InvalidOperationException($"Wallet address {address.Address} is not stored");
+        if (!StringComparer.Ordinal.Equals(entity.Address, address.Address))
+            throw new InvalidOperationException("Wallet address reservation does not match the stored derivation.");
         entity.IsReserved = true;
     }
 

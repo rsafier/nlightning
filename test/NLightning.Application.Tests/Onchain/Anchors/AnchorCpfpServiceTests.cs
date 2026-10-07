@@ -40,7 +40,7 @@ using Infrastructure.Bitcoin.Wallet.Models;
 /// minimum and replaces the old row, the reservation is released once the commitment confirmed or lost, and the anchors
 /// are swept 16 blocks after the confirmation only when that pays for itself.
 /// </summary>
-public sealed class AnchorCpfpServiceTests : IDisposable
+public sealed partial class AnchorCpfpServiceTests : IDisposable
 {
     private const uint HtlcExpiry = 600;
 
@@ -155,6 +155,7 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         services.AddSingleton<IAnchorFeeInputSource>(_wallet);
         services.AddSingleton(new SweepFeePolicy());
         services.AddScoped(_ => _unitOfWork.Object);
+        services.AddSingleton<Application.Onchain.Fees.OperatorFeeBumps>();
         services.AddAnchorCpfpServices();
         return services.BuildServiceProvider();
     }

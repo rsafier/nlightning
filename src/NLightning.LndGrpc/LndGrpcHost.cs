@@ -110,6 +110,18 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
         var walletKit = _serviceProvider.GetService<WalletKitService>();
         if (walletKit is not null)
             builder.Services.AddSingleton(walletKit);
+        var swapSigner = _serviceProvider.GetService<SignerService>();
+        if (swapSigner is not null)
+            builder.Services.AddSingleton(swapSigner);
+        var state = _serviceProvider.GetService<StateService>();
+        if (state is not null)
+            builder.Services.AddSingleton(state);
+        var versioner = _serviceProvider.GetService<VersionerService>();
+        if (versioner is not null)
+            builder.Services.AddSingleton(versioner);
+        var chainNotifier = _serviceProvider.GetService<ChainNotifierService>();
+        if (chainNotifier is not null)
+            builder.Services.AddSingleton(chainNotifier);
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
             kestrel.Limits.MaxConcurrentConnections = _options.MaxConnections;
@@ -118,6 +130,23 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
         });
 
         var app = builder.Build();
+        // grpc-go's answers for unknown services and methods, before the macaroon check (NL-1243)
+        var mapped = new List<Type> { typeof(LightningService) };
+        if (invoices is not null)
+            mapped.Add(typeof(InvoicesService));
+        if (router is not null)
+            mapped.Add(typeof(RouterService));
+        if (walletKit is not null)
+            mapped.Add(typeof(WalletKitService));
+        if (swapSigner is not null)
+            mapped.Add(typeof(SignerService));
+        if (state is not null)
+            mapped.Add(typeof(StateService));
+        if (versioner is not null)
+            mapped.Add(typeof(VersionerService));
+        if (chainNotifier is not null)
+            mapped.Add(typeof(ChainNotifierService));
+        app.Use(new LndUnknownMethods(mapped).InvokeAsync);
         app.MapGrpcService<LightningService>();
         if (invoices is not null)
             app.MapGrpcService<InvoicesService>();
@@ -125,6 +154,14 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
             app.MapGrpcService<RouterService>();
         if (walletKit is not null)
             app.MapGrpcService<WalletKitService>();
+        if (swapSigner is not null)
+            app.MapGrpcService<SignerService>();
+        if (state is not null)
+            app.MapGrpcService<StateService>();
+        if (versioner is not null)
+            app.MapGrpcService<VersionerService>();
+        if (chainNotifier is not null)
+            app.MapGrpcService<ChainNotifierService>();
         app.StartAsync(cancellationToken).GetAwaiter().GetResult();
         _app = app;
 

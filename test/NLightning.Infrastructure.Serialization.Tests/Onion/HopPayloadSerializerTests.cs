@@ -31,7 +31,6 @@ public class HopPayloadSerializerTests
 
     private readonly HopPayloadSerializer _serializer = new(SerializerHelper.TlvSerializer,
                                                             SerializerHelper.TlvStreamSerializer,
-                                                            SerializerHelper.TlvConverterFactory,
                                                             SerializerHelper.ValueObjectSerializerFactory);
 
     public static TheoryData<string> VectorPayloads => new(Hop0, Hop1, Hop2, Hop3, s_hop4);

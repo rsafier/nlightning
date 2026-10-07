@@ -158,6 +158,7 @@ public sealed partial class LightningService
                                             IServerStreamWriter<CloseStatusUpdate> responseStream,
                                             ServerCallContext context)
     {
+        RefuseSilentPaymentChannelDestination(request.DeliveryAddress);
         if (!string.IsNullOrEmpty(request.DeliveryAddress))
             throw Unimplemented("delivery_address: the node closes to its own wallet or the upfront shutdown script");
         if (request.MaxFeePerVbyte != 0)
@@ -223,7 +224,7 @@ public sealed partial class LightningService
 
     /// <summary>
     /// <c>UpdateChannelPolicy</c>: the node's <c>setchannelpolicy</c> on one channel (<c>chan_point</c>) or, with
-    /// <c>global</c>, on every Open channel (the node's configured default policy itself is not changed at run time). As
+    /// <c>global</c>, on every Open channel and as the persisted fee/CLTV default for future channels. As
     /// LND, the base fee, the fee rate (<c>fee_rate_ppm</c>, else <c>fee_rate</c> x 1,000,000) and the time lock delta
     /// are always applied; <c>max_htlc_msat</c> when non-zero, <c>min_htlc_msat</c> with
     /// <c>min_htlc_msat_specified</c>. Inbound fees are refused. A channel the node refuses is a failed update.
@@ -238,6 +239,9 @@ public sealed partial class LightningService
         if (request.TimeLockDelta > ushort.MaxValue)
             throw InvalidArgument("time_lock_delta is out of range");
 
+        if (!double.IsFinite(request.FeeRate) || request.FeeRate < 0
+         || (request.FeeRatePpm == 0 && request.FeeRate * 1_000_000 > uint.MaxValue))
+            throw InvalidArgument("fee_rate is out of range");
         var feeRatePpm = request.FeeRatePpm != 0 ? request.FeeRatePpm : (uint)Math.Round(request.FeeRate * 1_000_000);
         List<ChannelModel> channels;
         if (request.ScopeCase == PolicyUpdateRequest.ScopeOneofCase.ChanPoint)
@@ -247,35 +251,58 @@ public sealed partial class LightningService
         else
             throw InvalidArgument("set global or chan_point");
 
-        var response = new PolicyUpdateResponse();
-        foreach (var channel in channels)
+        var global = request.ScopeCase == PolicyUpdateRequest.ScopeOneofCase.Global && request.Global;
+        if (global)
         {
-            var update = new SetChannelPolicyClientRequest(new ChannelReference(channel.ChannelId))
-            {
-                FeeBaseMsat = (uint)request.BaseFeeMsat,
-                FeeProportionalMillionths = feeRatePpm,
-                CltvExpiryDelta = (ushort)request.TimeLockDelta,
-                HtlcMaximumMsat = request.MaxHtlcMsat != 0 ? request.MaxHtlcMsat : null,
-                HtlcMinimumMsat = request.MinHtlcMsatSpecified ? request.MinHtlcMsat : null
-            };
-            try
-            {
-                await DispatchAsync<SetChannelPolicyClientRequest, ChannelPolicyClientResponse>(update, context);
-            }
-            catch (RpcException e)
-            {
-                response.FailedUpdates.Add(new FailedUpdate
-                {
-                    Outpoint = ToOutPoint(channel),
-                    Reason = e.StatusCode == StatusCode.NotFound
-                                 ? UpdateFailure.NotFound
-                                 : UpdateFailure.InvalidParameter,
-                    UpdateError = e.Status.Detail
-                });
-            }
+            if (_channelPolicyService is null)
+                throw Unimplemented("the node-wide policy service is not available");
+            var routing = _nodeOptions.Routing;
+            if (request.TimeLockDelta < Domain.Node.Options.RoutingOptions.MinimumCltvExpiryDelta
+             || request.TimeLockDelta <= routing.ExpiryTooSoonBlocks
+             || request.TimeLockDelta > routing.MaxCltvExpiryDistance)
+                throw InvalidArgument("time_lock_delta is outside the node's routing limits");
+            await _globalPolicyGate.WaitAsync(context.CancellationToken);
         }
+        try
+        {
+            var response = new PolicyUpdateResponse();
+            foreach (var channel in channels)
+            {
+                var update = new SetChannelPolicyClientRequest(new ChannelReference(channel.ChannelId))
+                {
+                    FeeBaseMsat = (uint)request.BaseFeeMsat,
+                    FeeProportionalMillionths = feeRatePpm,
+                    CltvExpiryDelta = (ushort)request.TimeLockDelta,
+                    HtlcMaximumMsat = request.MaxHtlcMsat != 0 ? request.MaxHtlcMsat : null,
+                    HtlcMinimumMsat = request.MinHtlcMsatSpecified ? request.MinHtlcMsat : null
+                };
+                try
+                {
+                    await DispatchAsync<SetChannelPolicyClientRequest, ChannelPolicyClientResponse>(update, context);
+                }
+                catch (RpcException e)
+                {
+                    response.FailedUpdates.Add(new FailedUpdate
+                    {
+                        Outpoint = ToOutPoint(channel),
+                        Reason = e.StatusCode == StatusCode.NotFound
+                                     ? UpdateFailure.NotFound
+                                     : UpdateFailure.InvalidParameter,
+                        UpdateError = e.Status.Detail
+                    });
+                }
+            }
 
-        return response;
+            if (global)
+                await _channelPolicyService!.SetDefaultAsync((uint)request.BaseFeeMsat, feeRatePpm,
+                                                             (ushort)request.TimeLockDelta, context.CancellationToken);
+            return response;
+        }
+        finally
+        {
+            if (global)
+                _globalPolicyGate.Release();
+        }
     }
 
     /// <summary>
@@ -371,6 +398,7 @@ public sealed partial class LightningService
     {
         if (request.FundingShim is not null || request.FundMax || request.Outpoints.Count > 0)
             throw Unimplemented("funding shims, fund_max and chosen outpoints are not supported");
+        RefuseSilentPaymentChannelDestination(request.CloseAddress);
         if (!string.IsNullOrEmpty(request.CloseAddress))
             throw Unimplemented("close_address is not supported; the node reserves its own upfront shutdown address");
         if (request.MaxLocalCsv != 0 || request.UseBaseFee || request.UseFeeRate || request.SpendUnconfirmed)
@@ -415,6 +443,14 @@ public sealed partial class LightningService
     }
 
     /// <summary>Runs a node command, its refusals as gRPC statuses.</summary>
+    private static void RefuseSilentPaymentChannelDestination(string? address)
+    {
+        if (address is not null && (address.StartsWith("sp1", StringComparison.OrdinalIgnoreCase) ||
+                                   address.StartsWith("tsp1", StringComparison.OrdinalIgnoreCase) ||
+                                   address.StartsWith("sprt1", StringComparison.OrdinalIgnoreCase)))
+            throw InvalidArgument("Silent payment destinations are not supported for channel closes: pay the wallet, then `withdraw` to the silent payment address.");
+    }
+
     private Task<TResponse> DispatchAsync<TRequest, TResponse>(TRequest request, ServerCallContext context)
         where TRequest : notnull =>
         DispatchAsync<TRequest, TResponse>(request, context.CancellationToken);

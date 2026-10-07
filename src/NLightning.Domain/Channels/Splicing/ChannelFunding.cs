@@ -40,6 +40,8 @@ using ValueObjects;
 /// <param name="SpliceLockedReceived">The peer sent <c>splice_locked</c> for this funding.</param>
 /// <param name="AnnouncementSignaturesReceived">The peer's <c>announcement_signatures</c> for this funding arrived
 /// (SP-RE-02 <c>retransmit_flags</c>).</param>
+/// <param name="FundingKeysUnknown">Recovery knows the outpoint but not both funding keys; key fields are
+/// historical hints and must never be used to sign this funding.</param>
 public sealed record ChannelFunding(
     TxId FundingTxId,
     ushort OutputIndex,
@@ -58,7 +60,8 @@ public sealed record ChannelFunding(
     ShortChannelId? ShortChannelId = null,
     bool SpliceLockedSent = false,
     bool SpliceLockedReceived = false,
-    bool AnnouncementSignaturesReceived = false)
+    bool AnnouncementSignaturesReceived = false,
+    bool FundingKeysUnknown = false)
 {
     /// <summary>The capacity in millisatoshis.</summary>
     public ulong CapacityMsat => checked(CapacitySatoshis * 1_000);

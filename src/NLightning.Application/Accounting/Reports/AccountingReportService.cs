@@ -393,6 +393,8 @@ public sealed class AccountingReportService : IAccountingReports
                     return;
                 }
             case AccountingEventKind.InvoiceSettled:
+            // NL-1182: a forward the HTLC interceptor settled is a payment received on its incoming channel
+            case AccountingEventKind.InterceptedHtlcSettled:
                 {
                     if (GetOrAdd(channels, accountingEvent.ChannelId) is not { } channel)
                         return;

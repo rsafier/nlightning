@@ -37,6 +37,7 @@ public class AccountingEventDbRepository : BaseDbRepository<AccountingEventEntit
         Insert(new AccountingEventEntity
         {
             EventKey = accountingEvent.EventKey,
+            ReversesEventKey = ReversesEventKey(accountingEvent),
             Kind = (int)accountingEvent.Kind,
             OccurredAt = accountingEvent.OccurredAt,
             BlockHeight = accountingEvent.BlockHeight,
@@ -161,6 +162,43 @@ public class AccountingEventDbRepository : BaseDbRepository<AccountingEventEntit
 
         var entities = await rows.OrderBy(e => e.LedgerSeq).Take(query.Take).ToListAsync(cancellationToken);
         return entities.Select(MapEntityToDomain).ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<AccountingEventModel>> GetWalletHistoryAsync(
+        uint startHeight, uint endHeight, long afterLedgerSeq, int take,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(take);
+        if (startHeight > endHeight)
+            return [];
+
+        var received = (int)AccountingEventKind.WalletReceived;
+        var spent = (int)AccountingEventKind.WalletOutputSpent;
+        var reversal = (int)AccountingEventKind.Reversal;
+        var entities = await DbSet.AsNoTracking()
+                                  .Where(e => e.LedgerSeq != null && e.LedgerSeq > afterLedgerSeq
+                                           && (e.Kind == received || e.Kind == spent)
+                                           && e.BlockHeight >= startHeight && e.BlockHeight <= endHeight
+                                           && !DbSet.Any(r => r.Kind == reversal && r.LedgerSeq != null
+                                                          && r.ReversesEventKey == e.EventKey))
+                                  .OrderBy(e => e.LedgerSeq)
+                                  .Take(take)
+                                  .ToListAsync(cancellationToken);
+        return entities.Select(MapEntityToDomain).ToList();
+    }
+
+    private static string? ReversesEventKey(AccountingEventModel accountingEvent)
+    {
+        if (accountingEvent.Kind != AccountingEventKind.Reversal)
+            return null;
+        if (accountingEvent.Details.GetValueOrDefault(AccountingConfirmations.ReversesDetail) is { Length: > 0 } key)
+            return key;
+
+        // Historical reversals may predate the explicit reference detail. Use the last infix because the original
+        // confirmation key itself can contain earlier re-emission/reversal components.
+        var marker = accountingEvent.EventKey.LastIndexOf(":rev:", StringComparison.Ordinal);
+        return marker > 0 ? accountingEvent.EventKey[..marker] : null;
     }
 
     /// <inheritdoc />

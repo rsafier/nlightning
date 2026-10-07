@@ -1,11 +1,13 @@
+using NLightning.Domain.Bitcoin.ValueObjects;
+using NLightning.Domain.Crypto.Constants;
+using NLightning.Domain.Crypto.ValueObjects;
+using NLightning.Domain.Protocol.Constants;
+using NLightning.Domain.Protocol.Tlv;
+
 namespace NLightning.Infrastructure.Serialization.Wire.Definitions;
 
-using Domain.Crypto.Constants;
-using Domain.Crypto.ValueObjects;
-using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
-using Domain.Protocol.Tlv;
 
 /// <summary>
 /// The wire definitions of <c>commitment_signed</c> (132: channel_id, signature, u16 num_htlcs, num_htlcs x
@@ -16,9 +18,22 @@ using Domain.Protocol.Tlv;
 /// </summary>
 internal static class CommitmentSignedWire
 {
+    public static readonly TlvDef<FundingTxIdTlv> FundingTxId = TlvDef.Typed<FundingTxIdTlv>(TlvConstants.FundingTxId,
+        baseTlv =>
+        {
+            if (baseTlv.Type != TlvConstants.FundingTxId)
+                throw new InvalidCastException("Invalid TLV type");
+
+            if (baseTlv.Length != FundingTxIdTlv.ValueLength)
+                throw new InvalidCastException("Invalid length");
+
+            return new FundingTxIdTlv(baseTlv.Value[..FundingTxIdTlv.ValueLength]);
+        },
+        tlv => tlv);
+
     public static readonly MessageWire<CommitmentSignedMessage> Def = new(MessageTypes.CommitmentSigned, Encode,
-        Decode, TlvDef.Typed<FundingTxIdTlv>(TlvConstants.FundingTxId),
-        TlvDef.Typed<PartialSignatureWithNonceTlv>(TaprootTlvConstants.PartialSignatureWithNonce));
+        Decode, CommitmentSignedWire.FundingTxId,
+        TlvDefs.PartialSignatureWithNonce);
 
     private static void Encode(ref WireWriter writer, CommitmentSignedMessage message)
     {
@@ -49,7 +64,7 @@ internal static class CommitmentSignedWire
 internal static class RevokeAndAckWire
 {
     public static readonly MessageWire<RevokeAndAckMessage> Def = new(MessageTypes.RevokeAndAck, Encode, Decode,
-        TlvDef.Typed<NextLocalNoncesTlv>(TaprootTlvConstants.NextLocalNonces));
+        TlvDefs.NextLocalNonces);
 
     private static void Encode(ref WireWriter writer, RevokeAndAckMessage message)
     {
@@ -73,12 +88,66 @@ internal static class RevokeAndAckWire
 
 internal static class ChannelReestablishWire
 {
+    public static readonly TlvDef<AnnouncementNoncesTlv> AnnouncementNonces = TlvDef.Typed<AnnouncementNoncesTlv>(TaprootTlvConstants.AnnouncementNonces,
+        baseTlv =>
+        {
+            if (baseTlv.Type != TaprootTlvConstants.AnnouncementNonces)
+                throw new InvalidCastException("Invalid TLV type");
+
+            if (baseTlv.Length != AnnouncementNoncesTlv.ValueLength || baseTlv.Value.Length != baseTlv.Length)
+                throw new InvalidCastException(
+                    $"Invalid length: announcement_nonces holds {AnnouncementNoncesTlv.ValueLength} bytes, not "
+                  + $"{baseTlv.Value.Length}");
+
+            return new AnnouncementNoncesTlv(new MusigPublicNonce(baseTlv.Value[..MusigConstants.PublicNonceLen]),
+                                             new MusigPublicNonce(baseTlv.Value[MusigConstants.PublicNonceLen..]));
+        },
+        tlv => tlv);
+
+    public static readonly TlvDef<MyCurrentFundingLockedTlv> MyCurrentFundingLocked = TlvDef.Typed<MyCurrentFundingLockedTlv>(TlvConstants.MyCurrentFundingLocked,
+        baseTlv =>
+        {
+            if (baseTlv.Type != TlvConstants.MyCurrentFundingLocked)
+            {
+                throw new InvalidCastException("Invalid TLV type");
+            }
+
+            if (baseTlv.Length != MyCurrentFundingLockedTlv.ValueLength || baseTlv.Value.Length != baseTlv.Length)
+            {
+                throw new InvalidCastException("Invalid length");
+            }
+
+            var txId = new TxId(baseTlv.Value[..CryptoConstants.Sha256HashLen]);
+            return new MyCurrentFundingLockedTlv(txId, baseTlv.Value[CryptoConstants.Sha256HashLen]);
+        },
+        tlv => tlv);
+
+    public static readonly TlvDef<NextFundingTlv> NextFunding = TlvDef.Typed<NextFundingTlv>(TlvConstants.NextFunding,
+        baseTlv =>
+        {
+            if (baseTlv.Type != TlvConstants.NextFunding)
+            {
+                throw new InvalidCastException("Invalid TLV type");
+            }
+
+            if (baseTlv.Length != NextFundingTlv.ValueLength)
+            {
+                throw new InvalidCastException("Invalid length");
+            }
+
+            return new NextFundingTlv(baseTlv.Value[..32], baseTlv.Value[32]);
+        },
+        tlv => tlv);
+
+    public static readonly TlvDef<CurrentCommitNonceTlv> CurrentCommitNonce =
+        TlvDefs.PublicNonce(TaprootTlvConstants.CurrentCommitNonce, value => new CurrentCommitNonceTlv(value));
+
     public static readonly MessageWire<ChannelReestablishMessage> Def = new(MessageTypes.ChannelReestablish, Encode,
-        Decode, TlvDef.Typed<NextFundingTlv>(TlvConstants.NextFunding),
-        TlvDef.Typed<MyCurrentFundingLockedTlv>(TlvConstants.MyCurrentFundingLocked),
-        TlvDef.Typed<NextLocalNoncesTlv>(TaprootTlvConstants.NextLocalNonces),
-        TlvDef.Typed<CurrentCommitNonceTlv>(TaprootTlvConstants.CurrentCommitNonce),
-        TlvDef.Typed<AnnouncementNoncesTlv>(TaprootTlvConstants.AnnouncementNonces));
+        Decode, ChannelReestablishWire.NextFunding,
+        ChannelReestablishWire.MyCurrentFundingLocked,
+        TlvDefs.NextLocalNonces,
+        ChannelReestablishWire.CurrentCommitNonce,
+        ChannelReestablishWire.AnnouncementNonces);
 
     private static void Encode(ref WireWriter writer, ChannelReestablishMessage message)
     {
@@ -111,10 +180,23 @@ internal static class ChannelReestablishWire
 
 internal static class TxAddInputWire
 {
+    public static readonly TlvDef<SharedInputTxIdTlv> SharedInputTxId = TlvDef.Typed<SharedInputTxIdTlv>(InteractiveTxTlvConstants.SharedInputTxId,
+        baseTlv =>
+        {
+            if (baseTlv.Type != InteractiveTxTlvConstants.SharedInputTxId)
+                throw new InvalidCastException("Invalid TLV type");
+
+            if (baseTlv.Length != SharedInputTxIdTlv.ValueLength || baseTlv.Value.Length != SharedInputTxIdTlv.ValueLength)
+                throw new InvalidCastException("Invalid length");
+
+            return new SharedInputTxIdTlv(baseTlv.Value[..SharedInputTxIdTlv.ValueLength]);
+        },
+        tlv => tlv);
+
     public static readonly MessageWire<TxAddInputMessage> Def = new(MessageTypes.TxAddInput, Encode, Decode,
-        TlvDef.Typed<SharedInputTxIdTlv>(InteractiveTxTlvConstants.SharedInputTxId),
-        TlvDef.Typed<PrevTxDetailsTlv>(InteractiveTxTlvConstants.PrevTxDetails),
-        TlvDef.Typed<PrevTxDetailsTlv>(InteractiveTxTlvConstants.PrevTxDetailsEclair));
+        TxAddInputWire.SharedInputTxId,
+        TlvDefs.PrevTxDetails,
+        TlvDefs.PrevTxDetails.WithType(InteractiveTxTlvConstants.PrevTxDetailsEclair));
 
     private static void Encode(ref WireWriter writer, TxAddInputMessage message)
     {

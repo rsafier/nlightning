@@ -57,17 +57,20 @@ public sealed class SweepScheduler : ISweepScheduler
     private readonly ILogger<SweepScheduler> _logger;
     private readonly SweepFeePolicy _policy;
     private readonly ISecretStorageServiceFactory? _secretStorageServiceFactory;
+    private readonly OperatorFeeBumps? _operatorFeeBumps;
     private readonly HashSet<TxId> _loggedOnce = [];
 
     public SweepScheduler(IFeeService feeService, ILightningSigner lightningSigner, ILogger<SweepScheduler> logger,
                           SweepFeePolicy? policy = null,
-                          ISecretStorageServiceFactory? secretStorageServiceFactory = null)
+                          ISecretStorageServiceFactory? secretStorageServiceFactory = null,
+                          OperatorFeeBumps? operatorFeeBumps = null)
     {
         _feeService = feeService;
         _lightningSigner = lightningSigner;
         _logger = logger;
         _policy = policy ?? new SweepFeePolicy();
         _secretStorageServiceFactory = secretStorageServiceFactory;
+        _operatorFeeBumps = operatorFeeBumps;
     }
 
     /// <inheritdoc />
@@ -82,6 +85,12 @@ public sealed class SweepScheduler : ISweepScheduler
 
         var broadcasts = await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(close.ChannelId);
         var rows = outputs.ToDictionary(o => (o.TransactionId, o.OutputIndex));
+
+        // An operator's request ends with its output's resolution (NL-1186)
+        if (_operatorFeeBumps is not null)
+            foreach (var row in outputs.Where(o => o.State is OutputResolutionState.Resolved
+                                                           or OutputResolutionState.Irrevocable))
+                _operatorFeeBumps.ClearOutput(row.TransactionId, row.OutputIndex);
         var actions = new List<OutputResolverAction>();
         Secret? revocationSecret = null;
 
@@ -131,8 +140,15 @@ public sealed class SweepScheduler : ISweepScheduler
                 continue;
             }
 
-            var deadline = spent.Where(r => r?.DeadlineHeight is not null).Select(r => r!.DeadlineHeight).Min();
-            if (!_policy.ShouldBump(broadcast.FirstBroadcastHeight, height, deadline))
+            var ownDeadline = spent.Where(r => r?.DeadlineHeight is not null).Select(r => r!.DeadlineHeight).Min();
+            var deadline = ownDeadline;
+
+            // The operator's request (walletrpc BumpFee, NL-1186): a fresh one replaces at once; its deadline never
+            // loosens the output's own
+            var (bump, fresh) = FindOperatorBump(spent);
+            if (bump?.DeadlineHeight is { } operatorDeadline)
+                deadline = deadline is { } own ? Math.Min(own, operatorDeadline) : operatorDeadline;
+            if (!fresh && !_policy.ShouldBump(broadcast.FirstBroadcastHeight, height, deadline))
                 continue;
 
             if (spent.Any(r => r is null) || tx.Outputs.Count != 1)
@@ -155,10 +171,15 @@ public sealed class SweepScheduler : ISweepScheduler
                 }
             }
 
-            var replacement = await BuildReplacementAsync(close, broadcast, tx, spent!, deadline, height,
-                                                           revocationSecret, cancellationToken);
+            var replacement = await BuildReplacementAsync(close, broadcast, tx, spent!, deadline,
+                                                           ownDeadline is not null, height, revocationSecret, bump,
+                                                           cancellationToken);
             if (replacement is null)
                 continue;
+
+            if (fresh)
+                foreach (var row in spent)
+                    _operatorFeeBumps!.MarkOutputApplied(row!.TransactionId, row.OutputIndex);
 
             actions.Add(new BroadcastAction(replacement));
             foreach (var row in naming)
@@ -175,8 +196,10 @@ public sealed class SweepScheduler : ISweepScheduler
                                                                         BroadcastTransactionModel broadcast,
                                                                         Transaction tx,
                                                                         IReadOnlyList<OutputResolutionModel> spent,
-                                                                        uint? deadline, uint height,
+                                                                        uint? deadline, bool hasOwnDeadline,
+                                                                        uint height,
                                                                         Secret? revocationSecret,
+                                                                        OperatorFeeBumpRequest? bump,
                                                                         CancellationToken cancellationToken)
     {
         var txId = broadcast.TransactionId;
@@ -209,12 +232,26 @@ public sealed class SweepScheduler : ISweepScheduler
 
         // The replacement has the same shape; a signature may be one byte longer
         var weight = (long)tx.GetVirtualSize() * 4 + tx.Inputs.Count * 4;
-        var target = _policy.GetConfirmationTarget(height, deadline);
+        var target = bump?.ConfTarget is { } confTarget and > 0
+                         ? confTarget
+                         : _policy.GetConfirmationTarget(height, deadline);
         var estimate = await FeeEstimates.GetForTargetAsync(_feeService, target, _logger, cancellationToken);
+        if (bump?.StartingFeeratePerKw is { } starting && starting > estimate)
+            estimate = starting;
         var destination = tx.Outputs[0].ScriptPubKey.ToBytes();
         var dust = ShutdownScriptValidator.GetDustThresholdSat(destination);
         var isPenalty = broadcast.Purpose == BroadcastPurpose.Penalty;
-        var decision = _policy.DecideReplacement(total, oldFee, weight, estimate, isPenalty, height, deadline, dust);
+        // An operator's budget never lowers the cap that protects an output a competitor can take at its deadline (an
+        // HTLC claim, a penalty: near the deadline a penalty may pay up to PenaltyMaxFeePerMille), as the anchor CPFP's
+        // ApplyBudget does; without a deadline the budget replaces the cap
+        var decision = bump?.BudgetSat is { } budget and > 0
+                           ? _policy.DecideReplacementWithBudget(
+                               total, oldFee, weight, estimate,
+                               hasOwnDeadline
+                                   ? Math.Max(budget, _policy.GetMaxFee(total, isPenalty, height, deadline))
+                                   : budget, dust)
+                           : _policy.DecideReplacement(total, oldFee, weight, estimate, isPenalty, height, deadline,
+                                                       dust);
         if (decision is null)
         {
             LogOnce(txId, null, "{Purpose} {TxId} of channel {ChannelId} is unconfirmed, but no replacement can pay "
@@ -320,6 +357,35 @@ public sealed class SweepScheduler : ISweepScheduler
             return null;
         }
     }
+
+    /// <summary>The operator's request on one of the spent outputs (NL-1186), and whether no round applied it yet.
+    /// </summary>
+    private (OperatorFeeBumpRequest? Request, bool Fresh) FindOperatorBump(
+        IReadOnlyList<OutputResolutionModel?> spent)
+    {
+        if (_operatorFeeBumps is null)
+            return (null, false);
+
+        OperatorFeeBumpRequest? found = null;
+        var fresh = false;
+        foreach (var row in spent)
+        {
+            if (row is null || _operatorFeeBumps.GetOutput(row.TransactionId, row.OutputIndex, out var rowFresh) is not
+                { } request)
+                continue;
+
+            found ??= request;
+            fresh |= rowFresh;
+        }
+
+        return (found, fresh);
+    }
+
+    /// <summary>
+    /// Whether the scheduler can re-sign the sweep, claim or penalty of an output of <paramref name="descriptor"/>
+    /// (an operator's <c>BumpFee</c> applies to those, NL-1186; HTLC transactions and anchors are bumped elsewhere).
+    /// </summary>
+    public static bool CanBump(OutputDescriptorKind descriptor) => GetKeyKind(descriptor) is not null;
 
     private static SweepKeyKind? GetKeyKind(OutputDescriptorKind descriptor) => descriptor switch
     {

@@ -74,7 +74,7 @@ public class StartupStateTests
         Assert.Equal(ChannelState.V1FundingSigned, channel.State);
         Assert.Equal([ChannelState.V1FundingSigned], _persistedStates);
         _unitOfWork.Verify(u => u.SaveChangesAsync(), Times.Once);
-        _memory.Verify(m => m.AddChannel(channel), Times.Once);
+        _memory.Verify(m => m.LoadChannel(channel), Times.Once);
         _signer.Verify(s => s.RegisterChannel(channel.ChannelId, It.IsAny<ChannelSigningInfo>()), Times.Once);
     }
 
@@ -93,7 +93,7 @@ public class StartupStateTests
         // Assert - BOLT 2: not remembered, persisted Stale so the next start skips it
         Assert.Equal(ChannelState.Stale, channel.State);
         Assert.Equal([ChannelState.Stale], _persistedStates);
-        _memory.Verify(m => m.AddChannel(It.IsAny<ChannelModel>()), Times.Never);
+        _memory.Verify(m => m.LoadChannel(It.IsAny<ChannelModel>()), Times.Never);
         _signer.Verify(s => s.RegisterChannel(It.IsAny<ChannelId>(), It.IsAny<ChannelSigningInfo>()), Times.Never);
     }
 
@@ -125,7 +125,7 @@ public class StartupStateTests
         Assert.Equal(ChannelState.Stale, channel.State);
         Assert.Equal(["abandon True", "save"], steps);
         _utxoMemory.Verify(u => u.ReturnUtxosNotSpentOnChannel(channel.ChannelId), Times.Once);
-        _memory.Verify(m => m.AddChannel(It.IsAny<ChannelModel>()), Times.Never);
+        _memory.Verify(m => m.LoadChannel(It.IsAny<ChannelModel>()), Times.Never);
     }
 
     [Fact]
@@ -162,7 +162,7 @@ public class StartupStateTests
 
         // Assert
         Assert.Equal(ChannelState.Stale, channel.State);
-        _memory.Verify(m => m.AddChannel(It.IsAny<ChannelModel>()), Times.Never);
+        _memory.Verify(m => m.LoadChannel(It.IsAny<ChannelModel>()), Times.Never);
     }
 
     [Theory]
@@ -184,7 +184,7 @@ public class StartupStateTests
         // Assert
         Assert.Equal(state, channel.State);
         Assert.Empty(_persistedStates);
-        _memory.Verify(m => m.AddChannel(It.IsAny<ChannelModel>()), Times.Never);
+        _memory.Verify(m => m.LoadChannel(It.IsAny<ChannelModel>()), Times.Never);
         _signer.Verify(s => s.RegisterChannel(It.IsAny<ChannelId>(), It.IsAny<ChannelSigningInfo>()), Times.Never);
     }
 
@@ -207,7 +207,7 @@ public class StartupStateTests
         // Assert
         Assert.Equal(state, channel.State);
         Assert.Empty(_persistedStates);
-        _memory.Verify(m => m.AddChannel(channel), Times.Once);
+        _memory.Verify(m => m.LoadChannel(channel), Times.Once);
         _signer.Verify(s => s.RegisterChannel(channel.ChannelId, It.IsAny<ChannelSigningInfo>()), Times.Once);
     }
 
@@ -249,7 +249,7 @@ public class StartupStateTests
         await manager.RegisterExistingChannelAsync(channel);
 
         // Assert
-        _memory.Verify(m => m.AddChannel(channel), Times.Once);
+        _memory.Verify(m => m.LoadChannel(channel), Times.Once);
         _signer.Verify(s => s.RegisterChannel(It.IsAny<ChannelId>(), It.IsAny<ChannelSigningInfo>()), Times.Never);
         _unitOfWork.Verify(u => u.BroadcastTransactionDbRepository, Times.Never);
     }

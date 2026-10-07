@@ -9,6 +9,7 @@ namespace NLightning.Application.Tests.Onchain.Resolvers.Local;
 using Application.Onchain.Resolvers;
 using Application.Onchain.Resolvers.Local;
 using Channels.Services;
+using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Factories;
@@ -116,6 +117,9 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
 
     /// <summary>Our invoices by payment hash (the final-hop decision asks the switch only for an <c>Open</c> one).</summary>
     public Dictionary<Hash, InvoiceModel> Invoices { get; } = [];
+
+    /// <summary>The keys of the saved accounting events (<c>IAccountingEventDbRepository.ExistsAsync</c>).</summary>
+    public HashSet<string> AccountingEventKeys { get; } = [];
 
     /// <param name="setup">Moves the pair to the state whose commitment goes on chain.</param>
     /// <param name="hasAnchors">An option_anchors channel (O7-T3).</param>
@@ -452,7 +456,12 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
         invoices.Setup(r => r.GetByPaymentHashAsync(It.IsAny<Hash>()))
                 .ReturnsAsync((Hash hash) => Invoices.GetValueOrDefault(hash));
 
+        var accountingEvents = new Mock<IAccountingEventDbRepository>();
+        accountingEvents.Setup(r => r.ExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                        .ReturnsAsync((string key, CancellationToken _) => AccountingEventKeys.Contains(key));
+
         var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.SetupGet(u => u.AccountingEventDbRepository).Returns(accountingEvents.Object);
         unitOfWork.SetupGet(u => u.ForwardCircuitDbRepository).Returns(circuits.Object);
         unitOfWork.SetupGet(u => u.InvoiceDbRepository).Returns(invoices.Object);
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channels.Object);

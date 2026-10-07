@@ -93,7 +93,8 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
         _ourNodeId = secureKeyManager?.GetNodePubKey();
         _metrics = metrics;
         _acceptedFeed = acceptedFeed;
-        metrics?.RegisterQueue("relay_pending", () => _relayPeers.Sum(p => (long)p.Value.PendingCount));
+        metrics?.RegisterQueue("relay_pending", () => _relayPeers.Sum(p => (long)p.Value.PendingCount)
+                                                        + _v2Peers.Sum(p => (long)p.Value.PendingCount));
         metrics?.RegisterRelayPausedConnections(() => _relayPeers.Count(p => p.Value.IsPaused));
 
         if (IsRelayingOthers)

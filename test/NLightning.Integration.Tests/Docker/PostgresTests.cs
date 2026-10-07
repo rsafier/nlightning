@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore.Storage;
 
 namespace NLightning.Integration.Tests.Docker;
 
+using Domain.Accounting.Books;
 using Fixtures;
 using Infrastructure.Persistence.Contexts;
 using Infrastructure.Persistence.Enums;
@@ -442,6 +443,50 @@ public class PostgresTests
                 new DbContextOptionsBuilder<NLightningDbContext>(options).AddInterceptors(interceptors).Options,
                 databaseTypeProvider),
             TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Given_PostgresHistoricalFeed_When_Upgraded_Then_ReversalReferencesAreBackfilledWithoutChangingSeals()
+    {
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_accounting_history_upgrade");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        await AccountingHistoryUpgradeRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, databaseTypeProvider), DatabaseType.PostgreSql,
+            TestContext.Current.CancellationToken);
+    }
+
+    [Theory]
+    [InlineData(AccountingBook.Operational, "AccountingEntries")]
+    [InlineData(AccountingBook.Operational, "AccountingBalances")]
+    [InlineData(AccountingBook.Operational, "AccountingCursor")]
+    [InlineData(AccountingBook.Financial, "AccountingEntries")]
+    [InlineData(AccountingBook.Financial, "AccountingBalances")]
+    [InlineData(AccountingBook.Financial, "AccountingCursor")]
+    public async Task Given_PostgresBooks_When_AClearIsInterrupted_Then_TheJournalAndCursorRollBackTogether(
+        AccountingBook book, string failedTable)
+    {
+        // Arrange: use the same failure injection as SQLite, with PostgreSQL's real SQL and transaction handling.
+        var options = await CreateOwnDatabaseOptionsAsync($"nltg_clear_{book.ToString().ToLowerInvariant()}_{failedTable.ToLowerInvariant()}");
+        var provider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await AccountingClearRecoveryRoundTrip.AssertAsync(
+            interceptors => new NLightningDbContext(new DbContextOptionsBuilder<NLightningDbContext>(options)
+                                                        .AddInterceptors(interceptors).Options, provider),
+            book, failedTable);
+    }
+
+    [Fact]
+    public async Task Given_PostgresWallet_When_SilentPaymentsMigrateAndSpend_Then_RecoveryMetadataRoundTrips()
+    {
+        // Arrange
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_silent_payments");
+        var provider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await SilentPaymentSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, provider),
+            DatabaseType.PostgreSql, TestContext.Current.CancellationToken);
     }
 
     private async Task<DbContextOptions<NLightningDbContext>> CreateOwnDatabaseOptionsAsync(string database)

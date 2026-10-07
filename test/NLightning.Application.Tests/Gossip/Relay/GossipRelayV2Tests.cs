@@ -8,7 +8,9 @@ using Application.Gossip.Relay;
 using Application.Gossip.Relay.Interfaces;
 using Application.Gossip.Sync.Interfaces;
 using Domain.Channels.ValueObjects;
+using Domain.Gossip.Enums;
 using Domain.Gossip.Graph;
+using Domain.Gossip.Models;
 using Domain.Gossip.Queries;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
@@ -47,7 +49,9 @@ public class GossipRelayV2Tests : IDisposable
         _relay = CreateRelay(null);
     }
 
-    private GossipRelayScheduler CreateRelay(GossipV2TestKey? ourNode)
+    private GossipRelayScheduler CreateRelay(GossipV2TestKey? ourNode,
+                                              Action<GossipRelayOptions>? configure = null,
+                                              IGossipPeerSender? sender = null)
     {
         var options = new GossipRelayOptions
         {
@@ -55,6 +59,7 @@ public class GossipRelayV2Tests : IDisposable
             RelayCollectInterval = TimeSpan.FromSeconds(10),
             RelayTickInterval = TimeSpan.FromSeconds(1)
         };
+        configure?.Invoke(options);
         _syncManager.Setup(m => m.TryGetPeerFilter(It.IsAny<IPeerService>(), out It.Ref<GossipTimestampFilter>.IsAny))
                     .Returns(new TryGetFilter((IPeerService peer, out GossipTimestampFilter filter) =>
                                                   _filters.TryGetValue(peer, out filter)));
@@ -74,7 +79,7 @@ public class GossipRelayV2Tests : IDisposable
 
         return new GossipRelayScheduler(directory.Object, NullLogger<GossipRelayScheduler>.Instance,
                                         Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }),
-                                        Options.Create(new GossipOptions()), _clock, null, _graph.Store,
+                                        Options.Create(new GossipOptions()), _clock, sender, _graph.Store,
                                         _syncManager.Object, _origins, Options.Create(options), keys);
     }
 
@@ -166,6 +171,145 @@ public class GossipRelayV2Tests : IDisposable
         ], peer.Sent.Where(m => m.Type is MessageTypes.ChannelAnnouncement2 or MessageTypes.ChannelUpdate2
                                                                            or MessageTypes.NodeAnnouncement2)
                     .Select(m => m.Type));
+    }
+
+    [Fact]
+    public async Task Given_AV2Backlog_When_PacedAtOneMessagePerTick_Then_ItPreservesOrderAndIsNotTruncatedByPendingCaps()
+    {
+        _relay.Dispose();
+        _relay = CreateRelay(null, o =>
+        {
+            o.BacklogMessagesPerSecond = 1;
+            o.MaxRelayPendingPerPeer = 1;
+        });
+        AddV2Channel();
+        var peer = AddPeer(0x41, true, new GossipBlockHeightRange(0, uint.MaxValue));
+        await BaselineAsync();
+        _syncManager.Raise(m => m.FilterReceived += null,
+                           new GossipFilterReceivedEventArgs(peer, _filters[peer]));
+
+        for (var i = 1; i <= 4; i++)
+        {
+            await TickAfterAsync(TimeSpan.FromSeconds(1));
+            Assert.Equal(i, peer.Sent.Count);
+        }
+
+        Assert.Equal([MessageTypes.ChannelAnnouncement2, MessageTypes.ChannelUpdate2,
+                      MessageTypes.ChannelUpdate2, MessageTypes.NodeAnnouncement2], peer.Sent.Select(m => m.Type));
+        await FlushAllAsync();
+        Assert.Equal(4, peer.Sent.Count);
+    }
+
+    [Fact]
+    public async Task Given_BothProtocolBacklogs_When_Paced_Then_TheyShareOneWireMessageBudget()
+    {
+        _relay.Dispose();
+        _relay = CreateRelay(null, o => o.BacklogMessagesPerSecond = 1);
+        _graph.AddSignedChannel(new ShortChannelId(700, 1, 0), SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+        AddV2Channel();
+        var peer = AddPeer(0x41, true, new GossipBlockHeightRange(0, uint.MaxValue));
+        await BaselineAsync();
+        _syncManager.Raise(m => m.FilterReceived += null,
+                           new GossipFilterReceivedEventArgs(peer, _filters[peer]));
+
+        for (var i = 1; i <= 7; i++)
+        {
+            await TickAfterAsync(TimeSpan.FromSeconds(1));
+            Assert.Equal(i, peer.Sent.Count);
+        }
+
+        Assert.Equal([MessageTypes.ChannelAnnouncement, MessageTypes.ChannelUpdate, MessageTypes.ChannelUpdate,
+                      MessageTypes.ChannelAnnouncement2, MessageTypes.ChannelUpdate2,
+                      MessageTypes.ChannelUpdate2, MessageTypes.NodeAnnouncement2], peer.Sent.Select(m => m.Type));
+    }
+
+    [Fact]
+    public async Task Given_TheLastV1BacklogPassFillsTheOutbox_When_ItDrains_Then_TheV2BacklogResumesWithoutV1Duplicates()
+    {
+        var sender = new BlockingSender(3);
+        _relay.Dispose();
+        _relay = CreateRelay(null, sender: sender);
+        _graph.AddSignedChannel(new ShortChannelId(700, 1, 0), SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+        AddV2Channel();
+        var peer = AddPeer(0x41, true, new GossipBlockHeightRange(0, uint.MaxValue));
+        await BaselineAsync();
+        _syncManager.Raise(m => m.FilterReceived += null,
+                           new GossipFilterReceivedEventArgs(peer, _filters[peer]));
+
+        await TickAfterAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(3, peer.Sent.Count);
+        Assert.Equal(1, _relay.GetStatus().PausedConnections);
+        await TickAfterAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(4, sender.Attempts);
+        sender.Blocked = false;
+        await TickAfterAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal([MessageTypes.ChannelAnnouncement, MessageTypes.ChannelUpdate, MessageTypes.ChannelUpdate,
+                      MessageTypes.ChannelAnnouncement2, MessageTypes.ChannelUpdate2,
+                      MessageTypes.ChannelUpdate2, MessageTypes.NodeAnnouncement2], peer.Sent.Select(m => m.Type));
+        Assert.Equal(0, _relay.GetStatus().PausedConnections);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_AFullV2Outbox_When_ItDrainsOrStalls_Then_TheBacklogResumesOrIsDiscarded(bool stall)
+    {
+        var sender = new BlockingSender();
+        _relay.Dispose();
+        _relay = CreateRelay(null, o => o.RelayStallTimeout = TimeSpan.FromSeconds(5), sender);
+        AddV2Channel();
+        var peer = AddPeer(0x41, true, new GossipBlockHeightRange(0, uint.MaxValue));
+        await BaselineAsync();
+        _syncManager.Raise(m => m.FilterReceived += null,
+                           new GossipFilterReceivedEventArgs(peer, _filters[peer]));
+        await TickAfterAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(1, _relay.GetStatus().PausedConnections);
+        Assert.Equal(1, sender.Attempts);
+        await TickAfterAsync(TimeSpan.FromSeconds(stall ? 6 : 1));
+        Assert.Equal(1, sender.Attempts);
+
+        sender.Blocked = false;
+        await TickAfterAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(stall ? 0 : 4, peer.Sent.Count);
+        Assert.Equal(0, _relay.GetStatus().PausedConnections);
+    }
+
+    [Fact]
+    public async Task Given_AV2PendingFlushBlockedByAFullOutbox_When_ItStalls_Then_ItsPendingMessagesAreDropped()
+    {
+        var sender = new BlockingSender();
+        _relay.Dispose();
+        _relay = CreateRelay(null, o => o.RelayStallTimeout = TimeSpan.FromSeconds(5), sender);
+        var peer = AddPeer(0x41, true, new GossipBlockHeightRange(0, uint.MaxValue));
+        await BaselineAsync();
+        AddV2Channel();
+        await FlushAllAsync();
+        Assert.True(_relay.GetStatus().PendingMessages > 0);
+        await TickAfterAsync(TimeSpan.FromSeconds(6));
+        Assert.Equal(0, _relay.GetStatus().PendingMessages);
+
+        sender.Blocked = false;
+        await FlushAllAsync();
+        Assert.Empty(peer.Sent);
+    }
+
+    private sealed class BlockingSender(int successfulBeforeBlock = 0) : IGossipPeerSender
+    {
+        public bool Blocked { get; set; } = true;
+        public int Attempts { get; private set; }
+
+        public async ValueTask<GossipEnqueueResult> SendAsync(GossipPeer peer, IMessage message, int size)
+        {
+            Attempts++;
+            if (Blocked && Attempts > successfulBeforeBlock)
+                return GossipEnqueueResult.Full;
+            await peer.Service.SendGossipMessageAsync(message);
+            return GossipEnqueueResult.Queued;
+        }
+
+        public GossipOutboxDepth? GetDepth(GossipPeer peer) =>
+            new(Blocked ? 1 : 0, 0, 1, 0, 0);
     }
 
     [Fact]

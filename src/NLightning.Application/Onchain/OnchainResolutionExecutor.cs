@@ -26,6 +26,8 @@ using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
 using Domain.Onchain.Parsers;
 using Domain.Payments.Enums;
+using Domain.Payments.Events;
+using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Payments.Trampoline;
 using Domain.Persistence.Interfaces;
@@ -575,6 +577,9 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         // Read before any row: a watch on a transaction not confirmed by then can only be spent in a later block
         var lastProcessedBefore = scope.ServiceProvider.GetService<IBlockchainMonitor>()?.LastProcessedBlockHeight;
         Applied applied;
+        var passivePublisher = scope.ServiceProvider.GetService<IHtlcEventPublisher>();
+        Action<HtlcActivityEvent>? publishPassive = null;
+        IReadOnlyList<HtlcActivityEvent> passiveActivities = [];
         WatchedOutpointModel? rewatch = null;
         List<(WatchedOutpointModel, uint)> catchUp = [];
         using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
@@ -747,6 +752,19 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                 { } accountingStage)
                 stageMore.Add(accountingStage);
 
+            // NL-1231: checkpoint even without readers, so recovery is never presented as new live activity.
+            if (passivePublisher is not null)
+            {
+                passiveActivities = await OnchainHtlcObservations.StageAsync(
+                    unitOfWork, channel, actions, outputs.Values, _channelMemoryRepository, _timeProvider.GetUtcNow(),
+                    close, height, _options.ReasonableDepth, spent);
+                if (passiveActivities.Count > 0)
+                {
+                    publishPassive = passivePublisher.CapturePublisher();
+                    stageMore.Add(() => Task.CompletedTask);
+                }
+            }
+
             applied = await StageAndSaveAsync(unitOfWork, actions,
                                               stageMore.Count == 0
                                                   ? null
@@ -775,6 +793,25 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         if (rewatch is not null)
             _outpointWatcher.TrackWatchedOutpoint(rewatch);
 
+        foreach (var activity in passiveActivities)
+        {
+            try
+            {
+                publishPassive!(activity);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(exception, "Could not publish on-chain HTLC activity for channel {ChannelId}", channelId);
+                try
+                {
+                    passivePublisher!.InvalidateSubscriptions();
+                }
+                catch (Exception invalidationException)
+                {
+                    _logger.LogWarning(invalidationException, "Could not invalidate on-chain HTLC subscriptions");
+                }
+            }
+        }
         await AfterSaveAsync(scope, channelId, applied);
         await CatchUpSpendsAsync(channelId, catchUp, cancellationToken);
     }
@@ -1222,8 +1259,13 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                     return [(OnchainAccounting.ValueBookedByKey, "forward")];
 
                 // NL-875: a part of a trampoline relay: TrampolineRelaySettled booked it
-                return await TrampolineRelayReads.GetPartAsync(unitOfWork, channelId, spec.Id) is not null
-                           ? [(OnchainAccounting.ValueBookedByKey, OnchainAccounting.TrampolineValueOwner)]
+                if (await TrampolineRelayReads.GetPartAsync(unitOfWork, channelId, spec.Id) is not null)
+                    return [(OnchainAccounting.ValueBookedByKey, OnchainAccounting.TrampolineValueOwner)];
+
+                // NL-1182: a forward the HTLC interceptor settled: InterceptedHtlcSettled booked it
+                return unitOfWork.AccountingEventDbRepository is { } events
+                    && await events.ExistsAsync(AccountingEventKeys.InterceptedHtlcSettled(channelId, spec.Id))
+                           ? [(OnchainAccounting.ValueBookedByKey, OnchainAccounting.InterceptorValueOwner)]
                            : [(OnchainAccounting.ValueBookedByKey, "invoice")];
             }
 
@@ -1302,6 +1344,10 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             return false;
 
         var circuit = await circuits.GetByIncomingAsync(channel.ChannelId, htlcId);
+        if (circuit is null)
+            return await StageInterceptedLossAsync(accounting, channel, closeTxId, htlcId, spenderTxId, height, now,
+                                                   trimmed, cancellationToken);
+
         if (circuit is not { Status: ForwardCircuitStatus.Fulfilled })
             return false;
 
@@ -1311,6 +1357,37 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             return false;
 
         accounting.Add(PaymentAccountingEvents.ForwardUpstreamLostOnchain(key, circuit, channel, closeTxId, spenderTxId,
+                                                                          now, height, trimmed));
+        return true;
+    }
+
+    /// <summary>
+    /// Stages the <see cref="AccountingEventKind.ForwardLostOnchain"/> of incoming HTLC <paramref name="htlcId"/> when
+    /// the HTLC interceptor settled its held forward (NL-1182): its <c>InterceptedHtlcSettled</c> (a live event, not a
+    /// memo) booked the HTLC's amount into the channels, which the close never took out, and the HTLC was not failed
+    /// off chain; its output was taken by the peer or given up, or it had none (<paramref name="trimmed"/>). Keyed as a
+    /// forward's loss, so <see cref="StageUpstreamForwardLossReversalAsync"/> reverses it after a reorg.
+    /// </summary>
+    private static async Task<bool> StageInterceptedLossAsync(IAccountingEventDbRepository accounting,
+                                                              ChannelModel channel, TxId closeTxId, ulong htlcId,
+                                                              TxId? spenderTxId, uint height, DateTimeOffset now,
+                                                              bool trimmed, CancellationToken cancellationToken)
+    {
+        if (channel.Commitments?.GetHtlc(HtlcDirection.Incoming, htlcId) is { Removal.IsFulfill: false })
+            return false;
+
+        var settled = await accounting.GetByKeyAsync(
+                          AccountingEventKeys.InterceptedHtlcSettled(channel.ChannelId, htlcId), cancellationToken);
+        if (settled is null
+         || (settled.Details.TryGetValue(AccountingDetailKeys.Memo, out var memo) && memo == AccountingDetailKeys.True))
+            return false;
+
+        var key = await OnchainAccounting.NewKeyAsync(
+                      accounting, AccountingEventKeys.ForwardLostOnchain(channel.ChannelId, htlcId), cancellationToken);
+        if (key is null)
+            return false;
+
+        accounting.Add(PaymentAccountingEvents.InterceptedHtlcLostOnchain(key, settled, channel, closeTxId, spenderTxId,
                                                                           now, height, trimmed));
         return true;
     }

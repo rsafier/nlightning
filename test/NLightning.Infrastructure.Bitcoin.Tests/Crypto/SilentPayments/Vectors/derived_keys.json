@@ -1,0 +1,77 @@
+{
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "passphrase": "",
+  "accounts": [
+    {
+      "coin_type": 0,
+      "account": 0,
+      "scan_path": "m/352'/0'/0'/1'/0",
+      "spend_path": "m/352'/0'/0'/0'/0",
+      "scan_private_key": "78e7fd7d2b7a2c1456709d147021a122d2dccaafeada040cc1002083e2833b09",
+      "spend_private_key": "c88567742d5019d7ccc81f6e82cef8ef01997a6a3761cc9166036b580549539b",
+      "scan_public_key": "024139b0f81042e243a90478e43990c6a27be0e3346f0c71adbbcdd511beaea1e3",
+      "spend_public_key": "02fa210b3c4a60b80dd1616f48ae53bbdf0db744b3f9083385108f81be0acb58c6",
+      "address": "sp1qqfqnnv8czppwysafq3uwgwvsc638hc8rx3hscuddh0xa2yd746s7xqh6yy9ncjnqhqxazct0fzh98w7lpkm5fvlepqec2yy0sxlq4j6ccc3h6t0g"
+    },
+    {
+      "coin_type": 0,
+      "account": 1,
+      "scan_path": "m/352'/0'/1'/1'/0",
+      "spend_path": "m/352'/0'/1'/0'/0",
+      "scan_private_key": "ecf5559aa6201ef9f3ae96e82678ebcf39ded31a4855fc118acf48f2a710e2f6",
+      "spend_private_key": "14992d9d0101622d2d8e4275f078229a3476f851c6b915d330e54479c81e4aa4",
+      "scan_public_key": "03fac9f16f3b8dbc8901dbaa8ddff6a759fa4cc69fe720fdfbed5eb513692a5fe6",
+      "spend_public_key": "033fa2319a70786a5da48c20592e73589972d432e5d9f9423d15bdd9dd74b892c5",
+      "address": "sp1qq0avnut08wxmezgpmw4gmhlk5avl5nxxnlnjpl0ma40t2ymf9f07vqel5gce5urcdfw6frpqtyh8xkyewt2r9ewel9pr69dam8whfwyjc5c8ef34"
+    },
+    {
+      "coin_type": 1,
+      "account": 0,
+      "scan_path": "m/352'/1'/0'/1'/0",
+      "spend_path": "m/352'/1'/0'/0'/0",
+      "scan_private_key": "38658693c017c46fd6b8bb94b8766c123cd5baf6026338305b6f59f82b36f9c0",
+      "spend_private_key": "9fd37137e760930c7208fa905e991c78c522689d237a220b2820c3ddb4c745a8",
+      "scan_public_key": "03439fc230182b46ff22032ca7ae2dff32958c9a0d177c7b7096df0d4b7141eb21",
+      "spend_public_key": "02833085c9a716d36b467552c00d6aa8bd42e39adbe98b05bc203110177192f702",
+      "address": "tsp1qqdpels3srq45dlezqvk20t3dlueftry6p5thc7msjm0s6jm3g84jzq5rxzzunfck6d45va2jcqxk429agt3e4klf3vzmcgp3zqthryhhqgnz4k3n",
+      "scan_shared_generator": "03439fc230182b46ff22032ca7ae2dff32958c9a0d177c7b7096df0d4b7141eb21",
+      "scan_shared_twice_generator": "03f887a99c7ee3328b3a822e48f8ed655e2c35042ea9b99132d0dcb069242f9ca3",
+      "labels": [
+        {
+          "label": 0,
+          "tweak": "a6df7f176ac2f7b3eb4459e7125b244b222fa0d9082c020144c4536777fe3d1b",
+          "point": "024b1bc6c34f24ae409889caa1cd8f46d03431324e1418e9c98156107f6198dcdf",
+          "spend_tweak_one_key": "46b2f04f52238ac05d4d547770f440c52ca32c8f7c5d83d0ad12b8b85c8f4183",
+          "spend_tweak_one_point": "0249d7f0d6e9349aedb8b0b1579bf50d1859d5d1472aa85469efeed0c1fdee1a4e"
+        },
+        {
+          "label": 1,
+          "tweak": "b0fbcac7926a3661f22a68e10248f6df1db76c4f0dbaae51eb0278207eeaebc8",
+          "point": "021ea7c1ce70d25a3ce8eb83125be7f48aba2adf5879d3960edc6c76202b9c5117",
+          "spend_tweak_one_key": "50cf3bff79cac96e6433637160e21359282af80581ec30215350dd71637bf030",
+          "spend_tweak_one_point": "02d66f7cc104f76b204f638ecd42d8b89030688b46d90b63c146c8a541c7c9c7e7"
+        },
+        {
+          "label": 4294967295,
+          "tweak": "cdb9de940b4e9d6ba6684e532028efa74724a780adde4b62a85416c1706c7986",
+          "point": "02a4f89a2cec1bec4ef22104183ac52c92e750e6d4aeab146a322048dd0df1afdd",
+          "spend_tweak_one_key": "9272b0340d50cf87e78eb71c813df3dd6916a9af8d38d309af2fe27a7b38c353",
+          "spend_tweak_one_point": "03308e7ede809850d494d01653c83bd96086ce67636ea92504d78a11fd12398c6b"
+        }
+      ],
+      "unlabeled_spend_tweak_one_key": "602c8ec8189f6cf38df7056fa166e385f58c74498bce7e3097b19aaf1b6efb98",
+      "unlabeled_spend_tweak_one_point": "03d55ab22f551d448795254addd7b01cc2c1ba8e2fcf6e44f46dc609be2fb07a3c"
+    },
+    {
+      "coin_type": 1,
+      "account": 1,
+      "scan_path": "m/352'/1'/1'/1'/0",
+      "spend_path": "m/352'/1'/1'/0'/0",
+      "scan_private_key": "93628419891d2d0d3010bfb53027672a692855bcaef70887ea88667206a203c1",
+      "spend_private_key": "822cf773d87267b9647366fb7df96e2d7d96cbb9b0f2537e39fece53c48d95c7",
+      "scan_public_key": "034e5b1750493b583323808778c69c7682d04cf19ecd20d0d4bea27fe63d190edd",
+      "spend_public_key": "0246fbf4432948634160f31003001cdc88e60f9124603d27d93a2fbf25987ef4d9",
+      "address": "tsp1qqd89k96sfya4sverszrh335uw6pdqn83nmxjp5x5h638le3ary8d6qjxl06yx22gvdqkpucsqvqpehyguc8ezfrq85najw30hujeslh5my3lq9qk"
+    }
+  ]
+}

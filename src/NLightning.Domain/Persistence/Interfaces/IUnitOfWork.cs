@@ -26,6 +26,8 @@ public interface IUnitOfWork : IDisposable
     IWatchedTransactionDbRepository WatchedTransactionDbRepository { get; }
     IWalletAddressesDbRepository WalletAddressesDbRepository { get; }
     IUtxoDbRepository UtxoDbRepository { get; }
+    ISilentPaymentDbRepository SilentPaymentDbRepository =>
+        throw new NotSupportedException("This unit of work does not store silent payments.");
 
     // Fee input reservations (BOLT 5 plan O7-T1)
     IFeeInputReservationDbRepository FeeInputReservationDbRepository { get; }
@@ -38,6 +40,9 @@ public interface IUnitOfWork : IDisposable
     // On-chain resolution repositories (BOLT 5 plan O1)
     IRevokedCommitmentDbRepository RevokedCommitmentDbRepository { get; }
     IOnchainResolutionDbRepository OnchainResolutionDbRepository { get; }
+
+    IOnchainHtlcObservationDbRepository OnchainHtlcObservationDbRepository =>
+        throw new NotSupportedException("This unit of work does not store on-chain HTLC observations.");
 
     // Chanel repositories
     IChannelConfigDbRepository ChannelConfigDbRepository { get; }
@@ -54,6 +59,17 @@ public interface IUnitOfWork : IDisposable
 
     // Node repositories
     IPeerDbRepository PeerDbRepository { get; }
+
+    Bitcoin.Wallet.Interfaces.IImportedTapscriptDbRepository ImportedTapscriptDbRepository =>
+        throw new NotSupportedException("This unit of work does not store imported tapscripts.");
+
+    // The wallet's durable transaction history (NL-1187, migration AddWalletTransactions); wrappers must forward it,
+    // the default keeps none
+    Bitcoin.Wallet.Interfaces.IWalletTransactionDbRepository WalletTransactionDbRepository =>
+        Bitcoin.Wallet.Interfaces.NullWalletTransactionDbRepository.Instance;
+
+    Crypto.KeyRing.IKeyRingDbRepository KeyRingDbRepository =>
+        throw new NotSupportedException("This unit of work does not store key ring keys.");
 
     // BOLT 1 peer storage (migration AddPeerStorage)
     IPeerStorageDbRepository PeerStorageDbRepository { get; }

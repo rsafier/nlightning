@@ -47,6 +47,9 @@ internal sealed class DualFundHost : IInteractiveTxHost
         _service.CreateCommitmentSignedAsync(_negotiation, session, unitOfWork);
 
     /// <inheritdoc />
+    public bool WantsCommitNonces => _negotiation.Channel is { ChannelParams.OptionSimpleTaproot: true };
+
+    /// <inheritdoc />
     public CommitNoncesTlv? GetLocalCommitNonces(TxId fundingTxId) =>
         _service.GetLocalCommitNonces(_negotiation, fundingTxId);
 

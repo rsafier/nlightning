@@ -22,6 +22,7 @@ using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
+using Domain.Node.PeerStorage;
 using Domain.Node.ValueObjects;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
@@ -82,6 +83,13 @@ using Onchain.Interfaces;
 /// names our key (the channel moves there and the peer's commitment on it is handed over), or all of them are spent by
 /// something else (then it was no splice of ours and is handed over). The result detail starts
 /// <c>FundingSplicedUnresolved:</c> meanwhile.</para>
+/// <para>Simple taproot channels (NL-1059): a splice's MuSig2 P2TR output is recognized by our keys and the peer's
+/// known ones, else by the peer's commitment at the end of the chain that pays our taproot <c>to_remote</c> (the locator
+/// walks the P2TR outputs spend by spend), else by the funding the peer's copy of our own backup names
+/// (<see cref="IPeerStorageService.GetRetrievals"/>, the latest retrieval of that peer: the splice's named output, or
+/// the output of an earlier splice that the named funding's transaction spends). A key-path spend names no key, so a
+/// funding found by the commitment or the peer's blob keeps the peer's last known funding key (and ours, unless the
+/// blob names our key index): the recovery channel never signs on it, it only resolves the peer's close.</para>
 /// <para>A dual-funded open still unconfirmed when the backup was written (lane SP2-E review): the backup names every
 /// signed candidate of its RBF as a pending funding with the channel's keys; the restore locates each and makes the
 /// channel at the one that confirmed (<c>FundingRbf:</c>), else at the backed-up one with the others stored as pending
@@ -118,6 +126,7 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
     private readonly Lock _resumeGate = new();
     private readonly ConcurrentDictionary<ChannelId, SpliceWait> _spliceWaits = new();
     private readonly IBlockchainMonitor? _blockchainMonitor;
+    private readonly Func<IPeerStorageService?>? _peerStorage;
     private readonly Lock _spliceWaitGate = new();
     private readonly TimeProvider _timeProvider;
     private Task? _resume;
@@ -160,8 +169,10 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                                  IChannelMemoryRepository? channelMemoryRepository = null,
                                  IChannelFundingKeySource? fundingKeySource = null,
                                  IChannelLockProvider? channelLockProvider = null,
-                                 TimeProvider? timeProvider = null)
+                                 TimeProvider? timeProvider = null,
+                                 Func<IPeerStorageService?>? peerStorage = null)
     {
+        _peerStorage = peerStorage;
         _graphStore = graphStore;
         _fundingKeySource = fundingKeySource ?? new SignerChannelFundingKeySource(signer);
         _channelLockProvider = channelLockProvider;
@@ -556,7 +567,8 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
             var keyIndex = current.KeyIndex;
             var next = await _spendLocator.FollowSpliceAsync(
                            current, spend, index => _fundingKeySource.GetFundingPubKey(keyIndex, index),
-                           cancellationToken);
+                           cancellationToken)
+                    ?? await FollowPeerStorageHintAsync(current, spend, cancellationToken);
             if (next is null)
                 break;
 
@@ -627,7 +639,8 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
         var locked = new ChannelFunding(to.FundingTxId, to.FundingOutputIndex, to.CapacitySat, to.LocalFundingPubKey,
                                         to.RemoteFundingPubKey, to.LocalFundingKeyIndex, 0, 0,
                                         kind, ChannelFundingStatus.Current,
-                                        ConfirmedHeight: to.FundingHeight, ShortChannelId: to.ShortChannelId);
+                                        ConfirmedHeight: to.FundingHeight, ShortChannelId: to.ShortChannelId,
+                                        FundingKeysUnknown: to.FundingKeysUnknown);
         var lockHandle = _channelLockProvider is null
                              ? null
                              : await _channelLockProvider.AcquireAsync(channelId, cancellationToken);
@@ -683,6 +696,7 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                                                                 to.LocalFundingPubKey, to.RemoteFundingPubKey,
                                                                 to.FundingTxId, to.FundingOutputIndex));
                 live.SetLocalFundingKeyIndex(to.LocalFundingKeyIndex);
+                live.FundingKeysUnknown = to.FundingKeysUnknown;
                 if (to.ShortChannelId is { } shortChannelId)
                     live.ShortChannelId = shortChannelId;
                 live.FundingCreatedAtBlockHeight = to.FundingHeight;
@@ -706,8 +720,11 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
         // The signer follows the lock (it may also load the channel from the database at its new funding already)
         try
         {
-            _signer.RegisterFunding(channelId, locked with { Status = ChannelFundingStatus.Pending });
-            _signer.LockFunding(channelId, to.FundingTxId, to.ShortChannelId);
+            if (!locked.FundingKeysUnknown)
+            {
+                _signer.RegisterFunding(channelId, locked with { Status = ChannelFundingStatus.Pending });
+                _signer.LockFunding(channelId, to.FundingTxId, to.ShortChannelId);
+            }
         }
         catch (Exception e)
         {
@@ -929,7 +946,8 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                                                      OutpointSpentEventArgs spend,
                                                      CancellationToken cancellationToken)
     {
-        var outputs = SpliceSpendFollower.GetSpliceCandidateOutputs(spend.SpendingTransaction.RawTxBytes);
+        var outputs = SpliceSpendFollower.GetSpliceCandidateOutputs(spend.SpendingTransaction.RawTxBytes,
+                                                                    entry.OptionSimpleTaproot);
         if (_spendLocator is null || outputs is null || outputs.Count == 0)
             return await HandOverEarlierSpendAsync(entry, fundingWatch, spend, cancellationToken);
 
@@ -958,6 +976,14 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
     {
         var entry = wait.Entry;
         var keyIndex = entry.KeyIndex;
+
+        // NL-1059: a key-path splice names no key, but the peer may hand back our own backup naming the funding
+        if (await FollowPeerStorageHintAsync(entry, wait.Spend, cancellationToken) is { } hinted)
+        {
+            _spliceWaits.TryRemove(new KeyValuePair<ChannelId, SpliceWait>(entry.ChannelId, wait));
+            return await ContinueAfterSpliceAsync(wait, hinted, cancellationToken);
+        }
+
         foreach (var vout in wait.Remaining.ToList())
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1034,8 +1060,10 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
           || !RecoveryChannels.IsRecoveryChannel(live)))
             return false;
 
-        if (SpliceSpendFollower.GetSpliceCandidateOutputs(spend.SpendingTransaction.RawTxBytes) is not
-            { Count: > 0 })
+        // A simple taproot channel's splice has P2TR outputs (NL-1059); the entry tells which kind once loaded
+        if (SpliceSpendFollower.GetSpliceCandidateOutputs(spend.SpendingTransaction.RawTxBytes) is not { Count: > 0 }
+         && SpliceSpendFollower.GetSpliceCandidateOutputs(spend.SpendingTransaction.RawTxBytes, true) is not
+         { Count: > 0 })
             return false;
 
         await _restoreLock.WaitAsync(cancellationToken);
@@ -1084,6 +1112,105 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
         return ChannelBackupService.CreateEntry(channel, null, null,
                                                 await ChannelBackupService.GetFundingSetAsync(unitOfWork, channelId,
                                                                                               _logger));
+    }
+
+    /// <summary>
+    /// The funding of <paramref name="entry"/> that the peer's latest <c>peer_storage_retrieval</c> names (our own
+    /// backup blob, encrypted and authenticated with our key, so the peer can only replay an older one of ours): its
+    /// outpoint and our funding key index, or null when no retrieval of that peer names the channel's funding.
+    /// </summary>
+    private (TxId TxId, ushort OutputIndex, uint? LocalFundingKeyIndex)? FindPeerStorageFunding(ChannelBackupEntry entry)
+    {
+        IReadOnlyList<PeerBackupRetrieval> retrievals;
+        try
+        {
+            retrievals = _peerStorage?.Invoke()?.GetRetrievals() ?? [];
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogDebug(e, "The peer storage retrievals could not be read");
+            return null;
+        }
+
+        var named = retrievals.Where(r => r.PeerNodeId == entry.RemoteNodeId && r.Contents is not null)
+                              .OrderByDescending(r => r.Contents!.CreatedAt)
+                              .SelectMany(r => r.Contents!.Channels)
+                              .FirstOrDefault(c => c.ChannelId == entry.ChannelId && c.FundingTxId is not null
+                                                && c.FundingOutputIndex is not null);
+        return named is null ? null : (named.FundingTxId!.Value, named.FundingOutputIndex!.Value,
+                                       named.LocalFundingKeyIndex);
+    }
+
+    /// <summary>
+    /// Follows the splice <paramref name="spend"/> of the simple taproot channel <paramref name="entry"/> toward the
+    /// funding the peer's retrieval names (NL-1059, <see cref="FindPeerStorageFunding"/>): when the splice is that
+    /// funding's transaction, its named output (with our key at the named index); when it is an earlier one, the output
+    /// of the splice whose spend is the named funding's transaction (its keys stay the last known). Null otherwise.
+    /// </summary>
+    private async Task<ChannelBackupEntry?> FollowPeerStorageHintAsync(ChannelBackupEntry entry,
+                                                                      OutpointSpentEventArgs spend,
+                                                                      CancellationToken cancellationToken)
+    {
+        if (!entry.OptionSimpleTaproot || _spendLocator is null
+         || FindPeerStorageFunding(entry) is not var (namedTxId, namedIndex, namedKeyIndex)
+         || (namedTxId == entry.FundingTxId && namedIndex == entry.FundingOutputIndex))
+            return null;
+
+        NBitcoin.Transaction transaction;
+        try
+        {
+            transaction = NBitcoin.Transaction.Load(spend.SpendingTransaction.RawTxBytes, NBitcoin.Network.Main);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        if (SpliceSpendFollower.IsCommitment(transaction))
+            return null;
+
+        var spliceTxId = spend.SpendingTransaction.TxId;
+        if (spliceTxId == namedTxId)
+        {
+            if (namedIndex >= transaction.Outputs.Count
+             || !SpliceSpendFollower.IsCandidate(transaction.Outputs[namedIndex], true))
+                return null;
+
+            var keyIndex = namedKeyIndex ?? entry.LocalFundingKeyIndex;
+            var localKey = _fundingKeySource.GetFundingPubKey(entry.KeyIndex, keyIndex);
+            _logger.LogWarning("The peer's copy of our backup names {TxId}:{Index} as the funding of simple taproot "
+                             + "channel {ChannelId}: following its splice there (the peer's funding key is not known)",
+                               namedTxId, namedIndex, entry.ChannelId);
+            return SpliceSpendFollower.MoveTo(entry, spliceTxId, namedIndex,
+                                              (ulong)transaction.Outputs[namedIndex].Value.Satoshi,
+                                              localKey is null ? entry.LocalFundingKeyIndex : keyIndex,
+                                              localKey ?? entry.LocalFundingPubKey, entry.RemoteFundingPubKey,
+                                              spend.BlockHeight, spend.TransactionIndex) with
+            { FundingKeysUnknown = true };
+        }
+
+        // An earlier splice: the output whose spend is the named funding's transaction
+        foreach (var vout in SpliceSpendFollower.GetCandidateOutputs(transaction, true))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var candidate = SpliceSpendFollower.MoveTo(entry, spliceTxId, vout,
+                                                       (ulong)transaction.Outputs[vout].Value.Satoshi,
+                                                       entry.LocalFundingKeyIndex, entry.LocalFundingPubKey,
+                                                       entry.RemoteFundingPubKey, spend.BlockHeight,
+                                                       spend.TransactionIndex) with
+            { FundingKeysUnknown = true };
+            var location = await _spendLocator.LocateAsync(candidate, cancellationToken);
+            if (location is { Status: FundingSpendStatus.SpentFound, Spend: { } next }
+             && next.SpendingTransaction.TxId == namedTxId)
+            {
+                _logger.LogWarning("Output {Vout} of {SpliceTxId} is the funding of simple taproot channel {ChannelId}: "
+                                 + "its spend is {TxId}, the funding the peer's copy of our backup names", vout,
+                                   spliceTxId, entry.ChannelId, namedTxId);
+                return candidate;
+            }
+        }
+
+        return null;
     }
 
     private void HandleNewBlock(object? sender, NewBlockEventArgs args)

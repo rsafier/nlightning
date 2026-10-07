@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Grpc.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -14,6 +15,8 @@ using Domain.Accounting.Labels;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Interfaces;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -35,6 +38,7 @@ using Google.Protobuf;
 using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Signers;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Infrastructure.Repositories.Memory;
 using LndGrpc.Macaroons;
 using LndGrpc.Services;
 using LndGrpc.Tls;
@@ -66,14 +70,23 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
     private readonly Mock<IPeerManager> _peers = new();
     private readonly Mock<IChannelMemoryRepository> _channelMemory = new();
     private readonly Mock<IPaymentService> _paymentService = new();
+    private readonly Mock<Application.Payments.Routing.Interfaces.IRouteQueryService> _routeQuery = new();
+    private readonly Mock<Application.Channels.Backup.Interfaces.IChannelBackupService> _backups = new();
+    private readonly Mock<Application.Channels.Backup.Interfaces.IChannelRestoreService> _restores = new();
+    private readonly LndGrpcOptions _serviceOptions = new();
     private readonly Mock<IHoldInvoiceService> _holdInvoices = new();
     private readonly Mock<IBitcoinWalletService> _wallet = new();
+    private readonly Mock<IWalletSpendService> _walletSpend = new();
+    private readonly Mock<IFeeService> _fees = new();
     private readonly PaymentEventHub _events = new();
+    private readonly Mock<Domain.Channels.RoutingPolicies.IChannelPolicyService> _policies = new();
     private readonly FakeDispatcher _dispatcher = new();
     private readonly List<ChannelModel> _closedChannels = [];
     private readonly List<OutputResolutionModel> _outputs = [];
     private readonly List<ChannelCloseModel> _closes = [];
+    private readonly UtxoMemoryRepository _utxos = new();
 
+    private Domain.Bitcoin.ValueObjects.BlockchainState? _chainState;
     private ServiceProvider? _services;
     private LndGrpcHost? _host;
 
@@ -158,7 +171,8 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
         Assert.Equal("nltg-test", info.Alias);
         Assert.Equal("#3399ff", info.Color);
         Assert.Equal(150u, info.BlockHeight);
-        Assert.True(info.SyncedToChain);
+        Assert.False(info.SyncedToChain);
+        Assert.Equal(new string('0', 64), info.BlockHash);
         Assert.StartsWith("0.21.4-beta nlightning-", info.Version);
         Assert.Equal("regtest", Assert.Single(info.Chains).Network);
         Assert.Equal(1u, info.NumInactiveChannels);
@@ -190,7 +204,9 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
     [Fact]
     public async Task Given_TheReadOnlyMacaroon_When_Writing_Then_PermissionDeniedButReadsWork()
     {
-        // Arrange
+        // Arrange: at height 150, 70,000 sat mined at 140 and 5,000 sat not mined yet
+        AddUtxo(70_000, 140);
+        AddUtxo(5_000, 0);
         using var connection = await ConnectAsync(LndMacaroonFiles.ReadOnlyFileName);
 
         // Act
@@ -210,6 +226,36 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
         Assert.Equal(5_000, balance.UnconfirmedBalance);
         Assert.Equal(75_000, balance.TotalBalance);
         Assert.Equal(70_000, balance.AccountBalance["default"].ConfirmedBalance);
+    }
+
+    [Fact]
+    public async Task Given_OutputsWith0And1And4Confirmations_When_WalletBalance_Then_ConfirmedFromOneConfirmationLikeLnd()
+    {
+        // Arrange: at height 150, 1,000 sat in the mempool, 20,000 sat mined at the tip (1 confirmation) and 300,000 sat
+        // mined at 147 (4 confirmations); the node's own walletbalance confirms only the last one (NL-1236)
+        AddUtxo(1_000, 0);
+        AddUtxo(20_000, 150);
+        AddUtxo(300_000, 147);
+        using var connection = await ConnectAsync(LndMacaroonFiles.ReadOnlyFileName);
+
+        // Act
+        var balance = await connection.LightningClient.WalletBalanceAsync(new WalletBalanceRequest(),
+                                                                           cancellationToken: Ct);
+        var fourConfirmations = await connection.LightningClient.WalletBalanceAsync(
+                                    new WalletBalanceRequest { MinConfs = 4 }, cancellationToken: Ct);
+
+        // Assert
+        Assert.Equal(320_000, balance.ConfirmedBalance);
+        Assert.Equal(1_000, balance.UnconfirmedBalance);
+        Assert.Equal(321_000, balance.TotalBalance);
+        Assert.Equal(0, balance.LockedBalance);
+        Assert.Equal(320_000, balance.AccountBalance["default"].ConfirmedBalance);
+        Assert.Equal(1_000, balance.AccountBalance["default"].UnconfirmedBalance);
+        Assert.Equal(300_000, fourConfirmations.ConfirmedBalance);
+        Assert.Equal(21_000, fourConfirmations.UnconfirmedBalance);
+        Assert.Equal(321_000, fourConfirmations.TotalBalance);
+        // The node's own 4-confirmation rule is unchanged: the output mined at the tip is still unconfirmed there
+        Assert.Equal(LightningMoney.Satoshis(20_000), _utxos.GetUnconfirmedBalance(150));
     }
 
     [Fact]
@@ -246,14 +292,14 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
 
         // Act
         var preimage = await Assert.ThrowsAsync<RpcException>(
-            () => connection.LightningClient.AddInvoiceAsync(new Invoice { RPreimage = ByteString.CopyFrom(new byte[32]) },
+            () => connection.LightningClient.AddInvoiceAsync(new Invoice { RPreimage = ByteString.CopyFrom(new byte[31]) },
                                                              cancellationToken: Ct).ResponseAsync);
         var both = await Assert.ThrowsAsync<RpcException>(
             () => connection.LightningClient.AddInvoiceAsync(new Invoice { Value = 1, ValueMsat = 2 },
                                                              cancellationToken: Ct).ResponseAsync);
 
         // Assert
-        Assert.Equal(StatusCode.Unimplemented, preimage.StatusCode);
+        Assert.Equal(StatusCode.InvalidArgument, preimage.StatusCode);
         Assert.Equal(StatusCode.InvalidArgument, both.StatusCode);
     }
 
@@ -430,6 +476,7 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
         Assert.Equal(new ShortChannelId(160, 1, 1), new ShortChannelId(hops[1].ChanId));
         Assert.Equal(2, all.Payments.Count);
         Assert.Equal(Payment.Types.PaymentStatus.InFlight, all.Payments[1].Status);
+        Assert.Equal(new string('0', 64), all.Payments[1].PaymentPreimage); // LND's zero preimage (NL-1252)
         var hop = Assert.Single(history.ForwardingEvents);
         Assert.Equal(new ShortChannelId(150, 7, 0), new ShortChannelId(hop.ChanIdIn));
         Assert.Equal(new ShortChannelId(170, 2, 0), new ShortChannelId(hop.ChanIdOut));
@@ -463,6 +510,10 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
 
     /// <summary>A connection with one of the baked macaroons; <c>GetInfo</c> is called unless the macaroon cannot
     /// (the invoice macaroon has no <c>info:read</c>, as in LND).</summary>
+    private void AddUtxo(long satoshis, uint blockHeight) =>
+        _utxos.Add(new UtxoModel(new TxId(RandomNumberGenerator.GetBytes(32)), 0, LightningMoney.Satoshis(satoshis),
+                                 blockHeight, 0, false, Domain.Bitcoin.Enums.AddressType.P2Wpkh));
+
     private async Task<LndNodeConnection> ConnectAsync(string macaroonFile)
     {
         var settings = LndSettings.FromFiles(Endpoint, Path.Combine(_directory, LndTlsFiles.CertificateFileName),
@@ -527,20 +578,25 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
         monitor.SetupGet(x => x.LastProcessedBlockHeight).Returns(150);
         services.AddSingleton(monitor.Object);
 
-        var utxos = new Mock<IUtxoMemoryRepository>();
-        utxos.Setup(x => x.GetConfirmedBalance(150)).Returns(LightningMoney.Satoshis(70_000));
-        utxos.Setup(x => x.GetUnconfirmedBalance(150)).Returns(LightningMoney.Satoshis(5_000));
-        utxos.Setup(x => x.GetLockedBalance()).Returns(LightningMoney.Zero);
-        services.AddSingleton(utxos.Object);
+        services.AddSingleton<IUtxoMemoryRepository>(_utxos);
 
         services.AddScoped(_ => CreateUnitOfWork());
         services.AddScoped(_ => _wallet.Object);
+        services.AddSingleton(_walletSpend.Object);
+        services.AddSingleton(_fees.Object);
         services.AddSingleton(_paymentService.Object);
+        services.AddSingleton(_routeQuery.Object);
+        services.AddSingleton(_backups.Object);
+        services.AddSingleton(_restores.Object);
+        services.AddSingleton(Options.Create(_serviceOptions));
         services.AddSingleton(_holdInvoices.Object);
         services.AddSingleton<IPaymentEventSource>(_events);
+        services.AddSingleton(_policies.Object);
         services.AddSingleton<INodeCommandDispatcher>(_dispatcher);
         services.AddSingleton(new LndRootKeyStore(_directory));
         services.AddSingleton<LightningService>();
+        services.AddSingleton<StateService>();
+        services.AddSingleton<VersionerService>();
         services.AddSingleton(new HtlcInterceptorHub(NullLogger<HtlcInterceptorHub>.Instance));
         services.AddSingleton<RouterService>();
         services.AddSingleton<InvoicesService>();
@@ -559,12 +615,21 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
                                   _payments.OrderByDescending(p => p.CreatedAt).Skip(skip).Take(take).ToList());
         var forwards = new Mock<IForwardCircuitDbRepository>();
         forwards.Setup(x => x.SummarizeAsync(It.IsAny<ForwardCircuitListQuery>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => new ForwardCircuitTotals(0, 0, _forwards.Count, 0, 0));
+                .ReturnsAsync((ForwardCircuitListQuery query, CancellationToken _) =>
+                {
+                    var matching = _forwards.Where(f => (query.Since is not { } since || f.CreatedAt >= since)
+                                                     && (query.Until is not { } until || f.CreatedAt <= until)
+                                                     && (query.Status is not { } status || f.Status == status))
+                                            .ToList();
+                    return new ForwardCircuitTotals(0, 0, matching.Count, 0,
+                                                    matching.Sum(f => (long)f.Fee.MilliSatoshi));
+                });
         forwards.Setup(x => x.ListAsync(It.IsAny<ForwardCircuitListQuery>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((ForwardCircuitListQuery query, CancellationToken _) =>
                                   _forwards.OrderByDescending(f => f.CreatedAt).Skip(query.Skip).Take(query.Take)
                                            .ToList());
         var state = new Mock<IBlockchainStateDbRepository>();
+        state.Setup(x => x.GetStateAsync()).ReturnsAsync(() => _chainState);
         var stored = new Mock<IChannelDbRepository>();
         stored.Setup(x => x.GetAllAsync()).ReturnsAsync(() => _closedChannels.ToList());
         var resolutions = new Mock<IOnchainResolutionDbRepository>();

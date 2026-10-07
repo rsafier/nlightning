@@ -3,6 +3,10 @@ namespace NLightning.Infrastructure.RemoteSigning;
 public static class SignerOperations
 {
     public const uint Identity = 0;
+    // Added on top of the original v1 surface: never renumber the existing operations.
+    public const uint ComputeSilentPaymentOutputs = 62;
+    public const uint SignWalletMessage = 63;
+    public const uint GetDepositAccount = 108;
     // CreateNewChannel(out ChannelBasepoints basepoints, out CompactPubKey firstPerCommitmentPoint)
     public const uint CreateNewChannel = 1;
     // GetChannelBasepoints(uint channelKeyIndex)
@@ -136,6 +140,9 @@ public static class SignerOperations
     public static int ArgumentCount(uint operation) => operation switch
     {
         Identity => 0,
+        ComputeSilentPaymentOutputs => 4,
+        SignWalletMessage => 2,
+        GetDepositAccount => 1,
         CreateNewChannel => 0,
         GetChannelBasepoints => 1,
         GetChannelBasepoints2 => 1,

@@ -100,6 +100,13 @@ public sealed class PaymentSendOptions
     public ushort TrampolineCltvExpiryDelta { get; set; } = 576;
 
     /// <summary>
+    /// How long after the oldest part of a <c>payroute</c> payment still in flight was offered <c>payroute --attach</c>
+    /// may add routes to it (NL-1276; default 60 s, BOLT 4's recommended <c>mpp_timeout</c>, after which the payee
+    /// fails the parts it holds). LND's <c>SendToRouteV2</c> is not bound by it, as LND is not.
+    /// </summary>
+    public TimeSpan PayRouteAttachWindow { get; set; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>
     /// The largest part limit a call may ask for.
     /// </summary>
     public const int MaxPartsLimit = 128;
