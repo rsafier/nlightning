@@ -10135,7 +10135,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** RTL's Network page, backups and Query Routes need the node's `GetNetworkInfo`, channel backup RPCs and `QueryRoutes` (`LND_TOOLS_COMPAT.md` section 3)
 
 ### NL-1251 `SendToRouteV2` refused a keysend route whose payment hash is not the preimage's SHA256 (bos keysend probe)
-- **Status:** fixed (PENDING)
+- **Status:** fixed (46c6128f)
 - **Severity:** low
 - **Kind:** interop
 - **Location:** `src/NLightning.Application/Payments/Send/PaymentService.PayRoute.cs`
@@ -10144,7 +10144,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** related NL-1242
 
 ### NL-1252 LND gRPC payments without a preimage answered an empty `payment_preimage`; LND answers 64 zero hex characters
-- **Status:** fixed (PENDING)
+- **Status:** fixed (46c6128f)
 - **Severity:** low
 - **Kind:** interop
 - **Location:** `src/NLightning.LndGrpc/Services/LightningService.Payments.cs`, `RouterService.Payments.cs` (TrackPayments in-flight update)
