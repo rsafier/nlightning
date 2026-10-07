@@ -43,4 +43,7 @@ public interface IPingPongService
     /// Event that is raised when the pong is not received in time or the pong message is invalid.
     /// </summary>
     event EventHandler<Exception>? DisconnectEvent;
+
+    /// <summary>How long the peer took to answer our latest answered ping, or null before the first pong.</summary>
+    TimeSpan? LastRoundTrip => null;
 }

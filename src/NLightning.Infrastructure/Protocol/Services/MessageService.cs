@@ -109,6 +109,12 @@ internal sealed class MessageService : IMessageService
     public event EventHandler<Exception>? OnExceptionRaised;
 
     /// <inheritdoc />
+    public long BytesSent => _transportService?.BytesSent ?? 0;
+
+    /// <inheritdoc />
+    public long BytesReceived => _transportService?.BytesReceived ?? 0;
+
+    /// <inheritdoc />
     public bool IsConnected => _transportService?.IsConnected ?? false;
 
     /// <summary>

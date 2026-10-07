@@ -181,6 +181,46 @@ public sealed class PeerService : IPeerService
     /// <inheritdoc />
     public DateTimeOffset? LastMessageReceivedAt => _peerCommunicationService.LastMessageReceivedAt;
 
+    /// <inheritdoc />
+    public DateTimeOffset? ConnectedAt => _peerCommunicationService.ConnectedAt;
+
+    /// <inheritdoc />
+    public long BytesSent => _peerCommunicationService.BytesSent;
+
+    /// <inheritdoc />
+    public long BytesReceived => _peerCommunicationService.BytesReceived;
+
+    /// <inheritdoc />
+    public TimeSpan? PingRoundTrip => _peerCommunicationService.PingRoundTrip;
+
+    /// <inheritdoc />
+    public ReadOnlyMemory<byte> LastPeerPingPayload => _peerCommunicationService.LastPeerPingPayload;
+
+    /// <inheritdoc />
+    public IReadOnlyList<(DateTimeOffset At, string Message)> RecentErrors
+    {
+        get
+        {
+            lock (_recentErrors)
+                return _recentErrors.ToList();
+        }
+    }
+
+    /// <summary>The peer's latest errors and warnings (LND keeps 10).</summary>
+    private const int MaxRecentErrors = 10;
+
+    private readonly Queue<(DateTimeOffset At, string Message)> _recentErrors = new();
+
+    private void RecordError(string message)
+    {
+        lock (_recentErrors)
+        {
+            _recentErrors.Enqueue((DateTimeOffset.UtcNow, message));
+            while (_recentErrors.Count > MaxRecentErrors)
+                _recentErrors.Dequeue();
+        }
+    }
+
     /// <summary>
     /// Initializes a new instance of the <see cref="PeerService"/> class.
     /// </summary>
@@ -374,6 +414,7 @@ public sealed class PeerService : IPeerService
                     PeerPubKey, channelId is null ? "" : channelId.ToString(), errorMessageString);
             }
 
+            RecordError(errorMessageString);
             OnAttentionMessageReceived?.Invoke(
                 this, new AttentionMessageEventArgs(errorMessageString, PeerPubKey, channelId));
         }
@@ -404,6 +445,7 @@ public sealed class PeerService : IPeerService
                 _peerStorage?.HandleWarning(this, warningMessageString);
             }
 
+            RecordError(warningMessageString);
             OnAttentionMessageReceived?.Invoke(
                 this, new AttentionMessageEventArgs(warningMessageString, PeerPubKey, channelId));
         }

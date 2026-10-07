@@ -1,5 +1,6 @@
 using System.Net;
 using Grpc.Core;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.LndGrpc.Services;
@@ -118,8 +119,11 @@ public sealed partial class LightningService
     /// <c>ListPeers</c>: the connected peers with their address and features; <c>inbound</c> is true only for a peer
     /// that can only reach us (we keep no direction per connection); traffic counters stay 0.
     /// </summary>
-    public override Task<ListPeersResponse> ListPeers(ListPeersRequest request, ServerCallContext context)
+    public override async Task<ListPeersResponse> ListPeers(ListPeersRequest request, ServerCallContext context)
     {
+        var syncStates = GossipSyncStates();
+        var channels = _channels.FindChannels(_ => true);
+        var traffic = await ChannelTrafficAsync(channels, context.CancellationToken);
         var response = new ListPeersResponse();
         foreach (var peer in _peerManager.ListPeers())
         {
@@ -130,14 +134,67 @@ public sealed partial class LightningService
                               ? $"[{peer.Host}]:{peer.Port}"
                               : $"{peer.Host}:{peer.Port}",
                 Inbound = peer.IsInboundOnly,
-                SyncType = Peer.Types.SyncType.UnknownSync
+                SyncType = syncStates.TryGetValue(peer.NodeId, out var sync) ? ToSyncType(sync)
+                         : Peer.Types.SyncType.UnknownSync
             };
             item.Features.Add(LndFeatures.ToMap(TryGetFeatures(peer)).ToDictionary(p => p.Key, p => p.Value));
+
+            // NL-1249: the connection's traffic and liveness, the peer's flaps since this server started, and what
+            // its channels sent and received
+            if (peer.TryGetPeerService(out var service))
+            {
+                item.BytesSent = (ulong)Math.Max(0, service.BytesSent);
+                item.BytesRecv = (ulong)Math.Max(0, service.BytesReceived);
+                item.PingTime = service.PingRoundTrip is { } roundTrip ? roundTrip.Ticks / 10 : 0;
+                item.LastPingPayload = Google.Protobuf.ByteString.CopyFrom(service.LastPeerPingPayload.Span);
+                var errors = service.RecentErrors;
+                foreach (var (at, message) in request.LatestError ? errors.TakeLast(1) : errors)
+                    item.Errors.Add(new TimestampedError
+                    {
+                        Timestamp = (ulong)Math.Max(0, at.ToUnixTimeSeconds()),
+                        Error = message
+                    });
+            }
+
+            var (flaps, lastFlap) = _liveness.Flaps(peer.NodeId);
+            item.FlapCount = flaps;
+            item.LastFlapNs = lastFlap is { } flapped ? UnixNanos(flapped) : 0;
+            foreach (var channel in channels.Where(c => c.RemoteNodeId == peer.NodeId))
+            {
+                if (!traffic.TryGetValue(channel.ChannelId, out var totals))
+                    continue;
+
+                item.SatSent += (long)(totals.SentMsat / 1_000);
+                item.SatRecv += (long)(totals.ReceivedMsat / 1_000);
+            }
+
             response.Peers.Add(item);
         }
 
-        return Task.FromResult(response);
+        return response;
     }
+
+    /// <summary>The gossip sync state per connected peer, empty without a sync manager.</summary>
+    private Dictionary<Domain.Crypto.ValueObjects.CompactPubKey, Application.Gossip.Sync.GossipSyncPeerState>
+        GossipSyncStates()
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var sync = scope.ServiceProvider.GetService<Application.Gossip.Sync.Interfaces.IGossipSyncManager>();
+        var states = new Dictionary<Domain.Crypto.ValueObjects.CompactPubKey,
+            Application.Gossip.Sync.GossipSyncPeerState>();
+        foreach (var state in sync?.GetPeerStates() ?? [])
+            states[state.PeerId] = state;
+        return states;
+    }
+
+    /// <summary>
+    /// LND's sync type: active for a peer we sync the graph from or whose live updates we asked for (a
+    /// <c>gossip_timestamp_filter</c> with a range), passive for one whose updates we do not take.
+    /// </summary>
+    private static Peer.Types.SyncType ToSyncType(Application.Gossip.Sync.GossipSyncPeerState state) =>
+        state.IsSyncPeer || state.OurFilter is { TimestampRange: > 0 }
+            ? Peer.Types.SyncType.ActiveSync
+            : Peer.Types.SyncType.PassiveSync;
 
     /// <summary>The peer's features, or null before its <c>init</c> (no peer service yet).</summary>
     private static Domain.Node.FeatureSet? TryGetFeatures(Domain.Node.Models.PeerModel peer) =>

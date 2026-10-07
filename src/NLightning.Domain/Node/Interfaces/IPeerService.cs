@@ -38,6 +38,27 @@ public interface IPeerService : IDisposable
     /// </summary>
     DateTimeOffset? LastMessageReceivedAt { get; }
 
+    /// <summary>When this connection was made (UTC), or null when unknown.</summary>
+    DateTimeOffset? ConnectedAt => null;
+
+    /// <summary>The bytes this connection wrote so far (the BOLT 8 frames and the handshake).</summary>
+    long BytesSent => 0;
+
+    /// <summary>The bytes this connection read so far (the BOLT 8 frames and the handshake).</summary>
+    long BytesReceived => 0;
+
+    /// <summary>The round trip of our latest answered ping, or null before the first pong.</summary>
+    TimeSpan? PingRoundTrip => null;
+
+    /// <summary>The <c>ignored</c> bytes of the latest ping the peer sent us (empty before one).</summary>
+    ReadOnlyMemory<byte> LastPeerPingPayload => ReadOnlyMemory<byte>.Empty;
+
+    /// <summary>
+    /// The latest <c>error</c> and <c>warning</c> messages the peer sent on this connection, oldest first (at most
+    /// 10, as LND keeps), with when they arrived.
+    /// </summary>
+    IReadOnlyList<(DateTimeOffset At, string Message)> RecentErrors => [];
+
     /// <summary>
     /// Sends a <c>ping</c> (or joins the one in flight) and waits for its <c>pong</c> (BOLT 2: before
     /// <c>commitment_signed</c> when nothing was received recently). A timeout closes the connection (BOLT 1 MAY;

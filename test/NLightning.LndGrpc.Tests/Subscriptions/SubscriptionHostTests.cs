@@ -66,26 +66,34 @@ public sealed class SubscriptionHostTests : IAsyncLifetime
               .Callback((EventHandler<PeerStateChangedEventArgs> handler) =>
               {
                   _peerHandlers += handler;
-                  Interlocked.Increment(ref _peerReaders);
+                  // The server's own liveness tracker (NL-1249) listens for good; only streams count
+                  if (handler.Target is not PeerLivenessTracker)
+                      Interlocked.Increment(ref _peerReaders);
               });
         _peers.SetupRemove(x => x.OnPeerStateChanged -= It.IsAny<EventHandler<PeerStateChangedEventArgs>>())
               .Callback((EventHandler<PeerStateChangedEventArgs> handler) =>
               {
                   _peerHandlers -= handler;
-                  Interlocked.Decrement(ref _peerReaders);
+                  // The server's own liveness tracker (NL-1249) listens for good; only streams count
+                  if (handler.Target is not PeerLivenessTracker)
+                      Interlocked.Decrement(ref _peerReaders);
               });
         _channels.Setup(x => x.FindChannels(It.IsAny<Func<ChannelModel, bool>>())).Returns([]);
         _channels.SetupAdd(x => x.OnChannelAdded += It.IsAny<EventHandler<ChannelUpdatedEventArgs>>())
                  .Callback((EventHandler<ChannelUpdatedEventArgs> handler) =>
               {
                   _channelHandlers += handler;
-                  Interlocked.Increment(ref _channelReaders);
+                  // The server's own liveness tracker (NL-1249) listens for good; only streams count
+                  if (handler.Target is not PeerLivenessTracker)
+                      Interlocked.Increment(ref _channelReaders);
               });
         _channels.SetupRemove(x => x.OnChannelAdded -= It.IsAny<EventHandler<ChannelUpdatedEventArgs>>())
                  .Callback((EventHandler<ChannelUpdatedEventArgs> handler) =>
               {
                   _channelHandlers -= handler;
-                  Interlocked.Decrement(ref _channelReaders);
+                  // The server's own liveness tracker (NL-1249) listens for good; only streams count
+                  if (handler.Target is not PeerLivenessTracker)
+                      Interlocked.Decrement(ref _channelReaders);
               });
         _channels.SetupAdd(x => x.OnChannelUpdated += It.IsAny<EventHandler<ChannelUpdatedEventArgs>>())
                  .Callback((EventHandler<ChannelUpdatedEventArgs> handler) => _channelUpdateHandlers += handler);

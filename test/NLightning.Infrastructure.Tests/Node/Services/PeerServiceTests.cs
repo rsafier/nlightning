@@ -107,6 +107,22 @@ public class PeerServiceTests
         _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
     }
 
+    [Fact]
+    public void Given_ElevenErrorsFromThePeer_When_Read_Then_TheLatestTenAreKeptInOrder()
+    {
+        // Arrange - NL-1249: LND's ListPeers errors (it keeps the 10 most recent)
+        var peerService = CreatePeerService();
+        RaiseMessage(CreateInitMessage(ChainConstants.Regtest));
+
+        // Act
+        for (var i = 0; i < 11; i++)
+            RaiseMessage(new ErrorMessage(new ErrorPayload((ChannelId?)null, $"error {i}")));
+
+        // Assert
+        Assert.Equal(Enumerable.Range(1, 10).Select(i => $"error {i}"),
+                     peerService.RecentErrors.Select(e => e.Message));
+    }
+
     private static CompactPubKey CreateKey(byte fill)
     {
         var key = Enumerable.Repeat(fill, 33).ToArray();

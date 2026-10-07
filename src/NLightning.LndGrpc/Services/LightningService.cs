@@ -65,6 +65,7 @@ public sealed partial class LightningService : Lnrpc.Lightning.LightningBase
     private readonly IChannelPolicyService? _channelPolicyService;
     private readonly IRouteQueryService? _routeQuery;
     private readonly SemaphoreSlim _globalPolicyGate = new(1, 1);
+    private readonly PeerLivenessTracker _liveness;
 
     public LightningService(ILightningSigner signer, IOptions<NodeOptions> nodeOptions,
                             IServiceScopeFactory scopeFactory, IChannelMemoryRepository channels,
@@ -99,6 +100,7 @@ public sealed partial class LightningService : Lnrpc.Lightning.LightningBase
         _graphStore = graphStore;
         _graphOptions = graphOptions?.Value;
         _tcpService = tcpService;
+        _liveness = new PeerLivenessTracker(peerManager, channels, _timeProvider);
     }
 
     /// <summary>The graph snapshot, or null when the node keeps no gossip graph.</summary>

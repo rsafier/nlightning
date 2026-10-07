@@ -245,6 +245,27 @@ public class PingPongServiceTests
     }
 
     [Fact]
+    public async Task Given_AnAnsweredPing_When_Read_Then_TheRoundTripIsKnown()
+    {
+        // Arrange - NL-1249: LND's ping_time
+        var service = CreateService(TimeSpan.FromSeconds(30));
+        var pings = new List<PingMessage>();
+        service.OnPingMessageReady += (_, ping) => pings.Add((PingMessage)ping);
+        var before = service.LastRoundTrip;
+
+        // Act
+        var pingTask = service.PingAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await Task.Delay(20, TestContext.Current.CancellationToken);
+        service.HandlePong(new PongMessage(Assert.Single(pings).Payload.NumPongBytes));
+        await pingTask;
+
+        // Assert
+        Assert.Null(before);
+        Assert.NotNull(service.LastRoundTrip);
+        Assert.True(service.LastRoundTrip >= TimeSpan.FromMilliseconds(15));
+    }
+
+    [Fact]
     public async Task Given_APingInFlight_When_PingAsync_Then_ItJoinsItAndNoSecondPingGoesOut()
     {
         // Arrange - one ping at a time, so a pong is always checked against the ping it answers
