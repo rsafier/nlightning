@@ -1,8 +1,8 @@
 # Public signet Loop trial (real loopd against NLightning's LND gRPC)
 
 Date: 2026-10-06. Result: **real Lightning Labs `loopd` v0.35.0-beta runs against an NLightning node on the public
-signet and completes a Loop Out, a classic Loop In and a static-address Loop In against Lightning Labs' signet Loop
-server**. The static Loop In first failed because of an NLightning bug (NL-1233, fixed on this branch in `91759661`).
+signet and completes a Loop Out, a classic Loop In, a static-address Loop In and a cooperative static-address withdrawal
+against Lightning Labs' signet Loop server**. The static Loop In first failed because of an NLightning bug (NL-1233, fixed on this branch in `91759661`).
 
 ## Setup
 
@@ -37,14 +37,17 @@ and `0288fa27...`. Many nodes in mempool.space's signet graph are unreachable.
 | Loop Out 300,000 | **SUCCESS** | swap `5a02cb187b09acb3b40a22dfafe880792579281deead82519f5e1f924f05f757`; prepay 30,000 sat and swap payment 273,048 sat over our router; server HTLC `07c0059c...1ab0` (325268) seen by our ChainNotifier; cooperative MuSig2 sweep `a70dd6df571921b59569b713389a34f4939596c444252f32dc1a85a6c3f3a301` (325269) published through our PublishTransaction; cost server 3,048, on-chain 113 sat |
 | Static Loop In, first try (`57dc482e`) | **failed: NLightning bug NL-1233** | the server's probe HTLC (260,000,000 msat, random hash, no MPP record) was failed with `invalid_onion_payload`; LND counts only `incorrect_or_unknown_payment_details` as the destination reached, so loopd logged "Server probe error: target unreachable" and the server answered "loop in failed" |
 | Classic Loop In 250,000 | **SUCCESS** | swap `d0892d48cf9b2bd112a874b6b9b1eb82d1e9242668e6fb8351bd40c81d1a72c8`; its probe goes to a real hold invoice with a payment_secret ("Server probe successful", answered 0x400F, invoice canceled); our wallet published the HTLC `bd9e32ec0ea25b79bd03e989154f9fb3f0430cdd5b4a5d22f5e3e831ced27e47` (WalletKit SendOutputs, 144 sat fee, block 325270); the server paid our 249,482 sat invoice; server sweep `d77716af...445b` (325274); cost server 518, on-chain 144 sat. It survived a node and loopd restart in `InvoiceSettled` (20:47, the NL-1233 deploy): loopd resumed and finished |
-| Static Loop In, after the fix (`91759661`) | **SUCCEEDED** | swap `c55f5633ff3a19b30186f88185c4ff02f806515703bac9417fe00a2bb5029368`, deposit `83db4aaa...:0` `LOOPED_IN`; the server's two probes (HTLCs 3 and 4) answered `IncorrectOrUnknownPaymentDetails`; three `MuSig2Sign` sessions in our signer; the server paid our 259,932 sat invoice (HTLC 5) 1.7 s after the request; cost server 68 sat |
+| Static Loop In, after the fix (`91759661`) | **SUCCEEDED** | swap `c55f5633ff3a19b30186f88185c4ff02f806515703bac9417fe00a2bb5029368`, deposit `83db4aaa...:0` `LOOPED_IN`; the server's two probes (HTLCs 3 and 4) answered `IncorrectOrUnknownPaymentDetails`; three `MuSig2Sign` sessions in our signer; the server paid our 259,932 sat invoice (HTLC 5) 1.7 s after the request; cost server 68 sat. The server swept the deposit cooperatively in `b6a5b2a089386cde9e5009a1fcaceb52463f21f47079f52e388658a0cdaec211` (block 325276) |
+| Cooperative static withdrawal | **works** | `loop static withdraw --utxo fe528e22...:0` (deposit 2, 260,000 sat, block 325269, sent by the orchestrator from our wallet): our `SignerService` ran MuSig2Sign session `A4A742E7...` and published `f193b713ab4a748c23b78eade76ea417fe1f781413ade524ade8ae6df1463549` (key path, 112 sat fee, no wallet input) to a fresh wallet address `tb1p7r4fln0r7jkp0aq5r7gv0czn75wwzeuh9j52hctskxpknevllw9qk4qzh2` from our NewAddress; confirmed at 325276 and seen by our wallet ("Deposit detected: 0.00259888"). loopd's own fee-bump attempt `64f131df...` three seconds later was refused by bitcoind (`insufficient fee, rejecting replacement`) and is harmless. At three confirmations (325278, loopd's `MinConfs` through our ChainNotifier) the deposit is `WITHDRAWN` and `loop static listwithdrawals` shows `f193b713...`, 259,888 sat withdrawn |
 
 The first two static attempts on the fixed build (20:54, 20:55, one per deposit) were refused at once without a probe
 HTLC; ten minutes later the same request went through. The server evidently remembered the failed probe for a while.
 
-The second Loop Out (`9e8efbdf...`, 300,000 sat, sweep `85e7b6cc...` at 325275) and the second static deposit
-(`fe528e22...:0`, 260,000 sat, block 325269, still `DEPOSITED`) were made by the orchestrator to restore inbound
-liquidity and for a later test.
+**Inbound lesson.** A static (and classic) Loop In needs the server's side of our channel to hold at least the swap
+amount above its channel reserve (1 % of the capacity, 12,000 sat here): the classic Loop In paid us 249,482 sat and
+left the server only 53,567 sat, so a 260,000 sat static Loop In could not be paid until the orchestrator's second Loop
+Out (`9e8efbdf...`, 300,000 sat, sweep `85e7b6cc...` at 325275) moved liquidity back to the server's side. Plan one
+Loop Out (or other inbound) per Loop In of the same size on a single channel.
 
 ### NL-1233 (fixed in `91759661`)
 
@@ -56,9 +59,7 @@ loop-in probe, count only that error as reaching the destination. The validator 
 
 ## Not covered
 
-- The server's cooperative sweep of the looped-in deposit had not confirmed when this record was written (the server
-  batches it), so the imported output's spend was not observed yet.
-- Cooperative withdrawal and the CSV timeout sweep of a static deposit were not run on signet (regtest proofs in
+- The CSV timeout sweep of a static deposit was not run on signet (the expiry is 1,500 blocks; regtest proof in
   `LOOP_GRPC_PLAN.md`).
 - A baked least-privilege Loop macaroon was not used; loopd ran with the admin macaroon.
 
