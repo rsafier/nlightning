@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application;
 
 using Accounting;
+using Bitcoin.SilentPayments;
 using Channels.Close;
 using Channels.Close.Handlers;
 using Channels.DualFunding;
@@ -71,6 +72,7 @@ public static class DependencyInjection
     /// </remarks>
     public static IServiceCollection AddApplicationServices(this IServiceCollection services)
     {
+        services.AddSilentPaymentApplicationServices();
         // Domain services that have no DI of their own
         services.AddSingleton<IChannelOpenValidator>(sp =>
         {

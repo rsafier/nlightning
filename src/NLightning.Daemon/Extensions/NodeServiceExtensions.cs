@@ -277,6 +277,7 @@ public static class NodeServiceExtensions
         services.AddOperatorIpcServices();
         // On-chain withdraw (wave m6 W1, ClientCommand 25)
         services.AddWithdrawIpcServices();
+        services.AddSilentPaymentIpcServices();
 
         // Cashu plan C1 (NL-992): the CDK payment processor (Cashu:PaymentProcessor, off by default)
         services.AddCashuPaymentProcessor(configuration);
@@ -388,6 +389,17 @@ public static class NodeServiceExtensions
                      if (errors.Count > 0)
                          throw new OptionsValidationException("FeeEstimation", typeof(FeeEstimationOptions), errors);
 
+                     return true;
+                 })
+                .ValidateOnStart();
+        services.AddOptions<SilentPaymentsOptions>()
+                .BindConfiguration(SilentPaymentsOptions.SectionName)
+                .Validate(options =>
+                 {
+                     var network = configuration["Node:Network"] ?? "mainnet";
+                     var errors = options.GetValidationErrors(string.Equals(network, "mainnet", StringComparison.OrdinalIgnoreCase));
+                     if (errors.Count > 0)
+                         throw new OptionsValidationException(SilentPaymentsOptions.SectionName, typeof(SilentPaymentsOptions), errors);
                      return true;
                  })
                 .ValidateOnStart();

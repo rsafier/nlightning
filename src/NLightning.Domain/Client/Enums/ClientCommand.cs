@@ -4,7 +4,7 @@ namespace NLightning.Domain.Client.Enums;
 /// Commands sent by a client.
 /// </summary>
 /// <remarks>
-/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 52.
+/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 56.
 /// </remarks>
 public enum ClientCommand
 {
@@ -141,5 +141,10 @@ public enum ClientCommand
     /// Cancels a hold invoice (NL-995, <c>cancelholdinvoice</c>): a held set's parts are failed back and the invoice
     /// is <c>Canceled</c>; an open one is simply canceled.
     /// </summary>
-    CancelHoldInvoice = 51
+    CancelHoldInvoice = 51,
+
+    GetSilentPaymentAddress = 52,
+    SilentPaymentLabels = 53,
+    SilentPaymentRescan = 54,
+    SilentPaymentStatus = 55
 }

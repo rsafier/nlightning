@@ -139,7 +139,18 @@ internal static class ClientApp
                     var balance = await client.GetWalletBalance(cancellationToken);
                     new WalletBalancePrinter().Print(balance);
                     break;
-                case "withdraw":
+                case "getspaddress":
+                case "splabels":
+                case "sprescan":
+                case "spstatus":
+                    await SilentPaymentCommands.RunAsync(cmd, commandArgs, client, cancellationToken);
+                    break;
+                case "getspaddress":
+            case "splabels":
+            case "sprescan":
+            case "spstatus":
+                return SilentPaymentCommands.Validate(cmd, commandArgs);
+            case "withdraw":
                 case "send-coins":
                 case "sendcoins":
                     var withdrawArgs = ParseWithdrawOptions(commandArgs, out _)!;

@@ -30,6 +30,7 @@ using Services;
 using Signers;
 using Wallet;
 using Wallet.Interfaces;
+using Wallet.SilentPayments;
 
 /// <summary>
 /// Extension methods for setting up Bitcoin infrastructure services in an IServiceCollection.
@@ -43,6 +44,7 @@ public static class DependencyInjection
     /// <returns>The same service collection so that multiple calls can be chained.</returns>
     public static IServiceCollection AddBitcoinInfrastructure(this IServiceCollection services)
     {
+        services.AddSilentPaymentBitcoinServices();
         services.AddOptions<KeyRing.KeyRingOptions>();
         services.AddSingleton<KeyRing.KeyRingService>();
         services.AddSingleton<KeyRing.SwapSigner>();

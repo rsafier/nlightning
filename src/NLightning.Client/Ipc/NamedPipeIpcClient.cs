@@ -437,6 +437,15 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// <param name="satPerVbyte">The fee rate in sat/vB; null for the node's estimate.</param>
     /// <param name="ct">Cancels the call.</param>
     /// <param name="labels">The operator's label and tags (NL-602 A3-T1), or null for none.</param>
+    public Task<SilentPaymentIpcResponse> SilentPaymentAsync(ClientCommand command, SilentPaymentIpcRequest request,
+                                                              CancellationToken ct = default)
+    {
+        if (command is not (ClientCommand.GetSilentPaymentAddress or ClientCommand.SilentPaymentLabels
+            or ClientCommand.SilentPaymentRescan or ClientCommand.SilentPaymentStatus))
+            throw new ArgumentOutOfRangeException(nameof(command));
+        return SendRequestAsync<SilentPaymentIpcRequest, SilentPaymentIpcResponse>(command, request, ct);
+    }
+
     public Task<WithdrawIpcResponse> WithdrawAsync(string address, ulong? amountSat, ulong? satPerVbyte,
                                                    CancellationToken ct = default, LabelArguments? labels = null)
     {
