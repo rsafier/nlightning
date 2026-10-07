@@ -189,10 +189,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 0 | 96 | 96 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 70 | 242 | 502 | 829 |
+| fixed | 15 | 70 | 242 | 503 | 830 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **70** | **258** | **621** | **964** |
+| **Total** | **15** | **70** | **258** | **622** | **965** |
 
 ### Epics
 
@@ -10161,4 +10161,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** `LND_TOOLS_COMPAT.md` (2026-10-07): bos `chart-chain-fees` and `accounting chain-fees`/`chain-receives`/`chain-sends`/`invoices`/`payments` fail with `UnexpectedGetSweepTxError` (ln-service `getSweepTransactions` → `walletrpc.ListSweeps` UNIMPLEMENTED); `PendingSweeps` (ln-service `getPendingSweeps`) unimplemented too.
 - **Fix:** `ListSweeps`: the `BroadcastTransactions` rows of every channel with a recorded close plus the pending rows whose purpose is one LND's sweeper publishes (Sweep, HtlcTransaction, HtlcClaim, Penalty, AnchorCpfp, AnchorSweep), replaced and abandoned attempts left out; `start_height` keeps the sweeps confirmed at or above it plus the unconfirmed ones, -1 only the unconfirmed ones; not verbose: the txids in display order; verbose: `GetTransactions`' wallet history filtered to those txids (LND reads its wallet's history the same way, so a sweep that moved no wallet output is listed only by txid). `PendingSweeps`: every output of a closed channel still Pending/Waiting/Broadcast that is ours to take, with LND's witness type for its descriptor (to_local `COMMITMENT_TIME_LOCK`, to_remote `COMMITMENT_TO_REMOTE_CONFIRMED` on anchors else `COMMITMENT_NO_DELAY_TWEAKLESS`, our commitment's HTLCs the second-level types, the peer's HTLCs `HTLC_OFFERED_REMOTE_TIMEOUT`/`HTLC_ACCEPTED_REMOTE_SUCCESS`, revoked outputs the revoke types, our anchor `COMMITMENT_ANCHOR`), amount, `broadcast_attempts` (1 once its transaction is out), that transaction's feerate as `sat_per_vbyte`, `deadline_height`, `maturity_height`. Not distinguished: the taproot witness types; `budget`, `immediate` and `requested_sat_per_vbyte` stay 0. Permission entries (onchain read) already existed.
 - **Validation (2026-10-07):** `LndGrpcWave3HostTests.Sweeps.cs` (2: a confirmed sweep, a pending penalty, a replaced attempt and a commitment, listed plain, unconfirmed-only and verbose; a waiting to_local and a broadcast HTLC claim listed with their witness types, maturity, deadline and feerate, a resolved and a peer output left out). LndGrpc.Tests green on net10.0.
+- **Blocks/Blocked-by:** none
+
+### NL-1246 LND gRPC: `GetNetworkInfo` unimplemented (RTL calls it on every page)
+- **Status:** fixed (pending pin)
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `src/NLightning.LndGrpc/Services/LightningService.NetworkInfo.cs`, `test/NLightning.LndGrpc.Tests/Mapping/NetworkInfoTests.cs`
+- **Evidence:** `LND_TOOLS_COMPAT.md` (2026-10-07): RTL's app init and Network page call `GET /v1/graph/info` → `lnrpc.GetNetworkInfo`, UNIMPLEMENTED (a 501 toast on every page, three errors on the Network page).
+- **Fix:** computed from the gossip graph snapshot as LND's `rpcserver.GetNetworkInfo`: nodes = every announced node and channel end; channels = the unspent channels that are not zombies, each counted once with its funding capacity (the estimate when it was not looked up); out degree per node = its channels, `max_out_degree`, `avg_out_degree` = 2 x channels / nodes; `total_network_capacity`, min/max/avg channel size and the median (the mean of the two middle values for an even count, as LND's `autopilot.Median`); `num_zombie_chans` = channels with a policy past the stale rule (`Gossip:StaleAfter`, LND marks those zombies and drops them from the other figures); `graph_diameter` 0 (not computed). No graph: `UNAVAILABLE`, as `DescribeGraph`. The macaroon entry (info read) already existed.
+- **Validation (2026-10-07):** `Mapping/NetworkInfoTests` (live, zombie and spent channels; an even-count median; an empty graph). LndGrpc.Tests green on net10.0.
 - **Blocks/Blocked-by:** none
