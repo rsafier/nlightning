@@ -110,6 +110,7 @@ public sealed class SilentPaymentScanner(IBlockPrevoutSource prevouts, ISilentPa
             for (uint label = 1; label <= labelCount; label++)
                 labelPoints[label] = GetLabelPoint(label);
             foreach (var label in labels) labelPoints[label.M] = GetLabelPoint(label.M);
+            var scanContext = crypto.PrepareScanContext(labelPoints);
             for (var index = 0; index < eligible.Length; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -123,7 +124,10 @@ public sealed class SilentPaymentScanner(IBlockPrevoutSource prevouts, ISilentPa
                         .Where(x => IsTaproot(x.output.ScriptPubKey.ToBytes()))
                         .Select(x => new SilentPaymentScanCandidate((uint)x.outputIndex,
                             x.output.ScriptPubKey.ToBytes().AsSpan(2).ToArray())).ToArray();
-                    foreach (var match in crypto.Scan(shared, keys.SpendPubKey, candidates, labelPoints))
+                    var discovered = scanContext is null
+                        ? crypto.Scan(shared, keys.SpendPubKey, candidates, labelPoints)
+                        : crypto.ScanPrepared(shared, keys.SpendPubKey, candidates, scanContext);
+                    foreach (var match in discovered)
                     {
                         var amount = transaction.Outputs[(int)match.OutputIndex].Value.Satoshi;
                         var ignored = amount < _options.MinReceiveSat;

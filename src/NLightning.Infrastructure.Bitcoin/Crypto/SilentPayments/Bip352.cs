@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Frozen;
 using System.Security.Cryptography;
 using NBitcoin.Secp256k1;
 
@@ -172,18 +173,26 @@ internal static class Bip352
 
     public static byte[] AddPublicTweak(ReadOnlySpan<byte> key, ReadOnlySpan<byte> tweak) => Compressed(AddTweak(Point(key), tweak));
 
-    public static IReadOnlyList<SilentPaymentScanMatch> Scan(ReadOnlySpan<byte> sharedSecret, CompactPubKey spendKey,
-        IReadOnlyList<SilentPaymentScanCandidate> candidates, IReadOnlyDictionary<uint, CompactPubKey>? labelPoints = null)
+    internal static IReadOnlyDictionary<string, uint> PrepareLabelLookup(IReadOnlyDictionary<uint, CompactPubKey>? labelPoints)
     {
-        var spend = Point(spendKey);
         var labels = new Dictionary<string, uint>(StringComparer.Ordinal);
         if (labelPoints is not null)
-            foreach (var (label, point) in labelPoints)
+            foreach (var (label, key) in labelPoints)
             {
-                _ = Point(point);
-                if (!labels.TryAdd(Convert.ToHexString((byte[])point), label))
+                // Serialize the parsed point rather than retaining the caller's mutable CompactPubKey array.
+                var point = Point(key);
+                if (!labels.TryAdd(Convert.ToHexString(Compressed(point)), label))
                     throw new ArgumentException("Duplicate label points.");
             }
+        return labels.ToFrozenDictionary(StringComparer.Ordinal);
+    }
+
+    public static IReadOnlyList<SilentPaymentScanMatch> Scan(ReadOnlySpan<byte> sharedSecret, CompactPubKey spendKey,
+        IReadOnlyList<SilentPaymentScanCandidate> candidates, IReadOnlyDictionary<uint, CompactPubKey>? labelPoints = null,
+        IReadOnlyDictionary<string, uint>? preparedLabels = null)
+    {
+        var spend = Point(spendKey);
+        var labels = preparedLabels ?? PrepareLabelLookup(labelPoints);
         var remaining = new List<(SilentPaymentScanCandidate candidate, GE point)>();
         foreach (var candidate in candidates)
         {
