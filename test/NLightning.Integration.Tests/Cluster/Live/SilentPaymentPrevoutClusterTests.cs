@@ -154,6 +154,37 @@ public sealed class SilentPaymentPrevoutClusterTests
         Log($"CAPTURE core31-rest {Convert.ToBase64String(await response.Content.ReadAsByteArrayAsync(ct))}");
     }
 
+    [Fact(Explicit = true)]
+    public async Task Given_PrunedCore_When_RecoveryStartsBelowPruneFloor_Then_ItRefusesBeforeScanning()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var run = await TestRun.StartAsync(TestRunOptions.FromEnvironment("sp-pruned"), ct);
+        var miner = await BitcoinCoreNode.DeployAsync(run, new BitcoinCoreOptions
+        {
+            Image = ImageVersions.BitcoinCore31,
+            Storage = NodeStorage.Ephemeral,
+            TxIndex = false,
+            // Core's regtest-only fast-prune option uses small block files, so this needs no 550 MB fixture.
+            ExtraArgs = ["-rest", "-prune=550", "-fastprune=1"]
+        }, TimeSpan.FromMinutes(4), ct);
+        await miner.ConnectRpcAsync(RpcRoute.PodIp, ct);
+        var core = miner.CreateNBitcoinClient(RpcRoute.PodIp);
+        var node = miner.CreateNBitcoinClient(RpcRoute.PodIp, string.Empty);
+        var address = await core.GetNewAddressAsync(ct);
+        await core.GenerateToAddressAsync(1_001, address, ct);
+        var oldHash = await node.GetBlockHashAsync(10, ct);
+        await node.SendCommandAsync(ct, "pruneblockchain", 700);
+        var info = (await node.SendCommandAsync(ct, "getblockchaininfo")).Result;
+        Assert.True((bool)info["pruned"]!);
+        Assert.True((uint)info["pruneheight"]! > 10);
+        var unavailable = await Assert.ThrowsAsync<NBitcoin.RPC.RPCException>(() => node.GetBlockAsync(oldHash, ct));
+        Assert.Contains("pruned", unavailable.Message, StringComparison.OrdinalIgnoreCase);
+        var source = CreateSource(miner, SilentPaymentPrevoutSource.Auto);
+        var refusal = await Assert.ThrowsAsync<InvalidOperationException>(() => source.ValidateHeightAsync(10, ct));
+        Assert.Contains("pruned", refusal.Message);
+        Log($"SOURCE pruned refusal: pruneheight {info["pruneheight"]}, old block 10 rejected before recovery writes.");
+    }
+
     private static BlockPrevoutSource CreateSource(BitcoinCoreNode node, SilentPaymentPrevoutSource kind) => new(
         new OptionsWrapper<BitcoinOptions>(new BitcoinOptions
         {
