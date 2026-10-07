@@ -1,6 +1,7 @@
 # PAYROUTE_PLAN — full IPC control over the payment path (`payroute`, NL-1082)
 
-Status: Phase A + B implemented on `wip/payroute` (from `wip/fafo` at `b6adfa2e`, 2026-10-05).
+Status: Phase A + B implemented on `wip/payroute` (from `wip/fafo` at `b6adfa2e`, 2026-10-05); phase C (attach
+routes to an in-flight payment, NL-1276) on `wip/u-nl1276` (2026-10-07), record in §6.
 
 The IPC client can pay over exactly the routes it supplies — a single route or an MPP shard
 set — with the daemon never re-planning. This plan records the design (approved 2026-10-05),
@@ -17,7 +18,8 @@ the as-built state and the edge-case catalog.
   `SendToRoute` form; with no secret the final hop carries the all-zero secret — documented).
 - **One call = one attempt**: N routes = N HTLCs offered immediately, sequentially. A later
   call for the same invoice replaces the failed row (existing semantics). Attaching shards to
-  a still-in-flight manual payment is Phase C (deferred, §6).
+  a still-in-flight manual payment is Phase C (§6): `payroute --attach` (ClientCommand 56) and LND's
+  `SendToRouteV2` with the hash of a payment in flight.
 - Everything downstream of planning is reused verbatim: `PaymentOnionFactory` (fresh session
   key per shard — the receiver's per-HTLC replay store is never hit), `OfferHtlcAsync`, part
   persistence (NL-321), outcome handling, restart reconciliation, accounting/labels.
@@ -84,7 +86,7 @@ response.
 | Edge | Resolution |
 |---|---|
 | Shard fails while siblings held at payee | No retry; payment waits; all resolved w/o fulfill → Failed (held ones fail `mpp_timeout` at the payee and decrypt as such — pinned by `PayRouteTests` test 7 with per-route attribution). Client re-calls with a replacement set → replaces the failed row (test 8). |
-| Payee's 60 s `mpp_timeout` window | All shards offered in one call, sequentially — inside the window by construction. Phase C attach must beat the timer (documented). |
+| Payee's 60 s `mpp_timeout` window | All shards offered in one call, sequentially — inside the window by construction. A phase C attach must come within `Node:Payments:PayRouteAttachWindow` (60 s) of the oldest part still in flight, else it is refused as too late (§6). |
 | Same channel on multiple shards | Allowed; the liquidity estimator sums them; pinned by test 6 (two shards over one channel). |
 | Duplicate route reuse across shards | Allowed; fresh onion per shard (factory session keys). |
 | Shard-set settle atomicity vs outcomes | When the payment succeeds, every offered route was fulfilled by the payee, also the ones whose fulfill arrived after the session completed: they report Succeeded and their stored part rows are settled (`SettleLeftoverPartRowsAsync`). |
@@ -113,14 +115,67 @@ response.
   only hop IS the payee (no first-hop CLTV lowering), and getroute's final hop names its
   incoming channel while payroute's final hop omits the scid.
 
-## 6. Phase C — deferred (design only)
+## 6. Phase C — attach routes to an in-flight payment (NL-1276, as built)
 
-`payroute --attach <payment-hash>`: add replacement shards to a still-in-flight manual
-payment (same secret/total), useful when one shard failed while siblings are held at the
-payee and the 60 s window is still open. Needs session-lookup-by-hash for an open manual
-session, additive `SuppliedRoutes`, and a linger rule (keep the session open until deadline
-or an explicit done). Deliberately gated on A/B learnings.
+Useful when one shard failed while the payee holds the others and its `mpp_timeout` window is still open: the
+caller replaces the failed shard without giving up the held ones. Built on `wip/u-nl1276` (a8d67864, 2026-10-07).
+
+- **Surfaces.** `PayRouteRequest.Attach` (`PayRouteAttachMode`: `Never` (default, phase A/B: refused while a
+  payment of the hash is in flight), `Required` (attach only), `IfInFlight` (attach when a payroute session of
+  the hash is open, else start one)) and `PayRouteRequest.IndependentShards` (LND form, below).
+  - IPC: `ClientCommand.PayRouteAttach = 56` (52-55 are reserved for the silent payments commands,
+    `SILENT_PAYMENTS_PLAN.md` §3.9), request `PayRouteAttachIpcRequest` (keys 0-6 as `PayRouteIpcRequest`'s
+    0-6; no label or tags: the row keeps the first call's), response `PayRouteIpcResponse`; client handler
+    `PayRouteAttachClientHandler` (mapped by `PayRouteClientHandler` with `Required`), IPC handler
+    `PayRouteAttachIpcHandler`, refused while draining. CLI: `nltg payroute ... --attach` (a flag; `--label`/`--tag`
+    refused with it).
+  - LND: `routerrpc.SendToRouteV2` sends every call as `IfInFlight` + `IndependentShards`, so an MPP set sent over
+    several calls (ln-service's multi-path pay sends shards in parallel and replaces a failed one) joins the
+    payroute payment of the hash, as LND registers each call as one more attempt of the payment.
+- **Service** (`PaymentService.PayRoute.cs`). The stateless validation of §3 runs first (shape, first hops, CLTV,
+  policies, liquidity of the call's routes on our channels as they are now, in-flight HTLCs included); then, under
+  the payment hash's lock, `StartOrAttachPayRouteAsync` attaches to the registered session or starts one.
+  `AttachPayRouteLockedAsync` checks, nothing offered on a refusal:
+  - the session is a payroute (`ManualRoutes`) session, not keysend (else `InvalidOperationException`);
+  - the same payment secret (the invoice's, or the raw form's; null is the all-zero secret), the same total and
+    the same payee as the session's; at most 256 parts in the session (the part-row index is a byte);
+  - `Required` only: the oldest part still in flight was offered at most `Node:Payments:PayRouteAttachWindow`
+    (`PaymentSendOptions.PayRouteAttachWindow`, default 60 s, BOLT 4's `mpp_timeout`) ago ("Too late");
+  - delivery: with the parts in flight the routes deliver at least the total (`Required`; a replacement that leaves
+    the set short would only be failed by the payee's timer) or at most the total (`IndependentShards`: LND's
+    "attempted value exceeds payment amount");
+  - fees: the parts in flight plus the routes within `MaxFee ??` the session's limit.
+  Nothing in flight: `Required` is refused (`InvalidOperationException`: "already succeeded" for a settled payment,
+  else "No payroute payment ... in flight"); `IfInFlight` starts a session (the failed row is replaced, phase A).
+  The attached round is one more `RunManualRoundAsync` (onions, the row kept as the parts are in flight, offers in
+  order); the session's limits, fee accounting (`RecordedFeesInFlightMsat` at the fulfill), `MovePrimaryPartAsync`
+  and the no-retry rule are unchanged.
+- **Linger rule.** None: a session lives exactly as long as one of its parts is in flight (a session without one is
+  decided and removed under the hash's lock, so an attach that finds it registered always joins live parts). When
+  every part has failed, the payee holds nothing any more, so a new call without `--attach` (or an LND shard) starts
+  a new attempt over the failed row, which the payee treats the same. A restart ends every session (memory only):
+  an attach after it is refused, and the parts in flight are reconciled as before (NL-321).
+- **Answers.** Every call reports only its own routes (`RouteOutcome.Index` within the call; a route left unoffered
+  after an offer of unknown outcome is reported failed). A `Never`/`Required` call waits for the payment's outcome
+  (its timeout); an `IndependentShards` call answers once its own parts are resolved (`PaymentSession.
+  WhenPartsResolvedAsync`, woken by `SignalPartsChanged` on every part failure and by the session's end), so a
+  failed shard is answered at once while its siblings stay held, and a held shard answers when the payee settles or
+  fails the set.
+- **Proofs** (in-process, real crypto and onions): `Application.Tests/Payments/Send/PayRouteTests.Attach.cs` (5):
+  one shard failed at Carol and one held, a replacement attached completes the set (each call reports its own
+  routes; the money moves once); refusals before anything is offered (another secret, another total, short of the
+  total, nothing in flight, past the window); a settled payment refused; an attached replacement that fails too,
+  then the payee's `mpp_timeout` (per-route attribution: Carol at index 0 on both failed shards, the payee at index 1
+  on the held one); the LND form (one shard per call, a failed shard answered at once with Carol's failure while
+  the other is held, an over-total shard refused, the replacement settling the set).
+  `LndGrpc.Tests/LndGrpcHostTests.SendToRouteShards.cs` (3): two parallel `SendToRouteV2` shards of one hash both
+  reach payroute as attachable shards with the mpp record and each answers its own HTLC (the failed one at LND's
+  index), a refused attach is `InvalidArgument`, a settled payment `FailedPrecondition`.
+  `Daemon.Tests/Ipc/Handlers/PayRouteAttachIpcHandlerTests` (5): the request over MessagePack to `Required`, the
+  refusals as `invalid_operation`, ClientCommand 56 and the drain refusal, the wire layout and the CLI flag.
+- **Not done.** No cluster proof against LND's own multi-path `SendToRouteV2` client (bos/ln-service); a cluster run
+  of `PayRouteFlowTests` is unchanged by this work.
 
 ## 7. Ledger
 
-NL-1082 (epic), NL-1083 (the implementation: service, IPC, CLI, tests).
+NL-1082 (epic), NL-1083 (the implementation: service, IPC, CLI, tests), NL-1276 (phase C).
