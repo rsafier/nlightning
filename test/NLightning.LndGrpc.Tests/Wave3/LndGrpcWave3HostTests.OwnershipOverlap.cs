@@ -51,10 +51,10 @@ public sealed partial class LndGrpcWave3HostTests
         // Act
         var response = await connection.LightningClient.GetTransactionsAsync(new GetTransactionsRequest(), cancellationToken: Ct);
         // Assert
-        var receipt = Assert.Single(response.Transactions.Where(t => t.TxHash == depositId.ToString()));
+        var receipt = Assert.Single(response.Transactions, t => t.TxHash == depositId.ToString());
         Assert.Equal(30_000, receipt.Amount);
         Assert.Equal(2, receipt.OutputDetails.Count(o => o.IsOurAddress));
-        var payment = Assert.Single(response.Transactions.Where(t => t.TxHash == spendId.ToString()));
+        var payment = Assert.Single(response.Transactions, t => t.TxHash == spendId.ToString());
         Assert.Equal(-11_000, payment.Amount);
         Assert.Equal(1_000, payment.TotalFees);
         Assert.Equal(2, payment.PreviousOutpoints.Count);
@@ -86,7 +86,7 @@ public sealed partial class LndGrpcWave3HostTests
         // Assert
         Assert.Equal(2, response.Utxos.Count);
         Assert.Equal(30_000, response.Utxos.Sum(u => u.AmountSat));
-        Assert.Single(response.Utxos.Where(u => u.Outpoint.OutputIndex == 0));
+        Assert.Single(response.Utxos, u => u.Outpoint.OutputIndex == 0);
     }
 
     private void SetImportedBlock(Script canonical, Script imported, params NBitcoin.Transaction[] transactions)

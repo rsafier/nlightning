@@ -50,7 +50,7 @@ public partial class WalletSpendServiceTests
         // Assert
         var tx = AssertPublishedAndValid(first, second);
         Assert.Equal("51203e9fce73d4e77a4809908e3c3a2e54ee147b9312dc5044a193d1fc85de46e3c1",
-                     Convert.ToHexStringLower(Assert.Single(tx.Outputs.Where(o => o.Value.Satoshi == 300_000)).ScriptPubKey.ToBytes()));
+                     Convert.ToHexStringLower(Assert.Single(tx.Outputs, o => o.Value.Satoshi == 300_000).ScriptPubKey.ToBytes()));
         Assert.Equal(300_000, result.Amount.Satoshi);
         Assert.Equal(300_000, tx.Outputs[(int)result.DestinationOutputIndex].Value.Satoshi);
         Assert.All(tx.Outputs, output => Assert.Equal(34, output.ScriptPubKey.Length));
@@ -70,11 +70,11 @@ public partial class WalletSpendServiceTests
             LightningMoney.Satoshis(FeeRatePerKw), cancellationToken: TestContext.Current.CancellationToken);
         // Assert
         var tx = AssertPublishedAndValid(coin.TxOut);
-        Assert.Equal(s_destination.ScriptPubKey, Assert.Single(tx.Outputs.Where(o => o.Value.Satoshi == 30_000)).ScriptPubKey);
-        Assert.NotEqual(Assert.Single(tx.Outputs.Where(o => o.Value.Satoshi == 20_000)).ScriptPubKey,
-                        Assert.Single(tx.Outputs.Where(o => o.Value.Satoshi == 40_000)).ScriptPubKey);
+        Assert.Equal(s_destination.ScriptPubKey, Assert.Single(tx.Outputs, o => o.Value.Satoshi == 30_000).ScriptPubKey);
+        Assert.NotEqual(Assert.Single(tx.Outputs, o => o.Value.Satoshi == 20_000).ScriptPubKey,
+                        Assert.Single(tx.Outputs, o => o.Value.Satoshi == 40_000).ScriptPubKey);
         Assert.All(new long[] { 20_000, 30_000, 40_000 }, amount =>
-            Assert.Single(tx.Outputs.Where(o => o.Value.Satoshi == amount)));
+            Assert.Single(tx.Outputs, o => o.Value.Satoshi == amount));
     }
 
     [Fact]
@@ -164,7 +164,7 @@ public partial class WalletSpendServiceTests
         var key = new Key(Convert.FromHexString(privateKey));
         var address = key.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
         _keyManager.Setup(k => k.GetDepositP2WpkhKeyAtIndex(index, false))
-                   .Returns(new ExtKey(key, new byte[32]).ToBytes());
+                   .Returns(() => new ExtKey(key, new byte[32]).ToBytes());
         var outpoint = new OutPoint(uint256.Parse(txid), 0);
         var model = new UtxoModel(new TxId(outpoint.Hash.ToBytes()), 0, LightningMoney.Satoshis(200_000), Height,
             new WalletAddressModel(AddressType.P2Wpkh, index, false, address.ToString()));

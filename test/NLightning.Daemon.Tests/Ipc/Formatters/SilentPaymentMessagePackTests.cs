@@ -22,8 +22,8 @@ public class SilentPaymentMessagePackTests
             [new SilentPaymentLabelInfo(7, "store", 10, "sprt1qlabel"),
              new SilentPaymentLabelInfo(0, "change", 10, "sprt1qchange", true)], status));
         // Act
-        var bytes = MessagePackSerializer.Serialize(wire, NLightningMessagePackOptions.Options);
-        var restored = MessagePackSerializer.Deserialize<SilentPaymentIpcResponse>(bytes, NLightningMessagePackOptions.Options);
+        var bytes = MessagePackSerializer.Serialize(wire, NLightningMessagePackOptions.Options, TestContext.Current.CancellationToken);
+        var restored = MessagePackSerializer.Deserialize<SilentPaymentIpcResponse>(bytes, NLightningMessagePackOptions.Options, TestContext.Current.CancellationToken);
         // Assert
         Assert.Equal(("sprt1qaddress", (uint?)7, "store", true),
             (restored.Address, restored.Label, restored.LabelName, restored.RecoverableElsewhere));
@@ -47,8 +47,8 @@ public class SilentPaymentMessagePackTests
         // Arrange
         var request = new SilentPaymentIpcRequest { Label = "store", FromHeight = 123, RecoveryLabels = 100, Cancel = true };
         // Act
-        var bytes = MessagePackSerializer.Serialize(request, NLightningMessagePackOptions.Options);
-        var restored = MessagePackSerializer.Deserialize<SilentPaymentIpcRequest>(bytes, NLightningMessagePackOptions.Options)
+        var bytes = MessagePackSerializer.Serialize(request, NLightningMessagePackOptions.Options, TestContext.Current.CancellationToken);
+        var restored = MessagePackSerializer.Deserialize<SilentPaymentIpcRequest>(bytes, NLightningMessagePackOptions.Options, TestContext.Current.CancellationToken)
             .ToClientRequest(ClientCommand.SilentPaymentRescan);
         // Assert
         Assert.Equal((ClientCommand.SilentPaymentRescan, "store", (uint?)123, (uint?)100, true),
