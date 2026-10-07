@@ -35,7 +35,8 @@ public partial class WalletPsbtServiceTests
         var retained = record;
         if (projected)
             record = WalletTransactionHistory.Describe(spend, record.BlockHeight, record.BlockHash,
-                record.Timestamp, record.OurOutputs, record.OurInputs) with { RawTransaction = [] };
+                record.Timestamp, record.OurOutputs, record.OurInputs) with
+            { RawTransaction = [] };
         history.Setup(h => h.GetByIdsAsync(It.IsAny<IReadOnlyCollection<TxId>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([retained]);
         history.Setup(h => h.GetHistoryPageAsync(0, It.IsAny<uint>(), false, 0, 128, It.IsAny<CancellationToken>()))
