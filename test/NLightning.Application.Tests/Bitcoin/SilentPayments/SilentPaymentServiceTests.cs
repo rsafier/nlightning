@@ -14,6 +14,7 @@ using MsOptions = Microsoft.Extensions.Options.Options;
 namespace NLightning.Application.Tests.Bitcoin.SilentPayments;
 
 using Application.Bitcoin.SilentPayments;
+using Domain.Accounting.Books;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
 using Domain.Bitcoin.Enums;
@@ -163,6 +164,14 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         Assert.All(events, fact => Assert.Equal("silent_payment", fact.Details["receiptSource"]));
         Assert.Equal(AccountingDetailKeys.ExternalSource, events.Single(fact => fact.Kind == AccountingEventKind.WalletReceived &&
             fact.TxId == new TxId(held.Hash.ToBytes())).Details[AccountingDetailKeys.Source]);
+        var settlements = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wsend:", TestContext.Current.CancellationToken);
+        var settlement = Assert.Single(settlements);
+        Assert.Equal(-10_000_000L, settlement.AmountMsat);
+        Assert.Equal(10_000_000L, settlement.FeeMsat);
+        Assert.Equal("true", settlement.Details["purposeUnknown"]);
+        AssertRecoveredBooks(events.Concat(settlements), 30_000_000, -50_000_000, 10_000_000, 10_000_000);
+        Assert.False(await restarted.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        Assert.Single(await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wsend:", TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -191,6 +200,37 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         Assert.Equal(2, events.Count);
         Assert.Equal(0, events.Sum(fact => fact.AmountMsat));
         Assert.Equal(_blocks[5].Header.BlockTime, events.Single(fact => fact.Kind == AccountingEventKind.WalletOutputSpent).OccurredAt);
+        var settlements = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wsend:", TestContext.Current.CancellationToken);
+        var settlement = Assert.Single(settlements);
+        Assert.Equal(_blocks[5].Header.BlockTime, settlement.OccurredAt);
+        AssertRecoveredBooks(events.Concat(settlements), 0, -21_000_000, 10_000_000, 11_000_000);
+    }
+
+    [Fact]
+    public async Task Given_HistoricalSpendWithUnknownSharedInput_When_Recovered_Then_AccountingAndCursorFailAtomically()
+    {
+        // Arrange: neither a reusable-address label nor one owned input proves ownership of the whole transaction.
+        var receipt = AddReceipt(1, 20_000);
+        AddSpend(2, receipt);
+        _blocks[2].Transactions.Last().Inputs.Add(new TxIn(new OutPoint(new uint256(12345), 0)));
+        _blocks[2].UpdateMerkleRoot();
+        using var service = CreateService();
+        await service.GetAddressAsync(cancellationToken: TestContext.Current.CancellationToken);
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+        Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+
+        // Act
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+
+        // Assert: no fabricated withdrawal/fee, no spent marker, no cursor advance or selectable historical coin.
+        Assert.Contains("provenance", error.Message);
+        using var scope = _provider.CreateScope();
+        var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        Assert.Equal(1u, (await uow.SilentPaymentDbRepository.GetScanStateAsync(TestContext.Current.CancellationToken))!.RescanCursorHeight);
+        Assert.Null(Assert.Single(await uow.SilentPaymentDbRepository.GetOutputsAsync(TestContext.Current.CancellationToken)).SpentByTransactionId);
+        Assert.Empty(await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wsend:", TestContext.Current.CancellationToken));
+        Assert.Single(await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wallet:", TestContext.Current.CancellationToken));
+        Assert.Empty(await UnspentAsync());
     }
 
     [Fact]
@@ -471,11 +511,24 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
             _unspent[new OutPoint(transaction.GetHash(), index)] = (transaction.Outputs[(int)index], height);
     }
 
+    private static void AssertRecoveredBooks(IEnumerable<Domain.Accounting.Models.AccountingEventModel> facts,
+        long wallet, long transfersIn, long transfersOut, long fees)
+    {
+        var balances = facts.SelectMany(fact => AccountingPostingRules.Post(fact, _ => null))
+            .GroupBy(posting => posting.Account).ToDictionary(group => group.Key, group => group.Sum(posting => posting.AmountMsat));
+        Assert.Equal(wallet, balances.GetValueOrDefault(AccountRole.Wallet));
+        Assert.Equal(0L, balances.GetValueOrDefault(AccountRole.Clearing));
+        Assert.Equal(transfersIn, balances.GetValueOrDefault(AccountRole.TransfersIn));
+        Assert.Equal(transfersOut, balances.GetValueOrDefault(AccountRole.TransfersOut));
+        Assert.Equal(fees, balances.GetValueOrDefault(AccountRole.FeeWithdraw));
+        Assert.Equal(0L, balances.Values.Sum());
+    }
+
     private void AddSpend(uint height, OutPoint point)
     {
         var transaction = Transaction.Create(Network.RegTest);
         transaction.Inputs.Add(new TxIn(point));
-        transaction.Outputs.Add(new TxOut(Money.Satoshis(10_000), Script.Empty));
+        transaction.Outputs.Add(new TxOut(Money.Satoshis(Math.Min(10_000, _unspent[point].Output.Value.Satoshi - 1)), Script.Empty));
         _blocks[height].Transactions.Add(transaction);
         _blocks[height].UpdateMerkleRoot();
         _unspent.Remove(point);
