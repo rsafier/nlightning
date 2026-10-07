@@ -1,6 +1,5 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using NBitcoin;
 
 namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet.SilentPayments;
@@ -104,7 +103,7 @@ public class SilentPaymentScannerTests
         var given = Vectors[0].GetProperty("receiving")[0].GetProperty("given");
         var (block, previous) = CreateBlock(given);
         var inputList = previous.Values.Single().ToArray();
-        inputList[0] = new BitcoinPrevout(10_000, new byte[] { 0x52, 0x20, .. new byte[32] });
+        inputList[0] = new BitcoinPrevout(10_000, (byte[])[0x52, 0x20, .. new byte[32]]);
         previous = new Dictionary<TxId, IReadOnlyList<BitcoinPrevout>> { [previous.Keys.Single()] = inputList };
         var scanner = CreateScanner(new VectorPrevouts(previous), new VectorKeys(given.GetProperty("key_material")), 0);
 
@@ -132,7 +131,7 @@ public class SilentPaymentScannerTests
     }
 
     private static SilentPaymentScanner CreateScanner(IBlockPrevoutSource previous, ISilentPaymentKeySource keys,
-        long minReceiveSat) => new(previous, new SilentPaymentCrypto(), keys, Options.Create(new SilentPaymentsOptions
+        long minReceiveSat) => new(previous, new SilentPaymentCrypto(), keys, Microsoft.Extensions.Options.Options.Create(new SilentPaymentsOptions
         { Enabled = true, RecoveryLabelCount = 0, MinReceiveSat = minReceiveSat }), NullLogger<SilentPaymentScanner>.Instance);
 
     private static (BitcoinBlock Block, IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>> Previous) CreateBlock(JsonElement given)
