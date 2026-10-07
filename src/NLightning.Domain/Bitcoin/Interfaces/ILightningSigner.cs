@@ -4,6 +4,7 @@ using Channels.ValueObjects;
 using Crypto.ValueObjects;
 using Money;
 using Onchain.Models;
+using SilentPayments;
 using Transactions.Models;
 using ValueObjects;
 
@@ -14,8 +15,13 @@ using ValueObjects;
 public interface ILightningSigner
 {
     /// <summary>
-    /// Generate a new channel key set and return the channel key index
+    /// Derives BIP 352 scripts using exactly the frozen reservation inputs; private input keys never leave the signer.
     /// </summary>
+    IReadOnlyList<BitcoinScript> ComputeSilentPaymentOutputs(Guid reservationId,
+        IReadOnlyList<SilentPaymentAddress> recipients, IReadOnlyList<(TxId TxId, uint Index)> allInputs) =>
+        throw new NotSupportedException("This signer does not support silent payment sends.");
+
+    /// <summary>Generate a new channel key set and return the channel key index.</summary>
     uint CreateNewChannel(out ChannelBasepoints basepoints, out CompactPubKey firstPerCommitmentPoint);
 
     /// <summary>

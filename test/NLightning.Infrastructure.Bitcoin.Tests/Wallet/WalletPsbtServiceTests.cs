@@ -106,13 +106,75 @@ public class WalletPsbtServiceTests : IDisposable
         _selector = new FeeInputSelector(_utxos, scopeFactory, nodeOptions, NullLogger<FeeInputSelector>.Instance);
         var signer = new LocalLightningSigner(Mock.Of<IFundingOutputBuilder>(), Mock.Of<IKeyDerivationService>(),
                                               NullLogger<LocalLightningSigner>.Instance, nodeOptions.Value,
-                                              _keyManager.Object, _utxos);
+                                              new SilentPaymentTestKeys(_keyManager.Object), _utxos);
         _service = new WalletPsbtService(_selector, _anchorReserve.Object, _utxos, signer, _monitor.Object,
                                          scopeFactory, nodeOptions, _logger,
                                          _chain.Object, _time);
     }
 
     public void Dispose() => _service.Dispose();
+
+    [Fact]
+    public async Task Given_ASilentPaymentCoin_When_ListUnspent_Then_ItIsShownAsAnOrdinaryTaprootOutput()
+    {
+        // Arrange
+        var silent = AddSilentPaymentUtxo();
+
+        // Act
+        var outputs = await _service.ListUnspentAsync(1, uint.MaxValue, Ct);
+
+        // Assert
+        var output = Assert.Single(outputs);
+        Assert.Equal(AddressType.P2Tr, output.AddressType);
+        Assert.Equal(silent.PrevOut.ScriptPubKey.ToBytes(), (byte[])output.ScriptPubKey);
+        Assert.StartsWith("bcrt1p", output.Address);
+    }
+
+    [Fact]
+    public async Task Given_AFundedSilentPaymentPsbt_When_FinalizedAndPublished_Then_TheRawKeySpendVerifies()
+    {
+        // Arrange: explicit coin selection exercises leases, PSBT signing and publishing together.
+        var silent = AddSilentPaymentUtxo();
+        var funded = await _service.FundPsbtAsync(Request(20_000) with
+        {
+            Inputs = [(silent.Model.TxId, silent.Model.Index)]
+        }, Ct);
+
+        // Act
+        var finalized = await _service.FinalizePsbtAsync(funded.Psbt, Ct);
+        var tx = Transaction.Load(finalized.RawFinalTx, Network.RegTest);
+
+        // Assert: the witness spends P directly, with no BIP86 tweak.
+        Assert.True(tx.CreateValidator([silent.PrevOut]).ValidateInput(0).Error is null or ScriptError.OK);
+        await _service.PublishTransactionAsync(finalized.RawFinalTx, "silent payment", Ct);
+        Assert.Single(_published);
+    }
+
+    private (UtxoModel Model, TxOut PrevOut) AddSilentPaymentUtxo()
+    {
+        using var key = new Key(SilentPaymentTestKeys.RawScalar());
+        var outputKey = key.PubKey.ToBytes().AsSpan(1).ToArray();
+        var model = new UtxoModel(new SilentPaymentOutputModel(RandomUtils.GetUInt256().ToBytes(), 0,
+            outputKey, Convert.FromHexString(new string('0', 63) + "1"), null, 100_000, 100,
+            new Domain.Crypto.ValueObjects.Hash(new byte[32])));
+        _utxos.Add(model);
+        return (model, new TxOut(Money.Satoshis(100_000), new Script([0x51, 0x20, .. outputKey])));
+    }
+
+    private sealed class SilentPaymentTestKeys(ISecureKeyManager deposit) : ISecureKeyManager
+    {
+        public static byte[] RawScalar() => Enumerable.Repeat((byte)10, 32).ToArray();
+        public byte[] GetSilentPaymentSpendKey(ReadOnlySpan<byte> tweak32, uint? label) => RawScalar();
+        public BitcoinKeyPath ChannelKeyPath => deposit.ChannelKeyPath;
+        public uint HeightOfBirth => deposit.HeightOfBirth;
+        public Domain.Crypto.ValueObjects.ExtPrivKey GetNextChannelKey(out uint index) => deposit.GetNextChannelKey(out index);
+        public Domain.Crypto.ValueObjects.ExtPrivKey GetChannelKeyAtIndex(uint index) => deposit.GetChannelKeyAtIndex(index);
+        public Domain.Crypto.ValueObjects.ExtPrivKey GetDepositP2TrKeyAtIndex(uint index, bool isChange) => deposit.GetDepositP2TrKeyAtIndex(index, isChange);
+        public Domain.Crypto.ValueObjects.ExtPrivKey GetDepositP2WpkhKeyAtIndex(uint index, bool isChange) => deposit.GetDepositP2WpkhKeyAtIndex(index, isChange);
+        public Domain.Crypto.ValueObjects.CryptoKeyPair GetNodeKeyPair() => deposit.GetNodeKeyPair();
+        public Domain.Crypto.ValueObjects.CompactPubKey GetNodePubKey() => deposit.GetNodePubKey();
+        public void ComputeNodeSharedSecret(ReadOnlySpan<byte> publicKey, Span<byte> sharedSecret) => deposit.ComputeNodeSharedSecret(publicKey, sharedSecret);
+    }
 
     [Fact]
     public async Task Given_AWallet_When_FundingAPsbt_Then_TheInputsAreLeasedAndTheChangeAdded()
