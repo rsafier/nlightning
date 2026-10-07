@@ -207,6 +207,45 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Given_IgnoredInputAndExternalFunding_When_AcceptedReceiptRecovered_Then_ItIsExternalEquityWithNoClearingDrift()
+    {
+        // Arrange: the tiny owned input was never accepted into wallet custody; outside funds supplement it.
+        _options.MinReceiveSat = 1000;
+        var ignored = AddReceipt(1, 500);
+        var external = new OutPoint(new uint256(777), 0);
+        using var sender = new Key(FixtureKeys.Secret(1));
+        var derived = Assert.Single(_crypto.DeriveOutputs(
+            [new SilentPaymentSenderInput(ignored.ToBytes(), sender.ToBytes(), false),
+             new SilentPaymentSenderInput(external.ToBytes(), sender.ToBytes(), false)],
+            [new SilentPaymentRecipient(_keys.ScanPubKey, _keys.SpendPubKey)]));
+        var transaction = Transaction.Create(Network.RegTest);
+        foreach (var point in new[] { ignored, external })
+            transaction.Inputs.Add(new TxIn(point) { WitScript = new WitScript([new byte[64], sender.PubKey.ToBytes()]) });
+        transaction.Outputs.Add(new TxOut(Money.Satoshis(2000), new Script(new byte[] { 0x51, 0x20 }.Concat(derived.OutputKey32).ToArray())));
+        _blocks[2].Transactions.Add(transaction);
+        _blocks[2].UpdateMerkleRoot();
+        _unspent.Remove(ignored);
+        _unspent[new OutPoint(transaction.GetHash(), 0)] = (transaction.Outputs[0], 2);
+        using var service = CreateService();
+        await service.GetAddressAsync(cancellationToken: TestContext.Current.CancellationToken);
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+
+        // Act
+        for (var round = 0; round < 5; round++)
+            Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+
+        // Assert: metadata ownership alone cannot create an input custody debit or self-transfer settlement.
+        Assert.Equal(2000L, Assert.Single(await UnspentAsync()).Amount.Satoshi);
+        using var scope = _provider.CreateScope();
+        var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var events = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wallet:", TestContext.Current.CancellationToken);
+        var receipt = Assert.Single(events);
+        Assert.Equal(AccountingDetailKeys.ExternalSource, receipt.Details[AccountingDetailKeys.Source]);
+        Assert.Empty(await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wsend:", TestContext.Current.CancellationToken));
+        AssertRecoveredBooks(events, 2_000_000, -2_000_000, 0, 0);
+    }
+
+    [Fact]
     public async Task Given_IgnoredOwnChangeAndRecoveredSettlement_When_ThresholdLowers_Then_ImmutableCorrectionKeepsClearingZero()
     {
         // Arrange: the fixture's external key controls eligible input evidence; metadata proves custody amounts.
