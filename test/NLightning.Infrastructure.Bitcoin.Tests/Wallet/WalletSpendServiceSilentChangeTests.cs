@@ -85,7 +85,7 @@ public partial class WalletSpendServiceTests
         Assert.True(sent.Change.Satoshi < options.MinReceiveSat);
         var script = Assert.Single(_stored).ChangeScript;
         Assert.NotNull(script);
-        Assert.Equal((byte[])script.Value, Assert.Single(tx.Outputs.Where(o => o.Value.Satoshi == sent.Change.Satoshi)).ScriptPubKey.ToBytes());
+        Assert.Equal((byte[])script.Value, Assert.Single(tx.Outputs, o => o.Value.Satoshi == sent.Change.Satoshi).ScriptPubKey.ToBytes());
         Assert.Equal(34, ((byte[])script.Value).Length);
     }
 

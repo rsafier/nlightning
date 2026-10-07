@@ -27,7 +27,7 @@ public sealed partial class LndGrpcWave3HostTests
         // Act
         var response = await connection.WalletKitClient.ListAddressesAsync(new ListAddressesRequest(), cancellationToken: Ct);
         // Assert
-        var account = Assert.Single(response.AccountWithAddresses.Where(a => a.AddressType == WalletAddressType.TaprootPubkey));
+        var account = Assert.Single(response.AccountWithAddresses, a => a.AddressType == WalletAddressType.TaprootPubkey);
         var address = Assert.Single(account.Addresses);
         Assert.Equal(script.GetDestinationAddress(Network.RegTest)!.ToString(), address.Address);
         Assert.Equal(42_000, address.Balance);
