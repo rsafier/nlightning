@@ -143,6 +143,13 @@ the binding, and answers the three litrpc reads Terminal needs
 `serve --log-rpc` and `--log-mailbox` show what a client calls. What Terminal can
 and cannot do is listed in `tools/lnc/README.md`, "Lightning Terminal".
 
+## Lightning Terminal Autopilot (NL-1240)
+
+The bridge emulates litd's Autopilot for AutoFees (autopilot server
+registration, firewall rules, privacy mapper, action log behind
+`litrpc.Firewall.ListActions`). Research, security model and what is missing:
+[`LNC_AUTOPILOT_PLAN.md`](LNC_AUTOPILOT_PLAN.md).
+
 ## Packaging
 
 Build and run the bridge as a separate Go executable under the same service

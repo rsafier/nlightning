@@ -1,34 +1,57 @@
 package main
 
-import "google.golang.org/protobuf/encoding/protowire"
+import (
+	"context"
+
+	"google.golang.org/protobuf/encoding/protowire"
+)
 
 // Lightning Terminal (terminal.lightning.engineering) talks to litd, not to a
 // bare lnd. After pairing it calls lnrpc GetInfo and then refuses the node unless
 // the session macaroon grants /litrpc.Autopilot/ListAutopilotSessions; it then
-// asks litrpc.Status for the sub-servers it may use. The bridge answers these few
-// litrpc reads itself, read-only and without touching the node, so Terminal sees
-// lnd running and every other sub-server off instead of failing on UNIMPLEMENTED.
+// asks litrpc.Status for the sub-servers it may use, and its Autopilot page
+// drives litrpc.Autopilot and reads litrpc.Firewall.ListActions. The bridge
+// answers these litrpc calls itself (never the node): Status and the autopilot
+// lists for every Terminal session, adding and revoking autopilot sessions for
+// sessions granted it (autopilot.go).
 const (
-	litSubServerStatus       = "/litrpc.Status/SubServerStatus"
-	litListAutopilotSessions = "/litrpc.Autopilot/ListAutopilotSessions"
-	litListAutopilotFeatures = "/litrpc.Autopilot/ListAutopilotFeatures"
+	litSubServerStatus        = "/litrpc.Status/SubServerStatus"
+	litListAutopilotSessions  = "/litrpc.Autopilot/ListAutopilotSessions"
+	litListAutopilotFeatures  = "/litrpc.Autopilot/ListAutopilotFeatures"
+	litAddAutopilotSession    = "/litrpc.Autopilot/AddAutopilotSession"
+	litRevokeAutopilotSession = "/litrpc.Autopilot/RevokeAutopilotSession"
+	litListActions            = "/litrpc.Firewall/ListActions"
 )
 
-// litLocalMethods are the methods the bridge answers locally (when the session's
-// macaroon grants them); every other method goes to the backend.
-var litLocalMethods = map[string]func() []byte{
-	litSubServerStatus: subServerStatusResponse,
-	// Empty ListAutopilotSessionsResponse / ListAutopilotFeaturesResponse: no
-	// autopilot exists here, which Terminal shows as an empty list.
-	litListAutopilotSessions: func() []byte { return nil },
-	litListAutopilotFeatures: func() []byte { return nil },
+// litLocalHandlers are the litrpc methods the bridge answers. With no
+// autopilot service the autopilot lists are empty and the rest fail with
+// FailedPrecondition.
+func litLocalHandlers(a *autopilotService) map[string]LocalHandler {
+	out := map[string]LocalHandler{
+		litSubServerStatus: func(context.Context, CallInfo, []byte) ([]byte, error) { return subServerStatusResponse(), nil },
+	}
+	if a == nil {
+		empty := func(context.Context, CallInfo, []byte) ([]byte, error) { return nil, nil }
+		out[litListAutopilotSessions] = empty
+		out[litListAutopilotFeatures] = empty
+		out[litListActions] = empty
+		return out
+	}
+	out[litListAutopilotSessions] = a.listSessions
+	out[litListAutopilotFeatures] = a.listFeatures
+	out[litAddAutopilotSession] = a.addSession
+	out[litRevokeAutopilotSession] = a.revokeSession
+	out[litListActions] = a.listActions
+	return out
 }
 
 // litSubServers lists litd's sub-server names (lightning-terminal
 // subservers/subserver.go and terminal.go) with whether the bridge reports them
 // running. Only lnd (NLightning's LND-compatible API) and lit (this bridge's
-// minimal status shim) are up; Loop, Pool, Faraday and Taproot Assets are not
-// provided, so they are reported disabled and Terminal hides their pages.
+// litd emulation, which includes autopilot and the firewall) are up; litd has
+// no separate status entry for autopilot or the firewall. Loop, Pool, Faraday,
+// Taproot Assets and accounts are not provided, so they are reported disabled
+// and Terminal hides their pages.
 var litSubServers = []struct {
 	name    string
 	running bool
@@ -39,6 +62,7 @@ var litSubServers = []struct {
 	{"pool", false},
 	{"faraday", false},
 	{"taproot-assets", false},
+	{"accounts", false},
 }
 
 // subServerStatusResponse encodes litrpc.SubServerStatusResp
@@ -68,14 +92,14 @@ func subServerStatusResponse() []byte {
 }
 
 // localMethodsFor returns the locally answered methods the session's permission
-// list grants. Older sessions lack these URIs; their calls go to the backend.
-func localMethodsFor(allowed []string) map[string]func() []byte {
+// list grants. Older sessions lack these URIs; their litrpc calls are refused.
+func localMethodsFor(all map[string]LocalHandler, allowed []string) map[string]LocalHandler {
 	granted := map[string]bool{}
 	for _, m := range allowed {
 		granted[m] = true
 	}
-	out := map[string]func() []byte{}
-	for m, fn := range litLocalMethods {
+	out := map[string]LocalHandler{}
+	for m, fn := range all {
 		if granted[m] {
 			out[m] = fn
 		}

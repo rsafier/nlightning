@@ -98,7 +98,7 @@ func TestStockClientPairsAndCallsThroughBridge(t *testing.T) {
 	var logged []string
 	authenticated := 0
 	bridge, err := NewSessionProxyWith(backend, hex.EncodeToString(credential), ProxyConfig{
-		Local:           localMethodsFor([]string{litSubServerStatus}),
+		Local:           localMethodsFor(litLocalHandlers(nil), []string{litSubServerStatus}),
 		OnAuthenticated: func() { logMu.Lock(); authenticated++; logMu.Unlock() },
 		LogRPC: func(method string, code codes.Code, _ time.Duration) {
 			logMu.Lock()
@@ -221,7 +221,7 @@ func TestSubServerStatusNamesLitdSubServers(t *testing.T) {
 	statuses := decodeSubServerStatus(t, subServerStatusResponse())
 	want := map[string]subServer{
 		"lit": {running: true}, "lnd": {running: true}, "loop": {disabled: true}, "pool": {disabled: true},
-		"faraday": {disabled: true}, "taproot-assets": {disabled: true},
+		"faraday": {disabled: true}, "taproot-assets": {disabled: true}, "accounts": {disabled: true},
 	}
 	if fmt.Sprint(statuses) != fmt.Sprint(want) {
 		t.Fatalf("got %v", statuses)
@@ -239,7 +239,7 @@ func TestProxyAnswersLocalMethodsOnlyWhenGrantedAndLogsCodes(t *testing.T) {
 	var mu sync.Mutex
 	var logged []string
 	bridge, err := NewSessionProxyWith(backend, "010203", ProxyConfig{
-		Local: localMethodsFor([]string{litListAutopilotSessions}),
+		Local: localMethodsFor(litLocalHandlers(nil), []string{litListAutopilotSessions}),
 		LogRPC: func(method string, code codes.Code, _ time.Duration) {
 			mu.Lock()
 			logged = append(logged, method+" "+code.String())
@@ -255,11 +255,14 @@ func TestProxyAnswersLocalMethodsOnlyWhenGrantedAndLogsCodes(t *testing.T) {
 	if err = conn.Invoke(ctx, litListAutopilotSessions, &empty, &reply, grpc.ForceCodec(opaqueCodec{})); err != nil || len(reply) != 0 {
 		t.Fatal("granted local method", err)
 	}
-	if err = conn.Invoke(ctx, litSubServerStatus, &empty, &reply, grpc.ForceCodec(opaqueCodec{})); status.Code(err) != codes.Unimplemented {
-		t.Fatal("ungranted local method was not forwarded", err)
+	// An ungranted litrpc method is refused by the bridge, never forwarded.
+	if err = conn.Invoke(ctx, litSubServerStatus, &empty, &reply, grpc.ForceCodec(opaqueCodec{})); status.Code(err) != codes.PermissionDenied {
+		t.Fatal("ungranted local method was not refused", err)
 	}
-	if got := <-backendCalls; got != litSubServerStatus {
-		t.Fatal(got)
+	select {
+	case got := <-backendCalls:
+		t.Fatal("litrpc call forwarded to the node", got)
+	default:
 	}
 	bad := metadata.AppendToOutgoingContext(context.Background(), "macaroon", "0102")
 	if err = conn.Invoke(bad, litListAutopilotSessions, &empty, &reply, grpc.ForceCodec(opaqueCodec{})); status.Code(err) != codes.Unauthenticated {
@@ -267,7 +270,7 @@ func TestProxyAnswersLocalMethodsOnlyWhenGrantedAndLogsCodes(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	want := []string{litListAutopilotSessions + " OK", litSubServerStatus + " Unimplemented", litListAutopilotSessions + " Unauthenticated"}
+	want := []string{litListAutopilotSessions + " OK", litSubServerStatus + " PermissionDenied", litListAutopilotSessions + " Unauthenticated"}
 	if fmt.Sprint(logged) != fmt.Sprint(want) {
 		t.Fatalf("log %v", logged)
 	}
@@ -279,10 +282,21 @@ func TestProxyAnswersLocalMethodsOnlyWhenGrantedAndLogsCodes(t *testing.T) {
 }
 
 func TestEveryProfileGrantsTerminalLitrpcReads(t *testing.T) {
-	for _, profile := range []string{"readonly", "wallet"} {
+	all := litLocalHandlers(&autopilotService{})
+	reads := []string{litSubServerStatus, litListAutopilotSessions, litListAutopilotFeatures, litListActions}
+	writes := []string{litAddAutopilotSession, litRevokeAutopilotSession}
+	for _, profile := range []string{"readonly", "wallet", "admin"} {
 		methods, _ := profileMethods(profile)
-		if len(localMethodsFor(methods)) != len(litLocalMethods) {
-			t.Fatal(profile, "lacks the litrpc reads Terminal requires")
+		granted := localMethodsFor(all, methods)
+		for _, m := range reads {
+			if granted[m] == nil {
+				t.Fatal(profile, "lacks", m)
+			}
+		}
+		for _, m := range writes {
+			if (granted[m] != nil) != (profile != "readonly") {
+				t.Fatal(profile, "autopilot write grant wrong for", m)
+			}
 		}
 	}
 }
@@ -395,3 +409,31 @@ func (failingCreds) ServerHandshake(net.Conn) (net.Conn, credentials.AuthInfo, e
 	return nil, nil, errors.New("authentication handshake failed")
 }
 func (failingCreds) Clone() credentials.TransportCredentials { return failingCreds{} }
+
+// What Lightning Terminal's channel and fee management calls (its bundle's
+// openChannel/openChannelsTool, closeChannel and updateChannelPolicy flows):
+// only the admin profile grants it, and admin keeps every wallet grant.
+func TestAdminProfileGrantsTerminalChannelManagement(t *testing.T) {
+	terminal := []string{"/lnrpc.Lightning/BatchOpenChannel", "/lnrpc.Lightning/CloseChannel",
+		"/lnrpc.Lightning/UpdateChannelPolicy", "/lnrpc.Lightning/ConnectPeer", "/lnrpc.Lightning/GetNodeInfo",
+		"/lnrpc.Lightning/GetChanInfo", "/lnrpc.Lightning/OpenChannelSync", "/lnrpc.Lightning/EstimateFee"}
+	admin, _ := profileMethods("admin")
+	wallet, _ := profileMethods("wallet")
+	granted := map[string]bool{}
+	for _, m := range admin {
+		granted[m] = true
+	}
+	for _, m := range append(terminal, wallet...) {
+		if !granted[m] {
+			t.Fatal("admin lacks", m)
+		}
+	}
+	for _, m := range wallet {
+		if m == "/lnrpc.Lightning/BatchOpenChannel" || m == "/lnrpc.Lightning/CloseChannel" || m == "/lnrpc.Lightning/UpdateChannelPolicy" {
+			t.Fatal("wallet grants channel management", m)
+		}
+	}
+	if _, e := parseConfig("create", []string{"--tls-cert", "x", "--admin-macaroon", "a", "--profile", "admin"}); e != nil {
+		t.Fatal(e)
+	}
+}

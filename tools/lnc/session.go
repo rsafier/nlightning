@@ -34,6 +34,33 @@ type Session struct {
 	// side (and so never kept its keys) can pair again; confirming erases it.
 	Confirmed      bool     `json:"confirmed,omitempty"`
 	AllowedMethods []string `json:"allowed_methods"`
+	// Type is empty for a session paired by a person's LNC client and
+	// sessionTypeAutopilot for one created by AddAutopilotSession, which the
+	// autopilot server connects to (autopilot.go).
+	Type string `json:"type,omitempty"`
+	// LitID is the 4-byte litrpc session ID (hex) and GroupID the LitID of the
+	// first session of its linked group; set on autopilot sessions.
+	LitID   string `json:"lit_id,omitempty"`
+	GroupID string `json:"group_id,omitempty"`
+	// ClientMacaroon, when set, is the credential sent to the client in the
+	// handshake instead of Macaroon: Macaroon plus litd's firewall caveats.
+	// The client must present it (with at most an added meta caveat); the
+	// bridge still forwards with Macaroon only.
+	ClientMacaroon string         `json:"client_macaroon,omitempty"`
+	RevokedAt      time.Time      `json:"revoked_at,omitempty"`
+	Autopilot      *autopilotInfo `json:"autopilot,omitempty"`
+}
+
+const sessionTypeAutopilot = "autopilot"
+
+func (s *Session) isAutopilot() bool { return s.Type == sessionTypeAutopilot }
+
+// clientCredential is the macaroon the client receives and must present.
+func (s *Session) clientCredential() string {
+	if s.ClientMacaroon != "" {
+		return s.ClientMacaroon
+	}
+	return s.Macaroon
 }
 
 type Store struct{ Dir string }
@@ -95,7 +122,13 @@ func (s *Store) save(session *Session) error {
 	if e != nil {
 		return e
 	}
-	f, e := os.CreateTemp(s.Dir, ".session-")
+	return writePrivateFile(s.Dir, p, data)
+}
+
+// writePrivateFile replaces path atomically with data, mode 0600, and syncs
+// the file and its directory.
+func writePrivateFile(dir, path string, data []byte) error {
+	f, e := os.CreateTemp(dir, ".session-")
 	if e != nil {
 		return e
 	}
@@ -113,15 +146,27 @@ func (s *Store) save(session *Session) error {
 	if e != nil {
 		return e
 	}
-	if e = os.Rename(f.Name(), p); e != nil {
+	if e = os.Rename(f.Name(), path); e != nil {
 		return e
 	}
-	d, e := os.Open(s.Dir)
+	d, e := os.Open(dir)
 	if e != nil {
 		return e
 	}
 	defer d.Close()
 	return d.Sync()
+}
+
+// readPrivateFile reads a regular file that only its owner may access.
+func readPrivateFile(path string) ([]byte, error) {
+	info, e := os.Lstat(path)
+	if e != nil {
+		return nil, e
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+		return nil, fmt.Errorf("%s must be a regular file with mode 0600", filepath.Base(path))
+	}
+	return os.ReadFile(path)
 }
 func (s *Store) update(id string, fn func(*Session) error) error {
 	lock := flock.New(filepath.Join(s.Dir, "state.lock"))
@@ -145,7 +190,9 @@ func (s *Store) list() ([]*Session, error) {
 	}
 	sessions := []*Session{}
 	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".json") {
+		// The directory also holds the autopilot files (autopilot.json,
+		// actions.json, privacy-*.json); session files are named by their ID.
+		if !strings.HasSuffix(entry.Name(), ".json") || !validID(strings.TrimSuffix(entry.Name(), ".json")) {
 			continue
 		}
 		session, e := s.load(strings.TrimSuffix(entry.Name(), ".json"))

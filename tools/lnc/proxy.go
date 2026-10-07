@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -63,12 +64,29 @@ func DialBackend(ctx context.Context, target, tlsCertPath, serverName string) (*
 			grpc.MaxCallSendMsgSize(maxProxyMessageBytes)), grpc.WithBlock())
 }
 
+// CallInfo describes an authenticated call.
+type CallInfo struct {
+	// Meta is the litd firewall meta information the caller attached to its
+	// credential as a caveat (autopilot sessions only; nil otherwise).
+	Meta *MetaInfo
+}
+
+// LocalHandler answers one unary call in the bridge: it gets the encoded
+// request and returns the encoded response.
+type LocalHandler func(ctx context.Context, call CallInfo, request []byte) ([]byte, error)
+
 // ProxyConfig holds a session proxy's optional behavior.
 type ProxyConfig struct {
-	// Local maps full method names the bridge answers itself (read-only
-	// litrpc shims) to their encoded response; their request is read and
-	// ignored. Every other method is forwarded to the backend.
-	Local map[string]func() []byte
+	// Local maps full method names the bridge answers itself (the litrpc
+	// shims, and every call of an autopilot session) to their handler. Every
+	// other method is forwarded to the backend unless LocalOnly is set.
+	Local map[string]LocalHandler
+	// LocalOnly refuses every method that is not in Local: nothing is
+	// forwarded as is (autopilot sessions).
+	LocalOnly bool
+	// Authenticate checks the credential the client presented. Nil means it
+	// must equal the session credential byte for byte.
+	Authenticate func(presented []byte) (CallInfo, error)
 	// OnAuthenticated runs on every call that presented the session credential,
 	// before it is answered or forwarded.
 	OnAuthenticated func()
@@ -99,7 +117,15 @@ func NewSessionProxyWith(backend grpc.ClientConnInterface, macaroonHex string, c
 			return status.Error(codes.Unauthenticated, "session credential required")
 		}
 		provided, err := hex.DecodeString(values[0])
-		if err != nil || subtle.ConstantTimeCompare(provided, credential) != 1 {
+		if err != nil {
+			return status.Error(codes.Unauthenticated, "invalid session credential")
+		}
+		var call CallInfo
+		if config.Authenticate != nil {
+			if call, err = config.Authenticate(provided); err != nil {
+				return status.Error(codes.Unauthenticated, "invalid session credential")
+			}
+		} else if subtle.ConstantTimeCompare(provided, credential) != 1 {
 			return status.Error(codes.Unauthenticated, "invalid session credential")
 		}
 		if config.OnAuthenticated != nil {
@@ -110,8 +136,19 @@ func NewSessionProxyWith(backend grpc.ClientConnInterface, macaroonHex string, c
 			if err := inbound.RecvMsg(&request); err != nil {
 				return err
 			}
-			response := local()
+			response, err := local(inbound.Context(), call, request)
+			if err != nil {
+				if _, ok := status.FromError(err); ok {
+					return err
+				}
+				return status.Error(codes.Unknown, err.Error())
+			}
 			return inbound.SendMsg(&response)
+		}
+		// litrpc calls are never forwarded: the node does not serve them, and a
+		// session without the local grant must not reach them.
+		if config.LocalOnly || strings.HasPrefix(method, "/litrpc.") {
+			return status.Errorf(codes.PermissionDenied, "%s is not permitted for this session", method)
 		}
 		outgoing := md.Copy()
 		outgoing.Set("macaroon", hex.EncodeToString(credential))
