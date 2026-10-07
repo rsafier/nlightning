@@ -27,7 +27,7 @@ internal static class SilentPaymentSchemaRoundTrip
             var sql = new MigrationSqlDialect(provider);
             var blob = provider switch
             {
-                DatabaseType.PostgreSql => $"decode('{Convert.ToHexString((byte[])legacyId)}, 'hex')",
+                DatabaseType.PostgreSql => $"decode('{Convert.ToHexString((byte[])legacyId)}', 'hex')",
                 DatabaseType.MicrosoftSql => $"0x{Convert.ToHexString((byte[])legacyId)}",
                 _ => $"X'{Convert.ToHexString((byte[])legacyId)}'"
             };
