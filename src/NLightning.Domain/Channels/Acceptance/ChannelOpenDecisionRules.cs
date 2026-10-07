@@ -64,11 +64,12 @@ public static class ChannelOpenDecisionRules
     /// Applies an acceptance's values to the parameters we announce, as LND's funding manager applies a
     /// <c>ChannelAcceptResponse</c> (NL-1181). Returns the error that refuses the open when a value cannot apply here:
     /// <list type="bullet">
-    /// <item><c>zero_conf</c> (or <c>min_accept_depth</c> 0) applies only to an open whose <c>channel_type</c> has
+    /// <item><c>zero_conf</c> applies only to an open whose <c>channel_type</c> has
     /// <c>option_zeroconf</c> (then we ask for depth 0); an acceptance of such an open without it is LND's "channel
     /// acceptor blocked zero-conf channel negotiation", and a zero-conf answer to an open without that type is refused
     /// (LND would turn it into a zero-conf channel through <c>option_scid_alias</c>; NLightning has no zero-conf
-    /// channels of its own), as is a zero-conf answer with a non-zero depth;</item>
+    /// channels of its own), as is a zero-conf answer with a non-zero depth; <c>min_accept_depth</c> 0 without
+    /// <c>zero_conf</c> is refused (LND reads 0 as "unset", <see cref="ChannelOpenDecision.MinimumDepth"/>);</item>
     /// <item><c>reserve_sat</c> below either dust limit or not below the capacity; on a dual-funded open BOLT 2 fixes
     /// the reserve (1 % of the total, at least the dust limit), so a <c>reserve_sat</c> applies when that reserve
     /// already meets it and refuses the open otherwise;</item>
@@ -97,8 +98,12 @@ public static class ChannelOpenDecisionRules
         newLocal = local;
         newMinimumDepth = minimumDepth;
 
+        // Only zero_conf accepts a zero-conf channel: in LND min_accept_depth 0 means "unset", so a decider's depth 0
+        // without zero_conf is a contract error, never a zero-conf acceptance by accident (NL-1181 review)
+        if (decision.MinimumDepth is 0 && !decision.ZeroConf)
+            return "min_accept_depth 0 without zero_conf: only zero_conf accepts a zero-conf channel";
         var wantsZeroConf = request.ChannelType?.IsFeatureSet(Feature.OptionZeroconf, true) == true;
-        var zeroConf = decision.ZeroConf || decision.MinimumDepth is 0;
+        var zeroConf = decision.ZeroConf;
         if (wantsZeroConf && !zeroConf)
             return "channel acceptor blocked zero-conf channel negotiation";
         if (zeroConf && !wantsZeroConf)

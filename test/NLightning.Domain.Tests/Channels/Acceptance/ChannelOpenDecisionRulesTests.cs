@@ -163,12 +163,42 @@ public class ChannelOpenDecisionRulesTests
     }
 
     [Fact]
-    public void Given_AZeroConfOpenAndADepthZeroAcceptance_When_Applied_Then_ItCountsAsZeroConf()
+    public void Given_AZeroConfOpenAndADepthZeroAcceptanceWithoutZeroConf_When_Applied_Then_TheOpenIsRefused()
     {
         // Act
         var error = ChannelOpenDecisionRules.TryApply(new ChannelOpenDecision { Accept = true, MinimumDepth = 0 },
                                                       Request(zeroConfType: true), s_local, 3,
-                                                      LightningMoney.Satoshis(1_000_000), out _, out var depth);
+                                                      LightningMoney.Satoshis(1_000_000), out var local,
+                                                      out var depth);
+
+        // Assert
+        Assert.NotNull(error);
+        Assert.Contains("min_accept_depth 0", error);
+        Assert.Equal(s_local, local);
+        Assert.Equal(3U, depth);
+    }
+
+    [Fact]
+    public void Given_AnOpenWithoutTheZeroConfTypeAndADepthZeroAcceptance_When_Applied_Then_ItIsNotAZeroConfAcceptance()
+    {
+        // Act
+        var error = ChannelOpenDecisionRules.TryApply(new ChannelOpenDecision { Accept = true, MinimumDepth = 0 },
+                                                      Request(), s_local, 3, LightningMoney.Satoshis(1_000_000),
+                                                      out _, out var depth);
+
+        // Assert
+        Assert.NotNull(error);
+        Assert.Contains("without zero_conf", error);
+        Assert.Equal(3U, depth);
+    }
+
+    [Fact]
+    public void Given_AZeroConfOpenAndZeroConfWithDepthZero_When_Applied_Then_WeAskForDepthZero()
+    {
+        // Act
+        var error = ChannelOpenDecisionRules.TryApply(
+            new ChannelOpenDecision { Accept = true, ZeroConf = true, MinimumDepth = 0 }, Request(zeroConfType: true),
+            s_local, 3, LightningMoney.Satoshis(1_000_000), out _, out var depth);
 
         // Assert
         Assert.Null(error);

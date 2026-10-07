@@ -3,18 +3,23 @@ namespace NLightning.Application.Tests.Channels.Acceptance;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Acceptance;
 using Domain.Channels.DualFunding.Models;
+using Domain.Channels.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Payloads;
+using Domain.Protocol.Tlv;
 using DualFunding;
 using InteractiveTx.TestDoubles;
 
 /// <summary>
 /// NL-1180/NL-1181 on the dual-funded accepter (<see cref="DualFundHarness"/>): an external decider answers before Bob
 /// makes keys for the open; its rejection is Alice's error, its values are what <c>accept_channel2</c> announces (its
-/// upfront_shutdown included), and a reserve_sat applies when the reserve BOLT 2 fixes for v2 meets it.
+/// upfront_shutdown included), and a reserve_sat applies when the reserve BOLT 2 fixes for v2 meets it, for the first
+/// attempt and for every RBF attempt of the open (NL-1181 review), also after Bob restarted.
 /// </summary>
 public class DualFundOpenDecisionTests
 {
@@ -191,6 +196,110 @@ public class DualFundOpenDecisionTests
         Assert.Empty(harness.Bob.Memory.FindChannels(_ => true));
     }
 
+    [Theory]
+    [InlineData(300_000, false)]
+    [InlineData(400_000, true)]
+    public async Task Given_AnAcceptorReserve_When_TheOpenerRbfsWithALowerContribution_Then_BelowItBobAnswersTxAbort(
+        long aliceRbfShareSat, bool accepted)
+    {
+        // Arrange: reserve_sat 8,000 holds for the 1,000,000 sat open (10,000 sat); Alice's RBF with 300,000 sat makes
+        // a 700,000 sat channel (7,000 sat), with 400,000 sat an 800,000 sat one (8,000 sat)
+        await using var harness = await CreateAsync(new ChannelOpenDecisionGateTests.FixedDecider(
+                                                        new ChannelOpenDecision
+                                                        {
+                                                            Accept = true,
+                                                            ChannelReserve = LightningMoney.Satoshis(8_000)
+                                                        }), refused: false);
+        var first = await OpenAsync(harness);
+        Assert.True(first.FailureReason is null, $"{first.FailureReason}\n{harness.Describe()}");
+
+        // Act
+        var reply = await SendTxInitRbfAsync(harness, first.ChannelId, aliceRbfShareSat);
+
+        // Assert
+        AssertRbfReply(harness, first, reply, accepted, "channel acceptor");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_AnAcceptorReserveOnlyBobsShareMeetsInAnRbf_When_BobsWalletCannotFundIt_Then_TxAbort(
+        bool bobHasFunds)
+    {
+        // Arrange: Alice opens alone with 900,000 sat (Bob's wallet is empty: 9,000 sat meets reserve_sat 8,000), then
+        // RBFs with 600,000 sat, which meets it only with Bob's 400,000 sat
+        await using var harness = await CreateAsync(new ChannelOpenDecisionGateTests.FixedDecider(
+                                                        new ChannelOpenDecision
+                                                        {
+                                                            Accept = true,
+                                                            ChannelReserve = LightningMoney.Satoshis(8_000)
+                                                        }), refused: false, bobHasFunds: false);
+        var first = await OpenAsync(harness, LightningMoney.Satoshis(900_000));
+        Assert.True(first.FailureReason is null, $"{first.FailureReason}\n{harness.Describe()}");
+        Assert.Equal(LightningMoney.Satoshis(900_000), harness.Bob.Channel(first.ChannelId).FundingOutput!.Amount);
+        if (bobHasFunds)
+            harness.Bob.Wallet.Utxos.Add(WalletUtxo.Create(700_000));
+
+        // Act
+        var reply = await SendTxInitRbfAsync(harness, first.ChannelId, 600_000);
+
+        // Assert: never accepted without the share the acceptor's reserve needs
+        AssertRbfReply(harness, first, reply, bobHasFunds, "channel acceptor");
+        if (bobHasFunds)
+            Assert.Equal(400_000, ((TxAckRbfMessage)reply!).FundingOutputContributionTlv?.Satoshis);
+    }
+
+    [Theory]
+    [InlineData(300_000, false)]
+    [InlineData(600_000, true)]
+    public async Task Given_BobRestartedBetweenTheAttempts_When_TheOpenerRbfsBelowTheSignedTotal_Then_TxAbort(
+        long aliceRbfShareSat, bool accepted)
+    {
+        // Arrange: the acceptor's answer is memory only, so after the restart Bob keeps at least the signed total
+        await using var harness = await CreateAsync(new ChannelOpenDecisionGateTests.FixedDecider(
+                                                        new ChannelOpenDecision
+                                                        {
+                                                            Accept = true,
+                                                            ChannelReserve = LightningMoney.Satoshis(8_000)
+                                                        }), refused: false);
+        var first = await OpenAsync(harness);
+        Assert.True(first.FailureReason is null, $"{first.FailureReason}\n{harness.Describe()}");
+        await harness.RestartAsync(harness.Bob);
+        await harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Act
+        var reply = await SendTxInitRbfAsync(harness, first.ChannelId, aliceRbfShareSat);
+
+        // Assert
+        AssertRbfReply(harness, first, reply, accepted, "restart");
+    }
+
+    /// <summary>Alice's <c>tx_init_rbf</c> with <paramref name="aliceShareSat"/> to Bob, and Bob's answer.</summary>
+    private static async Task<IChannelMessage?> SendTxInitRbfAsync(DualFundHarness harness, ChannelId channelId,
+                                                                   long aliceShareSat)
+    {
+        var initRbf = new TxInitRbfMessage(new TxInitRbfPayload(channelId, 5_000, 500),
+                                           new FundingOutputContributionTlv(LightningMoney.Satoshis(aliceShareSat)));
+        await harness.DeliverAsync(harness.Alice, initRbf);
+        return harness.TakeNext(harness.Bob);
+    }
+
+    private static void AssertRbfReply(DualFundHarness harness, DualFundedOpenResult first, IChannelMessage? reply,
+                                       bool accepted, string reason)
+    {
+        if (accepted)
+        {
+            Assert.IsType<TxAckRbfMessage>(reply);
+            return;
+        }
+
+        var abort = Assert.IsType<TxAbortMessage>(reply);
+        Assert.Contains(reason, System.Text.Encoding.ASCII.GetString(abort.Payload.Data));
+        Assert.Equal([first.FundingTxId!.Value], harness.Bob.DualFund.GetSignedFundingTxIds(first.ChannelId));
+        Assert.Equal(first.FundingTxId, harness.Bob.Channel(first.ChannelId).FundingOutput!.TransactionId);
+    }
+
     /// <param name="refused">The open is refused: Alice gives it up after a short open timeout (as the other refusal
     /// tests).</param>
     /// <param name="bobHasFunds">Bob's wallet can fund his 400,000 sat contribution.</param>
@@ -205,8 +314,9 @@ public class DualFundOpenDecisionTests
         return harness;
     }
 
-    private static async Task<DualFundedOpenResult> OpenAsync(DualFundHarness harness) =>
+    private static async Task<DualFundedOpenResult> OpenAsync(DualFundHarness harness,
+                                                              LightningMoney? aliceShare = null) =>
         await harness.RunAsync(harness.Alice.DualFund.OpenAsync(
-                                   new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare, 2_500),
+                                   new DualFundedOpenRequest(harness.Bob.NodeId, aliceShare ?? s_aliceShare, 2_500),
                                    TestContext.Current.CancellationToken));
 }

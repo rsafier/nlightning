@@ -1,6 +1,7 @@
 namespace NLightning.Application.Channels.DualFunding;
 
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Acceptance;
 using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
@@ -50,10 +51,30 @@ internal sealed class DualFundNegotiation
     public bool RemoteRequiresConfirmedInputs { get; set; }
 
     /// <summary>
-    /// Whether our contribution must be made in full (NL-1181: a channel acceptor's values hold only with it); an open
-    /// we cannot fund is then refused instead of going on without our share.
+    /// Whether our contribution to the first attempt must be made in full (NL-1181: a channel acceptor's values hold
+    /// only with it); an open we cannot fund is then refused instead of going on without our share. Every RBF attempt
+    /// is checked against <see cref="OpenDecision"/> again with its own total instead.
     /// </summary>
     public bool LocalShareRequired { get; init; }
+
+    /// <summary>
+    /// The channel acceptor's answer applied to this open we accept (NL-1181), with <see cref="OpenRequest"/> the
+    /// request it answered; null when no decider answered or we opened. Every RBF attempt of the open must still meet
+    /// it with its own total (the reserve BOLT 2 fixes follows the total, the HTLC minimum must stay below it), else the
+    /// attempt is refused. Memory only (see <see cref="OpenDecisionUnknown"/>).
+    /// </summary>
+    public ChannelOpenDecision? OpenDecision { get; init; }
+
+    /// <summary>The <see cref="ChannelOpenRequest"/> <see cref="OpenDecision"/> answered.</summary>
+    public ChannelOpenRequest? OpenRequest { get; init; }
+
+    /// <summary>
+    /// This open we accept was rebuilt after a restart, so whether a channel acceptor's values applied to it is not
+    /// known (<see cref="OpenDecision"/> is memory only): an RBF attempt may then not lower the total below the last
+    /// signed attempt's, which keeps every value an acceptor could have set (the reserve and the HTLC minimum only
+    /// depend on the total).
+    /// </summary>
+    public bool OpenDecisionUnknown { get; init; }
 
     /// <summary>The opener's <c>open_channel2</c> before <c>accept_channel2</c> arrives (our side of it).</summary>
     public PendingOpen? Pending { get; set; }

@@ -46,7 +46,11 @@ public sealed record ChannelOpenDecision
     /// <summary>The <c>htlc_minimum_msat</c> we announce.</summary>
     public LightningMoney? HtlcMinimum { get; init; }
 
-    /// <summary>The <c>minimum_depth</c> we ask for.</summary>
+    /// <summary>
+    /// The <c>minimum_depth</c> we ask for (null: the node's own). 0 is not a zero-conf acceptance: only
+    /// <see cref="ZeroConf"/> accepts one, and 0 without it refuses the open (LND reads <c>min_accept_depth</c> 0 as
+    /// "unset"; NL-1181).
+    /// </summary>
     public uint? MinimumDepth { get; init; }
 
     /// <summary>
