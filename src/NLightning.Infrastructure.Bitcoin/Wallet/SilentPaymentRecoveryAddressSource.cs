@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Options;
 using NBitcoin;
 
@@ -17,6 +18,7 @@ public sealed class SilentPaymentRecoveryAddressSource(ISecureKeyManager keys, I
     : ISilentPaymentRecoveryAddressSource
 {
     private readonly Network _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
+    private readonly ConditionalWeakTable<IUnitOfWork, Dictionary<(AddressType, bool, uint), WalletAddressModel>> _staged = new();
     public const uint MaximumAddressCount = 100_000;
 
     public Task<IReadOnlyList<WalletAddressModel>> StageAddressesAsync(IUnitOfWork uow, uint addressCount = 30,
@@ -28,6 +30,9 @@ public sealed class SilentPaymentRecoveryAddressSource(ISecureKeyManager keys, I
         cancellationToken.ThrowIfCancellationRequested();
         var stored = uow.WalletAddressesDbRepository.GetAllAddresses()
             .ToDictionary(a => (a.AddressType, a.IsChange, a.Index));
+        var staged = _staged.GetOrCreateValue(uow);
+        foreach (var entry in staged)
+            stored.TryAdd(entry.Key, entry.Value);
         var missing = new List<WalletAddressModel>();
         var catalogue = new List<WalletAddressModel>();
         foreach (var type in new[] { AddressType.P2Wpkh, AddressType.P2Tr })
@@ -63,7 +68,11 @@ public sealed class SilentPaymentRecoveryAddressSource(ISecureKeyManager keys, I
             }
         }
         if (missing.Count != 0)
+        {
             uow.WalletAddressesDbRepository.AddRange(missing);
+            foreach (var model in missing)
+                staged[(model.AddressType, model.IsChange, model.Index)] = model;
+        }
         return Task.FromResult<IReadOnlyList<WalletAddressModel>>(catalogue);
     }
 }

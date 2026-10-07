@@ -37,6 +37,22 @@ public partial class BitcoinWalletServiceTests
     }
 
     [Fact]
+    public async Task Given_RepositoryExcludesUnsavedRows_When_CatalogueIsExtendedInOneUnitOfWork_Then_NoDuplicateRowsAreStaged()
+    {
+        // Arrange: EF's no-tracking query cannot see Added entities until the caller commits.
+        _addresses.Setup(r => r.GetAllAddresses()).Returns(Array.Empty<WalletAddressModel>());
+        var source = RecoverySource();
+        // Act
+        await source.StageAddressesAsync(_unitOfWork.Object, 30, TestContext.Current.CancellationToken);
+        await source.StageAddressesAsync(_unitOfWork.Object, 40, TestContext.Current.CancellationToken);
+        await source.StageAddressesAsync(_unitOfWork.Object, 40, TestContext.Current.CancellationToken);
+        // Assert
+        Assert.Equal(160, _stored.Count);
+        _addresses.Verify(r => r.AddRange(It.IsAny<List<WalletAddressModel>>()), Times.Exactly(2));
+        _unitOfWork.Verify(u => u.SaveChangesAsync(), Times.Never);
+    }
+
+    [Fact]
     public async Task Given_ReservedCatalogue_When_RecoveryExtendsItsBound_Then_ReservationsAndNextAddressArePreserved()
     {
         // Arrange
