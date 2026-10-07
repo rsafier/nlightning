@@ -10,9 +10,11 @@ using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
+using Domain.Payments.Keysend;
 using Domain.Payments.Models;
 using Domain.Payments.Policies;
 using Domain.Persistence.Interfaces;
+using Keysend;
 using Routing;
 
 /// <summary>
@@ -41,6 +43,9 @@ public sealed partial class PaymentService
             throw new InvalidOperationException("No block has been processed yet; cannot set the HTLC expiry.");
 
         // ---- The identity: an invoice (hash, secret, amount, basic_mpp from it) or the raw form
+        if (request.CustomRecords.Count > 0 && request.KeysendPreimage is null)
+            throw new ArgumentException("Custom records are sent only with a keysend preimage.", nameof(request));
+        KeysendFinalRecords? keysend = null;
         PaymentTarget? invoiceTarget = null;
         string? bolt11 = null;
         Hash paymentHash;
@@ -69,6 +74,18 @@ public sealed partial class PaymentService
         {
             paymentHash = request.PaymentHash!.Value;
             paymentSecret = request.PaymentSecret ?? new Secret(new byte[32]);
+            if (request.KeysendPreimage is { } preimage)
+            {
+                if (request.Routes.Count != 1 || request.PaymentSecret is not null || request.TotalAmount is not null)
+                    throw new ArgumentException(
+                        "A keysend payment goes over one route without a payment secret or total.", nameof(request));
+                if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                        System.Security.Cryptography.SHA256.HashData((ReadOnlySpan<byte>)preimage),
+                        (ReadOnlySpan<byte>)paymentHash))
+                    throw new ArgumentException("The payment hash is not the keysend preimage's SHA256.",
+                                                nameof(request));
+                keysend = new KeysendFinalRecords(preimage, CustomRecordCodec.Validate(request.CustomRecords));
+            }
             minFinalCltvExpiryDelta = RawFormMinFinalCltvExpiryDelta;
             // The caller asserts the payee accepts a multi-part payment of this total; we cannot know (documented)
             supportsMpp = true;
@@ -213,6 +230,7 @@ public sealed partial class PaymentService
                                          deadline, now)
         {
             SuppliedRoutes = paymentRoutes,
+            Keysend = keysend,
             Labels = options.Labels
         };
         await RunSessionAsync(session, options.Timeout, cancellationToken);
@@ -299,7 +317,7 @@ public sealed partial class PaymentService
                 var amount = route.Route.FirstHopAmount.MilliSatoshi;
                 if (amount > LocalLiquidityEstimator.MaxSendableMsat(commitments, planned,
                                                                      route.Route.FirstHopCltvExpiry))
-                    throw new ArgumentException(
+                    throw new PayRouteLiquidityException(
                         $"Channel {group.Key} cannot carry {amount} msat more (with the {planned.Count} route(s) "
                       + "already on it): balance, reserve, fee, in-flight, HTLC-count or dust limit reached.",
                         nameof(routes));
@@ -338,3 +356,10 @@ public sealed partial class PaymentService
             _ => PaymentPartState.Failed
         };
 }
+
+/// <summary>
+/// A <c>payroute</c> refused before anything was offered because a first-hop channel cannot carry its routes
+/// (balance, reserve, fee, in-flight, HTLC-count or dust limit). LND reports that case as a
+/// <c>temporary_channel_failure</c> at our own node, which callers that probe routes rely on (NL-1242).
+/// </summary>
+public sealed class PayRouteLiquidityException(string message, string paramName) : ArgumentException(message, paramName);

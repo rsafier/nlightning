@@ -27,6 +27,12 @@ public sealed class RouteConstraints
     public HashSet<ShortChannelId> ExcludedChannels { get; } = [];
 
     /// <summary>
+    /// Graph channel directions that are not used (LND <c>QueryRoutes</c>' <c>ignored_pairs</c>, NL-1242): the
+    /// pathfinder skips the edge from one node to the other, the reverse direction stays usable.
+    /// </summary>
+    public HashSet<DirectedChannel> ExcludedEdges { get; } = [];
+
+    /// <summary>
     /// Our own channels that are not used (closed on chain, refused our onion).
     /// </summary>
     public HashSet<ChannelId> ExcludedLocalChannels { get; } = [];

@@ -30,4 +30,16 @@ public interface IRouteQueryService
     Task<RouteQuote> QuoteRouteAsync(CompactPubKey payee, LightningMoney amount, LightningMoney? maxFee,
                                      ushort? finalCltvDelta, CompactPubKey? trampolineNode = null,
                                      CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// LND <c>QueryRoutes</c> (NL-1242): the route a one-part payment of <see cref="RouteQueryRequest.Amount"/> to
+    /// <see cref="RouteQueryRequest.Payee"/> would take now under the query's restrictions (fee and CLTV limits,
+    /// ignored nodes and directed pairs, allowed first-hop channels, a fixed last hop, route hints, mission control
+    /// on or off), the destination's expiry exactly the height plus <see cref="RouteQueryRequest.FinalCltvDelta"/>.
+    /// The payee may be this node (a circular route back over one of our channels).
+    /// </summary>
+    /// <exception cref="ArgumentException">A zero amount or an impossible last hop.</exception>
+    /// <exception cref="InvalidOperationException">No block was processed yet, or no route fits (the message says
+    /// why).</exception>
+    Task<RouteQuote> QueryRouteAsync(RouteQueryRequest query, CancellationToken cancellationToken = default);
 }

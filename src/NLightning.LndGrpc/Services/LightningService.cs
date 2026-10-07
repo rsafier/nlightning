@@ -8,6 +8,7 @@ namespace NLightning.LndGrpc.Services;
 
 using Application.Gossip.Graph;
 using Application.Gossip.Graph.Interfaces;
+using Application.Payments.Routing.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Interfaces;
@@ -62,6 +63,7 @@ public sealed partial class LightningService : Lnrpc.Lightning.LightningBase
     private readonly LndRootKeyStore? _rootKeys;
     private readonly IPaymentEventSource? _paymentEvents;
     private readonly IChannelPolicyService? _channelPolicyService;
+    private readonly IRouteQueryService? _routeQuery;
     private readonly SemaphoreSlim _globalPolicyGate = new(1, 1);
 
     public LightningService(ILightningSigner signer, IOptions<NodeOptions> nodeOptions,
@@ -73,8 +75,10 @@ public sealed partial class LightningService : Lnrpc.Lightning.LightningBase
                             IReestablishTracker? reestablish = null, IGraphStore? graphStore = null,
                             IOptions<GossipGraphOptions>? graphOptions = null, ITcpService? tcpService = null,
                             INodeCommandDispatcher? dispatcher = null, LndRootKeyStore? rootKeys = null,
-                            IPaymentEventSource? paymentEvents = null, IChannelPolicyService? channelPolicyService = null)
+                            IPaymentEventSource? paymentEvents = null, IChannelPolicyService? channelPolicyService = null,
+                            IRouteQueryService? routeQuery = null)
     {
+        _routeQuery = routeQuery;
         _channelPolicyService = channelPolicyService;
         _paymentEvents = paymentEvents;
         _dispatcher = dispatcher;

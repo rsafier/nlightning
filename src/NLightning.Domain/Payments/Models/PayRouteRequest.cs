@@ -46,6 +46,17 @@ public sealed class PayRouteRequest
     /// </summary>
     public LightningMoney? TotalAmount { get; init; }
 
+    /// <summary>
+    /// A keysend payment over the supplied route (LND <c>SendToRouteV2</c> with a <c>keysend_preimage</c> record,
+    /// NL-1242): the payee's payload carries this preimage and <see cref="CustomRecords"/> instead of
+    /// <c>payment_data</c>. Raw form only, one route, and <see cref="PaymentHash"/> must be its SHA256.
+    /// </summary>
+    public Secret? KeysendPreimage { get; init; }
+
+    /// <summary>The payee's application records of a keysend payment (types of 65536 or more, not the keysend
+    /// preimage); none otherwise.</summary>
+    public IReadOnlyList<Keysend.CustomRecord> CustomRecords { get; init; } = [];
+
     /// <summary>The routes to offer, our peer first on each; 1 to 128 of them.</summary>
     public required IReadOnlyList<PayRouteRoute> Routes { get; init; }
 }

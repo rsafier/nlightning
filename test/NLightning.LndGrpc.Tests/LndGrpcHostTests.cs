@@ -70,6 +70,7 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
     private readonly Mock<IPeerManager> _peers = new();
     private readonly Mock<IChannelMemoryRepository> _channelMemory = new();
     private readonly Mock<IPaymentService> _paymentService = new();
+    private readonly Mock<Application.Payments.Routing.Interfaces.IRouteQueryService> _routeQuery = new();
     private readonly Mock<IHoldInvoiceService> _holdInvoices = new();
     private readonly Mock<IBitcoinWalletService> _wallet = new();
     private readonly Mock<IWalletSpendService> _walletSpend = new();
@@ -580,6 +581,7 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
         services.AddSingleton(_walletSpend.Object);
         services.AddSingleton(_fees.Object);
         services.AddSingleton(_paymentService.Object);
+        services.AddSingleton(_routeQuery.Object);
         services.AddSingleton(_holdInvoices.Object);
         services.AddSingleton<IPaymentEventSource>(_events);
         services.AddSingleton(_policies.Object);
