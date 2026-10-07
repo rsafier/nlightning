@@ -183,10 +183,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 0 | 97 | 97 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 236 | 497 | 817 |
+| fixed | 15 | 69 | 237 | 497 | 818 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **69** | **252** | **617** | **953** |
+| **Total** | **15** | **69** | **253** | **617** | **954** |
 
 ### Epics
 
@@ -10046,3 +10046,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** the PR #27 integration onto `wip/fafo` (2026-10-06, with PR #26's subscription feeds) failed it after 241 ms. LndGrpc.Tests ran 210/211 while the Application suite ran in parallel. The class passed 18/18 three times alone. The test exercises the interceptor hold/resolve path that NL-1234 changed (holds retained until the callback succeeds, both stream directions observed), so a real ordering race between the FAIL resolution and the switch is possible, not only harness timing.
 - **Fix sketch:** run the test under load in a loop. Check whether the FAIL can be answered before the hold is registered with the switch, or whether the assertion polls with a fixed deadline. Make the wait event-driven.
 - **Blocks/Blocked-by:** related NL-1234, NL-1182
+
+### NL-1233 A final payload without `payment_data` answered `invalid_onion_payload`, so LND probes (Loop's static loop-in) saw us unreachable
+- **Status:** fixed (91759661)
+- **Severity:** medium
+- **Kind:** bug (interop)
+- **Location:** `src/NLightning.Domain/Protocol/Onion/Validators/HopPayloadValidator.cs` (`ValidateNonBlinded`)
+- **Evidence:** public signet Loop trial (`LOOP_SIGNET_TRIAL.md`, 2026-10-06): `loop static in` failed with the server's "loop in failed" after its probe logged "target unreachable". The Loop server probes the client node with a random payment hash and no MPP record (260,000,000 msat); our switch failed it with `invalid_onion_payload` on type 8. BOLT 4 answers a missing required `payment_secret` and an unknown `payment_hash` with `incorrect_or_unknown_payment_details`, and LND counts only that as the destination reached. Classic loop-in was not affected (its probe invoice carries a payment secret).
+- **Fix:** the validator no longer requires `payment_data` at a non-blinded final hop. `FinalHopProcessor` already refuses a payment without it (keysend aside) with `incorrect_or_unknown_payment_details` ("The final payload has no payment_data."). Trampoline outer payloads and blinded hops keep their own rules. Tests updated: `HopPayloadValidatorTests`, `HopPayloadValidatorKeysendTests`, `HopPayloadValidatorTrampolineTests`, `IncomingOnionProcessorTests`; `FinalHopProcessorTests.Given_NoPaymentData_*` already pins the 0x400F answer.
+- **Blocks/Blocked-by:** none
