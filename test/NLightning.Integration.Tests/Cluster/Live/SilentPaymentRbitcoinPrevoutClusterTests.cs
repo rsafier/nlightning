@@ -16,7 +16,7 @@ using Testing.Cluster.Nodes.BitcoinCore;
 using Testing.Cluster.Nodes.Rbitcoin;
 using Testing.Cluster.Run;
 
-/// <summary>Optional explicit backend contract, requiring the existing pinned rbitcoin image to be built first.</summary>
+/// <summary>Explicit alternative-backend contract, requiring the existing pinned rbitcoin image to be built first.</summary>
 [Trait("Category", "Cluster")]
 public sealed class SilentPaymentRbitcoinPrevoutClusterTests
 {
