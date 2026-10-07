@@ -85,6 +85,10 @@ public interface IUtxoMemoryRepository
     /// <summary>Clears the reservation <paramref name="reservationId"/> from every outpoint that carries it.</summary>
     void ReleaseFeeReservation(Guid reservationId);
 
+    /// <summary>A snapshot of every outpoint carrying this reservation, including temporarily missing reorg outputs.</summary>
+    IReadOnlyList<(TxId TxId, uint Index)> GetFeeReservedOutpoints(Guid reservationId) =>
+        throw new NotSupportedException("This wallet repository cannot enumerate fee reservations.");
+
     /// <summary>The fee reservation of an outpoint, if any (the outpoint need not be in the UTXO set).</summary>
     bool TryGetFeeReservation(TxId txId, uint index, out Guid reservationId);
 

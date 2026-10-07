@@ -789,7 +789,7 @@ public partial class LocalLightningSigner : ILightningSigner
                     $"Wallet input {i} ({prevOut}) belongs to fee reservation {reservationId}, not {expected}");
             if (utxo.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
                 throw new SignerException($"Wallet input {i} ({prevOut}) has unsupported type {utxo.AddressType}");
-            if (utxo.WalletAddress is null)
+            if (utxo.WalletAddress is null && utxo.SilentPayment is null)
                 throw new SignerException(
                     $"Wallet input {i} ({prevOut}) has no wallet address to check its derived key against");
 
@@ -841,7 +841,9 @@ public partial class LocalLightningSigner : ILightningSigner
                 if (walletUtxos[i] is null)
                     continue;
 
-                if (taprootKeyPairs[i] is { } taprootKeyPair)
+                if (walletUtxos[i]!.SilentPayment is not null)
+                    SignRawTaprootInput(tx, i, signingKeys[i]!, allPrevOuts!);
+                else if (taprootKeyPairs[i] is { } taprootKeyPair)
                     SignP2TrInput(tx, i, taprootKeyPair, allPrevOuts!);
                 else
                     SignP2WpkhInput(tx, i, signingKeys[i]!, prevOuts[i]!);
@@ -906,6 +908,7 @@ public partial class LocalLightningSigner : ILightningSigner
                 $"Failed to load transaction from RawTxBytes. TxId hint: {unsignedTransaction.TxId}", ex);
         }
 
+        var fundingSigningKeys = new Key?[nBitcoinTx.Inputs.Count];
         try
         {
             // Verify the funding output exists and is correct
@@ -939,7 +942,7 @@ public partial class LocalLightningSigner : ILightningSigner
 
             var signedInputCount = 0;
             var prevOuts = new TxOut[nBitcoinTx.Inputs.Count];
-            var signingKeys = new Key?[nBitcoinTx.Inputs.Count];
+            var signingKeys = fundingSigningKeys;
             var taprootKeyPairs = new TaprootKeyPair?[nBitcoinTx.Inputs.Count];
             var utxos = new UtxoModel[nBitcoinTx.Inputs.Count];
 
@@ -957,7 +960,7 @@ public partial class LocalLightningSigner : ILightningSigner
                                $"No locked UTXO for input {i} ({input.PrevOut}) of the funding transaction", channelId,
                                "Signing error");
 
-                if (utxo.WalletAddress is null)
+                if (utxo.WalletAddress is null && utxo.SilentPayment is null)
                     throw new SignerException(
                         $"The UTXO of input {i} ({input.PrevOut}) of the funding transaction has no wallet address",
                         channelId, "Signing error");
@@ -966,43 +969,11 @@ public partial class LocalLightningSigner : ILightningSigner
 
                 try
                 {
-                    // Create the scriptPubKey and previous output based on the address type
-                    Script scriptPubKey;
-                    ExtPrivKey signingExtKey;
-                    Key? signingKey = null;
-                    TaprootKeyPair? taprootKeyPair = null;
-
-                    switch (utxo.AddressType)
-                    {
-                        case AddressType.P2Wpkh:
-                            // Derive the key for this specific UTXO
-                            signingExtKey =
-                                _secureKeyManager.GetDepositP2WpkhKeyAtIndex(
-                                    utxo.WalletAddress.Index, utxo.WalletAddress.IsChange);
-                            signingKey = ExtKey.CreateFromBytes(signingExtKey).PrivateKey;
-                            // For P2WPKH: OP_0 <20-byte-pubkey-hash>
-                            scriptPubKey = signingKey.PubKey.WitHash.ScriptPubKey;
-                            break;
-
-                        case AddressType.P2Tr:
-                            // Derive the key for this specific UTXO
-                            signingExtKey =
-                                _secureKeyManager.GetDepositP2TrKeyAtIndex(
-                                    utxo.WalletAddress.Index, utxo.WalletAddress.IsChange);
-                            var rootKey = ExtKey.CreateFromBytes(signingExtKey).PrivateKey;
-                            // For P2TR (Taproot): OP_1 <32-byte-taproot-output>
-                            taprootKeyPair = rootKey.CreateTaprootKeyPair();
-                            scriptPubKey = taprootKeyPair.PubKey.ScriptPubKey;
-                            break;
-
-                        default:
-                            throw new SignerException($"Unsupported address type {utxo.AddressType} for input {i}",
-                                                      channelId);
-                    }
-
-                    signingKeys[i] = signingKey;
-                    taprootKeyPairs[i] = taprootKeyPair;
-                    prevOuts[i] = new TxOut(new Money(utxo.Amount.Satoshi), scriptPubKey);
+                    if (utxo.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
+                        throw new SignerException($"Unsupported address type {utxo.AddressType} for input {i}", channelId);
+                    prevOuts[i] = DeriveWalletPrevOut(utxo, out signingKeys[i], out taprootKeyPairs[i]);
+                    if (prevOuts[i].ScriptPubKey != GetWalletAddressScript(utxo, i))
+                        throw new SignerException($"Funding input {i}: the key does not match its recorded output.", channelId);
                 }
                 catch (Exception ex)
                 {
@@ -1033,6 +1004,11 @@ public partial class LocalLightningSigner : ILightningSigner
                             SignP2WpkhInput(nBitcoinTx, i, signingKey, prevOut);
                             break;
                         case AddressType.P2Tr:
+                            if (utxo.SilentPayment is not null)
+                            {
+                                SignRawTaprootInput(nBitcoinTx, i, signingKey!, prevOuts);
+                                break;
+                            }
                             if (taprootKeyPair is null)
                                 throw new SignerException($"Missing taproot key pair for P2TR input {i}", channelId);
 
@@ -1060,6 +1036,14 @@ public partial class LocalLightningSigner : ILightningSigner
             if (signedInputCount == 0)
                 throw new SignerException("No inputs were successfully signed", channelId, "Signing failed");
 
+            var validator = nBitcoinTx.CreateValidator(prevOuts);
+            for (var i = 0; i < nBitcoinTx.Inputs.Count; i++)
+            {
+                var error = validator.ValidateInput(i).Error;
+                if (error is not null and not ScriptError.OK)
+                    throw new SignerException($"Funding input {i} failed verification: {error}", channelId);
+            }
+
             // Update the transaction bytes in the SignedTransaction
             unsignedTransaction.RawTxBytes = nBitcoinTx.ToBytes();
 
@@ -1077,6 +1061,11 @@ public partial class LocalLightningSigner : ILightningSigner
         {
             throw new SignerException($"Exception during funding transaction signing for TxId {nBitcoinTx.GetHash()}",
                                       channelId, e);
+        }
+        finally
+        {
+            foreach (var key in fundingSigningKeys)
+                key?.Dispose();
         }
     }
 
@@ -1622,6 +1611,8 @@ public partial class LocalLightningSigner : ILightningSigner
     {
         try
         {
+            if (utxo.SilentPayment is { } silentPayment)
+                return RawTaprootScript(silentPayment.OutputKey);
             return BitcoinAddress.Create(utxo.WalletAddress!.Address, _network).ScriptPubKey;
         }
         catch (FormatException e)
@@ -1638,6 +1629,21 @@ public partial class LocalLightningSigner : ILightningSigner
     {
         signingKey = null;
         taprootKeyPair = null;
+
+        if (utxo.SilentPayment is { } silentPayment)
+        {
+            var scalar = _secureKeyManager.GetSilentPaymentSpendKey(silentPayment.Tweak, silentPayment.Label);
+            try
+            {
+                signingKey = new Key(scalar);
+                return new TxOut(Money.Satoshis(utxo.Amount.Satoshi),
+                                 RawTaprootScript(signingKey.PubKey.ToBytes().AsSpan(1)));
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(scalar);
+            }
+        }
 
         byte[] extKeyBytes = utxo.AddressType == AddressType.P2Wpkh
                                  ? _secureKeyManager.GetDepositP2WpkhKeyAtIndex(utxo.AddressIndex,

@@ -60,7 +60,11 @@ internal sealed class FakeWalletUtxoRepository : IUtxoMemoryRepository
                                                        IReadOnlySet<(TxId TxId, uint Index)> excludedOutpoints) =>
         throw new NotSupportedException();
 
-    public List<UtxoModel> GetLockedUtxosForChannel(ChannelId channelId) => throw new NotSupportedException();
+    public List<UtxoModel> GetLockedUtxosForChannel(ChannelId channelId)
+    {
+        lock (_lock)
+            return _utxos.Values.Where(utxo => utxo.LockedToChannelId == channelId).ToList();
+    }
     public List<UtxoModel> ReturnUtxosNotSpentOnChannel(ChannelId channelId) => throw new NotSupportedException();
     public void ConfirmSpendOnChannel(ChannelId channelId) => throw new NotSupportedException();
 
@@ -100,6 +104,12 @@ internal sealed class FakeWalletUtxoRepository : IUtxoMemoryRepository
             foreach (var key in _reservations.Where(r => r.Value == reservationId).Select(r => r.Key).ToList())
                 _reservations.Remove(key);
         }
+    }
+
+    public IReadOnlyList<(TxId TxId, uint Index)> GetFeeReservedOutpoints(Guid reservationId)
+    {
+        lock (_lock)
+            return _reservations.Where(pair => pair.Value == reservationId).Select(pair => pair.Key).ToArray();
     }
 
     public bool TryGetFeeReservation(TxId txId, uint index, out Guid reservationId)

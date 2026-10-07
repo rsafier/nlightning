@@ -274,6 +274,12 @@ public class UtxoMemoryRepository : IUtxoMemoryRepository
         }
     }
 
+    public IReadOnlyList<(TxId TxId, uint Index)> GetFeeReservedOutpoints(Guid reservationId)
+    {
+        lock (_reservationLock)
+            return _feeReservations.Where(pair => pair.Value == reservationId).Select(pair => pair.Key).ToArray();
+    }
+
     public bool TryGetFeeReservation(TxId txId, uint index, out Guid reservationId)
     {
         lock (_reservationLock)

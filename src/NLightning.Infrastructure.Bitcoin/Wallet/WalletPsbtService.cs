@@ -92,7 +92,7 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
         var result = new List<WalletUnspentOutput>();
         foreach (var utxo in _utxoMemoryRepository.GetUnreservedUtxos())
         {
-            if (utxo.LockedToChannelId is not null || utxo.WalletAddress is null
+            if (utxo.LockedToChannelId is not null || (utxo.WalletAddress is null && utxo.SilentPayment is null)
                                                    || pending.Contains((utxo.TxId, utxo.Index)))
                 continue;
 
@@ -103,7 +103,7 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
             Script script;
             try
             {
-                script = BitcoinAddress.Create(utxo.WalletAddress.Address, _network).ScriptPubKey;
+                script = WalletUtxoScript(utxo);
             }
             catch (FormatException)
             {
@@ -111,7 +111,7 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
             }
 
             result.Add(new WalletUnspentOutput(utxo.TxId, utxo.Index, utxo.Amount, utxo.AddressType,
-                                               utxo.WalletAddress.Address, script.ToBytes(), confirmations));
+                                               script.GetDestinationAddress(_network)?.ToString() ?? string.Empty, script.ToBytes(), confirmations));
         }
 
         return result.OrderBy(u => u.Confirmations).ThenBy(u => u.TxId.ToString()).ThenBy(u => u.Index).ToList();
@@ -607,6 +607,13 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
                                rest.Count - again.Count, reservation.Purpose);
     }
 
+    private Script WalletUtxoScript(UtxoModel utxo)
+    {
+        if (utxo.SilentPayment is { } silentPayment)
+            return new Script([0x51, 0x20, .. silentPayment.OutputKey]);
+        return BitcoinAddress.Create(utxo.WalletAddress!.Address, _network).ScriptPubKey;
+    }
+
     /// <summary>The spent outputs of <paramref name="tx"/>, every one of which must be a leased wallet output.</summary>
     private async Task<List<TxOut>> RequireLeasedWalletInputsAsync(Transaction tx, CancellationToken cancellationToken)
     {
@@ -615,7 +622,7 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
         foreach (var input in tx.Inputs)
         {
             var txId = new TxId(input.PrevOut.Hash.ToBytes());
-            if (!_utxoMemoryRepository.TryGetUtxo(txId, input.PrevOut.N, out var utxo) || utxo.WalletAddress is null)
+            if (!_utxoMemoryRepository.TryGetUtxo(txId, input.PrevOut.N, out var utxo) || (utxo.WalletAddress is null && utxo.SilentPayment is null))
                 throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
                                               $"input {input.PrevOut} is not a wallet output");
             if (!_utxoMemoryRepository.TryGetFeeReservation(txId, input.PrevOut.N, out var reservationId))
@@ -632,7 +639,7 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
                                               $"input {input.PrevOut} is reserved for another spend of this node");
 
             spent.Add(new TxOut(Money.Satoshis(utxo.Amount.Satoshi),
-                                BitcoinAddress.Create(utxo.WalletAddress.Address, _network).ScriptPubKey));
+                                WalletUtxoScript(utxo)));
         }
 
         return spent;
