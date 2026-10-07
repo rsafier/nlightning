@@ -344,6 +344,49 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         Assert.Single(await UnspentAsync());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_PolicyIgnoredReceipt_When_ThresholdLoweredAndRescanned_Then_ActualHistoricalOwnershipIsRecovered(bool alreadySpent)
+    {
+        // Arrange: under the old policy a match is retained as ignored metadata, without wallet accounting.
+        _options.MinReceiveSat = 1_000;
+        var received = AddReceipt(1, 500);
+        if (alreadySpent)
+            AddSpend(2, received);
+        using var service = CreateService();
+        await service.GetAddressAsync(cancellationToken: TestContext.Current.CancellationToken);
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+        for (var i = 0; i < 5; i++)
+            await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(1, (await service.GetStatusAsync(TestContext.Current.CancellationToken)).IgnoredOutputs);
+        Assert.Empty(await UnspentAsync());
+
+        // Act: rescan with the operator's new minimum; a historical receipt still cannot become selectable early.
+        _options.MinReceiveSat = 0;
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+        Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        Assert.Empty(await UnspentAsync());
+        Assert.Empty(_provider.GetRequiredService<IUtxoMemoryRepository>().GetUnreservedUtxos());
+        for (var i = 0; i < 4; i++)
+            await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var status = await service.GetStatusAsync(TestContext.Current.CancellationToken);
+        Assert.False(status.IsRescanning);
+        Assert.Equal(0, status.IgnoredOutputs);
+        Assert.Equal(1, status.FoundOutputs);
+        Assert.Equal(alreadySpent ? 0 : 1, (await UnspentAsync()).Length);
+        using var scope = _provider.CreateScope();
+        var work = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var output = Assert.Single(await work.SilentPaymentDbRepository.GetOutputsAsync(TestContext.Current.CancellationToken));
+        Assert.False(output.Ignored);
+        Assert.Equal(alreadySpent, output.SpentByTransactionId is not null);
+        var events = await work.AccountingEventDbRepository.GetByKeyPrefixAsync("wallet:", TestContext.Current.CancellationToken);
+        Assert.Equal(alreadySpent ? 2 : 1, events.Count);
+        Assert.Equal(alreadySpent ? 0 : 500_000L, events.Sum(fact => fact.AmountMsat));
+    }
+
     private SilentPaymentService CreateService(IServiceScopeFactory? scopes = null) => new(scopes ?? _provider.GetRequiredService<IServiceScopeFactory>(), _chain.Object,
         _monitor.Object, _prevouts.Object, _scanner, _keys, _crypto, MsOptions.Create(_options),
         MsOptions.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }), NullLogger<SilentPaymentService>.Instance);
