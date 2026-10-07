@@ -252,7 +252,8 @@ public partial class BlockchainMonitorService
     }
 
     private void CollectWalletOutputSpent(UtxoModel spent, Transaction spender, WalletTransactionSource source,
-                                          IUtxoMemoryRepository? utxoMemoryRepository, BlockEffects effects)
+                                          IUtxoMemoryRepository? utxoMemoryRepository, BlockEffects effects,
+                                          DateTimeOffset? occurredAt = null)
     {
         string? reservation = null;
         if (utxoMemoryRepository?.TryGetFeeReservation(spent.TxId, spent.Index, out var reservationId) == true)
@@ -274,7 +275,7 @@ public partial class BlockchainMonitorService
                                    AccountingEventKeys.WalletOutputSpent(spent.TxId, spent.Index),
                                    key => NewOnchainEvent(key, AccountingEventKind.WalletOutputSpent, effects.Height,
                                                           spent.TxId, spent.Index, channelId, amountMsat, 0,
-                                                          details)));
+                                                          details, occurredAt)));
     }
 
     /// <summary>
