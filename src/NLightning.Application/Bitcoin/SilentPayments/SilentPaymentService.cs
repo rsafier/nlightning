@@ -21,6 +21,7 @@ using Domain.Bitcoin.Wallet.Models;
 using Domain.Crypto.ValueObjects;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
+using Infrastructure.Bitcoin.Networks;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Bitcoin.Wallet.SilentPayments;
 using Hash = Domain.Crypto.ValueObjects.Hash;
@@ -244,6 +245,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
                 await RequireCanonicalAsync(block, height, cancellationToken);
                 if (height == uint.MaxValue) break;
             }
+        var pendingSpends = false;
         foreach (var output in outputs.Where(output => !output.Ignored && output.SpentByTransactionId is null))
         {
             if (auditedSpends.Contains((output.TransactionId, output.Index))) continue;
@@ -254,6 +256,12 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
             if (proof.Value.Output.Value.Satoshi != output.AmountSats ||
                 !proof.Value.Output.ScriptPubKey.ToBytes().AsSpan().SequenceEqual(new byte[] { 0x51, 0x20 }.Concat(output.OutputKey).ToArray()))
                 throw new InvalidOperationException("Recovered output differs from its current-chain proof.");
+            if (await chain.GetUnspentOutputAsync(new OutPoint(new uint256(output.TransactionId), output.Index))
+                    .WaitAsync(cancellationToken) is null)
+            {
+                pendingSpends = true;
+                continue;
+            }
             if (await uow.UtxoDbRepository.GetByIdAsync(output.TransactionId, output.Index) is null)
                 uow.AddUtxo(new UtxoModel(output));
         }
@@ -261,10 +269,10 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
             throw new InvalidOperationException("Chain changed during silent payment recovery finalization.");
         await ValidateCursorAsync(state, cancellationToken);
         await uow.SilentPaymentDbRepository.SetScanStateAsync(state with
-        { RescanTargetHeight = null }, cancellationToken);
+        { RescanTargetHeight = pendingSpends ? state.RescanTargetHeight : null }, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         await uow.SaveChangesAsync();
-        return true;
+        return !pendingSpends;
     }
 
     private async Task StageFactAsync(IUnitOfWork uow, SilentPaymentOutputModel output, TxId? spender,
@@ -292,8 +300,10 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
             OccurredAt = block.Header.BlockTime, BlockHeight = height, TxId = output.TransactionId, OutputIndex = output.Index,
             AmountMsat = checked(output.AmountSats * 1000) * (spender is null ? 1 : -1), Finality = AccountingFinality.Confirmed,
             Details = AccountingDetailsCodec.Create((AccountingDetailKeys.Source, source), ("addressType", "P2Tr"),
+                ("address", new Script(new byte[] { 0x51, 0x20 }.Concat(output.OutputKey).ToArray())
+                    .GetDestinationAddress(nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork())?.ToString()),
                 ("receiptSource", "silent_payment"), ("silentPayment", "true"), (AccountingDetailKeys.Label, name),
-                ("spLabel", output.Label?.ToString(CultureInfo.InvariantCulture)), ("spentBy", spender?.ToString()))
+                ("silentPaymentLabel", output.Label?.ToString(CultureInfo.InvariantCulture)), ("spentBy", spender?.ToString()))
         });
     }
 
