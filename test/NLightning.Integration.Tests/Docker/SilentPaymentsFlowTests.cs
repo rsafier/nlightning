@@ -179,7 +179,10 @@ public sealed class SilentPaymentsFlowTests
         Assert.Equal(recoveredSet, SilentCoins(b).Select(Outpoint).Order().ToArray());
         await ReconcileAsync(b, ct);
 
-        // Restore from the encrypted key file and an empty database; labels are recovered by bounded probing.
+        // Restore every wallet output, including the ordinary change produced by the default withdrawal policy.
+        var totalCustodyBeforeRestore = await ReadWalletCustodyAsync(b, ct);
+        Assert.Contains(totalCustodyBeforeRestore, coin => !coin.IsSilentPayment);
+        var totalAmountBeforeRestore = totalCustodyBeforeRestore.Sum(coin => coin.AmountSats);
         await b.StopAsync();
         SqliteTestPools.Clear(b.DatabaseFilePath!);
         b.DeleteFiles();
@@ -196,6 +199,12 @@ public sealed class SilentPaymentsFlowTests
         await ClusterPoll.UntilAsync(async token => !(await restore.GetStatusAsync(token)).IsRescanning,
             s_timeout, TimeSpan.FromMilliseconds(250), "silent payment restore finishes", ct);
         Assert.Equal(recoveredSet, SilentCoins(b).Select(Outpoint).Order().ToArray());
+        var totalCustodyAfterRestore = await ReadWalletCustodyAsync(b, ct);
+        Assert.Equal(totalCustodyBeforeRestore, totalCustodyAfterRestore);
+        Assert.Equal(totalAmountBeforeRestore, totalCustodyAfterRestore.Sum(coin => coin.AmountSats));
+        Assert.Equal(totalCustodyBeforeRestore.Select(coin => coin.Outpoint).ToArray(),
+            b.Services.GetRequiredService<IUtxoMemoryRepository>().GetUnreservedUtxos().Select(Outpoint).Order().ToArray());
+        Log($"SP restore {mode}: exact total custody restored, including ordinary change ({totalAmountBeforeRestore} sat).");
         await ReconcileAsync(b, ct);
 
         // Fund a real channel using the received silent coins, rather than topping up B with an ordinary deposit.
@@ -225,6 +234,18 @@ public sealed class SilentPaymentsFlowTests
         .GetUnreservedUtxos().Where(coin => coin.SilentPayment is not null).ToList();
 
     private static string Outpoint(UtxoModel coin) => $"{new uint256((byte[])coin.TxId)}:{coin.Index}";
+
+    private sealed record WalletCustodyCoin(string Outpoint, long AmountSats, bool IsSilentPayment);
+
+    private static async Task<WalletCustodyCoin[]> ReadWalletCustodyAsync(NLightningTestNode node, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        using var scope = node.Services.CreateScope();
+        var coins = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().UtxoDbRepository
+            .GetUnspentAsync(includeWalletAddress: true);
+        return coins.Select(coin => new WalletCustodyCoin(Outpoint(coin), coin.Amount.Satoshi, coin.SilentPayment is not null))
+            .OrderBy(coin => coin.Outpoint).ToArray();
+    }
 
     private static async Task AssertSilentCustodyAsync(NLightningTestNode node, RPCClient core, string[] expected,
         CancellationToken ct)
