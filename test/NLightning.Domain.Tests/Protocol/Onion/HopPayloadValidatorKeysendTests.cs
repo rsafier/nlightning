@@ -40,19 +40,16 @@ public class HopPayloadValidatorKeysendTests
     }
 
     [Fact]
-    public void Given_FinalPayloadWithoutPaymentDataOrKeysend_When_Validating_Then_PaymentDataMissing()
+    public void Given_FinalPayloadWithoutPaymentDataOrKeysend_When_Validating_Then_LeftToTheFinalHopProcessor()
     {
-        // Arrange
+        // Arrange (NL-1230: the final hop processor answers it with incorrect_or_unknown_payment_details)
         var payload = new HopPayload(Amt, Cltv, new BaseTlv(new BigSize(65537), [0x01]));
 
         // Act
-        var exception = Assert.Throws<OnionException>(() => HopPayloadValidator.Validate(payload, true, false));
+        var isValid = HopPayloadValidator.TryValidate(payload, true, false, out var error);
 
         // Assert
-        Assert.Equal(FailureCode.InvalidOnionPayload, exception.FailureCode);
-        Assert.True(InvalidOnionPayloadFailureFactory.TryDecodeData(exception.FailureData!.Value.Span, out var type,
-                                                                    out _));
-        Assert.Equal(OnionPayloadTlvTypes.PaymentData, type);
+        Assert.True(isValid, error?.Message);
     }
 
     [Fact]

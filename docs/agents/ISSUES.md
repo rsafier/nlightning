@@ -181,10 +181,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 0 | 97 | 97 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 234 | 495 | 813 |
+| fixed | 15 | 69 | 235 | 495 | 814 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 6 | 9 |
-| **Total** | **15** | **69** | **250** | **614** | **948** |
+| **Total** | **15** | **69** | **251** | **614** | **949** |
 
 ### Epics
 
@@ -9990,4 +9990,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `test/NLightning.Application.Tests/Gossip/Announcements/Announcement2HarnessTests.cs` (`Given_APublicTaprootChannel_When_BothReachTheDepth_Then_BothPublishTheSameValidAnnouncement2`)
 - **Evidence:** the codec-cleanup integration's full net10.0 run (2026-10-06, `wip/fafo` at `963e48e9`, beside a cluster build) failed it after 325 ms; the class passed 11/11 three times alone and the next full run (at `e9595727`) passed it. Not a codec regression: the interop matrix (lnd, cln, eclair, ldk, gossip, eclair2, taproot) was green on the same code.
 - **Fix sketch:** find the harness wait that races the two announcements (both nodes reaching the depth and exchanging `announcement_signatures_2` nonces) and make it event-driven.
+- **Blocks/Blocked-by:** none
+
+### NL-1230 A final payload without `payment_data` answered `invalid_onion_payload`, so LND probes (Loop's static loop-in) saw us unreachable
+- **Status:** fixed (wip/signet-loop)
+- **Severity:** medium
+- **Kind:** bug (interop)
+- **Location:** `src/NLightning.Domain/Protocol/Onion/Validators/HopPayloadValidator.cs` (`ValidateNonBlinded`)
+- **Evidence:** public signet Loop trial (`LOOP_SIGNET_TRIAL.md`, 2026-10-06): `loop static in` failed with the server's "loop in failed" after its probe logged "target unreachable". The Loop server probes the client node with a random payment hash and no MPP record (260,000,000 msat); our switch failed it with `invalid_onion_payload` on type 8. BOLT 4 answers a missing required `payment_secret` and an unknown `payment_hash` with `incorrect_or_unknown_payment_details`, and LND counts only that as the destination reached. Classic loop-in was not affected (its probe invoice carries a payment secret).
+- **Fix:** the validator no longer requires `payment_data` at a non-blinded final hop. `FinalHopProcessor` already refuses a payment without it (keysend aside) with `incorrect_or_unknown_payment_details` ("The final payload has no payment_data."). Trampoline outer payloads and blinded hops keep their own rules. Tests updated: `HopPayloadValidatorTests`, `HopPayloadValidatorKeysendTests`, `HopPayloadValidatorTrampolineTests`, `IncomingOnionProcessorTests`; `FinalHopProcessorTests.Given_NoPaymentData_*` already pins the 0x400F answer.
 - **Blocks/Blocked-by:** none

@@ -147,9 +147,10 @@ public class IncomingOnionProcessorTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_FinalPayloadWithoutPaymentData_When_Processed_Then_InvalidOnionPayloadType8()
+    public async Task Given_FinalPayloadWithoutPaymentData_When_Processed_Then_LeftToTheFinalHopProcessor()
     {
-        // Arrange
+        // Arrange (NL-1230: not invalid_onion_payload; the final hop processor answers
+        // incorrect_or_unknown_payment_details, which LND's probes read as the destination reached)
         var payload = new HopPayload(new AmtToForwardTlv(LightningMoney.MilliSatoshis(1_000)),
                                      new OutgoingCltvValueTlv(500));
         var onion = BuildOnion(await SerializeAsync(payload));
@@ -158,9 +159,8 @@ public class IncomingOnionProcessorTests : IDisposable
         var result = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash, s_replayOwner);
 
         // Assert
-        var failed = Assert.IsType<IncomingOnionFailed>(result);
-        Assert.Equal(FailureCode.InvalidOnionPayload, failed.Failure.Code);
-        Assert.Equal(OnionPayloadTlvTypes.PaymentData, failed.Failure.InvalidPayloadType);
+        var final = Assert.IsType<IncomingOnionFinal>(result);
+        Assert.Null(final.Payload.PaymentData);
     }
 
     [Fact]

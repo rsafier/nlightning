@@ -30,10 +30,11 @@ using Protocol.ValueObjects;
 /// </para>
 /// <para>
 /// Custom records (types of 65536 and up, <see cref="OnionPayloadTlvTypes.CustomRecordTypeStart"/>) are accepted
-/// whatever their parity at a final hop, as LND does (keysend's own record is even), and a non-blinded final hop with a
-/// <c>keysend_preimage</c> needs no <c>payment_data</c> (keysend, a spontaneous payment without an invoice; lane
-/// lh1-l3). This is an interop deviation from BOLT 1 ("if type is even: MUST fail to parse") limited to the final
-/// hop, the only place a custom record means anything: a forwarding hop keeps BOLT 1's strictness (LND accepts them at
+/// whatever their parity at a final hop, as LND does (keysend's own record is even). A non-blinded final hop needs no
+/// <c>payment_data</c> here: keysend pays without it (lane lh1-l3), and any other payment without it is refused by the
+/// final hop processor with <c>incorrect_or_unknown_payment_details</c>, BOLT 4's error for a missing required
+/// <c>payment_secret</c> and an unknown hash (NL-1230, what LND's probes expect). Accepting even custom records is an
+/// interop deviation from BOLT 1 ("if type is even: MUST fail to parse") limited to the final hop, the only place a custom record means anything: a forwarding hop keeps BOLT 1's strictness (LND accepts them at
 /// every hop), and a blinded hop allows only its fixed set of types.
 /// </para>
 /// <para>
@@ -283,12 +284,11 @@ public static class HopPayloadValidator
 
         // A short_channel_id at the final node is ignored: "MUST NOT include" it is a writer-only rule.
 
-        // BOLT 4 reader, final node: "MUST return an error if total_msat is not present". Outside a blinded route
-        // total_msat is carried only by payment_data. A keysend payment (keysend_preimage, no invoice, so no
-        // payment_secret) is paid in one HTLC without it, as LND and CLN send it: its total is amt_to_forward
-        return payload.PaymentData is null && payload.KeysendPreimage is null
-                   ? Missing(payload, OnionPayloadTlvTypes.PaymentData, "payment_data (total_msat)")
-                   : null;
+        // A missing payment_data (total_msat and payment_secret) is not a malformed onion: BOLT 4's failure rules
+        // answer a missing required payment_secret and an unknown payment_hash with incorrect_or_unknown_payment_details,
+        // which the final hop processor sends. LND's probes (random hash, no MPP record; Loop's static loop-in probe)
+        // count only that error as the destination reached (NL-1230). Keysend pays without payment_data (lane lh1-l3).
+        return null;
     }
 
     private static bool IsUnknown(BigSize type, bool allowTrampoline) =>
