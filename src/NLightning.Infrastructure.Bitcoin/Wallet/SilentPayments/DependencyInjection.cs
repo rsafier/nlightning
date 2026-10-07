@@ -37,6 +37,7 @@ public static class DependencyInjection
             sp.GetRequiredService<IOptions<BitcoinOptions>>(), sp.GetRequiredService<IOptions<NodeOptions>>(),
             sp.GetRequiredService<IOptions<SilentPaymentsOptions>>().Value.PrevoutSource));
         services.TryAddSingleton<SilentPaymentScanner>();
+        services.TryAddSingleton<ISilentPaymentRecoveryAddressSource, SilentPaymentRecoveryAddressSource>();
         return services;
     }
 
