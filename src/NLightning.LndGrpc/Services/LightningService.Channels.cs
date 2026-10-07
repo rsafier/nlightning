@@ -66,7 +66,8 @@ public sealed partial class LightningService
     /// for the funder, without the commitment fee and both anchors. <c>commit_fee</c> is that commitment's base fee
     /// (LND also counts trimmed HTLCs and rounding there). <c>chan_id</c> is the SCID as uint64, 0 before it is known.
     /// </remarks>
-    public override Task<ListChannelsResponse> ListChannels(ListChannelsRequest request, ServerCallContext context)
+    public override async Task<ListChannelsResponse> ListChannels(ListChannelsRequest request,
+                                                                  ServerCallContext context)
     {
         if (request.ActiveOnly && request.InactiveOnly)
             throw InvalidArgument("either `active_only` or `inactive_only` can be set, but not both");
@@ -83,9 +84,12 @@ public sealed partial class LightningService
 
         var graph = request.PeerAliasLookup ? Graph : null;
         var response = new ListChannelsResponse();
-        foreach (var channel in _channels.FindChannels(IsListed)
-                                         .OrderBy(c => c.ShortChannelId.BlockHeight)
-                                         .ThenBy(c => c.ShortChannelId.TransactionIndex))
+        var listed = _channels.FindChannels(IsListed)
+                              .OrderBy(c => c.ShortChannelId.BlockHeight)
+                              .ThenBy(c => c.ShortChannelId.TransactionIndex)
+                              .ToList();
+        var traffic = await ChannelTrafficAsync(listed, context.CancellationToken);
+        foreach (var channel in listed)
         {
             var active = IsActive(channel);
             if ((request.ActiveOnly && !active) || (request.InactiveOnly && active)
@@ -96,10 +100,16 @@ public sealed partial class LightningService
             var item = ToLndChannel(channel, active);
             if (graph is not null && graph.TryGetNode(channel.RemoteNodeId, out var node))
                 item.PeerAlias = node.AliasText;
+            if (traffic.TryGetValue(channel.ChannelId, out var totals))
+            {
+                item.TotalSatoshisSent = (long)(totals.SentMsat / 1_000);
+                item.TotalSatoshisReceived = (long)(totals.ReceivedMsat / 1_000);
+            }
+
             response.Channels.Add(item);
         }
 
-        return Task.FromResult(response);
+        return response;
     }
 
     /// <summary>
@@ -174,7 +184,9 @@ public sealed partial class LightningService
         var stored = await unitOfWork.ChannelDbRepository.GetAllAsync();
         var closes = (await unitOfWork.OnchainResolutionDbRepository.GetClosesAsync())
                     .ToDictionary(c => c.ChannelId);
-        var chainHash = _nodeOptions.BitcoinNetwork.ChainHash.ToString();
+        // LND prints the genesis hash in display order (chainhash.Hash.String()); ChainHash has no hex ToString
+        // (NL-1244)
+        var chainHash = DisplayHex(_nodeOptions.BitcoinNetwork.ChainHash.Value);
         var response = new ClosedChannelsResponse();
         foreach (var channel in stored.Where(c => c.State is ChannelState.Closed or ChannelState.Stale))
         {
@@ -371,6 +383,11 @@ public sealed partial class LightningService
         }));
         if (channel.LocalAliases is { } aliases)
             item.AliasScids.Add(aliases.Select(ToChanId));
+
+        // NL-1249: LND's channel event store figures, monitored since this server started or the channel was created
+        var since = _liveness.MonitoredSince(channel.ChannelId);
+        item.Lifetime = (long)Math.Max(0, (_timeProvider.GetUtcNow() - since).TotalSeconds);
+        item.Uptime = (long)_liveness.Uptime(channel.RemoteNodeId, since).TotalSeconds;
         return item;
     }
 

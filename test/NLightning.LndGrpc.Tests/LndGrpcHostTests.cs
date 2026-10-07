@@ -70,6 +70,10 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
     private readonly Mock<IPeerManager> _peers = new();
     private readonly Mock<IChannelMemoryRepository> _channelMemory = new();
     private readonly Mock<IPaymentService> _paymentService = new();
+    private readonly Mock<Application.Payments.Routing.Interfaces.IRouteQueryService> _routeQuery = new();
+    private readonly Mock<Application.Channels.Backup.Interfaces.IChannelBackupService> _backups = new();
+    private readonly Mock<Application.Channels.Backup.Interfaces.IChannelRestoreService> _restores = new();
+    private readonly LndGrpcOptions _serviceOptions = new();
     private readonly Mock<IHoldInvoiceService> _holdInvoices = new();
     private readonly Mock<IBitcoinWalletService> _wallet = new();
     private readonly Mock<IWalletSpendService> _walletSpend = new();
@@ -82,6 +86,7 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
     private readonly List<ChannelCloseModel> _closes = [];
     private readonly UtxoMemoryRepository _utxos = new();
 
+    private Domain.Bitcoin.ValueObjects.BlockchainState? _chainState;
     private ServiceProvider? _services;
     private LndGrpcHost? _host;
 
@@ -579,6 +584,10 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
         services.AddSingleton(_walletSpend.Object);
         services.AddSingleton(_fees.Object);
         services.AddSingleton(_paymentService.Object);
+        services.AddSingleton(_routeQuery.Object);
+        services.AddSingleton(_backups.Object);
+        services.AddSingleton(_restores.Object);
+        services.AddSingleton(Options.Create(_serviceOptions));
         services.AddSingleton(_holdInvoices.Object);
         services.AddSingleton<IPaymentEventSource>(_events);
         services.AddSingleton(_policies.Object);
@@ -619,6 +628,7 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
                                   _forwards.OrderByDescending(f => f.CreatedAt).Skip(query.Skip).Take(query.Take)
                                            .ToList());
         var state = new Mock<IBlockchainStateDbRepository>();
+        state.Setup(x => x.GetStateAsync()).ReturnsAsync(() => _chainState);
         var stored = new Mock<IChannelDbRepository>();
         stored.Setup(x => x.GetAllAsync()).ReturnsAsync(() => _closedChannels.ToList());
         var resolutions = new Mock<IOnchainResolutionDbRepository>();

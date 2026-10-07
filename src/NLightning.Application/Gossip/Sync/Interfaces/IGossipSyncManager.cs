@@ -50,6 +50,9 @@ public interface IGossipSyncManager : IGossipSyncService
     /// is known spent, or the connection or the wait ended first.
     /// </returns>
     Task<bool> QueryScidAsync(ShortChannelId shortChannelId, CancellationToken cancellationToken = default);
+
+    /// <summary>The sync state of every connection (a read only; empty for an implementation that keeps none).</summary>
+    IReadOnlyList<GossipSyncPeerState> GetPeerStates() => [];
 }
 
 /// <summary>A peer's <c>gossip_timestamp_filter</c>.</summary>

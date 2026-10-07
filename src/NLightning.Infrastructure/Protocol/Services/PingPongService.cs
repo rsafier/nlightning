@@ -24,6 +24,18 @@ internal class PingPongService : IPingPongService
 
     private PingMessage _lastPing;
     private TaskCompletionSource<bool>? _outstandingPong;
+    private long _pingSentTimestamp;
+    private long _lastRoundTripTicks = -1;
+
+    /// <inheritdoc />
+    public TimeSpan? LastRoundTrip
+    {
+        get
+        {
+            var ticks = Interlocked.Read(ref _lastRoundTripTicks);
+            return ticks < 0 ? null : TimeSpan.FromTicks(ticks);
+        }
+    }
 
     /// <inheritdoc />
     public event EventHandler<IMessage>? OnPingMessageReady;
@@ -155,6 +167,10 @@ internal class PingPongService : IPingPongService
             }
             else
             {
+                if (_outstandingPong is not null && _pingSentTimestamp != 0)
+                    Interlocked.Exchange(ref _lastRoundTripTicks,
+                                         System.Diagnostics.Stopwatch.GetElapsedTime(_pingSentTimestamp).Ticks);
+
                 answered = _outstandingPong ?? new TaskCompletionSource<bool>();
                 _outstandingPong = null;
             }
@@ -188,6 +204,7 @@ internal class PingPongService : IPingPongService
             pong = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             _lastPing = ping;
             _outstandingPong = pong;
+            _pingSentTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
         }
 
         // Raised outside the lock: the handler sends it, and a pong may be handled before it returns

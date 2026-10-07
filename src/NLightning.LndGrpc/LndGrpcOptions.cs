@@ -65,6 +65,13 @@ public sealed class LndGrpcOptions
     /// <summary>Additional opt-in for raw swap signing on mainnet.</summary>
     public bool AllowSignerOnMainnet { get; set; }
 
+    /// <summary>
+    /// Lets <c>RestoreChannelBackups</c> restore a static channel backup over gRPC (NL-1248): recovery channels whose
+    /// peers are asked to force close. Off by default: a restore belongs to the operator (<c>nltg restorechanbackup</c>
+    /// over the local IPC), not to a remote client holding an admin macaroon.
+    /// </summary>
+    public bool AllowChannelBackupRestore { get; set; }
+
     /// <summary>The most concurrent in-memory chain notification streams.</summary>
     public int MaxChainNotifierRegistrations { get; set; } = 128;
 

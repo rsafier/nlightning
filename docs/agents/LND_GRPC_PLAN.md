@@ -365,3 +365,30 @@ on-chain HTLC/imported-transaction limits. These streams add live visibility, no
 durable audit history or cursor API.
 
 NL-1182 reliability follow-up (`b3976b0d`, NL-1234): the hub retains holds until callbacks succeed, returns failure/in-progress results and retries failed expiry/disconnect resolutions. The gRPC service observes both directions and cancels/disconnects if either ends. Broader RESUME_MODIFIED, requireinterceptor and on-chain interception gaps remain open under NL-1182.
+
+## Tool gaps record (2026-10-07, wip/lnd-gaps)
+
+bos 24.2.2 and RTL 0.15.13 against the signet node (findings in the orchestrator's `LND_TOOLS_COMPAT.md`) left these
+gaps, closed on `wip/lnd-gaps` (ledger NL-1242..NL-1249; details and validation in each entry):
+
+- **NL-1242** `QueryRoutes` over the payment planner (`IRouteQueryService.QueryRouteAsync`: fee and CLTV limits,
+  ignored nodes and directed pairs, outgoing channels, last hop, route hints, mission control on or off, LND's exact
+  final expiry; no route = `unable to find a path to destination`) and `SendToRouteV2` over `payroute` (mpp record,
+  keysend record, LND failure codes and indexes). Not supported: `source_pub_key` other than ours, blinded paths, a
+  circular `SendToRouteV2` (bos `rebalance`), several parallel shards of one hash.
+- **NL-1243** grpc-go's `unknown method M for service S` / `unknown service S` for everything not implemented
+  (`LndUnknownMethods`, before the macaroon check), so ln-service's fallbacks work.
+- **NL-1244** block and chain hashes in display order (`GetInfo.block_hash`, a stored `GetTransactions.block_hash`,
+  `ChannelCloseSummary.chain_hash`).
+- **NL-1245** walletrpc `ListSweeps`/`PendingSweeps` from the BOLT 5 rows.
+- **NL-1246** `GetNetworkInfo` from the gossip graph, computed as LND does (`graph_diameter` 0).
+- **NL-1247** walletrpc `ListAccounts`/`ListAddresses` (P2WPKH and P2TR default accounts, public data from
+  `ISecureKeyManager.GetDepositAccount`).
+- **NL-1248** channel backup RPCs over our own SCB (`NLSCB`, not LND's format); `RestoreChannelBackups` only with
+  `LndGrpc:AllowChannelBackupRestore` (default off).
+- **NL-1249** ListPeers traffic, ping, errors, sync type and flaps, ListChannels lifetime, uptime and sent/received
+  totals (memory tracking since the server's start; totals from the stored history).
+
+Still unimplemented (answered `unknown method`): `GetDebugInfo`, `ListPermissions`, `GetNodeMetrics`, `ListAliases`,
+routerrpc `QueryMissionControl`/`GetMissionControlConfig`, and the `chainrpc.ChainKit`, `autopilotrpc`,
+`wtclientrpc`, `watchtowerrpc` services (`unknown service`). A REST gateway for RTL is not part of this server.

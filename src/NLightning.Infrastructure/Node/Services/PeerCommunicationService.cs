@@ -28,6 +28,7 @@ public class PeerCommunicationService : IPeerCommunicationService
     private readonly ILogger<PeerCommunicationService> _logger;
     private readonly IMessageService _messageService;
     private readonly PingRateLimiter _pingRateLimiter = new();
+    private byte[] _lastPeerPingPayload = [];
     private readonly IPingPongService _pingPongService;
     private readonly AddressDescriptor? _remoteAddress;
     private readonly IServiceProvider _serviceProvider;
@@ -75,6 +76,21 @@ public class PeerCommunicationService : IPeerCommunicationService
 
     /// <inheritdoc />
     public bool IsConnected => _messageService.IsConnected;
+
+    /// <inheritdoc />
+    public DateTimeOffset? ConnectedAt { get; } = DateTimeOffset.UtcNow;
+
+    /// <inheritdoc />
+    public long BytesSent => _messageService.BytesSent;
+
+    /// <inheritdoc />
+    public long BytesReceived => _messageService.BytesReceived;
+
+    /// <inheritdoc />
+    public TimeSpan? PingRoundTrip => _pingPongService.LastRoundTrip;
+
+    /// <inheritdoc />
+    public ReadOnlyMemory<byte> LastPeerPingPayload => Volatile.Read(ref _lastPeerPingPayload);
 
     /// <inheritdoc />
     public CompactPubKey PeerCompactPubKey { get; }
@@ -331,6 +347,10 @@ public class PeerCommunicationService : IPeerCommunicationService
         // Handle ping messages internally
         if (_isInitialized && message.Type == MessageTypes.Ping)
         {
+            // LND's last_ping_payload (NL-1249): the peer's latest ping's ignored bytes
+            if (message is PingMessage { Payload.Ignored: { } ignored })
+                Volatile.Write(ref _lastPeerPingPayload, ignored);
+
             // BOLT 1: a ping with num_pong_bytes >= 65532 MUST be ignored (no pong)
             if (message is PingMessage { Payload.NumPongBytes: >= IgnorePingNumPongBytes })
             {

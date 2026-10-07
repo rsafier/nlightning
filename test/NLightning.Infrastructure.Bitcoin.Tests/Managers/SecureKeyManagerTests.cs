@@ -686,6 +686,32 @@ public sealed class SecureKeyManagerTests : IDisposable
     }
 
     [Fact]
+    public void Given_TheBip84TestMnemonic_When_ReadingTheDepositAccounts_Then_TheyAreTheAccountXpubsWithTheirPaths()
+    {
+        // Arrange: the BIP84 test vector (NL-1247, LND's ListAccounts)
+        const string mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon " +
+                                "abandon about";
+        using var keyManager = SecureKeyManager.FromMnemonic(mnemonic, string.Empty, BitcoinNetwork.Mainnet,
+                                                             _filePath);
+
+        // Act
+        var p2Wpkh = keyManager.GetDepositAccount(Domain.Bitcoin.Enums.AddressType.P2Wpkh);
+        var p2Tr = keyManager.GetDepositAccount(Domain.Bitcoin.Enums.AddressType.P2Tr);
+
+        // Assert
+        Assert.NotNull(p2Wpkh);
+        Assert.Equal("xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V",
+                     p2Wpkh.ExtendedPublicKey);
+        Assert.Equal("m/84'/0'/0'", p2Wpkh.DerivationPath);
+        Assert.Equal(Convert.FromHexString("73c5da0a"), p2Wpkh.MasterFingerprint);
+        Assert.NotNull(p2Tr);
+        Assert.Equal("m/86'/0'/0'", p2Tr.DerivationPath);
+        Assert.Equal(ExtKey.CreateFromBytes(keyManager.GetDepositP2TrKeyAtIndex(4, false)).Neuter().PubKey,
+                     ExtPubKey.Parse(p2Tr.ExtendedPublicKey, Network.Main).Derive(new KeyPath("0/4")).PubKey);
+        Assert.Null(keyManager.GetDepositAccount(Domain.Bitcoin.Enums.AddressType.P2Tr | Domain.Bitcoin.Enums.AddressType.P2Wpkh));
+    }
+
+    [Fact]
     public void Given_AnUpgradedVersion1KeyFile_When_Loaded_Then_WarnsAboutTheWeakBackup()
     {
         // Arrange

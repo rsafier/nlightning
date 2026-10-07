@@ -130,6 +130,23 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
         });
 
         var app = builder.Build();
+        // grpc-go's answers for unknown services and methods, before the macaroon check (NL-1243)
+        var mapped = new List<Type> { typeof(LightningService) };
+        if (invoices is not null)
+            mapped.Add(typeof(InvoicesService));
+        if (router is not null)
+            mapped.Add(typeof(RouterService));
+        if (walletKit is not null)
+            mapped.Add(typeof(WalletKitService));
+        if (swapSigner is not null)
+            mapped.Add(typeof(SignerService));
+        if (state is not null)
+            mapped.Add(typeof(StateService));
+        if (versioner is not null)
+            mapped.Add(typeof(VersionerService));
+        if (chainNotifier is not null)
+            mapped.Add(typeof(ChainNotifierService));
+        app.Use(new LndUnknownMethods(mapped).InvokeAsync);
         app.MapGrpcService<LightningService>();
         if (invoices is not null)
             app.MapGrpcService<InvoicesService>();

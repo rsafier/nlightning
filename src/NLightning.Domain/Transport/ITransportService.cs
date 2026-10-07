@@ -14,4 +14,10 @@ public interface ITransportService : IDisposable
     bool IsInitiator { get; }
     bool IsConnected { get; }
     CompactPubKey? RemoteStaticPublicKey { get; }
+
+    /// <summary>The bytes written to the connection so far (handshake and encrypted frames).</summary>
+    long BytesSent => 0;
+
+    /// <summary>The bytes read from the connection so far (handshake and encrypted frames).</summary>
+    long BytesReceived => 0;
 }
