@@ -49,6 +49,12 @@ internal sealed class DualFundNegotiation
     /// <summary>The peer sent <c>require_confirmed_inputs</c>.</summary>
     public bool RemoteRequiresConfirmedInputs { get; set; }
 
+    /// <summary>
+    /// Whether our contribution must be made in full (NL-1181: a channel acceptor's values hold only with it); an open
+    /// we cannot fund is then refused instead of going on without our share.
+    /// </summary>
+    public bool LocalShareRequired { get; init; }
+
     /// <summary>The opener's <c>open_channel2</c> before <c>accept_channel2</c> arrives (our side of it).</summary>
     public PendingOpen? Pending { get; set; }
 

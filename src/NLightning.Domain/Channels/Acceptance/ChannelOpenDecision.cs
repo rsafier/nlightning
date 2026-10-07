@@ -22,13 +22,19 @@ public sealed record ChannelOpenDecision
     /// <summary>The error text the opener gets on a rejection (at most 500 characters).</summary>
     public string? Error { get; init; }
 
-    /// <summary>Our upfront shutdown script (needs <c>option_upfront_shutdown_script</c> negotiated).</summary>
+    /// <summary>
+    /// Our upfront shutdown script (needs <c>option_upfront_shutdown_script</c> negotiated), sent in
+    /// <c>accept_channel</c> or <c>accept_channel2</c>.
+    /// </summary>
     public BitcoinScript? UpfrontShutdownScript { get; init; }
 
     /// <summary>The <c>to_self_delay</c> we impose on the opener's outputs.</summary>
     public ushort? ToSelfDelay { get; init; }
 
-    /// <summary>The reserve the opener must keep (v1 opens only).</summary>
+    /// <summary>
+    /// The reserve the opener must keep. On a dual-funded open BOLT 2 fixes the reserve: the value applies when that
+    /// reserve meets it (NL-1181).
+    /// </summary>
     public LightningMoney? ChannelReserve { get; init; }
 
     /// <summary>The <c>max_htlc_value_in_flight_msat</c> we announce.</summary>
@@ -43,7 +49,11 @@ public sealed record ChannelOpenDecision
     /// <summary>The <c>minimum_depth</c> we ask for.</summary>
     public uint? MinimumDepth { get; init; }
 
-    /// <summary>Whether the decider asks for a zero-conf channel (refused: not supported).</summary>
+    /// <summary>
+    /// Whether the decider accepts a zero-conf channel (LND's <c>zero_conf</c>, NL-1181): required when the opener's
+    /// <c>channel_type</c> has <c>option_zeroconf</c> (we then ask for depth 0), refused otherwise
+    /// (<see cref="ChannelOpenDecisionRules.TryApply"/>).
+    /// </summary>
     public bool ZeroConf { get; init; }
 
     /// <summary>A rejection with <paramref name="error"/> (or the generic text).</summary>

@@ -1,6 +1,9 @@
 namespace NLightning.Domain.Channels.Acceptance;
 
+using Closing;
+using Domain.Enums;
 using Money;
+using Node.Options;
 using ValueObjects;
 
 /// <summary>
@@ -58,10 +61,23 @@ public static class ChannelOpenDecisionRules
     }
 
     /// <summary>
-    /// Applies an acceptance's values to the parameters we announce. Returns the error that refuses the open when a
-    /// value cannot apply here: <c>zero_conf</c> (not supported), a <c>reserve_sat</c> on a dual-funded open (BOLT 2
-    /// fixes it), an upfront shutdown script on a dual-funded open, a reserve below either dust limit or not below the
-    /// capacity, more than 483 HTLCs, an HTLC minimum not below the capacity.
+    /// Applies an acceptance's values to the parameters we announce, as LND's funding manager applies a
+    /// <c>ChannelAcceptResponse</c> (NL-1181). Returns the error that refuses the open when a value cannot apply here:
+    /// <list type="bullet">
+    /// <item><c>zero_conf</c> (or <c>min_accept_depth</c> 0) applies only to an open whose <c>channel_type</c> has
+    /// <c>option_zeroconf</c> (then we ask for depth 0); an acceptance of such an open without it is LND's "channel
+    /// acceptor blocked zero-conf channel negotiation", and a zero-conf answer to an open without that type is refused
+    /// (LND would turn it into a zero-conf channel through <c>option_scid_alias</c>; NLightning has no zero-conf
+    /// channels of its own), as is a zero-conf answer with a non-zero depth;</item>
+    /// <item><c>reserve_sat</c> below either dust limit or not below the capacity; on a dual-funded open BOLT 2 fixes
+    /// the reserve (1 % of the total, at least the dust limit), so a <c>reserve_sat</c> applies when that reserve
+    /// already meets it and refuses the open otherwise;</item>
+    /// <item><c>upfront_shutdown</c> without <c>option_upfront_shutdown_script</c> negotiated (LND's
+    /// <c>errUpfrontShutdownScriptNotSupported</c>) or not a <c>shutdown</c> form the features allow (checked when
+    /// <paramref name="negotiatedFeatures"/> is given); on a dual-funded open it goes in <c>accept_channel2</c>;</item>
+    /// <item><c>csv_delay</c> 0, <c>max_htlc_count</c> above 483, <c>in_flight_max_msat</c> 0, <c>min_htlc_in</c>
+    /// not below the capacity.</item>
+    /// </list>
     /// </summary>
     /// <param name="decision">The (merged) acceptance.</param>
     /// <param name="request">The open it answers.</param>
@@ -70,18 +86,26 @@ public static class ChannelOpenDecisionRules
     /// <param name="capacity">The channel's total funding.</param>
     /// <param name="newLocal">The parameters to announce.</param>
     /// <param name="newMinimumDepth">The depth to ask for.</param>
+    /// <param name="negotiatedFeatures">The features negotiated with the opener (null: the upfront script's feature
+    /// and form are not checked here).</param>
     public static string? TryApply(ChannelOpenDecision decision, ChannelOpenRequest request, ChannelParty local,
                                    uint minimumDepth, LightningMoney capacity, out ChannelParty newLocal,
-                                   out uint newMinimumDepth)
+                                   out uint newMinimumDepth, FeatureOptions? negotiatedFeatures = null)
     {
         ArgumentNullException.ThrowIfNull(decision);
         ArgumentNullException.ThrowIfNull(request);
         newLocal = local;
         newMinimumDepth = minimumDepth;
-        if (decision.ZeroConf)
-            return "zero-conf channels are not supported";
-        if (decision.MinimumDepth is 0)
-            return "min_accept_depth 0 (zero-conf) is not supported";
+
+        var wantsZeroConf = request.ChannelType?.IsFeatureSet(Feature.OptionZeroconf, true) == true;
+        var zeroConf = decision.ZeroConf || decision.MinimumDepth is 0;
+        if (wantsZeroConf && !zeroConf)
+            return "channel acceptor blocked zero-conf channel negotiation";
+        if (zeroConf && !wantsZeroConf)
+            return "zero_conf needs the opener's option_zeroconf channel_type: zero-conf channels are not supported "
+                 + "otherwise";
+        if (zeroConf && decision.MinimumDepth is > 0)
+            return "zero_conf with a non-zero min_accept_depth";
         if (decision.ToSelfDelay is 0)
             return "csv_delay must be at least 1";
         if (decision.MaxAcceptedHtlcs is 0 or > MaxAcceptedHtlcsLimit)
@@ -90,25 +114,41 @@ public static class ChannelOpenDecisionRules
             return "in_flight_max_msat must be positive";
         if (decision.HtlcMinimum is { } htlcMinimum && htlcMinimum >= capacity)
             return "min_htlc_in must be below the channel capacity";
-        if (request.DualFunded && decision.ChannelReserve is not null)
-            return "reserve_sat cannot apply to a dual-funded channel (BOLT 2 fixes its reserve)";
-        if (request.DualFunded && decision.UpfrontShutdownScript is not null)
-            return "upfront_shutdown is not supported on a dual-funded open";
-        if (decision.ChannelReserve is { } reserve)
+        if (decision.UpfrontShutdownScript is { } script && negotiatedFeatures is not null)
         {
-            if (reserve < request.DustLimit || reserve < local.DustLimitAmount)
-                return "reserve lower than proposed dust limit";
-            if (reserve >= capacity)
-                return "reserve_sat must be below the channel capacity";
+            if (negotiatedFeatures.UpfrontShutdownScript == FeatureSupport.No)
+                return "requested upfront shutdown to address, but remote peer does not support option upfront "
+                     + "shutdown script";
+            if (script.Length == 0 || !ShutdownScriptValidator.IsValidUpfront((byte[])script, negotiatedFeatures))
+                return "upfront_shutdown is not a valid shutdown script";
         }
 
-        newLocal = new ChannelParty(local.DustLimitAmount, decision.ChannelReserve ?? local.ChannelReserveAmount,
-                                    decision.HtlcMinimum ?? local.HtlcMinimumAmount,
+        var reserve = local.ChannelReserveAmount;
+        if (decision.ChannelReserve is { } wanted)
+        {
+            if (wanted < request.DustLimit || wanted < local.DustLimitAmount)
+                return "reserve lower than proposed dust limit";
+            if (wanted >= capacity)
+                return "reserve_sat must be below the channel capacity";
+            if (request.DualFunded)
+            {
+                // BOLT 2 fixes the dual-funded reserve: the acceptor's minimum applies when the fixed one meets it
+                if (wanted > local.ChannelReserveAmount)
+                    return $"reserve_sat {wanted.Satoshi} sat is above the reserve BOLT 2 fixes for this dual-funded "
+                         + $"channel ({local.ChannelReserveAmount.Satoshi} sat)";
+            }
+            else
+            {
+                reserve = wanted;
+            }
+        }
+
+        newLocal = new ChannelParty(local.DustLimitAmount, reserve, decision.HtlcMinimum ?? local.HtlcMinimumAmount,
                                     decision.MaxAcceptedHtlcs ?? local.MaxAcceptedHtlcs,
                                     decision.MaxHtlcValueInFlight ?? local.MaxHtlcValueInFlight,
                                     decision.ToSelfDelay ?? local.ToSelfDelay,
                                     decision.UpfrontShutdownScript ?? local.UpfrontShutdownScript);
-        newMinimumDepth = decision.MinimumDepth ?? minimumDepth;
+        newMinimumDepth = zeroConf ? 0U : decision.MinimumDepth ?? minimumDepth;
         return null;
     }
 
