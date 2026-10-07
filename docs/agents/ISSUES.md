@@ -10379,6 +10379,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
   - Tests: captured answers for unit tests; a cluster live test on Core 31.1 and rbitcoin.
 - **Blocks/Blocked-by:** blocked by NL-1260; blocks NL-1262
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` §3.5, NL-1261 SP-R3
+- **Verified (2026-10-07, orchestrator):** on the public signet node's Bitcoin Core 31.1 (unpruned, no indexes: `getindexinfo` is empty), `getblock <hash> 3` for block 325300 returned `prevout` objects for every input (101 non-coinbase inputs). So `getblock` verbosity 3 needs no `txindex` there. The REST `spenttxouts` question is still open.
 
 ### NL-1262 No silent payment scanner: found outputs never reach the wallet
 - **Status:** open
