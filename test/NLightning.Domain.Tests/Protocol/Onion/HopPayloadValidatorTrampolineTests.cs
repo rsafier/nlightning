@@ -258,7 +258,7 @@ public class HopPayloadValidatorTrampolineTests
         Assert.True(HopPayloadValidator.TryValidate(intermediate, false, false, true, out _));
         Assert.True(HopPayloadValidator.TryValidate(final, true, false, true, out _));
         Assert.True(HopPayloadValidator.TryValidate(blindedIntermediate, false, false, true, out _));
-        // NL-1230: a missing payment_data is the final hop processor's incorrect_or_unknown_payment_details
+        // NL-1233: a missing payment_data is the final hop processor's incorrect_or_unknown_payment_details
         Assert.True(HopPayloadValidator.TryValidate(finalWithoutPaymentData, true, false, true, out _));
     }
 

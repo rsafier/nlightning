@@ -42,7 +42,7 @@ public class HopPayloadValidatorKeysendTests
     [Fact]
     public void Given_FinalPayloadWithoutPaymentDataOrKeysend_When_Validating_Then_LeftToTheFinalHopProcessor()
     {
-        // Arrange (NL-1230: the final hop processor answers it with incorrect_or_unknown_payment_details)
+        // Arrange (NL-1233: the final hop processor answers it with incorrect_or_unknown_payment_details)
         var payload = new HopPayload(Amt, Cltv, new BaseTlv(new BigSize(65537), [0x01]));
 
         // Act

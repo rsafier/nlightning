@@ -33,7 +33,7 @@ using Protocol.ValueObjects;
 /// whatever their parity at a final hop, as LND does (keysend's own record is even). A non-blinded final hop needs no
 /// <c>payment_data</c> here: keysend pays without it (lane lh1-l3), and any other payment without it is refused by the
 /// final hop processor with <c>incorrect_or_unknown_payment_details</c>, BOLT 4's error for a missing required
-/// <c>payment_secret</c> and an unknown hash (NL-1230, what LND's probes expect). Accepting even custom records is an
+/// <c>payment_secret</c> and an unknown hash (NL-1233, what LND's probes expect). Accepting even custom records is an
 /// interop deviation from BOLT 1 ("if type is even: MUST fail to parse") limited to the final hop, the only place a custom record means anything: a forwarding hop keeps BOLT 1's strictness (LND accepts them at
 /// every hop), and a blinded hop allows only its fixed set of types.
 /// </para>
@@ -287,7 +287,7 @@ public static class HopPayloadValidator
         // A missing payment_data (total_msat and payment_secret) is not a malformed onion: BOLT 4's failure rules
         // answer a missing required payment_secret and an unknown payment_hash with incorrect_or_unknown_payment_details,
         // which the final hop processor sends. LND's probes (random hash, no MPP record; Loop's static loop-in probe)
-        // count only that error as the destination reached (NL-1230). Keysend pays without payment_data (lane lh1-l3).
+        // count only that error as the destination reached (NL-1233). Keysend pays without payment_data (lane lh1-l3).
         return null;
     }
 

@@ -9992,7 +9992,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** find the harness wait that races the two announcements (both nodes reaching the depth and exchanging `announcement_signatures_2` nonces) and make it event-driven.
 - **Blocks/Blocked-by:** none
 
-### NL-1230 A final payload without `payment_data` answered `invalid_onion_payload`, so LND probes (Loop's static loop-in) saw us unreachable
+### NL-1233 A final payload without `payment_data` answered `invalid_onion_payload`, so LND probes (Loop's static loop-in) saw us unreachable
 - **Status:** fixed (wip/signet-loop)
 - **Severity:** medium
 - **Kind:** bug (interop)

@@ -127,7 +127,7 @@ public class HopPayloadValidatorTests
     [Fact]
     public void Given_FinalNonBlindedPayloadWithoutPaymentData_When_Validating_Then_Succeeds()
     {
-        // Arrange (NL-1230: the final hop processor answers it with incorrect_or_unknown_payment_details, the
+        // Arrange (NL-1233: the final hop processor answers it with incorrect_or_unknown_payment_details, the
         // error LND's probes expect, not invalid_onion_payload)
         var payload = new HopPayload(Amt, Cltv);
 

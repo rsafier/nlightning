@@ -245,7 +245,7 @@ public class ReestablishFlowTests : IAsyncLifetime
         }, cancellationToken: ct);
 
         // BuildRoute cannot attach a payment address for a node outside LND's graph, so set the MPP record here (a
-        // payload without it gets the same incorrect_or_unknown_payment_details, NL-1230).
+        // payload without it gets the same incorrect_or_unknown_payment_details, NL-1233).
         route.Route.Hops[^1].MppRecord = new MPPRecord
         {
             PaymentAddr = ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),

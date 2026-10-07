@@ -149,7 +149,7 @@ public class IncomingOnionProcessorTests : IDisposable
     [Fact]
     public async Task Given_FinalPayloadWithoutPaymentData_When_Processed_Then_LeftToTheFinalHopProcessor()
     {
-        // Arrange (NL-1230: not invalid_onion_payload; the final hop processor answers
+        // Arrange (NL-1233: not invalid_onion_payload; the final hop processor answers
         // incorrect_or_unknown_payment_details, which LND's probes read as the destination reached)
         var payload = new HopPayload(new AmtToForwardTlv(LightningMoney.MilliSatoshis(1_000)),
                                      new OutgoingCltvValueTlv(500));
