@@ -82,9 +82,9 @@ public sealed class SilentPaymentDbRepository(NLightningDbContext context) : ISi
 
     public async Task SetScanStateAsync(SilentPaymentScanState state, CancellationToken cancellationToken = default)
     {
-        if (state.RescanCursorHeight.HasValue != state.RescanCursorHash.HasValue
-            || state.LiveCursorHeight.HasValue != state.LiveCursorHash.HasValue)
-            throw new ArgumentException("A rescan cursor requires both a height and a block hash.", nameof(state));
+        if (state.RescanCursorHash.HasValue && !state.RescanCursorHeight.HasValue
+            || state.LiveCursorHash.HasValue && !state.LiveCursorHeight.HasValue)
+            throw new ArgumentException("A cursor hash requires a corresponding height.", nameof(state));
         var replacement = new SilentPaymentScanStateEntity
         {
             Id = 0, BirthdayHeight = state.BirthdayHeight, LiveFromHeight = state.LiveFromHeight,
