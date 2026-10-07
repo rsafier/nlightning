@@ -1,7 +1,7 @@
 # Remote signing research and implementation plan
 
 Research date: 2026-10-07. Base: `wip/fafo`, `525347f6c0d6ed8bf0ce4d451e11e49265ccbed5`.
-Status: native remote-signing MVP implemented on `wip/remotesigner`; Nitro deployment and VLS remain planned work.
+Status: native remote-signing MVP and durable request reconciliation implemented on `wip/remotesigner`; a pinned VLS core compatibility spike is available. Nitro deployment and the production VLS adapter remain planned work.
 
 ## Recommendation
 
@@ -19,7 +19,7 @@ The local transport is gRPC/HTTP2 over a private Unix socket, authenticated by a
 
 An append-only, fsynced journal restores channel/funding guards, sticky data-loss/broadcast state and retirement tombstones. Consumed taproot/close/splice nonce outcomes are bound to the public nonce and exact payload, allowing identical replay while refusing conflicting reuse after restart. Seed-injection mode also persists a public identity/network-bound key-index journal before allocating keys. These files protect ordinary restarts; a malicious host can still roll them back together.
 
-The broader requirements below remain the production roadmap. The MVP has no Nitro packaging, attestation, network TLS endpoint, external freshness authority, distributed writer fencing, VLS adapter or feature-capability negotiation. General request-ID replay caching is bounded and process-local; durable outcomes cover selected nonce-consuming operations, not every RPC. There is no client reconciliation API for an unknown outcome. Signing authorization still trusts node-supplied channel state and wallet reservations, and public verification currently incurs remote calls. Do not use this prototype as a production funds-protection boundary.
+The broader requirements below remain the production roadmap. The MVP has no Nitro packaging, attestation, network TLS endpoint, external freshness authority, distributed writer fencing, VLS adapter or feature-capability negotiation. Supported safety mutations, nonce-consuming signatures and key-index allocations now retain bounded durable request receipts. `Prepare` / `Execute` / `Reconcile` expose explicit outcome recovery; transport failures retain the exact envelope. Separate key-index persistence has a write-ahead unknown marker. Ephemeral nonce creation and other unsupported operations cannot be reconciled across restart. The node does not yet persist these envelopes or automatically reconcile its database transitions; that application integration remains a gate. Receipts fail closed at capacity and have no safe online compaction procedure yet. Signing authorization still trusts node-supplied channel state and wallet reservations, and public verification currently incurs remote calls. Do not use this prototype as a production funds-protection boundary.
 
 ## Boundaries on the base branch
 
@@ -88,7 +88,7 @@ Provision/import keys directly into the approved signer through an authenticated
 
 ## VLS compatibility and integration
 
-Canonical VLS source inspected at `cb8a64c71d3b214951e752281f05b9090e77f074`; pin and re-evaluate before implementation. The GitHub repository describes itself as a lazy mirror. Published instructions demonstrate LDK through `lnrod`, but NLightning is an independent C# implementation and needs a protocol adapter. [LDK guide](https://vls.tech/docs/v0.14.0/get-started/ldk-vls/), [node protocol guide](https://vls.tech/docs/v0.14.0/get-started/newnodeintegration/).
+Canonical VLS source inspected and exercised at `cb8a64c71d3b214951e752281f05b9090e77f074`; pin and re-evaluate before implementation. The [compatibility spike](VLS_COMPATIBILITY_SPIKE.md) runs the real core validator for static-remotekey and zero-fee anchors, validates and independently verifies commitment signatures, checks revocations, and rejects unauthorized HTLCs. It uses in-memory persistence and artificial funding fixtures; it is not a protocol gateway or live VLS payment proof. The GitHub repository describes itself as a lazy mirror. Published instructions demonstrate LDK through `lnrod`, but NLightning is an independent C# implementation and needs a protocol adapter. [LDK guide](https://vls.tech/docs/v0.14.0/get-started/ldk-vls/), [node protocol guide](https://vls.tech/docs/v0.14.0/get-started/newnodeintegration/).
 
 | Operation | Assessment at inspected revision |
 | --- | --- |
@@ -99,7 +99,7 @@ Canonical VLS source inspected at `cb8a64c71d3b214951e752281f05b9090e77f074`; pi
 | Splicing, concurrent fundings and rotated funding keys | Blocked for stock integration: `SignSpliceTx` handler is `unimplemented!()` and is not advertised. A protocol message definition is not implemented support. |
 | Dual funding and interactive RBF | No acceptance assumed. Prove beneficial-value policy, both roles, multiple inputs and attempt recovery before advertising. |
 | Simple taproot/MuSig2 and gossip v2 | No corresponding NLightning operation family found in inspected wire protocol. Treat as unsupported until an upstream extension/custom backend is demonstrated. P2TR wallet support is a separate question from taproot Lightning channel support. |
-| Existing NLightning key/state migration | VLS offers Native/CLN, LDK and LND derivation styles, not NLightning's scheme. Use fresh VLS-backed identities initially; retaining existing channels needs custom derivation/import and validated state conversion. |
+| Existing NLightning key/state migration | VLS LND style can match NLightning v3 node identity on mainnet with the same BIP32 seed, but regtest node identity differs and no stock style matches NLightning channel derivation. Node identity equality does not migrate channels or wallet state. Use fresh VLS-backed identities initially; retaining existing channels needs custom derivation/import and validated state conversion. |
 | Backup/peer storage, offer path IDs, accounting and liquidity signatures | NLightning-specific contracts require explicit supported extensions or redesigned scoped secrets. Do not route them through an unrestricted signing escape hatch. |
 
 Evidence: pinned [protocol messages](https://gitlab.com/lightning-signer/validating-lightning-signer/-/blob/cb8a64c71d3b214951e752281f05b9090e77f074/vls-protocol/src/msgs.rs), [handler](https://gitlab.com/lightning-signer/validating-lightning-signer/-/blob/cb8a64c71d3b214951e752281f05b9090e77f074/vls-protocol-signer/src/handler.rs), [derivation styles](https://gitlab.com/lightning-signer/validating-lightning-signer/-/blob/cb8a64c71d3b214951e752281f05b9090e77f074/vls-core/src/signer/derive.rs).

@@ -75,3 +75,41 @@ separate users needs explicit socket access grants and separately provisioned pr
 token files. This MVP isolates keys and preserves existing C# signing checks; it is not
 VLS policy validation or a production enclave deployment. Future vsock hosting can
 replace the stream connector and listener without changing the signing operations.
+
+## Recover an unknown RPC outcome
+
+Calls have deadlines and no automatic retry. A transport failure does not prove an
+operation failed: the signer may already have persisted it. Use
+`RemoteSignerConnection.Prepare(operation, arguments)` to create an envelope,
+store it securely before dispatch, and call `Execute(envelope)`. A
+`RemoteSignerTransportException.Request` also preserves the exact failed envelope
+for recovery while the caller remains alive. `Reconcile(envelope)` authenticates
+and looks up the result without executing it. Changing its ID, operation or
+payload defeats exact-outcome recovery; conflicting reuse of an ID is refused.
+
+| Outcome | Action |
+| --- | --- |
+| `Completed` | Consume the stored response, or explicitly execute the identical envelope to retrieve it. The supported operation is not executed again. |
+| `Unknown` | An allocation may have persisted in the separate key-index journal. Do not execute this ID again; it remains refused. Treat the allocated index as potentially used and reconcile the channel workflow before continuing. |
+| `Invalidated` | Channel data-loss or retirement invalidated the old result. Recover the channel through its safety procedure; do not replay its old signature. |
+| `NotFound` | No durable receipt exists for this supported operation. An explicit dispatch of the original envelope is allowed; this lookup did not execute it. |
+| `Unsupported` | No durable outcome guarantee exists for this operation. Use its protocol recovery procedure; do not infer non-execution from a missing receipt. |
+
+Durable receipts cover channel/funding safety mutations, holder broadcast
+signatures, nonce-consuming close/splice signatures and channel-key allocations.
+Ephemeral nonce creation is unsupported across restart because the secret nonce is
+not restored. Nonce sessions bind decoded channel/public-nonce identities: equivalent
+accepted base64 encodings cannot create another signing context. Restart refuses
+conflicting historical nonce-session records. Safety changes and their completed responses share one fsynced journal
+record. Allocations write a pending marker before touching the separate allocation
+journal. Data-loss and retirement invalidate completed receipts for that channel;
+unrelated allocation outcomes remain available.
+
+The receipt store refuses new supported requests at 65,536 identities or its 64 MiB
+response budget (reserving room for the largest response before execution). It never
+evicts old identities to permit re-execution. There is no safe online compaction or
+maintenance procedure yet: deleting the journal is unsafe. The node's current
+synchronous adapters do not persist pending envelopes or automatically reconcile
+node-database transitions. This API and its process-failure tests establish the
+signer boundary; automatic application recovery, external state freshness and cloned
+writer fencing remain separate work.

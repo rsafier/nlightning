@@ -53,6 +53,7 @@ using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Services;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Persistence.Contexts;
+using Infrastructure.RemoteSigning;
 using Infrastructure.Transport.Interfaces;
 using Infrastructure.Transport.Services;
 using Infrastructure.Transport.Tor;
@@ -130,6 +131,9 @@ public sealed class NLightningTestNode : IAsyncDisposable
     public string? DatabaseFilePath => Database.SqliteFilePath;
 
     public ISecureKeyManager SecureKeyManager { get; }
+
+    /// <summary>Remote signer transport reused across node service-graph restarts; owned by the caller.</summary>
+    public RemoteSignerConnection? RemoteSignerConnection { get; set; }
     public int Port { get; }
 
     /// <summary>
@@ -277,18 +281,20 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// </summary>
     public static Task<NLightningTestNode> CreateAsync(RegtestBitcoinEndpoint bitcoin, string name,
                                                        TestNodeDatabase? database = null,
-                                                       Action<NodeOptions>? configureNodeOptions = null) =>
-        CreateAsync(() => bitcoin, name, database, configureNodeOptions);
+                                                       Action<NodeOptions>? configureNodeOptions = null,
+                                                       ISecureKeyManager? secureKeyManager = null) =>
+        CreateAsync(() => bitcoin, name, database, configureNodeOptions, secureKeyManager: secureKeyManager);
 
     private static async Task<NLightningTestNode> CreateAsync(Func<RegtestBitcoinEndpoint> bitcoinEndpoint,
                                                               string name, TestNodeDatabase? database,
                                                               Action<NodeOptions>? configureNodeOptions,
                                                               Func<LndNodeConnection, CancellationToken, Task<string>>?
-                                                                  lndPeerEndpoint = null)
+                                                                  lndPeerEndpoint = null,
+                                                              ISecureKeyManager? secureKeyManager = null)
     {
         var port = await PortPoolUtil.GetAvailablePortAsync();
         database ??= TestNodeDatabase.Sqlite($"nlightning_{name}_{Guid.NewGuid():N}.db");
-        return new NLightningTestNode(bitcoinEndpoint, name, database, new FakeSecureKeyManager(), port,
+        return new NLightningTestNode(bitcoinEndpoint, name, database, secureKeyManager ?? new FakeSecureKeyManager(), port,
                                       configureNodeOptions, ownsResources: true, lndPeerEndpoint)
         {
             ReconnectInitialDelay = FastReconnectInitialDelay
@@ -825,7 +831,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
                                               .SetMinimumLevel(LogLevel.Debug));
 
         // The daemon's composition
-        services.AddNltgNodeServices(configuration, SecureKeyManager);
+        services.AddNltgNodeServices(configuration, SecureKeyManager, RemoteSignerConnection);
 
         // Test-only overrides: a fixed fee estimate, our own port and network, and a TCP service CrashAsync can reset
         services.AddFeeServices(_ => CreateFixedFeeHandler());

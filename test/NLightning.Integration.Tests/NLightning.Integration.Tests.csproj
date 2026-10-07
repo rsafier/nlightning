@@ -46,6 +46,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\NLightning.Application\NLightning.Application.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Daemon\NLightning.Daemon.csproj"/>
+    <ProjectReference Include="..\..\src\NLightning.Signer\NLightning.Signer.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Infrastructure.Repositories\NLightning.Infrastructure.Repositories.csproj"/>
     <ProjectReference Include="..\NLightning.Tests.Utils\NLightning.Tests.Utils.csproj"/>
     <!-- The Kubernetes harness, for Cluster/ (our in-process node in a cluster topology); it references no product
@@ -61,6 +62,10 @@
     <ProjectReference Include="..\..\src\NLightning.Infrastructure.Persistence.Sqlite\NLightning.Infrastructure.Persistence.Sqlite.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Infrastructure.Persistence.SqlServer\NLightning.Infrastructure.Persistence.SqlServer.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Infrastructure.Persistence\NLightning.Infrastructure.Persistence.csproj"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\NLightning.RemoteSigning.Tests\SignerDaemonFixture.cs" Link="Cluster\SignerDaemonFixture.cs"/>
   </ItemGroup>
 
   <!-- The taproot two-node harness and its D-T4 crash proof, run on Postgres by Docker/TaprootPostgresCrashTests in the

@@ -2,6 +2,8 @@
 
 The single durable issue ledger for this repo. GitHub issues are disabled on the fork, so this file replaces them. Every known bug, gap, spec violation, missing feature, test/CI hygiene problem and tech-debt item lives here, so nothing is lost between agent sessions.
 
+Updated 2026-10-07 on `wip/remotesigner`: remote-signing follow-up records NL-1190..NL-1195, including executable native recovery/interop and VLS research evidence, the fixed nonce-identity alias bug, and the remaining production gates. Summary recounted: 924 entries, no duplicate IDs.
+
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
 Updated 2026-10-04 by the zc-int integrator (branch `zc-int` from `wip/fafo` at `cd5c2c5d`, `origin/wip/zcleanup1` merged with `--no-ff`; the migration `AddTrampolineRelayBlindedDelta` regenerated after `AddDualFundTaprootAttempts`): NL-1006 and NL-1007 (low) new and fixed. Summary recounted from the entries (856), no duplicate IDs.
@@ -177,14 +179,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 94 | 95 |
-| in-progress | 0 | 0 | 5 | 1 | 6 |
-| fixed | 15 | 68 | 229 | 476 | 788 |
+| open | 0 | 0 | 4 | 95 | 99 |
+| in-progress | 0 | 0 | 6 | 1 | 7 |
+| fixed | 15 | 69 | 229 | 476 | 789 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 5 | 8 |
-| **Total** | **15** | **68** | **244** | **591** | **918** |
+| **Total** | **15** | **69** | **248** | **592** | **924** |
 
 ### Epics
+
+- NL-1190: Remote signing production readiness (in-progress, medium; native daemon, injected provisioning, durable signer receipts and live LND proof implemented; pinned VLS core spike; application recovery, compaction, VLS adapter and Nitro follow-ups NL-1191..NL-1194)
 
 - NL-1160: LND gRPC compatibility (in-progress, medium; plan `docs/agents/LND_GRPC_PLAN.md`: wave 1 read/invoice/message surface with real macaroons NL-1161..NL-1163 fixed, wave 2 pay/channels/hold invoices/streams NL-1164..NL-1167, NL-1169 fixed, wave 3 acceptor/interceptor/walletrpc/history NL-1168 fixed (NL-1180, NL-1183..NL-1185); follow-ups NL-1170..NL-1172, NL-1181, NL-1182, NL-1186, NL-1187)
 - NL-990: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-991 (fixed), C1 CDK gRPC payment processor NL-992 (fixed, BOLT 11; follow-ups NL-997), C2 proof NL-993 (fixed, on the cluster harness), C3 native wallet NL-994, C4 hold invoices NL-995; integration review NL-998, NL-999, NL-1001..NL-1004 fixed, NL-1000 fixed, NL-1010 and NL-1011 open; BOLT 12 and on-chain NL-997 fixed)
@@ -9695,3 +9699,59 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** in the LND gRPC waves 2+3 integration's full net10.0 run (2026-10-06, `wip/fafo` at `28d7bdd2`, while `run-cluster.sh --matrix lnd,postgres` built and ran on the same host) it failed after 1 m 36 s; the class passed 25/25 three times alone right after.
 - **Fix sketch:** find the real-clock wait in the test (or the ingress worker it waits on) and move it to a stepped `TimeProvider` or a bounded event-driven wait, as the de-timing pass did; else the `timing-serial` collection.
 - **Blocks/Blocked-by:** none
+
+
+### NL-1190 Remote signing production readiness
+- **Status:** in-progress
+- **Severity:** medium
+- **Kind:** epic
+- **Location:** `src/NLightning.Signer/`, `src/NLightning.Infrastructure.RemoteSigning/`, `docs/agents/REMOTE_SIGNING_PLAN.md`
+- **Evidence:** native C# extraction and injected seed provisioning landed in 9fb3ff1c. The `wip/remotesigner` follow-up adds supported-operation durable receipts/reconciliation, a real LND open/pay/restart/close proof, and a pinned VLS core compatibility spike. Same-machine key isolation is implemented; complete node/signer crash reconciliation, bounded-store maintenance, an authenticated VLS semantic adapter, and Nitro state freshness remain gates.
+- **Fix sketch:** carry the acceptance gates in the remote-signing plan through application recovery, on-chain resolution, policy validation and enclave deployment. Do not describe the prototype as production host-compromise protection.
+- **Blocks/Blocked-by:** NL-1191..NL-1194
+
+### NL-1191 Node does not persist remote-signer request envelopes before dispatch
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `RemoteSignerConnection.Invoke`, `RemoteLightningSigner`, application channel transitions
+- **Evidence:** the signer persists supported outcomes and exposes `Prepare` / `Execute` / `Reconcile`, but ordinary node adapters create envelopes in memory. The transport exception retains a failed envelope only while the node survives. A node-process crash loses that request identity, so signer receipts alone do not reconcile a pending node database transition.
+- **Fix sketch:** persist explicit pending envelopes and workflow stages before dispatch, reconcile exact outcomes on startup, and prove node-ahead/signer-ahead failures without rolling either safety state backward.
+- **Blocks/Blocked-by:** NL-1190; follow the crash-consistency plan
+
+### NL-1192 Durable signer receipt store has no safe maintenance or compaction procedure
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `DurableSignerState.MaxRequestReceipts`, receipt response quota, append-only journal
+- **Evidence:** the prototype retains up to 65,536 immutable receipt identities and a 64 MiB response budget. New supported requests fail closed at capacity, rather than evict an old identity and permit duplicate execution. The journal grows, and no safe online compaction or fenced migration procedure exists. Deleting the journal rolls back signer safety history.
+- **Fix sketch:** design authenticated retention/checkpointing with durable operation identity and nonce/session history; prove delayed retries, interrupted compaction and quota recovery fail safely.
+- **Blocks/Blocked-by:** NL-1190; external state freshness/fencing for enclave use
+
+### NL-1193 Production VLS semantic adapter remains unimplemented
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `tools/vls-compat-spike/`, `docs/agents/VLS_COMPATIBILITY_SPIKE.md`, application commitment/revocation hooks
+- **Evidence:** pinned VLS core signing/validation, authorization refusals and derivation differences are executable research. The spike uses artificial funding fixtures and DummyPersister; it does not provide a C# adapter, authenticated protocol gateway, durable VLS state, live payment settlement or signer-capability negotiation. Stock splice/taproot support is insufficient for the current node feature set.
+- **Fix sketch:** implement a fresh-node ECDSA semantic adapter with explicit authorization and durable VLS persistence; suppress unsupported features before negotiation and prove live payments and all on-chain recovery paths without native fallback.
+- **Blocks/Blocked-by:** NL-1190; scope and acceptance gates in the VLS assessment
+
+### NL-1194 Nitro signer deployment needs attested provisioning and trustworthy external state
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `docs/agents/REMOTE_SIGNING_PLAN.md`, signer transport and provisioning boundary
+- **Evidence:** stdin seed injection and a replaceable stream connector establish local prototype boundaries. No Nitro image, vsock listener, attested provisioning peer, rollback-resistant external state authority or cloned-writer fencing is implemented. Local sidecar locking protects only processes sharing the same state path.
+- **Fix sketch:** first prove vsock transport, then attested secret delivery and authenticated/fresh external state commits with writer fencing on real Nitro hardware; retain tested recovery and deadline monitoring.
+- **Blocks/Blocked-by:** NL-1190, NL-1191, NL-1192
+
+
+### NL-1195 Equivalent encoded identities bypassed durable nonce-session lookup after restart
+- **Status:** fixed (wip/remotesigner, this follow-up)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `DurableSignerState.SessionKey`, `Remember`, `RequestRecoveryTests`
+- **Evidence:** nonce sessions hashed raw JSON channel IDs and closing/splice public nonces. Utf8JsonReader accepts embedded whitespace in base64 strings, and JsonElement retains that whitespace when serialized. Against the pre-fix daemon, a real-process restart followed by an equivalent encoded channel ID and a different transaction with a valid peer partial signature signed a second transaction using the same deterministic holder verification nonce. The regression failed because no SignerException was thrown. JSON Unicode escapes normalize, and invalid padding bits are rejected; those are not the reproduced trigger.
+- **Fix sketch:** session identities now use decoded ChannelId and MusigPublicNonce bytes. Restore recomputes canonical identities from existing entries and refuses a repeated session with a different payload hash or response; exact duplicate history remains valid. The process regression checks altered transaction refusal after restart and startup refusal for simulated conflicting legacy history.
+- **Blocks/Blocked-by:** NL-1190; prototype validation remains distinct from production deployment

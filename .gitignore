@@ -505,6 +505,7 @@ api/
 # DocFX temporary files
 *.tmp
 *.lock
+!tools/vls-compat-spike/Cargo.lock
 *.log
 .log/
 tmp/

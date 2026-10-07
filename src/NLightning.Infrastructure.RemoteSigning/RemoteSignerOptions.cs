@@ -20,4 +20,12 @@ public sealed class RemoteSignerOptions
 
 public sealed record SignerIdentity(string Network, NLightning.Domain.Crypto.ValueObjects.CompactPubKey NodePublicKey,
                                    NLightning.Domain.Bitcoin.ValueObjects.BitcoinKeyPath ChannelKeyPath, uint HeightOfBirth);
-public sealed class RemoteSignerTransportException(string message, Exception? inner = null) : Exception(message, inner);
+public sealed class RemoteSignerTransportException : Exception
+{
+    private readonly NLightning.Signing.Contracts.SigningRequest? _request;
+    /// <summary>Exact failed envelope; persist securely before process exit if its result needs reconciliation.</summary>
+    public NLightning.Signing.Contracts.SigningRequest? Request => _request?.Clone();
+    public RemoteSignerTransportException(string message, Exception? inner = null,
+                                         NLightning.Signing.Contracts.SigningRequest? request = null) : base(message, inner)
+        => _request = request?.Clone();
+}

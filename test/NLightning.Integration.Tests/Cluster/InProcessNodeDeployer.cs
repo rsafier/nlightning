@@ -6,6 +6,7 @@ namespace NLightning.Integration.Tests.Cluster;
 
 using Docker.Utils;
 using Domain.Node.Options;
+using Domain.Protocol.Interfaces;
 using Testing.Cluster.Nodes;
 using Testing.Cluster.Reach;
 using Testing.Cluster.Topology;
@@ -37,6 +38,9 @@ public sealed class InProcessNodeDeployer : ILightningNodeDeployer, IAsyncDispos
     /// <see cref="NLightningTestNode.ConfigureServices"/>, ...
     /// </summary>
     public Action<NLightningTestNode>? ConfigureNode { get; init; }
+
+    /// <summary>Optional externally owned key manager, e.g. a proxy to a separate signer process.</summary>
+    public Func<string, ISecureKeyManager>? KeyManager { get; init; }
 
     /// <summary>The database of each node (by alias); a SQLite file of its own when null.</summary>
     public Func<string, TestNodeDatabase?>? Database { get; init; }
@@ -79,7 +83,7 @@ public sealed class InProcessNodeDeployer : ILightningNodeDeployer, IAsyncDispos
             if (!Equals(bindAddress, IPAddress.Loopback))
                 options.ListenAddresses = [$"{bindAddress}:{created!.Port}"];
             ConfigureNodeOptions?.Invoke(node.Name, options);
-        });
+        }, KeyManager?.Invoke(node.Name));
         var adapter = new InProcessNode(created, context.Run.Identity, podFacingHost)
         {
             DefaultOpenMode = DefaultOpenMode

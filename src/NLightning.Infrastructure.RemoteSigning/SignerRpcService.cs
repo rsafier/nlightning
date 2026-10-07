@@ -24,22 +24,24 @@ public sealed class SignerRpcService(ILightningSigner signer, ISecureKeyManager 
     private WalletSnapshot? _walletContext;
     public override Task<SigningResponse> Execute(SigningRequest request, ServerCallContext context)
     {
-        var supplied = context.RequestHeaders.GetValue("x-signer-token") ?? "";
-        if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(supplied), Encoding.UTF8.GetBytes(_options.AuthToken)))
-            throw new RpcException(new Status(StatusCode.Unauthenticated, "Signer authentication failed."));
-        if (request.Version != 1 || !Guid.TryParseExact(request.RequestId, "N", out _) || request.Payload.Length > RemoteSignerOptions.MaxMessageBytes - 1024)
-            throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid signer protocol version, request ID or payload size."));
+        Authenticate(context);
+        ValidateRequest(request);
         lock (_gate)
         {
             var fingerprint = SHA256.HashData(request.ToByteArray());
             if (_replies.TryGetValue(request.RequestId, out var previous))
             {
                 if (!fingerprint.AsSpan().SequenceEqual(previous.Fingerprint)) throw new RpcException(new Status(StatusCode.InvalidArgument, "Request ID was reused for another operation."));
-                return Task.FromResult(previous.Response);
+                if (durableState is null || !DurableSignerState.SupportsReconciliation(request.Operation))
+                    return Task.FromResult(previous.Response);
             }
             try
             {
                 context.CancellationToken.ThrowIfCancellationRequested();
+                // Check durable identities even for identity/unsupported operations before any side effects.
+                var known = durableState?.Reconcile(request);
+                if (known?.Outcome == RequestOutcome.Completed)
+                    return Task.FromResult(known.Response);
                 var args = SignerWire.Decode(request.Payload.ToByteArray());
                 if (args.Length != SignerOperations.ArgumentCount(request.Operation)) throw new ArgumentException("Unexpected number of signer arguments.");
                 if (request.Operation is >= 27 and <= 30)
@@ -49,20 +51,29 @@ public sealed class SignerRpcService(ILightningSigner signer, ISecureKeyManager 
                 }
                 object?[] values;
                 if (request.Operation == 0) values = [new SignerIdentity(_options.Network, keys.GetNodePubKey(), keys.ChannelKeyPath, keys.HeightOfBirth)];
+                else if (durableState is not null)
+                    values = durableState.ExecuteRequest(request, args, () => request.Operation >= 100
+                        ? KeyOperation(request.Operation, args) : SignerDispatcher.Execute(signer, request.Operation, args));
                 else if (request.Operation >= 100) values = KeyOperation(request.Operation, args);
-                else values = durableState?.Execute(request.Operation, args) ?? SignerDispatcher.Execute(signer, request.Operation, args);
+                else values = SignerDispatcher.Execute(signer, request.Operation, args);
                 if (request.Operation is SignerOperations.MarkDataLoss or SignerOperations.UnregisterChannel
                  || request.Operation == SignerOperations.RegisterChannel
                  && SignerWire.Read<NLightning.Domain.Channels.ValueObjects.ChannelSigningInfo>(args[1]).DataLossDetected)
                 {
                     _replies.Clear(); _replyOrder.Clear(); _replyBytes = 0;
                 }
-                var response = new SigningResponse { Payload = ByteString.CopyFrom(SignerWire.Encode(values)) };
-                _replies.Add(request.RequestId, (fingerprint, response)); _replyOrder.Enqueue(request.RequestId);
-                _replyBytes += response.Payload.Length;
-                while (_replyOrder.Count > 4096 || _replyBytes > 64 * 1024 * 1024)
+                // Send the exact persisted bytes, including for fresh requests that reuse a consumed session.
+                var response = durableState is not null && DurableSignerState.SupportsReconciliation(request.Operation)
+                    ? durableState.Reconcile(request).Response
+                    : new SigningResponse { Payload = ByteString.CopyFrom(SignerWire.Encode(values)) };
+                if (durableState is null || !DurableSignerState.SupportsReconciliation(request.Operation))
                 {
-                    var oldest = _replyOrder.Dequeue(); _replyBytes -= _replies[oldest].Response.Payload.Length; _replies.Remove(oldest);
+                    _replies.Add(request.RequestId, (fingerprint, response)); _replyOrder.Enqueue(request.RequestId);
+                    _replyBytes += response.Payload.Length;
+                    while (_replyOrder.Count > 4096 || _replyBytes > 64 * 1024 * 1024)
+                    {
+                        var oldest = _replyOrder.Dequeue(); _replyBytes -= _replies[oldest].Response.Payload.Length; _replies.Remove(oldest);
+                    }
                 }
                 return Task.FromResult(response);
             }
@@ -72,6 +83,37 @@ public sealed class SignerRpcService(ILightningSigner signer, ISecureKeyManager 
             { throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid signer operation arguments.")); }
         }
     }
+    public override Task<ReconciliationResponse> Reconcile(SigningRequest request, ServerCallContext context)
+    {
+        Authenticate(context);
+        ValidateRequest(request);
+        lock (_gate)
+        {
+            try
+            {
+                context.CancellationToken.ThrowIfCancellationRequested();
+                _ = SignerOperations.ArgumentCount(request.Operation);
+                return Task.FromResult(durableState?.Reconcile(request)
+                    ?? new ReconciliationResponse { Outcome = RequestOutcome.Unsupported });
+            }
+            catch (ArgumentException)
+            { throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid or conflicting signer reconciliation request.")); }
+        }
+    }
+
+    private void Authenticate(ServerCallContext context)
+    {
+        var supplied = context.RequestHeaders.GetValue("x-signer-token") ?? "";
+        if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(supplied), Encoding.UTF8.GetBytes(_options.AuthToken)))
+            throw new RpcException(new Status(StatusCode.Unauthenticated, "Signer authentication failed."));
+    }
+
+    private static void ValidateRequest(SigningRequest request)
+    {
+        if (request.Version != 1 || !Guid.TryParseExact(request.RequestId, "N", out _) || request.Payload.Length > RemoteSignerOptions.MaxMessageBytes - 1024)
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid signer protocol version, request ID or payload size."));
+    }
+
     private static RemoteSignerOptions ValidateOptions(RemoteSignerOptions options)
     {
         options.Validate(); return options;

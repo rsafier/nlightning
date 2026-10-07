@@ -39,6 +39,34 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   block 28332 / raw tx 28333): by **pod IP** from the host, by headless Service name in the cluster. Read once: a test
   that restarts bitcoind must rebuild the node.
 
+## Remote C# signer interoperability proof
+
+`Live/RemoteSignerLndClusterTests.Given_AnInjectedRemoteSignerAndLnd_When_WePayBothWaysRestartBothAndClose_Then_BothEndsAgree`
+uses a separate injected-seed signer process and the daemon's remote composition. It opens a v1 channel to LND,
+pays in both directions, restarts the signer and node with their durable state, pays both directions again, and
+confirms the cooperative close with LND's closing transaction. The node receives only `RemoteSecureKeyManager`;
+private-key export is refused and seed injection creates no key file. `InProcessNodeDeployer.KeyManager` and
+`NLightningTestNode.RemoteSignerConnection` are caller-owned test seams; existing local tests retain their defaults.
+
+On a host with pod routing:
+
+```bash
+scripts/run-cluster.sh -n 1 -p integration --method '*Given_AnInjectedRemoteSignerAndLnd_When_WePayBothWaysRestartBothAndClose_Then_BothEndsAgree'
+```
+
+For kind or a host without pod routing, build an integration runner image with a **new** tag, import it into the
+cluster with that environment's normal image loader, then run the explicit wrapper through the same runner:
+
+```bash
+remote_signer_tag="remote-signer-$(date -u +%Y%m%d%H%M%S)"
+NLTG_RUNNER_PROJECT=integration NLTG_RUNNER_TAG="$remote_signer_tag" test/NLightning.Testing.Cluster/Runner/image/build.sh
+NLTG_RUNNER_IMAGE="nltg-spike-runner:$remote_signer_tag" scripts/run-cluster.sh -n 1 -p integration --method '*Given_TheIntegrationRunnerImage_When_RemoteSignerInteropRunsInCluster_Then_TheProofPasses'
+```
+
+The wrapper invokes `InClusterTestRunner` with the existing namespaced service account and adopted run. Its inner
+node binds to the runner pod's IP. The image must contain the binaries of the source revision being validated.
+These tests are Explicit: a default unit-test run does not execute or prove interoperability.
+
 ## The CLN interop suite on the cluster (phase 2 lane B)
 
 - **The cluster is the only backend of the CLN, Eclair, LDK and Postgres fixtures since NL-866** (owner decision
