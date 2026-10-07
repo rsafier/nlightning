@@ -297,7 +297,9 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
         { RescanTargetHeight = pendingSpends || ordinaryPending || missing.Length > batch.Count ? state.RescanTargetHeight : null }, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         await uow.SaveChangesAsync();
-        foreach (var address in catalogue) monitor.WatchBitcoinAddress(address);
+        // The final spend audit can extend the catalogue inside its own scope. Publish its persisted full result.
+        if (recoveryAddresses is not null)
+            foreach (var address in uow.WalletAddressesDbRepository.GetAllAddresses()) monitor.WatchBitcoinAddress(address);
         return !pendingSpends && !ordinaryBlocked;
     }
 
