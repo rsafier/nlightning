@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Utilities;
 
+using Configuration;
 using Domain.Protocol.ValueObjects;
 using Extensions;
 using Infrastructure.Bitcoin.Managers;
@@ -24,6 +25,15 @@ internal static class ConfigurationCheck
     /// <returns>The validation failures, empty when the configuration is valid.</returns>
     public static IReadOnlyList<string> Run(IConfiguration configuration, string network)
     {
+        try
+        {
+            SigningOptions.Read(configuration);
+        }
+        catch (Exception e) when (e is InvalidOperationException or ArgumentException or FormatException)
+        {
+            return [e.Message];
+        }
+
         var services = new ServiceCollection();
         services.AddLogging();
 
@@ -32,7 +42,10 @@ internal static class ConfigurationCheck
         var keyManager = SecureKeyManager.CreateNew(new BitcoinNetwork(network), unusedKeyPath, 0);
         try
         {
-            services.AddNltgNodeServices(configuration, keyManager);
+            // Signing transport was validated above. Options validation stays offline and never loads signer secrets.
+            var offlineConfiguration = new ConfigurationBuilder().AddConfiguration(configuration)
+                .AddInMemoryCollection(new Dictionary<string, string?> { ["Signing:Mode"] = "Local" }).Build();
+            services.AddNltgNodeServices(offlineConfiguration, keyManager);
         }
         catch (Exception e) when (e is InvalidOperationException or ArgumentException or FormatException)
         {

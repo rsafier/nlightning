@@ -9,13 +9,16 @@ using NBitcoin;
 namespace NLightning.Infrastructure.Bitcoin.Managers;
 
 using Domain.Bitcoin.Constants;
+using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
+using Domain.Protocol.Enums;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Crypto.Ciphers;
 using Infrastructure.Crypto.Factories;
+using Infrastructure.Crypto.Functions;
 using Infrastructure.Crypto.Hashes;
 using Networks;
 using Node.Models;
@@ -60,7 +63,8 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
                                                                          | UnixFileMode.OtherWrite
                                                                          | UnixFileMode.OtherExecute;
 
-    private readonly string _filePath;
+    private readonly string? _filePath;
+    private readonly Action<uint>? _persistIndex;
     private readonly object _lastUsedIndexLock = new();
     private readonly Network _network;
     private readonly KeyPath _channelKeyPath = new(KeyConstants.ChannelKeyPathString);
@@ -118,8 +122,8 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     /// <param name="network">The network associated with the key.</param>
     /// <param name="filePath">The file path for storing the key data.</param>
     /// <param name="heightOfBirth">Block Height when the wallet was created</param>
-    private SecureKeyManager(byte[] privateKey, byte[]? chainCode, BitcoinNetwork network, string filePath,
-                             uint heightOfBirth)
+    private SecureKeyManager(byte[] privateKey, byte[]? chainCode, BitcoinNetwork network, string? filePath,
+                             uint heightOfBirth, Action<uint>? persistIndex = null, uint lastUsedIndex = 0)
     {
         ArgumentNullException.ThrowIfNull(privateKey);
 
@@ -183,6 +187,8 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         }
 
         _filePath = filePath;
+        _persistIndex = persistIndex;
+        _lastUsedIndex = lastUsedIndex;
         HeightOfBirth = heightOfBirth;
     }
 
@@ -204,24 +210,90 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         }
     }
 
+    /// <summary>
+    /// Creates a runtime-only BIP32 manager from an injected 32-byte seed. No key file path is accepted or used.
+    /// The seed is wiped, and every index reservation is synchronously persisted through the supplied callback
+    /// before it is returned. The callback must durably write the public index or throw.
+    /// </summary>
+    public static SecureKeyManager FromSeed(byte[] seed, BitcoinNetwork network, Action<uint> persistIndex,
+                                            uint lastUsedIndex = 0)
+    {
+        ArgumentNullException.ThrowIfNull(seed);
+        try
+        {
+            ArgumentNullException.ThrowIfNull(persistIndex);
+            if (seed.Length != 32)
+                throw new ArgumentException("The injected seed must be 32 bytes.", nameof(seed));
+            var master = ExtKey.CreateFromSeed(seed);
+            using var masterPrivateKey = master.PrivateKey;
+            return new SecureKeyManager(masterPrivateKey.ToBytes(), master.ChainCode.ToArray(), network, null, 0,
+                                         persistIndex, lastUsedIndex);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(seed);
+        }
+    }
+
     public ExtPrivKey GetNextChannelKey(out uint index)
     {
-        lock (_lastUsedIndexLock)
-        {
-            _lastUsedIndex++;
-            index = _lastUsedIndex;
-
-            // Persist the index before the key is handed out, under the lock: the old fire-and-forget write could be
-            // lost in a crash or land after a later one, and after a restart a new channel would get the index (and
-            // so the keys) of an existing channel. A failed write throws, so the key is never used.
-            PersistLastUsedIndex();
-        }
+        index = ReserveChannelKeyIndex();
 
         // Derive the key at m/6425'/0'/0'/0/index
         var masterKey = GetMasterKey();
         var derivedKey = masterKey.Derive(_channelKeyPath.Derive(index));
 
         return derivedKey.ToBytes();
+    }
+
+    public uint ReserveChannelKeyIndex()
+    {
+        lock (_lastUsedIndexLock)
+        {
+            if (_lastUsedIndex == uint.MaxValue)
+                throw new InvalidOperationException("The channel key index space is exhausted.");
+            _lastUsedIndex++;
+            // Persist under the reservation lock before any caller can use this index. A failed write throws,
+            // so a crash cannot make a later channel reuse an index already handed out (SR-19).
+            PersistLastUsedIndex();
+            return _lastUsedIndex;
+        }
+    }
+
+    public CompactPubKey GetWalletPublicKey(uint index, bool isChange, AddressType addressType)
+    {
+        var path = addressType switch
+        {
+            AddressType.P2Tr => _depositP2TrKeyPath,
+            AddressType.P2Wpkh => _depositP2WpkhKeyPath,
+            _ => throw new ArgumentOutOfRangeException(nameof(addressType))
+        };
+        return GetMasterKey().Derive(path.Derive(isChange ? "1" : "0")).Derive(index).Neuter().PubKey.ToBytes();
+    }
+
+    public byte[] SignBolt11Invoice(string humanReadablePart, byte[] dataU5) =>
+        WithNodeKey(key => Signers.LightningInvoiceSignature.Sign(key, humanReadablePart, dataU5));
+
+    public byte[] EncryptNodeData(NodeDataPurpose purpose, byte[] nonce, byte[] associatedData, byte[] plaintext) =>
+        WithNodeKey(key => NodeAuxiliaryCrypto.Encrypt(key, purpose, nonce, associatedData, plaintext));
+
+    public byte[] DecryptNodeData(NodeDataPurpose purpose, byte[] nonce, byte[] associatedData, byte[] ciphertext) =>
+        WithNodeKey(key => NodeAuxiliaryCrypto.Decrypt(key, purpose, nonce, associatedData, ciphertext));
+
+    public byte[] ComputeOfferPathId(byte[] offerMetadata) =>
+        WithNodeKey(key => NodeAuxiliaryCrypto.ComputeOfferPathId(key, offerMetadata));
+
+    private byte[] WithNodeKey(Func<byte[], byte[]> action)
+    {
+        var key = CopyFromSecure(_secureNodeKeyPtr, _nodeKeyLength);
+        try
+        {
+            return action(key);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(key);
+        }
     }
 
     public ExtPrivKey GetChannelKeyAtIndex(uint index)
@@ -312,6 +384,8 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     public void SaveToFile(string password)
     {
         ArgumentNullException.ThrowIfNull(password);
+        if (_filePath is null)
+            throw new InvalidOperationException("Injected seed managers cannot save private key material to a file.");
 
         lock (_lastUsedIndexLock)
         {
@@ -985,7 +1059,12 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     /// </summary>
     private void PersistLastUsedIndex()
     {
-        if (!File.Exists(_filePath))
+        if (_persistIndex is not null)
+        {
+            _persistIndex(_lastUsedIndex);
+            return;
+        }
+        if (_filePath is null || !File.Exists(_filePath))
             return;
 
         var data = JsonSerializer.Deserialize(File.ReadAllText(_filePath), KeyFileDataJsonContext.Default.KeyFileData)

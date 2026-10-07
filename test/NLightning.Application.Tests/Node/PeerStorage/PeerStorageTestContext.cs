@@ -18,7 +18,9 @@ using Domain.Money;
 using Domain.Node.Options;
 using Domain.Node.PeerStorage;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.Enums;
 using Domain.Protocol.Interfaces;
+using Infrastructure.Crypto.Functions;
 using Infrastructure.Node.PeerStorage;
 
 /// <summary>
@@ -64,6 +66,14 @@ internal sealed class PeerStorageTestContext : IDisposable
         nodePubKey[0] = 0x02;
         keyManager.Setup(k => k.GetNodeKeyPair())
                   .Returns(() => new CryptoKeyPair(new PrivKey(secret.ToArray()), new CompactPubKey(nodePubKey)));
+        keyManager.Setup(k => k.EncryptNodeData(It.IsAny<NodeDataPurpose>(), It.IsAny<byte[]>(),
+                                                It.IsAny<byte[]>(), It.IsAny<byte[]>()))
+                  .Returns((NodeDataPurpose purpose, byte[] nonce, byte[] ad, byte[] plaintext) =>
+                               NodeAuxiliaryCrypto.Encrypt(secret, purpose, nonce, ad, plaintext));
+        keyManager.Setup(k => k.DecryptNodeData(It.IsAny<NodeDataPurpose>(), It.IsAny<byte[]>(),
+                                                It.IsAny<byte[]>(), It.IsAny<byte[]>()))
+                  .Returns((NodeDataPurpose purpose, byte[] nonce, byte[] ad, byte[] ciphertext) =>
+                               NodeAuxiliaryCrypto.Decrypt(secret, purpose, nonce, ad, ciphertext));
         Cipher = new PeerStorageCipher(keyManager.Object);
         BlobProvider = new ChannelListPeerBackupBlobProvider(_channelMemory.Object, Cipher, Time);
 

@@ -1,5 +1,4 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using NBitcoin;
@@ -668,7 +667,10 @@ public partial class Invoice
     /// Thrown when an error occurs during the encoding process, including a failed validation (the inner
     /// <see cref="InvalidOperationException"/> lists the errors).
     /// </exception>
-    public string Encode(Key nodeKey)
+    public string Encode(Key nodeKey) =>
+        EncodeCore(writer => SignInvoice(HumanReadablePart, writer, nodeKey), nodeKey.PubKey);
+
+    private string EncodeCore(Func<BitWriter, CompactSignature> sign, PubKey nodePubKey)
     {
         try
         {
@@ -698,7 +700,7 @@ public partial class Invoice
             _taggedFields.WriteToBitWriter(bitWriter);
 
             // Sign the invoice
-            var compactSignature = SignInvoice(HumanReadablePart, bitWriter, nodeKey);
+            var compactSignature = sign(bitWriter);
             var signature = new byte[compactSignature.Signature.Length + 1];
             compactSignature.Signature.CopyTo(signature, 0);
             signature[^1] = (byte)compactSignature.RecoveryId;
@@ -711,7 +713,7 @@ public partial class Invoice
             Signature = compactSignature;
 
             // Without an `n` field the payee is whoever signed, so drop any key recovered from an earlier signature
-            _recoveredPayeePubKey = nodeKey.PubKey;
+            _recoveredPayeePubKey = nodePubKey;
 
             return _invoiceString;
         }
@@ -732,18 +734,17 @@ public partial class Invoice
             throw new InvalidOperationException(
                 "Secure key manager is not set, please use Encode(Key nodeKey) or ToString(Key nodeKey) instead");
 
-        // Copy the node key before use: ISecureKeyManager does not promise the returned buffer is a fresh copy,
-        // so only our own copy is zeroed once the invoice is signed
-        var nodeKeyBytes = _secureKeyManager.GetNodeKeyPair().PrivKey.Value.ToArray();
-        try
+        return EncodeCore(writer =>
         {
-            using var nodeKey = new Key(nodeKeyBytes);
-            return Encode(nodeKey);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(nodeKeyBytes);
-        }
+            var reader = new BitReader(writer.ToArray());
+            var words = new byte[writer.TotalBits / 5];
+            for (var i = 0; i < words.Length; i++)
+                words[i] = reader.ReadByteFromBits(5);
+            var signature = _secureKeyManager.SignBolt11Invoice(HumanReadablePart, words);
+            if (signature.Length != 65 || signature[64] > 3)
+                throw new InvalidOperationException("The signer returned an invalid BOLT 11 signature.");
+            return new CompactSignature(signature[64], signature.AsSpan(0, 64).ToArray());
+        }, new PubKey(_secureKeyManager.GetNodePubKey()));
     }
 
     /// <summary>

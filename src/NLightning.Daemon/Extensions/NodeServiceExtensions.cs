@@ -35,10 +35,12 @@ using Application.Payments.Send;
 using Application.Payments.Switch;
 using Application.Payments.Trampoline;
 using Cashu.PaymentProcessor;
+using Configuration;
 using Contracts.Utilities;
 using Daemon.Ipc.Handlers;
 using Daemon.Ipc.Interfaces;
 using Domain.Accounting.Prices;
+using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
 using Domain.Client.Constants;
 using Domain.Client.Exceptions;
@@ -54,13 +56,13 @@ using Handlers;
 using Infrastructure;
 using Infrastructure.Bitcoin;
 using Infrastructure.Bitcoin.Gossip;
-using Infrastructure.Bitcoin.Managers;
 using Infrastructure.Bitcoin.Onchain;
 using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Services;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Persistence;
+using Infrastructure.RemoteSigning;
 using Infrastructure.Repositories;
 using Infrastructure.Serialization;
 using Interfaces;
@@ -73,13 +75,13 @@ public static class NodeServiceExtensions
     /// <summary>
     /// Registers all NLTG application services for dependency injection
     /// </summary>
-    public static IHostBuilder ConfigureNltgServices(this IHostBuilder hostBuilder, SecureKeyManager secureKeyManager,
-                                                     string configPath)
+    public static IHostBuilder ConfigureNltgServices(this IHostBuilder hostBuilder, ISecureKeyManager secureKeyManager,
+                                                     string configPath, RemoteSignerConnection? remoteConnection = null)
     {
         return hostBuilder.ConfigureServices((hostContext, services) =>
         {
             // The whole node graph, shared with the Docker integration tests
-            services.AddNltgNodeServices(hostContext.Configuration, secureKeyManager);
+            services.AddNltgNodeServices(hostContext.Configuration, secureKeyManager, remoteConnection);
 
             // The gossip graph (ingress + pruner, BOLT 7 G2-T4/G2-T5) is registered first: it starts before the daemon
             // service (the pruner follows the chain monitor's first block) and stops after it (the graph is written
@@ -144,8 +146,15 @@ public static class NodeServiceExtensions
     /// <returns>The same service collection.</returns>
     public static IServiceCollection AddNltgNodeServices(this IServiceCollection services,
                                                          IConfiguration configuration,
-                                                         ISecureKeyManager secureKeyManager)
+                                                         ISecureKeyManager secureKeyManager,
+                                                         RemoteSignerConnection? remoteConnection = null)
     {
+        var signingOptions = SigningOptions.Read(configuration);
+        if (signingOptions.IsRemote != (remoteConnection is not null))
+            throw new ArgumentException("RemoteNative signing requires a remote connection; Local signing requires a local key manager.");
+        if (signingOptions.IsRemote && secureKeyManager is not RemoteSecureKeyManager)
+            throw new ArgumentException("RemoteNative signing requires a remote key manager.");
+
         // Register configuration and the node key
         services.AddSingleton(configuration);
         services.AddSingleton(secureKeyManager);
@@ -359,6 +368,14 @@ public static class NodeServiceExtensions
         services.AddPersistenceInfrastructureServices(configuration);
         services.AddRepositoriesInfrastructureServices();
         services.AddSerializationInfrastructureServices();
+
+        if (remoteConnection is not null)
+        {
+            services.AddSingleton(remoteConnection);
+            services.Replace(ServiceDescriptor.Singleton<ILightningSigner>(sp =>
+                new RemoteLightningSigner(remoteConnection, sp.GetRequiredService<IChannelSigningInfoSource>(),
+                                           sp.GetRequiredService<IUtxoMemoryRepository>())));
+        }
 
         // BOLT 5 on-chain building blocks (output mapper, sweep and penalty builders); they need the commitment model
         // factory from AddApplicationServices and the commitment builder from AddBitcoinInfrastructure

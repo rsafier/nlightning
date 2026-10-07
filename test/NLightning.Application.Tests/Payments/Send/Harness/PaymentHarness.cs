@@ -53,6 +53,7 @@ using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin;
+using Infrastructure.Bitcoin.Signers;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Crypto.Hashes;
 using Infrastructure.Protocol.Onion;
@@ -706,6 +707,22 @@ internal sealed class HarnessKeyManager : ISecureKeyManager
     public CryptoKeyPair GetNodeKeyPair() => new(new PrivKey(_nodeKey.ToBytes()), NodeId);
 
     public CompactPubKey GetNodePubKey() => NodeId;
+
+    public byte[] SignBolt11Invoice(string humanReadablePart, byte[] dataU5) =>
+        LightningInvoiceSignature.Sign(_nodeKey.ToBytes(), humanReadablePart, dataU5);
+
+    public byte[] EncryptNodeData(Domain.Protocol.Enums.NodeDataPurpose purpose, byte[] nonce,
+                                  byte[] associatedData, byte[] plaintext) =>
+        Infrastructure.Crypto.Functions.NodeAuxiliaryCrypto.Encrypt(_nodeKey.ToBytes(), purpose, nonce,
+                                                                   associatedData, plaintext);
+
+    public byte[] DecryptNodeData(Domain.Protocol.Enums.NodeDataPurpose purpose, byte[] nonce,
+                                  byte[] associatedData, byte[] ciphertext) =>
+        Infrastructure.Crypto.Functions.NodeAuxiliaryCrypto.Decrypt(_nodeKey.ToBytes(), purpose, nonce,
+                                                                   associatedData, ciphertext);
+
+    public byte[] ComputeOfferPathId(byte[] offerMetadata) =>
+        Infrastructure.Crypto.Functions.NodeAuxiliaryCrypto.ComputeOfferPathId(_nodeKey.ToBytes(), offerMetadata);
 
     public void ComputeNodeSharedSecret(ReadOnlySpan<byte> publicKey, Span<byte> sharedSecret)
     {

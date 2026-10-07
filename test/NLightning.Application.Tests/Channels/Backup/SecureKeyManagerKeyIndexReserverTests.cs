@@ -43,7 +43,7 @@ public class SecureKeyManagerKeyIndexReserverTests
 
         // Assert
         Assert.Equal(21u, last);
-        keyManager.Verify(k => k.GetNextChannelKey(out It.Ref<uint>.IsAny), Times.Once);
+        keyManager.Verify(k => k.ReserveChannelKeyIndex(), Times.Once);
     }
 
     [Fact]
@@ -51,6 +51,8 @@ public class SecureKeyManagerKeyIndexReserverTests
     {
         // Arrange: a key manager (e.g. a bare mock) that always hands out index 0
         var keyManager = new Mock<ISecureKeyManager>();
+        keyManager.Setup(k => k.EnsureLastUsedChannelIndexAtLeast(It.IsAny<uint>()))
+                  .Throws<NotSupportedException>();
         var reserver = new SecureKeyManagerKeyIndexReserver(keyManager.Object);
 
         // Act / Assert
@@ -88,6 +90,9 @@ public class SecureKeyManagerKeyIndexReserverTests
     private Mock<ISecureKeyManager> CreateKeyManager()
     {
         var keyManager = new Mock<ISecureKeyManager>();
+        keyManager.Setup(k => k.EnsureLastUsedChannelIndexAtLeast(It.IsAny<uint>()))
+                  .Throws<NotSupportedException>();
+        keyManager.Setup(k => k.ReserveChannelKeyIndex()).Returns(() => ++_lastUsedIndex);
         keyManager.Setup(k => k.GetNextChannelKey(out It.Ref<uint>.IsAny))
                   .Callback(new NextChannelKey((out uint index) => index = ++_lastUsedIndex))
                   .Returns(default(ExtPrivKey));

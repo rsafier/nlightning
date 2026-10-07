@@ -29,12 +29,11 @@ public class BitcoinWalletServiceTests
 
     public BitcoinWalletServiceTests()
     {
-        _secureKeyManager.Setup(k => k.GetDepositP2WpkhKeyAtIndex(It.IsAny<uint>(), It.IsAny<bool>()))
-                         .Returns((uint index, bool isChange) =>
-                                      s_masterKey.Derive(isChange ? 1u : 0u).Derive(index).ToBytes());
-        _secureKeyManager.Setup(k => k.GetDepositP2TrKeyAtIndex(It.IsAny<uint>(), It.IsAny<bool>()))
-                         .Returns((uint index, bool isChange) =>
-                                      s_masterKey.Derive(isChange ? 3u : 2u).Derive(index).ToBytes());
+        _secureKeyManager.Setup(k => k.GetWalletPublicKey(It.IsAny<uint>(), It.IsAny<bool>(), It.IsAny<AddressType>()))
+                         .Returns((uint index, bool isChange, AddressType type) =>
+                                      (Domain.Crypto.ValueObjects.CompactPubKey)s_masterKey
+                                          .Derive(type == AddressType.P2Tr ? (isChange ? 3u : 2u) : (isChange ? 1u : 0u))
+                                          .Derive(index).Neuter().PubKey.ToBytes());
 
         // The repository's semantics: the lowest stored address that is not reserved, holds no UTXO and lies above
         // every reserved or funded one (NL-280); an empty table gives null

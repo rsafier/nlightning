@@ -5,7 +5,10 @@ namespace NLightning.Application.Tests.Payments;
 
 using Domain.Bitcoin.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Protocol.Enums;
 using Domain.Protocol.Interfaces;
+using Infrastructure.Bitcoin.Signers;
+using Infrastructure.Crypto.Functions;
 
 /// <summary>
 /// A node key manager for payment tests: node key pair and node-key ECDH (BOLT 4 Sphinx) from a fixed seed byte.
@@ -39,4 +42,16 @@ internal sealed class TestNodeKeyManager : ISecureKeyManager
         var sharedPoint = new PubKey(publicKey.ToArray()).GetSharedPubkey(_nodeKey);
         SHA256.HashData(sharedPoint.ToBytes(), sharedSecret);
     }
+
+    public byte[] SignBolt11Invoice(string humanReadablePart, byte[] dataU5) =>
+        LightningInvoiceSignature.Sign(_nodeKey.ToBytes(), humanReadablePart, dataU5);
+
+    public byte[] EncryptNodeData(NodeDataPurpose purpose, byte[] nonce, byte[] associatedData, byte[] plaintext) =>
+        NodeAuxiliaryCrypto.Encrypt(_nodeKey.ToBytes(), purpose, nonce, associatedData, plaintext);
+
+    public byte[] DecryptNodeData(NodeDataPurpose purpose, byte[] nonce, byte[] associatedData, byte[] ciphertext) =>
+        NodeAuxiliaryCrypto.Decrypt(_nodeKey.ToBytes(), purpose, nonce, associatedData, ciphertext);
+
+    public byte[] ComputeOfferPathId(byte[] offerMetadata) =>
+        NodeAuxiliaryCrypto.ComputeOfferPathId(_nodeKey.ToBytes(), offerMetadata);
 }

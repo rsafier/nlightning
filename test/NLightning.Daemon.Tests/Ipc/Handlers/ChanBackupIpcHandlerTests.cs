@@ -28,9 +28,11 @@ using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Onchain.Interfaces;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.Enums;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Domain.Serialization.Interfaces;
+using Infrastructure.Crypto.Functions;
 using Infrastructure.Crypto.Hashes;
 using Transport.Ipc;
 using Transport.Ipc.MessagePack;
@@ -252,6 +254,14 @@ public class ChanBackupIpcHandlerTests
         var nodeId = new CompactPubKey(_nodeKey.PubKey.ToBytes());
         var keyManager = new Mock<ISecureKeyManager>();
         keyManager.Setup(k => k.GetNodeKeyPair()).Returns(() => new CryptoKeyPair(_nodeKey.ToBytes(), nodeId));
+        keyManager.Setup(k => k.EncryptNodeData(It.IsAny<NodeDataPurpose>(), It.IsAny<byte[]>(),
+                                                It.IsAny<byte[]>(), It.IsAny<byte[]>()))
+                  .Returns((NodeDataPurpose purpose, byte[] nonce, byte[] ad, byte[] plaintext) =>
+                               NodeAuxiliaryCrypto.Encrypt(_nodeKey.ToBytes(), purpose, nonce, ad, plaintext));
+        keyManager.Setup(k => k.DecryptNodeData(It.IsAny<NodeDataPurpose>(), It.IsAny<byte[]>(),
+                                                It.IsAny<byte[]>(), It.IsAny<byte[]>()))
+                  .Returns((NodeDataPurpose purpose, byte[] nonce, byte[] ad, byte[] ciphertext) =>
+                               NodeAuxiliaryCrypto.Decrypt(_nodeKey.ToBytes(), purpose, nonce, ad, ciphertext));
         keyManager.Setup(k => k.GetNodePubKey()).Returns(nodeId);
         var signer = new Mock<ILightningSigner>();
         signer.Setup(s => s.GetChannelBasepoints(It.IsAny<uint>()))

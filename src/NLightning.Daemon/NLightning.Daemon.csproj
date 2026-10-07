@@ -33,6 +33,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\NLightning.Infrastructure.RemoteSigning\NLightning.Infrastructure.RemoteSigning.csproj"/>
     <ProjectReference Include="..\NLightning.Application\NLightning.Application.csproj"/>
     <ProjectReference Include="..\NLightning.Cashu.PaymentProcessor\NLightning.Cashu.PaymentProcessor.csproj"/>
     <ProjectReference Include="..\NLightning.LnBackend\NLightning.LnBackend.csproj"/>

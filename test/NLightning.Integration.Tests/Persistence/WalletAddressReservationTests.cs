@@ -187,8 +187,10 @@ public class WalletAddressReservationTests
     private static BitcoinWalletService CreateWallet(UnitOfWork uow)
     {
         var keyManager = new Mock<ISecureKeyManager>();
-        keyManager.Setup(k => k.GetDepositP2WpkhKeyAtIndex(It.IsAny<uint>(), It.IsAny<bool>()))
-                  .Returns((uint index, bool isChange) => s_masterKey.Derive(isChange ? 1u : 0u).Derive(index).ToBytes());
+        keyManager.Setup(k => k.GetWalletPublicKey(It.IsAny<uint>(), It.IsAny<bool>(), It.IsAny<AddressType>()))
+                  .Returns((uint index, bool isChange, AddressType _) =>
+                               (Domain.Crypto.ValueObjects.CompactPubKey)s_masterKey.Derive(isChange ? 1u : 0u)
+                                   .Derive(index).Neuter().PubKey.ToBytes());
         return new BitcoinWalletService(new Mock<IBlockchainMonitor>().Object,
                                         NullLogger<BitcoinWalletService>.Instance,
                                         Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }),

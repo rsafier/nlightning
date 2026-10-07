@@ -14,6 +14,7 @@ using Domain.Node;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Exceptions;
+using Infrastructure.Bitcoin.Signers;
 
 /// <summary>
 /// The encode path the node uses (W0-D / NL-120): sign with the node key from <see cref="ISecureKeyManager"/>,
@@ -38,16 +39,12 @@ public class InvoiceNodeEncodingTests
     private static readonly CompactPubKey s_carolPubKey =
         Convert.FromHexString("02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5");
 
-    private static Mock<ISecureKeyManager> CreateKeyManager(List<byte[]> handedOutKeys)
+    private static Mock<ISecureKeyManager> CreateKeyManager()
     {
         var keyManager = new Mock<ISecureKeyManager>();
-        keyManager.Setup(x => x.GetNodeKeyPair()).Returns(() =>
-        {
-            // Hand out a new array every call so tests can inspect exactly what Encode received
-            var copy = s_nodePrivKey.ToArray();
-            handedOutKeys.Add(copy);
-            return new CryptoKeyPair(new PrivKey(copy), new CompactPubKey(s_nodePubKey.ToBytes()));
-        });
+        keyManager.Setup(x => x.GetNodePubKey()).Returns(new CompactPubKey(s_nodePubKey.ToBytes()));
+        keyManager.Setup(x => x.SignBolt11Invoice(It.IsAny<string>(), It.IsAny<byte[]>()))
+                  .Returns((string hrp, byte[] words) => LightningInvoiceSignature.Sign(s_nodePrivKey, hrp, words));
         return keyManager;
     }
 
@@ -66,8 +63,7 @@ public class InvoiceNodeEncodingTests
     public void Given_NodeKeyManager_When_EncodedDecodedAndValidated_Then_EveryFieldRoundTripsAndPayeeIsTheNode()
     {
         // Arrange
-        var handedOutKeys = new List<byte[]>();
-        var invoice = CreateNodeInvoice(CreateKeyManager(handedOutKeys).Object);
+        var invoice = CreateNodeInvoice(CreateKeyManager().Object);
 
         // Act
         var encoded = invoice.Encode();
@@ -89,13 +85,10 @@ public class InvoiceNodeEncodingTests
     }
 
     [Fact]
-    public void Given_KeyManagerReturningItsOwnBuffer_When_Encoded_Then_TheNodeKeyIsNotWiped()
+    public void Given_NodeKeyManager_When_EncodedTwice_Then_ThePrivateKeyIsNeverRequested()
     {
-        // Arrange: a key manager that caches its key pair and hands out the same internal buffer every call
-        var internalKey = s_nodePrivKey.ToArray();
-        var keyPair = new CryptoKeyPair(new PrivKey(internalKey), new CompactPubKey(s_nodePubKey.ToBytes()));
-        var keyManager = new Mock<ISecureKeyManager>();
-        keyManager.Setup(x => x.GetNodeKeyPair()).Returns(keyPair);
+        // Arrange
+        var keyManager = CreateKeyManager();
         var invoice = CreateNodeInvoice(keyManager.Object);
 
         // Act
@@ -103,7 +96,7 @@ public class InvoiceNodeEncodingTests
         var second = CreateNodeInvoice(keyManager.Object).Encode();
 
         // Assert
-        Assert.Equal(s_nodePrivKey, internalKey);
+        keyManager.Verify(x => x.GetNodeKeyPair(), Times.Never);
         Assert.Equal(s_nodePubKey, Invoice.Decode(first, BitcoinNetwork.Regtest).PayeePubKey);
         Assert.Equal(s_nodePubKey, Invoice.Decode(second, BitcoinNetwork.Regtest).PayeePubKey);
     }

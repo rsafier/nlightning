@@ -5,7 +5,6 @@ using NBitcoin;
 namespace NLightning.Infrastructure.Bitcoin.Wallet;
 
 using Domain.Bitcoin.Enums;
-using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
@@ -103,23 +102,10 @@ public class BitcoinWalletService : IBitcoinWalletService
         var addressList = new List<WalletAddressModel>(BatchSize + GapLimit);
         for (var i = firstIndex; i < firstIndex + BatchSize + GapLimit; i++)
         {
-            ExtPrivKey extPrivKey;
-            if (addressType == AddressType.P2Tr)
-            {
-                extPrivKey = _secureKeyManager.GetDepositP2TrKeyAtIndex(i, isChange);
-                var extKey = ExtKey.CreateFromBytes(extPrivKey);
-                var address = extKey.Neuter().PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, _network);
-
-                addressList.Add(new WalletAddressModel(addressType, i, isChange, address.ToString()));
-            }
-            else
-            {
-                extPrivKey = _secureKeyManager.GetDepositP2WpkhKeyAtIndex(i, isChange);
-                var extKey = ExtKey.CreateFromBytes(extPrivKey);
-                var address = extKey.Neuter().PubKey.GetAddress(ScriptPubKeyType.Segwit, _network);
-
-                addressList.Add(new WalletAddressModel(addressType, i, isChange, address.ToString()));
-            }
+            var pubKey = new PubKey(_secureKeyManager.GetWalletPublicKey(i, isChange, addressType));
+            var scriptType = addressType == AddressType.P2Tr ? ScriptPubKeyType.TaprootBIP86 : ScriptPubKeyType.Segwit;
+            var address = pubKey.GetAddress(scriptType, _network);
+            addressList.Add(new WalletAddressModel(addressType, i, isChange, address.ToString()));
         }
 
         _uow.WalletAddressesDbRepository.AddRange(addressList);

@@ -4,6 +4,8 @@ using System.Text;
 namespace NLightning.Application.Channels.Backup;
 
 using Domain.Crypto.Constants;
+using Domain.Protocol.Enums;
+using Domain.Protocol.Interfaces;
 using Infrastructure.Crypto.Ciphers;
 
 /// <summary>
@@ -76,6 +78,51 @@ public static class ChannelBackupCipher
         return blob;
     }
 
+    /// <summary>Encrypts a backup without exporting its encryption key from the signer.</summary>
+    public static byte[] EncryptWithSigner(ISecureKeyManager keyManager, ReadOnlySpan<byte> plaintext)
+    {
+        var blob = new byte[Overhead + plaintext.Length];
+        s_magic.CopyTo(blob, 0);
+        blob[s_magic.Length] = FileVersion;
+        RandomNumberGenerator.Fill(blob.AsSpan(HeaderLength, NonceLength));
+        var ciphertext = keyManager.EncryptNodeData(NodeDataPurpose.ChannelBackup,
+                                                    blob.AsSpan(HeaderLength, NonceLength).ToArray(),
+                                                    blob.AsSpan(0, HeaderLength).ToArray(), plaintext.ToArray());
+        ciphertext.CopyTo(blob, HeaderLength + NonceLength);
+        return blob;
+    }
+
+    /// <summary>Authenticates a backup without exporting its encryption key from the signer.</summary>
+    public static byte[] DecryptWithSigner(ISecureKeyManager keyManager, ReadOnlySpan<byte> blob)
+    {
+        ValidateBlob(blob);
+        try
+        {
+            return keyManager.DecryptNodeData(NodeDataPurpose.ChannelBackup,
+                                              blob.Slice(HeaderLength, NonceLength).ToArray(),
+                                              blob[..HeaderLength].ToArray(),
+                                              blob[(HeaderLength + NonceLength)..].ToArray());
+        }
+        catch (CryptographicException e)
+        {
+            throw new ChannelBackupAuthenticationException(
+                "The channel backup does not decrypt with this node's key: it belongs to another node or was changed.",
+                e);
+        }
+    }
+
+    private static void ValidateBlob(ReadOnlySpan<byte> blob)
+    {
+        if (!LooksLikeBackup(blob))
+            throw new ChannelBackupFormatException("Not a static channel backup (bad magic).");
+        if (blob.Length < HeaderLength)
+            throw new ChannelBackupFormatException("The channel backup is truncated.");
+        if (blob[s_magic.Length] != FileVersion)
+            throw new ChannelBackupFormatException($"Unknown channel backup file version {blob[s_magic.Length]}.");
+        if (blob.Length < Overhead)
+            throw new ChannelBackupFormatException("The channel backup is truncated.");
+    }
+
     /// <summary>Whether <paramref name="blob"/> starts like a static channel backup (magic only).</summary>
     public static bool LooksLikeBackup(ReadOnlySpan<byte> blob) =>
         blob.Length >= s_magic.Length && blob[..s_magic.Length].SequenceEqual(s_magic);
@@ -87,14 +134,7 @@ public static class ChannelBackupCipher
     {
         if (key.Length != KeyLength)
             throw new ArgumentException($"The backup key must be {KeyLength} bytes.", nameof(key));
-        if (!LooksLikeBackup(blob))
-            throw new ChannelBackupFormatException("Not a static channel backup (bad magic).");
-        if (blob.Length < HeaderLength)
-            throw new ChannelBackupFormatException("The channel backup is truncated.");
-        if (blob[s_magic.Length] != FileVersion)
-            throw new ChannelBackupFormatException($"Unknown channel backup file version {blob[s_magic.Length]}.");
-        if (blob.Length < Overhead)
-            throw new ChannelBackupFormatException("The channel backup is truncated.");
+        ValidateBlob(blob);
 
         var nonce = blob.Slice(HeaderLength, NonceLength);
         var ciphertext = blob[(HeaderLength + NonceLength)..];

@@ -1,8 +1,9 @@
 namespace NLightning.Infrastructure.Tests.Node.PeerStorage;
 
-using Domain.Crypto.ValueObjects;
 using Domain.Node.PeerStorage;
+using Domain.Protocol.Enums;
 using Domain.Protocol.Interfaces;
+using Infrastructure.Crypto.Functions;
 using Infrastructure.Node.PeerStorage;
 
 public class PeerStorageCipherTests
@@ -98,11 +99,15 @@ public class PeerStorageCipherTests
     private static Mock<ISecureKeyManager> CreateKeyManager(byte fill)
     {
         var secret = Enumerable.Repeat(fill, 32).ToArray();
-        var pubKey = new byte[33];
-        pubKey[0] = 0x02;
         var keyManager = new Mock<ISecureKeyManager>();
-        keyManager.Setup(k => k.GetNodeKeyPair())
-                  .Returns(() => new CryptoKeyPair(new PrivKey(secret.ToArray()), new CompactPubKey(pubKey)));
+        keyManager.Setup(k => k.EncryptNodeData(It.IsAny<NodeDataPurpose>(), It.IsAny<byte[]>(),
+                                                It.IsAny<byte[]>(), It.IsAny<byte[]>()))
+                  .Returns((NodeDataPurpose purpose, byte[] nonce, byte[] ad, byte[] plaintext) =>
+                               NodeAuxiliaryCrypto.Encrypt(secret, purpose, nonce, ad, plaintext));
+        keyManager.Setup(k => k.DecryptNodeData(It.IsAny<NodeDataPurpose>(), It.IsAny<byte[]>(),
+                                                It.IsAny<byte[]>(), It.IsAny<byte[]>()))
+                  .Returns((NodeDataPurpose purpose, byte[] nonce, byte[] ad, byte[] ciphertext) =>
+                               NodeAuxiliaryCrypto.Decrypt(secret, purpose, nonce, ad, ciphertext));
         return keyManager;
     }
 

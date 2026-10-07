@@ -1,12 +1,10 @@
 using System.Security.Cryptography;
-using System.Text;
 
 namespace NLightning.Infrastructure.Node.PeerStorage;
 
-using Crypto.Ciphers;
-using Crypto.Functions;
 using Domain.Crypto.Constants;
 using Domain.Node.PeerStorage;
+using Domain.Protocol.Enums;
 using Domain.Protocol.Interfaces;
 
 /// <summary>
@@ -19,8 +17,6 @@ public sealed class PeerStorageCipher : IPeerStorageCipher
     internal const byte Version = 1;
     private const int NonceLength = 24;
     private const int HeaderLength = 1 + NonceLength;
-
-    private static readonly byte[] s_keyLabel = Encoding.ASCII.GetBytes("nltg peer storage v1");
 
     private readonly ISecureKeyManager _secureKeyManager;
 
@@ -44,18 +40,10 @@ public sealed class PeerStorageCipher : IPeerStorageCipher
         blob[0] = Version;
         RandomNumberGenerator.Fill(blob.AsSpan(1, NonceLength));
 
-        Span<byte> key = stackalloc byte[CryptoConstants.PrivkeyLen];
-        try
-        {
-            DeriveKey(key);
-            using var cipher = new XChaCha20Poly1305();
-            cipher.Encrypt(key, blob.AsSpan(1, NonceLength), blob.AsSpan(0, 1), plaintext,
-                           blob.AsSpan(HeaderLength));
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(key);
-        }
+        var ciphertext = _secureKeyManager.EncryptNodeData(NodeDataPurpose.PeerStorage,
+                                                           blob.AsSpan(1, NonceLength).ToArray(), [Version],
+                                                           plaintext.ToArray());
+        ciphertext.CopyTo(blob, HeaderLength);
 
         return blob;
     }
@@ -66,38 +54,15 @@ public sealed class PeerStorageCipher : IPeerStorageCipher
         if (blob.Length < HeaderLength + CryptoConstants.Xchacha20Poly1305TagLen || blob[0] != Version)
             return null;
 
-        var ciphertext = blob[HeaderLength..];
-        var plaintext = new byte[ciphertext.Length - CryptoConstants.Xchacha20Poly1305TagLen];
-        Span<byte> key = stackalloc byte[CryptoConstants.PrivkeyLen];
         try
         {
-            DeriveKey(key);
-            using var cipher = new XChaCha20Poly1305();
-            cipher.Decrypt(key, blob.Slice(1, NonceLength), blob[..1], ciphertext, plaintext);
-            return plaintext;
+            return _secureKeyManager.DecryptNodeData(NodeDataPurpose.PeerStorage,
+                                                     blob.Slice(1, NonceLength).ToArray(), [Version],
+                                                     blob[HeaderLength..].ToArray());
         }
         catch (CryptographicException)
         {
             return null;
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(key);
-        }
-    }
-
-    private void DeriveKey(Span<byte> key)
-    {
-        var nodeKey = _secureKeyManager.GetNodeKeyPair();
-        byte[] secret = nodeKey.PrivKey;
-        try
-        {
-            using var hmac = new HmacSha256();
-            hmac.ComputeHash(secret, s_keyLabel, key);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(secret);
         }
     }
 }

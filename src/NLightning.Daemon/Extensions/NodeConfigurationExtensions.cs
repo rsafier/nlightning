@@ -438,6 +438,13 @@ public static class NodeConfigurationExtensions
                    ],
                    "Enrich": [ "FromLogContext", "WithMachineName", "WithThreadId", "ClassName" ]
                  },
+                 "Signing": {
+                   "Mode": "Local",
+                   "SocketPath": "",
+                   "AuthTokenFile": "",
+                   "TimeoutSeconds": 15,
+                   "ExpectedNodePublicKey": null
+                 },
                  "Node": {
                    "Network": "{{NETWORK}}",{{CUSTOM_SIGNET}}
                    "Daemon": false,

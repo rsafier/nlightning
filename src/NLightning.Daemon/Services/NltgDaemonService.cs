@@ -31,7 +31,6 @@ using Domain.Node.Options;
 using Domain.Node.PeerStorage;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
-using Infrastructure.Bitcoin.Managers;
 using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -398,14 +397,14 @@ public class NltgDaemonService : BackgroundService
     /// </summary>
     private async Task ReconcileChannelKeyIndexAsync()
     {
-        if (_scopeFactory is null || _secureKeyManager is not SecureKeyManager fileBacked)
+        if (_scopeFactory is null)
             return;
 
         using var scope = _scopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var highest = await unitOfWork.ChannelDbRepository.GetHighestLocalKeyIndexAsync();
-        if (fileBacked.EnsureLastUsedChannelIndexAtLeast(highest))
-            _logger.LogWarning("The key file's last used channel key index was below the database's highest ({Index}); "
+        if (_secureKeyManager.EnsureLastUsedChannelIndexAtLeast(highest))
+            _logger.LogWarning("The signer's last used channel key index was below the database's highest ({Index}); "
                              + "raised it", highest);
     }
 }

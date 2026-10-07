@@ -4,9 +4,13 @@ using NBitcoin;
 namespace NLightning.Integration.Tests.Docker.Mock;
 
 using Domain.Bitcoin.Constants;
+using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Protocol.Enums;
 using Domain.Protocol.Interfaces;
+using Infrastructure.Bitcoin.Signers;
+using Infrastructure.Crypto.Functions;
 
 public class FakeSecureKeyManager : ISecureKeyManager
 {
@@ -78,5 +82,36 @@ public class FakeSecureKeyManager : ISecureKeyManager
     {
         var sharedPubKey = new PubKey(publicKey.ToArray()).GetSharedPubkey(_nodeKey.PrivateKey);
         SHA256.HashData(sharedPubKey.Compress().ToBytes(), sharedSecret);
+    }
+
+    public byte[] SignBolt11Invoice(string humanReadablePart, byte[] dataU5) =>
+        LightningInvoiceSignature.Sign(_nodeKey.PrivateKey.ToBytes(), humanReadablePart, dataU5);
+
+    public byte[] EncryptNodeData(NodeDataPurpose purpose, byte[] nonce, byte[] associatedData, byte[] plaintext) =>
+        NodeAuxiliaryCrypto.Encrypt(_nodeKey.PrivateKey.ToBytes(), purpose, nonce, associatedData, plaintext);
+
+    public byte[] DecryptNodeData(NodeDataPurpose purpose, byte[] nonce, byte[] associatedData, byte[] ciphertext) =>
+        NodeAuxiliaryCrypto.Decrypt(_nodeKey.PrivateKey.ToBytes(), purpose, nonce, associatedData, ciphertext);
+
+    public byte[] ComputeOfferPathId(byte[] offerMetadata) =>
+        NodeAuxiliaryCrypto.ComputeOfferPathId(_nodeKey.PrivateKey.ToBytes(), offerMetadata);
+
+    public CompactPubKey GetWalletPublicKey(uint index, bool isChange, AddressType addressType)
+    {
+        var key = addressType == AddressType.P2Tr
+                      ? GetDepositP2TrKeyAtIndex(index, isChange)
+                      : GetDepositP2WpkhKeyAtIndex(index, isChange);
+        return ExtKey.CreateFromBytes(key).PrivateKey.PubKey.ToBytes();
+    }
+
+    public bool EnsureLastUsedChannelIndexAtLeast(uint highestUsedIndex)
+    {
+        lock (_lastUsedIndexLock)
+        {
+            if (_lastUsedIndex >= highestUsedIndex)
+                return false;
+            _lastUsedIndex = highestUsedIndex;
+            return true;
+        }
     }
 }

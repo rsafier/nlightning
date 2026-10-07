@@ -20,26 +20,12 @@ public sealed class OfferPathIds
     /// <summary>The <c>path_id</c> length.</summary>
     public const int Length = 32;
 
-    private static ReadOnlySpan<byte> SecretLabel => "nltg_bolt12_offer_paths"u8;
-    private static ReadOnlySpan<byte> PathLabel => "nltg_bolt12_offer_path"u8;
-
-    private readonly Lazy<byte[]> _secret;
+    private readonly ISecureKeyManager _secureKeyManager;
 
     public OfferPathIds(ISecureKeyManager secureKeyManager)
     {
         ArgumentNullException.ThrowIfNull(secureKeyManager);
-        _secret = new Lazy<byte[]>(() =>
-        {
-            var privateKey = (byte[])secureKeyManager.GetNodeKeyPair().PrivKey;
-            try
-            {
-                return HMACSHA256.HashData(privateKey, SecretLabel);
-            }
-            finally
-            {
-                CryptographicOperations.ZeroMemory(privateKey);
-            }
-        }, LazyThreadSafetyMode.ExecutionAndPublication);
+        _secureKeyManager = secureKeyManager;
     }
 
     /// <summary>
@@ -47,10 +33,7 @@ public sealed class OfferPathIds
     /// </summary>
     public byte[] Compute(ReadOnlySpan<byte> offerMetadata)
     {
-        var message = new byte[PathLabel.Length + offerMetadata.Length];
-        PathLabel.CopyTo(message);
-        offerMetadata.CopyTo(message.AsSpan(PathLabel.Length));
-        return HMACSHA256.HashData(_secret.Value, message);
+        return _secureKeyManager.ComputeOfferPathId(offerMetadata.ToArray());
     }
 
     /// <summary>

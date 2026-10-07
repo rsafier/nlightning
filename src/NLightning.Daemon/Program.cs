@@ -4,15 +4,18 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NLightning.Daemon.Configuration;
 using NLightning.Daemon.Contracts.Helpers;
 using NLightning.Daemon.Contracts.Utilities;
 using NLightning.Daemon.Extensions;
 using NLightning.Daemon.Utilities;
 using NLightning.Domain.Node.Options;
+using NLightning.Domain.Protocol.Interfaces;
 using NLightning.Domain.Protocol.ValueObjects;
 using NLightning.Infrastructure.Bitcoin.Managers;
 using NLightning.Infrastructure.Bitcoin.Options;
 using NLightning.Infrastructure.Bitcoin.Wallet;
+using NLightning.Infrastructure.RemoteSigning;
 using NLightning.Transport.Ipc.MessagePack;
 using Serilog;
 
@@ -85,70 +88,92 @@ try
     FilePermissionUtils.WarnIfDatabaseAccessibleByOthers(initialConfig["Database:Provider"],
                                                          initialConfig["Database:ConnectionString"], Log.Logger);
 
-    // Get the password from --password-file, --password-stdin, --password or NLTG_PASSWORD, or prompt for it
-    var password = PasswordUtils.ResolvePassword(args, PasswordUtils.OpenStdinReader(), Log.Logger);
-
-    // Don't leak the password to anything else that reads our environment
-    Environment.SetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable, null);
-
-    if (string.IsNullOrWhiteSpace(password))
-    {
-        password = ConsoleUtils.ReadPassword("Enter password for key encryption: ");
-    }
-
-    if (string.IsNullOrWhiteSpace(password))
-    {
-        Log.Error("Password cannot be empty.");
-        return 1;
-    }
-
-    SecureKeyManager keyManager;
-    var keyFilePath = SecureKeyManager.GetKeyFilePath(configPath);
-    if (!File.Exists(keyFilePath))
-    {
-        // Get current Block Height for key birth
-        try
+    var signingOptions = SigningOptions.Read(initialConfig);
+    ISecureKeyManager keyManager;
+    var password = string.Empty;
+    using var remoteConnection = signingOptions.IsRemote
+        ? new RemoteSignerConnection(new RemoteSignerOptions
         {
-            // Create the logger for the wallet service using Serilog
-            var loggerFactory = LoggerFactory.Create(b => b.AddSerilog(Log.Logger, dispose: false));
-            var walletLogger = loggerFactory.CreateLogger<BitcoinChainService>();
-
-            // Bind options from initialConfig
-            var bitcoinOptions = initialConfig.GetSection(BitcoinOptions.SectionName).Get<BitcoinOptions>()
-                              ?? throw new InvalidOperationException(
-                                     "Bitcoin configuration section is missing or invalid.");
-            var bitcoinErrors = bitcoinOptions.GetValidationErrors();
-            if (bitcoinErrors.Count > 0)
-                throw new InvalidOperationException(string.Join(" ", bitcoinErrors));
-
-            var nodeOptions = initialConfig.GetSection("Node").Get<NodeOptions>()
-                           ?? throw new InvalidOperationException("Node configuration section is missing or invalid.");
-
-            // Instantiate the service
-            var bitcoinChainService = new BitcoinChainService(Options.Create(bitcoinOptions), walletLogger,
-                                                              Options.Create(nodeOptions)
-            );
-
-            var heightOfBirth = await bitcoinChainService.GetCurrentBlockHeightAsync();
-
-            // Creates a new key: a BIP32 master key with the node key on its own path (version 3 key file, NL-159)
-            keyManager = SecureKeyManager.CreateNew(new BitcoinNetwork(network), keyFilePath, heightOfBirth);
-            keyManager.SaveToFile(password);
-            Console.WriteLine($"New key created and saved to {keyFilePath}");
-        }
-        catch (Exception e)
-        {
-            // The birth height comes from bitcoind (NL-153: the service itself constructs without it)
-            Log.Logger.Error(e, "An error occurred while creating new key; a new key needs a reachable bitcoind for "
-                              + "its birth height.");
-            return 1;
-        }
+            SocketPath = signingOptions.SocketPath,
+            AuthToken = signingOptions.ReadAuthToken(),
+            Network = network,
+            TimeoutSeconds = signingOptions.TimeoutSeconds,
+            ExpectedNodePublicKey = signingOptions.ExpectedNodePublicKey
+        })
+        : null;
+    if (remoteConnection is not null)
+    {
+        keyManager = new RemoteSecureKeyManager(remoteConnection);
+        Environment.SetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable, null);
+        Log.Information("Connected to remote signer: {NodePublicKey}", keyManager.GetNodePubKey().ToString());
     }
     else
     {
-        // Load the existing key
-        keyManager = SecureKeyManager.FromFilePath(keyFilePath, new BitcoinNetwork(network), password);
-        Console.WriteLine($"Loaded key from {keyFilePath}");
+        // Get the password from --password-file, --password-stdin, --password or NLTG_PASSWORD, or prompt for it
+        password = PasswordUtils.ResolvePassword(args, PasswordUtils.OpenStdinReader(), Log.Logger);
+
+        // Don't leak the password to anything else that reads our environment
+        Environment.SetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable, null);
+
+        if (string.IsNullOrWhiteSpace(password))
+        {
+            password = ConsoleUtils.ReadPassword("Enter password for key encryption: ");
+        }
+
+        if (string.IsNullOrWhiteSpace(password))
+        {
+            Log.Error("Password cannot be empty.");
+            return 1;
+        }
+
+        var keyFilePath = SecureKeyManager.GetKeyFilePath(configPath);
+        if (!File.Exists(keyFilePath))
+        {
+            // Get current Block Height for key birth
+            try
+            {
+                // Create the logger for the wallet service using Serilog
+                var loggerFactory = LoggerFactory.Create(b => b.AddSerilog(Log.Logger, dispose: false));
+                var walletLogger = loggerFactory.CreateLogger<BitcoinChainService>();
+
+                // Bind options from initialConfig
+                var bitcoinOptions = initialConfig.GetSection(BitcoinOptions.SectionName).Get<BitcoinOptions>()
+                                  ?? throw new InvalidOperationException(
+                                         "Bitcoin configuration section is missing or invalid.");
+                var bitcoinErrors = bitcoinOptions.GetValidationErrors();
+                if (bitcoinErrors.Count > 0)
+                    throw new InvalidOperationException(string.Join(" ", bitcoinErrors));
+
+                var nodeOptions = initialConfig.GetSection("Node").Get<NodeOptions>()
+                               ?? throw new InvalidOperationException("Node configuration section is missing or invalid.");
+
+                // Instantiate the service
+                var bitcoinChainService = new BitcoinChainService(Options.Create(bitcoinOptions), walletLogger,
+                                                                  Options.Create(nodeOptions)
+                );
+
+                var heightOfBirth = await bitcoinChainService.GetCurrentBlockHeightAsync();
+
+                // Creates a new key: a BIP32 master key with the node key on its own path (version 3 key file, NL-159)
+                var localKeyManager = SecureKeyManager.CreateNew(new BitcoinNetwork(network), keyFilePath, heightOfBirth);
+                localKeyManager.SaveToFile(password);
+                keyManager = localKeyManager;
+                Console.WriteLine($"New key created and saved to {keyFilePath}");
+            }
+            catch (Exception e)
+            {
+                // The birth height comes from bitcoind (NL-153: the service itself constructs without it)
+                Log.Logger.Error(e, "An error occurred while creating new key; a new key needs a reachable bitcoind for "
+                                  + "its birth height.");
+                return 1;
+            }
+        }
+        else
+        {
+            // Load the existing key
+            keyManager = SecureKeyManager.FromFilePath(keyFilePath, new BitcoinNetwork(network), password);
+            Console.WriteLine($"Loaded key from {keyFilePath}");
+        }
     }
 
     // Start as a daemon if requested
@@ -166,7 +191,7 @@ try
     // Create and run host
     var host = Host.CreateDefaultBuilder(DaemonUtils.NormalizeArgs(args))
                    .ConfigureNltg(initialConfig)
-                   .ConfigureNltgServices(keyManager, configPath)
+                   .ConfigureNltgServices(keyManager, configPath, remoteConnection)
                    .Build();
 
     // Run migrations if configured

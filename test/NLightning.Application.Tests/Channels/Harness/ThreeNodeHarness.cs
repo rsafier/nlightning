@@ -60,6 +60,7 @@ using Domain.Protocol.Models;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin;
+using Infrastructure.Bitcoin.Signers;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Crypto.Hashes;
 using Infrastructure.Persistence;
@@ -550,7 +551,9 @@ internal sealed class SwitchNode
     public string Name { get; }
     public string DatabasePath { get; }
     public HarnessKeyManager KeyManager { get; }
-    public CompactPubKey NodeId => KeyManager.NodeId;
+    /// <summary>Optional external signer key facade, supplied before starting the node.</summary>
+    public ISecureKeyManager? ExternalKeyManager { get; set; }
+    public CompactPubKey NodeId => ExternalKeyManager?.GetNodePubKey() ?? KeyManager.NodeId;
     public NodeOptions Options { get; }
     public LockAudit LockAudit { get; } = new();
     public LinkProbe Probe { get; }
@@ -752,7 +755,7 @@ internal sealed class SwitchNode
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(Options));
-        services.AddSingleton<ISecureKeyManager>(KeyManager);
+        services.AddSingleton<ISecureKeyManager>(ExternalKeyManager ?? KeyManager);
         // The node's persistent replay set on its SQLite database: it survives the harness restarts (NL-078)
         services.AddPersistentOnionReplayStore();
         services.AddTransient<ISha256, Sha256>();
@@ -1086,6 +1089,22 @@ internal sealed class HarnessKeyManager : ISecureKeyManager
     public CryptoKeyPair GetNodeKeyPair() => new(new PrivKey(_nodeKey.ToBytes()), NodeId);
 
     public CompactPubKey GetNodePubKey() => NodeId;
+
+    public byte[] SignBolt11Invoice(string humanReadablePart, byte[] dataU5) =>
+        LightningInvoiceSignature.Sign(_nodeKey.ToBytes(), humanReadablePart, dataU5);
+
+    public byte[] EncryptNodeData(Domain.Protocol.Enums.NodeDataPurpose purpose, byte[] nonce,
+                                  byte[] associatedData, byte[] plaintext) =>
+        Infrastructure.Crypto.Functions.NodeAuxiliaryCrypto.Encrypt(_nodeKey.ToBytes(), purpose, nonce,
+                                                                   associatedData, plaintext);
+
+    public byte[] DecryptNodeData(Domain.Protocol.Enums.NodeDataPurpose purpose, byte[] nonce,
+                                  byte[] associatedData, byte[] ciphertext) =>
+        Infrastructure.Crypto.Functions.NodeAuxiliaryCrypto.Decrypt(_nodeKey.ToBytes(), purpose, nonce,
+                                                                   associatedData, ciphertext);
+
+    public byte[] ComputeOfferPathId(byte[] offerMetadata) =>
+        Infrastructure.Crypto.Functions.NodeAuxiliaryCrypto.ComputeOfferPathId(_nodeKey.ToBytes(), offerMetadata);
 
     public void ComputeNodeSharedSecret(ReadOnlySpan<byte> publicKey, Span<byte> sharedSecret)
     {

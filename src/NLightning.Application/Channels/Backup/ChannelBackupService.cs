@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -116,15 +115,7 @@ public sealed class ChannelBackupService : IChannelBackupService
     /// <inheritdoc />
     public ChannelBackupSnapshot Decrypt(ReadOnlySpan<byte> backup)
     {
-        var key = DeriveKey();
-        try
-        {
-            return ChannelBackupCodec.Decode(ChannelBackupCipher.Decrypt(key, backup));
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(key);
-        }
+        return ChannelBackupCodec.Decode(ChannelBackupCipher.DecryptWithSigner(_secureKeyManager, backup));
     }
 
     /// <inheritdoc />
@@ -634,30 +625,6 @@ public sealed class ChannelBackupService : IChannelBackupService
     private static byte[] CanonicalContent(ChannelBackupSnapshot snapshot) =>
         ChannelBackupCodec.Encode(snapshot with { CreatedAt = DateTimeOffset.UnixEpoch });
 
-    private byte[] Encrypt(ChannelBackupSnapshot snapshot)
-    {
-        var key = DeriveKey();
-        try
-        {
-            return ChannelBackupCipher.Encrypt(key, ChannelBackupCodec.Encode(snapshot));
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(key);
-        }
-    }
-
-    private byte[] DeriveKey()
-    {
-        var keyPair = _secureKeyManager.GetNodeKeyPair();
-        var privateKey = (byte[])keyPair.PrivKey;
-        try
-        {
-            return ChannelBackupCipher.DeriveKey(privateKey);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(privateKey);
-        }
-    }
+    private byte[] Encrypt(ChannelBackupSnapshot snapshot) =>
+        ChannelBackupCipher.EncryptWithSigner(_secureKeyManager, ChannelBackupCodec.Encode(snapshot));
 }

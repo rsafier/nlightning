@@ -13,6 +13,8 @@ public class KeyDerivationService : IKeyDerivationService
 {
     private readonly ISecp256K1Math _secp256K1Math;
 
+    public KeyDerivationService() : this(new Crypto.Functions.Secp256K1Math()) { }
+
     public KeyDerivationService(ISecp256K1Math secp256K1Math)
     {
         _secp256K1Math = secp256K1Math;

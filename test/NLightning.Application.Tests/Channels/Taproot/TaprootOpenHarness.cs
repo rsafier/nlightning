@@ -736,7 +736,30 @@ internal sealed class TaprootKeyManager : ISecureKeyManager
 
     public CryptoKeyPair GetNodeKeyPair() => new(new PrivKey(_nodeKey.ToBytes()), NodeId);
 
+    public CompactPubKey GetWalletPublicKey(uint index, bool isChange, Domain.Bitcoin.Enums.AddressType addressType)
+    {
+        if (addressType != Domain.Bitcoin.Enums.AddressType.P2Wpkh)
+            throw new NotSupportedException();
+        return _depositRoot.Derive(isChange ? 1u : 0u).Derive(index).Neuter().PubKey.ToBytes();
+    }
+
     public CompactPubKey GetNodePubKey() => NodeId;
+
+    public byte[] SignBolt11Invoice(string humanReadablePart, byte[] dataU5) =>
+        Infrastructure.Bitcoin.Signers.LightningInvoiceSignature.Sign(_nodeKey.ToBytes(), humanReadablePart, dataU5);
+
+    public byte[] EncryptNodeData(Domain.Protocol.Enums.NodeDataPurpose purpose, byte[] nonce,
+                                  byte[] associatedData, byte[] plaintext) =>
+        Infrastructure.Crypto.Functions.NodeAuxiliaryCrypto.Encrypt(_nodeKey.ToBytes(), purpose, nonce,
+                                                                   associatedData, plaintext);
+
+    public byte[] DecryptNodeData(Domain.Protocol.Enums.NodeDataPurpose purpose, byte[] nonce,
+                                  byte[] associatedData, byte[] ciphertext) =>
+        Infrastructure.Crypto.Functions.NodeAuxiliaryCrypto.Decrypt(_nodeKey.ToBytes(), purpose, nonce,
+                                                                   associatedData, ciphertext);
+
+    public byte[] ComputeOfferPathId(byte[] offerMetadata) =>
+        Infrastructure.Crypto.Functions.NodeAuxiliaryCrypto.ComputeOfferPathId(_nodeKey.ToBytes(), offerMetadata);
 
     public void ComputeNodeSharedSecret(ReadOnlySpan<byte> publicKey, Span<byte> sharedSecret)
     {

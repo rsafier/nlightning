@@ -25,9 +25,11 @@ using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Node.PeerStorage;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.Enums;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Infrastructure.Crypto.Functions;
 using Infrastructure.Crypto.Hashes;
 using Infrastructure.Node.PeerStorage;
 using Infrastructure.Persistence.Contexts;
@@ -165,6 +167,14 @@ public class ListPeerStorageIpcRoundTripTests
         var keyManager = new Mock<ISecureKeyManager>();
         keyManager.Setup(k => k.GetNodeKeyPair())
                   .Returns(() => new CryptoKeyPair(new PrivKey(secret.ToArray()), Key()));
+        keyManager.Setup(k => k.EncryptNodeData(It.IsAny<NodeDataPurpose>(), It.IsAny<byte[]>(),
+                                                It.IsAny<byte[]>(), It.IsAny<byte[]>()))
+                  .Returns((NodeDataPurpose purpose, byte[] nonce, byte[] ad, byte[] plaintext) =>
+                               NodeAuxiliaryCrypto.Encrypt(secret, purpose, nonce, ad, plaintext));
+        keyManager.Setup(k => k.DecryptNodeData(It.IsAny<NodeDataPurpose>(), It.IsAny<byte[]>(),
+                                                It.IsAny<byte[]>(), It.IsAny<byte[]>()))
+                  .Returns((NodeDataPurpose purpose, byte[] nonce, byte[] ad, byte[] ciphertext) =>
+                               NodeAuxiliaryCrypto.Decrypt(secret, purpose, nonce, ad, ciphertext));
 
         var services = new ServiceCollection();
         services.AddLogging();
