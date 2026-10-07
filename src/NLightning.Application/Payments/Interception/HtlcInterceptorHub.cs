@@ -130,11 +130,14 @@ public sealed class HtlcInterceptorHub : IHtlcForwardInterceptor, IDisposable
               || !SHA256.HashData((byte[])preimage).AsSpan().SequenceEqual((byte[])held.Forward.PaymentHash)))
                 return InterceptResolveResult.PreimageMismatch;
 
-            Remove(key, held);
+            if (held.Resolving)
+                return InterceptResolveResult.InProgress;
+            held.Resolving = true;
         }
 
-        await RunAsync(held, resolution);
-        return InterceptResolveResult.Resolved;
+        return await RunAsync(held, resolution)
+                   ? InterceptResolveResult.Resolved
+                   : InterceptResolveResult.Failed;
     }
 
     /// <summary>Fails back every held forward whose auto-fail height is reached (LND's <c>failExpiredHtlcs</c>).</summary>
@@ -143,18 +146,20 @@ public sealed class HtlcInterceptorHub : IHtlcForwardInterceptor, IDisposable
         List<Held> expired;
         lock (_lock)
         {
-            expired = _held.Where(h => h.Value.Forward.AutoFailHeight <= height).Select(h => h.Value).ToList();
+            expired = _held.Values.Where(h => !h.Resolving
+                                           && (h.Forward.AutoFailHeight <= height || h.ResumeOnDisconnect)).ToList();
             foreach (var held in expired)
-                Remove((held.Forward.IncomingChannelId, held.Forward.IncomingHtlcId), held);
+                held.Resolving = true;
         }
 
         foreach (var held in expired)
         {
-            _logger.LogInformation("Held forward of HTLC {HtlcId} of channel {ChannelId} reached its auto-fail height "
-                                 + "{Height}: failing it back", held.Forward.IncomingHtlcId,
-                                   held.Forward.IncomingChannelId, held.Forward.AutoFailHeight);
-            _ = RunAsync(held, new ForwardInterceptResolution(ForwardInterceptAction.Fail,
-                                                              FailureCode: FailureCode.TemporaryChannelFailure));
+            _logger.LogInformation("Retrying resolution of held HTLC {HtlcId} of channel {ChannelId} at height {Height}",
+                                   held.Forward.IncomingHtlcId, held.Forward.IncomingChannelId, height);
+            _ = RunAsync(held, held.Forward.AutoFailHeight <= height
+                                  ? new ForwardInterceptResolution(ForwardInterceptAction.Fail,
+                                                                   FailureCode: FailureCode.TemporaryChannelFailure)
+                                  : ForwardInterceptResolution.Resume);
         }
     }
 
@@ -173,9 +178,11 @@ public sealed class HtlcInterceptorHub : IHtlcForwardInterceptor, IDisposable
                 return;
 
             Volatile.Write(ref _client, null);
-            released = _held.Values.ToList();
-            _held.Clear();
-            _byKey.Clear();
+            foreach (var held in _held.Values)
+                held.ResumeOnDisconnect = true;
+            released = _held.Values.Where(h => !h.Resolving).ToList();
+            foreach (var held in released)
+                held.Resolving = true;
         }
 
         // LND without requireinterceptor: the held forwards go on as if they had never been held
@@ -190,23 +197,33 @@ public sealed class HtlcInterceptorHub : IHtlcForwardInterceptor, IDisposable
         _byKey.Remove((held.Forward.IncomingShortChannelId, held.Forward.IncomingHtlcId));
     }
 
-    private async Task RunAsync(Held held, ForwardInterceptResolution resolution)
+    private async Task<bool> RunAsync(Held held, ForwardInterceptResolution resolution)
     {
         try
         {
             await Task.Yield();
             await held.Resolve(resolution);
+            lock (_lock)
+                Remove((held.Forward.IncomingChannelId, held.Forward.IncomingHtlcId), held);
+            return true;
         }
         catch (Exception e)
         {
             _logger.LogError(e, "Resolving the held forward of HTLC {HtlcId} of channel {ChannelId} ({Action}) failed",
                              held.Forward.IncomingHtlcId, held.Forward.IncomingChannelId, resolution.Action);
+            lock (_lock)
+                held.Resolving = false;
+            return false;
         }
     }
 
     private void OnNewBlock(object? sender, NewBlockEventArgs e) => ExpireHeld(e.Height);
 
-    private sealed record Held(InterceptedForward Forward, Func<ForwardInterceptResolution, Task> Resolve);
+    private sealed record Held(InterceptedForward Forward, Func<ForwardInterceptResolution, Task> Resolve)
+    {
+        public bool Resolving { get; set; }
+        public bool ResumeOnDisconnect { get; set; }
+    }
 
     private sealed class Connection(HtlcInterceptorHub hub, IHtlcInterceptorClient client) : IDisposable
     {

@@ -44,13 +44,14 @@ public sealed partial class RouterService
             throw new RpcException(new Status(StatusCode.AlreadyExists, "interceptor already exists"));
         }
 
-        var cancellationToken = context.CancellationToken;
+        using var streamCts = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
+        var cancellationToken = streamCts.Token;
         var writer = Task.Run(async () =>
         {
             await foreach (var request in client.Outbound.Reader.ReadAllAsync(cancellationToken))
                 await responseStream.WriteAsync(request, cancellationToken);
         }, CancellationToken.None);
-        try
+        async Task ReadResponsesAsync()
         {
             while (await requestStream.MoveNext(cancellationToken))
             {
@@ -58,6 +59,10 @@ public sealed partial class RouterService
                 var (scid, htlcId, resolution) = ToResolution(response);
                 switch (await _interceptorHub.ResolveAsync(scid, htlcId, resolution))
                 {
+                    case InterceptResolveResult.Failed:
+                        throw new RpcException(new Status(StatusCode.Unavailable, "forward resolution failed; retry"));
+                    case InterceptResolveResult.InProgress:
+                        throw new RpcException(new Status(StatusCode.Aborted, "forward resolution already in progress"));
                     case InterceptResolveResult.NotFound:
                         throw new RpcException(new Status(StatusCode.NotFound,
                                                           $"forward does not exist: {scid}/{htlcId}"));
@@ -67,17 +72,23 @@ public sealed partial class RouterService
                 }
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        var reader = ReadResponsesAsync();
+        try
+        {
+            await await Task.WhenAny(reader, writer);
+        }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
         {
             // The client went away
         }
         finally
         {
+            await streamCts.CancelAsync();
             connection.Dispose();
             client.Outbound.Writer.TryComplete();
             try
             {
-                await writer;
+                await Task.WhenAll(reader, writer);
             }
             catch (Exception e) when (e is OperationCanceledException or IOException or InvalidOperationException
                                           or RpcException)

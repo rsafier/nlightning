@@ -122,6 +122,76 @@ public class HtlcInterceptorHubTests
         Assert.Equal(0, _hub.HeldCount);
     }
 
+    [Fact]
+    public async Task Given_AFailedResolution_When_Retried_Then_TheHoldAndExpiryProtectionSurvive()
+    {
+        using var connection = _hub.Connect(new Client());
+        var calls = 0;
+        _hub.Intercept(Forward(1), 100, _ => ++calls == 1
+            ? Task.FromException(new IOException("save failed")) : Task.CompletedTask);
+
+        Assert.Equal(InterceptResolveResult.Failed,
+                     await _hub.ResolveAsync(new ShortChannelId(150, 1, 0), 1, ForwardInterceptResolution.Resume));
+        Assert.Equal(1, _hub.HeldCount);
+        Assert.Equal(InterceptResolveResult.Resolved,
+                     await _hub.ResolveAsync(new ShortChannelId(150, 1, 0), 1, ForwardInterceptResolution.Resume));
+        Assert.Equal(2, calls);
+        Assert.Equal(0, _hub.HeldCount);
+    }
+
+    [Fact]
+    public async Task Given_AFailedExpiryResolution_When_AnotherBlockArrives_Then_ItIsRetried()
+    {
+        using var connection = _hub.Connect(new Client());
+        var attempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        _hub.Intercept(Forward(1), 100, resolution =>
+        {
+            Assert.Equal(ForwardInterceptAction.Fail, resolution.Action);
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                attempted.SetResult();
+                throw new IOException("save failed");
+            }
+            return Task.CompletedTask;
+        });
+        _hub.ExpireHeld(481);
+        await attempted.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await WaitUntilAsync(() => _hub.HeldCount == 1);
+        // Retry after the failed callback has returned to the hub.
+        await WaitUntilAsync(() =>
+        {
+            _hub.ExpireHeld(482);
+            return _hub.HeldCount == 0;
+        });
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
+    public async Task Given_AResolutionInProgress_When_DisconnectedAndResolvedAgain_Then_NoConcurrentCallbackRuns()
+    {
+        var connection = _hub.Connect(new Client());
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var complete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        _hub.Intercept(Forward(1), 100, async _ =>
+        {
+            Interlocked.Increment(ref calls);
+            entered.SetResult();
+            await complete.Task;
+        });
+        var resolving = _hub.ResolveAsync(new ShortChannelId(150, 1, 0), 1, ForwardInterceptResolution.Resume);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        connection.Dispose();
+        _hub.ExpireHeld(481);
+        Assert.Equal(InterceptResolveResult.InProgress,
+                     await _hub.ResolveAsync(new ShortChannelId(150, 1, 0), 1, ForwardInterceptResolution.Resume));
+        Assert.Equal(1, calls);
+        complete.SetResult();
+        Assert.Equal(InterceptResolveResult.Resolved, await resolving);
+        Assert.Equal(0, _hub.HeldCount);
+    }
+
     private Task Record(ForwardInterceptResolution resolution)
     {
         lock (_resolutions)

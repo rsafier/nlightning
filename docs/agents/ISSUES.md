@@ -181,10 +181,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 0 | 95 | 95 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 234 | 496 | 814 |
+| fixed | 15 | 69 | 235 | 496 | 815 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **69** | **250** | **614** | **948** |
+| **Total** | **15** | **69** | **251** | **614** | **949** |
 
 ### Epics
 
@@ -9637,13 +9637,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1180
 
 ### NL-1182 LND gRPC HtlcInterceptor: gaps against LND
-- **Status:** open (the accounting of a SETTLE fixed in 56595f0d, NL-1205)
+- **Status:** open (SETTLE accounting fixed in 56595f0d, NL-1205; callback/stream reliability fixed in this commit, NL-1230)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `Application/Payments/Interception/HtlcInterceptorHub`, `HtlcSwitch.Interception.cs`, `RouterService.Interceptor.cs`
 - **Evidence:** `RESUME_MODIFIED` answers UNIMPLEMENTED (custom-channel amounts and wire records); there is no `requireinterceptor` mode (held forwards resume when the client leaves, and a forward replayed before a client connects after a restart is forwarded normally, LND's default); forwards held while their incoming channel goes on chain are not offered (LND's on-chain interception). (A SETTLE booked no accounting event: fixed as NL-1205.)
 - **Fix sketch:** RESUME_MODIFIED over the offer path's amount/records; a persisted hold for `requireinterceptor`; on-chain interception.
 - **Blocks/Blocked-by:** follow-up of NL-1183
+- **Reliability follow-up (2026-10-06):** NL-1230 fixes false success/lost expiry protection after a resolution callback fails and an outbound gRPC writer failure leaving the reader connected. The broader RESUME_MODIFIED, requireinterceptor and on-chain interception feature gaps above remain open.
 
 ### NL-1183 LND gRPC: routerrpc HtlcInterceptor and the switch's forward interception point
 - **Status:** fixed (788466f3)
@@ -9992,3 +9993,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** the codec-cleanup integration's full net10.0 run (2026-10-06, `wip/fafo` at `963e48e9`, beside a cluster build) failed it after 325 ms; the class passed 11/11 three times alone and the next full run (at `e9595727`) passed it. Not a codec regression: the interop matrix (lnd, cln, eclair, ldk, gossip, eclair2, taproot) was green on the same code.
 - **Fix sketch:** find the harness wait that races the two announcements (both nodes reaching the depth and exchanging `announcement_signatures_2` nonces) and make it event-driven.
 - **Blocks/Blocked-by:** none
+
+
+### NL-1230 Interceptor callback and outbound stream failures can strand held forwards
+- **Status:** fixed (this commit; SHA recorded in batch closeout)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `Application/Payments/Interception/HtlcInterceptorHub.cs`, `Payments/Switch/HtlcSwitch.Interception.cs`, `LndGrpc/Services/RouterService.Interceptor.cs`
+- **Evidence:** The hub removed a hold before running its callback, swallowed callback exceptions and returned Resolved; a refused or failed save lost both retry ownership and hub expiry protection. The gRPC method awaited the reader while an independent failed writer left the hub connected. Found during the NL-1182 review.
+- **Fix:** Retain holds until callback success, report Failed/InProgress and preserve serialized resolution/expiry retries; propagate commitment refusals to the hub. Monitor both stream directions, cancel the other and disconnect/release holds when either ends. Regression tests cover failed callbacks, repeated expiry, concurrent resolve/disconnect and an idle reader with a failed outbound writer.
+- **Blocks/Blocked-by:** Related NL-1182 (remaining feature parity stays open)
