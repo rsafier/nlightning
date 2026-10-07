@@ -147,6 +147,10 @@ public sealed class SilentPaymentsFlowTests
         var spendResult = await b.Services.GetRequiredService<IWalletSpendService>().WithdrawAsync(
             new WalletWithdrawRequest(ordinaryAddress.ToString(), LightningMoney.Satoshis(100_000), null), ct);
         Assert.True(spendResult.Published);
+        var withdrawal = await nodeRpc.GetRawTransactionAsync(new uint256((byte[])spendResult.TxId), false, ct);
+        var withdrawnSilentInputs = withdrawal.Inputs.Select(input => $"{input.PrevOut.Hash}:{input.PrevOut.N}")
+            .Where(beforeSpend.Contains).Order().ToArray();
+        Assert.NotEmpty(withdrawnSilentInputs);
         var spentHeight = (uint)await nodeRpc.GetBlockCountAsync(ct) + 1;
         await MineAsync(core, nodeRpc, mineAddress, 2, [a, b], ct);
         Assert.True(SilentCoins(b).Count < beforeSpend.Length);
@@ -156,7 +160,13 @@ public sealed class SilentPaymentsFlowTests
         for (var i = 0; i < 3; i++)
             await nodeRpc.SendCommandAsync("generateblock", mineAddress.ToString(), Array.Empty<string>()).WaitAsync(ct);
         await WaitAtTipAsync(nodeRpc, [a, b], ct);
-        Assert.Equal(beforeSpend, SilentCoins(b).Select(Outpoint).Order().ToArray());
+        await AssertSilentCustodyAsync(b, nodeRpc, beforeSpend, ct);
+        var memoryAfterRollback = b.Services.GetRequiredService<IUtxoMemoryRepository>();
+        foreach (var input in withdrawal.Inputs.Where(input => withdrawnSilentInputs.Contains($"{input.PrevOut.Hash}:{input.PrevOut.N}")))
+            Assert.True(memoryAfterRollback.TryGetFeeReservation(new Domain.Bitcoin.ValueObjects.TxId(input.PrevOut.Hash.ToBytes()),
+                input.PrevOut.N, out _), "The pending disconnected withdrawal must retain its input reservation.");
+        Assert.Equal(beforeSpend.Except(withdrawnSilentInputs).Order().ToArray(), SilentCoins(b).Select(Outpoint).Order().ToArray());
+        Log($"SP reorg {mode}: exact custody restored; pending inputs remain reserved and excluded from selection.");
         await ReconcileAsync(b, ct);
         await nodeRpc.SendCommandAsync("generateblock", mineAddress.ToString(),
             new[] { new uint256((byte[])spendResult.TxId).ToString() }).WaitAsync(ct);
@@ -215,6 +225,32 @@ public sealed class SilentPaymentsFlowTests
         .GetUnreservedUtxos().Where(coin => coin.SilentPayment is not null).ToList();
 
     private static string Outpoint(UtxoModel coin) => $"{new uint256((byte[])coin.TxId)}:{coin.Index}";
+
+    private static async Task AssertSilentCustodyAsync(NLightningTestNode node, RPCClient core, string[] expected,
+        CancellationToken ct)
+    {
+        using var scope = node.Services.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var coins = (await unitOfWork.UtxoDbRepository.GetUnspentAsync()).Where(coin => coin.SilentPayment is not null).ToArray();
+        Assert.Equal(expected, coins.Select(Outpoint).Order().ToArray());
+        var metadata = (await unitOfWork.SilentPaymentDbRepository.GetOutputsAsync(ct))
+            .Where(output => !output.Ignored && output.SpentByTransactionId is null).ToArray();
+        Assert.Equal(expected, metadata.Select(output => $"{new uint256((byte[])output.TransactionId)}:{output.Index}").Order().ToArray());
+        var memory = node.Services.GetRequiredService<IUtxoMemoryRepository>();
+        foreach (var coin in coins)
+        {
+            Assert.True(memory.TryGetUtxo(coin.TxId, coin.Index, out var retained));
+            Assert.Equal(coin.Amount, retained!.Amount);
+            Assert.NotNull(retained.SilentPayment);
+            // Core's confirmed chain custody is independent of its mempool's pending spend.
+            var response = await core.SendCommandAsync("gettxout", new uint256((byte[])coin.TxId).ToString(),
+                coin.Index, false).WaitAsync(ct);
+            Assert.NotNull(response.Result);
+            Assert.Equal(coin.Amount.Satoshi, (long)((decimal)response.Result["value"]! * 100_000_000m));
+            Assert.Equal(Convert.ToHexString((byte[])[0x51, 0x20, .. coin.SilentPayment!.OutputKey]).ToLowerInvariant(),
+                (string?)response.Result["scriptPubKey"]?["hex"]);
+        }
+    }
 
     private static async Task<JObject> OracleAsync(KubeNodeHandle oracle, JObject request, CancellationToken ct)
     {
