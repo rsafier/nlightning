@@ -461,3 +461,85 @@ Nothing at startup may cost more as history grows. A node with a million settled
 - **Security and privacy.** No runtime code loading keeps the AOT build and the attack surface unchanged. The feed holds counterparties, payment hashes and labels, and IPC 41-45 sit behind the existing cookie authentication. Exports stream to the client or land under the config directory only, never at an arbitrary daemon-side path. The price source leaks nothing beyond "this node wants the BTC price at time t" and goes through Tor in `TorOnly`. All of this is in `SECURITY_REVIEW.md` "Accounting" (SR-20..SR-27, written in A3-T7).
 - **Performance.** One extra row per money event, inside an existing save. The sealer and projector run off the hot path, and snapshots are hourly by default.
 - **Not in scope:** tax-form generation, invoicing or customer management, consolidating several nodes or other money rails (done by an external ledger fed by the exports or the IPC feed), and liquidity-ad lease accounting until leases exist.
+
+
+## 12. Accounting review (2026-10-07, wip/accounting-review)
+
+Reviewed from latest `wip/fafo` at `89d8c7be`, including the merged subscription/indexing and LND client work.
+Implementation: `7c9b8e73` (NL-1271..NL-1274 (filed on the branch as NL-1254..NL-1257)).
+This is a code and regression review with local SQLite and regtest/PostgreSQL proofs. It is not a fresh audit of
+FAFO's current database. No live FAFO configuration was changed.
+
+### Findings and fixes
+
+| Issue | Before | Recovery after this change |
+|---|---|---|
+| NL-1271 | A failed late-price adjustment save still populated the in-process dedupe cache. | Cache keys are recorded after the page commits; the same service retries both adjustments once. |
+| NL-1272 | Clearing postings, entries, balances and cursor used four separate commits. | One transaction preserves the old book on any interrupted delete; retry clears only the selected book. |
+| NL-1273 | Signed-close verification queried rows without the financial writer gate. | Verification waits for writers across all digest reads, supports cancellation and still detects tampering. |
+| NL-1274 | Opening-lot import deleted the old imported basis before saving the replacement. | Deletions and replacement lots share one save; failure preserves the original basis and reliefs. |
+
+The financial reset before an opening-lot replacement remains a separate, recoverable commit. If replacement fails,
+the retained original imports let the next projection restore the derived financial book. This avoids treating the
+financial journal, which can be replayed, and imported acquisition basis, which cannot be inferred, as equally
+replaceable data. Deleting imported lots now stages tracked entities; replacement memory usage grows with the
+number of imported lots and their reliefs, rather than issuing eager bulk deletes.
+
+### Invariants and coverage reviewed
+
+| Area | Invariant / evidence |
+|---|---|
+| Source facts and sealing | Operational transitions stage accounting facts in their unit of work; deterministic keys, duplicate flags, dense sequence/hash chaining and restart behavior are covered by event persistence, sealer and chain verification tests. |
+| Operational journal | Balanced posting rules; entries, balances and replay cursor save together. Projection failure does not skip the failing event. The new clear fault matrix exercises both books and failures at each later delete. |
+| Payments and channels | Existing posting-rule, payment, funding, forward, on-chain and reorg tests cover invoice settlement, fees, channel movement, pending outputs and reversals. The real ABCD accounting proof checks forwarded-payment reconciliation and both msat and fiat balance sheets. |
+| Financial projection and lots | Existing FIFO/LIFO/HIFO, bucket transfer, held-outside, short-bucket, reversal, debt and rebuild tests cover msat/basis identities. Lot-import save failure now preserves irrecoverable acquisition basis. |
+| Valuation and classification | Existing late/forced-close, price replacement, reclassification, rollback and rebuild tests exercise fiat adjustments and replay. Late-value retry now uses committed keys only. |
+| Closed periods | Close rows, entry/lot/relief marks and signatures share a save; existing tamper tests validate digests and signatures. Verification is serialized with lot/relief writers. |
+| Reorgs and restarts | Chain accounting, operational reversal, financial rollback/rebuild and closed-period correction tests remain in the accounting suites. The previous merged real subscription proof also covered imported-output reorg/reconfirmation and final on-chain HTLC restart dedup. |
+| Reports and exports | Existing operational/financial reports, export golden data and IPC round trips cover book selection, totals and retained historical facts. Price provenance limitations below remain open. |
+
+### Existing issues and remaining work
+
+- **NL-1207 is historical residue, not a new rounding defect identified by this review.** Its ledger evidence traces
+  the channel difference of +5/-5 msat to the sub-satoshi on-chain HTLC fix NL-1007 (`b37114e3`). Clearing residues
+  include the old anchor-sweep bug NL-611 and missing wallet-input fee NL-748. FAFO's documented -514,000 msat and
+  FAFO2's -246,000 msat are consistent with those older facts. Append-only history means a rebuild does not invent
+  missing pre-fix facts. Review confirmed those fixes are in the base; the live database was not re-read here.
+- **NL-758 remains open:** replacing an unused/open-period price keeps the old value and operator note only in logs.
+  A durable replacement audit table needs a migration for all three providers and a reader/export surface.
+- **NL-759 remains open:** prices corrected after a close can differ from immutable closed-lot costs, while closed
+  exports print the current stored price. Closed-lot recosting needs an explicit accounting policy; retaining the
+  price actually used by a close is a complementary provenance fix. This review does not silently change D-A8.
+- **NL-1253 remains open:** `GetTransactions` can double-count a canonical P2TR output imported as tapscript.
+  This is a wallet-history response defect; the financial book and passive stream use different paths. Fix by
+  merging ownership by outpoint before computing net amounts, with overlap/mixed deposit and spend proofs.
+- **NL-1187 remains partially complete:** indexed wallet history is implemented; pre-cutover history,
+  accounting-disabled history and pruned-block metadata still need an explicit source/retention design.
+- **NL-851 / NL-852 remain open:** late liquidity-purchase funding confirmation coverage and abandoned/RBF purchase
+  state semantics. These are the remaining accounting-adjacent lifecycle follow-ups found in the existing ledger.
+- **NL-729 / NL-900 / NL-1188 / NL-1227 are existing test reliability issues.** A passing run does not by itself prove
+  those loaded-run flakes are fixed; they remain open.
+
+No newly reproduced arithmetic imbalance was found in the reviewed tests. Four confirmed recovery/verification
+gaps were fixed. The open provenance, wallet-history and lifecycle issues above prevent a claim of a gap-free
+accounting system. Read reports can still span concurrent projection rounds; the new verification gate specifically
+protects signed-close digest checks, rather than providing a database-wide snapshot for every report.
+
+### Validation record
+
+Baseline net10 accounting suites passed: Domain 392, Application 297, Integration 91, Daemon 267 (1,047 total).
+The late-value retry, imported-basis replacement, verification gate and six valid journal-clear failure cases all
+failed against the original implementation before their fixes. Final validation:
+
+- Release solution builds for net10.0 and net11.0: zero warnings and errors. Full solution formatting verification
+  and diff whitespace checks passed.
+- Final net10.0 Application accounting: 299 passed; broader Integration selection (excluding Docker, SQL Server
+  and cluster classes): 1,162 passed. The accounting persistence subset also passed 98 tests before the broad run.
+- Fresh runner `nltg-spike-runner:accounting-review-proof1`, image config
+  `sha256:4cbfa64fe7f541854ddd54357e5a662fcbc5bef8fd3f18a647d7fa86b4fcd370`.
+- `scripts/run-cluster.sh` proof `accounting-review-proof1`: 1/1 wrapper and 39/39 inner tests passed in 112 s.
+  Includes all six PostgreSQL interrupted-clear cases and the real ABCD forwarded-payment accounting proof.
+  Bob (sequence 13) and Carol (sequence 9) each reconciled with zero drift in Channels, Pending, Wallet and Clearing;
+  both financial balance sheets balanced in msat and fiat with zero unvalued postings. All owned namespaces cleaned.
+- Retained proof log: `TestResults/cluster/accounting-review-proof1/accounting-review-proof1-1/output.log.gz`.
+  SQL Server runtime, optional external-ledger tool checks and manual live-database replay are not exercised here.

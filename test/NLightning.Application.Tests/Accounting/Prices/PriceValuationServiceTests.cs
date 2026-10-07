@@ -9,6 +9,7 @@ using MsOptions = Microsoft.Extensions.Options.Options;
 namespace NLightning.Application.Tests.Accounting.Prices;
 
 using Application.Accounting;
+using Application.Accounting.Financial;
 using Application.Accounting.Prices;
 using Domain.Accounting.Books;
 using Domain.Accounting.Enums;
@@ -627,6 +628,54 @@ public sealed class PriceValuationServiceTests : IAsyncLifetime
         Assert.All((await GetEntryAsync(seq)).Postings, p => Assert.NotNull(p.FiatAmount));
     }
 
+    [Fact]
+    public async Task Given_AClosedPosting_When_ItsAdjustmentSaveFails_Then_TheSameServiceRetriesDurably()
+    {
+        // Arrange: production adjustment sink and SQLite; fail the valuation page's save, after its period read.
+        var ct = TestContext.Current.CancellationToken;
+        var september = new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
+        var seq = await AddEntryAsync(september, 1_000);
+        await StorePricesAsync((september, 70_000m));
+        await using (var scope = Provider.CreateAsyncScope())
+        {
+            var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            await uow.AccountingPeriodDbRepository.AddAsync(
+                new AccountingPeriod("2026-09", september, september.AddMonths(1), AccountingPeriodState.Closed,
+                                     september.AddMonths(1), seq, null, null, null, false, null), ct);
+            await uow.AccountingBooksDbRepository.MarkEntriesClosedAsync(
+                AccountingBook.Financial, "2026-09", september, september.AddMonths(1), ct);
+            await uow.SaveChangesAsync();
+        }
+
+        var scopes = Provider.GetRequiredService<IServiceScopeFactory>();
+        using var sink = new AccountingPeriodService(scopes, NullLogger<AccountingPeriodService>.Instance,
+                                              timeProvider: _time);
+        await using var service = CreateService(new AccountingPriceOptions { Source = AccountingPriceSourceMode.None },
+                                                sink: sink, scopeFactory: new CrashingScopeFactory(scopes, 2));
+
+        // Act: a retry in the same process must not remember an adjustment which never committed.
+        await Assert.ThrowsAsync<SimulatedCrashException>(() => service.ValueNowAsync(ct));
+        await using (var scope = Provider.CreateAsyncScope())
+        {
+            var books = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().AccountingBooksDbRepository;
+            Assert.Single(await books.GetEntriesByKeyAsync(AccountingBook.Financial, $"inv:{seq}:settled", ct));
+        }
+        var retry = await service.ValueNowAsync(ct);
+        var repeated = await service.ValueNowAsync(ct);
+
+        // Assert: both fiat-only adjustments persisted exactly once; the closed originals stay untouched.
+        Assert.Equal(2, retry.LateValuations);
+        Assert.Equal(0, repeated.LateValuations);
+        await using var check = Provider.CreateAsyncScope();
+        var entries = await check.ServiceProvider.GetRequiredService<IUnitOfWork>().AccountingBooksDbRepository
+                                 .GetEntriesByKeyAsync(AccountingBook.Financial, $"inv:{seq}:settled", ct);
+        Assert.Equal(3, entries.Count);
+        Assert.All(entries.Single(e => e.Adjustment == 0).Postings, p => Assert.Null(p.FiatAmount));
+        Assert.Equal(new[] { -0.0007m, 0.0007m }, entries.Where(e => e.Adjustment != 0)
+                                                     .SelectMany(e => e.Postings).Select(p => p.FiatAmount!.Value)
+                                                     .Order());
+    }
+
     private static DateTimeOffset AccountingValuationHour(DateTimeOffset at) => AccountingValuation.HourStart(at);
 
     private static AccountingPrice Price(DateTimeOffset time, decimal price) =>
@@ -635,8 +684,9 @@ public sealed class PriceValuationServiceTests : IAsyncLifetime
     private PriceValuationService CreateService(AccountingPriceOptions options, IPriceSource? source = null,
                                                 IAccountingAdjustmentSink? sink = null, bool booksEnabled = true,
                                                 int pageSize = PriceValuationService.DefaultPageSize,
-                                                ILogger<PriceValuationService>? logger = null) =>
-        new(Provider.GetRequiredService<IServiceScopeFactory>(), logger ?? NullLogger<PriceValuationService>.Instance,
+                                                ILogger<PriceValuationService>? logger = null,
+                                                IServiceScopeFactory? scopeFactory = null) =>
+        new(scopeFactory ?? Provider.GetRequiredService<IServiceScopeFactory>(), logger ?? NullLogger<PriceValuationService>.Instance,
             MsOptions.Create(new AccountingOptions { Enabled = booksEnabled }), MsOptions.Create(options), source,
             sink, _time)
         {
@@ -748,6 +798,32 @@ public sealed class PriceValuationServiceTests : IAsyncLifetime
                 _asked.Add(time);
             LastFailure = failure?.Invoke(time);
             return Task.FromResult(answer(time));
+        }
+    }
+
+    private sealed class CrashingScopeFactory(IServiceScopeFactory inner, int crashScope) : IServiceScopeFactory
+    {
+        private int _scopes;
+
+        public IServiceScope CreateScope()
+        {
+            var scope = inner.CreateScope();
+            return Interlocked.Increment(ref _scopes) == crashScope ? new CrashingScope(scope) : scope;
+        }
+
+        private sealed class CrashingScope(IServiceScope inner) : IServiceScope, IServiceProvider
+        {
+            private CrashingUnitOfWork? _unitOfWork;
+
+            public IServiceProvider ServiceProvider => this;
+
+            public object? GetService(Type serviceType) =>
+                serviceType == typeof(IUnitOfWork)
+                    ? _unitOfWork ??= new CrashingUnitOfWork(
+                          inner.ServiceProvider.GetRequiredService<IUnitOfWork>(), 1)
+                    : inner.ServiceProvider.GetService(serviceType);
+
+            public void Dispose() => inner.Dispose();
         }
     }
 

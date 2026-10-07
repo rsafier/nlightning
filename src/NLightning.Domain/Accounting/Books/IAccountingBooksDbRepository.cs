@@ -106,7 +106,8 @@ public interface IAccountingBooksDbRepository
                                      CancellationToken cancellationToken = default) =>
         throw NotSupported(book);
 
-    /// <summary>Deletes the book's entries, postings, balances and cursor at once, like <see cref="ClearAsync"/>.</summary>
+    /// <summary>Deletes the book's entries, postings, balances and cursor together in its own transaction,
+    /// like <see cref="ClearAsync"/>. A failure preserves the complete old book.</summary>
     Task ClearAsync(AccountingBook book, CancellationToken cancellationToken = default) =>
         book == AccountingBook.Operational ? ClearAsync(cancellationToken) : throw NotSupported(book);
 
