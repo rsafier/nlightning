@@ -420,7 +420,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
         else
             foreach (var input in transaction.Inputs)
                 if (await uow.SilentPaymentDbRepository.GetOutputAsync(new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N,
-                        cancellationToken) is not null || await uow.UtxoDbRepository.GetByIdAsync(new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N) is not null)
+                        cancellationToken) is { Ignored: false } || await uow.UtxoDbRepository.GetByIdAsync(new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N) is not null)
                 { source = AccountingDetailKeys.WalletSource; break; }
         var name = output.Label is { } label ? labels.FirstOrDefault(item => item.M == label)?.Name : null;
         uow.AccountingEventDbRepository.Add(new AccountingEventModel
