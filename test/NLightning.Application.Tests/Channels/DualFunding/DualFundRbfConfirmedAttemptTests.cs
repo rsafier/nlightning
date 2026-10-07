@@ -1,7 +1,12 @@
+using Microsoft.Extensions.DependencyInjection;
+
 namespace NLightning.Application.Tests.Channels.DualFunding;
 
+using Application.InteractiveTx.Interfaces;
+using Application.InteractiveTx.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.DualFunding.Models;
+using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.LiquidityAds.Enums;
 using Domain.Money;
@@ -229,6 +234,45 @@ public class DualFundRbfConfirmedAttemptTests
         Assert.Empty(harness.Alice.Errors);
         Assert.Empty(harness.Bob.Errors);
         await LiquidityAdsKit.AssertBalancesAsync(harness, channelId, 600_000, RequestedSat, Fees(2_500).TotalMsat);
+    }
+
+    [Fact]
+    public async Task Given_AnOpenDualFundedChannel_When_ABlockArrivesDuringASpliceNegotiation_Then_TheSpliceIsKept()
+    {
+        // Arrange: NL-1293 (cluster taproot suite on Core 31.1): the open's negotiation stays in memory after the
+        // channel is open, and a block raised while the driver ran a splice on the channel found the open's confirmed
+        // funding and aborted the splice with "an earlier attempt ... confirmed"
+        await using var harness = await CreateBothFundedAsync();
+        var first = await OpenAsync(harness);
+        var channelId = first.ChannelId;
+        var firstTxId = first.FundingTxId!.Value;
+        await harness.ConfirmFundingAsync(channelId, firstTxId);
+        Assert.All(harness.Nodes, n => Assert.NotEqual(Domain.Channels.Enums.ChannelState.V1FundingSigned,
+                                                       n.Channel(channelId).State));
+        var driver = harness.Alice.Services.GetRequiredService<IInteractiveTxDriver>();
+        var splice = new TestSharedFundingHost
+        {
+            LocalOutputShare = s_aliceShare,
+            RemoteOutputShare = LightningMoney.Satoshis(BobShareSat)
+        };
+        using (await harness.Alice.Services.GetRequiredService<IChannelLockProvider>().AcquireAsync(channelId,
+                   TestContext.Current.CancellationToken))
+        {
+            await driver.StartAsync(new InteractiveTxTerms(channelId, harness.Alice.NodeId, harness.Bob.NodeId, true,
+                                                           2_500, 0),
+                                    splice, TestContext.Current.CancellationToken);
+        }
+
+        var session = driver.GetInfo(channelId)?.SessionId;
+        Assert.NotNull(session);
+
+        // Act: a block (the open's funding has its first-seen height)
+        await harness.Alice.SeeInBlockAsync(channelId, firstTxId, spendWallet: false);
+
+        // Assert: the splice negotiation still runs, nothing aborted it
+        Assert.Equal(session, driver.GetInfo(channelId)?.SessionId);
+        Assert.Empty(splice.Aborts);
+        Assert.Empty(harness.Alice.Errors);
     }
 
     private static async Task<DualFundHarness> CreateBothFundedAsync()

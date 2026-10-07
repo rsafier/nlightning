@@ -1521,6 +1521,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         foreach (var negotiation in _negotiations.Values.Distinct().ToList())
         {
             if (negotiation.CompletedTxIds.Count == 0
+             || !IsStillOpening(negotiation.ChannelId)
              || driver.GetInfo(negotiation.ChannelId) is not { } info
              || info is { SessionId: null, RbfRequested: false })
                 continue;
@@ -1553,6 +1554,17 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     }
 
     /// <summary>
+    /// Whether the channel's dual-funded open is still waiting for its funding (<see cref="ChannelState.V1FundingSigned"/>
+    /// in memory), the only time an interactive-tx session on it can be an RBF attempt of the open (NL-1293). The open's
+    /// negotiation stays in memory after the channel is open, and the driver's session on an open channel is a splice
+    /// (its own RBF rules are <c>SpliceService</c>'s): before this check a block during a splice negotiation found the
+    /// open's confirmed funding and aborted the splice with "an earlier attempt ... confirmed".
+    /// </summary>
+    private bool IsStillOpening(ChannelId channelId) =>
+        _channelMemoryRepository.TryGetChannel(channelId, out var channel)
+     && channel is { Version: ChannelVersion.V2, State: ChannelState.V1FundingSigned };
+
+    /// <summary>
     /// Under the channel's lock: the running RBF attempt (or our unanswered <c>tx_init_rbf</c>) is abandoned when an
     /// earlier attempt confirmed; returns our <c>tx_abort</c> (to publish), empty when nothing was abandoned. After our
     /// <c>tx_signatures</c> nothing is (IT-ABT-01): the attempt double-spends the confirmed one and never confirms.
@@ -1561,7 +1573,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                                                  IUnitOfWork? unitOfWork)
     {
         var driver = _serviceProvider.GetService<IInteractiveTxDriver>();
-        if (driver?.GetInfo(negotiation.ChannelId) is not { } info || info is { SessionId: null, RbfRequested: false }
+        if (!IsStillOpening(negotiation.ChannelId)
+         || driver?.GetInfo(negotiation.ChannelId) is not { } info || info is { SessionId: null, RbfRequested: false }
          || info.State is InteractiveTxSessionState.TxSignaturesSent or InteractiveTxSessionState.Signed
          || await GetConfirmedAttemptAsync(negotiation, unitOfWork) is not { } confirmed)
             return [];
