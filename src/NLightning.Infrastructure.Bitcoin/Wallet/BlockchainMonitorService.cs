@@ -1257,6 +1257,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         if (silentPayments is not null)
             foreach (var output in silentPayments.Matches.Where(output => !output.Ignored))
                 effects.SilentPaymentOutputs.Add(new OutPoint(new uint256((byte[])output.TransactionId), output.Index));
+        await StageSilentPaymentInputOwnershipAsync(silentPayments, uow, effects, block);
         Dictionary<uint256, uint256>? replacedMembers = null;
 
         if (_logger.IsEnabled(LogLevel.Debug))
@@ -1317,6 +1318,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         StageWalletMovements(transactions, height, block.Header.BlockTime, uow, effects);
         await StageSilentPaymentSpendsAndStateAsync(silentPayments, height, uow, effects, block);
         await StageAccountingAsync(uow, effects);
+        await StageSilentPaymentSettlementsAsync(silentPayments, uow, effects, block);
         await StageWatchedSpendsAsync(transactions, height, blockHash, uow, effects);
         StageWatchedTransactionDepths(height, uow, effects);
 
@@ -2343,6 +2345,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         public List<WalletMovementEventArgs> Movements { get; } = [];
         public List<WalletTransactionEventArgs> WalletTransactions { get; } = [];
         public HashSet<OutPoint> SilentPaymentOutputs { get; } = [];
+        public HashSet<OutPoint> SilentPaymentInputs { get; } = [];
         public List<OutpointSpentEventArgs> Spends { get; } = [];
 
         /// <summary>The wallet outputs this block deposited (a later transaction of the block may spend one).</summary>

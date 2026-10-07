@@ -79,6 +79,33 @@ public partial class BlockchainMonitorService
         return new PreparedSilentPaymentBlock(serialized, matches, labels, state, advance);
     }
 
+    private async Task StageSilentPaymentInputOwnershipAsync(PreparedSilentPaymentBlock? prepared,
+        IUnitOfWork unitOfWork, BlockEffects effects, Block block)
+    {
+        if (prepared is null || _silentPaymentScanner is null) return;
+        var accepted = prepared.Matches.Where(output => !output.Ignored)
+            .Select(output => new OutPoint(new uint256((byte[])output.TransactionId), output.Index)).ToHashSet();
+        foreach (var transaction in block.Transactions.Where(transaction => !transaction.IsCoinBase))
+            foreach (var input in transaction.Inputs)
+                if (accepted.Contains(input.PrevOut) ||
+                    await unitOfWork.SilentPaymentDbRepository.GetOutputAsync(new TxId(input.PrevOut.Hash.ToBytes()),
+                        input.PrevOut.N) is { Ignored: false })
+                    effects.SilentPaymentInputs.Add(input.PrevOut);
+    }
+
+    private async Task StageSilentPaymentSettlementsAsync(PreparedSilentPaymentBlock? prepared,
+        IUnitOfWork unitOfWork, BlockEffects effects, Block block)
+    {
+        if (prepared is null || _silentPaymentScanner is null || effects.SilentPaymentInputs.Count == 0) return;
+        var memory = _serviceProvider.GetService<Domain.Bitcoin.Interfaces.IUtxoMemoryRepository>();
+        var excluded = block.Transactions.Where(transaction => !transaction.Inputs.Any(input =>
+                effects.SilentPaymentInputs.Contains(input.PrevOut)) ||
+                ClassifyWalletTransaction(transaction, memory, effects).Source == ChannelSource)
+            .Select(transaction => new TxId(transaction.GetHash().ToBytes())).ToHashSet();
+        await SilentPaymentAccounting.StageSettlementsAsync(unitOfWork, block, effects.Height, prepared.Labels,
+            _network, _timeProvider, CancellationToken.None, excluded);
+    }
+
     private async Task StageSilentPaymentReceiptsAsync(PreparedSilentPaymentBlock? prepared, IUnitOfWork unitOfWork,
         BlockEffects effects, Block block)
     {

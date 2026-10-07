@@ -227,7 +227,7 @@ public partial class BlockchainMonitorService
 
         foreach (var input in transaction.Inputs)
         {
-            if (effects.StagedDeposits.ContainsKey(input.PrevOut)
+            if (effects.StagedDeposits.ContainsKey(input.PrevOut) || effects.SilentPaymentInputs.Contains(input.PrevOut)
              || utxoMemoryRepository?.TryGetUtxo(new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N, out _)
              == true)
                 return new WalletTransactionSource(WalletSource, null, null);
