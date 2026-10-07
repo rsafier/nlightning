@@ -16,4 +16,12 @@ public interface ISilentPaymentCrypto
     IReadOnlyList<SilentPaymentScanMatch> Scan(ReadOnlySpan<byte> sharedSecret33, CompactPubKey spendKey,
                                              IReadOnlyList<SilentPaymentScanCandidate> candidates,
                                              IReadOnlyDictionary<uint, CompactPubKey>? labelPoints = null);
+
+    /// <summary>Validates and copies label points once for a block; null requests the uncached compatibility path.</summary>
+    ISilentPaymentScanContext? PrepareScanContext(IReadOnlyDictionary<uint, CompactPubKey> labelPoints) => null;
+
+    /// <summary>Scans using a context made by this adapter, without validating every label again per transaction.</summary>
+    IReadOnlyList<SilentPaymentScanMatch> ScanPrepared(ReadOnlySpan<byte> sharedSecret33, CompactPubKey spendKey,
+        IReadOnlyList<SilentPaymentScanCandidate> candidates, ISilentPaymentScanContext context) =>
+        throw new NotSupportedException("This crypto adapter has no prepared label scan context.");
 }
