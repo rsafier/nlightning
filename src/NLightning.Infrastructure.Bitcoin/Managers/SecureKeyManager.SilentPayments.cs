@@ -200,7 +200,23 @@ public partial class SecureKeyManager : ISilentPaymentKeySource
         if (_secureMasterKeyPtr == IntPtr.Zero)
             throw new ObjectDisposedException(nameof(SecureKeyManager));
         var path = new KeyPath(KeyConstants.GetSilentPaymentKeyPath(_network == Network.Main, isScan));
-        using var key = GetMasterKey().Derive(path).PrivateKey;
-        return key.ToBytes();
+        var extended = GetMasterKey();
+        try
+        {
+            // ExtKey.Derive(KeyPath) leaves its intermediate private keys to finalization. Derive each element
+            // explicitly so both the root and every intermediate secret are released as soon as they are replaced.
+            foreach (var index in path.Indexes)
+            {
+                var child = extended.Derive(index);
+                extended.PrivateKey.Dispose();
+                extended = child;
+            }
+            // Return an independent scalar array; the extended key is always disposed before the caller receives it.
+            return extended.PrivateKey.ToBytes();
+        }
+        finally
+        {
+            extended.PrivateKey.Dispose();
+        }
     }
 }
