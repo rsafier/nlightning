@@ -395,9 +395,9 @@ public static class NodeServiceExtensions
                 .ValidateOnStart();
         services.AddOptions<SilentPaymentsOptions>()
                 .BindConfiguration(SilentPaymentsOptions.SectionName)
-                .Validate(options =>
+                .Validate<IOptions<NodeOptions>>((options, resolvedNodeOptions) =>
                  {
-                     var network = configuration["Node:Network"] ?? "mainnet";
+                     var network = resolvedNodeOptions.Value.BitcoinNetwork.Name;
                      var errors = options.GetValidationErrors(string.Equals(network, "mainnet", StringComparison.OrdinalIgnoreCase));
                      if (errors.Count > 0)
                          throw new OptionsValidationException(SilentPaymentsOptions.SectionName, typeof(SilentPaymentsOptions), errors);
