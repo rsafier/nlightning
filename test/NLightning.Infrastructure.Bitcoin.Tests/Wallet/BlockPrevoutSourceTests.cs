@@ -24,7 +24,7 @@ public class BlockPrevoutSourceTests
         inputs[1]["prevout"]!["value"] = 0.00000001m;
 
         // Act
-        var previous = await BlockPrevoutSource.ParseVerboseAsync(new StringReader(json.ToString()), block);
+        var previous = await BlockPrevoutSource.ParseVerboseAsync(new StringReader(json.ToString()), block, cancellationToken: TestContext.Current.CancellationToken);
 
         // Assert
         var values = Assert.Single(previous).Value;
@@ -43,7 +43,7 @@ public class BlockPrevoutSourceTests
         json["result"]!["tx"]![1]!["vin"]![0]!["prevout"]!["value"] = 12_345_678.12345678m;
 
         // Act
-        var previous = await BlockPrevoutSource.ParseVerboseAsync(new StringReader(json.ToString()), block);
+        var previous = await BlockPrevoutSource.ParseVerboseAsync(new StringReader(json.ToString()), block, cancellationToken: TestContext.Current.CancellationToken);
 
         // Assert
         Assert.Equal(1_234_567_812_345_678UL, Assert.Single(previous).Value[0].AmountSat);
@@ -59,7 +59,7 @@ public class BlockPrevoutSourceTests
 
         // Act / Assert
         await Assert.ThrowsAsync<InvalidDataException>(() => BlockPrevoutSource.ParseVerboseAsync(
-            new StringReader(json.ToString()), block));
+            new StringReader(json.ToString()), block, cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -70,7 +70,7 @@ public class BlockPrevoutSourceTests
 
         // Act / Assert
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => BlockPrevoutSource.ParseVerboseAsync(
-            new StringReader(json), CreateBlock()));
+            new StringReader(json), CreateBlock(), cancellationToken: TestContext.Current.CancellationToken));
         Assert.Contains("pruned", error.Message);
     }
 
@@ -87,7 +87,7 @@ public class BlockPrevoutSourceTests
         ((JObject)json["result"]!["tx"]![2]!["vin"]![0]!).Remove("prevout");
 
         // Act
-        var previous = await BlockPrevoutSource.ParseVerboseAsync(new StringReader(json.ToString()), block);
+        var previous = await BlockPrevoutSource.ParseVerboseAsync(new StringReader(json.ToString()), block, cancellationToken: TestContext.Current.CancellationToken);
 
         // Assert
         Assert.Single(previous);
@@ -103,7 +103,7 @@ public class BlockPrevoutSourceTests
 
         // Act / Assert
         await Assert.ThrowsAsync<InvalidDataException>(() => BlockPrevoutSource.ParseVerboseAsync(
-            new StringReader(json.ToString()), block));
+            new StringReader(json.ToString()), block, cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -250,7 +250,7 @@ public class BlockPrevoutSourceTests
                     result = block.GetHash().ToString();
                     break;
                 case "getblock" when (int)rpc["params"]![1]! == 0:
-                    result = block.ToHex();
+                    result = Convert.ToHexString(block.ToBytes());
                     break;
                 case "getblock":
                     VerboseRequests++;

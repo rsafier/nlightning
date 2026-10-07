@@ -18,6 +18,7 @@ using Application.Accounting.Backfill;
 using Application.Accounting.Books;
 using Application.Accounting.Financial;
 using Application.Accounting.Prices;
+using Application.Bitcoin.SilentPayments;
 using Application.Channels.Fees;
 using Application.Channels.RoutingPolicies;
 using Application.Channels.Safety.Interfaces;
@@ -113,6 +114,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
     private CrashableTcpService? _tcpService;
     private IFeeService? _feeService;
     private GossipGraphHostedService? _gossipGraph;
+    private SilentPaymentService? _silentPayments;
     private ServiceProvider? _serviceProvider;
     private bool _started;
     private bool _disposed;
@@ -389,6 +391,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
             // As the daemon does: BOLT 5 O8, unconfirmed spends of our outputs (before the monitor's mempool loop)
             Services.GetRequiredService<IMempoolReactor>().Start();
             await BlockchainMonitor.StartAsync(currentHeight, cancellationToken);
+            // Hosted services are started explicitly in this in-process daemon harness. Recovery waits for the live monitor.
+            _silentPayments = Services.GetService<SilentPaymentService>();
+            if (_silentPayments is not null)
+                await _silentPayments.StartAsync(cancellationToken);
             // As the daemon does: drop the retired short channel ids that expired while the node was down (SP2-B)
             retiredScidMap?.PruneExpired(BlockchainMonitor.LastProcessedBlockHeight);
             // As the daemon does: release orphaned withdraw reservations (wave m6 W1)
@@ -439,6 +445,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
         {
             if (_started)
             {
+                if (_silentPayments is not null)
+                    await _silentPayments.StopAsync(CancellationToken.None);
                 await StopSafetyServicesAsync();
                 // As the daemon does: the back-valuation before the books, the books before the sealer (NL-602)
                 await (Services.GetService<PriceValuationService>()?.StopAsync() ?? Task.CompletedTask);
@@ -739,6 +747,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
     {
         try
         {
+            if (_silentPayments is not null)
+                await _silentPayments.StopAsync(CancellationToken.None);
             if (safetyStarted)
             {
                 await StopSafetyServicesAsync();
@@ -790,6 +800,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
         _serviceProvider = null;
         _feeService = null;
         _tcpService = null;
+        _silentPayments = null;
         if (serviceProvider is not null)
             await serviceProvider.DisposeAsync();
 
