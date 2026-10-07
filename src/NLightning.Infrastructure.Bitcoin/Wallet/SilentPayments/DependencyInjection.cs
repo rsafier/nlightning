@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging;
 
 namespace NLightning.Infrastructure.Bitcoin.Wallet.SilentPayments;
 
@@ -22,7 +23,12 @@ public static class DependencyInjection
         {
             var keyManager = sp.GetRequiredService<ISecureKeyManager>();
             if (keyManager is ISilentPaymentKeySource source)
+            {
+                if (sp.GetRequiredService<IOptions<SilentPaymentsOptions>>().Value.Enabled && !source.RecoverableElsewhere)
+                    sp.GetRequiredService<ILogger<SilentPaymentScanner>>().LogWarning(
+                        "This legacy silent payment wallet can be restored with its node key file, but not by standard external silent payment wallets.");
                 return source;
+            }
             if (sp.GetRequiredService<IOptions<SilentPaymentsOptions>>().Value.Enabled)
                 throw new InvalidOperationException("The signer does not support silent payment keys.");
             return new UnavailableKeySource();
