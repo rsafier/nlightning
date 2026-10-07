@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using NBitcoin;
 
 namespace NLightning.Integration.Tests.Persistence;
 
@@ -15,7 +16,6 @@ using Domain.Accounting.Models;
 using Domain.Accounting.Services;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
-using Domain.Crypto.ValueObjects;
 using Infrastructure.Bitcoin.Wallet.SilentPayments;
 using Infrastructure.Repositories.Database.Accounting;
 using Infrastructure.Repositories.Database.Bitcoin;
@@ -39,7 +39,7 @@ public sealed partial class SilentPaymentChainMonitorTests
         var block = harness.Chain[101];
         var scanner = harness.Services.GetRequiredService<SilentPaymentScanner>();
         var metadata = Assert.Single(await scanner.PrepareAsync(new BitcoinBlock(block.ToBytes(),
-            new Hash(block.GetHash().ToBytes()), block.Transactions.Count), 101, [], ct));
+            new Domain.Crypto.ValueObjects.Hash(block.GetHash().ToBytes()), block.Transactions.Count), 101, [], ct));
         SilentPaymentScanState pending;
         await using (var context = harness.Context())
         {
@@ -48,8 +48,8 @@ public sealed partial class SilentPaymentChainMonitorTests
             var state = (await repository.GetScanStateAsync(ct))!;
             pending = state with
             {
-                RescanCursorHeight = 100, RescanCursorHash = new Hash(harness.Chain[100].GetHash().ToBytes()),
-                RescanTargetHeight = 101, LiveCursorHeight = 101, LiveCursorHash = new Hash(block.GetHash().ToBytes())
+                RescanCursorHeight = 100, RescanCursorHash = new Domain.Crypto.ValueObjects.Hash(harness.Chain[100].GetHash().ToBytes()),
+                RescanTargetHeight = 101, LiveCursorHeight = 101, LiveCursorHash = new Domain.Crypto.ValueObjects.Hash(block.GetHash().ToBytes())
             };
             await repository.SetScanStateAsync(pending, ct);
             new AccountingEventDbRepository(context).Add(new AccountingEventModel
@@ -132,8 +132,8 @@ public sealed partial class SilentPaymentChainMonitorTests
             var balances = await repository.GetAccountBalancesAsync(AccountingBook.Financial, ct);
             Assert.Equal(walletMsat, Assert.Single(balances, balance => balance.Account == AccountRole.Wallet).BalanceMsat);
             Assert.Equal(0, balances.Where(balance => balance.Account == AccountRole.Clearing).Sum(balance => balance.BalanceMsat));
-            Assert.Equal(0, balances.Where(balance => balance.AccountName.StartsWith("income:", StringComparison.Ordinal)).Sum(balance => balance.BalanceMsat));
-            Assert.Equal(equityMsat, balances.Where(balance => balance.AccountName.StartsWith("equity:", StringComparison.Ordinal)).Sum(balance => balance.BalanceMsat));
+            Assert.Equal(0, balances.Where(balance => balance.AccountName?.StartsWith("income:", StringComparison.Ordinal) == true).Sum(balance => balance.BalanceMsat));
+            Assert.Equal(equityMsat, balances.Where(balance => balance.AccountName?.StartsWith("equity:", StringComparison.Ordinal) == true).Sum(balance => balance.BalanceMsat));
             Assert.Equal(feeMsat, balances.Where(balance => balance.AccountName == "expenses:fees:withdraw").Sum(balance => balance.BalanceMsat));
             var lots = await new AccountingLotDbRepository(context).ListOpenLotsAsync(AccountingLotBucket.Wallet, ct);
             Assert.Equal(walletMsat, lots.Where(lot => lot.Origin != AccountingLotOrigin.Debt).Sum(lot => lot.RemainingMsat));
