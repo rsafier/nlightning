@@ -307,10 +307,10 @@ public sealed class FeeInputSelector : IFeeInputSelector
 
                 inputs.Add(new WalletInput(utxo.TxId, utxo.Index, utxo.Amount, utxo.AddressType,
                                            scriptPubKey.ToBytes(), WalletWeights.GetInputWeight(utxo.AddressType))
-            {
-                IsSilentPayment = utxo.SilentPayment is not null,
-                SilentPaymentLabel = utxo.SilentPayment?.Label
-            });
+                {
+                    IsSilentPayment = utxo.SilentPayment is not null,
+                    SilentPaymentLabel = utxo.SilentPayment?.Label
+                });
             }
 
             if (inputs.Count == 0)

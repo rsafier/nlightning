@@ -1,5 +1,5 @@
-using System.Security.Cryptography;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using Microsoft.Extensions.Options;
 using NBitcoin;
 
@@ -36,37 +36,37 @@ public sealed class SilentPaymentRecoveryAddressSource(ISecureKeyManager keys, I
         var missing = new List<WalletAddressModel>();
         var catalogue = new List<WalletAddressModel>();
         foreach (var type in new[] { AddressType.P2Wpkh, AddressType.P2Tr })
-        foreach (var isChange in new[] { false, true })
-        for (uint index = 0; index < addressCount; index++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var material = type == AddressType.P2Tr
-                ? keys.GetDepositP2TrKeyAtIndex(index, isChange)
-                : keys.GetDepositP2WpkhKeyAtIndex(index, isChange);
-            string address;
-            try
-            {
-                using var key = ExtKey.CreateFromBytes(material.Value).PrivateKey;
-                address = key.PubKey.GetAddress(type == AddressType.P2Tr
-                    ? ScriptPubKeyType.TaprootBIP86 : ScriptPubKeyType.Segwit, _network).ToString();
-            }
-            finally
-            {
-                CryptographicOperations.ZeroMemory(material.Value);
-            }
-            if (stored.TryGetValue((type, isChange, index), out var existing))
-            {
-                if (!StringComparer.Ordinal.Equals(existing.Address, address))
-                    throw new InvalidOperationException("Recovery address catalogue does not match the wallet seed or network.");
-                catalogue.Add(existing);
-            }
-            else
-            {
-                var model = new WalletAddressModel(type, index, isChange, address);
-                missing.Add(model);
-                catalogue.Add(model);
-            }
-        }
+            foreach (var isChange in new[] { false, true })
+                for (uint index = 0; index < addressCount; index++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var material = type == AddressType.P2Tr
+                        ? keys.GetDepositP2TrKeyAtIndex(index, isChange)
+                        : keys.GetDepositP2WpkhKeyAtIndex(index, isChange);
+                    string address;
+                    try
+                    {
+                        using var key = ExtKey.CreateFromBytes(material.Value).PrivateKey;
+                        address = key.PubKey.GetAddress(type == AddressType.P2Tr
+                            ? ScriptPubKeyType.TaprootBIP86 : ScriptPubKeyType.Segwit, _network).ToString();
+                    }
+                    finally
+                    {
+                        CryptographicOperations.ZeroMemory(material.Value);
+                    }
+                    if (stored.TryGetValue((type, isChange, index), out var existing))
+                    {
+                        if (!StringComparer.Ordinal.Equals(existing.Address, address))
+                            throw new InvalidOperationException("Recovery address catalogue does not match the wallet seed or network.");
+                        catalogue.Add(existing);
+                    }
+                    else
+                    {
+                        var model = new WalletAddressModel(type, index, isChange, address);
+                        missing.Add(model);
+                        catalogue.Add(model);
+                    }
+                }
         if (missing.Count != 0)
         {
             uow.WalletAddressesDbRepository.AddRange(missing);

@@ -10,7 +10,6 @@ using Crypto.Musig2;
 using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.SilentPayments.Interfaces;
 using Domain.Crypto.ValueObjects;
-using Domain.Protocol.ValueObjects;
 using Onion;
 
 public partial class SecureKeyManager : ISilentPaymentKeySource

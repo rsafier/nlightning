@@ -7,8 +7,8 @@ using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
-using Domain.Persistence.Interfaces;
 using Domain.Onchain.Models;
+using Domain.Persistence.Interfaces;
 
 public partial class BlockchainMonitorService
 {

@@ -7,18 +7,14 @@ using NBitcoin;
 
 namespace NLightning.Application.Bitcoin.SilentPayments;
 
-using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Labels;
-using Domain.Accounting.Models;
-using Domain.Accounting.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.SilentPayments;
 using Domain.Bitcoin.SilentPayments.Interfaces;
 using Domain.Bitcoin.SilentPayments.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
-using Domain.Crypto.ValueObjects;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Networks;

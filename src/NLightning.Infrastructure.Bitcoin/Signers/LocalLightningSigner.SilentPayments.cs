@@ -1,18 +1,17 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using NBitcoin;
-using NBitcoin.Secp256k1;
 using NBitcoin.Crypto;
+using NBitcoin.Secp256k1;
 
 namespace NLightning.Infrastructure.Bitcoin.Signers;
 
-using Crypto.SilentPayments;
 using Crypto.Musig2;
+using Crypto.SilentPayments;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.SilentPayments;
 using Domain.Bitcoin.SilentPayments.Models;
 using Domain.Bitcoin.ValueObjects;
-using Domain.Bitcoin.Wallet.Models;
 using Domain.Exceptions;
 using Taproot;
 
@@ -55,7 +54,7 @@ public partial class LocalLightningSigner
                 {
                     if (prevOut.ScriptPubKey != GetWalletAddressScript(utxo, inputs.Count))
                         throw new SignerException("The silent payment input key does not match its recorded output.");
-                    byte[]? secret = key!.ToBytes();
+                    var secret = key!.ToBytes();
                     try
                     {
                         if (taprootPair is not null)

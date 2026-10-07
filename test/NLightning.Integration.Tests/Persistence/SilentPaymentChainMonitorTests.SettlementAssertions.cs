@@ -1,8 +1,8 @@
 namespace NLightning.Integration.Tests.Persistence;
 
 using Domain.Accounting.Books;
-using Domain.Accounting.Services;
 using Domain.Accounting.Enums;
+using Domain.Accounting.Services;
 using Infrastructure.Repositories.Database.Accounting;
 
 public sealed partial class SilentPaymentChainMonitorTests

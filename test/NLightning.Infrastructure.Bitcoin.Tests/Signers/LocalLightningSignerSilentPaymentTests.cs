@@ -6,7 +6,6 @@ using NBitcoin;
 namespace NLightning.Infrastructure.Bitcoin.Tests.Signers;
 
 using Domain.Bitcoin.Enums;
-using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.SilentPayments;
 using Domain.Bitcoin.SilentPayments.Models;
 using Domain.Bitcoin.ValueObjects;
@@ -16,8 +15,8 @@ using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
-using Domain.Protocol.ValueObjects;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Crypto.SilentPayments;
 using Infrastructure.Bitcoin.Managers;
@@ -53,9 +52,9 @@ public sealed class LocalLightningSignerSilentPaymentTests : IDisposable
     {
         // Arrange: golden key fixtures exercise both odd and even output-key parity.
         var reservation = Guid.NewGuid();
-        var silent = AddSilent(label, reservation);
+        var (Model, Outpoint, PrevOut) = AddSilent(label, reservation);
         var deposit = AddDeposit(AddressType.P2Tr, 2, reservation);
-        var tx = CreateSpend(silent.Outpoint, deposit.Outpoint);
+        var tx = CreateSpend(Outpoint, deposit.Outpoint);
         var signed = ToSigned(tx);
 
         // Act
@@ -63,7 +62,7 @@ public sealed class LocalLightningSignerSilentPaymentTests : IDisposable
 
         // Assert: an accidental BIP86 tweak fails the independent script interpreter.
         var result = Transaction.Load(signed.RawTxBytes, Network.RegTest);
-        var validator = result.CreateValidator([silent.PrevOut, deposit.PrevOut]);
+        var validator = result.CreateValidator([PrevOut, deposit.PrevOut]);
         Assert.All(Enumerable.Range(0, 2), index => Assert.True(validator.ValidateInput(index).Error is null or ScriptError.OK));
         Assert.All(result.Inputs, input => Assert.Single(input.WitScript.Pushes));
         AssertWipedSignerScalars();
@@ -77,15 +76,15 @@ public sealed class LocalLightningSignerSilentPaymentTests : IDisposable
     {
         // Arrange: channel opens use another signing entry point than withdrawals and fee spends.
         var channel = new ChannelId(RandomUtils.GetBytes(32));
-        var silent = AddSilent(label);
+        var (Model, Outpoint, PrevOut) = AddSilent(label);
         var deposit = AddDeposit(AddressType.P2Wpkh, 3);
-        silent.Model.LockedToChannelId = channel;
+        Model.LockedToChannelId = channel;
         deposit.Model.LockedToChannelId = channel;
         using var local = new Key(Enumerable.Repeat((byte)7, 32).ToArray());
         using var remote = new Key(Enumerable.Repeat((byte)8, 32).ToArray());
         var output = new FundingOutput(LightningMoney.Satoshis(50_000), local.PubKey, remote.PubKey).ToTxOut();
         var tx = Network.RegTest.CreateTransaction();
-        tx.Inputs.Add(new TxIn(silent.Outpoint));
+        tx.Inputs.Add(new TxIn(Outpoint));
         tx.Inputs.Add(new TxIn(deposit.Outpoint));
         tx.Outputs.Add(output);
         _signer.RegisterChannel(channel, new ChannelSigningInfo(tx.GetHash().ToBytes(), 0, LightningMoney.Satoshis(50_000),
@@ -97,7 +96,7 @@ public sealed class LocalLightningSignerSilentPaymentTests : IDisposable
 
         // Assert
         var result = Transaction.Load(signed.RawTxBytes, Network.RegTest);
-        var validator = result.CreateValidator([silent.PrevOut, deposit.PrevOut]);
+        var validator = result.CreateValidator([PrevOut, deposit.PrevOut]);
         Assert.True(validator.ValidateInput(0).Error is null or ScriptError.OK);
         Assert.True(validator.ValidateInput(1).Error is null or ScriptError.OK);
     }
@@ -107,9 +106,9 @@ public sealed class LocalLightningSignerSilentPaymentTests : IDisposable
     {
         // Arrange
         var reservation = Guid.NewGuid();
-        var silent = AddSilent(0, reservation);
-        silent.Model.SilentPayment!.OutputKey[0] ^= 1;
-        var signed = ToSigned(CreateSpend(silent.Outpoint));
+        var (Model, Outpoint, PrevOut) = AddSilent(0, reservation);
+        Model.SilentPayment!.OutputKey[0] ^= 1;
+        var signed = ToSigned(CreateSpend(Outpoint));
         var before = signed.RawTxBytes.ToArray();
 
         // Act / Assert
@@ -127,20 +126,20 @@ public sealed class LocalLightningSignerSilentPaymentTests : IDisposable
     {
         // Arrange: repeat recipient scan keys advance k, and BIP86 inputs require the actual tweaked output scalar.
         var reservation = Guid.NewGuid();
-        var input = useSilentCoin ? AddSilent(uint.MaxValue, reservation) : AddDeposit(type, 2, reservation);
+        var (Model, Outpoint, PrevOut) = useSilentCoin ? AddSilent(uint.MaxValue, reservation) : AddDeposit(type, 2, reservation);
         var recipient = new SilentPaymentAddress(0, _keys.ScanPubKey, _keys.SpendPubKey, "sprt");
-        (TxId TxId, uint Index)[] frozen = [(input.Model.TxId, input.Model.Index)];
+        (TxId TxId, uint Index)[] frozen = [(Model.TxId, Model.Index)];
 
         // Act
         var scripts = _signer.ComputeSilentPaymentOutputs(reservation, [recipient, recipient], frozen);
 
         // Assert: use only public spent-output keys plus the receiver's private scan operation.
         var publicKey = type == AddressType.P2Tr
-            ? new CompactPubKey([2, .. input.PrevOut.ScriptPubKey.ToBytes().AsSpan(2)])
+            ? new CompactPubKey([2, .. PrevOut.ScriptPubKey.ToBytes().AsSpan(2)])
             : DepositPubKey(2);
         var outpoint = new byte[36];
-        ((byte[])input.Model.TxId).CopyTo(outpoint, 0);
-        BinaryPrimitives.WriteUInt32LittleEndian(outpoint.AsSpan(32), input.Model.Index);
+        ((byte[])Model.TxId).CopyTo(outpoint, 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(outpoint.AsSpan(32), Model.Index);
         var hash = Bip352.ComputeInputHash(outpoint, publicKey);
         var tweakedPublic = Bip352.TweakInputPublicKey(publicKey, hash);
         var shared = new byte[33];
@@ -164,13 +163,13 @@ public sealed class LocalLightningSignerSilentPaymentTests : IDisposable
     {
         // Arrange
         var reservation = Guid.NewGuid();
-        var first = AddDeposit(AddressType.P2Wpkh, 1, reservation);
+        var (Model, Outpoint, PrevOut) = AddDeposit(AddressType.P2Wpkh, 1, reservation);
         AddDeposit(AddressType.P2Wpkh, 2, reservation);
         var recipient = new SilentPaymentAddress(0, _keys.ScanPubKey, _keys.SpendPubKey, "sprt");
 
         // Act / Assert
         Assert.Throws<SignerException>(() => _signer.ComputeSilentPaymentOutputs(reservation, [recipient],
-            [(first.Model.TxId, first.Model.Index)]));
+            [(Model.TxId, Model.Index)]));
     }
 
     private (UtxoModel Model, OutPoint Outpoint, TxOut PrevOut) AddSilent(uint? label, Guid? reservation = null)

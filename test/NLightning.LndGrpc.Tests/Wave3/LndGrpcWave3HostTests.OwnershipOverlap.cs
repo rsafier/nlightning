@@ -4,8 +4,6 @@ using NBitcoin;
 namespace NLightning.LndGrpc.Tests.Wave3;
 
 using Domain.Accounting.Enums;
-using AddressType = Domain.Bitcoin.Enums.AddressType;
-using OutPoint = NBitcoin.OutPoint;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Bitcoin.Wallet.Models;
@@ -13,7 +11,9 @@ using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using LndGrpc.Macaroons;
 using Testing.Lnd.Lnrpc;
+using AddressType = Domain.Bitcoin.Enums.AddressType;
 using ListUnspentRequest = Testing.Lnd.Walletrpc.ListUnspentRequest;
+using OutPoint = NBitcoin.OutPoint;
 
 public sealed partial class LndGrpcWave3HostTests
 {

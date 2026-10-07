@@ -48,15 +48,23 @@ public sealed partial class SilentPaymentChainMonitorTests
             var state = (await repository.GetScanStateAsync(ct))!;
             pending = state with
             {
-                RescanCursorHeight = 100, RescanCursorHash = new Domain.Crypto.ValueObjects.Hash(harness.Chain[100].GetHash().ToBytes()),
-                RescanTargetHeight = 101, LiveCursorHeight = 101, LiveCursorHash = new Domain.Crypto.ValueObjects.Hash(block.GetHash().ToBytes())
+                RescanCursorHeight = 100,
+                RescanCursorHash = new Domain.Crypto.ValueObjects.Hash(harness.Chain[100].GetHash().ToBytes()),
+                RescanTargetHeight = 101,
+                LiveCursorHeight = 101,
+                LiveCursorHash = new Domain.Crypto.ValueObjects.Hash(block.GetHash().ToBytes())
             };
             await repository.SetScanStateAsync(pending, ct);
             new AccountingEventDbRepository(context).Add(new AccountingEventModel
             {
-                EventKey = AccountingEventKeys.WalletReceived(Id(receipt), 0), Kind = AccountingEventKind.WalletReceived,
-                OccurredAt = block.Header.BlockTime, BlockHeight = 101, TxId = Id(receipt), OutputIndex = 0,
-                AmountMsat = AmountSat * 1_000, Finality = AccountingFinality.Confirmed,
+                EventKey = AccountingEventKeys.WalletReceived(Id(receipt), 0),
+                Kind = AccountingEventKind.WalletReceived,
+                OccurredAt = block.Header.BlockTime,
+                BlockHeight = 101,
+                TxId = Id(receipt),
+                OutputIndex = 0,
+                AmountMsat = AmountSat * 1_000,
+                Finality = AccountingFinality.Confirmed,
                 Details = AccountingDetailsCodec.Create((AccountingDetailKeys.Source, "external"), ("receiptSource", "silent_payment"))
             });
             await context.SaveChangesAsync(ct);

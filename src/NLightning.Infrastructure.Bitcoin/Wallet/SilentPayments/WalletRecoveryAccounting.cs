@@ -37,9 +37,14 @@ public static class WalletRecoveryAccounting
                 if (key is null) continue;
                 uow.AccountingEventDbRepository.Add(new AccountingEventModel
                 {
-                    EventKey = key, Kind = AccountingEventKind.WalletReceived, OccurredAt = block.Header.BlockTime,
-                    BlockHeight = height, TxId = transactionId, OutputIndex = index,
-                    AmountMsat = checked(output.Value.Satoshi * 1000), Finality = AccountingFinality.Confirmed,
+                    EventKey = key,
+                    Kind = AccountingEventKind.WalletReceived,
+                    OccurredAt = block.Header.BlockTime,
+                    BlockHeight = height,
+                    TxId = transactionId,
+                    OutputIndex = index,
+                    AmountMsat = checked(output.Value.Satoshi * 1000),
+                    Finality = AccountingFinality.Confirmed,
                     Details = AccountingDetailsCodec.Create((RecoveredCustody, "true"), ("receiptSource", "wallet_recovery"),
                         ("address", owned.Address), ("addressType", Enum.GetName(owned.AddressType)),
                         ("recoveryAddressIndex", owned.Index.ToString(CultureInfo.InvariantCulture)),
@@ -77,9 +82,14 @@ public static class WalletRecoveryAccounting
         uow.TrySpendUtxo(receipt.TxId.Value, receipt.OutputIndex.Value);
         uow.AccountingEventDbRepository.Add(new AccountingEventModel
         {
-            EventKey = key, Kind = AccountingEventKind.WalletOutputSpent, OccurredAt = occurredAt,
-            BlockHeight = height, TxId = receipt.TxId, OutputIndex = receipt.OutputIndex,
-            AmountMsat = -receipt.AmountMsat, Finality = AccountingFinality.Confirmed,
+            EventKey = key,
+            Kind = AccountingEventKind.WalletOutputSpent,
+            OccurredAt = occurredAt,
+            BlockHeight = height,
+            TxId = receipt.TxId,
+            OutputIndex = receipt.OutputIndex,
+            AmountMsat = -receipt.AmountMsat,
+            Finality = AccountingFinality.Confirmed,
             Details = AccountingDetailsCodec.Create((RecoveredCustody, "true"), ("address", receipt.Details.GetValueOrDefault("address")),
                 ("addressType", receipt.Details.GetValueOrDefault("addressType")),
                 ("spentBy", new TxId(spender.GetHash().ToBytes()).ToString()), (AccountingDetailKeys.Source, AccountingDetailKeys.WalletSource))

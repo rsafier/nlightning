@@ -25,13 +25,13 @@ public partial class BitcoinWalletServiceTests
         Assert.Equal(120, _stored.Count);
         Assert.Empty(_reserved);
         foreach (var type in new[] { AddressType.P2Wpkh, AddressType.P2Tr })
-        foreach (var change in new[] { false, true })
-        {
-            var branch = type == AddressType.P2Tr ? (change ? 3u : 2u) : (change ? 1u : 0u);
-            var expected = s_masterKey.Derive(branch).Derive(29).PrivateKey.PubKey.GetAddress(
-                type == AddressType.P2Tr ? ScriptPubKeyType.TaprootBIP86 : ScriptPubKeyType.Segwit, Network.RegTest).ToString();
-            Assert.Equal(expected, Assert.Single(first, a => a.AddressType == type && a.IsChange == change && a.Index == 29).Address);
-        }
+            foreach (var change in new[] { false, true })
+            {
+                var branch = type == AddressType.P2Tr ? (change ? 3u : 2u) : (change ? 1u : 0u);
+                var expected = s_masterKey.Derive(branch).Derive(29).PrivateKey.PubKey.GetAddress(
+                    type == AddressType.P2Tr ? ScriptPubKeyType.TaprootBIP86 : ScriptPubKeyType.Segwit, Network.RegTest).ToString();
+                Assert.Equal(expected, Assert.Single(first, a => a.AddressType == type && a.IsChange == change && a.Index == 29).Address);
+            }
         _addresses.Verify(r => r.AddRange(It.IsAny<List<WalletAddressModel>>()), Times.Once);
         _unitOfWork.Verify(u => u.SaveChangesAsync(), Times.Never);
         _blockchainMonitor.Verify(m => m.WatchBitcoinAddress(It.IsAny<WalletAddressModel>()), Times.Never);

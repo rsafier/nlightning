@@ -1,15 +1,14 @@
 using System.Buffers.Binary;
-using SHA256 = System.Security.Cryptography.SHA256;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
-using Moq;
 using NBitcoin;
 using NBitcoin.Secp256k1;
 using NLightning.Tests.Utils.Mocks;
 using MsOptions = Microsoft.Extensions.Options.Options;
+using SHA256 = System.Security.Cryptography.SHA256;
 
 namespace NLightning.Application.Tests.Bitcoin.SilentPayments;
 

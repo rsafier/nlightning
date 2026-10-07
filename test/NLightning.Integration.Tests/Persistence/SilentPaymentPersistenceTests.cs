@@ -38,7 +38,9 @@ public class SilentPaymentPersistenceTests
         }
         context.Utxos.Add(new UtxoEntity
         {
-            TransactionId = output.TransactionId, Index = output.Index, AmountSats = output.AmountSats,
+            TransactionId = output.TransactionId,
+            Index = output.Index,
+            AmountSats = output.AmountSats,
             BlockHeight = output.BlockHeight,
             AddressIndex = bothOwners ? address.Index : null,
             IsAddressChange = bothOwners ? address.IsChange : null,
@@ -63,9 +65,12 @@ public class SilentPaymentPersistenceTests
         await context.SaveChangesAsync(TestContext.Current.CancellationToken);
         context.Utxos.Add(new UtxoEntity
         {
-            TransactionId = output.TransactionId, Index = output.Index + 1,
-            AmountSats = output.AmountSats, BlockHeight = output.BlockHeight,
-            SilentPaymentTransactionId = output.TransactionId, SilentPaymentIndex = output.Index
+            TransactionId = output.TransactionId,
+            Index = output.Index + 1,
+            AmountSats = output.AmountSats,
+            BlockHeight = output.BlockHeight,
+            SilentPaymentTransactionId = output.TransactionId,
+            SilentPaymentIndex = output.Index
         });
 
         // Act & Assert

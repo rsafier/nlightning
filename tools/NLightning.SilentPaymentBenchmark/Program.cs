@@ -13,7 +13,6 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.SilentPayments;
 using Domain.Bitcoin.SilentPayments.Models;
 using Domain.Bitcoin.ValueObjects;
-using Domain.Bitcoin.Wallet.Models;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Crypto.SilentPayments;
 using Infrastructure.Bitcoin.Managers;
@@ -114,8 +113,10 @@ public static class Program
                 var parent = new byte[32];
                 BitConverter.GetBytes(index + 1).CopyTo(parent, 0);
                 var transaction = Network.RegTest.CreateTransaction();
-                var input = new TxIn(new OutPoint(new uint256(parent), 0));
-                input.WitScript = new WitScript(Op.GetPushOp(new byte[] { 1 }), Op.GetPushOp(sender.PubKey.ToBytes()));
+                var input = new TxIn(new OutPoint(new uint256(parent), 0))
+                {
+                    WitScript = new WitScript(Op.GetPushOp(new byte[] { 1 }), Op.GetPushOp(sender.PubKey.ToBytes()))
+                };
                 transaction.Inputs.Add(input);
                 if (index < 2000)
                 {

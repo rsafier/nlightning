@@ -118,7 +118,7 @@ public class WalletPsbtServiceTests : IDisposable
     public async Task Given_ASilentPaymentCoin_When_ListUnspent_Then_ItIsShownAsAnOrdinaryTaprootOutput()
     {
         // Arrange
-        var silent = AddSilentPaymentUtxo();
+        var (Model, PrevOut) = AddSilentPaymentUtxo();
 
         // Act
         var outputs = await _service.ListUnspentAsync(1, uint.MaxValue, Ct);
@@ -126,7 +126,7 @@ public class WalletPsbtServiceTests : IDisposable
         // Assert
         var output = Assert.Single(outputs);
         Assert.Equal(AddressType.P2Tr, output.AddressType);
-        Assert.Equal(silent.PrevOut.ScriptPubKey.ToBytes(), (byte[])output.ScriptPubKey);
+        Assert.Equal(PrevOut.ScriptPubKey.ToBytes(), (byte[])output.ScriptPubKey);
         Assert.StartsWith("bcrt1p", output.Address);
     }
 
@@ -134,10 +134,10 @@ public class WalletPsbtServiceTests : IDisposable
     public async Task Given_AFundedSilentPaymentPsbt_When_FinalizedAndPublished_Then_TheRawKeySpendVerifies()
     {
         // Arrange: explicit coin selection exercises leases, PSBT signing and publishing together.
-        var silent = AddSilentPaymentUtxo();
+        var (Model, PrevOut) = AddSilentPaymentUtxo();
         var funded = await _service.FundPsbtAsync(Request(20_000) with
         {
-            Inputs = [(silent.Model.TxId, silent.Model.Index)]
+            Inputs = [(Model.TxId, Model.Index)]
         }, Ct);
 
         // Act
@@ -145,7 +145,7 @@ public class WalletPsbtServiceTests : IDisposable
         var tx = Transaction.Load(finalized.RawFinalTx, Network.RegTest);
 
         // Assert: the witness spends P directly, with no BIP86 tweak.
-        Assert.True(tx.CreateValidator([silent.PrevOut]).ValidateInput(0).Error is null or ScriptError.OK);
+        Assert.True(tx.CreateValidator([PrevOut]).ValidateInput(0).Error is null or ScriptError.OK);
         await _service.PublishAsync(finalized.RawFinalTx, "silent payment", Ct);
         Assert.Single(_published);
     }

@@ -135,7 +135,8 @@ public sealed class CdkPaymentProcessorOnchainTests : CdkProcessorTestBase
                    .ReturnsAsync(new WalletWithdrawResult(s_meltTx, LightningMoney.Satoshis(20_000),
                                                           LightningMoney.Satoshis(210), LightningMoney.Satoshis(5_000),
                                                           LightningMoney.Satoshis(1_666), 600, 1, LightningMoney.Zero,
-                                                          true) { DestinationOutputIndex = destinationOutputIndex });
+                                                          true)
+                   { DestinationOutputIndex = destinationOutputIndex });
         var broadcast = new BroadcastTransactionModel(new SignedTransaction(s_meltTx, [1, 2, 3]),
                                                       BroadcastPurpose.WalletSend, null, 100);
         Broadcasts.Setup(b => b.GetByTransactionIdAsync(s_meltTx)).ReturnsAsync(() => broadcast);

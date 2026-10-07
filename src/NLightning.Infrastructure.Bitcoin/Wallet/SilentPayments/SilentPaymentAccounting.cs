@@ -120,8 +120,12 @@ public static class SilentPaymentAccounting
                 var reversal = new AccountingEventModel
                 {
                     EventKey = AccountingEventKeys.Reversal(standing.EventKey, standing.BlockHeight!.Value),
-                    Kind = AccountingEventKind.Reversal, OccurredAt = time.GetUtcNow(), BlockHeight = standing.BlockHeight,
-                    TxId = transactionId, AmountMsat = -standing.AmountMsat, FeeMsat = -standing.FeeMsat,
+                    Kind = AccountingEventKind.Reversal,
+                    OccurredAt = time.GetUtcNow(),
+                    BlockHeight = standing.BlockHeight,
+                    TxId = transactionId,
+                    AmountMsat = -standing.AmountMsat,
+                    FeeMsat = -standing.FeeMsat,
                     Finality = AccountingFinality.Confirmed,
                     Details = AccountingDetailsCodec.Create((AccountingConfirmations.ReversesDetail, standing.EventKey),
                         (AccountingConfirmations.OriginalKindDetail, standing.Kind.ToString()), ("reason", "recovered_custody_policy_changed"))
@@ -131,9 +135,14 @@ public static class SilentPaymentAccounting
             }
             uow.AccountingEventDbRepository.Add(new AccountingEventModel
             {
-                EventKey = key!, Kind = AccountingEventKind.WalletSent, OccurredAt = block.Header.BlockTime,
-                BlockHeight = height, TxId = transactionId, AmountMsat = amountMsat,
-                FeeMsat = feeMsat, Finality = AccountingFinality.Confirmed,
+                EventKey = key!,
+                Kind = AccountingEventKind.WalletSent,
+                OccurredAt = block.Header.BlockTime,
+                BlockHeight = height,
+                TxId = transactionId,
+                AmountMsat = amountMsat,
+                FeeMsat = feeMsat,
+                Finality = AccountingFinality.Confirmed,
                 Details = AccountingDetailsCodec.Create(("recovered", "true"), ("purposeUnknown", broadcast is null ? "true" : null),
                     ("externalOutputs", externalOutputs.ToString(CultureInfo.InvariantCulture)))
             });
@@ -154,9 +163,14 @@ public static class SilentPaymentAccounting
         var name = output.Label is { } label ? labels.FirstOrDefault(item => item.M == label)?.Name : null;
         uow.AccountingEventDbRepository.Add(new AccountingEventModel
         {
-            EventKey = key, Kind = spender is null ? AccountingEventKind.WalletReceived : AccountingEventKind.WalletOutputSpent,
-            OccurredAt = block.Header.BlockTime, BlockHeight = height, TxId = output.TransactionId, OutputIndex = output.Index,
-            AmountMsat = checked(output.AmountSats * 1000) * (spender is null ? 1 : -1), Finality = AccountingFinality.Confirmed,
+            EventKey = key,
+            Kind = spender is null ? AccountingEventKind.WalletReceived : AccountingEventKind.WalletOutputSpent,
+            OccurredAt = block.Header.BlockTime,
+            BlockHeight = height,
+            TxId = output.TransactionId,
+            OutputIndex = output.Index,
+            AmountMsat = checked(output.AmountSats * 1000) * (spender is null ? 1 : -1),
+            Finality = AccountingFinality.Confirmed,
             Details = AccountingDetailsCodec.Create((AccountingDetailKeys.Source, source), ("addressType", "P2Tr"),
                 ("address", new Script(new byte[] { 0x51, 0x20 }.Concat(output.OutputKey).ToArray())
                     .GetDestinationAddress(network)?.ToString()),

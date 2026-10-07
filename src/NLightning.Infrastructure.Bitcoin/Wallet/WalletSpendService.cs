@@ -5,13 +5,13 @@ using NBitcoin;
 
 namespace NLightning.Infrastructure.Bitcoin.Wallet;
 
+using Crypto.SilentPayments;
+using Domain.Accounting.Labels;
 using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.SilentPayments;
 using Domain.Bitcoin.SilentPayments.Interfaces;
-using Domain.Accounting.Labels;
-using Crypto.SilentPayments;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Constants;
 using Domain.Bitcoin.Wallet.Interfaces;

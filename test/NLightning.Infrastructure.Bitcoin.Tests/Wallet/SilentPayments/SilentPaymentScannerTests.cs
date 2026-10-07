@@ -6,7 +6,6 @@ namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet.SilentPayments;
 
 using Bitcoin.Crypto.SilentPayments;
 using Bitcoin.Wallet.SilentPayments;
-using Crypto.SilentPayments;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.SilentPayments;
@@ -143,7 +142,8 @@ public class SilentPaymentScannerTests
             var outpoint = Outpoint(input);
             transaction.Inputs.Add(new TxIn(new OutPoint(new uint256(outpoint.AsSpan(0, 32).ToArray()),
                 System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(outpoint.AsSpan(32))),
-                new Script(Hex(input.GetProperty("scriptSig")))) { WitScript = new WitScript(Witness(input)) });
+                new Script(Hex(input.GetProperty("scriptSig"))))
+            { WitScript = new WitScript(Witness(input)) });
             previous.Add(new BitcoinPrevout(10_000,
                 Hex(input.GetProperty("prevout").GetProperty("scriptPubKey").GetProperty("hex"))));
         }

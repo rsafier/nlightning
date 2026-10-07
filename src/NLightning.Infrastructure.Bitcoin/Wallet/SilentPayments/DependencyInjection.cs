@@ -1,7 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Infrastructure.Bitcoin.Wallet.SilentPayments;
 
@@ -9,9 +9,9 @@ using Crypto.SilentPayments;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.SilentPayments;
 using Domain.Bitcoin.SilentPayments.Interfaces;
-using Domain.Protocol.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Domain.Node.Options;
+using Domain.Protocol.Interfaces;
 using Options;
 
 public static class DependencyInjection

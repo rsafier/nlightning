@@ -1,8 +1,8 @@
 namespace NLightning.Daemon.Tests.Client;
 
+using Domain.Client.Enums;
 using NLightning.Client;
 using NLightning.Client.Handlers;
-using Domain.Client.Enums;
 
 public class SilentPaymentCommandTests
 {

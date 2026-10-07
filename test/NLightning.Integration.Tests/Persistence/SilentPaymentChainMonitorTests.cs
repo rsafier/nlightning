@@ -12,7 +12,6 @@ using Application.Accounting.Books;
 using Domain.Accounting.Books;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Models;
-using Domain.Accounting.Services;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.SilentPayments;
@@ -271,7 +270,10 @@ public sealed partial class SilentPaymentChainMonitorTests
 
     private static SilentPaymentsOptions EnabledOptions() => new()
     {
-        Enabled = true, Receive = true, RecoveryLabelCount = 0, MinReceiveSat = 1_000
+        Enabled = true,
+        Receive = true,
+        RecoveryLabelCount = 0,
+        MinReceiveSat = 1_000
     };
 
     private static ChainMonitorHarness CreateHarness(SecureKeyManager keys, SilentPaymentsOptions options,

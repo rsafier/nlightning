@@ -195,7 +195,7 @@ public sealed class SilentPaymentScanner(IBlockPrevoutSource prevouts, ISilentPa
             foreach (var input in transaction.Inputs)
             {
                 var key = (new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N);
-                var output = await unitOfWork.SilentPaymentDbRepository.GetOutputAsync(key.Item1, key.Item2, cancellationToken);
+                var output = await unitOfWork.SilentPaymentDbRepository.GetOutputAsync(key.Item1, key.N, cancellationToken);
                 output ??= staged.GetValueOrDefault(key);
                 if (output is null || output.SpentByTransactionId == spender && output.SpentAtHeight == height) continue;
                 await unitOfWork.SilentPaymentDbRepository.UpsertOutputAsync(output with

@@ -1,12 +1,10 @@
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using NBitcoin;
 
 namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
 
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
-using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Domain.Bitcoin.SilentPayments;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;

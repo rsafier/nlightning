@@ -138,9 +138,14 @@ public sealed partial class SilentPaymentChainMonitorTests
             await new SilentPaymentDbRepository(context).UpsertOutputAsync(Assert.Single(matches), TestContext.Current.CancellationToken);
             new AccountingEventDbRepository(context).Add(new AccountingEventModel
             {
-                EventKey = AccountingEventKeys.WalletReceived(Id(receipt), 0), Kind = AccountingEventKind.WalletReceived,
-                OccurredAt = block.Header.BlockTime, BlockHeight = 101, TxId = Id(receipt), OutputIndex = 0,
-                AmountMsat = AmountSat * 1_000, Finality = AccountingFinality.Confirmed,
+                EventKey = AccountingEventKeys.WalletReceived(Id(receipt), 0),
+                Kind = AccountingEventKind.WalletReceived,
+                OccurredAt = block.Header.BlockTime,
+                BlockHeight = 101,
+                TxId = Id(receipt),
+                OutputIndex = 0,
+                AmountMsat = AmountSat * 1_000,
+                Finality = AccountingFinality.Confirmed,
                 Details = AccountingDetailsCodec.Create((AccountingDetailKeys.Source, "external"), ("receiptSource", "silent_payment"))
             });
             await context.SaveChangesAsync(TestContext.Current.CancellationToken);

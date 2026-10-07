@@ -23,8 +23,11 @@ public sealed class SilentPaymentIpcResponse
         RecoverableElsewhere = response.Address?.RecoverableElsewhere ?? response.Status?.RecoverableElsewhere ?? false,
         Labels = response.Labels?.Select(label => new SilentPaymentLabelIpcInfo
         {
-            M = label.Label, Name = label.Name, CreatedAtHeight = label.CreatedAtHeight,
-            Address = label.Address, IsChange = label.IsChange
+            M = label.Label,
+            Name = label.Name,
+            CreatedAtHeight = label.CreatedAtHeight,
+            Address = label.Address,
+            IsChange = label.IsChange
         }).ToList(),
         Status = response.Status is { } status ? SilentPaymentStatusIpcInfo.FromDomain(status) : null
     };

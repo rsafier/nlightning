@@ -1,5 +1,3 @@
-using NBitcoin;
-
 namespace NLightning.Integration.Tests.Persistence;
 
 using Domain.Bitcoin.Events;

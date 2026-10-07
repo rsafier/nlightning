@@ -68,7 +68,9 @@ public sealed class SilentPaymentDbRepository(NLightningDbContext context) : ISi
             throw new ArgumentException("A silent payment label name cannot exceed 256 characters.", nameof(label));
         context.SilentPaymentLabels.Add(new SilentPaymentLabelEntity
         {
-            M = label.M, Name = label.Name, CreatedAtHeight = label.CreatedAtHeight
+            M = label.M,
+            Name = label.Name,
+            CreatedAtHeight = label.CreatedAtHeight
         });
     }
 
@@ -87,10 +89,15 @@ public sealed class SilentPaymentDbRepository(NLightningDbContext context) : ISi
             throw new ArgumentException("A cursor hash requires a corresponding height.", nameof(state));
         var replacement = new SilentPaymentScanStateEntity
         {
-            Id = 0, BirthdayHeight = state.BirthdayHeight, LiveFromHeight = state.LiveFromHeight,
-            RescanCursorHeight = state.RescanCursorHeight, RescanCursorHash = state.RescanCursorHash,
-            RescanTargetHeight = state.RescanTargetHeight, PrevoutSource = state.PrevoutSource,
-            LiveCursorHeight = state.LiveCursorHeight, LiveCursorHash = state.LiveCursorHash,
+            Id = 0,
+            BirthdayHeight = state.BirthdayHeight,
+            LiveFromHeight = state.LiveFromHeight,
+            RescanCursorHeight = state.RescanCursorHeight,
+            RescanCursorHash = state.RescanCursorHash,
+            RescanTargetHeight = state.RescanTargetHeight,
+            PrevoutSource = state.PrevoutSource,
+            LiveCursorHeight = state.LiveCursorHeight,
+            LiveCursorHash = state.LiveCursorHash,
             RecoveryLabelCount = state.RecoveryLabelCount
         };
         var existing = await context.SilentPaymentScanState.FindAsync([(byte)0], cancellationToken);
@@ -105,9 +112,16 @@ public sealed class SilentPaymentDbRepository(NLightningDbContext context) : ISi
 
     private static SilentPaymentOutputEntity MapModelToEntity(SilentPaymentOutputModel output) => new()
     {
-        TransactionId = output.TransactionId, Index = output.Index, OutputKey = output.OutputKey.ToArray(),
-        Tweak = output.Tweak.ToArray(), Label = output.Label, AmountSats = output.AmountSats,
-        BlockHeight = output.BlockHeight, BlockHash = output.BlockHash,
-        SpentByTransactionId = output.SpentByTransactionId, Ignored = output.Ignored, SpentAtHeight = output.SpentAtHeight
+        TransactionId = output.TransactionId,
+        Index = output.Index,
+        OutputKey = output.OutputKey.ToArray(),
+        Tweak = output.Tweak.ToArray(),
+        Label = output.Label,
+        AmountSats = output.AmountSats,
+        BlockHeight = output.BlockHeight,
+        BlockHash = output.BlockHash,
+        SpentByTransactionId = output.SpentByTransactionId,
+        Ignored = output.Ignored,
+        SpentAtHeight = output.SpentAtHeight
     };
 }

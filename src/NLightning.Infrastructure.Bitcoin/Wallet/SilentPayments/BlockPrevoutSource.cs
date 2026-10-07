@@ -198,8 +198,7 @@ public sealed class BlockPrevoutSource : IBlockPrevoutSource
                     var json = await JObject.LoadAsync(reader, cancellationToken);
                     if (!candidates.TryGetValue((string?)json["txid"] ?? "", out var tx))
                         continue;
-                    var inputs = json["vin"] as JArray;
-                    if (inputs is null || inputs.Count != tx.Inputs.Count)
+                    if (json["vin"] is not JArray inputs || inputs.Count != tx.Inputs.Count)
                         throw new InvalidDataException("getblock 3 input count mismatch.");
                     List<BitcoinPrevout> prevouts = [];
                     for (var i = 0; i < inputs.Count; i++)
