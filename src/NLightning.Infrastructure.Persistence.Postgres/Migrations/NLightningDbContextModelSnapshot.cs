@@ -212,6 +212,11 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("bytea")
                         .HasColumnName("payment_hash");
 
+                    b.Property<string>("ReversesEventKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("reverses_event_key");
+
                     b.Property<byte[]>("ShortChannelId")
                         .HasColumnType("bytea")
                         .HasColumnName("short_channel_id");
@@ -234,6 +239,12 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
 
                     b.HasIndex("OccurredAt")
                         .HasDatabaseName("ix_accounting_events_occurred_at");
+
+                    b.HasIndex("ReversesEventKey")
+                        .HasDatabaseName("ix_accounting_events_reverses_event_key");
+
+                    b.HasIndex("Kind", "BlockHeight", "LedgerSeq")
+                        .HasDatabaseName("ix_accounting_events_kind_block_height_ledger_seq");
 
                     b.ToTable("accounting_events", (string)null);
                 });
@@ -2612,6 +2623,34 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasName("pk_channel_closes");
 
                     b.ToTable("channel_closes", (string)null);
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.OnchainHtlcObservationEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("bytea")
+                        .HasColumnName("channel_id");
+
+                    b.Property<byte>("Direction")
+                        .HasColumnType("smallint")
+                        .HasColumnName("direction");
+
+                    b.Property<decimal>("HtlcId")
+                        .HasColumnType("numeric(20,0)")
+                        .HasColumnName("htlc_id");
+
+                    b.Property<bool>("Settled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("settled");
+
+                    b.Property<long>("ObservedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("observed_at");
+
+                    b.HasKey("ChannelId", "Direction", "HtlcId", "Settled")
+                        .HasName("pk_onchain_htlc_observations");
+
+                    b.ToTable("onchain_htlc_observations", (string)null);
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.OutputResolutionEntity", b =>

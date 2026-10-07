@@ -20,6 +20,34 @@ payment processor's TLS story: `LnBackend:TlsDirectory` (server.pem/server.key, 
 signed by its ca.pem), h2c on loopback only with `AllowInsecureLoopback`, refused on mainnet
 without `AllowMainnet`.
 
+## Configuring the Xpay retry window (NL-1153)
+
+`LnBackend:MaxXpayRetryFor` is the operator's maximum `cln.Node.Xpay` retry window in seconds.
+Its default is 300; values outside 1 through 3,600 are rejected when the backend is enabled.
+To allow captaind to request more than its default five minutes, merge this setting into the
+existing `LnBackend` section of the node's `appsettings.json`, then restart the daemon:
+
+```json
+{
+  "LnBackend": {
+    "MaxXpayRetryFor": 900
+  }
+}
+```
+
+This fragment sets only the retry cap. The existing `Enabled`, network opt-in, and mutual TLS
+settings still configure the listener. With a cap of 900, a request whose `retry_for` is 600 gets
+a 600-second `PayInvoiceOptions.Timeout`; 5,000 is capped at 900. A missing or zero `retry_for`
+uses 60 seconds, or the configured cap if it is lower. Match captaind's `cln_xpay_max_retry_for`
+to the node's cap when the ASP should use its full requested window.
+
+The limit stops new attempts; HTLCs already in flight resolve through the existing payment and
+`ListPays` reconciliation path. It does not turn a pending payment into a failed payment when
+the window ends, or cancel it when its gRPC caller disconnects. Validation on 2026-10-07:
+backend tests 114/114 passed, including configuration mapping, cap/default/boundary cases
+and a real HTTP/2 host forwarding a 600-second request under a configured 900-second cap.
+Release net10.0/net11.0 solution builds had zero warnings/errors.
+
 ## State mapping and semantics
 
 Our `Open → Held → Settled|Canceled` is their `UNPAID → ACCEPTED → PAID | CANCELLED` (a legacy
@@ -112,8 +140,9 @@ now served).
    the parts in flight resolve on their own; our understanding of CLN's xpay is the same (no new attempts
    after `retry_for`), and either way captaind only reconciles by `ListPays`, so this is liveness, not
    safety. Retrying in the background past the window is not done.
-6. **NL-1153 (open, low):** our `retry_for` cap of 300 s equals captaind's default maximum but an
-   operator may raise theirs.
+6. **NL-1153:** the original fixed 300-second `retry_for` cap is now configurable through
+   `LnBackend:MaxXpayRetryFor` (default 300, valid range 1–3,600 seconds); see the configuration
+   section above.
 7. Test-only: captaind's chain is its own (Core 31), so the proof keeps it at our height — captaind
    compares its tip with our `Getinfo` height (xpay's `maxdelay`) and requires the inbound HTLC's expiry
    (our chain) to clear its own tip + `c` ("Incoming HTLC expiry height doesn't fit").

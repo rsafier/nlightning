@@ -18,10 +18,6 @@ using Transaction = Lnrpc.Transaction;
 
 public sealed partial class LightningService
 {
-    /// <summary>The accounting feed's wallet kinds <c>GetTransactions</c> reads (NL-603's wallet history).</summary>
-    private static readonly AccountingEventKind[] s_walletHistoryKinds =
-        [AccountingEventKind.WalletReceived, AccountingEventKind.WalletOutputSpent, AccountingEventKind.Reversal];
-
     /// <summary>
     /// LND's <c>GetTransactions</c> (NL-1185): the on-chain wallet's history, one entry per transaction that moved a
     /// wallet output. Confirmed ones come from the accounting feed (sealed first): every wallet output a block deposits
@@ -54,7 +50,6 @@ public sealed partial class LightningService
                                                                        IReadOnlySet<TxId>? only, bool unconfirmedOnly,
                                                                        CancellationToken cancellationToken)
     {
-
         var tip = _blockchainMonitor?.LastProcessedBlockHeight ?? 0;
         var includeUnconfirmed = request.EndHeight is -1 or 0;
         var endHeight = request.EndHeight <= 0 ? uint.MaxValue : (uint)request.EndHeight;
@@ -76,7 +71,7 @@ public sealed partial class LightningService
 
         var entries = new Dictionary<TxId, HistoryEntry>();
         foreach (var accountingEvent in await ReadWalletEventsAsync(unitOfWork.AccountingEventDbRepository,
-                                                                    cancellationToken))
+                                                                    startHeight, endHeight, cancellationToken))
         {
             switch (accountingEvent.Kind)
             {
@@ -190,15 +185,16 @@ public sealed partial class LightningService
     }
 
     private static async Task<IReadOnlyList<AccountingEventModel>> ReadWalletEventsAsync(
-        IAccountingEventDbRepository repository, CancellationToken cancellationToken)
+        IAccountingEventDbRepository repository, uint startHeight, uint endHeight,
+        CancellationToken cancellationToken)
     {
         const int pageSize = 1_000;
         var all = new List<AccountingEventModel>();
         long after = 0;
         while (true)
         {
-            var batch = await repository.ListAsync(new AccountingEventQuery(after, pageSize, s_walletHistoryKinds),
-                                                   cancellationToken);
+            var batch = await repository.GetWalletHistoryAsync(startHeight, endHeight, after, pageSize,
+                                                               cancellationToken);
             all.AddRange(batch);
             if (batch.Count < pageSize || batch[^1].LedgerSeq is not { } last)
                 break;
@@ -206,11 +202,7 @@ public sealed partial class LightningService
             after = last;
         }
 
-        // A reorg's reversal cancels the event whose key it extends ("<key>:rev:<height>")
-        var reversed = all.Where(e => e.Kind == AccountingEventKind.Reversal)
-                          .Select(e => e.EventKey[..Math.Max(0, e.EventKey.LastIndexOf(":rev:", StringComparison.Ordinal))])
-                          .ToHashSet(StringComparer.Ordinal);
-        return all.Where(e => e.Kind != AccountingEventKind.Reversal && !reversed.Contains(e.EventKey)).ToList();
+        return all;
     }
 
     private async Task<Transaction> ToRpcAsync(HistoryEntry entry, BroadcastTransactionModel? row, uint tip,

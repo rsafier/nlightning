@@ -60,4 +60,20 @@ public class HtlcEventMappingTests
         Assert.True(rpc.FinalHtlcEvent.Settled);
         Assert.True(rpc.FinalHtlcEvent.Offchain);
     }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Given_OnchainFinal_When_Mapping_Then_FinalReportsOutcomeWithOffchainFalse(bool settled)
+    {
+        var rpc = RouterService.MapHtlcActivity(Activity(HtlcActivityKind.Final) with
+        {
+            Settled = settled,
+            Offchain = false
+        });
+        Assert.Equal(settled, rpc.FinalHtlcEvent.Settled);
+        Assert.False(rpc.FinalHtlcEvent.Offchain);
+        Assert.Equal(0UL, rpc.OutgoingChannelId);
+    }
+
 }

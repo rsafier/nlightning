@@ -36,9 +36,14 @@ public sealed class LnBackendOptions
     /// <summary>The most concurrent gRPC clients (each holds streams).</summary>
     public int MaxConnections { get; set; } = 8;
 
+    /// <summary>The maximum xpay retry window in seconds (1 to 3,600); unset requests use at most 60 seconds.</summary>
+    public int MaxXpayRetryFor { get; set; } = 300;
+
     public IReadOnlyList<string> GetValidationErrors()
     {
         var errors = new List<string>();
+        if (MaxXpayRetryFor is < 1 or > 3600)
+            errors.Add($"{SectionName}:{nameof(MaxXpayRetryFor)} must be 1 to 3,600 seconds.");
         if (Port is < 0 or > 65535)
             errors.Add($"{SectionName}:{nameof(Port)} must be a TCP port.");
         if (MaxConnections is < 1 or > 64)

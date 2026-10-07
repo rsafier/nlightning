@@ -1504,8 +1504,14 @@ public sealed partial class GossipIngress : IGossipIngress, IOwnGossipSink, IGos
     {
         foreach (var nodeId in _orphans.NodeIds)
         {
-            if (_pending.HasChannelOf(nodeId))
+            if (_pending.HasChannelOf(nodeId) || _pendingV2.HasChannelOf(nodeId))
                 _orphans.RefreshNodeAnnouncement(nodeId);
+        }
+
+        foreach (var nodeId in _orphans.NodeIds2)
+        {
+            if (_pending.HasChannelOf(nodeId) || _pendingV2.HasChannelOf(nodeId))
+                _orphans.RefreshNodeAnnouncement2(nodeId);
         }
     }
 

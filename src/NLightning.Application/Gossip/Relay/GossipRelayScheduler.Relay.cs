@@ -126,7 +126,7 @@ public sealed partial class GossipRelayScheduler
             outboxBytes += depth.QueuedBytes;
         }
 
-        return new GossipRelayStatus(IsRelayingOthers, states.Sum(s => (long)s.PendingCount),
+        return new GossipRelayStatus(IsRelayingOthers, states.Sum(s => (long)s.PendingCount) + _v2Peers.Sum(p => (long)p.Value.PendingCount),
                                      states.Count(s => s.IsPaused), outboxMessages, outboxBytes);
     }
 
@@ -220,17 +220,22 @@ public sealed partial class GossipRelayScheduler
                     return sent;
             }
 
+            // NL-1141: both protocol backlogs share one per-tick budget and the connection's stall state.
+            sent += await SendV2BacklogAsync(peer, state, now, Math.Max(0, BacklogBudget - sent));
+            if (state.IsPaused)
+                return sent;
+
             // NL-417: no flush while a backlog runs. What was collected since the snapshot includes newer updates and
             // node announcements of channels the backlog has not sent yet; flushed now they would reach the peer before
             // their channel_announcement. They wait in the pending set (bounded, a 256 with its 258s) and go out at the
             // first tick after the backlog ends
-            if (now >= state.NextFlushAt && state.Backlog is null && state.HeldBacklogItem is null)
+            if (now >= state.NextFlushAt && state.Backlog is null && state.HeldBacklogItem is null && !GetV2State(peer).HasBacklog)
             {
                 sent += await FlushPeerAsync(peer, state, filter, now);
 
                 // NL-878: the taproot gossip inside the peer's block_height_range, after the BOLT 7 messages
                 if (!state.IsPaused)
-                    sent += await FlushV2PeerAsync(peer);
+                    sent += await FlushV2PeerAsync(peer, state, now);
 
                 // A flush the full outbox interrupted goes on as soon as the connection resumes
                 if (!state.IsPaused)
@@ -490,11 +495,13 @@ public sealed partial class GossipRelayScheduler
         return sent;
     }
 
+    private int BacklogBudget => (int)Math.Max(1, Math.Min(int.MaxValue,
+                                                          _relayOptions.BacklogMessagesPerSecond
+                                                        * _relayOptions.RelayTickInterval.TotalSeconds));
+
     private async Task<int> SendBacklogAsync(GossipPeer peer, RelayPeerState state, DateTimeOffset now)
     {
-        var budget = (int)Math.Max(1, Math.Min(int.MaxValue,
-                                               _relayOptions.BacklogMessagesPerSecond
-                                             * _relayOptions.RelayTickInterval.TotalSeconds));
+        var budget = BacklogBudget;
         var sent = 0;
         while (sent < budget)
         {
@@ -575,7 +582,7 @@ public sealed partial class GossipRelayScheduler
          || now - state.LastProgressAt < _relayOptions.RelayStallTimeout)
             return false;
 
-        var dropped = state.Stall();
+        var dropped = state.Stall() + GetV2State(peer).ClearWaiting();
         _metrics?.RecordRelayStalled();
         _metrics?.RecordDropped(GossipMetricReasons.RelayStalled, dropped);
         _logger.LogInformation("Peer {Peer} read no gossip for {Timeout} with {Messages} gossip messages waiting: ended "

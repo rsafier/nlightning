@@ -6,6 +6,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels;
 
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Enums;
@@ -32,7 +33,8 @@ public static class CompiledModelCatalog
         ValueComparer.CreateDefault<int>, ValueComparer.CreateDefault<uint>, ValueComparer.CreateDefault<long>,
         ValueComparer.CreateDefault<ulong>, ValueComparer.CreateDefault<decimal>, ValueComparer.CreateDefault<DateTime>,
         ValueComparer.CreateDefault<DateTimeOffset>, ValueComparer.CreateDefault<Guid>,
-        ValueComparer.CreateDefault<AddressType>, ValueComparer.CreateDefault<ChannelId>,
+        ValueComparer.CreateDefault<AddressType>, ValueComparer.CreateDefault<HtlcDirection>,
+        ValueComparer.CreateDefault<ChannelId>,
         ValueComparer.CreateDefault<CompactPubKey>, ValueComparer.CreateDefault<Hash>,
         ValueComparer.CreateDefault<ShortChannelId>, ValueComparer.CreateDefault<TxId>
     ];

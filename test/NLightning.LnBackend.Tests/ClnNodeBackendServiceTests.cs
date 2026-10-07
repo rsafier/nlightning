@@ -48,6 +48,8 @@ public sealed class ClnNodeBackendServiceTests
 
         public uint BlockHeight { get; init; } = 1_013;
 
+        public LnBackendOptions BackendOptions { get; init; } = new();
+
         public Harness()
         {
             Offers.SetupGet(o => o.IsAvailable).Returns(true);
@@ -63,7 +65,7 @@ public sealed class ClnNodeBackendServiceTests
                                                         new NodeOptions { BitcoinNetwork = Network }),
                                                     BlockchainMonitor.Object, PaymentService.Object,
                                                     _provider.GetRequiredService<IServiceScopeFactory>(),
-                                                    WithOffers ? Offers.Object : null);
+                                                    WithOffers ? Offers.Object : null, Options.Create(BackendOptions));
 
         /// <summary>Whether the node pays BOLT 12 (an <see cref="IOfferPaymentService"/> registered).</summary>
         public bool WithOffers { get; init; } = true;
@@ -200,6 +202,30 @@ public sealed class ClnNodeBackendServiceTests
     }
 
     [Theory]
+    [InlineData(900, 600u, 600)]
+    [InlineData(900, 5_000u, 900)]
+    [InlineData(30, 0u, 30)]
+    [InlineData(3600, uint.MaxValue, 3600)]
+    public async Task Given_AConfiguredRetryLimit_When_Xpay_Then_ThePaymentUsesTheBoundedWindow(
+        int maximum, uint retryFor, int seconds)
+    {
+        // Arrange
+        using var harness = new Harness { BackendOptions = new LnBackendOptions { MaxXpayRetryFor = maximum } };
+        harness.PaymentService.Setup(s => s.PayInvoiceAsync("lnbcrt1priced", null, It.IsAny<PayInvoiceOptions>(),
+                                                           It.IsAny<CancellationToken>()))
+               .ReturnsAsync(Paid("lnbcrt1priced"));
+
+        // Act
+        await harness.Build().Xpay(new Cln.XpayRequest { Invstring = "lnbcrt1priced", RetryFor = retryFor },
+                                   new TestServerCallContext());
+
+        // Assert
+        harness.PaymentService.Verify(s => s.PayInvoiceAsync("lnbcrt1priced", null,
+                                       It.Is<PayInvoiceOptions>(o => o.Timeout == TimeSpan.FromSeconds(seconds)),
+                                       It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
     [InlineData(0u, 60)]
     [InlineData(1u, 1)]
     [InlineData(45u, 45)]
@@ -218,8 +244,7 @@ public sealed class ClnNodeBackendServiceTests
         await harness.Build().Xpay(new Cln.XpayRequest { Invstring = "lnbcrt1priced", RetryFor = retryFor },
                                    new TestServerCallContext());
 
-        // Assert: unset (0) is CLN's own 60s default; 5000s would hold the caller for far longer than any window
-        // their side uses
+        // Assert: unset (0) uses 60s; the default operator limit remains 300s.
         harness.PaymentService.Verify(s => s.PayInvoiceAsync("lnbcrt1priced", null,
                                        It.Is<PayInvoiceOptions>(o => o.Timeout == TimeSpan.FromSeconds(seconds)),
                                        It.IsAny<CancellationToken>()), Times.Once);

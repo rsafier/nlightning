@@ -184,6 +184,24 @@ All verified in code unless marked. "Gate" = the task that fixes it.
 4. **Resolve:** on each block the planner runs for every unresolved output of every closing channel; actions are persisted first, then broadcast (persist-before-broadcast, like I1), then switch events are raised after the save (idempotent, replayed at startup like the BOLT2 events).
 5. **Finish:** when every output is irrevocably resolved (100 blocks), the channel becomes `Closed`, its watches are dropped and its revoked-commitment log is deleted.
 
+
+**Passive LND observations (NL-1231):** the executor stages a durable
+`OnchainHtlcObservations` checkpoint in the same unit of work as each first known
+outgoing fulfill/fail and ordinary incoming terminal resolution. Only after the save
+and outside the channel lock does it publish to the passive HTLC source; operational
+switch callbacks still replay on every resolver round that needs recovery. The key is
+channel + HTLC direction + id + settled outcome, independent of a commitment txid or
+block. Reorgs and replacement closes retain it, so reconfirmation and restart do not
+relabel recovery as new activity; a later newly known preimage can publish a separate
+settle after a failure. Ordinary incoming finals report `Offchain=false`, with settled
+true for our confirmed claim and false for a peer timeout or an ignored output.
+Authoritatively identified dust-trimmed incoming HTLCs from the close's accounting
+metadata fail at `ReasonableDepth`. Missing metadata, unmapped/future data-loss outputs,
+revocation penalties and second-level sweeps never imply an invented ordinary incoming
+outcome. This is a live feed checkpoint, not an outbox or historical payload store;
+commit-before-fanout crashes can miss a notification, and prior notifications are not
+retracted by a reorg. ChainNotifier remains the chain fact feed. Validation on 2026-10-07: affected Application tests 1,697/1,697 and Integration 1,214/1,214; cluster proof `fixes-waves-proof1` passed all 35 inner tests and the real confirmed final-hop claim/same-database restart dedup check (`WAVES_ONCHAIN_RESTART_OK`). All test namespaces were cleaned.
+
 ### 3.3 Output descriptors per case
 Keys: *ours* = derived from our basepoint secrets (signer); *point* = the per-commitment point of the commitment on chain (ours for a local commitment, the peer's stored point for a remote one, `secret·G` for a revoked one).
 

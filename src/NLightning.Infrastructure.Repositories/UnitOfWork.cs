@@ -61,6 +61,7 @@ public class UnitOfWork : IUnitOfWork
     private BlockHeaderDbRepository? _blockHeaderDbRepository;
     private RevokedCommitmentDbRepository? _revokedCommitmentDbRepository;
     private OnchainResolutionDbRepository? _onchainResolutionDbRepository;
+    private OnchainHtlcObservationDbRepository? _onchainHtlcObservationDbRepository;
 
     // Channel repositories
     private ChannelConfigDbRepository? _channelConfigDbRepository;
@@ -142,6 +143,9 @@ public class UnitOfWork : IUnitOfWork
 
     public IOnchainResolutionDbRepository OnchainResolutionDbRepository =>
         _onchainResolutionDbRepository ??= new OnchainResolutionDbRepository(_context);
+
+    public IOnchainHtlcObservationDbRepository OnchainHtlcObservationDbRepository =>
+        _onchainHtlcObservationDbRepository ??= new OnchainHtlcObservationDbRepository(_context);
 
     public IChannelConfigDbRepository ChannelConfigDbRepository =>
         _channelConfigDbRepository ??= new ChannelConfigDbRepository(_context);

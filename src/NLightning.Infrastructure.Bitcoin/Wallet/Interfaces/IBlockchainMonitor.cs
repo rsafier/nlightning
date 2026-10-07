@@ -60,6 +60,20 @@ public interface IBlockchainMonitor : IChainBroadcaster, IOutpointWatcher
         remove { }
     }
 
+    /// <summary>Invalidates the preceding completion marker before a newly saved wallet batch is published.</summary>
+    event EventHandler? OnWalletTransactionsProcessing
+    {
+        add { }
+        remove { }
+    }
+
+    /// <summary>Raised after a committed block or rewind's wallet transaction observations. Handlers only enqueue.</summary>
+    event EventHandler<NewBlockEventArgs>? OnWalletTransactionsProcessed
+    {
+        add { }
+        remove { }
+    }
+
     /// <summary>
     /// Saves the watch and a pending <see cref="BroadcastTransactionModel"/> for the transaction
     /// (purpose <c>Unspecified</c>) in one save, then publishes it. A refused publish throws, and the stored row makes

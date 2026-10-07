@@ -12,6 +12,8 @@ using Domain.Onchain.Models;
 public partial class BlockchainMonitorService
 {
     public event EventHandler<WalletTransactionEventArgs>? OnWalletTransactionObserved;
+    public event EventHandler<NewBlockEventArgs>? OnWalletTransactionsProcessed;
+    public event EventHandler? OnWalletTransactionsProcessing;
 
     private readonly Lock _walletObservationLock = new();
     private readonly HashSet<uint256> _unconfirmedWalletTransactions = [];
@@ -128,7 +130,7 @@ public partial class BlockchainMonitorService
             cached = _confirmedWalletObservations.Values
                 .Where(o => blocks.Contains((o.BlockHeight, o.BlockHash)))
                 .Select(o => new WalletTransactionEventArgs(o.RawTransactionHex, o.AmountSat, o.FeeSat,
-                    0, "", o.Timestamp, o.Label, o.OurOutputs, o.OurInputs, o.TxHash)).ToList();
+                    0, "", o.Timestamp, o.Label, o.OurOutputs, o.OurInputs, o.TxHash, isReorg: true)).ToList();
         // Retain committed snapshots even when a subscriber joins while the rewind save is pending.
         if (OnWalletTransactionObserved is null)
             return cached;
@@ -180,7 +182,9 @@ public partial class BlockchainMonitorService
             }
             if (DescribeWalletTransaction(transaction, 0, "", previous: previous) is { } observed)
             {
-                result.Add(observed);
+                result.Add(new WalletTransactionEventArgs(observed.RawTransactionHex, observed.AmountSat,
+                    observed.FeeSat, 0, "", observed.Timestamp, observed.Label, observed.OurOutputs,
+                    observed.OurInputs, observed.TxHash, isReorg: true));
             }
         }
         return result;

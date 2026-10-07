@@ -39,6 +39,9 @@ public interface IUnitOfWork : IDisposable
     IRevokedCommitmentDbRepository RevokedCommitmentDbRepository { get; }
     IOnchainResolutionDbRepository OnchainResolutionDbRepository { get; }
 
+    IOnchainHtlcObservationDbRepository OnchainHtlcObservationDbRepository =>
+        throw new NotSupportedException("This unit of work does not store on-chain HTLC observations.");
+
     // Chanel repositories
     IChannelConfigDbRepository ChannelConfigDbRepository { get; }
     IChannelDbRepository ChannelDbRepository { get; }

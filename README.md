@@ -117,6 +117,25 @@ To start contributing:
 We encourage you to dive into the codebase, familiarize yourself with the project structure, and see where your skills
 and interests can help drive NLightning forward.
 
+### Bark/ASP backend retry window
+
+For an existing Bark/captaind deployment using the node's LN backend, set
+`LnBackend:MaxXpayRetryFor` in `appsettings.json` to allow longer `cln.Node.Xpay` retries:
+
+```json
+{
+  "LnBackend": {
+    "MaxXpayRetryFor": 900
+  }
+}
+```
+
+The setting is in seconds, defaults to 300, and accepts 1 through 3,600. With the example,
+a `retry_for` of 600 gets 600 seconds; a request above 900 is capped at 900. Missing or zero
+`retry_for` uses 60 seconds, capped by this setting. Restart the daemon after changing its config.
+See the [LN backend setup and payment semantics](docs/agents/LN_BACKEND_PLAN.md) for the listener,
+mutual TLS, and payment reconciliation requirements.
+
 ### Testing
 
 To verify that everything is set up correctly, run the unit tests (no containers needed):

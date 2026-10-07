@@ -61,6 +61,7 @@ public class NLightningDbContext : DbContext
     // On-chain resolution DbSets
     public DbSet<ChannelCloseEntity> ChannelCloses { get; set; }
     public DbSet<OutputResolutionEntity> OutputResolutions { get; set; }
+    public DbSet<OnchainHtlcObservationEntity> OnchainHtlcObservations { get; set; }
 
     public DbSet<ImportedTapscriptEntity> ImportedTapscripts { get; set; }
     public DbSet<ImportedWatchIndexEntity> ImportedWatchIndexes { get; set; }
@@ -146,6 +147,7 @@ public class NLightningDbContext : DbContext
         // On-chain resolution entities
         modelBuilder.ConfigureChannelCloseEntity(_databaseType);
         modelBuilder.ConfigureOutputResolutionEntity(_databaseType);
+        modelBuilder.ConfigureOnchainHtlcObservationEntity(_databaseType);
 
         // Node entities
         modelBuilder.ConfigurePeerEntity(_databaseType);

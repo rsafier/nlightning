@@ -23,6 +23,43 @@ public sealed class LnBackendOptionsTests
     };
 
     [Fact]
+    public void Given_AConfiguredXpayRetryLimit_When_Registered_Then_OptionsBindTheOperatorLimit()
+    {
+        // Arrange
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["LnBackend:MaxXpayRetryFor"] = "900"
+        }).Build();
+        var services = new ServiceCollection();
+        services.AddSingleton(Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }));
+        services.AddLnBackend(configuration);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<LnBackendOptions>>().Value;
+
+        // Assert
+        Assert.Equal(900, options.MaxXpayRetryFor);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(3601)]
+    public void Given_AnInvalidXpayRetryLimit_When_Validated_Then_ItIsReported(int seconds)
+    {
+        // Arrange
+        var options = Valid();
+        options.MaxXpayRetryFor = seconds;
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.StartsWith("LnBackend:MaxXpayRetryFor", Assert.Single(errors), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Given_InsecureLoopback_When_Validated_Then_ThereIsNoError()
     {
         // Act

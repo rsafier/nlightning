@@ -9,6 +9,7 @@ using NLightning.Testing.Lnd.Routerrpc;
 namespace NLightning.Integration.Tests.Docker.Onchain;
 
 using Abcd;
+using Application.Onchain.Interfaces;
 using Domain.Bitcoin.Enums;
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
@@ -18,6 +19,7 @@ using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
 using Domain.Payments.Enums;
+using Domain.Payments.Events;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Persistence.Interfaces;
@@ -74,6 +76,7 @@ public class OnchainFinalHopTests : IAsyncLifetime
     {
         // Arrange: two channels to david, each with a push so david can pay us over both
         var ct = TestContext.Current.CancellationToken;
+        using var htlcSubscription = Node.Services.GetRequiredService<IHtlcEventSource>().Subscribe();
         var david = _fixture.GetLndNode("david");
         var davidAddress = await Node.ConnectToAsync(david, ct);
         var first = await OpenUsableChannelAsync(david, davidAddress, ct);
@@ -155,6 +158,41 @@ public class OnchainFinalHopTests : IAsyncLifetime
         Console.WriteLine($"First part: {firstResult.Status} {firstResult.Failure?.Code}");
         Assert.Equal(HTLCAttempt.Types.HTLCStatus.Succeeded, firstResult.Status);
         Assert.Equal(InvoiceStatus.Settled, (await GetInvoiceAsync(invoice, ct)).Status);
+
+        // NL-1231: the real confirmed preimage claim publishes an incoming on-chain final exactly once.
+        using var observationTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        observationTimeout.CancelAfter(s_timeout);
+        HtlcActivityEvent? onchainFinal = null;
+        await foreach (var activity in htlcSubscription.ReadAllAsync(observationTimeout.Token))
+        {
+            if (activity is { Kind: HtlcActivityKind.Final, Offchain: false }
+             && activity.IncomingHtlcId == held.Id && activity.IncomingChannelId == firstLnd.ChanId)
+            {
+                onchainFinal = activity;
+                break;
+            }
+        }
+        Assert.NotNull(onchainFinal);
+        Assert.True(onchainFinal.Settled);
+        htlcSubscription.Dispose();
+
+        // Restart recreates the executor and hub from the same SQLite database. Operational replay still runs,
+        // while a fresh reader sees no old activity. Closing the subscription is a deterministic drain barrier.
+        await Node.StopAsync();
+        await Node.StartAsync(ct);
+        using var replaySubscription = Node.Services.GetRequiredService<IHtlcEventSource>().Subscribe();
+        var executor = Node.Services.GetRequiredService<IOnchainResolutionExecutor>();
+        await executor.ResolveChannelAsync(first.ChannelId, confirmedAt, ct);
+        await executor.ResolveChannelAsync(first.ChannelId, confirmedAt, ct);
+        replaySubscription.Dispose();
+        await foreach (var activity in replaySubscription.ReadAllAsync(ct))
+            Assert.False(activity is { Offchain: false, IncomingHtlcId: var replayedId, IncomingChannelId: var replayedScid }
+                         && replayedId == held.Id && replayedScid == firstLnd.ChanId,
+                         $"Recovery published old on-chain HTLC activity: {activity}");
+        using var checkpointScope = Node.Services.CreateScope();
+        Assert.True(await checkpointScope.ServiceProvider.GetRequiredService<IUnitOfWork>()
+            .OnchainHtlcObservationDbRepository.ContainsAsync(first.ChannelId, HtlcDirection.Incoming, held.Id, true));
+        Console.WriteLine("WAVES_ONCHAIN_RESTART_OK: real on-chain final and restart dedup proved");
     }
 
     private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(LndNodeConnection peer,

@@ -91,7 +91,7 @@ public sealed partial class RouterService
                 result.EventType = HtlcEvent.Types.EventType.Unknown;
                 result.OutgoingChannelId = 0;
                 result.OutgoingHtlcId = 0;
-                result.FinalHtlcEvent = new FinalHtlcEvent { Settled = activity.Settled, Offchain = true };
+                result.FinalHtlcEvent = new FinalHtlcEvent { Settled = activity.Settled, Offchain = activity.Offchain };
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(activity));

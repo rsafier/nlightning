@@ -163,6 +163,10 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<byte[]>("PaymentHash")
                         .HasColumnType("BLOB");
 
+                    b.Property<string>("ReversesEventKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
                     b.Property<byte[]>("ShortChannelId")
                         .HasColumnType("BLOB");
 
@@ -178,6 +182,10 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.HasIndex("LedgerSeq");
 
                     b.HasIndex("OccurredAt");
+
+                    b.HasIndex("ReversesEventKey");
+
+                    b.HasIndex("Kind", "BlockHeight", "LedgerSeq");
 
                     b.ToTable("AccountingEvents");
                 });
@@ -2012,6 +2020,28 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.HasKey("ChannelId");
 
                     b.ToTable("ChannelCloses");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.OnchainHtlcObservationEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte>("Direction")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ulong>("HtlcId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("Settled")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("ObservedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("ChannelId", "Direction", "HtlcId", "Settled");
+
+                    b.ToTable("OnchainHtlcObservations");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.OutputResolutionEntity", b =>

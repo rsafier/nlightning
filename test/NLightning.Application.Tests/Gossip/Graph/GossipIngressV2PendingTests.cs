@@ -272,6 +272,63 @@ public class GossipIngressV2PendingTests
         Assert.Equal(0, kit.Ingress.PendingAnnouncement2Count);
         updater.Verify(p => p.Disconnect(It.IsAny<Exception>()), Times.Never);
         updater.Verify(p => p.SendWarningAsync(It.IsAny<WarningException>()), Times.Never);
+        Assert.Equal(1, kit.Ingress.Misbehaviour.GetScore(announcer.Object.PeerPubKey));
+        Assert.Equal(0, kit.Ingress.Misbehaviour.GetScore(updater.Object.PeerPubKey));
+    }
+
+    [Fact]
+    public async Task Given_AForgedPendingProofAtTheThreshold_When_Promoted_Then_OnlyItsOriginalSenderIsBanned()
+    {
+        var kit = CreateKit(configure: o => o.MisbehaviourThreshold = 1);
+        var ct = TestContext.Current.CancellationToken;
+        var announcer = GraphTestKit.CreatePeer(0x31);
+        var updater = GraphTestKit.CreatePeer(0x32);
+        await kit.Ingress.ProcessAsync(announcer.Object, KeylessAnnouncement(forged: true), 0, ct);
+
+        await kit.Ingress.ProcessAsync(updater.Object, Update(), 0, ct);
+
+        Assert.True(kit.Ingress.IsBannedForMisbehaviour(announcer.Object.PeerPubKey));
+        Assert.True(kit.Store.IsBanned(announcer.Object.PeerPubKey));
+        Assert.False(kit.Ingress.IsBannedForMisbehaviour(updater.Object.PeerPubKey));
+        updater.Verify(p => p.Disconnect(It.IsAny<Exception>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_AV2NodeWithAPendingChannel_When_TheOrphanTtlPasses_Then_ItWaitsAndReplaysAtPromotion()
+    {
+        var kit = CreateKit();
+        var ct = TestContext.Current.CancellationToken;
+        var peer = GraphTestKit.CreatePeer().Object;
+        await kit.Ingress.ProcessAsync(peer, KeylessAnnouncement(), 0, ct);
+        var node = new NodeAnnouncement2Message(GossipV2TestSigner.SignedNodeAnnouncement2(s_alice, Tip - 1));
+        Assert.Equal(GossipIngressOutcome.Orphaned, (await kit.Ingress.ProcessAsync(peer, node, 0, ct)).Outcome);
+
+        kit.Clock.Advance(kit.Options.OrphanTtl + TimeSpan.FromSeconds(1));
+        kit.Ingress.PrunePendingAnnouncements();
+        kit.Ingress.KeepOrphansOfPendingNodes();
+        kit.Ingress.Orphans.PruneExpired();
+        await kit.Ingress.ProcessAsync(peer, Update(), 0, ct);
+
+        Assert.True(kit.Store.TryGetNode(s_alice.PubKey, out var stored));
+        Assert.Equal(node.Payload.GetBytes(), stored.RawAnnouncement2.ToArray());
+        Assert.Equal(0, kit.Ingress.Orphans.Count);
+    }
+
+    [Fact]
+    public async Task Given_AV2NodeWhosePendingChannelExpires_When_Refreshed_Then_ItsOrphanAlsoExpires()
+    {
+        var kit = CreateKit();
+        var ct = TestContext.Current.CancellationToken;
+        var peer = GraphTestKit.CreatePeer().Object;
+        await kit.Ingress.ProcessAsync(peer, KeylessAnnouncement(), 0, ct);
+        await kit.Ingress.ProcessAsync(peer,
+            new NodeAnnouncement2Message(GossipV2TestSigner.SignedNodeAnnouncement2(s_alice, Tip - 1)), 0, ct);
+
+        kit.Clock.Advance(kit.Options.PendingAnnouncementTtl + TimeSpan.FromSeconds(1));
+        kit.Ingress.PrunePendingAnnouncements();
+        kit.Ingress.KeepOrphansOfPendingNodes();
+        Assert.Equal(1, kit.Ingress.Orphans.PruneExpired());
+        Assert.Equal(0, kit.Ingress.Orphans.Count);
     }
 
     [Fact]

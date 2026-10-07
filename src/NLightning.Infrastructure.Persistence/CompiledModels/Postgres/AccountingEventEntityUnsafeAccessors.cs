@@ -61,6 +61,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<PaymentHash>k__BackingField")]
         public static extern ref Hash? PaymentHash(AccountingEventEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<ReversesEventKey>k__BackingField")]
+        public static extern ref string ReversesEventKey(AccountingEventEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<ShortChannelId>k__BackingField")]
         public static extern ref ShortChannelId? ShortChannelId(AccountingEventEntity @this);
 
