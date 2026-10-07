@@ -76,7 +76,8 @@ public partial class BlockchainMonitorService
         {
             var output = transaction.Outputs[i];
             if (output.ScriptPubKey.GetDestinationAddress(_network) is { } address &&
-                _watchedAddresses.ContainsKey(address.ToString()))
+                _watchedAddresses.ContainsKey(address.ToString()) ||
+                staged?.ContainsKey(new OutPoint(transaction.GetHash(), i)) == true)
             {
                 outputs.Add((uint)i);
                 received += output.Value.Satoshi;

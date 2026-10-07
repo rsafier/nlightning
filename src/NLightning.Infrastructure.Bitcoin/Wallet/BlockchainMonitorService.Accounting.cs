@@ -227,12 +227,19 @@ public partial class BlockchainMonitorService
         return new WalletTransactionSource(ExternalSource, null, null);
     }
 
-    private void CollectWalletReceived(UtxoModel utxo, WalletAddressModel address, WalletTransactionSource source,
-                                       BlockEffects effects)
+    private void CollectWalletReceived(UtxoModel utxo, WalletAddressModel? address, WalletTransactionSource source,
+                                       BlockEffects effects, string? silentPaymentLabel = null, DateTimeOffset? occurredAt = null)
     {
-        var details = AccountingDetailsCodec.Create(("address", address.Address),
-                                                    ("addressType", Enum.GetName(address.AddressType)),
-                                                    ("change", address.IsChange ? "true" : "false"),
+        var outputAddress = address?.Address;
+        if (utxo.SilentPayment is { } silentPayment)
+            outputAddress = new Script([0x51, 0x20, .. silentPayment.OutputKey]).GetDestinationAddress(_network)?.ToString();
+        var details = AccountingDetailsCodec.Create(("address", outputAddress),
+                                                    ("addressType", Enum.GetName(utxo.AddressType)),
+                                                    ("change", address?.IsChange == true || utxo.SilentPayment?.Label == 0 && source.Source == WalletSource ? "true" : "false"),
+                                                    ("silentPayment", utxo.SilentPayment is not null ? "true" : null),
+                                                    ("receiptSource", utxo.SilentPayment is not null ? "silent_payment" : null),
+                                                    ("silentPaymentLabel", utxo.SilentPayment?.Label?.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                                                    ("label", silentPaymentLabel),
                                                     (AccountingDetailKeys.Source, source.Source),
                                                     (AccountingDetailKeys.Purpose,
                                                      source.Purpose is { } purpose ? Enum.GetName(purpose) : null));
@@ -241,7 +248,7 @@ public partial class BlockchainMonitorService
                                    AccountingEventKeys.WalletReceived(utxo.TxId, utxo.Index),
                                    key => NewOnchainEvent(key, AccountingEventKind.WalletReceived, effects.Height,
                                                           utxo.TxId, utxo.Index, source.ChannelId, amountMsat, 0,
-                                                          details)));
+                                                          details, occurredAt)));
     }
 
     private void CollectWalletOutputSpent(UtxoModel spent, Transaction spender, WalletTransactionSource source,
@@ -251,8 +258,11 @@ public partial class BlockchainMonitorService
         if (utxoMemoryRepository?.TryGetFeeReservation(spent.TxId, spent.Index, out var reservationId) == true)
             reservation = reservationId.ToString();
 
+        var spentAddress = spent.WalletAddress?.Address;
+        if (spent.SilentPayment is { } silentPayment)
+            spentAddress = new Script([0x51, 0x20, .. silentPayment.OutputKey]).GetDestinationAddress(_network)?.ToString();
         var details = AccountingDetailsCodec.Create(("spentBy", new TxId(spender.GetHash().ToBytes()).ToString()),
-                                                    ("address", spent.WalletAddress?.Address),
+                                                    ("address", spentAddress),
                                                     ("addressType", Enum.GetName(spent.AddressType)),
                                                     (AccountingDetailKeys.Source, source.Source),
                                                     (AccountingDetailKeys.Purpose,
@@ -411,12 +421,12 @@ public partial class BlockchainMonitorService
 
     private AccountingEventModel NewOnchainEvent(string key, AccountingEventKind kind, uint height, TxId txId,
                                                  uint? outputIndex, ChannelId? channelId, long amountMsat,
-                                                 long feeMsat, IReadOnlyDictionary<string, string> details) =>
+                                                 long feeMsat, IReadOnlyDictionary<string, string> details, DateTimeOffset? occurredAt = null) =>
         new()
         {
             EventKey = key,
             Kind = kind,
-            OccurredAt = _timeProvider.GetUtcNow(),
+            OccurredAt = occurredAt ?? _timeProvider.GetUtcNow(),
             BlockHeight = height,
             ChannelId = channelId,
             TxId = txId,

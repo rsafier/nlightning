@@ -201,6 +201,16 @@ internal static class Bip352
             {
                 var expected = AddTweak(spend, tweak);
                 var expectedX = XOnly(expected);
+                // Check the unlabelled key first. Avoid point subtraction for every unrelated output when a plain
+                // receipt exists later in the transaction (important for the K_max case).
+                var plainIndex = remaining.FindIndex(row => expectedX.AsSpan().SequenceEqual(row.candidate.OutputKey32));
+                if (plainIndex >= 0)
+                {
+                    var plain = remaining[plainIndex].candidate;
+                    matches.Add(new SilentPaymentScanMatch(plain.OutputIndex, plain.OutputKey32.ToArray(), tweak.ToArray(), null));
+                    remaining.RemoveAt(plainIndex);
+                    continue;
+                }
                 var found = false;
                 for (var i = 0; i < remaining.Count; i++)
                 {
