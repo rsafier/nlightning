@@ -281,11 +281,15 @@ Restore story:
 Found outputs stage `WalletReceived = 30` through the existing `CollectWalletReceived` (`BlockchainMonitorService.Accounting.cs:230`), because they arrive through the same `AddUtxo` path. Spends stage `WalletOutputSpent = 32` and `WalletSent = 31` as today. Reorgs write `Reversal` rows (A1 rules).
 
 New in the event payload:
-- source `silent_payment`;
+- `receiptSource=silent_payment`, preserving the existing canonical `source=external`, `wallet`, `broadcast` or `channel` classification and its financial rules;
 - the label's name (`m ≥ 1`) as the accounting label, so `accountingreport` can group receipts by SP label;
-- `m = 0` change classified as a self-transfer.
+- `m = 0` identifies the change label, while actual input ownership/publication evidence establishes self-transfer: an external sender can also pay label 0.
 
 A rescan that finds historical outputs writes their events with the block's height and time. The sealer orders them by commit order, so they appear late in the ledger, which A1 already allows for imported history (`OpeningBalance` precedent). If the A1 dedup key would treat a rescan finding as a duplicate of a live finding, check the key includes the outpoint. The financial profile (A3) values them at the block time.
+
+SP-only seed recovery reconstructs historical custody and complete spent-wallet settlement atomically when every input and owned output has proven accounting provenance. Exact on-chain amounts determine external transfers and fees; recovered transactions carry `purposeUnknown=true` when original publication context is absent. Shared inputs or ordinary wallet change without their custody journal pause recovery instead of guessing withdrawal ownership. Finalization may stage all known inputs of a spender transaction together even when it crosses the bounded unspent-output proof batch. Lowering the receive threshold can promote previously ignored own change; a recovered settlement is then explicitly reversed and replaced, retaining immutable history and balanced Clearing.
+
+Seed recovery does not restore operator labels beyond the selected search range, prior rules/overrides, original lot basis or original transaction purpose. In a fresh database, an already spent ordinary input can have no retained provenance, so an otherwise found SP receipt can be classified as an external equity transfer. Default external receipts post to equity transfers in, rather than income, and acquire lots at historical block-time value. Original tax basis and any custom income classification require the original accounting/database backup or a separately reviewed accounting import.
 
 ### 3.9 IPC and client (next free `ClientCommand` is 52; `src/NLightning.Domain/Client/Enums/ClientCommand.cs` ends at `CancelHoldInvoice = 51`)
 
