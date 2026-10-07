@@ -209,6 +209,20 @@ public class AccountingBooksPersistenceTests
         Assert.Null(await reader.GetEntryByKeyAsync("b", TestContext.Current.CancellationToken));
     }
 
+    [Theory]
+    [InlineData(AccountingBook.Operational, "AccountingEntries")]
+    [InlineData(AccountingBook.Operational, "AccountingBalances")]
+    [InlineData(AccountingBook.Operational, "AccountingCursor")]
+    [InlineData(AccountingBook.Financial, "AccountingEntries")]
+    [InlineData(AccountingBook.Financial, "AccountingBalances")]
+    [InlineData(AccountingBook.Financial, "AccountingCursor")]
+    public async Task Given_TwoBooks_When_AClearIsInterrupted_Then_BothBooksRemainIntactAndTheClearCanRetry(
+        AccountingBook book, string failedTable)
+    {
+        using var database = new SqliteTestDatabase();
+        await AccountingClearRecoveryRoundTrip.AssertAsync(database.CreateContext, book, failedTable);
+    }
+
     private static async Task AddAsync(SqliteTestDatabase database, long cursor, params AccountingEntry[] entries)
     {
         await using var context = database.CreateContext();

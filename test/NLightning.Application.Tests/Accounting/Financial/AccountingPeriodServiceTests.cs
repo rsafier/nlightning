@@ -532,6 +532,32 @@ public sealed class AccountingPeriodServiceTests
     /// September: two invoices (lots 1 and 2) and two payments (both relieve lot 1, FIFO); one October 1 invoice (lot
     /// 3, ledger sequence 4) in the open period, sealed before the last September payment (5).
     /// </summary>
+    [Fact]
+    public async Task Given_AFinancialWriteInProgress_When_ClosesAreVerified_Then_VerificationWaitsAndCanBeCancelled()
+    {
+        // Arrange: signed September includes lots whose remaining amounts change in October.
+        var ct = TestContext.Current.CancellationToken;
+        await using var kit = await FinancialCloseTestKit.CreateAsync(s_now);
+        await SeedSeptemberAsync(kit);
+        await kit.Periods.CloseAsync("2026-09", false, ct);
+        using var cancelled = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        Task<IReadOnlyList<AccountingCloseVerification>> verification;
+
+        // Act: no multi-query digest may read while a financial writer owns the gate.
+        using (await kit.Periods.EnterAsync(ct))
+        {
+            verification = kit.Periods.VerifyClosesAsync(ct);
+            Assert.False(verification.IsCompleted);
+            var interrupted = kit.Periods.VerifyClosesAsync(cancelled.Token);
+            cancelled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => interrupted);
+        }
+
+        // Assert: completing the write releases verification; a cancelled reader did not leak the gate.
+        Assert.True(Assert.Single(await verification).IsIntact);
+        Assert.True(Assert.Single(await kit.Periods.VerifyClosesAsync(ct)).IsIntact);
+    }
+
     private static async Task SeedSeptemberAsync(FinancialCloseTestKit kit) =>
         await kit.AddAndProjectAsync(FinancialCloseTestKit.Income("sep-income-1", 1_000_000, s_sep5),
                                      FinancialCloseTestKit.Income("sep-income-2", 400_000, s_sep20),

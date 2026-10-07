@@ -467,7 +467,7 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
         ClearAsync(AccountingBook.Operational, cancellationToken);
 
     /// <inheritdoc />
-    /// <remarks>Runs at once (see the class remarks), not at the unit of work's save.</remarks>
+    /// <remarks>Runs at once in its own transaction (see the class remarks), not at the unit of work's save.</remarks>
     public async Task ClearAsync(AccountingBook book, CancellationToken cancellationToken = default)
     {
         var bookValue = (byte)book;
@@ -486,10 +486,14 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
                                         .ToList())
             tracked.State = EntityState.Detached;
 
+        // Clearing a journal without clearing its cursor loses replayed history. Commit all four deletes together,
+        // so a failure leaves either the complete old book or an empty book ready to replay from sequence zero.
+        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
         await _context.AccountingPostings.Where(p => p.Book == bookValue).ExecuteDeleteAsync(cancellationToken);
         await _context.AccountingEntries.Where(e => e.Book == bookValue).ExecuteDeleteAsync(cancellationToken);
         await _context.AccountingBalances.Where(b => b.Book == bookValue).ExecuteDeleteAsync(cancellationToken);
         await _context.AccountingCursor.Where(c => c.Book == bookValue).ExecuteDeleteAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     /// <inheritdoc />

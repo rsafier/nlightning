@@ -1,3 +1,6 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+
 namespace NLightning.Integration.Tests.Persistence;
 
 using Domain.Accounting.Books;
@@ -17,6 +20,60 @@ public class AccountingFinancialRollbackTests
 
     private static readonly DateTimeOffset s_sep = new(2026, 9, 10, 0, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset s_oct = new(2026, 10, 5, 0, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public async Task Given_ImportedBasis_When_AReplacementSaveFails_Then_TheOriginalBasisAndReliefsSurvive()
+    {
+        // Arrange: the replacement and removal must share one save, rather than deleting the old basis eagerly.
+        var ct = TestContext.Current.CancellationToken;
+        using var database = new SqliteTestDatabase();
+        await SeedAsync(database);
+        AccountingLot original;
+        int reliefCount;
+        await using (var context = database.CreateContext())
+        {
+            original = Assert.Single(await new AccountingLotDbRepository(context)
+                                         .ListLotsByOriginAsync(AccountingLotOrigin.Import, ct));
+            original = original with { FiatCost = 456m, FiatCurrency = "USD" };
+            await new AccountingLotDbRepository(context).UpdateLotAsync(original, ct);
+            await context.SaveChangesAsync(ct);
+            reliefCount = await context.AccountingLotReliefs.CountAsync(ct);
+        }
+
+        // Act
+        await using (var context = database.CreateContext(new FailReplacementSave()))
+        {
+            var lots = new AccountingLotDbRepository(context);
+            await lots.DeleteLotsByOriginAsync(AccountingLotOrigin.Import, ct);
+            await lots.AddLotAsync(original with { Id = 0, FiatCost = 123m }, ct);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => context.SaveChangesAsync(ct));
+        }
+
+        // Assert: a fresh context sees the entire original basis; retry commits the new one exactly once.
+        await using (var context = database.CreateContext())
+        {
+            var lots = new AccountingLotDbRepository(context);
+            Assert.Equal(original, Assert.Single(await lots.ListLotsByOriginAsync(AccountingLotOrigin.Import, ct)));
+            Assert.Equal(reliefCount, await context.AccountingLotReliefs.CountAsync(ct));
+            await lots.DeleteLotsByOriginAsync(AccountingLotOrigin.Import, ct);
+            await lots.AddLotAsync(original with { Id = 0, FiatCost = 123m }, ct);
+            await context.SaveChangesAsync(ct);
+        }
+        await using var check = database.CreateContext();
+        var replacement = Assert.Single(await new AccountingLotDbRepository(check)
+                                              .ListLotsByOriginAsync(AccountingLotOrigin.Import, ct));
+        Assert.Equal(123m, replacement.FiatCost);
+        Assert.Equal(original.OriginalMsat, replacement.OriginalMsat);
+        Assert.Empty(await new AccountingLotDbRepository(check).ListReliefsByLotAsync(original.Id, ct));
+    }
+
+    private sealed class FailReplacementSave : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Injected opening-basis replacement failure");
+    }
 
     [Fact]
     public async Task Given_OpenEntries_When_RolledBackFromOne_Then_ItAndEverythingAfterIsUndoneButAdjustmentsStay()
@@ -88,6 +145,7 @@ public class AccountingFinancialRollbackTests
                                                         TestContext.Current.CancellationToken);
             deleted = await lots.DeleteLotsByOriginAsync(AccountingLotOrigin.Import,
                                                          TestContext.Current.CancellationToken);
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
         }
 
         // Assert

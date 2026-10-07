@@ -1,5 +1,8 @@
 # NLightning Issue Ledger
 
+Updated 2026-10-07 by `wip/accounting-review` from latest `wip/fafo` 89d8c7be: new and fixed NL-1254 (late-valuation retry cache), NL-1255 (atomic journal clear), NL-1256 (verification under the financial writer gate), NL-1257 (atomic imported-basis replacement). Nine regressions failed on the original behavior. Validation: net10/net11 Release solution builds with zero warnings/errors; full formatting verification; final net10 Application accounting 299 and broad non-Docker/non-SqlServer/non-cluster Integration 1,162 passed. Fresh cluster proof `accounting-review-proof1`: 1/1 wrapper, 39/39 inner tests, 112 s, including six PostgreSQL fault-recovery cases and real ABCD zero-drift operational reconciliation and balanced financial books; all owned namespaces cleaned. Review and remaining issues are recorded in ACCOUNTING_PLAN section 12. NL-1207's rounding correction is already in the base; NL-758, NL-759, NL-1253 and the other documented follow-ups remain open. Summary: 976 unique classified entries. No schema or live-node configuration change. Implementation commit: pending.
+
+
 The single durable issue ledger for this repo. GitHub issues are disabled on the fork, so this file replaces them. Every known bug, gap, spec violation, missing feature, test/CI hygiene problem and tech-debt item lives here, so nothing is lost between agent sessions.
 
 Updated 2026-10-07 by `wip/fixes-waves1and2` from `wip/fafo` 6d166c2e: implemented NL-1062, NL-1141, NL-1146, NL-1147, NL-1153, NL-1231 and NL-1232; NL-1187 remains open with indexed wallet history completed. New provider migrations add passive HTLC checkpoints and derived wallet-history query indexes. Validation: warning-free Release net10.0/net11.0 builds; final net10.0 suites Application (affected areas) 1,697, Integration (non-Docker/non-SqlServer/non-cluster) 1,214, Bitcoin 2,164 + 3 platform skips, LN backend 114 and LND gRPC 224 passed. Real cluster proof `fixes-waves-proof1`: 1/1 wrapper, 35/35 inner tests, 157 s, all owned namespaces cleaned; includes five live feeds, imported deposit/spend/reorg/reconfirmation, on-chain final/restart dedup and PostgreSQL historical-feed upgrade. Full solution formatting verification and staged diff checks passed. Solution configuration check: 40 projects. No live-node activation. Implementation commit: `ae7234e8`. New open NL-1253 (filed on the branch as NL-1242) records the existing canonical/imported overlap history defect. Summary recounted: 961 unique classified entries.
@@ -191,10 +194,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 0 | 90 | 90 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 70 | 243 | 515 | 843 |
+| fixed | 15 | 70 | 246 | 516 | 847 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **70** | **259** | **628** | **972** |
+| **Total** | **15** | **70** | **262** | **629** | **976** |
 
 ### Epics
 
@@ -10251,3 +10254,43 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** Merge canonical and imported ownership by outpoint/input/output identity before calculating net amount and output details; add overlap deposit/spend and distinct mixed-output history proofs.
 - **Blocks/Blocked-by:** Related NL-1187, NL-1232
 - **Plan ref:** LND_SUBSCRIPTIONS_PLAN.md Limits
+
+### NL-1254 Failed late-valuation save poisons the in-process adjustment cache
+- **Status:** fixed (wip/accounting-review)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `Application/Accounting/Prices/PriceValuationService.cs`
+- **Evidence:** On base 89d8c7be, a real SQLite closed-period entry and production adjustment sink staged two fiat-only price adjustments. Injecting a failure at the page save left no adjustments in the database, but a retry using the same service reported zero late valuations instead of two: `_adjusted` remembered uncommitted posting keys.
+- **Fix:** Accumulate adjustment keys per page and remember them only after that page saves successfully. The retry persists both adjustments once; another round adds none and the closed postings remain untouched.
+- **Validation:** `PriceValuationServiceTests.Given_AClosedPosting_When_ItsAdjustmentSaveFails_Then_TheSameServiceRetriesDurably` failed before the fix; accounting review verification recorded in ACCOUNTING_PLAN.
+- **Blocks/Blocked-by:** Related NL-602, NL-693
+
+### NL-1255 Interrupted book clearing can delete journal rows while retaining the old replay cursor
+- **Status:** fixed (wip/accounting-review)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `Infrastructure.Repositories/Database/Accounting/AccountingBooksDbRepository.cs`
+- **Evidence:** The four bulk deletes in `ClearAsync` committed independently. Six SQLite fault cases on base 89d8c7be (operational/financial books, failures at entries/balances/cursor deletes) lost postings or entries before the cursor cleared. A subsequent operational projector can therefore believe the missing journal is already projected.
+- **Fix:** Enclose postings, entries, balances and cursor deletion in one repository transaction. A failed clear retains the complete old book; a successful retry empties only the selected book for replay from zero.
+- **Validation:** Six SQLite fault regressions failed before the fix. The same provider-agnostic recovery proof runs on PostgreSQL; accounting review verification recorded in ACCOUNTING_PLAN.
+- **Blocks/Blocked-by:** Related NL-602, NL-662
+
+### NL-1256 Signed-close verification can read financial rows across a concurrent writer
+- **Status:** fixed (wip/accounting-review)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `Application/Accounting/Financial/AccountingPeriodService.cs`
+- **Evidence:** Verification did not enter the financial write gate. A signed close's digest combines multiple queries, including current lot amounts and reliefs since the close; a disposal between those queries can produce a false corruption report. On base 89d8c7be the new concurrency regression completed verification even while a financial writer held that gate.
+- **Fix:** Hold the shared financial write gate throughout verification. Readers wait for financial writers and cancellation releases a waiting reader without leaking the gate. Existing tamper tests still check real corruption.
+- **Validation:** `AccountingPeriodServiceTests.Given_AFinancialWriteInProgress_When_ClosesAreVerified_Then_VerificationWaitsAndCanBeCancelled` failed before the fix; accounting review verification recorded in ACCOUNTING_PLAN.
+- **Blocks/Blocked-by:** Related NL-602
+
+### NL-1257 A failed opening-lot replacement permanently deletes the imported cost basis
+- **Status:** fixed (wip/accounting-review)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `Infrastructure.Repositories/Database/Accounting/AccountingLotDbRepository.cs`, `Domain/Accounting/Financial/IAccountingLotDbRepository.cs`
+- **Evidence:** Opening-lot replacement resets the derived financial book, bulk-deletes imported lots and their reliefs immediately, then stages replacement lots for a later save. A real SQLite regression on base 89d8c7be injected failure at that save: a fresh context found no original imported lot, so replay could fall back to estimated opening basis.
+- **Fix:** Stage deletion of imported lots and reliefs in the same unit of work as their replacements. A failed save preserves the original acquisition amounts, costs and reliefs. The preceding financial reset remains a separately committed, recoverable reset; the original imports survive it and replay can restore the derived book.
+- **Validation:** `AccountingFinancialRollbackTests.Given_ImportedBasis_When_AReplacementSaveFails_Then_TheOriginalBasisAndReliefsSurvive` failed before the fix; retry replaces basis once. Accounting review verification recorded in ACCOUNTING_PLAN.
+- **Blocks/Blocked-by:** Related NL-602, NL-657

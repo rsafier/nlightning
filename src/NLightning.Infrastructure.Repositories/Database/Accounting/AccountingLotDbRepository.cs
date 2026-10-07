@@ -291,20 +291,19 @@ public class AccountingLotDbRepository : IAccountingLotDbRepository
     }
 
     /// <inheritdoc />
-    /// <remarks>Runs at once (see the class remarks), not at the unit of work's save.</remarks>
     public async Task<int> DeleteLotsByOriginAsync(AccountingLotOrigin origin,
                                                    CancellationToken cancellationToken = default)
     {
-        foreach (var tracked in _context.ChangeTracker.Entries()
-                                        .Where(e => e.Entity is AccountingLotEntity or AccountingLotReliefEntity)
-                                        .ToList())
-            tracked.State = EntityState.Detached;
-
         var value = (byte)origin;
-        var lots = _context.AccountingLots.Where(l => l.Origin == value);
-        await _context.AccountingLotReliefs.Where(r => lots.Any(l => l.Id == r.LotId))
-                      .ExecuteDeleteAsync(cancellationToken);
-        return await lots.ExecuteDeleteAsync(cancellationToken);
+        var lots = await _context.AccountingLots.Where(l => l.Origin == value).ToListAsync(cancellationToken);
+        var reliefs = await _context.AccountingLotReliefs
+                                    .Where(r => _context.AccountingLots.Any(l => l.Id == r.LotId && l.Origin == value))
+                                    .ToListAsync(cancellationToken);
+        // The replacement import is staged in this same unit of work. Preserve its old cost basis if saving the
+        // replacement fails; detaching and bulk-deleting here used to lose it before that save.
+        _context.AccountingLotReliefs.RemoveRange(reliefs);
+        _context.AccountingLots.RemoveRange(lots);
+        return lots.Count;
     }
 
     /// <inheritdoc />
