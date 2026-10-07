@@ -10584,3 +10584,19 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** split out of the NL-1082 epic at its close (2026-10-07). payroute offers all shards in one call, so a failed shard cannot be replaced while the rest are held by the payee. Phase C was designed but deferred (plan §6, "Phase C — deferred (design only)").
 - **Fix sketch:** implement plan §6: a follow-up IPC call (and the LND `SendToRouteV2` path with the same payment hash, which NL-1242 refuses today) attaches new shards to the pending manual payment inside the payee's `mpp_timeout` window.
 - **Blocks/Blocked-by:** part of NL-1082 (closed); related NL-1242
+
+### NL-1292 Splice initiator paid one weight unit less than CLN v26.06.9 requires for the 2-of-2 shared input
+- **Status:** fixed (1f1712c0)
+- **Severity:** medium
+- **Kind:** interop bug
+- **Location:** `src/NLightning.Application/Channels/Splicing/SpliceFundingScripts.cs` (`SharedInputFeeWeight`, `GetSharedInputFeeWeight`), `SpliceService.GetInitiatorSharedWeight`
+- **Evidence:** cluster `cln` suite after the move to CLN v26.06.9 (batch `mx-20261007140016`): `ClnSpliceTests.Given_WeSpliceOutToAnAddress_*` failed twice, CLN answered our splice-out with `tx_abort` "Your fee (1810000msat) was too low, must be at least 1812sat weight: 725, splicing->feerate_per_kw: 2500". CLN v26.06.9 (commit "channeld: fix splice accepter never recording negotiated feerate") is the first release whose accepter enforces the initiator's minimum fee; its `bitcoin_tx_input_weight` adds a witness item count on top of `bitcoin_tx_2of2_input_witness_weight`, which already counts it, so the shared input is 387 wu to CLN and 386 to us (a P2WPKH splice-out: 724 vs 725 wu). Not caused by Core 31.1.
+- **Fix:** the splice initiator (ours, splice-in, splice-out and RBF) pays for 387 wu of 2-of-2 shared input (CLN's count; taproot key path already matched at 230 wu); a peer's fee is still checked against the exact 386. Pinned by `SpliceFundingScriptsTests.Given_ClnsWeightOfTheSharedInput_*`.
+
+### NL-1293 A block during a splice of a dual-funded channel aborted the splice ("an earlier attempt confirmed")
+- **Status:** fixed (1f1712c0)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`ScheduleConfirmedAttemptRound`, `AbandonRbfAttemptLockedAsync`, new `IsStillOpening`)
+- **Evidence:** cluster `taproot` suite (batch `mx-20261007140016`, Core 31.1): `TaprootPublicChannelFlowTests.Given_APublicTaprootChannel_When_SplicedInAndOut_*` failed twice with "the splice is Aborted: an earlier attempt 1a3380b1... confirmed"; 1a3380b1 is the channel's dual-funded open, confirmed a minute earlier. Alice's log: `SpliceService: Splice transaction 6ff99043... constructed`, block 875 processed, then `DualFundedOpenService: Abandoning the RBF attempt of channel a3cf8a3b...: an earlier attempt 1a3380b1... confirmed` and the driver's `tx_abort`. The open's `DualFundNegotiation` stays in memory after the channel opens, and the NL-867 per-block round took the driver's splice session for an RBF attempt of the open. It needs a block inside the splice's negotiation window, which the test's mining bursts hit on the Core 31.1 run; the bug is not version specific.
+- **Fix:** the round and the locked abandon act only while the channel is still `V1FundingSigned` in memory. Regression `DualFundRbfConfirmedAttemptTests.Given_AnOpenDualFundedChannel_When_ABlockArrivesDuringASpliceNegotiation_Then_TheSpliceIsKept` (failed before the fix). Follow-up left open: the open's negotiation is never forgotten once the channel is open (memory only).
