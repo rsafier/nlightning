@@ -147,7 +147,7 @@ public sealed class BlockPrevoutSource : IBlockPrevoutSource
     {
         var chain = (JObject)await RpcAsync("getblockchaininfo", [], cancellationToken);
         if ((bool?)chain["pruned"] == true && height < (uint?)chain["pruneheight"])
-            throw new InvalidOperationException($"Silent payment block {height} is pruned; use an unpruned node to rescan.");
+            throw new InvalidOperationException($"Silent payment block {height} is pruned (pruneheight {chain["pruneheight"]}); use an unpruned node to rescan.");
     }
 
     private static bool IsCandidate(Transaction tx) => !tx.IsCoinBase && tx.Outputs.Any(o =>
