@@ -79,11 +79,9 @@ public sealed partial class PaymentService
                 if (request.Routes.Count != 1 || request.PaymentSecret is not null || request.TotalAmount is not null)
                     throw new ArgumentException(
                         "A keysend payment goes over one route without a payment secret or total.", nameof(request));
-                if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
-                        System.Security.Cryptography.SHA256.HashData((ReadOnlySpan<byte>)preimage),
-                        (ReadOnlySpan<byte>)paymentHash))
-                    throw new ArgumentException("The payment hash is not the keysend preimage's SHA256.",
-                                                nameof(request));
+                // The hash need not be the preimage's SHA256: LND's SendToRouteV2 passes such a route through, and
+                // bos probes keysend with a random hash and the real preimage, expecting the payee's
+                // incorrect_or_unknown_payment_details (NL-1251); a mismatched payment can only fail at the payee
                 keysend = new KeysendFinalRecords(preimage, CustomRecordCodec.Validate(request.CustomRecords));
             }
             minFinalCltvExpiryDelta = RawFormMinFinalCltvExpiryDelta;

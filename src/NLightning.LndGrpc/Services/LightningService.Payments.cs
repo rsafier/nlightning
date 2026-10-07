@@ -143,7 +143,11 @@ public sealed partial class LightningService
             PaymentStatus.Failed => Payment.Types.PaymentStatus.Failed,
             _ => Payment.Types.PaymentStatus.InFlight
         };
-        var preimage = payment.Preimage is { } secret ? Convert.ToHexStringLower((byte[])secret) : string.Empty;
+        // LND reports a payment without a preimage (failed or in flight) as 32 zero bytes; ln-service requires the hex
+        // (NL-1252)
+        var preimage = payment.Preimage is { } secret
+                           ? Convert.ToHexStringLower((byte[])secret)
+                           : new string('0', 64);
         var item = new Payment
         {
             PaymentHash = payment.PaymentHash.ToString(),

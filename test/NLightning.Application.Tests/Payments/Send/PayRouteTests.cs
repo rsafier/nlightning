@@ -173,16 +173,40 @@ public class PayRouteTests
     }
 
     [Fact]
-    public async Task Given_AKeysendPreimageThatIsNotTheHashs_When_BobPays_Then_Refused()
+    public async Task Given_AKeysendPreimageThatIsNotTheHashs_When_BobPays_Then_ItIsOfferedAndFailsAtThePayee()
     {
-        // Arrange
+        // Arrange: bos's keysend probe (NL-1251): a random hash with a real preimage record, as LND passes it through
         using var harness = new PaymentHarness();
+        var preimage = new Secret(Enumerable.Repeat((byte)1, 32).ToArray());
+        Domain.Protocol.Onion.Models.HopPayload? received = null;
+        harness.David.Switch.FinalHopInterceptor = (_, final) =>
+        {
+            received = final.Payload;
+            return FailureMessage.IncorrectOrUnknownPaymentDetails(s_amount.MilliSatoshi,
+                                                                   PaymentHarness.BlockHeight);
+        };
         var request = new PayRouteRequest
         {
             PaymentHash = new Hash(new byte[32]),
-            KeysendPreimage = new Secret(Enumerable.Repeat((byte)1, 32).ToArray()),
+            KeysendPreimage = preimage,
             Routes = [ViaCarol(harness, s_amount)]
         };
+
+        // Act
+        var result = await PayRouteAsync(harness, request);
+
+        // Assert
+        Assert.NotNull(received);
+        Assert.Equal((byte[])preimage, received.KeysendPreimage!.Value.ToArray());
+        Assert.Equal(PaymentPartState.Failed, Assert.Single(result.Outcomes).Status);
+        AssertNoPendingHtlcs(harness);
+    }
+
+    [Fact]
+    public async Task Given_CustomRecordsWithoutAKeysendPreimage_When_BobPays_Then_Refused()
+    {
+        // Arrange
+        using var harness = new PaymentHarness();
         var recordsAlone = new PayRouteRequest
         {
             PaymentHash = new Hash(new byte[32]),
@@ -191,7 +215,6 @@ public class PayRouteTests
         };
 
         // Act / Assert
-        await Assert.ThrowsAsync<ArgumentException>(() => PayRouteAsync(harness, request));
         await Assert.ThrowsAsync<ArgumentException>(() => PayRouteAsync(harness, recordsAlone));
         Assert.Empty(harness.Bob.Switch.Events);
     }

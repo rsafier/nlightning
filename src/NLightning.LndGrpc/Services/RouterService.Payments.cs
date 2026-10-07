@@ -194,6 +194,7 @@ public sealed partial class RouterService
                             PaymentIndex = started.PaymentIndex,
                             CreationDate = started.OccurredAt.ToUnixTimeSeconds(),
                             CreationTimeNs = LightningService.UnixNanos(started.OccurredAt),
+                            PaymentPreimage = new string('0', 64),
                             Status = Payment.Types.PaymentStatus.InFlight
                         }, context.CancellationToken);
                     continue;

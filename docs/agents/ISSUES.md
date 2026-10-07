@@ -189,10 +189,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 0 | 96 | 96 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 70 | 243 | 506 | 834 |
+| fixed | 15 | 70 | 243 | 508 | 836 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **70** | **259** | **625** | **969** |
+| **Total** | **15** | **70** | **259** | **627** | **971** |
 
 ### Epics
 
@@ -10133,6 +10133,24 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Validation (2026-10-07):** `go vet ./...`, `go test -race -count=3 ./...` in `tools/lnd-rest` (28 tests against a fake TLS gRPC backend: every REST binding of LND's service yaml files reaches its gRPC method, LND's JSON shapes, query bindings, 501 and 404 answers, wrong methods refused before the node, macaroon pass-through, NDJSON and WebSocket streams with the macaroon as header and as protocol field, stream errors, generated/reused/expired/provided certificates and permissions, HTTP/2 off, backend certificate verified, CORS, body limit, request log, backend down = 503, shutdown of streams and WebSockets), `gofmt`, `go mod verify`. Live against the signet node (127.0.0.1:10029, read-only macaroon): `/v1/getinfo`, `/v1/balance/blockchain`, `/v1/balance/channels`, `/v1/channels`, `/v1/channels/pending`, `/v1/peers`, `/v1/fees`, `/v1/invoices`, `/v1/payments`, `/v2/versioner/version` 200, `/v1/graph/info` 501, no macaroon 401, a write 403; WebSocket `TrackPaymentV2` (one SUCCEEDED update, then closed) and `SubscribeInvoices` (held open); RTL 0.15.13 headless over HTTPS with the read-only macaroon: all 26 pages load, the only failures are the node's unimplemented `GetNetworkInfo` and channel backup RPCs (as with the prototype).
 - **Notes:** like LND, the WebSocket handshake does not echo a `Sec-WebSocket-Protocol`, so clients that require one (browsers, Node's `ws`) fail the handshake when they send the macaroon only that way (LND's documented browser workaround has the same limit). RTL never verifies the LND REST certificate (`rejectUnauthorized: false`), so the README keeps the gateway and RTL on one machine.
 - **Blocks/Blocked-by:** RTL's Network page, backups and Query Routes need the node's `GetNetworkInfo`, channel backup RPCs and `QueryRoutes` (`LND_TOOLS_COMPAT.md` section 3)
+
+### NL-1251 `SendToRouteV2` refused a keysend route whose payment hash is not the preimage's SHA256 (bos keysend probe)
+- **Status:** fixed (PENDING)
+- **Severity:** low
+- **Kind:** interop
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.PayRoute.cs`
+- **Evidence:** bos/RTL rerun on build 525dbfaa (`LND_TOOLS_COMPAT.md`, 2026-10-07): `bos send` probes keysend with a random payment hash and the real preimage record. LND passes such a route through and the payee fails it with `incorrect_or_unknown_payment_details`, while we answered INVALID_ARGUMENT "The payment hash is not the keysend preimage's SHA256".
+- **Fix:** payroute no longer checks the hash against the keysend preimage. A mismatched payment can only fail at the payee. Custom records without a preimage are still refused. Tests: `PayRouteTests.Given_AKeysendPreimageThatIsNotTheHashs_*` (offered, fails at the payee) and `Given_CustomRecordsWithoutAKeysendPreimage_*`.
+- **Blocks/Blocked-by:** related NL-1242
+
+### NL-1252 LND gRPC payments without a preimage answered an empty `payment_preimage`; LND answers 64 zero hex characters
+- **Status:** fixed (PENDING)
+- **Severity:** low
+- **Kind:** interop
+- **Location:** `src/NLightning.LndGrpc/Services/LightningService.Payments.cs`, `RouterService.Payments.cs` (TrackPayments in-flight update)
+- **Evidence:** bos/RTL rerun on build 525dbfaa: ln-service threw `ExpectedPaymentPreimageInRpcPaymentDetails` on our failed payments, which broke `bos clean-failed-payments` and `getFailedPayments`.
+- **Fix:** a failed or in-flight payment reports `payment_preimage` as 32 zero bytes in hex, as LND marshals an unset preimage. Tests pin it in ListPayments and TrackPayments.
+- **Blocks/Blocked-by:** related NL-1242
 
 ### NL-1242 LND gRPC: `QueryRoutes` unimplemented (bos probe/send/pay, RTL Query Routes); `SendToRouteV2` missing too
 - **Status:** fixed (fb8d832f)

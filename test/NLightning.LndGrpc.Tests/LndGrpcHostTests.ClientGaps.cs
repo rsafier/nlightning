@@ -108,7 +108,7 @@ public partial class LndGrpcHostTests
         {
             Assert.Equal(Payment.Types.PaymentStatus.InFlight, call.ResponseStream.Current.Status);
             Assert.Equal(8ul, call.ResponseStream.Current.PaymentIndex);
-            Assert.Empty(call.ResponseStream.Current.PaymentPreimage);
+            Assert.Equal(new string('0', 64), call.ResponseStream.Current.PaymentPreimage);
             Assert.True(await call.ResponseStream.MoveNext(Bounded));
         }
         Assert.Equal(Payment.Types.PaymentStatus.Succeeded, call.ResponseStream.Current.Status);

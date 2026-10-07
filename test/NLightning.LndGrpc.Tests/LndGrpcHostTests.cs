@@ -476,6 +476,7 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
         Assert.Equal(new ShortChannelId(160, 1, 1), new ShortChannelId(hops[1].ChanId));
         Assert.Equal(2, all.Payments.Count);
         Assert.Equal(Payment.Types.PaymentStatus.InFlight, all.Payments[1].Status);
+        Assert.Equal(new string('0', 64), all.Payments[1].PaymentPreimage); // LND's zero preimage (NL-1252)
         var hop = Assert.Single(history.ForwardingEvents);
         Assert.Equal(new ShortChannelId(150, 7, 0), new ShortChannelId(hop.ChanIdIn));
         Assert.Equal(new ShortChannelId(170, 2, 0), new ShortChannelId(hop.ChanIdOut));
