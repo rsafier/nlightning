@@ -19,8 +19,8 @@ public enum ForwardInterceptAction
 
     /// <summary>
     /// Forward it with modifications (LND's <c>RESUME_MODIFIED</c>, NL-1182): an incoming amount used in place of the
-    /// HTLC's for the forwarding checks, the outgoing amount of the <c>update_add_htlc</c> and custom records merged into
-    /// its extension.
+    /// HTLC's for the forwarding checks, the outgoing amount of the <c>update_add_htlc</c> and the custom records of
+    /// its extension (the forwarded add carries exactly the interceptor's records).
     /// </summary>
     ResumeModified
 }
@@ -40,8 +40,9 @@ public enum ForwardInterceptAction
 /// <param name="OutAmount">For <see cref="ForwardInterceptAction.ResumeModified"/>: the amount of the outgoing
 /// <c>update_add_htlc</c> (LND's <c>out_amount_msat</c>); null keeps the onion's <c>amt_to_forward</c>.</param>
 /// <param name="OutWireCustomRecords">For <see cref="ForwardInterceptAction.ResumeModified"/>: custom records (types of
-/// 65536 or more) for the outgoing <c>update_add_htlc</c>'s extension (LND's <c>out_wire_custom_records</c>), merged
-/// over the existing ones; null or empty adds none.</param>
+/// 65536 or more) for the outgoing <c>update_add_htlc</c>'s extension (LND's <c>out_wire_custom_records</c>). The
+/// forwarded add starts without records (LND's <c>link.go</c> builds it without the incoming ones), so it carries
+/// exactly these; null or empty adds none.</param>
 public sealed record ForwardInterceptResolution(
     ForwardInterceptAction Action,
     Secret? Preimage = null,
@@ -58,11 +59,13 @@ public sealed record ForwardInterceptResolution(
     /// A <see cref="ForwardInterceptAction.ResumeModified"/> resolution; a zero amount means unchanged (LND).
     /// </summary>
     /// <exception cref="ArgumentException">A custom record's type is below 65536 or appears twice (LND: "failed to
-    /// validate custom records").</exception>
+    /// validate custom records"), or the records do not fit an <c>update_add_htlc</c> (BOLT 8's 65,535 bytes,
+    /// <see cref="WireCustomRecordCodec.MaxEncodedLength"/> with a <c>blinded_path</c>).</exception>
     public static ForwardInterceptResolution Modified(LightningMoney? inAmount, LightningMoney? outAmount,
                                                       IEnumerable<CustomRecord>? outWireCustomRecords)
     {
         var records = WireCustomRecordCodec.Validate(outWireCustomRecords);
+        WireCustomRecordCodec.EnsureFitsUpdateAddHtlc(records);
         return new ForwardInterceptResolution(ForwardInterceptAction.ResumeModified,
                                               InAmount: inAmount is { IsZero: false } ? inAmount : null,
                                               OutAmount: outAmount is { IsZero: false } ? outAmount : null,

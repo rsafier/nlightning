@@ -10,7 +10,7 @@ using static Tests.Channels.Commitments.CommitmentsTestKit;
 
 /// <summary>
 /// NL-1182: the <c>update_add_htlc</c> custom records (LND's wire custom records): LND's validation (any type from
-/// 65536, the keysend type included), the merge of <c>RESUME_MODIFIED</c>, the storage form, and the engine keeping them
+/// 65536, the keysend type included), the BOLT 8 size bound of <c>RESUME_MODIFIED</c>, the storage form, and the engine keeping them
 /// on the HTLC record so a retransmission carries them.
 /// </summary>
 public class WireCustomRecordCodecTests
@@ -41,16 +41,78 @@ public class WireCustomRecordCodecTests
     }
 
     [Fact]
-    public void Given_ExistingRecords_When_MergingOverrides_Then_SameTypesAreReplacedAndTheRestKept()
+    public void Given_TheUpdateAddHtlcBounds_When_Computed_Then_TheyLeaveBolt8sPlaintextForTheRecords()
     {
-        // Act: LND's CustomRecords.MergedCopy
-        var merged = WireCustomRecordCodec.Merge([new CustomRecord(65_537, [1]), new CustomRecord(65_539, [3])],
-                                                 [new CustomRecord(65_537, [9]), new CustomRecord(65_541, [5])]);
+        // Act / Assert: 65,535 - (2 + 1,450) - 35 with a blinded_path
+        Assert.Equal(1_452, WireCustomRecordCodec.UpdateAddHtlcFixedLength);
+        Assert.Equal(64_083, WireCustomRecordCodec.MaxEncodedLength(false));
+        Assert.Equal(64_048, WireCustomRecordCodec.MaxEncodedLength(true));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Given_RecordsAtTheBound_When_EncodingForAnUpdateAddHtlc_Then_Accepted(bool withBlindedPath)
+    {
+        // Arrange
+        var max = WireCustomRecordCodec.MaxEncodedLength(withBlindedPath);
+        var records = RecordsOfEncodedLength(max);
+
+        // Act
+        var encoded = WireCustomRecordCodec.EncodeForUpdateAddHtlc(records, withBlindedPath);
 
         // Assert
-        Assert.Equal([new CustomRecord(65_537, [9]), new CustomRecord(65_539, [3]), new CustomRecord(65_541, [5])],
-                     merged);
+        Assert.Equal(max, encoded.Length);
+        Assert.Equal(max, WireCustomRecordCodec.EncodedLength(records));
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Given_RecordsOneByteOverTheBound_When_EncodingForAnUpdateAddHtlc_Then_Refused(bool withBlindedPath)
+    {
+        // Arrange: an add this large could be committed and persisted but never sent (BOLT 8)
+        var records = RecordsOfEncodedLength(WireCustomRecordCodec.MaxEncodedLength(withBlindedPath) + 1);
+
+        // Act
+        var exception = Assert.Throws<ArgumentException>(() =>
+            WireCustomRecordCodec.EncodeForUpdateAddHtlc(records, withBlindedPath));
+
+        // Assert
+        Assert.Contains("an update_add_htlc has room for at most", exception.Message);
+    }
+
+    [Fact]
+    public void Given_RecordsSpreadOverManyTypesTooLargeForAnAdd_When_BuildingAResumeModified_Then_Refused()
+    {
+        // Arrange: 100 records of 1,000 bytes each (about 100 KB), which gRPC accepts
+        var records = Enumerable.Range(0, 100)
+                                .Select(i => new CustomRecord(65_537UL + (ulong)(2 * i), new byte[1_000]))
+                                .ToArray();
+
+        // Act / Assert
+        Assert.Throws<ArgumentException>(() =>
+            ForwardInterceptResolution.Modified(null, null, records));
+    }
+
+    [Fact]
+    public void Given_RecordsThatFitWithABlindedPath_When_BuildingAResumeModified_Then_Kept()
+    {
+        // Arrange: the resolution is checked against the stricter bound (the outgoing add may carry a blinded_path)
+        var records = RecordsOfEncodedLength(WireCustomRecordCodec.MaxEncodedLength(true));
+
+        // Act
+        var resolution = ForwardInterceptResolution.Modified(null, null, records);
+
+        // Assert
+        Assert.Equal(records, resolution.OutWireCustomRecords);
+        Assert.Throws<ArgumentException>(() => ForwardInterceptResolution.Modified(
+            null, null, RecordsOfEncodedLength(WireCustomRecordCodec.MaxEncodedLength(true) + 1)));
+    }
+
+    /// <summary>One record of type 65537 (5-byte BigSize type, 3-byte BigSize length) of the given encoded size.</summary>
+    internal static CustomRecord[] RecordsOfEncodedLength(int encodedLength) =>
+        [new CustomRecord(65_537, new byte[encodedLength - 8])];
 
     [Fact]
     public void Given_NoBytesOrBadBytes_When_Decoding_Then_NoRecords()

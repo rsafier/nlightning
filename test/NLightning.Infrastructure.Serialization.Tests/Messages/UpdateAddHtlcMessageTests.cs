@@ -303,6 +303,25 @@ public class UpdateAddHtlcMessageTests
     }
 
     [Fact]
+    public async Task Given_CustomRecordsAtTheBoundAndABlindedPath_When_SerializeAsync_Then_TheMessageIsBolt8sLargest()
+    {
+        // Arrange: NL-1182, the largest records an add may carry (WireCustomRecordCodec.MaxEncodedLength)
+        var pathKey = Convert.FromHexString("02c93ca7dca44d2e45e3cc5419d92750f7fb3a0f180852b73a621f4051c0193a75");
+        var max = WireCustomRecordCodec.MaxEncodedLength(true);
+        var message = new UpdateAddHtlcMessage(
+            new UpdateAddHtlcPayload(LightningMoney.MilliSatoshis(1), ChannelId.Zero, 3u, 0UL, s_paymentHash,
+                                     Convert.FromHexString(OnionHex)),
+            new BlindedPathTlv(pathKey), [new CustomRecord(65_537, new byte[max - 8])]);
+        var stream = new MemoryStream();
+
+        // Act
+        await _updateAddHtlcMessageTypeSerializer.SerializeAsync(message, stream);
+
+        // Assert: with the 2-byte type, exactly BOLT 8's 65,535-byte plaintext
+        Assert.Equal(WireCustomRecordCodec.MaxLightningMessageLength, stream.Length + 2);
+    }
+
+    [Fact]
     public async Task Given_CustomRecordsOnly_When_RoundTripped_Then_TheBytesAndRecordsMatch()
     {
         // Arrange: given out of order; the message sorts them

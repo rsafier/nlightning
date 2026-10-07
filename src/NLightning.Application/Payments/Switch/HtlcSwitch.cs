@@ -1279,6 +1279,16 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
         }
 
         _htlcMonitor?.CaptureForward(circuit);
+
+        // NL-1182: like LND we send even custom record types too, but a peer that does not know one (CLN, Eclair,
+        // LDK, NLightning) refuses the add with a warning and disconnects; the add is persisted, so every
+        // reconnection retransmits it until the HTLC deadline monitor fails the channel (NL-1283)
+        if (outWireCustomRecords.Any(r => r.Type % 2 == 0))
+            _logger.LogWarning("Interceptor's modified forward of HTLC {HtlcId} of channel {ChannelId} carries even "
+                             + "update_add_htlc custom record types ({Types}); a peer that does not understand them "
+                             + "will refuse the add", htlc.Id, incomingChannelId,
+                               string.Join(", ", outWireCustomRecords.Where(r => r.Type % 2 == 0).Select(r => r.Type)));
+
         ulong outgoingHtlcId;
         try
         {

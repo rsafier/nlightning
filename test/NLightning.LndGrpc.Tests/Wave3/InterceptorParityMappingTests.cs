@@ -76,6 +76,26 @@ public sealed class InterceptorParityMappingTests
     }
 
     [Fact]
+    public void Given_RecordsTooLargeForAnUpdateAddHtlc_When_Mapped_Then_InvalidArgumentBeforeAnythingIsForwarded()
+    {
+        // Arrange: about 65 KB of records, which gRPC accepts but no update_add_htlc can carry (BOLT 8, 65,535 bytes)
+        var response = new ForwardHtlcInterceptResponse
+        {
+            IncomingCircuitKey = new CircuitKey(),
+            Action = ResolveHoldForwardAction.ResumeModified
+        };
+        for (var i = 0; i < 65; i++)
+            response.OutWireCustomRecords[65_537UL + (ulong)(2 * i)] = ByteString.CopyFrom(new byte[1_000]);
+
+        // Act
+        var e = Assert.Throws<RpcException>(() => RouterService.ToResolution(response));
+
+        // Assert
+        Assert.Equal(StatusCode.InvalidArgument, e.StatusCode);
+        Assert.StartsWith("failed to validate custom records: custom records take ", e.Status.Detail);
+    }
+
+    [Fact]
     public void Given_AForwardHeldOnChainWithWireRecords_When_SentToTheInterceptor_Then_TheDeadlineAndRecordsAreLnds()
     {
         // Arrange: on chain the auto_fail_height field carries the settle deadline (the incoming expiry)

@@ -130,8 +130,10 @@ public sealed class ChannelOperationsService : IChannelOperations
                                             CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(wireCustomRecords);
-        // NL-1182: checked (and sorted) before anything is staged; persisted with the HTLC for its retransmissions
-        var encodedRecords = WireCustomRecordCodec.Encode(wireCustomRecords);
+        // NL-1182: checked (sorted, and small enough for BOLT 8 with the blinded_path) before anything is staged; an
+        // add too large to send would be committed and persisted but never reach the peer. Persisted with the HTLC
+        // for its retransmissions
+        var encodedRecords = WireCustomRecordCodec.EncodeForUpdateAddHtlc(wireCustomRecords, pathKey is not null);
         ArgumentNullException.ThrowIfNull(amount);
         if (!origin.IsValid)
             throw new ArgumentException("The HTLC origin routes nowhere", nameof(origin));
