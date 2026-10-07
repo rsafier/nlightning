@@ -30,6 +30,7 @@ using Domain.Payments.Interception;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
+using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.ValueObjects;
 using Google.Protobuf;
@@ -63,6 +64,9 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
     private readonly List<BroadcastTransactionModel> _broadcastRows = [];
     private readonly List<ChannelCloseModel> _closes = [];
     private readonly List<OutputResolutionModel> _outputs = [];
+    private readonly List<WalletAddressModel> _walletAddresses = [];
+    private readonly List<UtxoModel> _unspent = [];
+    private readonly Mock<ISecureKeyManager> _keys = new();
 
     private ServiceProvider? _services;
     private LndGrpcHost? _host;
@@ -621,7 +625,14 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
             resolutions.Setup(x => x.GetClosesAsync()).ReturnsAsync(() => _closes.ToList());
             resolutions.Setup(x => x.GetOutputsByChannelIdAsync(It.IsAny<ChannelId>()))
                        .ReturnsAsync((ChannelId id) => _outputs.Where(o => o.ChannelId == id).ToList());
+            var addresses = new Mock<IWalletAddressesDbRepository>();
+            addresses.Setup(x => x.GetAllAddresses()).Returns(() => _walletAddresses.ToList());
+            var utxoRows = new Mock<IUtxoDbRepository>();
+            utxoRows.Setup(x => x.GetUnspentAsync(It.IsAny<bool>()))
+                    .ReturnsAsync(() => _unspent.ToList());
             var unitOfWork = new Mock<IUnitOfWork>();
+            unitOfWork.SetupGet(x => x.WalletAddressesDbRepository).Returns(addresses.Object);
+            unitOfWork.SetupGet(x => x.UtxoDbRepository).Returns(utxoRows.Object);
             unitOfWork.SetupGet(x => x.OnchainResolutionDbRepository).Returns(resolutions.Object);
             unitOfWork.SetupGet(x => x.AccountingEventDbRepository).Returns(accounting.Object);
             unitOfWork.SetupGet(x => x.BroadcastTransactionDbRepository).Returns(broadcasts.Object);
@@ -631,6 +642,7 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
         services.AddSingleton<LightningService>();
         services.AddSingleton<RouterService>();
         services.AddSingleton<WalletKitService>();
+        services.AddSingleton(_keys.Object);
         return services.BuildServiceProvider();
     }
 }

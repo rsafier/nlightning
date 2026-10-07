@@ -189,10 +189,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 0 | 96 | 96 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 70 | 242 | 503 | 830 |
+| fixed | 15 | 70 | 242 | 504 | 831 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **70** | **258** | **622** | **965** |
+| **Total** | **15** | **70** | **258** | **623** | **966** |
 
 ### Epics
 
@@ -10171,4 +10171,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** `LND_TOOLS_COMPAT.md` (2026-10-07): RTL's app init and Network page call `GET /v1/graph/info` → `lnrpc.GetNetworkInfo`, UNIMPLEMENTED (a 501 toast on every page, three errors on the Network page).
 - **Fix:** computed from the gossip graph snapshot as LND's `rpcserver.GetNetworkInfo`: nodes = every announced node and channel end; channels = the unspent channels that are not zombies, each counted once with its funding capacity (the estimate when it was not looked up); out degree per node = its channels, `max_out_degree`, `avg_out_degree` = 2 x channels / nodes; `total_network_capacity`, min/max/avg channel size and the median (the mean of the two middle values for an even count, as LND's `autopilot.Median`); `num_zombie_chans` = channels with a policy past the stale rule (`Gossip:StaleAfter`, LND marks those zombies and drops them from the other figures); `graph_diameter` 0 (not computed). No graph: `UNAVAILABLE`, as `DescribeGraph`. The macaroon entry (info read) already existed.
 - **Validation (2026-10-07):** `Mapping/NetworkInfoTests` (live, zombie and spent channels; an even-count median; an empty graph). LndGrpc.Tests green on net10.0.
+- **Blocks/Blocked-by:** none
+
+### NL-1247 LND gRPC: walletrpc `ListAccounts` and `ListAddresses` unimplemented (bos chain-deposit's taproot default)
+- **Status:** fixed (pending pin)
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `src/NLightning.LndGrpc/Services/WalletKitService.Accounts.cs`, `src/NLightning.Domain/Protocol/Interfaces/ISecureKeyManager.cs` (`GetDepositAccount`, `DepositAccountInfo`), `src/NLightning.Infrastructure.Bitcoin/Managers/SecureKeyManager.cs`
+- **Evidence:** `LND_TOOLS_COMPAT.md` (2026-10-07): bos `chain-deposit` (p2tr by default) fails with `UnexpectedErrorCheckingTaprootSupport` (ln-service `getMasterPublicKeys` → `walletrpc.ListAccounts` UNIMPLEMENTED); `ListAddresses` (ln-service `getChainAddresses`) unimplemented too. `NewAddress` TAPROOT_PUBKEY already worked (`/v1/newaddress?type=4` passed).
+- **Fix:** `ListAccounts`: the `default` account per address type the wallet holds, P2WPKH (`m/84'/0'/0'`) and P2TR (`m/86'/0'/0'`; the node derives under coin type 0 on every network), with its account extended public key (new public-only `ISecureKeyManager.GetDepositAccount`, a default member returning null for other managers; plain BIP32 `xpub`/`tpub`, where LND uses the scope's SLIP-132 version), the master fingerprint, the external and change key counts (highest handed-out or funded index + 1), never watch-only; `name` and `address_type` filters (another name lists nothing; LND's nested P2SH account does not exist here). `ListAddresses`: per account type, every address handed out or funded (look-ahead addresses nobody was given left out) with `is_internal`, its balance from the unspent wallet outputs, its full derivation path and its derived public key (P2TR: the untweaked internal key); `show_custom_accounts` adds nothing. Permission entries (onchain read) already existed.
+- **Validation (2026-10-07):** `Infrastructure.Bitcoin.Tests/Managers/SecureKeyManagerTests` (the BIP84 vector's account xpub, paths and fingerprint; the P2TR xpub derives the wallet's keys); `LndGrpc.Tests/Wave3/LndGrpcWave3HostTests.Accounts.cs` (2: both accounts with counts, xpub and fingerprint, the filters; addresses with balance, path and key, look-ahead left out). LndGrpc.Tests green on net10.0.
 - **Blocks/Blocked-by:** none

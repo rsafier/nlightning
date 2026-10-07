@@ -21,7 +21,7 @@ public class NetworkInfoTests
                                         uint timestamp)
     {
         var channel = new GraphChannel(scid, a, b, null, null, capacitySat);
-        foreach (byte direction in new byte[] { 0, 1 })
+        foreach (var direction in new byte[] { 0, 1 })
             channel = channel.WithPolicy(new GraphPolicy(timestamp, 1, direction, 40, 1, capacitySat * 1_000, 1_000,
                                                          1));
         return channel;

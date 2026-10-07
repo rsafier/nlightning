@@ -23,6 +23,14 @@ public interface ISecureKeyManager
     ExtPrivKey GetDepositP2WpkhKeyAtIndex(uint index, bool isChange);
 
     /// <summary>
+    /// The deposit wallet's account of <paramref name="addressType"/> (P2WPKH or P2TR): its extended public key
+    /// serialized for the node's network (BIP32 <c>xpub</c>/<c>tpub</c>), its derivation path and the master key
+    /// fingerprint (big-endian, as BIP32 serializes it); null when this manager keeps no such account. Public data only
+    /// (LND's <c>ListAccounts</c>, NL-1247).
+    /// </summary>
+    DepositAccountInfo? GetDepositAccount(Bitcoin.Enums.AddressType addressType) => null;
+
+    /// <summary>
     /// Returns the node key pair.
     /// </summary>
     /// <remarks>
@@ -44,3 +52,9 @@ public interface ISecureKeyManager
     /// <exception cref="ArgumentException">If <paramref name="publicKey"/> is not a valid point.</exception>
     void ComputeNodeSharedSecret(ReadOnlySpan<byte> publicKey, Span<byte> sharedSecret);
 }
+
+/// <summary>A deposit wallet account's public description (<see cref="ISecureKeyManager.GetDepositAccount"/>).</summary>
+/// <param name="ExtendedPublicKey">The account's extended public key (BIP32 serialization for the network).</param>
+/// <param name="DerivationPath">The account's path from the master key, e.g. <c>m/84'/0'/0'</c>.</param>
+/// <param name="MasterFingerprint">The master key's fingerprint, big-endian.</param>
+public sealed record DepositAccountInfo(string ExtendedPublicKey, string DerivationPath, byte[] MasterFingerprint);

@@ -9,6 +9,7 @@ using NBitcoin;
 namespace NLightning.Infrastructure.Bitcoin.Managers;
 
 using Domain.Bitcoin.Constants;
+using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
@@ -248,6 +249,23 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     {
         var masterKey = GetMasterKey();
         return masterKey.Derive(_depositP2WpkhKeyPath.Derive(isChange ? "1" : "0")).Derive(index).ToBytes();
+    }
+
+    /// <inheritdoc />
+    public DepositAccountInfo? GetDepositAccount(AddressType addressType)
+    {
+        var path = addressType switch
+        {
+            AddressType.P2Wpkh => _depositP2WpkhKeyPath,
+            AddressType.P2Tr => _depositP2TrKeyPath,
+            _ => null
+        };
+        if (path is null)
+            return null;
+
+        var masterKey = GetMasterKey();
+        return new DepositAccountInfo(masterKey.Derive(path).Neuter().ToString(_network), $"m/{path}",
+                                      masterKey.GetPublicKey().GetHDFingerPrint().ToBytes());
     }
 
     public CryptoKeyPair GetNodeKeyPair()
