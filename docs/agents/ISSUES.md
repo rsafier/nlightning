@@ -2,6 +2,8 @@
 
 The single durable issue ledger for this repo. GitHub issues are disabled on the fork, so this file replaces them. Every known bug, gap, spec violation, missing feature, test/CI hygiene problem and tech-debt item lives here, so nothing is lost between agent sessions.
 
+Updated 2026-10-07 by `wip/fixes-waves1and2` from `wip/fafo` 6d166c2e: implemented NL-1062, NL-1141, NL-1146, NL-1147, NL-1153, NL-1231 and NL-1232; NL-1187 remains open with indexed wallet history completed. New provider migrations add passive HTLC checkpoints and derived wallet-history query indexes. Validation: warning-free Release net10.0/net11.0 builds; final net10.0 suites Application (affected areas) 1,697, Integration (non-Docker/non-SqlServer/non-cluster) 1,214, Bitcoin 2,164 + 3 platform skips, LN backend 114 and LND gRPC 224 passed. Real cluster proof `fixes-waves-proof1`: 1/1 wrapper, 35/35 inner tests, 157 s, all owned namespaces cleaned; includes five live feeds, imported deposit/spend/reorg/reconfirmation, on-chain final/restart dedup and PostgreSQL historical-feed upgrade. Full solution formatting verification and staged diff checks passed. Solution configuration check: 40 projects. No live-node activation. Implementation SHA is pinned in the follow-up ledger commit. New open NL-1242 records the existing canonical/imported overlap history defect. Summary recounted: 961 unique classified entries.
+
 Updated 2026-10-06 by `wip/terminal-gaps` from `wip/fafo` 3179373c: new and fixed NL-1239 (Lightning Terminal through the LNC bridge: `FeeReport` implemented, `ListPayments` without `max_payments` no longer capped at lncli's 100, LND's truncated sat amounts on payments, cooperatively closing channels counted inactive in `GetInfo`). Summary recounted: 958 entries; no schema or live-node configuration change.
 
 Updated 2026-10-06 by `wip/lnc-terminal` from `wip/fafo` c40f725a: new and fixed NL-1238 (the LNC bridge's handshake auth data was `macaroon: <hex>`, which the stock LNC WASM client behind Lightning Terminal refuses; Terminal also needs litrpc reads), with opt-in RPC/mailbox logging. Summary recounted: 957 entries; no schema or live-node configuration change.
@@ -187,12 +189,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 0 | 96 | 96 |
+| open | 0 | 0 | 0 | 90 | 90 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 70 | 241 | 499 | 825 |
+| fixed | 15 | 70 | 241 | 506 | 832 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **70** | **257** | **618** | **960** |
+| **Total** | **15** | **70** | **257** | **619** | **961** |
 
 ### Epics
 
@@ -4378,7 +4380,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Update (t7 follow-ups, 2026-10-05):** signature first: a 4-key `channel_announcement_2` (both bitcoin keys) has its MuSig2 signature checked against `KeyAgg(KeySort(node_id_1, node_id_2, bitcoin_key_1, bitcoin_key_2))` before any chain lookup (new `IGossipV2SignatureVerifier.CheckChannelSignature`, which needs no output); a bad signature (or keys that do not aggregate) warns, scores the peer and closes, with no lookup, so a flood of forged 4-key announcements costs no funding lookups. The lookup then checks only the output (outpoint = scid output, depth, amount >= capacity, P2TR = the untweaked or BIP 86 tweaked KeyAgg(b1, b2) via `CheckChannelProof`). A keyless (3-key) announcement of a new channel waits without a lookup in a second `PendingAnnouncementIndex` (`PendingAnnouncement.IsV2`, the v1 bounds `Gossip:MaxPendingAnnouncements`/`PendingAnnouncementTtl`, at most 4 candidates per scid, NL-418 eviction, pruned with the v1 index, gauge `queue=pending_announcements_v2`, counted by `IsPending` for the sync) until its first valid `channel_update_2` promotes it (`GossipIngress.PromoteV2Async`: the candidate whose node signed the update, then the lookup and the 3-key proof; a failed proof drops the candidate without blaming the update's sender). Tests: `Application.Tests/Gossip/Graph/GossipIngressV2PendingTests` (16), `Infrastructure.Bitcoin.Tests/Gossip/GossipV2SignatureVerifierTests` (+1). Remains: the v2 blacklist of a conflicting announcement (B7-CA-04), `Gossip:AssumeChannelValid` and `FundingValidation=SkipUnavailable` for v2 (such announcements are still refused), and the NL-425 refresh of an orphaned `node_announcement_2` whose node's only channels are pending v2 (it expires with the orphan TTL).
 
 ### NL-1141 Taproot gossip relay: the v2 backlog of a new filter is not paced, and v2 is missing from `describegraph`
-- **Status:** open (partial: b4fb6269)
+- **Status:** fixed (waves 1 and 2; implementation SHA pinned in follow-up ledger commit)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Relay/GossipRelayScheduler.RelayV2.cs`, `src/NLightning.Application/Gossip/Graph/GossipGraphDescriber.cs`
@@ -4387,6 +4389,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-878, NL-360
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T7
 - **Update (t7 follow-ups, 2026-10-05):** `describegraph` shows taproot gossip: `GossipGraphDescriber` counts `GraphDescription.V2` (`GraphV2Counts`: channels with a `channel_announcement_2`, of those also announced with BOLT 7, `channel_update_2` directions, disabled ones, nodes with a `node_announcement_2`) and the ingress's keyless announcements waiting for their first update (NL-1140, `GossipIngressState.PendingAnnouncements2`); appended as `DescribeGraphIpcResponse` keys 35-40 (`V2Channels`, `ChannelsWithBothVersions`, `V2Policies`, `V2DisabledPolicies`, `V2AnnouncedNodes`, `PendingAnnouncements2`, the last null without an ingress); the client prints a `Taproot gossip:` line when any is non-zero. Key 6 `Policies` stays BOLT 7 only; key 5 `ChannelsWithoutPolicy` now counts a channel with no update of either version (a v2-only channel with `channel_update_2`s was counted as without a policy). Tests: `GossipGraphDescriberTests` (+1), `Daemon.Tests/Ipc/Handlers/DescribeGraphIpcHandlerTests` (+1, round trip extended), `PrinterSnapshotTests` (+1). Remains: the v2 backlog of a new filter is not paced like the v1 backlog (`BacklogMessagesPerSecond`), and a stalled connection's v2 pending set is not dropped by the NL-360 stall rule.
+- **Update (2026-10-07, waves 1 and 2):** V2 filter backlogs share the BOLT 7 per-tick message budget and the connection pause/resume/stall state. The paced backlog preserves announcement-before-update ordering independently of the bounded live pending set; full outboxes retain their position, stalled peers release the v2 backlog and pending messages, and the pending gauge includes v2. Regression coverage checks pacing, ordering, backpressure, resume and stalled pending/backlog cleanup. The earlier describegraph portion remains implemented.
 
 ### NL-1142 Our own `node_announcement_2` lives in memory only
 - **Status:** fixed (wip/taproot-t7, lane G merge: `NodeAnnouncementService.AnnounceV2Async` saves our row's v2 columns before it publishes, keeps its v1 columns, and waits for a new block when the stored v2 height is not older than the tip; the v1 save keeps the v2 columns)
@@ -6544,7 +6547,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 
 ### NL-1062 `InteractiveTxDriver.WithCommitNonces` builds the partial transaction for every `tx_complete`, taproot or not
-- **Status:** open
+- **Status:** fixed (waves 1 and 2; implementation SHA pinned in follow-up ledger commit)
 - **Severity:** low
 - **Kind:** cleanup
 - **Location:** `src/NLightning.Application/InteractiveTx/InteractiveTxDriver.cs` (`WithCommitNonces`), `IInteractiveTxHost.GetLocalCommitNonces`
@@ -6552,6 +6555,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** let the host say first whether it wants nonces (e.g. a `WantsCommitNonces` member defaulting to false) and skip the build otherwise. Left to the lane that next edits the driver (taproot splicing, NL-965, also needs `commit_nonces`).
 - **Blocks/Blocked-by:** Related NL-969, NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
+- **Update (2026-10-07, waves 1 and 2):** `IInteractiveTxHost.WantsCommitNonces` defaults to false; dual-funded and splice hosts enable it only for simple-taproot sessions. The driver keeps funding-nonce decoration but skips partial-transaction construction when commitment nonces are unnecessary. Regression coverage checks skipped construction and taproot nonce generation.
 
 ### NL-1079 A bumped taproot dual-funded open failed the channel on a reconnection after one side saw an attempt confirm
 - **Status:** fixed (3f76617e; landed in cd5c2c5d)
@@ -9298,7 +9302,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T7
 
 ### NL-1146 An orphaned `node_announcement_2` whose node has only pending v2 channels expires instead of waiting for the promotion
-- **Status:** open
+- **Status:** fixed (waves 1 and 2; implementation SHA pinned in follow-up ledger commit)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.V2.cs`, `OrphanUpdateCache`
@@ -9306,9 +9310,10 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** Extend the NL-425 refresh to the v2 pending index (keep the orphaned 269 while a pending v2 channel names the node) and replay it at the promotion.
 - **Blocks/Blocked-by:** Related NL-1140, NL-425
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T7
+- **Update (2026-10-07, waves 1 and 2):** Orphan node announcements of either version refresh while either pending channel index names their node, and the v2 orphan replays when its channel promotes. Regression coverage checks TTL retention, promotion and eventual expiry without a pending channel.
 
 ### NL-1147 A keyless `channel_announcement_2` whose proof fails at promotion does not score its sender
-- **Status:** open
+- **Status:** fixed (waves 1 and 2; implementation SHA pinned in follow-up ledger commit)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.V2.cs` (`PromoteV2Async`)
@@ -9316,6 +9321,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** Score the original sender through the misbehaviour tracker by node id (or keep a weak reference to its connection) when a promoted keyless proof fails.
 - **Blocks/Blocked-by:** Related NL-1140, NL-406
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T7
+- **Update (2026-10-07, waves 1 and 2):** Invalid or malformed v2 channel proofs at promotion score the original announcement sender by node id through the existing misbehaviour tracker. The peer supplying the promoting update is not blamed; threshold bans remain effective even without the original connection. Regression coverage checks attribution and bans.
 
 ### NL-1082 [EPIC] payroute: full IPC control over the payment path (single routes and MPP shard sets)
 - **Status:** in-progress (`wip/fafo`; phases A and B done (NL-1083), phase C deferred)
@@ -9463,13 +9469,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** found by NL-1148 wave C
 
 ### NL-1153 LN backend: Xpay caps `retry_for` at 300 s while captaind's `cln_xpay_max_retry_for` may be larger
-- **Status:** open
+- **Status:** fixed (waves 1 and 2; implementation SHA pinned in follow-up ledger commit)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `src/NLightning.LnBackend/ClnNodeBackendService.cs` (`Xpay`: `Math.Clamp(request.RetryFor, 1, 300)`)
 - **Evidence:** captaind's default `cln_xpay_max_retry_for` is 5 min (= our cap) but an operator may raise it (up to i32 seconds). We would then stop starting new attempts earlier than captaind expects. Safe: captaind reconciles by ListPays and fails the attempt only on a FAILED row, which needs no part in flight; the user just gets fewer retries.
 - **Fix sketch:** a `LnBackend:MaxXpayRetryFor` option (default 300 s) or follow the request up to a sane bound (e.g. 1 h).
 - **Blocks/Blocked-by:** found by NL-1148 wave C
+- **Update (2026-10-07, waves 1 and 2):** `LnBackend:MaxXpayRetryFor` bounds xpay retry windows, default 300 seconds and validated from 1 to 3,600. Explicit requests use the configured cap; unset requests use at most 60 seconds. The payment service receives the resulting timeout. Service, options and host coverage checks configured limits and startup validation.
 
 ### NL-1154 LN backend: ListPays could report FAILED between two attempts of a payment that was still retrying
 - **Status:** fixed (47ec437e)
@@ -9691,13 +9698,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1184
 
 ### NL-1187 LND gRPC GetTransactions: history gaps
-- **Status:** open
+- **Status:** open (partial: wip/fixes-waves1and2; indexed query implemented)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `LightningService.Transactions.cs`
 - **Evidence:** wallet movements before the accounting cutover (the opening balance) and with `Accounting:Enabled=false` are not listed; a transaction that is not ours gets its `raw_tx_hex` and full `output_details` from bitcoind (out of its block, or the mempool) only while bitcoind still has it (a pruned block leaves them out), and its `total_fees` only when every input was ours; the whole sealed feed is read per call (no index by kind/txid).
 - **Fix sketch:** a wallet-history query on the accounting repository (kinds, height range, paging in the database); store the raw transaction of external deposits with the UTXO.
 - **Blocks/Blocked-by:** follow-up of NL-1185
+- **Update (2026-10-07, waves 1 and 2):** `GetWalletHistoryAsync` pages standing sealed wallet received/spent rows by ledger sequence within the requested inclusive height range. Indexed `ReversesEventKey` references suppress reversals anywhere in the sealed feed, with legacy/explicit references backfilled by the provider migrations without rewriting sealed payloads or hashes. RPC aggregation spans all event pages before transaction pagination. Added actual SQLite query/backfill and >1,000-row RPC coverage. Remains open: pre-accounting/disabled-accounting history, external raw transaction retention on pruned nodes, and complete external-input fee knowledge. Validated by the final RPC, SQLite query/backfill and PostgreSQL historical-upgrade tests; see the batch validation above. Implementation SHA is pinned in the follow-up ledger commit.
 
 ### NL-1188 `FinancialHeldOutsideTests.Given_TheColdStorageStory_*` failed once under a loaded full run
 - **Status:** open
@@ -10015,7 +10023,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Plan ref:** LND_SUBSCRIPTIONS_PLAN.md
 
 ### NL-1231 Passive HTLC subscriptions do not publish BOLT 5 on-chain outcomes
-- **Status:** open
+- **Status:** fixed (waves 1 and 2; implementation SHA pinned in follow-up ledger commit)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** Application `OnchainResolutionExecutor`, `Payments/Events/HtlcEventMonitor`; Router SubscribeHtlcEvents
@@ -10023,9 +10031,10 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** Add a durable first-publication checkpoint or a resolver result contract distinguishing newly committed outcome facts, then publish on-chain HTLC settle/fail/final with Offchain=false without changing operational recovery replay.
 - **Blocks/Blocked-by:** Follow-up of NL-1230
 - **Plan ref:** LND_SUBSCRIPTIONS_PLAN.md Limits
+- **Update (2026-10-07, waves 1 and 2):** Known outgoing on-chain fulfill/fail and ordinary incoming terminal outcomes publish after the resolution save. `OnchainHtlcObservations` checkpoints channel/direction/HTLC/outcome in that same transaction, including when no reader is present; operational switch replay continues independently. Checkpoints survive restart/reorg/replaced closes. Incoming finals set Offchain=false, classify our confirmed claim versus peer timeout, and positively identified trimmed incoming HTLCs fail at ReasonableDepth. Unknown data-loss outputs or missing trimmed metadata do not invent outcomes. This is a live feed, not an outbox or event history: commit-to-fanout crashes may lose notifications, and reorgs do not retract HTLC events. Added failed-save, replay/restart, reorg, trimming, observer isolation and real final-hop proof coverage; final validation is recorded in the batch header and the implementation SHA is pinned in the follow-up ledger commit.
 
 ### NL-1232 Passive transaction subscriptions exclude imported-only tapscript transactions
-- **Status:** open
+- **Status:** fixed (waves 1 and 2; implementation SHA pinned in follow-up ledger commit)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** Bitcoin `ImportedTapscriptTracker`, `BlockchainMonitorService.TransactionEvents`; Lightning SubscribeTransactions
@@ -10033,6 +10042,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** Extend the NL-1197 incremental/reorg-aware imported index with committed immutable transaction notifications and connect them to the passive wallet feed, deduplicating transactions shared with the canonical wallet.
 - **Blocks/Blocked-by:** NL-1197; follow-up of NL-1230
 - **Plan ref:** LND_SUBSCRIPTIONS_PLAN.md Limits
+- **Update (2026-10-07, waves 1 and 2):** The incremental imported tapscript index publishes immutable deposit/spend confirmation and rewind changes after its index save. The unified source joins canonical ownership without double-counting shared outputs or inputs. Processing/completed height/hash markers defer fanout until the canonical batch finishes, including RPC catch-up, lagging workers and same-tip reorgs; explicit rewind metadata handles fresh trackers. First/reconnected readers establish a checkpoint without historical replay. Pending observations are bounded, index failures terminate affected streams explicitly, and returned snapshots are isolated from queued payloads. Imported-only mempool discovery is not added. Added durable SQLite and generated-client regtest coverage; final validation is recorded in the batch header and the implementation SHA is pinned in the follow-up ledger commit.
 
 ### NL-1234 Interceptor callback and outbound stream failures can strand held forwards
 - **Status:** fixed (b3976b0d)
@@ -10122,3 +10132,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix:** `BatchOpenChannel` (ffbb07bf) as LND v0.21.4 for a batch of one channel: the node's open (the `OpenChannelSync` path, `sat_per_vbyte`/`label` from the batch), answered at the published funding with one `PendingUpdate`, then `use_base_fee`/`use_fee_rate` as the channel's routing policy (a refusal is logged, the open stays); a batch of several channels (LND funds them from one transaction; the node funds one channel per transaction), `pending_chan_id`, `spend_unconfirmed` and coin selection strategies are refused before anything is funded. Bridge: `--profile admin` = `wallet` plus `OpenChannel`, `OpenChannelSync`, `BatchOpenChannel`, `CloseChannel`, `UpdateChannelPolicy`, `EstimateFee`, walletrpc `ListUnspent`/`EstimateFee` and the autopilot writes; still a per-session scoped macaroon (never the node admin macaroon), never macaroon administration, signrpc, walletrpc PSBT/lease/signing, the channel acceptor or the HTLC interceptor. README warning that it opens and closes channels and moves funds.
 - **Validation (2026-10-07):** `test/NLightning.LndGrpc.Tests/LndGrpcHostTests.BatchOpen.cs` (3 tests: Terminal's exact one-channel batch opened with its policy at the published funding; a refused policy still answers; seven refused batches dispatch nothing); LndGrpc.Tests 221/221 on net10.0; Release solution build (net10.0) 0 warnings, 0 errors; `dotnet format --verify-no-changes` clean. `tools/lnc`: `go vet`, `go test -race -count=1 ./...` (44 tests; the profile test now bans macaroon administration, signrpc, PSBT/lease/raw signing and the node hooks from every profile including admin; `TestAdminProfileGrantsTerminalChannelManagement`). Deploy: rebuild and restart the node daemon (for `BatchOpenChannel`), rebuild the bridge, create a `--profile admin` session and pair Terminal again.
 - **Blocks/Blocked-by:** a multi-channel batch needs funding several channels from one transaction (not supported by the node)
+
+
+### NL-1242 LND gRPC GetTransactions double-counts wallet outputs also imported as tapscript
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `LndGrpc/Services/LightningService.Transactions.cs`, `WalletKitService.Imports.cs`
+- **Evidence:** Code review during waves 1 and 2 found an existing history-merge defect. `WalletKit.ImportTapscript` with `FullKeyOnly` can register the same P2TR script as a canonical wallet address. `GetTransactions` first accumulates canonical accounting movements, then unconditionally adds `watched.Amount` and imported output details for the same transaction. A shared output is therefore counted twice; distinct wallet and imported outputs in one transaction should still sum normally. This is a code-derived finding, without an executed overlap-history proof. The new passive subscription source unions ownership correctly; this read-RPC follow-up is outside NL-1187's indexed-query work.
+- **Fix sketch:** Merge canonical and imported ownership by outpoint/input/output identity before calculating net amount and output details; add overlap deposit/spend and distinct mixed-output history proofs.
+- **Blocks/Blocked-by:** Related NL-1187, NL-1232
+- **Plan ref:** LND_SUBSCRIPTIONS_PLAN.md Limits

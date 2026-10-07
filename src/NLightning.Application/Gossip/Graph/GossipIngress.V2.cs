@@ -54,7 +54,7 @@ using Metrics;
 /// <para>
 /// Not done for v2 (NL-1140): the B7-CA-04 blacklist of a conflicting announcement, and the
 /// <see cref="GossipGraphOptions.AssumeChannelValid"/> and <c>SkipUnavailable</c> shortcuts (a v2 proof needs the
-/// output). The NL-425 refresh of a pending node's orphaned announcement covers BOLT 7 only.
+/// output). Pending node announcements of either version wait for promotion (NL-1146).
 /// </para>
 /// </remarks>
 public sealed partial class GossipIngress
@@ -486,6 +486,8 @@ public sealed partial class GossipIngress
                     _logger.LogDebug("The pending channel_announcement_2 {ShortChannelId} from peer {Peer} has an "
                                    + "invalid channel proof", update.ShortChannelId,
                                      pending.OriginNodeId?.ToString() ?? "us");
+                    ScoreMisbehaviour(pending.OriginNodeId, null, "invalid promoted channel_announcement_2 proof",
+                                      disconnect: false);
                     failure = GossipIngressResult.Limited("invalid channel proof",
                                                           GossipMetricReasons.InvalidSignature);
                     break;

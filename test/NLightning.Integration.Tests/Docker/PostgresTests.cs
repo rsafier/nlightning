@@ -444,6 +444,17 @@ public class PostgresTests
             TestContext.Current.CancellationToken);
     }
 
+    [Fact]
+    public async Task Given_PostgresHistoricalFeed_When_Upgraded_Then_ReversalReferencesAreBackfilledWithoutChangingSeals()
+    {
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_accounting_history_upgrade");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        await AccountingHistoryUpgradeRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, databaseTypeProvider), DatabaseType.PostgreSql,
+            TestContext.Current.CancellationToken);
+    }
+
     private async Task<DbContextOptions<NLightningDbContext>> CreateOwnDatabaseOptionsAsync(string database)
     {
         var connectionString = _fixture.DbConnectionString!.Replace("Database=nlightning", $"Database={database}",

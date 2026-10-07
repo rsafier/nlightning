@@ -43,7 +43,7 @@ using Sync;
 /// </para>
 /// <para>
 /// <b>Backlog:</b> a new filter with a <c>block_height_range</c> queues the v2 gossip of the graph inside it at the next
-/// flush, bounded like the pending set (no pacing beyond it, NL-1141).
+/// tick, sharing the BOLT 7 per-tick pacing budget and outbox stall handling (NL-1141).
 /// </para>
 /// </remarks>
 public sealed partial class GossipRelayScheduler
@@ -137,24 +137,22 @@ public sealed partial class GossipRelayScheduler
     }
 
     /// <summary>
-    /// One connection's v2 flush (with its BOLT 7 flush): its backlog when a new filter asked for one, then what is
-    /// pending inside its <c>block_height_range</c>, 267s first.
+    /// One connection's v2 flush (with its BOLT 7 flush): what is pending inside its
+    /// <c>block_height_range</c>, 267s first, after its paced backlog ends.
     /// </summary>
     /// <returns>How many messages went out.</returns>
-    private async Task<int> FlushV2PeerAsync(GossipPeer peer)
+    private async Task<int> FlushV2PeerAsync(GossipPeer peer, RelayPeerState relayState, DateTimeOffset now)
     {
         if (!SupportsGossipV2(peer) || !_syncManager!.TryGetPeerBlockHeightRange(peer.Service, out var range))
             return 0;
 
         var state = GetV2State(peer);
-        if (state.TakeBacklogRequest())
-            RecordV2Drops(state.Add(EnumerateV2Backlog(range), _relayOptions.MaxRelayPendingPerPeer));
-
         var pending = state.TakePending();
         if (pending.Count == 0)
             return 0;
 
         var items = SelectV2(pending, range, state, peer.NodeId);
+        items.RemoveAll(state.ConsumeBacklogSent);
         var sent = 0;
         for (var i = 0; i < items.Count; i++)
         {
@@ -174,6 +172,7 @@ public sealed partial class GossipRelayScheduler
             {
                 // NL-360: the rest waits for the next flush, ahead of what is collected meanwhile
                 RecordV2Drops(state.Add(items.Skip(i).ToList(), _relayOptions.MaxRelayPendingPerPeer));
+                Pause(peer, relayState, now);
                 return sent;
             }
 
@@ -186,6 +185,47 @@ public sealed partial class GossipRelayScheduler
             sent++;
         }
 
+        return sent;
+    }
+
+    private async Task<int> SendV2BacklogAsync(GossipPeer peer, RelayPeerState relayState,
+                                              DateTimeOffset now, int budget)
+    {
+        var state = GetV2State(peer);
+        if (state.TakeBacklogRequest())
+        {
+            state.ClearWaiting();
+            if (SupportsGossipV2(peer) && _syncManager!.TryGetPeerBlockHeightRange(peer.Service, out var range))
+                state.Backlog = new Queue<V2RelayItem>(SelectV2(EnumerateV2Backlog(range), range, state, peer.NodeId));
+        }
+
+        var sent = 0;
+        while (sent < budget && state.Backlog is { Count: > 0 } backlog)
+        {
+            var item = backlog.Peek();
+            var result = await _sender.SendAsync(peer, item.ToMessage(), item.Raw.Length + sizeof(ushort));
+            if (result == GossipEnqueueResult.Full)
+            {
+                Pause(peer, relayState, now);
+                return sent;
+            }
+
+            if (result != GossipEnqueueResult.Queued)
+            {
+                state.ClearWaiting();
+                return sent;
+            }
+
+            backlog.Dequeue();
+            if (item.Type == MessageTypes.ChannelAnnouncement2)
+                state.MarkAnnounced(item.ShortChannelId);
+            state.RememberBacklogSent(item, _relayOptions.MaxRelayPendingPerPeer);
+            _metrics?.RecordRelayed(item.Type, "others");
+            sent++;
+        }
+
+        if (state.Backlog is { Count: 0 })
+            state.Backlog = null;
         return sent;
     }
 
@@ -402,6 +442,42 @@ public sealed partial class GossipRelayScheduler
                 _pending.Clear();
                 return items;
             }
+        }
+
+        public Queue<V2RelayItem>? Backlog { get; set; }
+
+        public bool HasBacklog => Backlog is { Count: > 0 };
+
+        private readonly Dictionary<GossipMessageKey, uint> _backlogSent = [];
+
+        public int PendingCount
+        {
+            get
+            {
+                lock (_lock)
+                    return _pending.Count;
+            }
+        }
+
+        public void RememberBacklogSent(V2RelayItem item, int max)
+        {
+            if (_backlogSent.Count >= 4 * Math.Max(max, 16))
+                _backlogSent.Clear();
+            _backlogSent[item.Slot] = item.Height;
+        }
+
+        public bool ConsumeBacklogSent(V2RelayItem item)
+        {
+            if (!_backlogSent.Remove(item.Slot, out var height))
+                return false;
+            return height >= item.Height;
+        }
+
+        public int ClearWaiting()
+        {
+            Backlog = null;
+            _backlogSent.Clear();
+            return TakePending().Count;
         }
 
         public void MarkAnnounced(ShortChannelId shortChannelId)

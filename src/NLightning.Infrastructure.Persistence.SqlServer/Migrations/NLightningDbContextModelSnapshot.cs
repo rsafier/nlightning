@@ -170,6 +170,10 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("PaymentHash")
                         .HasColumnType("varbinary(32)");
 
+                    b.Property<string>("ReversesEventKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
                     b.Property<byte[]>("ShortChannelId")
                         .HasColumnType("varbinary(8)");
 
@@ -185,6 +189,10 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.HasIndex("LedgerSeq");
 
                     b.HasIndex("OccurredAt");
+
+                    b.HasIndex("ReversesEventKey");
+
+                    b.HasIndex("Kind", "BlockHeight", "LedgerSeq");
 
                     b.ToTable("AccountingEvents");
                 });
@@ -2033,6 +2041,28 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.HasKey("ChannelId");
 
                     b.ToTable("ChannelCloses");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.OnchainHtlcObservationEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte>("Direction")
+                        .HasColumnType("tinyint");
+
+                    b.Property<decimal>("HtlcId")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<bool>("Settled")
+                        .HasColumnType("bit");
+
+                    b.Property<long>("ObservedAt")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("ChannelId", "Direction", "HtlcId", "Settled");
+
+                    b.ToTable("OnchainHtlcObservations");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.OutputResolutionEntity", b =>

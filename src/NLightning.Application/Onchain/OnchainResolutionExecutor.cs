@@ -26,6 +26,8 @@ using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
 using Domain.Onchain.Parsers;
 using Domain.Payments.Enums;
+using Domain.Payments.Events;
+using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Payments.Trampoline;
 using Domain.Persistence.Interfaces;
@@ -575,6 +577,9 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         // Read before any row: a watch on a transaction not confirmed by then can only be spent in a later block
         var lastProcessedBefore = scope.ServiceProvider.GetService<IBlockchainMonitor>()?.LastProcessedBlockHeight;
         Applied applied;
+        var passivePublisher = scope.ServiceProvider.GetService<IHtlcEventPublisher>();
+        Action<HtlcActivityEvent>? publishPassive = null;
+        IReadOnlyList<HtlcActivityEvent> passiveActivities = [];
         WatchedOutpointModel? rewatch = null;
         List<(WatchedOutpointModel, uint)> catchUp = [];
         using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
@@ -747,6 +752,19 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                 { } accountingStage)
                 stageMore.Add(accountingStage);
 
+            // NL-1231: checkpoint even without readers, so recovery is never presented as new live activity.
+            if (passivePublisher is not null)
+            {
+                passiveActivities = await OnchainHtlcObservations.StageAsync(
+                    unitOfWork, channel, actions, outputs.Values, _channelMemoryRepository, _timeProvider.GetUtcNow(),
+                    close, height, _options.ReasonableDepth, spent);
+                if (passiveActivities.Count > 0)
+                {
+                    publishPassive = passivePublisher.CapturePublisher();
+                    stageMore.Add(() => Task.CompletedTask);
+                }
+            }
+
             applied = await StageAndSaveAsync(unitOfWork, actions,
                                               stageMore.Count == 0
                                                   ? null
@@ -775,6 +793,25 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         if (rewatch is not null)
             _outpointWatcher.TrackWatchedOutpoint(rewatch);
 
+        foreach (var activity in passiveActivities)
+        {
+            try
+            {
+                publishPassive!(activity);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(exception, "Could not publish on-chain HTLC activity for channel {ChannelId}", channelId);
+                try
+                {
+                    passivePublisher!.InvalidateSubscriptions();
+                }
+                catch (Exception invalidationException)
+                {
+                    _logger.LogWarning(invalidationException, "Could not invalidate on-chain HTLC subscriptions");
+                }
+            }
+        }
         await AfterSaveAsync(scope, channelId, applied);
         await CatchUpSpendsAsync(channelId, catchUp, cancellationToken);
     }

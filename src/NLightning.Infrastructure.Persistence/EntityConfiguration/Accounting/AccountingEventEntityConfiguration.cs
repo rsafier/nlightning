@@ -26,6 +26,7 @@ public static class AccountingEventEntityConfiguration
             entity.Property(e => e.EventKey)
                   .HasMaxLength(AccountingEventKeys.MaxLength)
                   .IsRequired();
+            entity.Property(e => e.ReversesEventKey).HasMaxLength(AccountingEventKeys.MaxLength).IsRequired(false);
             entity.Property(e => e.Kind).IsRequired();
             entity.Property(e => e.OccurredAt)
                   .HasConversion<UtcTicksConverter>()
@@ -58,6 +59,8 @@ public static class AccountingEventEntityConfiguration
             // The sealer finds a key's sealed row and the unsealed rows; readers page by ledger sequence and filter by
             // time and channel
             entity.HasIndex(e => e.EventKey);
+            entity.HasIndex(e => e.ReversesEventKey);
+            entity.HasIndex(e => new { e.Kind, e.BlockHeight, e.LedgerSeq });
             entity.HasIndex(e => e.LedgerSeq);
             entity.HasIndex(e => e.OccurredAt);
             entity.HasIndex(e => e.ChannelId);

@@ -31,7 +31,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// and only then publishes, watches, raises and alerts; marks spent outputs resolved, makes them irrevocable at depth
 /// 100 (not 99) and closes the channel once everything is irrevocable.
 /// </summary>
-public sealed class OnchainResolutionExecutorTests : IDisposable
+public sealed partial class OnchainResolutionExecutorTests : IDisposable
 {
     private const uint SpentAt = 1_000;
 

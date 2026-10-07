@@ -7,7 +7,6 @@ namespace NLightning.Infrastructure.Bitcoin.Wallet.Imports;
 
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Wallet.Interfaces;
-using Domain.Onchain.Events;
 using Domain.Persistence.Interfaces;
 using Interfaces;
 
@@ -28,6 +27,18 @@ public sealed class ImportedTapscriptTracker : IDisposable
     private int _requested;
     private int _worker;
     private CachedWatch? _cached;
+    private readonly Lock _observationsLock = new();
+    private readonly List<WalletTransactionEventArgs> _pendingCanonical = [];
+    private readonly List<WalletTransactionEventArgs> _pendingImported = [];
+    private (uint Height, string Hash)? _completedTip;
+    private readonly Dictionary<string, (uint Height, string Hash)> _published = new(StringComparer.Ordinal);
+    private readonly Queue<string> _publishedOrder = new();
+    private HashSet<string> _importedScripts = new(StringComparer.Ordinal);
+    private Dictionary<OutPoint, long> _importedOutputs = [];
+
+    /// <summary>Immutable confirmations and unconfirmations, published only after the index commit. No replay.</summary>
+    public event EventHandler<WalletTransactionEventArgs>? OnTransactionObserved;
+    public event Action<Exception>? OnObservationFailed;
 
     public ImportedTapscriptTracker(IServiceScopeFactory scopes, IBitcoinChainService chain,
                                     IBlockchainMonitor monitor, ILogger<ImportedTapscriptTracker>? logger = null)
@@ -37,14 +48,16 @@ public sealed class ImportedTapscriptTracker : IDisposable
         _monitor = monitor;
         _logger = logger ?? NullLogger<ImportedTapscriptTracker>.Instance;
         _lifetime = _stop.Token;
-        monitor.OnNewBlockDetected += OnNewBlock;
-        monitor.OnBlockDisconnected += OnBlockDisconnected;
+        monitor.OnWalletTransactionObserved += OnCanonicalTransaction;
+        monitor.OnWalletTransactionsProcessed += OnWalletTransactionsProcessed;
+        monitor.OnWalletTransactionsProcessing += OnWalletTransactionsProcessing;
     }
 
     public void Dispose()
     {
-        _monitor.OnNewBlockDetected -= OnNewBlock;
-        _monitor.OnBlockDisconnected -= OnBlockDisconnected;
+        _monitor.OnWalletTransactionObserved -= OnCanonicalTransaction;
+        _monitor.OnWalletTransactionsProcessed -= OnWalletTransactionsProcessed;
+        _monitor.OnWalletTransactionsProcessing -= OnWalletTransactionsProcessing;
         _stop.Cancel();
         // The gate remains valid until any in-flight RPC has unwound its finally block.
         _stop.Dispose();
@@ -65,6 +78,30 @@ public sealed class ImportedTapscriptTracker : IDisposable
             ct.ThrowIfCancellationRequested();
             await uow.SaveChangesAsync();
             _cached = null;
+            lock (_observationsLock)
+                _importedScripts.Add(Convert.ToHexString(script.Script));
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>Initializes durable ownership then joins the live source under the checkpoint gate.</summary>
+    public async Task SubscribeAsync(EventHandler<WalletTransactionEventArgs> handler, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            await SnapshotCoreAsync(ct);
+            lock (_observationsLock)
+            {
+                if (OnTransactionObserved is null)
+                {
+                    // A first/reconnected reader starts at this initialized checkpoint. Events queued by
+                    // earlier RPC catch-up belong to its baseline, not to the live subscription.
+                    _pendingImported.Clear();
+                    _pendingCanonical.Clear();
+                }
+                OnTransactionObserved += handler;
+            }
         }
         finally { _gate.Release(); }
     }
@@ -90,6 +127,7 @@ public sealed class ImportedTapscriptTracker : IDisposable
         if (scripts.Count == 0)
         {
             _cached = null;
+            PublishCommitted(tip, null);
             return new ImportedWatchSnapshot(tip, [], []);
         }
         ct.ThrowIfCancellationRequested();
@@ -97,11 +135,15 @@ public sealed class ImportedTapscriptTracker : IDisposable
         var scriptSet = string.Join("|", scripts.OrderBy(s => Convert.ToHexString(s.Script), StringComparer.Ordinal)
             .Select(s => Convert.ToHexString(s.Script) + ":" + s.CreatedHeight.ToString(System.Globalization.CultureInfo.InvariantCulture)));
         if (_cached is { } cached && cached.Snapshot.Tip == tip && cached.Hash == anchor && cached.ScriptSet == scriptSet)
+        {
+            PublishCommitted(tip, anchor.ToString());
             return Copy(cached.Snapshot);
+        }
 
         var start = scripts.Min(s => s.CreatedHeight);
         var saved = await uow.ImportedTapscriptDbRepository.GetIndexAsync();
-        var transactions = saved is not null && saved.ScriptSet == scriptSet ? ReadHistory(saved.History, ct) : [];
+        var original = saved is not null ? ReadHistory(saved.History, ct) : [];
+        var transactions = saved is not null && saved.ScriptSet == scriptSet ? original.ToList() : [];
         ulong scanFrom = start;
         uint256? previous = null;
         if (saved is not null && saved.ScriptSet == scriptSet)
@@ -157,12 +199,88 @@ public sealed class ImportedTapscriptTracker : IDisposable
          || await _chain.GetBlockHashAsync(tip).WaitAsync(ct) != anchor
          || _monitor.IsChainProcessingHalted)
             throw new InvalidOperationException("chain changed during imported tapscript scan; retry");
+        // Build notifications before saving: serialization or mapping failures cannot escape a partial commit.
+        var oldHistory = new List<ImportedWatchTransaction>();
+        var oldOutputs = new Dictionary<OutPoint, ImportedWatchOutput>();
+        foreach (var transaction in original)
+            Apply(transaction, tracked, oldOutputs, oldHistory);
+        var changes = saved is null ? [] : DescribeChanges(oldHistory, history);
         await uow.ImportedTapscriptDbRepository.SetIndexAsync(new ImportedWatchIndex(tip, anchor.ToBytes(), scriptSet, WriteHistory(transactions, ct)));
         ct.ThrowIfCancellationRequested();
         await uow.SaveChangesAsync();
         var snapshot = new ImportedWatchSnapshot(tip, outputs.Values.ToList(), history);
         _cached = new CachedWatch(anchor, scriptSet, Copy(snapshot));
-        return snapshot;
+        lock (_observationsLock)
+        {
+            _importedScripts = tracked.Keys.ToHashSet(StringComparer.Ordinal);
+            // Retain disconnected parents until the next checkpoint so a rewind notice can keep ownership.
+            _importedOutputs = original.Concat(transactions).SelectMany(t => t.Transaction.Outputs
+                .Select((output, i) => (Output: output, Point: new OutPoint(t.Transaction.GetHash(), (uint)i))))
+                .Where(o => _importedScripts.Contains(Convert.ToHexString(o.Output.ScriptPubKey.ToBytes())))
+                .GroupBy(o => o.Point).ToDictionary(g => g.Key, g => g.First().Output.Value.Satoshi);
+        }
+        lock (_observationsLock)
+        {
+            foreach (var observed in changes)
+            {
+                if (observed.BlockHeight == 0)
+                    _pendingImported.RemoveAll(t => t.TxHash == observed.TxHash && t.BlockHeight > 0);
+                if (_pendingImported.Count >= 8192)
+                {
+                    _pendingImported.Clear();
+                    FailObservers(new InvalidOperationException("imported transaction observation backlog exceeded 8192 events"));
+                }
+                _pendingImported.Add(observed);
+            }
+        }
+        PublishCommitted(tip, anchor.ToString());
+        return Copy(snapshot);
+    }
+
+    private static List<WalletTransactionEventArgs> DescribeChanges(
+        IReadOnlyList<ImportedWatchTransaction> previous, IReadOnlyList<ImportedWatchTransaction> current)
+    {
+        static string Identity(ImportedWatchTransaction t) => $"{t.Transaction.GetHash()}:{t.Height}:{t.BlockHash}";
+        var before = previous.Select(Identity).ToHashSet(StringComparer.Ordinal);
+        var after = current.Select(Identity).ToHashSet(StringComparer.Ordinal);
+        var changes = new List<WalletTransactionEventArgs>();
+        foreach (var transaction in previous.Where(t => !after.Contains(Identity(t))))
+            changes.Add(Describe(transaction, false));
+        foreach (var transaction in current.Where(t => !before.Contains(Identity(t))))
+            changes.Add(Describe(transaction, true));
+        return changes;
+    }
+
+    private static WalletTransactionEventArgs Describe(ImportedWatchTransaction observed, bool confirmed)
+    {
+        var tx = observed.Transaction;
+        var spent = observed.SpentOutputs.ToHashSet();
+        var inputs = Enumerable.Range(0, tx.Inputs.Count).Where(i => spent.Contains(tx.Inputs[i].PrevOut))
+            .Select(i => (uint)i).ToArray();
+        var fee = inputs.Length == tx.Inputs.Count && !tx.IsCoinBase
+            ? Math.Max(0, observed.OurOutputs.Sum(i => tx.Outputs[(int)i].Value.Satoshi)
+                          - observed.Amount - tx.Outputs.Sum(o => o.Value.Satoshi)) : 0;
+        return new WalletTransactionEventArgs(tx.ToHex(), observed.Amount, fee,
+            confirmed ? observed.Height : 0, confirmed ? observed.BlockHash.ToString() : "",
+            observed.Time, "", observed.OurOutputs, inputs, tx.GetHash().ToString(), isReorg: !confirmed);
+    }
+
+    private void Publish(WalletTransactionEventArgs observed)
+    {
+        lock (_observationsLock)
+        {
+            var state = (observed.BlockHeight, observed.BlockHash);
+            if (_published.TryGetValue(observed.TxHash, out var previous) && previous == state) return;
+            if (!_published.ContainsKey(observed.TxHash)) _publishedOrder.Enqueue(observed.TxHash);
+            _published[observed.TxHash] = state;
+            while (_publishedOrder.Count > 8192) _published.Remove(_publishedOrder.Dequeue());
+        }
+        if (OnTransactionObserved is not { } handlers) return;
+        foreach (var handler in handlers.GetInvocationList().Cast<EventHandler<WalletTransactionEventArgs>>())
+        {
+            try { handler(this, observed); }
+            catch (Exception e) { _logger.LogWarning(e, "Imported transaction subscriber failed"); }
+        }
     }
 
     private static bool Apply(IndexedTransaction indexed, Dictionary<string, ImportedTapscript> tracked,
@@ -234,8 +352,104 @@ public sealed class ImportedTapscriptTracker : IDisposable
         return entries;
     }
 
-    private void OnNewBlock(object? sender, NewBlockEventArgs args) => ScheduleUpdate();
-    private void OnBlockDisconnected(object? sender, BlockDisconnectedEventArgs args) => ScheduleUpdate();
+    private void OnWalletTransactionsProcessing(object? sender, EventArgs args)
+    {
+        lock (_observationsLock) _completedTip = null;
+    }
+
+    private void OnWalletTransactionsProcessed(object? sender, NewBlockEventArgs args)
+    {
+        lock (_observationsLock)
+            _completedTip = (args.Height, new uint256((byte[])args.BlockHash).ToString());
+        ScheduleUpdate();
+    }
+
+    private void OnCanonicalTransaction(object? sender, WalletTransactionEventArgs observed)
+    {
+        // Mempool observations are operational; confirmations and rewinds wait for the committed index join.
+        if (observed.BlockHeight == 0 && observed.BlockHash.Length == 0)
+        {
+            // Rewind notices arrive before the processed marker; a previously confirmed tx must join the diff.
+            lock (_observationsLock)
+            {
+                if (observed.IsReorg || _pendingCanonical.Any(t => t.TxHash == observed.TxHash && t.BlockHeight > 0)
+                    || (_published.TryGetValue(observed.TxHash, out var previous) && previous.Height > 0))
+                {
+                    // A rewind supersedes a confirmation not yet published by a lagging index worker.
+                    _pendingCanonical.RemoveAll(t => t.TxHash == observed.TxHash && t.BlockHeight > 0);
+                    QueueCanonical(observed);
+                    return;
+                }
+            }
+            Publish(Enrich(observed));
+            return;
+        }
+        lock (_observationsLock)
+            QueueCanonical(observed);
+    }
+
+    private void QueueCanonical(WalletTransactionEventArgs observed)
+    {
+        if (_pendingCanonical.Count >= 8192)
+        {
+            _pendingCanonical.Clear();
+            FailObservers(new InvalidOperationException("imported transaction observation backlog exceeded 8192 events"));
+        }
+        _pendingCanonical.Add(observed);
+    }
+
+    private void FailObservers(Exception exception)
+    {
+        if (OnObservationFailed is not { } handlers) return;
+        foreach (var handler in handlers.GetInvocationList().Cast<Action<Exception>>())
+        {
+            try { handler(exception); }
+            catch (Exception e) { _logger.LogWarning(e, "Imported transaction failure subscriber failed"); }
+        }
+    }
+
+    private void PublishCommitted(uint tip, string? anchor)
+    {
+        lock (_observationsLock)
+        {
+            // RPC reads may commit the index between the monitor's block notice and its canonical wallet
+            // callbacks. Retain those changes until the exact height/hash completion marker arrives.
+            if (_completedTip is not { } completed || completed.Height != tip
+                || (anchor is not null && completed.Hash != anchor)) return;
+            var canonical = _pendingCanonical.Where(t => t.BlockHeight <= tip).ToList();
+            _pendingCanonical.RemoveAll(t => t.BlockHeight <= tip);
+            var imported = _pendingImported.ToArray();
+            _pendingImported.Clear();
+            static (string, uint, string) Key(WalletTransactionEventArgs t) => (t.TxHash, t.BlockHeight, t.BlockHash);
+            var canonicalStates = canonical.Select(Key).ToHashSet();
+            var joined = canonical.Select(Enrich).Concat(imported.Where(t => !canonicalStates.Contains(Key(t))));
+            foreach (var observed in joined.OrderBy(t => t.BlockHeight)) Publish(observed);
+        }
+    }
+
+    private WalletTransactionEventArgs Enrich(WalletTransactionEventArgs canonical)
+    {
+        var tx = Transaction.Parse(canonical.RawTransactionHex, Network.Main);
+        var outputs = canonical.OurOutputs.ToHashSet();
+        var inputs = canonical.OurInputs.ToHashSet();
+        var amount = canonical.AmountSat;
+        lock (_observationsLock)
+        {
+            for (var i = 0; i < tx.Outputs.Count; i++)
+                if (_importedScripts.Contains(Convert.ToHexString(tx.Outputs[i].ScriptPubKey.ToBytes()))
+                    && outputs.Add((uint)i))
+                    amount += tx.Outputs[i].Value.Satoshi;
+            for (var i = 0; i < tx.Inputs.Count; i++)
+                if (_importedOutputs.TryGetValue(tx.Inputs[i].PrevOut, out var value) && inputs.Add((uint)i))
+                    amount -= value;
+        }
+        var fee = inputs.Count == tx.Inputs.Count && !tx.IsCoinBase
+            ? Math.Max(0, outputs.Sum(i => tx.Outputs[(int)i].Value.Satoshi) - amount
+                          - tx.Outputs.Sum(o => o.Value.Satoshi)) : canonical.FeeSat;
+        return new WalletTransactionEventArgs(canonical.RawTransactionHex, amount, fee, canonical.BlockHeight,
+            canonical.BlockHash, canonical.Timestamp, canonical.Label, outputs.Order().ToArray(), inputs.Order().ToArray(),
+            canonical.TxHash, canonical.IsReorg);
+    }
 
     private void ScheduleUpdate()
     {
@@ -253,7 +467,11 @@ public sealed class ImportedTapscriptTracker : IDisposable
             {
                 try { await SnapshotAsync(_lifetime); }
                 catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
-                catch (Exception e) { _logger.LogWarning(e, "Imported history update failed; the next RPC or block will retry"); }
+                catch (Exception e)
+                {
+                    _logger.LogWarning(e, "Imported history update failed; the next RPC or block will retry");
+                    FailObservers(e);
+                }
             }
         }
         finally

@@ -1222,6 +1222,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
 
             if (effects is not null)
             {
+                Raise(() => OnWalletTransactionsProcessing?.Invoke(this, EventArgs.Empty), "wallet transactions processing");
                 ApplyBlock(effects);
                 RaiseBlockEvents(effects, block);
                 return true;
@@ -1540,6 +1541,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         foreach (var observed in effects.WalletTransactions)
             RaiseWalletTransaction(observed);
 
+        Raise(() => OnWalletTransactionsProcessed?.Invoke(this, new NewBlockEventArgs(effects.Height, effects.BlockHash)), "wallet transactions processed");
+
         foreach (var movement in effects.Movements)
             Raise(() => OnWalletMovementDetected?.Invoke(this, movement), "wallet movement");
 
@@ -1649,6 +1652,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                     "Transaction {TxId} of channel {ChannelId} had reached its depth in block {Height}, which was disconnected; it is watched again from the new branch",
                     watch.TransactionId, watch.ChannelId, watch.FirstSeenAtHeight);
 
+            Raise(() => OnWalletTransactionsProcessing?.Invoke(this, EventArgs.Empty), "wallet transactions processing");
             foreach (var header in disconnected)
                 _headers.Remove(header.Height);
             _blockchainState = rewoundState;
@@ -1657,6 +1661,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             // The rewind is committed. Publish before any subsequent reload or chain RPC can fail.
             foreach (var observed in disconnectedWalletTransactions)
                 RaiseWalletTransaction(observed);
+
+            Raise(() => OnWalletTransactionsProcessed?.Invoke(this, new NewBlockEventArgs(forkHeight, forkHash)), "wallet transactions processed");
 
             // Memory follows the saved rows
             using (var scope = _serviceProvider.CreateScope())

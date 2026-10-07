@@ -1,10 +1,12 @@
 using Grpc.Core;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace NLightning.LndGrpc.Services;
 
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.ValueObjects;
 using Infrastructure.Bitcoin.Networks;
+using Infrastructure.Bitcoin.Wallet.Imports;
 using Lnrpc;
 using Transaction = Lnrpc.Transaction;
 
@@ -21,14 +23,39 @@ public sealed partial class LightningService
         using var queue = new LiveEventQueue<WalletTransactionEventArgs>();
         void Observed(object? sender, WalletTransactionEventArgs observed) =>
             queue.Publish(observed);
-        _blockchainMonitor.OnWalletTransactionObserved += Observed;
+        void Failed(Exception _) => queue.Fail(new RpcException(new Status(StatusCode.FailedPrecondition,
+            "transaction subscription history unavailable; reconcile GetTransactions and reconnect")));
+        await using var scope = CreateScope();
+        var imported = scope.ServiceProvider.GetService<ImportedTapscriptTracker>();
+        if (imported is not null)
+        {
+            // Initialize the incremental checkpoint before joining the live feed; historical rows are not replayed.
+            imported.OnObservationFailed += Failed;
+            try { await imported.SubscribeAsync(Observed, context.CancellationToken); }
+            catch (Exception e)
+            {
+                imported.OnObservationFailed -= Failed;
+                if (e is not InvalidOperationException) throw;
+                throw new RpcException(new Status(StatusCode.FailedPrecondition, e.Message));
+            }
+        }
+        else
+            _blockchainMonitor.OnWalletTransactionObserved += Observed;
         try
         {
             await context.WriteResponseHeadersAsync(new Metadata());
             await queue.WriteToAsync(responseStream, observed => ValueTask.FromResult(ToTransactionEvent(observed)),
                                      context.CancellationToken);
         }
-        finally { _blockchainMonitor.OnWalletTransactionObserved -= Observed; }
+        finally
+        {
+            if (imported is not null)
+            {
+                imported.OnTransactionObserved -= Observed;
+                imported.OnObservationFailed -= Failed;
+            }
+            else _blockchainMonitor.OnWalletTransactionObserved -= Observed;
+        }
     }
 
     internal Transaction ToTransactionEvent(WalletTransactionEventArgs observed)

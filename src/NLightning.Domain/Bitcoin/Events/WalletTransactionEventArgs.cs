@@ -5,10 +5,11 @@ namespace NLightning.Domain.Bitcoin.Events;
 public sealed class WalletTransactionEventArgs(
     string rawTransactionHex, long amountSat, long feeSat, uint blockHeight, string blockHash,
     DateTimeOffset timestamp, string label, IReadOnlyList<uint> ourOutputs,
-    IReadOnlyList<uint> ourInputs, string txHash) : EventArgs
+    IReadOnlyList<uint> ourInputs, string txHash, bool isReorg = false) : EventArgs
 {
     /// <summary>Captured from the original parsed transaction before commit; never re-derived by a publisher.</summary>
     public string TxHash { get; } = txHash;
+    public bool IsReorg { get; } = isReorg;
     public string RawTransactionHex { get; } = rawTransactionHex;
     public long AmountSat { get; } = amountSat;
     public long FeeSat { get; } = feeSat;

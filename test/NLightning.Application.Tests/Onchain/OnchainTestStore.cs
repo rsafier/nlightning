@@ -35,6 +35,8 @@ internal sealed class OnchainTestStore
     private readonly List<Action> _undo = [];
     private readonly List<AccountingEventModel> _stagedEvents = [];
 
+    public HashSet<(ChannelId ChannelId, HtlcDirection Direction, ulong HtlcId, bool Settled)> HtlcObservations { get; } = [];
+
     public Dictionary<ChannelId, ChannelCloseModel> Closes { get; } = [];
     public Dictionary<(TxId, uint), OutputResolutionModel> Outputs { get; } = [];
     public Dictionary<(TxId, uint), WatchedOutpointModel> Watches { get; } = [];
@@ -88,6 +90,7 @@ internal sealed class OnchainTestStore
     public Mock<IUnitOfWork> CreateUnitOfWork()
     {
         var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.SetupGet(u => u.OnchainHtlcObservationDbRepository).Returns(CreateHtlcObservations().Object);
         unitOfWork.SetupGet(u => u.OnchainResolutionDbRepository).Returns(new ResolutionRepository(this));
         unitOfWork.SetupGet(u => u.WatchedOutpointDbRepository).Returns(CreateWatchedOutpoints().Object);
         unitOfWork.SetupGet(u => u.WatchedTransactionDbRepository).Returns(CreateWatchedTransactions().Object);
@@ -125,6 +128,25 @@ internal sealed class OnchainTestStore
             return Task.CompletedTask;
         });
         return unitOfWork;
+    }
+
+    private Mock<IOnchainHtlcObservationDbRepository> CreateHtlcObservations()
+    {
+        var repository = new Mock<IOnchainHtlcObservationDbRepository>();
+        repository.Setup(r => r.ContainsAsync(It.IsAny<ChannelId>(), It.IsAny<HtlcDirection>(),
+                                              It.IsAny<ulong>(), It.IsAny<bool>()))
+                  .ReturnsAsync((ChannelId channel, HtlcDirection direction, ulong id, bool settled) =>
+                      HtlcObservations.Contains((channel, direction, id, settled)));
+        repository.Setup(r => r.Add(It.IsAny<OnchainHtlcObservationModel>()))
+                  .Callback<OnchainHtlcObservationModel>(observation =>
+                  {
+                      var key = (observation.ChannelId, observation.Direction, observation.HtlcId, observation.Settled);
+                      if (!HtlcObservations.Add(key))
+                          throw new InvalidOperationException("Duplicate HTLC observation");
+                      _undo.Add(() => HtlcObservations.Remove(key));
+                      _pending.Add($"htlc observation {observation.Direction} {observation.HtlcId} {observation.Settled}");
+                  });
+        return repository;
     }
 
     private Mock<IWatchedOutpointDbRepository> CreateWatchedOutpoints()

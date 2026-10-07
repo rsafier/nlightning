@@ -154,7 +154,7 @@ public sealed class LnBackendHostTests
     public async Task Given_TheClnNodeService_When_GetinfoAndXpay_Then_BothAreServedOverTheSameListener()
     {
         // Arrange
-        await using var node = await Node.StartAsync();
+        await using var node = await Node.StartAsync(maxXpayRetryFor: 900);
 
         // Act
         var info = await node.ClnClient.GetinfoAsync(new Cln.GetinfoRequest(), cancellationToken: Ct);
@@ -171,7 +171,7 @@ public sealed class LnBackendHostTests
             .Setup(s => s.PayInvoiceAsync("lnbcrt1amountless", LightningMoney.MilliSatoshis(50_000),
                                           It.Is<PayInvoiceOptions>(o =>
                                               o.MaxFee == LightningMoney.MilliSatoshis(1_000) &&
-                                              o.Timeout == TimeSpan.FromSeconds(30)),
+                                              o.Timeout == TimeSpan.FromSeconds(600)),
                                           It.IsAny<CancellationToken>()))
             .ReturnsAsync(new PayInvoiceResult(
                               PaymentModel.Restore(new Hash(SHA256.HashData(preimageBytes)), "lnbcrt1amountless",
@@ -184,7 +184,7 @@ public sealed class LnBackendHostTests
             Invstring = "lnbcrt1amountless",
             AmountMsat = new Cln.Amount { Msat = 50_000 },
             Maxfee = new Cln.Amount { Msat = 1_000 },
-            RetryFor = 30
+            RetryFor = 600
         }, cancellationToken: Ct);
 
         // Assert: the preimage their client demands (non-empty, 32 bytes)
@@ -259,13 +259,14 @@ public sealed class LnBackendHostTests
         /// <summary>The cln.Node client over the same bound port.</summary>
         public Cln.Node.NodeClient ClnClient => new(_channel!);
 
-        public static async Task<Node> StartAsync()
+        public static async Task<Node> StartAsync(int maxXpayRetryFor = 300)
         {
             var node = Build(new LnBackendOptions
             {
                 Enabled = true,
                 Port = 0,
-                AllowInsecureLoopback = true
+                AllowInsecureLoopback = true,
+                MaxXpayRetryFor = maxXpayRetryFor
             });
             await node.Host.StartAsync(CancellationToken.None);
             node._channel = GrpcChannel.ForAddress($"http://127.0.0.1:{node.Host.BoundPort}");

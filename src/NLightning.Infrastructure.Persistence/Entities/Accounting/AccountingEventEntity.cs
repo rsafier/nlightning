@@ -21,6 +21,9 @@ public class AccountingEventEntity
 
     public required string EventKey { get; set; }
 
+    /// <summary>Indexed reversal reference derived from details or the legacy event key; outside the sealed payload.</summary>
+    public string? ReversesEventKey { get; set; }
+
     /// <summary><c>AccountingEventKind</c>.</summary>
     public required int Kind { get; set; }
 

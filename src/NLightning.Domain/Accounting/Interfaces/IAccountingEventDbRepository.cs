@@ -40,6 +40,15 @@ public interface IAccountingEventDbRepository
     Task<IReadOnlyList<AccountingEventModel>> ListAsync(AccountingEventQuery query,
                                                         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Standing sealed wallet received/spent events in the inclusive height range, paged in ledger order. Reversals
+    /// anywhere in the sealed feed cancel their referenced event, independently of the reversal's block height.
+    /// </summary>
+    Task<IReadOnlyList<AccountingEventModel>> GetWalletHistoryAsync(
+        uint startHeight, uint endHeight, long afterLedgerSeq, int take,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<AccountingEventModel>>([]);
+
     /// <summary>Sealed events from <paramref name="fromLedgerSeq"/> on, in ledger order, for a chain check.</summary>
     Task<IReadOnlyList<AccountingEventModel>> GetSealedRangeAsync(long fromLedgerSeq, int take,
                                                                   CancellationToken cancellationToken = default);

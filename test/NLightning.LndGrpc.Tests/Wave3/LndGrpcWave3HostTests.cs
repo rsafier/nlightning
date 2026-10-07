@@ -527,6 +527,29 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
         Assert.Empty(response.Transactions);
     }
 
+    [Fact]
+    public async Task Given_MoreThanOneEventPage_When_GetTransactions_Then_NetAmountsAreAggregatedBeforePaging()
+    {
+        var spend = new TxId(Enumerable.Repeat((byte)0x06, 32).ToArray());
+        for (uint index = 0; index < 1_001; index++)
+        {
+            var previous = new TxId(Enumerable.Repeat((byte)0x05, 32).ToArray());
+            AddEvent(AccountingEventKind.WalletOutputSpent, previous, index, 120, -1_000_000,
+                     ("spentBy", spend.ToString()));
+        }
+        AddEvent(AccountingEventKind.WalletReceived, spend, 0, 120, 990_000_000);
+        using var connection = Connect(LndMacaroonFiles.ReadOnlyFileName);
+
+        var response = await connection.LightningClient.GetTransactionsAsync(
+                           new GetTransactionsRequest { StartHeight = 120, EndHeight = 120, MaxTransactions = 1 },
+                           cancellationToken: Ct);
+
+        var listed = Assert.Single(response.Transactions);
+        Assert.Equal(spend.ToString(), listed.TxHash);
+        Assert.Equal(-11_000, listed.Amount);
+        Assert.Equal(1_001, listed.PreviousOutpoints.Count);
+    }
+
     private string AddEvent(AccountingEventKind kind, TxId txId, uint index, uint height, long amountMsat,
                             params (string Key, string Value)[] details)
     {
@@ -600,12 +623,19 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
         services.AddScoped(_ =>
         {
             var accounting = new Mock<IAccountingEventDbRepository>();
-            accounting.Setup(x => x.ListAsync(It.IsAny<AccountingEventQuery>(), It.IsAny<CancellationToken>()))
-                      .ReturnsAsync((AccountingEventQuery query, CancellationToken _) =>
-                                        _accountingEvents.Where(e => e.LedgerSeq > query.AfterLedgerSeq
-                                                                  && (query.Kinds is null
-                                                                   || query.Kinds.Contains(e.Kind)))
-                                                         .Take(query.Take).ToList());
+            accounting.Setup(x => x.GetWalletHistoryAsync(It.IsAny<uint>(), It.IsAny<uint>(), It.IsAny<long>(),
+                                                          It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                      .ReturnsAsync((uint start, uint end, long after, int take, CancellationToken _) =>
+                      {
+                          var reversed = _accountingEvents.Where(e => e.Kind == AccountingEventKind.Reversal)
+                                                          .Select(e => e.EventKey[..e.EventKey.LastIndexOf(":rev:", StringComparison.Ordinal)])
+                                                          .ToHashSet(StringComparer.Ordinal);
+                          return _accountingEvents.Where(e => e.LedgerSeq > after
+                                                           && e.Kind is AccountingEventKind.WalletReceived or AccountingEventKind.WalletOutputSpent
+                                                           && e.BlockHeight >= start && e.BlockHeight <= end
+                                                           && !reversed.Contains(e.EventKey))
+                                                  .OrderBy(e => e.LedgerSeq).Take(take).ToList();
+                      });
             var broadcasts = new Mock<IBroadcastTransactionDbRepository>();
             broadcasts.Setup(x => x.GetPendingAsync()).ReturnsAsync([]);
             broadcasts.Setup(x => x.GetByTransactionIdAsync(It.IsAny<TxId>()))
