@@ -103,7 +103,7 @@ public partial class BlockchainMonitorService
                     await CollectSweepFeeBumpAsync(uow, stored, replaced, effects);
                     break;
                 case BroadcastPurpose.WalletSend:
-                    CollectWalletSent(stored, transaction, effects);
+                    await CollectWalletSentAsync(uow, stored, transaction, effects);
                     break;
             }
         }
@@ -159,15 +159,24 @@ public partial class BlockchainMonitorService
     }
 
     /// <summary>A withdrawal: what left to outputs that are not ours (the change comes back as a deposit).</summary>
-    private void CollectWalletSent(BroadcastTransactionModel stored, Transaction transaction, BlockEffects effects)
+    private async Task CollectWalletSentAsync(IUnitOfWork unitOfWork, BroadcastTransactionModel stored,
+        Transaction transaction, BlockEffects effects)
     {
         long sentSat = 0;
         var externalOutputs = 0;
         string? destination = null;
-        foreach (var output in transaction.Outputs)
+        var transactionId = new TxId(transaction.GetHash().ToBytes());
+        for (var index = 0; index < transaction.Outputs.Count; index++)
         {
+            var output = transaction.Outputs[index];
             var address = output.ScriptPubKey.GetDestinationAddress(_network)?.ToString();
-            if (address is not null && _watchedAddresses.ContainsKey(address))
+            if (address is not null && _watchedAddresses.ContainsKey(address) ||
+                effects.SilentPaymentOutputs.Contains(new OutPoint(transaction.GetHash(), index)))
+                continue;
+            // A broadcast discovered after its block was processed has no prepared matches; retained metadata
+            // still proves ownership of its SP change, including after the change was spent.
+            if (_silentPaymentScanner is not null &&
+                await unitOfWork.SilentPaymentDbRepository.GetOutputAsync(transactionId, (uint)index) is { Ignored: false })
                 continue;
 
             sentSat += output.Value.Satoshi;
@@ -235,7 +244,7 @@ public partial class BlockchainMonitorService
             outputAddress = new Script([0x51, 0x20, .. silentPayment.OutputKey]).GetDestinationAddress(_network)?.ToString();
         var details = AccountingDetailsCodec.Create(("address", outputAddress),
                                                     ("addressType", Enum.GetName(utxo.AddressType)),
-                                                    ("change", address?.IsChange == true || utxo.SilentPayment?.Label == 0 && source.Source == WalletSource ? "true" : "false"),
+                                                    ("change", address?.IsChange == true || utxo.SilentPayment?.Label == 0 && source.Source is WalletSource or BroadcastSource ? "true" : "false"),
                                                     ("silentPayment", utxo.SilentPayment is not null ? "true" : null),
                                                     ("receiptSource", utxo.SilentPayment is not null ? "silent_payment" : null),
                                                     ("silentPaymentLabel", utxo.SilentPayment?.Label?.ToString(System.Globalization.CultureInfo.InvariantCulture)),

@@ -1254,6 +1254,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                                        new BlockHeaderModel(height, blockHash,
                                                             new Hash(block.Header.HashPrevBlock.ToBytes())));
         var transactions = block.Transactions;
+        if (silentPayments is not null)
+            foreach (var output in silentPayments.Matches.Where(output => !output.Ignored))
+                effects.SilentPaymentOutputs.Add(new OutPoint(new uint256((byte[])output.TransactionId), output.Index));
         Dictionary<uint256, uint256>? replacedMembers = null;
 
         if (_logger.IsEnabled(LogLevel.Debug))
@@ -2339,6 +2342,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         public Dictionary<uint256, BroadcastTransactionModel> ConfirmedReplacedMembers { get; } = [];
         public List<WalletMovementEventArgs> Movements { get; } = [];
         public List<WalletTransactionEventArgs> WalletTransactions { get; } = [];
+        public HashSet<OutPoint> SilentPaymentOutputs { get; } = [];
         public List<OutpointSpentEventArgs> Spends { get; } = [];
 
         /// <summary>The wallet outputs this block deposited (a later transaction of the block may spend one).</summary>
