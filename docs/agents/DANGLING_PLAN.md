@@ -45,9 +45,10 @@ All runtime results below are net10.0. The final Release solution build covers b
 | Inputless and existing coin-select templates | 9 passed, including actual signature verification |
 | Final SQLite accounting backfill/recovery | 15 passed |
 | Projected-history lease cleanup and retained-spend proof | 6 passed |
+| CPFP whole-vbyte package and relay rounding/replacement/intent | 9 passed |
 | All-provider migration/model guards; SQLite fresh/legacy runtime | Passed in Integration |
 
-The final lease cleanup also hydrates only a bounded history page before checking canonical transaction hashes and confirmation depth; missing or corrupt retained history cannot prove a spend. The changed Bitcoin project builds cleanly for both targets.
+The final lease cleanup also hydrates only a bounded history page before checking canonical transaction hashes and confirmation depth; missing or corrupt retained history cannot prove a spend. The changed Bitcoin project builds cleanly for both targets. Core package and replacement relay pricing round each child up to whole virtual bytes, including partial-byte signed weights.
 
 The earlier full Bitcoin suite passed 2,434 tests with three platform skips; subsequent wallet changes were checked by the affected suite above. Broader runs are not repeated once a relevant final run passes. The real Core/LND combined acceptance run is still pending; successful fixture startup, isolated steps or PostgreSQL-only passes do not satisfy the combined acceptance gate. The additional Release.Native `PublishAot=true` analyzer build completed with zero errors and four inherited warnings: IL2026/IL3050 at the existing Newtonsoft RPC request serializer in BlockPrevoutSource, and two IL2075 reflection warnings in LndUnknownMethods. No NativeAOT publish or runtime proof is claimed.
 

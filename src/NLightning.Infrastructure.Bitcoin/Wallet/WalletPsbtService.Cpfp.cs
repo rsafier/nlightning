@@ -129,7 +129,7 @@ public sealed partial class WalletPsbtService
         var rate = Math.Max(requestedRate, await _bitcoinChainService.GetMempoolMinFeeRatePerKwAsync() ?? 0);
         var incremental = await _bitcoinChainService.GetIncrementalRelayFeeRatePerKwAsync();
         var oldFee = coin.Amount.Satoshi - previous.Outputs[0].Value.Satoshi;
-        var replacementFee = Math.Max(CpfpFee(package, weight, rate), checked(oldFee + Math.Max(1, FeeSat(incremental, weight))));
+        var replacementFee = Math.Max(CpfpFee(package, weight, rate), checked(oldFee + Math.Max(1, FeeSat(incremental, CpfpVirtualWeight(weight)))));
         if (budget is { } max && replacementFee > max)
             throw new WalletPsbtException(WalletPsbtError.FailedPrecondition, "CPFP replacement package fee exceeds budget");
         var amount = checked(coin.Amount.Satoshi - replacementFee);
@@ -149,7 +149,7 @@ public sealed partial class WalletPsbtService
         if (signed.Inputs.Count != 1 || signed.Inputs[0].PrevOut != parentOutpoint || signed.Outputs.Count != 1 ||
             signed.Outputs[0].ScriptPubKey != previous.Outputs[0].ScriptPubKey ||
             fee < CpfpFee(livePackage, WalletSpendService.GetWeight(signed), rate) ||
-            fee < oldFee + Math.Max(1, FeeSat(incremental, WalletSpendService.GetWeight(signed))))
+            fee < oldFee + Math.Max(1, FeeSat(incremental, CpfpVirtualWeight(WalletSpendService.GetWeight(signed)))))
             throw new WalletPsbtException(WalletPsbtError.FailedPrecondition, "CPFP replacement changed ownership or failed package/relay target");
         var row = new BroadcastTransactionModel(new SignedTransaction(new TxId(signed.GetHash().ToBytes()), signed.ToBytes()),
             BroadcastPurpose.WalletSend, null, _blockchainMonitor.LastProcessedBlockHeight,
@@ -168,12 +168,17 @@ public sealed partial class WalletPsbtService
         return row.TransactionId;
     }
 
+    private static long CpfpVirtualWeight(int weight) => checked(((long)weight + 3) / 4 * 4);
+
     internal static long CpfpFee(WalletMempoolEntry package, int childWeight, long ratePerKw)
     {
         if (package.AncestorVirtualSize <= 0 || package.AncestorFeeSat < 0 || childWeight <= 0 || ratePerKw <= 0)
             throw new ArgumentOutOfRangeException(nameof(package));
-        var target = checked((checked(ratePerKw * checked(package.AncestorVirtualSize * 4 + childWeight)) + 999) / 1000);
-        var childMinimum = checked((checked(ratePerKw * childWeight) + 999) / 1000);
+        // Core prices each transaction in whole virtual bytes; rounding only the final fee underpays
+        // a non-multiple-of-four child weight at the requested package sat/vB target.
+        var childVirtualWeight = CpfpVirtualWeight(childWeight);
+        var target = checked((checked(ratePerKw * checked(package.AncestorVirtualSize * 4 + childVirtualWeight)) + 999) / 1000);
+        var childMinimum = checked((checked(ratePerKw * childVirtualWeight) + 999) / 1000);
         return Math.Max(childMinimum, checked(target - package.AncestorFeeSat));
     }
 }

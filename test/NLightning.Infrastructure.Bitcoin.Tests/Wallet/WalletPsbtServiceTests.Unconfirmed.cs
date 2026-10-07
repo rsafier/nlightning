@@ -161,6 +161,22 @@ public partial class WalletPsbtServiceTests
             """)));
     }
 
+    [Theory]
+    [InlineData(437, 7_900)]
+    [InlineData(438, 7_900)]
+    [InlineData(439, 7_900)]
+    [InlineData(440, 7_900)]
+    [InlineData(441, 7_920)]
+    public void Given_SignedChildWeightWithPartialVirtualByte_When_PricingCpfp_Then_CoreWholeVsizePackageTargetIsCovered(int weight, long fee)
+    {
+        var package = new WalletMempoolEntry(100, 100, 300, 300, 3);
+        // Core sums ancestor vsize plus ceil(child weight/4), at the real replacement target20sat/vB.
+        Assert.Equal(fee, WalletPsbtService.CpfpFee(package, weight, 5_000));
+        Assert.True(package.AncestorFeeSat + fee >= 20 * (package.AncestorVirtualSize + (weight + 3) / 4));
+        Assert.Equal(20 * ((weight + 3) / 4),
+            WalletPsbtService.CpfpFee(package with { AncestorFeeSat = 100_000 }, weight, 5_000));
+    }
+
     [Fact]
     public async Task Given_PublishedWalletCpfp_When_BumpedAgain_Then_ReplacementPreservesExactInputAndChangeWithHigherPackageFee()
     {
