@@ -10083,7 +10083,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Validation (2026-10-06):** Final Go suite: 19 tests under the race detector, plus vet, module verification and formatting. Actual upstream default LNC client against NLightning and LND on regtest: `lnc-proof3`, 1/1 green in 130 s; gRPC and WebSocket pairing/GetInfo, read-only write denial, incoming invoice subscription/settlement, outgoing `SendPaymentV2`, persistent reconnect after bridge restart, active HTLC stream cutoff on revocation, revoked/expired reconnect refusal, unaffected control session. All run namespaces removed. Full net11 Release solution and final net10/net11 integration fixture builds: zero warnings/errors; C# format and 40-project solution configuration checks pass. No schema or live-node configuration change. Operator Signet trial remains separate.
 
 ### NL-1238 Lightning Terminal cannot use the LNC bridge: wrong auth data header and missing litrpc reads
-- **Status:** fixed (PENDING)
+- **Status:** fixed (e9f42621)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `tools/lnc/handshake.go`, `tools/lnc/lit.go`, `tools/lnc/serve.go`, `tools/lnc/session.go`, `tools/lnc/proxy.go`, `tools/lnc/config.go`
