@@ -306,6 +306,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         }
 
         var currentBlockHeight = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+        await InitializeSilentPaymentsAsync(currentBlockHeight, cancellationToken);
         if (currentBlockHeight < _lastProcessedBlockHeight && _headers.Count > 0)
         {
             // The chain is shorter than what we processed (reorg or invalidateblock while we were down)
@@ -1202,15 +1203,18 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     private async Task<bool> TryProcessBlockWithRetriesAsync(Block block, uint height,
                                                              CancellationToken cancellationToken)
     {
+        using var silentPaymentLease = _silentPaymentScanner is { } scanner
+            ? await scanner.EnterAsync(cancellationToken) : null;
         var delay = BlockRetryBaseDelay;
         for (var attempt = 1; attempt <= MaxBlockProcessingAttempts; attempt++)
         {
             BlockEffects? effects = null;
             try
             {
+                var prepared = await PrepareSilentPaymentBlockAsync(block, height, cancellationToken);
                 using var scope = _serviceProvider.CreateScope();
                 using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-                effects = await StageBlockAsync(block, height, uow);
+                effects = await StageBlockAsync(block, height, uow, prepared);
                 await uow.SaveChangesAsync();
             }
             catch (Exception ex)
@@ -1242,7 +1246,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     /// Stages everything one block changes in <paramref name="uow"/> without touching memory, and returns what to
     /// apply and raise once the unit of work is saved.
     /// </summary>
-    private async Task<BlockEffects> StageBlockAsync(Block block, uint height, IUnitOfWork uow)
+    private async Task<BlockEffects> StageBlockAsync(Block block, uint height, IUnitOfWork uow,
+                                                    PreparedSilentPaymentBlock? silentPayments = null)
     {
         var blockHash = new Hash(block.GetHash().ToBytes());
         var effects = new BlockEffects(height, blockHash,
@@ -1305,7 +1310,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             }
         }
 
+        await StageSilentPaymentReceiptsAsync(silentPayments, uow, effects, block);
         StageWalletMovements(transactions, height, block.Header.BlockTime, uow, effects);
+        await StageSilentPaymentSpendsAndStateAsync(silentPayments, height, uow);
         await StageAccountingAsync(uow, effects);
         await StageWatchedSpendsAsync(transactions, height, blockHash, uow, effects);
         StageWatchedTransactionDepths(height, uow, effects);
@@ -1368,7 +1375,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     private void StageWalletMovements(List<Transaction> transactions, uint blockHeight, DateTimeOffset blockTime, IUnitOfWork uow,
                                       BlockEffects effects)
     {
-        if (_watchedAddresses.IsEmpty)
+        if (_watchedAddresses.IsEmpty && _silentPaymentScanner is null)
             return;
 
         if (_logger.IsEnabled(LogLevel.Debug))
@@ -1570,6 +1577,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     /// </summary>
     private async Task<bool> TryRewindAsync(uint searchFrom)
     {
+        using var silentPaymentLease = _silentPaymentScanner is { } scanner
+            ? await scanner.EnterAsync() : null;
         try
         {
             uint? fork = null;
@@ -1806,6 +1815,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             restoredUtxos.Add((utxo, spentHeight));
         }
 
+        await StageSilentPaymentRollbackAsync(uow, forkHeight, removed, restoredUtxos);
         return (removed, restoredUtxos);
     }
 
