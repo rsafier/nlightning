@@ -5,6 +5,7 @@ using NBitcoin;
 namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
 
 using Domain.Bitcoin.Enums;
+using Domain.Bitcoin.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Domain.Bitcoin.SilentPayments;
 using Domain.Bitcoin.ValueObjects;

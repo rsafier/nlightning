@@ -34,8 +34,15 @@ public static class ClientUtils
         Console.WriteLine("  listchannels [peer_id]       List channels, optionally only those with one peer");
         Console.WriteLine("  getaddress [p2tr|p2wpkh|all] Gets an unused address of the requested type [default: p2tr]");
         Console.WriteLine("  walletbalance                Gets the wallet balance");
+        Console.WriteLine("  getspaddress [--label <name>] Get the static silent payment address, optionally labeled");
+        Console.WriteLine("  splabels                     List silent payment labels and addresses");
+        Console.WriteLine("  sprescan --from-height <height> [--labels <count>] | --cancel");
+        Console.WriteLine("                               Recover silent payments from the birthday using full blocks;");
+        Console.WriteLine("                               retained blocks and a prevout source are required");
+        Console.WriteLine("  spstatus                     Show silent payment configuration, cursors and scan progress");
         Console.WriteLine("  withdraw <address> <amount_sat|all> [--sat-per-vb <n>]");
-        Console.WriteLine("                               Send on-chain funds from the wallet (aliases: sendcoins,");
+        Console.WriteLine("                               Send on-chain funds to a Bitcoin or silent payment address");
+        Console.WriteLine("                               from the wallet (aliases: sendcoins,");
         Console.WriteLine("                               send-coins); all sends every confirmed output minus the");
         Console.WriteLine("                               fee and keeps the anchors reserve as change; fee rate");
         Console.WriteLine("                               1-1000 sat/vB [default: the node's estimate]");
