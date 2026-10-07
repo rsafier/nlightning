@@ -52,10 +52,17 @@ public sealed class SilentPaymentsFlowTests
         await core.GenerateToAddressAsync(101, mineAddress, ct);
         var birthday = (uint)await nodeRpc.GetBlockCountAsync(ct);
         var endpoint = new RegtestBitcoinEndpoint(core, miner.Handle.PodIp!, BitcoinCorePorts.ZmqRawBlock, BitcoinCorePorts.ZmqRawTx);
-        using var keysA = SecureKeyManager.CreateNew(BitcoinNetwork.Regtest, Path.Combine(Path.GetTempPath(), $"sp-a-{Guid.NewGuid():N}.key"), birthday);
-        using var keysB = SecureKeyManager.CreateNew(BitcoinNetwork.Regtest, Path.Combine(Path.GetTempPath(), $"sp-b-{Guid.NewGuid():N}.key"), birthday);
+        using var keyFiles = new ProofKeyDirectory();
+        const string proofPassword = "regtest-only-silent-payment-proof";
+        var keyPathA = Path.Combine(keyFiles.Path, "a.json");
+        var keyPathB = Path.Combine(keyFiles.Path, "b.json");
+        using var keysA = SecureKeyManager.CreateNew(BitcoinNetwork.Regtest, keyPathA, birthday);
+        using var keysB = SecureKeyManager.CreateNew(BitcoinNetwork.Regtest, keyPathB, birthday);
+        keysA.SaveToFile(proofPassword);
+        keysB.SaveToFile(proofPassword);
         await using var a = await NLightningTestNode.CreateAsync(endpoint, "sp-a", secureKeyManager: keysA);
-        await using var b = await NLightningTestNode.CreateAsync(endpoint, "sp-b", secureKeyManager: keysB);
+        await using var originalB = await NLightningTestNode.CreateAsync(endpoint, "sp-b", secureKeyManager: keysB);
+        var b = originalB;
         foreach (var wallet in new[] { a, b })
         {
             wallet.ChainNotifications = mode;
@@ -155,10 +162,16 @@ public sealed class SilentPaymentsFlowTests
         Assert.Equal(recoveredSet, SilentCoins(b).Select(Outpoint).Order().ToArray());
         await ReconcileAsync(b, ct);
 
-        // Restore from the same production key manager and an empty database; labels are recovered by bounded probing.
+        // Restore from the encrypted key file and an empty database; labels are recovered by bounded probing.
         await b.StopAsync();
         SqliteTestPools.Clear(b.DatabaseFilePath!);
         b.DeleteFiles();
+        using var restoredKeys = SecureKeyManager.FromFilePath(keyPathB, BitcoinNetwork.Regtest, proofPassword);
+        await using var restoredB = await NLightningTestNode.CreateAsync(endpoint, "sp-b-restored", secureKeyManager: restoredKeys);
+        restoredB.ChainNotifications = mode;
+        foreach (var entry in originalB.ExtraConfiguration)
+            restoredB.ExtraConfiguration[entry.Key] = entry.Value;
+        b = restoredB;
         await b.StartAsync(ct);
         await WaitAtTipAsync(nodeRpc, [a, b], ct);
         var restore = b.Services.GetRequiredService<ISilentPaymentService>();
@@ -182,6 +195,13 @@ public sealed class SilentPaymentsFlowTests
         await ReconcileAsync(a, ct);
         await ReconcileAsync(b, ct);
         Log($"SP proof {mode}: labeled/unlabeled receive, spend, two-block reorg, restart, empty-database restore, channel funding, and clean accounting.");
+    }
+
+    private sealed class ProofKeyDirectory : IDisposable
+    {
+        public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"sp-proof-keys-{Guid.NewGuid():N}");
+        public ProofKeyDirectory() => Directory.CreateDirectory(Path);
+        public void Dispose() => Directory.Delete(Path, recursive: true);
     }
 
     private static List<UtxoModel> SilentCoins(NLightningTestNode node) => node.Services.GetRequiredService<IUtxoMemoryRepository>()
