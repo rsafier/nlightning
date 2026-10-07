@@ -9714,7 +9714,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1184
 
 ### NL-1187 LND gRPC GetTransactions: history gaps
-- **Status:** open (partial: wip/fixes-waves1and2; indexed query implemented)
+- **Status:** fixed (3e78e451); the one residue that needs a wallet rescan is NL-1289
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `LightningService.Transactions.cs`
@@ -9722,6 +9722,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** a wallet-history query on the accounting repository (kinds, height range, paging in the database); store the raw transaction of external deposits with the UTXO.
 - **Blocks/Blocked-by:** follow-up of NL-1185
 - **Update (2026-10-07, waves 1 and 2):** `GetWalletHistoryAsync` pages standing sealed wallet received/spent rows by ledger sequence within the requested inclusive height range. Indexed `ReversesEventKey` references suppress reversals anywhere in the sealed feed, with legacy/explicit references backfilled by the provider migrations without rewriting sealed payloads or hashes. RPC aggregation spans all event pages before transaction pagination. Added actual SQLite query/backfill and >1,000-row RPC coverage. Remains open: pre-accounting/disabled-accounting history, external raw transaction retention on pruned nodes, and complete external-input fee knowledge. Validated by the final RPC, SQLite query/backfill and PostgreSQL historical-upgrade tests; see the batch validation above. Implementation commit: `ae7234e8`.
+- **Fix (2026-10-07, lane nl1187, `wip/u-nl1187`, 3e78e451):** the chain monitor writes the wallet's durable history (`WalletTransactions`, migration `AddWalletTransactions` for the three providers, compiled models regenerated; `BlockchainMonitorService.StageWalletHistoryAsync`) in each block's save from the description `SubscribeTransactions` publishes: raw transaction, block hash and time, wallet output indexes, wallet inputs with their values (`WalletTransactionEventArgs.OurInputAmounts`); a replayed block merges ownership with the stored row, the rewind's save makes the rows above the fork unconfirmed. `LightningService.Transactions.cs` merges it with the sealed feed, the outputs held since before the cutover, pending broadcasts, unconfirmed deposits and the imported tapscript history by output index and spent outpoint (NL-1253). Per gap: **cutover/gate** — the rows do not depend on the feed or its gate (NL-619), and outputs held since before the cutover list their creating transaction (a deposit; our own send only when bitcoind returns its parents, else it is left out rather than shown with a wrong amount); **`Accounting:Enabled=false`** — never a gap of the feed (D-A5: only the books follow it), now proven independent of the feed altogether; **block_hash and raw transactions** — from the stored row, no bitcoind needed (pruned nodes) for every transaction the monitor processed since the migration; **total_fees** — our broadcast row's fee, else btcwallet's rule (inputs less outputs when every input is the wallet's, else 0, as LND); **reorgs** — the rewind unconfirms the rows in its save, an unconfirmed row is listed only while it is our pending broadcast, an unconfirmed deposit or in bitcoind's mempool, and the confirmation on the new branch updates it. `SubscribeTransactions` publishes the same description the row stores (a test compares both answers field by field). Tests: Integration `Persistence/ChainMonitorAccountingTests.WalletHistory.cs` (4, SQLite), LndGrpc `Wave3/LndGrpcWave3HostTests.History.cs` (6). Gates: Release build 0 warnings, format clean; net10.0: LndGrpc 256/256, Infrastructure.Bitcoin 2166 (+2 platform skips), Integration 1225/1225, Application 4455/4455, Domain 4806 (+4 skips), Daemon 1692/1692. Remaining, moved to NL-1289: transactions whose wallet outputs were all spent before the cutover, pre-cutover sends whose parents bitcoind cannot return, and feed-only history from before the migration on a pruned node.
 
 ### NL-1188 `FinancialHeldOutsideTests.Given_TheColdStorageStory_*` failed once under a loaded full run
 - **Status:** open
@@ -10259,12 +10260,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** none
 
 ### NL-1253 LND gRPC GetTransactions double-counts wallet outputs also imported as tapscript
-- **Status:** open
+- **Status:** fixed (3e78e451)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `LndGrpc/Services/LightningService.Transactions.cs`, `WalletKitService.Imports.cs`
 - **Evidence:** Code review during waves 1 and 2 found an existing history-merge defect. `WalletKit.ImportTapscript` with `FullKeyOnly` can register the same P2TR script as a canonical wallet address. `GetTransactions` first accumulates canonical accounting movements, then unconditionally adds `watched.Amount` and imported output details for the same transaction. A shared output is therefore counted twice; distinct wallet and imported outputs in one transaction should still sum normally. This is a code-derived finding, without an executed overlap-history proof. The new passive subscription source unions ownership correctly; this read-RPC follow-up is outside NL-1187's indexed-query work.
 - **Fix sketch:** Merge canonical and imported ownership by outpoint/input/output identity before calculating net amount and output details; add overlap deposit/spend and distinct mixed-output history proofs.
+- **Fix (2026-10-07, lane nl1187, 3e78e451):** every source of `GetTransactions` (durable wallet history, sealed feed, held outputs, pending broadcasts, unconfirmed deposits, imported tapscript history) adds outputs keyed by index and inputs keyed by spent outpoint (`LightningService.Transactions.cs` `HistoryEntry`), and amount, `total_fees`, `output_details` and `previous_outpoints` are computed from the merged sets. Proof `LndGrpcWave3HostTests.Given_AnOutputImportedAsTapscriptAndOwnedByTheWallet_*`: a deposit paying a shared script (wallet + imported), an imported-only script and an external output, then a spend of both: 70,000 and -70,000 with fee 1,000 (120,000 and -120,000 before the fix).
 - **Blocks/Blocked-by:** Related NL-1187, NL-1232
 - **Plan ref:** LND_SUBSCRIPTIONS_PLAN.md Limits
 
@@ -10584,3 +10586,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** split out of the NL-1082 epic at its close (2026-10-07). payroute offers all shards in one call, so a failed shard cannot be replaced while the rest are held by the payee. Phase C was designed but deferred (plan §6, "Phase C — deferred (design only)").
 - **Fix sketch:** implement plan §6: a follow-up IPC call (and the LND `SendToRouteV2` path with the same payment hash, which NL-1242 refuses today) attaches new shards to the pending manual payment inside the payee's `mpp_timeout` window.
 - **Blocks/Blocked-by:** part of NL-1082 (closed); related NL-1242
+
+### NL-1289 LND gRPC GetTransactions: history that needs a wallet rescan
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.LndGrpc/Services/LightningService.Transactions.cs`; chain monitor wallet history (`WalletTransactions`)
+- **Evidence:** split out of NL-1187 at its fix (3e78e451). Spent wallet outputs are deleted from `Utxos`, and the durable `WalletTransactions` history starts at migration `AddWalletTransactions`, so three cases are still incomplete: (1) a transaction whose wallet outputs were all spent before the accounting cutover is not listed (neither the feed, the held outputs nor the new table know it); (2) a pre-cutover send whose change output is still held is left out when bitcoind cannot return its parents (no `txindex`, so its inputs' values are unknown); (3) history known only to the sealed feed (processed before the migration) reads its raw transaction and block hash from bitcoind, so a pruned node lists it without them.
+- **Fix sketch:** a bounded wallet rescan into `WalletTransactions` (from the lowest wallet address's first use or an operator-given birthday, over the blocks bitcoind still serves, with the imported tracker's checkpoint pattern), run once after the migration or on request; on a pruned node only what bitcoind still serves can be recovered.
+- **Blocks/Blocked-by:** follow-up of NL-1187
