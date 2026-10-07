@@ -24,7 +24,7 @@
 # --ipc (needs Docker; it starts and removes the container nltg-aot-smoke-bitcoind, so wrap it in the machine's Docker
 # lock where one exists, after a --build-only run outside it, then pass --skip-build): the AOT client against a running
 # node. The node is the JIT daemon (Release, built into --out/jit-daemon; the AOT daemon cannot run the node yet,
-# NL-708) on a regtest bitcoind (polarlightning/bitcoind:29.0) published on 127.0.0.1 ports NLTG_SMOKE_PORT_BASE+0..3
+# NL-708) on a regtest bitcoind (bitcoin/bitcoin:31.1) published on 127.0.0.1 ports NLTG_SMOKE_PORT_BASE+0..3
 # (default 39440): the client runs info, listpeers, listchannels, getaddress, walletbalance, chainstatus,
 # createinvoice, listinvoices, listpayments, listforwards, pendingsweeps, describegraph and listnodes (exit 0 each),
 # then shutdown stops the node.
@@ -167,7 +167,7 @@ if $ipc; then
   echo "== start $container (regtest bitcoind)"
   docker rm -f "$container" > /dev/null 2>&1 || true
   docker run -d --name "$container" -p "127.0.0.1:$rpc_port:18443" -p "127.0.0.1:$zmq_block_port:28334" \
-    -p "127.0.0.1:$zmq_tx_port:28335" polarlightning/bitcoind:29.0 bitcoind -regtest=1 -server=1 -rpcuser=smoke \
+    -p "127.0.0.1:$zmq_tx_port:28335" bitcoin/bitcoin:31.1 bitcoind -regtest=1 -server=1 -rpcuser=smoke \
     -rpcpassword=smoke -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -zmqpubrawblock=tcp://0.0.0.0:28334 \
     -zmqpubrawtx=tcp://0.0.0.0:28335 -fallbackfee=0.0002 > /dev/null
   rpc() {

@@ -18,20 +18,16 @@ public static class ImageVersions
     public const string SpikeImagePrefix = "nltg-spike-";
 
     /// <summary>
-    /// Bitcoin Core 29.0 (Polar's image): the chain of the LND fixture (LNUnit's <c>AddBitcoinCoreNode</c>) and of
-    /// <c>ClnFixture</c>.
+    /// Bitcoin Core 31.1, the official image pinned by its multi-arch index digest: the chain of every fixture (the
+    /// LND network, <c>ClnFixture</c>, Eclair, LDK, Cashu, Bark and the Tor fixture's Docker <c>TorChainHost</c>).
+    /// Eclair 0.14.3 refuses Core older than 31. Polar's 29.0 image was the default until 2026-10-07.
     /// </summary>
     public static readonly ImageRef BitcoinCore =
-        new("polarlightning/bitcoind", "29.0",
-            "sha256:4521294ac25fdbf1492a8cc5ea987463a5f244b82546d29bbe8451db39f36f3a");
-
-    /// <summary>
-    /// Bitcoin Core 31.1 (the official image, multi-arch index digest): the chain of the Eclair and LDK fixtures
-    /// (Eclair 0.14.3 refuses Core older than 31) and of the Tor fixture's Docker <c>TorChainHost</c>.
-    /// </summary>
-    public static readonly ImageRef BitcoinCore31 =
         new("bitcoin/bitcoin", "31.1",
             "sha256:da25cedc66b1daefff9f412ee196c901a899c3fa68a33b20849c3e08b5c40d63");
+
+    /// <summary>The same image as <see cref="BitcoinCore"/>; kept so callers that name 31.1 explicitly still read it.</summary>
+    public static readonly ImageRef BitcoinCore31 = BitcoinCore;
 
     /// <summary>
     /// LND 0.21.4-beta, built locally from <c>test/Docker/custom_lnd</c>
@@ -41,11 +37,11 @@ public static class ImageVersions
     public static readonly ImageRef Lnd = new("custom_lnd", "0.21.4-beta", PullPolicy: ImagePullPolicy.Never);
 
     /// <summary>
-    /// Core Lightning as in <c>ClnFixture</c> (interop needs at least v26.06.7).
+    /// Core Lightning as in <c>ClnFixture</c> (interop needs at least v26.06.9: major bug fixes over v26.06.8).
     /// </summary>
     public static readonly ImageRef Cln =
-        new("elementsproject/lightningd", "v26.06.8",
-            "sha256:56f1cebe829fbb3c7d5674be8cd1212c7e02527ab32403b695033a29bcd2abce");
+        new("elementsproject/lightningd", "v26.06.9",
+            "sha256:de74289ddcccb68cd60543b08b2b8594002d819125d200492e17a95166d56577");
 
     /// <summary>
     /// Eclair 0.14.3, built locally from <c>test/Docker/eclair</c>
@@ -117,5 +113,5 @@ public static class ImageVersions
 
     /// <summary>Every image of the table, for a preflight check.</summary>
     public static IReadOnlyList<ImageRef> All { get; } =
-        [BitcoinCore, BitcoinCore31, Lnd, Cln, Eclair, Ldk, Postgres, Busybox];
+        [BitcoinCore, Lnd, Cln, Eclair, Ldk, Postgres, Busybox];
 }

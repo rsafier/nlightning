@@ -18,7 +18,7 @@ using Routerrpc;
 /// </summary>
 public class LndGrpcLiveTests
 {
-    private const string BitcoindImage = "polarlightning/bitcoind:29.0";
+    private const string BitcoindImage = "bitcoin/bitcoin:31.1";
     private const string LndImage = "custom_lnd:0.21.4-beta";
     private const string RpcUser = "nltg";
     private const string RpcPassword = "nltg";
