@@ -294,6 +294,56 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         Assert.False((await service.GetStatusAsync(TestContext.Current.CancellationToken)).IsRescanning);
     }
 
+    [Fact]
+    public async Task Given_CompletedHistory_When_RescannedAgain_Then_ReceiptsSpendsAndSpendableCoinsAreNotDuplicated()
+    {
+        // Arrange
+        var spent = AddReceipt(1, 20_000);
+        AddSpend(2, spent);
+        AddReceipt(3, 30_000);
+        using var service = CreateService();
+        await service.GetAddressAsync(cancellationToken: TestContext.Current.CancellationToken);
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+        for (var i = 0; i < 5; i++)
+            await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken);
+
+        // Act
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+        for (var i = 0; i < 5; i++)
+            await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Single(await UnspentAsync());
+        using var scope = _provider.CreateScope();
+        var work = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        Assert.Equal(2, (await work.SilentPaymentDbRepository.GetOutputsAsync(TestContext.Current.CancellationToken)).Count);
+        var events = await work.AccountingEventDbRepository.GetByKeyPrefixAsync("wallet:", TestContext.Current.CancellationToken);
+        Assert.Equal(3, events.Count);
+        Assert.Equal(30_000_000, events.Sum(fact => fact.AmountMsat));
+    }
+
+    [Fact]
+    public async Task Given_TipAdvanceDuringFinalProof_When_RecoveryFinishes_Then_NoStaleCoinOrCompletedJobIsPublished()
+    {
+        // Arrange
+        AddReceipt(1, 20_000);
+        using var service = CreateService();
+        await service.GetAddressAsync(cancellationToken: TestContext.Current.CancellationToken);
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+        for (var i = 0; i < 4; i++)
+            await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken);
+        _chain.SetupSequence(chain => chain.GetCurrentBlockHeightAsync()).ReturnsAsync(5u).ReturnsAsync(6u);
+
+        // Act / Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        Assert.Empty(await UnspentAsync());
+        Assert.Empty(_provider.GetRequiredService<IUtxoMemoryRepository>().GetUnreservedUtxos());
+        Assert.True((await service.GetStatusAsync(TestContext.Current.CancellationToken)).IsRescanning);
+        _chain.Setup(chain => chain.GetCurrentBlockHeightAsync()).ReturnsAsync(5u);
+        Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        Assert.Single(await UnspentAsync());
+    }
+
     private SilentPaymentService CreateService(IServiceScopeFactory? scopes = null) => new(scopes ?? _provider.GetRequiredService<IServiceScopeFactory>(), _chain.Object,
         _monitor.Object, _prevouts.Object, _scanner, _keys, _crypto, MsOptions.Create(_options),
         MsOptions.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }), NullLogger<SilentPaymentService>.Instance);
