@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace NLightning.Integration.Tests.Persistence;
 
+using Domain.Bitcoin.ValueObjects;
 using Infrastructure.Persistence.Entities.Bitcoin;
 using Infrastructure.Persistence.Enums;
 
@@ -42,7 +43,7 @@ public class SilentPaymentPersistenceTests
             AddressIndex = bothOwners ? address.Index : null,
             IsAddressChange = bothOwners ? address.IsChange : null,
             AddressType = bothOwners ? address.AddressType : null,
-            SilentPaymentTransactionId = bothOwners ? output.TransactionId : null,
+            SilentPaymentTransactionId = bothOwners ? output.TransactionId : (TxId?)null,
             SilentPaymentIndex = bothOwners ? output.Index : null
         });
 

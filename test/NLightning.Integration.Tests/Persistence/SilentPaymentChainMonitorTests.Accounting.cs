@@ -62,7 +62,7 @@ public sealed partial class SilentPaymentChainMonitorTests
         await using var financial = new FinancialBooksProjector(scopes, NullLogger<FinancialBooksProjector>.Instance,
             priceOptions: Options.Create(new AccountingPriceOptions { Source = AccountingPriceSourceMode.None }));
         await books.ProjectNowAsync(TestContext.Current.CancellationToken);
-        await financial.ProjectNowAsync(TestContext.Current.CancellationToken);
+        await financial.ProjectAsync(TestContext.Current.CancellationToken);
         await using (var context = harness.Context())
         {
             var balances = await new AccountingBooksDbRepository(context).GetAccountBalancesAsync(
@@ -83,11 +83,11 @@ public sealed partial class SilentPaymentChainMonitorTests
         // Act: the input moves to clearing, only 20k leaves, and 54.5k comes back as our SP change.
         await harness.MineAndDeliverAsync();
         await books.ProjectNowAsync(TestContext.Current.CancellationToken);
-        await financial.ProjectNowAsync(TestContext.Current.CancellationToken);
+        await financial.ProjectAsync(TestContext.Current.CancellationToken);
         await harness.RestartAsync();
         await harness.DeliverTipAsync();
         await books.ProjectNowAsync(TestContext.Current.CancellationToken);
-        await financial.ProjectNowAsync(TestContext.Current.CancellationToken);
+        await financial.ProjectAsync(TestContext.Current.CancellationToken);
 
         // Assert: source identity, withdrawal amount and fee are independent of the change address encoding.
         var events = await EventsAsync(harness);
