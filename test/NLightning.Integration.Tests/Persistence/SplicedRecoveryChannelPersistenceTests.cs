@@ -26,6 +26,31 @@ public class SplicedRecoveryChannelPersistenceTests
     private static readonly TxId s_fundingTxId = new(Enumerable.Repeat((byte)0xA1, 32).ToArray());
     private static readonly TxId s_spliceTxId = new(Enumerable.Repeat((byte)0xA2, 32).ToArray());
 
+    [Theory]
+    [InlineData(0U)]
+    [InlineData(2U)]
+    public async Task Given_UnknownRecoveryFundingKeys_When_Reloaded_Then_FundingAndSignerKeepTheUnknownFlag(uint keyIndex)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await SqliteDbTestContext.CreateAsync(ct);
+        var entry = CreateEntry() with { FundingKeysUnknown = true, LocalFundingKeyIndex = keyIndex };
+        var channel = RecoveryChannels.Create(entry, Basepoints(), entry.LocalFundingPubKey, db.Sha256);
+        await using (var writeContext = db.CreateDbContext())
+        {
+            await new ChannelDbRepository(writeContext, db.Sha256).AddAsync(channel);
+            await new ChannelFundingDbRepository(writeContext).UpsertAsync(entry.ChannelId, RecoveryChannels.CreateFundings(entry).Current);
+            await writeContext.SaveChangesAsync(ct);
+        }
+        await using var readContext = db.CreateDbContext();
+        var reloaded = await new ChannelDbRepository(readContext, db.Sha256).GetByIdAsync(entry.ChannelId);
+        var signingInfo = await new ChannelSigningInfoDbRepository(readContext).GetAsync(entry.ChannelId);
+        var funding = await new ChannelFundingDbRepository(readContext).GetFundingSetAsync(entry.ChannelId);
+        Assert.True(reloaded!.FundingKeysUnknown);
+        Assert.True(signingInfo!.Value.FundingKeysUnknown);
+        Assert.True(signingInfo.Value.DataLossDetected);
+        Assert.True(funding!.Current.FundingKeysUnknown);
+    }
+
     [Fact]
     public async Task Given_ARecoveryChannelAtASplice_When_Reloaded_Then_ItKeepsTheSplicesKeysAndOurKeyIndex()
     {

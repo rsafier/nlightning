@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -161,13 +162,86 @@ public class LoopPersistenceTests
         Assert.Empty(context.Utxos);
     }
 
-    private static ServiceProvider Provider(SqliteTestDatabase database)
+    [Fact]
+    public async Task Given_ADurableImportedHistory_When_RestartedAndExtended_Then_OnlyNewBlocksAreRead()
+    {
+        using var database = new SqliteTestDatabase();
+        var failure = new IndexSaveFailure();
+        using var services = Provider(database, failure);
+        using var key = new Key();
+        var script = key.PubKey.GetTaprootFullPubKey().ScriptPubKey;
+        var deposit = Network.RegTest.CreateTransaction();
+        deposit.Inputs.Add(new TxIn(new OutPoint(uint256.One, 0)));
+        deposit.Outputs.Add(Money.Satoshis(500_000), script);
+        var blocks = new Dictionary<uint, Block>();
+        for (uint height = 1; height <= 3; height++)
+        {
+            var block = Network.RegTest.Consensus.ConsensusFactory.CreateBlock();
+            block.Header.Nonce = height;
+            block.Header.HashPrevBlock = height == 1 ? uint256.Zero : blocks[height - 1].GetHash();
+            if (height == 1) block.Transactions.Add(deposit);
+            block.UpdateMerkleRoot();
+            blocks[height] = block;
+        }
+        var chain = new Mock<IBitcoinChainService>();
+        chain.Setup(c => c.GetBlockAsync(It.IsAny<uint>())).ReturnsAsync((uint h) => blocks[h]);
+        chain.Setup(c => c.GetBlockHashAsync(It.IsAny<uint>())).ReturnsAsync((uint h) => blocks[h].GetHash());
+        uint tip = 2;
+        var monitor = new Mock<IBlockchainMonitor>();
+        monitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(() => tip);
+        var scopes = services.GetRequiredService<IServiceScopeFactory>();
+        using (var tracker = new ImportedTapscriptTracker(scopes, chain.Object, monitor.Object))
+        {
+            await tracker.ImportAsync(new ImportedTapscript(script.ToBytes(), key.PubKey.ToBytes()[1..], [1], 1), Ct);
+            Assert.Single((await tracker.SnapshotAsync(Ct)).Outputs);
+        }
+        using var restarted = new ImportedTapscriptTracker(scopes, chain.Object, monitor.Object);
+        Assert.Single((await restarted.SnapshotAsync(Ct)).Outputs);
+        chain.Verify(c => c.GetBlockAsync(1), Times.Once());
+        chain.Verify(c => c.GetBlockAsync(2), Times.Once());
+        tip = 3;
+        failure.FailNext = true;
+        await Assert.ThrowsAsync<IOException>(() => restarted.SnapshotAsync(Ct));
+        using (var checkpoint = database.CreateContext())
+            Assert.Equal(2U, checkpoint.ImportedWatchIndexes.Single().Height);
+        monitor.Raise(m => m.OnNewBlockDetected += null!, new Domain.Bitcoin.Events.NewBlockEventArgs(3, blocks[3].GetHash().ToBytes()));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        while (true)
+        {
+            using var context = database.CreateContext();
+            if (context.ImportedWatchIndexes.Single().Height == 3) break;
+            await Task.Delay(10, deadline.Token);
+        }
+        Assert.Single((await restarted.SnapshotAsync(Ct)).Outputs);
+        chain.Verify(c => c.GetBlockAsync(1), Times.Once());
+        chain.Verify(c => c.GetBlockAsync(2), Times.Once());
+        chain.Verify(c => c.GetBlockAsync(3), Times.Exactly(2));
+        using var finalContext = database.CreateContext();
+        Assert.Empty(finalContext.Utxos);
+    }
+
+    private static ServiceProvider Provider(SqliteTestDatabase database, params IInterceptor[] interceptors)
     {
         var services = new ServiceCollection();
         services.AddSingleton(new UtxoMemoryRepository());
-        services.AddScoped<NLightningDbContext>(_ => database.CreateContext());
+        services.AddScoped<NLightningDbContext>(_ => database.CreateContext(interceptors));
         services.AddScoped<IUnitOfWork>(s => new UnitOfWork(s.GetRequiredService<NLightningDbContext>(),
             NullLogger<UnitOfWork>.Instance, new Sha256(), s.GetRequiredService<UtxoMemoryRepository>()));
         return services.BuildServiceProvider();
+    }
+    private sealed class IndexSaveFailure : SaveChangesInterceptor
+    {
+        public bool FailNext { get; set; }
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (FailNext)
+            {
+                FailNext = false;
+                throw new IOException("checkpoint save failed");
+            }
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
     }
 }

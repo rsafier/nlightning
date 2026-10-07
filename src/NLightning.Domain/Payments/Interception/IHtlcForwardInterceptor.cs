@@ -35,7 +35,7 @@ public interface IHtlcForwardInterceptor
 
     /// <summary>
     /// Offers <paramref name="forward"/> at <paramref name="currentHeight"/>. When held, <paramref name="resolve"/> is
-    /// called exactly once later, never inline and never under a lock of the interceptor. A forward already held
+    /// called later, never concurrently, inline or under a lock of the interceptor; failed callbacks may be retried. A forward already held
     /// (a replay) stays held with its first callback and is not offered again.
     /// </summary>
     ForwardInterceptOutcome Intercept(InterceptedForward forward, uint currentHeight,

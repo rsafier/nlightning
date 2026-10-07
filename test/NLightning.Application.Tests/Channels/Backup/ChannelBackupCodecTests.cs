@@ -10,6 +10,16 @@ using Domain.Protocol.ValueObjects;
 public class ChannelBackupCodecTests
 {
     [Fact]
+    public void Given_UnknownRecoveryFundingKeys_When_RoundTripped_Then_TheFlagSurvives()
+    {
+        var snapshot = BackupTestData.SampleSnapshot();
+        var channel = snapshot.Channels[0] with { FundingKeysUnknown = true, OptionSimpleTaproot = true };
+        snapshot = snapshot with { Channels = [channel] };
+        var decoded = ChannelBackupCodec.Decode(ChannelBackupCodec.Encode(snapshot));
+        Assert.True(decoded.Channels[0].FundingKeysUnknown);
+    }
+
+    [Fact]
     public void Given_ASnapshotWithAnchorsAndLegacyChannels_When_EncodedAndDecoded_Then_EveryFieldRoundTrips()
     {
         // Arrange

@@ -243,7 +243,8 @@ public class ChannelFundingDbRepository : IChannelFundingDbRepository
             entity.LocalFundingPubKey, entity.RemoteFundingPubKey, entity.LocalFundingKeyIndex,
             entity.LocalBalanceDeltaMsat, entity.RemoteBalanceDeltaMsat, ToKind(entity.Kind), ToStatus(entity.Status),
             entity.FeeratePerKw, entity.Locktime, entity.RbfOf, entity.ConfirmedHeight, entity.ShortChannelId,
-            entity.SpliceLockedSent, entity.SpliceLockedReceived, entity.AnnouncementSignaturesReceived);
+            entity.SpliceLockedSent, entity.SpliceLockedReceived, entity.AnnouncementSignaturesReceived,
+            entity.FundingKeysUnknown);
 
     /// <summary>
     /// A new <see cref="ChannelFundingEntity"/> from <paramref name="funding"/> (for a channel's initial funding written
@@ -277,6 +278,7 @@ public class ChannelFundingDbRepository : IChannelFundingDbRepository
         entity.LocalFundingPubKey = funding.LocalFundingPubKey;
         entity.RemoteFundingPubKey = funding.RemoteFundingPubKey;
         entity.LocalFundingKeyIndex = funding.LocalFundingKeyIndex;
+        entity.FundingKeysUnknown = funding.FundingKeysUnknown;
         entity.LocalBalanceDeltaMsat = funding.LocalBalanceDeltaMsat;
         entity.RemoteBalanceDeltaMsat = funding.RemoteBalanceDeltaMsat;
         entity.Kind = (byte)funding.Kind;

@@ -251,6 +251,7 @@ public static class SpliceSpendFollower
             FundingOutputIndex = outputIndex,
             CapacitySat = capacitySat,
             LocalFundingKeyIndex = localFundingKeyIndex,
+            FundingKeysUnknown = false,
             LocalFundingPubKey = localFundingPubKey,
             RemoteFundingPubKey = remoteFundingPubKey,
             FundingHeight = height,

@@ -363,3 +363,5 @@ SubscribeChannelGraph. See [LND_SUBSCRIPTIONS_PLAN.md](LND_SUBSCRIPTIONS_PLAN.md
 publication points, overflow/reconnect behavior, verification and the explicit
 on-chain HTLC/imported-transaction limits. These streams add live visibility, not a
 durable audit history or cursor API.
+
+NL-1182 reliability follow-up (`b3976b0d`, NL-1234): the hub retains holds until callbacks succeed, returns failure/in-progress results and retries failed expiry/disconnect resolutions. The gRPC service observes both directions and cancels/disconnects if either ends. Broader RESUME_MODIFIED, requireinterceptor and on-chain interception gaps remain open under NL-1182.

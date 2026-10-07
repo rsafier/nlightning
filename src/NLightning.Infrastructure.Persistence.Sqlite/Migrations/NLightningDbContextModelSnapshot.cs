@@ -693,6 +693,32 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.ToTable("ImportedTapscripts", (string)null);
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.ImportedWatchIndexEntity", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("BlockHash")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("BLOB");
+
+                    b.Property<uint>("Height")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("History")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<string>("ScriptSet")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("ImportedWatchIndexes", (string)null);
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity", b =>
                 {
                     b.Property<byte[]>("TransactionId")
@@ -1171,6 +1197,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<uint?>("FeeratePerKw")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("FundingKeysUnknown")
                         .HasColumnType("INTEGER");
 
                     b.Property<byte>("Kind")

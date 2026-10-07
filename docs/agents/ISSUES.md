@@ -181,12 +181,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 0 | 98 | 98 |
+| open | 0 | 0 | 0 | 97 | 97 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 235 | 495 | 814 |
+| fixed | 15 | 69 | 236 | 497 | 817 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **69** | **251** | **616** | **951** |
+| **Total** | **15** | **69** | **252** | **617** | **953** |
 
 ### Epics
 
@@ -1959,7 +1959,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Backups")
 
 ### NL-1215 A recovery channel followed past a simple taproot splice by its commitment or the peer's blob keeps stale funding keys
-- **Status:** open
+- **Status:** fixed (59ee7cc2; schema 04ff2a4c)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Backup/ChainFundingSpendLocator.cs` (`CheckTaprootOutputAsync`), `ChannelRestoreService.FollowPeerStorageHintAsync`
@@ -1967,6 +1967,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** take the peer's funding key from its `channel_reestablish` (`my_current_funding_locked` names the txid) or a later splice message if the protocol ever carries it; otherwise mark the funding row's keys as unknown instead of copying the last ones.
 - **Blocks/Blocked-by:** Related NL-1059
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Backups")
+- **Fix (2026-10-06):** Unproved recovery fundings carry `FundingKeysUnknown` through the funding row, model/signing views and SCB bit 5; key fields are explicitly historical hints. Following a commitment or peer-storage locator marks the keys unknown, while a verified key aggregate clears the flag. The restore skips signer registration/lock for unknown fundings; the signer rejects registering an unknown funding for signing. The migration conservatively marks older taproot recovery rows unknown. Outpoint-based following and payment-basepoint recovery remain available. Coverage includes SCB, initial/rotated funding persistence, commitment/blob recovery paths and signer refusal.
 
 ### NL-1065 The receiver charged the initiator the segwit marker and flag, refusing Eclair's taproot splice-out by 3 sat
 - **Status:** fixed (24324c11; landed in cd5c2c5d)
@@ -9638,13 +9639,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1180
 
 ### NL-1182 LND gRPC HtlcInterceptor: gaps against LND
-- **Status:** open (the accounting of a SETTLE fixed in 56595f0d, NL-1205)
+- **Status:** open (SETTLE accounting fixed in 56595f0d, NL-1205; callback/stream reliability fixed in b3976b0d, NL-1234)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `Application/Payments/Interception/HtlcInterceptorHub`, `HtlcSwitch.Interception.cs`, `RouterService.Interceptor.cs`
 - **Evidence:** `RESUME_MODIFIED` answers UNIMPLEMENTED (custom-channel amounts and wire records); there is no `requireinterceptor` mode (held forwards resume when the client leaves, and a forward replayed before a client connects after a restart is forwarded normally, LND's default); forwards held while their incoming channel goes on chain are not offered (LND's on-chain interception). (A SETTLE booked no accounting event: fixed as NL-1205.)
 - **Fix sketch:** RESUME_MODIFIED over the offer path's amount/records; a persisted hold for `requireinterceptor`; on-chain interception.
 - **Blocks/Blocked-by:** follow-up of NL-1183
+- **Reliability follow-up (2026-10-06):** NL-1234 fixes false success/lost expiry protection after a resolution callback fails and an outbound gRPC writer failure leaving the reader connected. The broader RESUME_MODIFIED, requireinterceptor and on-chain interception feature gaps above remain open.
 
 ### NL-1183 LND gRPC: routerrpc HtlcInterceptor and the switch's forward interception point
 - **Status:** fixed (788466f3)
@@ -9790,7 +9792,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1197 Imported watch history rescans blocks per RPC
-- **Status:** open
+- **Status:** fixed (8fbb2383; schema 04ff2a4c)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/Imports/ImportedTapscriptTracker.cs`
@@ -9798,6 +9800,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** Persist indexed raw imported history and update/reverse it with monitor block events while retaining fresh-scope and reorg guarantees.
 - **Blocks/Blocked-by:** NL-1190
 
+- **Fix (2026-10-06):** Persist an atomic tip/script-set checkpoint with versioned raw relevant transactions. RPCs and coalesced monitor block/disconnect notifications extend only new blocks; reorgs rewind to the last surviving relevant block before replay, and changed imports backfill. Failed scans/saves leave the saved checkpoint intact; restarted instances reuse it. Existing confirmed-only, defensive-copy, fresh-scope, pruning and wallet-isolation behavior stays covered. New persistence coverage proves no old-block reads after restart/tip advance, event-driven updates and retry after a failed checkpoint save. Retained raw history is replayed in memory and rewritten as a blob, so history size still affects CPU/storage work.
 
 ### NL-1198 GraphPathfinder timing assertion failed under build load
 - **Status:** open
@@ -10024,3 +10027,22 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** Extend the NL-1197 incremental/reorg-aware imported index with committed immutable transaction notifications and connect them to the passive wallet feed, deduplicating transactions shared with the canonical wallet.
 - **Blocks/Blocked-by:** NL-1197; follow-up of NL-1230
 - **Plan ref:** LND_SUBSCRIPTIONS_PLAN.md Limits
+
+### NL-1234 Interceptor callback and outbound stream failures can strand held forwards
+- **Status:** fixed (b3976b0d)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `Application/Payments/Interception/HtlcInterceptorHub.cs`, `Payments/Switch/HtlcSwitch.Interception.cs`, `LndGrpc/Services/RouterService.Interceptor.cs`
+- **Evidence:** The hub removed a hold before running its callback, swallowed callback exceptions and returned Resolved; a refused or failed save lost both retry ownership and hub expiry protection. The gRPC method awaited the reader while an independent failed writer left the hub connected. Found during the NL-1182 review.
+- **Fix:** Retain holds until callback success, report Failed/InProgress and preserve serialized resolution/expiry retries; propagate commitment refusals to the hub. Monitor both stream directions, cancel the other and disconnect/release holds when either ends. Regression tests cover failed callbacks, repeated expiry, concurrent resolve/disconnect and an idle reader with a failed outbound writer.
+- **Blocks/Blocked-by:** Related NL-1182 (remaining feature parity stays open)
+- **Batch validation (2026-10-06, NL-1215 / NL-1197 / NL-1182):** Release net10.0 build: 0 warnings/errors; format verification clean; solution configuration check: 40 projects OK. Full non-Docker/non-SqlServer run: 17,221 passed, 75 not executed, only known timing flakes NL-1198 and NL-729 failed; their classes passed alone (44/44 GraphPathfinderTests, 53/53 ClassificationEngineTests). Final persistence/model coverage passed 28/28, including both new initial/rotated unknown-key cases (also independently 2/2). Every test used the 5-minute hang timeout. No Infrastructure/Crypto changes or Native gate required.
+
+### NL-1235 `LndGrpcWave3HostTests.Given_AnInterceptor_When_AForwardIsHeld_Then_ItsFailReachesTheSwitch` failed once under a loaded run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.LndGrpc.Tests/Wave3/LndGrpcWave3HostTests.cs`
+- **Evidence:** the PR #27 integration onto `wip/fafo` (2026-10-06, with PR #26's subscription feeds) failed it after 241 ms. LndGrpc.Tests ran 210/211 while the Application suite ran in parallel. The class passed 18/18 three times alone. The test exercises the interceptor hold/resolve path that NL-1234 changed (holds retained until the callback succeeds, both stream directions observed), so a real ordering race between the FAIL resolution and the switch is possible, not only harness timing.
+- **Fix sketch:** run the test under load in a loop. Check whether the FAIL can be answered before the hold is registered with the switch, or whether the assertion polls with a fixed deadline. Make the wait event-driven.
+- **Blocks/Blocked-by:** related NL-1234, NL-1182

@@ -22,5 +22,16 @@ public static class ImportedTapscriptEntityConfiguration
                 entity.Property(e => e.InternalKey).HasColumnType("varbinary(32)");
             }
         });
+        builder.Entity<ImportedWatchIndexEntity>(entity =>
+        {
+            entity.ToTable("ImportedWatchIndexes");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).ValueGeneratedNever();
+            entity.Property(e => e.BlockHash).HasMaxLength(32).IsRequired();
+            entity.Property(e => e.ScriptSet).IsRequired();
+            entity.Property(e => e.History).IsRequired();
+            if (type == DatabaseType.MicrosoftSql)
+                entity.Property(e => e.BlockHash).HasColumnType("varbinary(32)");
+        });
     }
 }

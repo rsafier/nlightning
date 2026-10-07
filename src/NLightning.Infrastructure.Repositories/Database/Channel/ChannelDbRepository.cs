@@ -597,6 +597,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         };
         // The current funding's key index (NL-495): the signer's view of a spliced channel uses its rotated key
         channelModel.SetLocalFundingKeyIndex(splicedFunding?.LocalFundingKeyIndex ?? 0);
+        channelModel.FundingKeysUnknown = currentFunding?.FundingKeysUnknown ?? false;
         if (channelEntity.LastReceivedPartialSignature is { } partialSignature)
             channelModel.UpdateLastReceivedPartialSignature(new MusigPartialSignatureWithNonce(partialSignature));
         if (channelEntity.ErrorSent is not null)

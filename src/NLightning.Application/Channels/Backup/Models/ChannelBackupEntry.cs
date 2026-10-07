@@ -107,6 +107,10 @@ public sealed record ChannelBackupEntry
     /// </summary>
     public uint LocalFundingKeyIndex { get; init; }
 
+    /// <summary>Recovery identified the outpoint but could not recover both funding keys.
+    /// The key fields are historical hints, never keys for signing this funding.</summary>
+    public bool FundingKeysUnknown { get; init; }
+
     /// <summary>
     /// The channel's pending splices at backup time (empty when none), so a restore from a backup written before the
     /// lock follows the splice (splicing plan SP2-0, lane SP2-E; trailing field of the record).

@@ -32,6 +32,8 @@ public class ChannelFundingEntity
     /// <summary>The derivation index of our funding key (splicing plan D5, 0 for the initial funding).</summary>
     public required uint LocalFundingKeyIndex { get; set; }
 
+    public bool FundingKeysUnknown { get; set; }
+
     public required long LocalBalanceDeltaMsat { get; set; }
 
     public required long RemoteBalanceDeltaMsat { get; set; }

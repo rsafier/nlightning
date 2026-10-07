@@ -46,6 +46,16 @@ public class LocalLightningSignerSplicingTests
     #region SP1-C-T1 funding keys
 
     [Fact]
+    public void Given_UnknownRecoveryFundingKeys_When_RegisteredForSigning_Then_Refused()
+    {
+        var signer = CreateSigner();
+        var (_, funding) = BuildSplice(signer);
+        var exception = Assert.Throws<SignerException>(() => signer.RegisterFunding(s_channelId,
+            funding with { FundingKeysUnknown = true }));
+        Assert.Contains("unknown", exception.Message);
+    }
+
+    [Fact]
     public void Given_AppendixCKeys_When_NodeBKeyChecked_Then_ItIsTheVectorsRemoteFundingKey()
     {
         // Assert: the fixture's peer key is the spec's node B funding key

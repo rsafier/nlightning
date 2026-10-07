@@ -54,6 +54,8 @@ public partial class LocalLightningSigner
     public void RegisterFunding(ChannelId channelId, ChannelFunding funding)
     {
         ArgumentNullException.ThrowIfNull(funding);
+        if (funding.FundingKeysUnknown)
+            throw new SignerException("Recovery funding keys are unknown; signing is forbidden", channelId, "Data loss");
         var signingInfo = GetRegisteredSigningInfo(channelId);
         if (funding.Status != ChannelFundingStatus.Pending)
             throw new SignerException($"Only a pending funding can be registered, not a {funding.Status} one",
@@ -342,7 +344,8 @@ public partial class LocalLightningSigner
             var signingInfo = GetRegisteredSigningInfo(channelId);
             foreach (var funding in incoming.Fundings ?? [])
             {
-                if (funding.FundingTxId == signingInfo.FundingTxId || funding.Status == ChannelFundingStatus.Current)
+                if (funding.FundingKeysUnknown || funding.FundingTxId == signingInfo.FundingTxId
+                 || funding.Status == ChannelFundingStatus.Current)
                     continue;
 
                 RegisterFundingLocked(channelId, signingInfo, funding);

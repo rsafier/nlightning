@@ -28,8 +28,14 @@ public sealed class HtlcInterceptorSettings
 /// <summary>How <see cref="HtlcInterceptorHub.ResolveAsync"/> ended.</summary>
 public enum InterceptResolveResult
 {
-    /// <summary>The resolution was carried out (or attempted: a refused channel operation is logged).</summary>
+    /// <summary>The resolution was carried out.</summary>
     Resolved,
+
+    /// <summary>The operation failed; the forward remains held and expiry protection remains active.</summary>
+    Failed,
+
+    /// <summary>Another resolution is executing for this circuit.</summary>
+    InProgress,
 
     /// <summary>No forward with that key is held (LND's <c>ErrFwdNotExists</c>).</summary>
     NotFound,

@@ -26,7 +26,7 @@ using Models;
 /// party:   u64 dust_limit_sat | u64 channel_reserve_sat | u64 htlc_minimum_msat | u16 max_accepted_htlcs
 ///         | u64 max_htlc_value_in_flight_msat | u16 to_self_delay
 /// address: u8 type_length | type (UTF-8) | u8 host_length | host (UTF-8) | u16 port
-/// flags:   bit 0 initiator, bit 1 option_anchors, bit 2 announced, bit 3 inferred params, bit 4 simple taproot
+/// flags:   bit 0 initiator, bit 1 option_anchors, bit 2 announced, bit 3 inferred params, bit 4 simple taproot, bit 5 recovery funding keys unknown
 ///          (version 2 only)
 /// then, since the splicing revision (still version 1, trailing fields):
 ///         | u32 local_funding_key_index | u8 pending_count | pending_count x pending
@@ -64,6 +64,7 @@ public static class ChannelBackupCodec
     private const byte FlagAnnounced = 4;
     private const byte FlagInferredParams = 8;
     private const byte FlagSimpleTaproot = 16;
+    private const byte FlagFundingKeysUnknown = 32;
 
     private const int PubKeyLength = CryptoConstants.CompactPubkeyLen;
     private const int HashLength = CryptoConstants.Sha256HashLen;
@@ -148,7 +149,8 @@ public static class ChannelBackupCodec
                          | (channel.OptionAnchorOutputs ? FlagAnchors : 0)
                          | (channel.AnnounceChannel ? FlagAnnounced : 0)
                          | (channel.HasInferredParams ? FlagInferredParams : 0)
-                         | (channel.OptionSimpleTaproot ? FlagSimpleTaproot : 0));
+                         | (channel.OptionSimpleTaproot ? FlagSimpleTaproot : 0)
+                         | (channel.FundingKeysUnknown ? FlagFundingKeysUnknown : 0));
         writer.Byte(flags);
         writer.Byte((byte)channel.Version);
         writer.Byte((byte)channel.UseScidAlias);
@@ -279,6 +281,7 @@ public static class ChannelBackupCodec
             AnnounceChannel = (flags & FlagAnnounced) != 0,
             HasInferredParams = (flags & FlagInferredParams) != 0,
             OptionSimpleTaproot = simpleTaproot,
+            FundingKeysUnknown = (flags & FlagFundingKeysUnknown) != 0,
             Version = (ChannelVersion)channelVersion,
             UseScidAlias = (FeatureSupport)scidAlias,
             MinimumDepth = minimumDepth,

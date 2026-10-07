@@ -129,9 +129,10 @@ public sealed partial class HtlcSwitch
         }
         catch (CommitmentRefusedException e)
         {
-            // Nothing was persisted: the HTLC is still pending, and the next replay offers it again
+            // Nothing was persisted: the hub must keep the HTLC held for retry and expiry protection
             _logger.LogWarning("Could not carry out the interceptor's {Action} of HTLC {HtlcId} of channel {ChannelId}: "
                              + "{Reason}", resolution.Action, htlcId, incomingChannelId, e.Message);
+            throw;
         }
     }
 

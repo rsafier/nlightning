@@ -35,7 +35,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 "NLightning.Infrastructure.Persistence.Entities.Channel.ChannelFundingEntity",
                 typeof(ChannelFundingEntity),
                 baseEntityType,
-                propertyCount: 20,
+                propertyCount: 21,
                 foreignKeyCount: 1,
                 keyCount: 1);
 
@@ -369,6 +369,54 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             feeratePerKw.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
             feeratePerKw.AddAnnotation("Relational:ColumnName", "feerate_per_kw");
 
+            var fundingKeysUnknown = runtimeEntityType.AddProperty(
+                "FundingKeysUnknown",
+                typeof(bool),
+                propertyInfo: typeof(ChannelFundingEntity).GetProperty("FundingKeysUnknown", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(ChannelFundingEntity).GetField("<FundingKeysUnknown>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                sentinel: false);
+            fundingKeysUnknown.SetGetter(
+                bool (ChannelFundingEntity instance) => ChannelFundingEntityUnsafeAccessors.FundingKeysUnknown(instance),
+                bool (ChannelFundingEntity instance) => ChannelFundingEntityUnsafeAccessors.FundingKeysUnknown(instance) == false);
+            fundingKeysUnknown.SetSetter(
+                ChannelFundingEntity (ChannelFundingEntity instance, bool value) =>
+                {
+                    ChannelFundingEntityUnsafeAccessors.FundingKeysUnknown(instance) = value;
+                    return instance;
+                });
+            fundingKeysUnknown.SetMaterializationSetter(
+                ChannelFundingEntity (ChannelFundingEntity instance, bool value) =>
+                {
+                    ChannelFundingEntityUnsafeAccessors.FundingKeysUnknown(instance) = value;
+                    return instance;
+                });
+            fundingKeysUnknown.SetAccessors(
+                bool (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.FundingKeysUnknown(((ChannelFundingEntity)(entry.Entity))),
+                bool (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.FundingKeysUnknown(((ChannelFundingEntity)(entry.Entity))),
+                bool (IInternalEntry entry) => entry.ReadOriginalValue<bool>(fundingKeysUnknown, 6),
+                bool (IInternalEntry entry) => entry.GetCurrentValue<bool>(fundingKeysUnknown));
+            fundingKeysUnknown.SetPropertyIndexes(
+                index: 6,
+                originalValueIndex: 6,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            fundingKeysUnknown.TypeMapping = NpgsqlBoolTypeMapping.Default.Clone(
+                comparer: new ValueComparer<bool>(
+                    bool (bool v1, bool v2) => v1 == v2,
+                    int (bool v) => ((object)v).GetHashCode(),
+                    bool (bool v) => v),
+                keyComparer: new ValueComparer<bool>(
+                    bool (bool v1, bool v2) => v1 == v2,
+                    int (bool v) => ((object)v).GetHashCode(),
+                    bool (bool v) => v),
+                providerValueComparer: new ValueComparer<bool>(
+                    bool (bool v1, bool v2) => v1 == v2,
+                    int (bool v) => ((object)v).GetHashCode(),
+                    bool (bool v) => v));
+            fundingKeysUnknown.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
+            fundingKeysUnknown.AddAnnotation("Relational:ColumnName", "funding_keys_unknown");
+
             var kind = runtimeEntityType.AddProperty(
                 "Kind",
                 typeof(byte),
@@ -393,11 +441,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             kind.SetAccessors(
                 byte (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.Kind(((ChannelFundingEntity)(entry.Entity))),
                 byte (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.Kind(((ChannelFundingEntity)(entry.Entity))),
-                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(kind, 6),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(kind, 7),
                 byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(kind));
             kind.SetPropertyIndexes(
-                index: 6,
-                originalValueIndex: 6,
+                index: 7,
+                originalValueIndex: 7,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -443,11 +491,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             localBalanceDeltaMsat.SetAccessors(
                 long (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.LocalBalanceDeltaMsat(((ChannelFundingEntity)(entry.Entity))),
                 long (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.LocalBalanceDeltaMsat(((ChannelFundingEntity)(entry.Entity))),
-                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(localBalanceDeltaMsat, 7),
+                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(localBalanceDeltaMsat, 8),
                 long (IInternalEntry entry) => entry.GetCurrentValue<long>(localBalanceDeltaMsat));
             localBalanceDeltaMsat.SetPropertyIndexes(
-                index: 7,
-                originalValueIndex: 7,
+                index: 8,
+                originalValueIndex: 8,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -490,11 +538,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             localFundingKeyIndex.SetAccessors(
                 uint (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.LocalFundingKeyIndex(((ChannelFundingEntity)(entry.Entity))),
                 uint (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.LocalFundingKeyIndex(((ChannelFundingEntity)(entry.Entity))),
-                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(localFundingKeyIndex, 8),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(localFundingKeyIndex, 9),
                 uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(localFundingKeyIndex));
             localFundingKeyIndex.SetPropertyIndexes(
-                index: 8,
-                originalValueIndex: 8,
+                index: 9,
+                originalValueIndex: 9,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -547,11 +595,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             localFundingPubKey.SetAccessors(
                 CompactPubKey (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.LocalFundingPubKey(((ChannelFundingEntity)(entry.Entity))),
                 CompactPubKey (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.LocalFundingPubKey(((ChannelFundingEntity)(entry.Entity))),
-                CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(localFundingPubKey, 9),
+                CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(localFundingPubKey, 10),
                 CompactPubKey (IInternalEntry entry) => entry.GetCurrentValue<CompactPubKey>(localFundingPubKey));
             localFundingPubKey.SetPropertyIndexes(
-                index: 9,
-                originalValueIndex: 9,
+                index: 10,
+                originalValueIndex: 10,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -604,11 +652,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             locktime.SetAccessors(
                 uint? (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.Locktime(((ChannelFundingEntity)(entry.Entity))),
                 uint? (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.Locktime(((ChannelFundingEntity)(entry.Entity))),
-                uint? (IInternalEntry entry) => entry.ReadOriginalValue<uint?>(locktime, 10),
+                uint? (IInternalEntry entry) => entry.ReadOriginalValue<uint?>(locktime, 11),
                 uint? (IInternalEntry entry) => entry.GetCurrentValue<uint?>(locktime));
             locktime.SetPropertyIndexes(
-                index: 10,
-                originalValueIndex: 10,
+                index: 11,
+                originalValueIndex: 11,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -661,11 +709,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             outputIndex.SetAccessors(
                 ushort (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.OutputIndex(((ChannelFundingEntity)(entry.Entity))),
                 ushort (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.OutputIndex(((ChannelFundingEntity)(entry.Entity))),
-                ushort (IInternalEntry entry) => entry.ReadOriginalValue<ushort>(outputIndex, 11),
+                ushort (IInternalEntry entry) => entry.ReadOriginalValue<ushort>(outputIndex, 12),
                 ushort (IInternalEntry entry) => entry.GetCurrentValue<ushort>(outputIndex));
             outputIndex.SetPropertyIndexes(
-                index: 11,
-                originalValueIndex: 11,
+                index: 12,
+                originalValueIndex: 12,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -721,11 +769,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             rbfOf.SetAccessors(
                 TxId? (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.RbfOf(((ChannelFundingEntity)(entry.Entity))),
                 TxId? (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.RbfOf(((ChannelFundingEntity)(entry.Entity))),
-                TxId? (IInternalEntry entry) => entry.ReadOriginalValue<TxId?>(rbfOf, 12),
+                TxId? (IInternalEntry entry) => entry.ReadOriginalValue<TxId?>(rbfOf, 13),
                 TxId? (IInternalEntry entry) => entry.GetCurrentValue<TxId?>(rbfOf));
             rbfOf.SetPropertyIndexes(
-                index: 12,
-                originalValueIndex: 12,
+                index: 13,
+                originalValueIndex: 13,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -779,11 +827,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             remoteBalanceDeltaMsat.SetAccessors(
                 long (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.RemoteBalanceDeltaMsat(((ChannelFundingEntity)(entry.Entity))),
                 long (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.RemoteBalanceDeltaMsat(((ChannelFundingEntity)(entry.Entity))),
-                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(remoteBalanceDeltaMsat, 13),
+                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(remoteBalanceDeltaMsat, 14),
                 long (IInternalEntry entry) => entry.GetCurrentValue<long>(remoteBalanceDeltaMsat));
             remoteBalanceDeltaMsat.SetPropertyIndexes(
-                index: 13,
-                originalValueIndex: 13,
+                index: 14,
+                originalValueIndex: 14,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -827,11 +875,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             remoteFundingPubKey.SetAccessors(
                 CompactPubKey (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.RemoteFundingPubKey(((ChannelFundingEntity)(entry.Entity))),
                 CompactPubKey (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.RemoteFundingPubKey(((ChannelFundingEntity)(entry.Entity))),
-                CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(remoteFundingPubKey, 14),
+                CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(remoteFundingPubKey, 15),
                 CompactPubKey (IInternalEntry entry) => entry.GetCurrentValue<CompactPubKey>(remoteFundingPubKey));
             remoteFundingPubKey.SetPropertyIndexes(
-                index: 14,
-                originalValueIndex: 14,
+                index: 15,
+                originalValueIndex: 15,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -884,11 +932,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             sequence.SetAccessors(
                 int (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.Sequence(((ChannelFundingEntity)(entry.Entity))),
                 int (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.Sequence(((ChannelFundingEntity)(entry.Entity))),
-                int (IInternalEntry entry) => entry.ReadOriginalValue<int>(sequence, 15),
+                int (IInternalEntry entry) => entry.ReadOriginalValue<int>(sequence, 16),
                 int (IInternalEntry entry) => entry.GetCurrentValue<int>(sequence));
             sequence.SetPropertyIndexes(
-                index: 15,
-                originalValueIndex: 15,
+                index: 16,
+                originalValueIndex: 16,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -935,11 +983,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             shortChannelId.SetAccessors(
                 ShortChannelId? (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.ShortChannelId(((ChannelFundingEntity)(entry.Entity))),
                 ShortChannelId? (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.ShortChannelId(((ChannelFundingEntity)(entry.Entity))),
-                ShortChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ShortChannelId?>(shortChannelId, 16),
+                ShortChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ShortChannelId?>(shortChannelId, 17),
                 ShortChannelId? (IInternalEntry entry) => entry.GetCurrentValue<ShortChannelId?>(shortChannelId));
             shortChannelId.SetPropertyIndexes(
-                index: 16,
-                originalValueIndex: 16,
+                index: 17,
+                originalValueIndex: 17,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -993,11 +1041,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             spliceLockedReceived.SetAccessors(
                 bool (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.SpliceLockedReceived(((ChannelFundingEntity)(entry.Entity))),
                 bool (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.SpliceLockedReceived(((ChannelFundingEntity)(entry.Entity))),
-                bool (IInternalEntry entry) => entry.ReadOriginalValue<bool>(spliceLockedReceived, 17),
+                bool (IInternalEntry entry) => entry.ReadOriginalValue<bool>(spliceLockedReceived, 18),
                 bool (IInternalEntry entry) => entry.GetCurrentValue<bool>(spliceLockedReceived));
             spliceLockedReceived.SetPropertyIndexes(
-                index: 17,
-                originalValueIndex: 17,
+                index: 18,
+                originalValueIndex: 18,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1041,11 +1089,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             spliceLockedSent.SetAccessors(
                 bool (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.SpliceLockedSent(((ChannelFundingEntity)(entry.Entity))),
                 bool (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.SpliceLockedSent(((ChannelFundingEntity)(entry.Entity))),
-                bool (IInternalEntry entry) => entry.ReadOriginalValue<bool>(spliceLockedSent, 18),
+                bool (IInternalEntry entry) => entry.ReadOriginalValue<bool>(spliceLockedSent, 19),
                 bool (IInternalEntry entry) => entry.GetCurrentValue<bool>(spliceLockedSent));
             spliceLockedSent.SetPropertyIndexes(
-                index: 18,
-                originalValueIndex: 18,
+                index: 19,
+                originalValueIndex: 19,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1089,11 +1137,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             status.SetAccessors(
                 byte (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.Status(((ChannelFundingEntity)(entry.Entity))),
                 byte (IInternalEntry entry) => ChannelFundingEntityUnsafeAccessors.Status(((ChannelFundingEntity)(entry.Entity))),
-                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(status, 19),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(status, 20),
                 byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(status));
             status.SetPropertyIndexes(
-                index: 19,
-                originalValueIndex: 19,
+                index: 20,
+                originalValueIndex: 20,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -1143,6 +1191,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var capacitySatoshis = runtimeEntityType.FindProperty("CapacitySatoshis");
             var confirmedHeight = runtimeEntityType.FindProperty("ConfirmedHeight");
             var feeratePerKw = runtimeEntityType.FindProperty("FeeratePerKw");
+            var fundingKeysUnknown = runtimeEntityType.FindProperty("FundingKeysUnknown");
             var kind = runtimeEntityType.FindProperty("Kind");
             var localBalanceDeltaMsat = runtimeEntityType.FindProperty("LocalBalanceDeltaMsat");
             var localFundingKeyIndex = runtimeEntityType.FindProperty("LocalFundingKeyIndex");
@@ -1164,7 +1213,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType1 = ((ChannelFundingEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<ChannelId, TxId, bool, long, uint?, uint?, byte, long, uint, CompactPubKey, uint?, ushort, TxId?, long, CompactPubKey, int, ShortChannelId?, bool, bool, byte>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<TxId>)(((IProperty)fundingTxId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId>(fundingTxId)), ((ValueComparer<bool>)(((IProperty)announcementSignaturesReceived).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(announcementSignaturesReceived)), ((ValueComparer<long>)(((IProperty)capacitySatoshis).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(capacitySatoshis)), (source.GetCurrentValue<uint?>(confirmedHeight) == null ? null : ((ValueComparer<uint?>)(((IProperty)confirmedHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(confirmedHeight))), (source.GetCurrentValue<uint?>(feeratePerKw) == null ? null : ((ValueComparer<uint?>)(((IProperty)feeratePerKw).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(feeratePerKw))), ((ValueComparer<byte>)(((IProperty)kind).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(kind)), ((ValueComparer<long>)(((IProperty)localBalanceDeltaMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(localBalanceDeltaMsat)), ((ValueComparer<uint>)(((IProperty)localFundingKeyIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(localFundingKeyIndex)), ((ValueComparer<CompactPubKey>)(((IProperty)localFundingPubKey).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(localFundingPubKey)), (source.GetCurrentValue<uint?>(locktime) == null ? null : ((ValueComparer<uint?>)(((IProperty)locktime).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(locktime))), ((ValueComparer<ushort>)(((IProperty)outputIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(outputIndex)), (source.GetCurrentValue<TxId?>(rbfOf) == null ? null : ((ValueComparer<TxId?>)(((IProperty)rbfOf).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId?>(rbfOf))), ((ValueComparer<long>)(((IProperty)remoteBalanceDeltaMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(remoteBalanceDeltaMsat)), ((ValueComparer<CompactPubKey>)(((IProperty)remoteFundingPubKey).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(remoteFundingPubKey)), ((ValueComparer<int>)(((IProperty)sequence).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(sequence)), (source.GetCurrentValue<ShortChannelId?>(shortChannelId) == null ? null : ((ValueComparer<ShortChannelId?>)(((IProperty)shortChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId?>(shortChannelId))), ((ValueComparer<bool>)(((IProperty)spliceLockedReceived).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(spliceLockedReceived)), ((ValueComparer<bool>)(((IProperty)spliceLockedSent).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(spliceLockedSent)), ((ValueComparer<byte>)(((IProperty)status).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(status)))));
+                    return ((ISnapshot)(new Snapshot<ChannelId, TxId, bool, long, uint?, uint?, bool, byte, long, uint, CompactPubKey, uint?, ushort, TxId?, long, CompactPubKey, int, ShortChannelId?, bool, bool, byte>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<TxId>)(((IProperty)fundingTxId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId>(fundingTxId)), ((ValueComparer<bool>)(((IProperty)announcementSignaturesReceived).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(announcementSignaturesReceived)), ((ValueComparer<long>)(((IProperty)capacitySatoshis).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(capacitySatoshis)), (source.GetCurrentValue<uint?>(confirmedHeight) == null ? null : ((ValueComparer<uint?>)(((IProperty)confirmedHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(confirmedHeight))), (source.GetCurrentValue<uint?>(feeratePerKw) == null ? null : ((ValueComparer<uint?>)(((IProperty)feeratePerKw).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(feeratePerKw))), ((ValueComparer<bool>)(((IProperty)fundingKeysUnknown).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(fundingKeysUnknown)), ((ValueComparer<byte>)(((IProperty)kind).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(kind)), ((ValueComparer<long>)(((IProperty)localBalanceDeltaMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(localBalanceDeltaMsat)), ((ValueComparer<uint>)(((IProperty)localFundingKeyIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(localFundingKeyIndex)), ((ValueComparer<CompactPubKey>)(((IProperty)localFundingPubKey).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(localFundingPubKey)), (source.GetCurrentValue<uint?>(locktime) == null ? null : ((ValueComparer<uint?>)(((IProperty)locktime).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(locktime))), ((ValueComparer<ushort>)(((IProperty)outputIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort>(outputIndex)), (source.GetCurrentValue<TxId?>(rbfOf) == null ? null : ((ValueComparer<TxId?>)(((IProperty)rbfOf).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId?>(rbfOf))), ((ValueComparer<long>)(((IProperty)remoteBalanceDeltaMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(remoteBalanceDeltaMsat)), ((ValueComparer<CompactPubKey>)(((IProperty)remoteFundingPubKey).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(remoteFundingPubKey)), ((ValueComparer<int>)(((IProperty)sequence).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(sequence)), (source.GetCurrentValue<ShortChannelId?>(shortChannelId) == null ? null : ((ValueComparer<ShortChannelId?>)(((IProperty)shortChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId?>(shortChannelId))), ((ValueComparer<bool>)(((IProperty)spliceLockedReceived).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(spliceLockedReceived)), ((ValueComparer<bool>)(((IProperty)spliceLockedSent).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(spliceLockedSent)), ((ValueComparer<byte>)(((IProperty)status).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(status)))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => ((ISnapshot)(new Snapshot<ChannelId>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(default(ChannelId))))));
@@ -1181,11 +1230,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                     return ((ISnapshot)(new Snapshot<ChannelId, TxId>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<TxId>)(((IProperty)fundingTxId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<TxId>(fundingTxId)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 20,
+                propertyCount: 21,
                 navigationCount: 0,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 20,
+                originalValueCount: 21,
                 shadowCount: 0,
                 relationshipCount: 2,
                 storeGeneratedCount: 1));

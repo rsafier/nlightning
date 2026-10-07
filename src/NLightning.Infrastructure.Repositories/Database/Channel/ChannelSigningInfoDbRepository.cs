@@ -159,6 +159,7 @@ public class ChannelSigningInfoDbRepository : IChannelSigningInfoDbRepository
             IsSimpleTaproot = channel.Config?.OptionSimpleTaproot ?? false,
             IsDualFunded = channel.Version == (byte)ChannelVersion.V2,
             LocalFundingKeyIndex = current?.LocalFundingKeyIndex ?? 0,
+            FundingKeysUnknown = fundings.Any(f => f.FundingTxId == channel.FundingTxId && f.FundingKeysUnknown),
             Fundings = others.Count == 0 ? null : others,
             PersistedSpliceCommitments = persisted.Count == 0 ? null : persisted
         };

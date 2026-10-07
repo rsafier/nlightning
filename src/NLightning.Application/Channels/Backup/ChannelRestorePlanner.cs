@@ -93,7 +93,7 @@ public static class ChannelRestorePlanner
             var basepoints = deriveBasepoints(entry.KeyIndex);
             if (basepoints.PaymentBasepoint != entry.LocalPaymentBasepoint
              || deriveFundingKey(entry.KeyIndex, entry.LocalFundingKeyIndex) is not { } fundingKey
-             || fundingKey != entry.LocalFundingPubKey)
+             || (!entry.FundingKeysUnknown && fundingKey != entry.LocalFundingPubKey))
             {
                 plan.Add(new ChannelRestorePlanItem(entry, ChannelRestoreAction.KeysMismatch));
                 continue;
