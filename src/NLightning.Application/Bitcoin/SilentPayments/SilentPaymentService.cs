@@ -308,11 +308,13 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
             var baseKey = AccountingEventKeys.WalletSent(transactionId);
             var prior = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync(baseKey, cancellationToken);
             var key = AccountingConfirmations.NextConfirmationKey(baseKey, prior);
-            if (key is null) continue;
+            var standing = AccountingConfirmations.FindStanding(baseKey, prior);
+            if (standing is not null && (!standing.Details.TryGetValue("recovered", out var recovered) || recovered != "true"))
+                continue;
             // A retained broadcast may represent funding, a sweep or a shared transaction. Its original writer
             // owns settlement; never relabel those movements as a recovered withdrawal.
             var broadcast = await uow.BroadcastTransactionDbRepository.GetByTransactionIdAsync(transactionId);
-            if (broadcast is not null && broadcast.Purpose != Domain.Bitcoin.Enums.BroadcastPurpose.WalletSend)
+            if (broadcast is not null && broadcast.Purpose != Domain.Onchain.Enums.BroadcastPurpose.WalletSend)
                 continue;
             long inputSat = 0;
             for (var index = 0; index < inputs.Count; index++)
@@ -362,11 +364,30 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
             }
             var feeSat = checked(inputSat - outputSat);
             if (feeSat < 0) throw new InvalidOperationException("Recovered spend outputs exceed its proven wallet inputs.");
+            var amountMsat = -checked(externalSat * 1000);
+            var feeMsat = checked(feeSat * 1000);
+            if (standing is not null)
+            {
+                if (standing.AmountMsat == amountMsat && standing.FeeMsat == feeMsat) continue;
+                // Threshold promotion can reveal own change previously excluded from custody. Correct only our
+                // recovery settlement, retaining the original immutable fact and its explicit policy reversal.
+                var reversal = new AccountingEventModel
+                {
+                    EventKey = AccountingEventKeys.Reversal(standing.EventKey, standing.BlockHeight!.Value),
+                    Kind = AccountingEventKind.Reversal, OccurredAt = _time.GetUtcNow(), BlockHeight = standing.BlockHeight,
+                    TxId = transactionId, AmountMsat = -standing.AmountMsat, FeeMsat = -standing.FeeMsat,
+                    Finality = AccountingFinality.Confirmed,
+                    Details = AccountingDetailsCodec.Create((AccountingConfirmations.ReversesDetail, standing.EventKey),
+                        (AccountingConfirmations.OriginalKindDetail, standing.Kind.ToString()), ("reason", "recovered_custody_policy_changed"))
+                };
+                uow.AccountingEventDbRepository.Add(reversal);
+                key = AccountingConfirmations.NextConfirmationKey(baseKey, prior.Append(reversal).ToArray());
+            }
             uow.AccountingEventDbRepository.Add(new AccountingEventModel
             {
-                EventKey = key, Kind = AccountingEventKind.WalletSent, OccurredAt = block.Header.BlockTime,
-                BlockHeight = height, TxId = transactionId, AmountMsat = -checked(externalSat * 1000),
-                FeeMsat = checked(feeSat * 1000), Finality = AccountingFinality.Confirmed,
+                EventKey = key!, Kind = AccountingEventKind.WalletSent, OccurredAt = block.Header.BlockTime,
+                BlockHeight = height, TxId = transactionId, AmountMsat = amountMsat,
+                FeeMsat = feeMsat, Finality = AccountingFinality.Confirmed,
                 Details = AccountingDetailsCodec.Create(("recovered", "true"), ("purposeUnknown", broadcast is null ? "true" : null),
                     ("externalOutputs", externalOutputs.ToString(CultureInfo.InvariantCulture)))
             });
