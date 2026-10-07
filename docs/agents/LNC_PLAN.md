@@ -76,7 +76,7 @@ The actual command interface and runnable setup instructions are maintained in
 
 ## Verification record
 
-Final checks passed on `wip/lnc`, based on `wip/fafo` `dff5931f`:
+Implementation commit: `478976a1` (NL-1237). Final checks passed on `wip/lnc`, based on `wip/fafo` `dff5931f`:
 
 - Go: 19 top-level tests passed with the race detector (7.243 s), plus
   `go vet ./...`, `go mod verify`, and clean gofmt output.

@@ -2,7 +2,7 @@
 
 The single durable issue ledger for this repo. GitHub issues are disabled on the fork, so this file replaces them. Every known bug, gap, spec violation, missing feature, test/CI hygiene problem and tech-debt item lives here, so nothing is lost between agent sessions.
 
-Updated 2026-10-06 by `wip/lnc` from latest `wip/fafo` dff5931f: NL-1237 fixed with a separate scoped LNC sidecar and upstream-client regtest proof `lnc-proof3` (1/1, 130 s). Summary recounted: 956 unique classified entries; no schema or live-node configuration change.
+Updated 2026-10-06 by `wip/lnc` from latest `wip/fafo` dff5931f: NL-1237 fixed in `478976a1` with a separate scoped LNC sidecar and upstream-client regtest proof `lnc-proof3` (1/1, 130 s). Summary recounted: 956 unique classified entries; no schema or live-node configuration change.
 
 Updated 2026-10-06 by `wip/lnd-p2` from `wip/fafo` d074fe01: NL-1170, NL-1171 and NL-1172 fixed; NL-1190/NL-1196 regtest matrix complete (`lnd-p2-proof6`, 1/1), Mutinynet trial prepared but pending access/server confirmation/owner approval. New and fixed NL-1226 (onion reply metric assertion race) and NL-1228 (same-height chain-sync barrier); new open NL-1227 (unchanged accounting adjustment assertion failed once under load, passed on both frameworks in isolation). NL-1198 reproduced under load, passed alone on both frameworks. Summary recounted: 942 entries, no duplicate IDs; no schema change.
 
@@ -10071,7 +10071,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1237 Lightning Node Connect transport for NLightning's LND-compatible gRPC server
-- **Status:** fixed (implementation commit; SHA recorded in follow-up)
+- **Status:** fixed (478976a1)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `tools/lnc`, `docs/agents/LNC_PLAN.md`, `test/NLightning.Integration.Tests/Cluster/Lnc`
