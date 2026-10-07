@@ -179,9 +179,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 0 | 95 | 95 |
+| open | 0 | 0 | 0 | 94 | 94 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 235 | 496 | 815 |
+| fixed | 15 | 69 | 235 | 497 | 816 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
 | **Total** | **15** | **69** | **251** | **614** | **949** |
@@ -9790,7 +9790,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1197 Imported watch history rescans blocks per RPC
-- **Status:** open
+- **Status:** fixed (this commit; schema 04ff2a4c)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/Imports/ImportedTapscriptTracker.cs`
@@ -9798,6 +9798,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** Persist indexed raw imported history and update/reverse it with monitor block events while retaining fresh-scope and reorg guarantees.
 - **Blocks/Blocked-by:** NL-1190
 
+- **Fix (2026-10-06):** Persist an atomic tip/script-set checkpoint with versioned raw relevant transactions. RPCs and coalesced monitor block/disconnect notifications extend only new blocks; reorgs rewind to the last surviving relevant block before replay, and changed imports backfill. Failed scans/saves leave the saved checkpoint intact; restarted instances reuse it. Existing confirmed-only, defensive-copy, fresh-scope, pruning and wallet-isolation behavior stays covered. New persistence coverage proves no old-block reads after restart/tip advance, event-driven updates and retry after a failed checkpoint save. Retained raw history is replayed in memory and rewritten as a blob, so history size still affects CPU/storage work.
 
 ### NL-1198 GraphPathfinder timing assertion failed under build load
 - **Status:** open

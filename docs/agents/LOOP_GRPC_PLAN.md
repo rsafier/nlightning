@@ -661,3 +661,6 @@ PSBT funding of our v1/v2 opens. Separate decision.
 8. **Merge order**: waves 2 and 3 are separate branches off wave 1; Loop needs both plus this plan's work.
 9. **Open-channel-from-deposits** (L5) needs PSBT-funded channel opens; out of scope unless wanted.
 10. Loop also has optional Taproot Assets (tapd) paths (`loop:assets/`); out of scope.
+
+
+NL-1197 follow-up (`wip/nl-fix-batch`): `ImportedWatchIndexes` persists the imported-script fingerprint, active tip and versioned raw relevant transactions in one save. RPCs and coalesced monitor notifications extend from the checkpoint, rewind on reorg and backfill when imports change. Restart and normal tip advances no longer rescan old blocks; pruned data and chain changes still fail explicitly. Imported history stays separate from spendable wallet outputs. The retained transaction history is replayed in memory for views, so its size still affects CPU and database blob writes.
