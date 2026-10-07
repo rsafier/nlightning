@@ -27,7 +27,7 @@ using Infrastructure.Repositories.Database.Accounting;
 using Infrastructure.Repositories.Database.Bitcoin;
 
 /// <summary>Production BIP 352 crypto, key source, scanner, chain monitor and books over real SQLite saves.</summary>
-public sealed class SilentPaymentChainMonitorTests
+public sealed partial class SilentPaymentChainMonitorTests
 {
     private const long AmountSat = 75_000;
 
@@ -270,13 +270,14 @@ public sealed class SilentPaymentChainMonitorTests
         Enabled = true, Receive = true, RecoveryLabelCount = 0, MinReceiveSat = 1_000
     };
 
-    private static ChainMonitorHarness CreateHarness(SecureKeyManager keys, SilentPaymentsOptions options) =>
+    private static ChainMonitorHarness CreateHarness(SecureKeyManager keys, SilentPaymentsOptions options,
+                                                    SenderPrevoutSource? source = null) =>
         new(configureServices: services =>
         {
             services.AddSingleton(Options.Create(options));
             services.AddSingleton<ISilentPaymentKeySource>(keys);
             services.AddSingleton<ISilentPaymentCrypto, SilentPaymentCrypto>();
-            services.AddSingleton<IBlockPrevoutSource>(new SenderPrevoutSource());
+            services.AddSingleton<IBlockPrevoutSource>(source ?? new SenderPrevoutSource());
             services.AddSingleton<Microsoft.Extensions.Logging.ILogger<SilentPaymentScanner>>(
                 NullLogger<SilentPaymentScanner>.Instance);
             services.AddSingleton<SilentPaymentScanner>();
@@ -356,6 +357,8 @@ public sealed class SilentPaymentChainMonitorTests
 
     private sealed class SenderPrevoutSource : IBlockPrevoutSource
     {
+        private readonly Dictionary<TxId, IReadOnlyList<BitcoinPrevout>> _overrides = [];
+        public void Add(Transaction transaction, params BitcoinPrevout[] prevouts) => _overrides[Id(transaction)] = prevouts;
         public SilentPaymentPrevoutSource Source => SilentPaymentPrevoutSource.GetBlock;
         public Task ProbeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task ValidateHeightAsync(uint height, CancellationToken cancellationToken = default) => Task.CompletedTask;
@@ -366,7 +369,8 @@ public sealed class SilentPaymentChainMonitorTests
             var script = new BitcoinScript(sender.PubKey.WitHash.ScriptPubKey.ToBytes());
             IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>> previous = Block.Load(block.BlockData, Network.RegTest)
                 .Transactions.Where(t => !t.IsCoinBase).ToDictionary(Id,
-                    t => (IReadOnlyList<BitcoinPrevout>)t.Inputs.Select(_ => new BitcoinPrevout(200_000, script)).ToArray());
+                    t => _overrides.GetValueOrDefault(Id(t)) ??
+                        (IReadOnlyList<BitcoinPrevout>)t.Inputs.Select(_ => new BitcoinPrevout(200_000, script)).ToArray());
             return Task.FromResult(previous);
         }
     }
