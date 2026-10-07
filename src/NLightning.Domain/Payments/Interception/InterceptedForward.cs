@@ -21,9 +21,15 @@ using Money;
 /// <param name="OutgoingAmount">The amount the onion asks us to forward.</param>
 /// <param name="IncomingExpiry">The incoming HTLC's <c>cltv_expiry</c>.</param>
 /// <param name="OutgoingExpiry">The <c>outgoing_cltv_value</c> the onion asks for.</param>
-/// <param name="AutoFailHeight">The block height at which the held forward is failed back.</param>
+/// <param name="AutoFailHeight">The block height at which the held forward is failed back; for a forward held on chain
+/// (<paramref name="IsOnChain"/>), the incoming expiry until which it can still be settled (LND's
+/// <c>OnChainSettleDeadline</c>, exposed through the same <c>auto_fail_height</c> field).</param>
 /// <param name="NextOnion">The onion for the next hop.</param>
 /// <param name="CustomRecords">The hop payload's records of type 65536 or more.</param>
+/// <param name="InWireCustomRecords">The incoming <c>update_add_htlc</c>'s custom records (LND's
+/// <c>in_wire_custom_records</c>, NL-1182).</param>
+/// <param name="IsOnChain">The incoming channel is closing on chain: only a settle is possible (LND's on-chain
+/// interception, NL-1182).</param>
 public sealed record InterceptedForward(
     ChannelId IncomingChannelId,
     ulong IncomingHtlcId,
@@ -37,4 +43,6 @@ public sealed record InterceptedForward(
     uint OutgoingExpiry,
     uint AutoFailHeight,
     ReadOnlyMemory<byte> NextOnion,
-    IReadOnlyList<CustomRecord> CustomRecords);
+    IReadOnlyList<CustomRecord> CustomRecords,
+    IReadOnlyList<CustomRecord>? InWireCustomRecords = null,
+    bool IsOnChain = false);

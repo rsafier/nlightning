@@ -172,6 +172,11 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         AssertRecoveredBooks(events.Concat(settlements), 30_000_000, -50_000_000, 10_000_000, 10_000_000);
         Assert.False(await restarted.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
         Assert.Single(await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wsend:", TestContext.Current.CancellationToken));
+        var history = await uow.WalletTransactionDbRepository.GetHistoryAsync(0, 5, true, TestContext.Current.CancellationToken);
+        Assert.Equal(3, history.Count);
+        AssertRecoveredHistory(history, _blocks[1], 1, _blocks[1].Transactions.Single(), [0], []);
+        AssertRecoveredHistory(history, _blocks[2], 2, _blocks[2].Transactions.Single(), [], [new WalletTransactionInput(0, 20_000)]);
+        AssertRecoveredHistory(history, _blocks[3], 3, _blocks[3].Transactions.Single(), [0], []);
     }
 
     [Fact]
@@ -204,6 +209,9 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         var settlement = Assert.Single(settlements);
         Assert.Equal(_blocks[5].Header.BlockTime, settlement.OccurredAt);
         AssertRecoveredBooks(events.Concat(settlements), 0, -21_000_000, 10_000_000, 11_000_000);
+        var history = await uow.WalletTransactionDbRepository.GetHistoryAsync(0, 5, true, TestContext.Current.CancellationToken);
+        Assert.Equal(2, history.Count);
+        AssertRecoveredHistory(history, _blocks[5], 5, _blocks[5].Transactions.Single(), [], [new WalletTransactionInput(0, 21_000)]);
     }
 
     [Fact]
@@ -252,6 +260,12 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         Assert.Null(coin.SilentPayment);
         Assert.Equal(address.Address, coin.WalletAddress!.Address);
         Assert.True(coin.WalletAddress.IsChange);
+        using (var historyScope = _provider.CreateScope())
+        {
+            var history = await historyScope.ServiceProvider.GetRequiredService<IUnitOfWork>().WalletTransactionDbRepository
+                .GetHistoryAsync(0, 5, true, TestContext.Current.CancellationToken);
+            AssertRecoveredHistory(history, _blocks[2], 2, spender, [1], [new WalletTransactionInput(0, 75_000)]);
+        }
         Assert.False((await restarted.GetStatusAsync(TestContext.Current.CancellationToken)).IsRescanning);
         using var after = _provider.CreateScope();
         var uow = after.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -495,6 +509,12 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         Assert.Equal(finalization ? 1 : 0, failed.FoundOutputs);
         Assert.Empty(await UnspentAsync());
         Assert.Empty(_provider.GetRequiredService<IUtxoMemoryRepository>().GetUnreservedUtxos());
+        using (var historyScope = _provider.CreateScope())
+        {
+            var history = await historyScope.ServiceProvider.GetRequiredService<IUnitOfWork>().WalletTransactionDbRepository
+                .GetHistoryAsync(0, 5, true, TestContext.Current.CancellationToken);
+            Assert.Equal(finalization ? 1 : 0, history.Count);
+        }
         Assert.True(await crashing.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
         if (finalization)
         {
@@ -583,6 +603,97 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         _chain.Setup(chain => chain.GetCurrentBlockHeightAsync()).ReturnsAsync(5u);
         Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
         Assert.Single(await UnspentAsync());
+    }
+
+    [Fact]
+    public async Task Given_DurableHistoryUnconfirmedByRewind_When_HistoricalBlocksReplay_Then_ConfirmationAndOwnershipAreRestored()
+    {
+        // Arrange: retain the wallet history a monitor rewind unconfirmed, then replay the active-chain blocks.
+        var receipt = AddReceipt(1, 20_000);
+        AddSpend(2, receipt);
+        using var service = CreateService();
+        await service.GetAddressAsync(cancellationToken: TestContext.Current.CancellationToken);
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+        for (var round = 0; round < 5; round++)
+            Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        using (var scope = _provider.CreateScope())
+        {
+            var work = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            Assert.Equal(2, await work.WalletTransactionDbRepository.UnconfirmAboveAsync(0));
+            await work.SaveChangesAsync();
+            var unconfirmed = await work.WalletTransactionDbRepository.GetUnconfirmedAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(2, unconfirmed.Count);
+            Assert.All(unconfirmed, record =>
+            {
+                Assert.Null(record.BlockHeight);
+                Assert.Null(record.BlockHash);
+            });
+            Assert.Equal(new WalletTransactionInput(0, 20_000),
+                Assert.Single(Assert.Single(unconfirmed, record => record.TxId == new TxId(_blocks[2].Transactions.Single().GetHash().ToBytes())).OurInputs));
+        }
+        _blocks[2].Header.Nonce++;
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+
+        // Act: existing spent metadata must still retain all input ownership on replay.
+        Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+
+        // Assert
+        using var after = _provider.CreateScope();
+        var history = await after.ServiceProvider.GetRequiredService<IUnitOfWork>().WalletTransactionDbRepository
+            .GetHistoryAsync(0, 5, true, TestContext.Current.CancellationToken);
+        Assert.Equal(2, history.Count);
+        AssertRecoveredHistory(history, _blocks[1], 1, _blocks[1].Transactions.Single(), [0], []);
+        AssertRecoveredHistory(history, _blocks[2], 2, _blocks[2].Transactions.Single(), [], [new WalletTransactionInput(0, 20_000)]);
+    }
+
+    [Fact]
+    public async Task Given_MixedRecoveredOrdinaryAndSilentInputs_When_Rescanned_Then_DurableHistoryRetainsBothInputAmounts()
+    {
+        // Arrange: a historical transaction pays both forms of wallet custody; the next block spends them together.
+        using var ordinaryKey = new Key(FixtureKeys.Secret(4));
+        var address = new WalletAddressModel(AddressType.P2Tr, 0, true,
+            ordinaryKey.PubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, Network.RegTest).ToString());
+        var staged = new HashSet<IUnitOfWork>();
+        var source = new Mock<ISilentPaymentRecoveryAddressSource>();
+        source.Setup(source => source.StageAddressesAsync(It.IsAny<IUnitOfWork>(), It.IsAny<uint>(), It.IsAny<CancellationToken>()))
+            .Returns((IUnitOfWork work, uint _, CancellationToken _) =>
+            {
+                if (staged.Add(work) && !work.WalletAddressesDbRepository.GetAllAddresses().Any(item => item.Address == address.Address))
+                    work.WalletAddressesDbRepository.AddRange([address]);
+                return Task.FromResult<IReadOnlyList<WalletAddressModel>>([address]);
+            });
+        _recoveryAddresses = source.Object;
+        var oldPoint = AddReceipt(1, 75_000);
+        var receipt = _blocks[1].Transactions.Single();
+        receipt.Outputs.Add(new TxOut(Money.Satoshis(20_000), BitcoinAddress.Create(address.Address, Network.RegTest).ScriptPubKey));
+        _blocks[1].UpdateMerkleRoot();
+        _unspent.Remove(oldPoint);
+        var silentPoint = new OutPoint(receipt.GetHash(), 0);
+        var ordinaryPoint = new OutPoint(receipt.GetHash(), 1);
+        _unspent[silentPoint] = (receipt.Outputs[0], 1);
+        AddSpend(2, silentPoint);
+        var spender = _blocks[2].Transactions.Single();
+        spender.Inputs.Add(new TxIn(ordinaryPoint));
+        spender.Outputs[0].Value = Money.Satoshis(94_000);
+        _blocks[2].UpdateMerkleRoot();
+        using var service = CreateService();
+        await service.GetAddressAsync(cancellationToken: TestContext.Current.CancellationToken);
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+
+        // Act
+        for (var round = 0; round < 5; round++)
+            Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+
+        // Assert
+        using var scope = _provider.CreateScope();
+        var work = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var history = await work.WalletTransactionDbRepository.GetHistoryAsync(0, 5, true, TestContext.Current.CancellationToken);
+        Assert.Equal(2, history.Count);
+        AssertRecoveredHistory(history, _blocks[1], 1, receipt, [0, 1], []);
+        AssertRecoveredHistory(history, _blocks[2], 2, spender, [],
+            [new WalletTransactionInput(0, 75_000), new WalletTransactionInput(1, 20_000)]);
+        Assert.Empty(await UnspentAsync());
     }
 
     [Theory]
@@ -711,6 +822,21 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         _blocks[height].UpdateMerkleRoot();
         for (uint index = 0; index < transaction.Outputs.Count; index++)
             _unspent[new OutPoint(transaction.GetHash(), index)] = (transaction.Outputs[(int)index], height);
+    }
+
+    private static void AssertRecoveredHistory(IReadOnlyList<WalletTransactionRecord> history, Block block, uint height,
+        Transaction transaction, IReadOnlyList<uint> outputs, IReadOnlyList<WalletTransactionInput> inputs)
+    {
+        var record = Assert.Single(history, record => record.TxId == new TxId(transaction.GetHash().ToBytes()));
+        Assert.Equal(transaction.ToBytes(), record.RawTransaction);
+        Assert.Equal(height, record.BlockHeight);
+        Assert.Equal(block.GetHash().ToBytes(), record.BlockHash);
+        Assert.Equal(block.Header.BlockTime, record.Timestamp);
+        Assert.Equal(outputs, record.OurOutputs);
+        Assert.Equal(inputs, record.OurInputs);
+        // Persisted raw bytes retain the previous-output IDs/indexes needed after the node prunes these blocks.
+        var retained = Transaction.Load(record.RawTransaction, Network.RegTest);
+        Assert.Equal(transaction.Inputs.Select(input => input.PrevOut), retained.Inputs.Select(input => input.PrevOut));
     }
 
     private static void AssertRecoveredBooks(IEnumerable<Domain.Accounting.Models.AccountingEventModel> facts,

@@ -37,7 +37,7 @@ using BarkProto = BarkServer;
 /// <remarks>
 /// <para>
 /// captaind runs in the fixture's run namespace beside its own bitcoind (Core 31: captaind refuses older, and the
-/// LND fixture's 29.0 is its own chain) and its own PostgreSQL. Its Lightning URIs are
+/// LND fixture's Core 31.1 is its own chain) and its own PostgreSQL. Its Lightning URIs are
 /// <c>https://host.orb.internal:&lt;port&gt;</c>: captaind's tonic client configures TLS whatever the URI's scheme (an
 /// <c>http://</c> URI dies parsing the certificate paths), so the backend serves <c>LnBackend:TlsDirectory</c> with the
 /// test's CA — captaind's client certificate signed by the very <c>ca.pem</c> our side requires. The pods of

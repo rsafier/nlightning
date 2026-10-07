@@ -79,5 +79,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<State>k__BackingField")]
         public static extern ref byte State(HtlcEntity @this);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<WireCustomRecords>k__BackingField")]
+        public static extern ref byte[] WireCustomRecords(HtlcEntity @this);
     }
 }

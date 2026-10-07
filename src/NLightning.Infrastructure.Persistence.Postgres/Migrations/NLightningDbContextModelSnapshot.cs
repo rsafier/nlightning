@@ -1186,6 +1186,49 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.ToTable("wallet_addresses", (string)null);
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletTransactionEntity", b =>
+                {
+                    b.Property<byte[]>("TransactionId")
+                        .HasColumnType("bytea")
+                        .HasColumnName("transaction_id");
+
+                    b.Property<byte[]>("BlockHash")
+                        .HasMaxLength(32)
+                        .HasColumnType("bytea")
+                        .HasColumnName("block_hash");
+
+                    b.Property<long?>("BlockHeight")
+                        .HasColumnType("bigint")
+                        .HasColumnName("block_height");
+
+                    b.Property<string>("OurInputs")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("our_inputs");
+
+                    b.Property<string>("OurOutputs")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("our_outputs");
+
+                    b.Property<byte[]>("RawTransaction")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("raw_transaction");
+
+                    b.Property<long>("Timestamp")
+                        .HasColumnType("bigint")
+                        .HasColumnName("timestamp");
+
+                    b.HasKey("TransactionId")
+                        .HasName("pk_wallet_transactions");
+
+                    b.HasIndex("BlockHeight")
+                        .HasDatabaseName("ix_wallet_transactions_block_height");
+
+                    b.ToTable("wallet_transactions", (string)null);
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedOutpointEntity", b =>
                 {
                     b.Property<byte[]>("TransactionId")
@@ -2088,6 +2131,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.Property<byte>("State")
                         .HasColumnType("smallint")
                         .HasColumnName("state");
+
+                    b.Property<byte[]>("WireCustomRecords")
+                        .HasColumnType("bytea")
+                        .HasColumnName("wire_custom_records");
 
                     b.HasKey("ChannelId", "HtlcId", "Direction")
                         .HasName("pk_htlcs");

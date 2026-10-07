@@ -55,6 +55,51 @@ public static class WalletRecoveryAccounting
         await StageInputSpendsAsync(uow, block, height, cancellationToken);
     }
 
+    /// <summary>Retains raw historical wallet transactions and complete proven ownership in the block's own save.</summary>
+    public static async Task StageWalletHistoryAsync(IUnitOfWork uow, Block block, uint height,
+        CancellationToken cancellationToken)
+    {
+        if (uow.WalletTransactionDbRepository is not { } history) return;
+        foreach (var transaction in block.Transactions.Where(transaction => !transaction.IsCoinBase))
+        {
+            var transactionId = new TxId(transaction.GetHash().ToBytes());
+            var outputs = new List<uint>();
+            var inputs = new List<WalletTransactionInput>();
+            for (uint index = 0; index < transaction.Outputs.Count; index++)
+            {
+                var amount = await OwnedAmountAsync(transactionId, index);
+                if (amount is null) continue;
+                if (amount != transaction.Outputs[(int)index].Value.Satoshi)
+                    throw new InvalidOperationException("Wallet history output differs from its custody evidence.");
+                outputs.Add(index);
+            }
+            for (uint index = 0; index < transaction.Inputs.Count; index++)
+            {
+                var point = transaction.Inputs[(int)index].PrevOut;
+                if (await OwnedAmountAsync(new TxId(point.Hash.ToBytes()), point.N) is { } amount)
+                    inputs.Add(new WalletTransactionInput(index, amount));
+            }
+            if (outputs.Count == 0 && inputs.Count == 0) continue;
+            // Raw bytes retain every input outpoint. The repository unions ownership with the existing description,
+            // including ordinary/imported wallet observations and transactions a rollback made unconfirmed.
+            await history.StageConfirmedAsync(new WalletTransactionRecord(transactionId, transaction.ToBytes(), height,
+                block.GetHash().ToBytes(), block.Header.BlockTime, outputs, inputs));
+        }
+
+        async Task<long?> OwnedAmountAsync(TxId transactionId, uint index)
+        {
+            var output = await uow.SilentPaymentDbRepository.GetOutputAsync(transactionId, index, cancellationToken);
+            if (output is not null) return output.Ignored ? null : output.AmountSats;
+            var key = AccountingEventKeys.WalletReceived(transactionId, index);
+            var facts = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync(key, cancellationToken);
+            var received = AccountingConfirmations.FindStanding(key, facts);
+            if (received is null) return null;
+            if (received.AmountMsat < 0 || received.AmountMsat % 1000 != 0)
+                throw new InvalidOperationException("Wallet history custody evidence is not a nonnegative satoshi amount.");
+            return received.AmountMsat / 1000;
+        }
+    }
+
     public static async Task StageInputSpendsAsync(IUnitOfWork uow, Block block, uint height,
         CancellationToken cancellationToken)
     {

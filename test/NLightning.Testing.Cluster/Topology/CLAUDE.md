@@ -68,7 +68,7 @@ Plan: `docs/agents/TEST_HARNESS_PLAN.md` R8 (declarative topology), R9 (facade),
 ## Nodes/Cln/
 
 - `ClnNode.Workload`:
-  - `elementsproject/lightningd` v26.06.8 by digest, with the `ClnFixture` flags (`--developer --dev-bitcoind-poll=1`
+  - `elementsproject/lightningd` v26.06.9 by digest, with the `ClnFixture` flags (`--developer --dev-bitcoind-poll=1`
     `--ignore-fee-limits=false`) and bitcoind reached by its alias;
   - its data on a PVC at `/root/.lightning` (an `emptyDir` with `ClnNodeOptions.Storage = Ephemeral`);
   - the chain's startup wait as its init container (`ClnNodeOptions.StartupWait`, set by `ClnNodeDeployer`);

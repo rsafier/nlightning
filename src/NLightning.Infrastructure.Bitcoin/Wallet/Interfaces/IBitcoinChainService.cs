@@ -27,6 +27,17 @@ public interface IBitcoinChainService
         Task.FromResult(PackageSubmitResult.Unsupported("this chain service has no package relay"));
 
     /// <summary>
+    /// bitcoind's <c>submitpackage</c> of <paramref name="transactions"/> as given (parents first, the child last) with
+    /// its optional <c>maxfeerate</c> in BTC/kvB (0 = no limit), answered as bitcoind does: the package message, each
+    /// transaction's result by wtxid and the transactions package RBF replaced (LND's walletrpc <c>SubmitPackage</c>,
+    /// NL-1186). bitcoind's JSON-RPC errors are thrown (<c>RPCException</c>). The default supports no package.
+    /// </summary>
+    /// <exception cref="NotSupportedException">This chain service has no <c>submitpackage</c>.</exception>
+    Task<RawPackageSubmitResult> SubmitRawPackageAsync(IReadOnlyList<Transaction> transactions,
+                                                       decimal? maxFeeRateBtcPerKvb) =>
+        throw new NotSupportedException("this chain service has no package relay");
+
+    /// <summary>
     /// bitcoind's current mempool minimum feerate (<c>getmempoolinfo</c> <c>mempoolminfee</c>, BTC/kvB) in sat per
     /// 1000 weight units, rounded up: a transaction (or package) paying less is refused. Null when unknown; the default
     /// knows none.

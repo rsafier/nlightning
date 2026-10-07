@@ -4,7 +4,7 @@ namespace NLightning.Domain.Client.Enums;
 /// Commands sent by a client.
 /// </summary>
 /// <remarks>
-/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 56.
+/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 57.
 /// </remarks>
 public enum ClientCommand
 {
@@ -146,5 +146,11 @@ public enum ClientCommand
     GetSilentPaymentAddress = 52,
     SilentPaymentLabels = 53,
     SilentPaymentRescan = 54,
-    SilentPaymentStatus = 55
+    SilentPaymentStatus = 55,
+    /// <summary>
+    /// Attaches routes to a <c>payroute</c> payment still in flight (NL-1276, <c>payroute --attach</c>): replacement
+    /// shards for parts that failed while the payee holds the others, with the same hash, secret and total, inside
+    /// the attach window (the payee's <c>mpp_timeout</c>).
+    /// </summary>
+    PayRouteAttach = 56
 }

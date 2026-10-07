@@ -24,7 +24,7 @@ using NLightning.Tests.Utils;
 /// hash+secret form, whole and split over one channel, with the per-route outcomes carrying each failure's attributed
 /// source — and every validation error refused before anything is offered.
 /// </summary>
-public class PayRouteTests
+public partial class PayRouteTests
 {
     private static readonly LightningMoney s_amount = LightningMoney.MilliSatoshis(50_000_123);
     private static readonly LightningMoney s_total = LightningMoney.MilliSatoshis(60_000_000);

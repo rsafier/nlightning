@@ -13,7 +13,7 @@ public sealed record BitcoinCoreOptions
     /// <summary>The node's alias (StatefulSet, Service and container name).</summary>
     public string Name { get; init; } = "miner";
 
-    /// <summary>The image: <see cref="ImageVersions.BitcoinCore"/> (29.0) or <see cref="ImageVersions.BitcoinCore31"/>.</summary>
+    /// <summary>The image: <see cref="ImageVersions.BitcoinCore"/> (Core 31.1) by default.</summary>
     public ImageRef Image { get; init; } = ImageVersions.BitcoinCore;
 
     public string RpcUser { get; init; } = "nltg";

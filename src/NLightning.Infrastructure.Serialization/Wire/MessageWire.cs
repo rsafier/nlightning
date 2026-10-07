@@ -284,6 +284,9 @@ public sealed class WireTlvs
         return _typed.TryGetValue(type, out var value) ? value as T : null;
     }
 
+    /// <summary>Every record the extension carried (known and unknown odd ones), in wire order.</summary>
+    public IEnumerable<BaseTlv> RawRecords => _raws.Values.OrderBy(r => r.Type.Value);
+
     /// <summary>The raw value of the record of <paramref name="type"/>, or null when the message carried none.</summary>
     public byte[]? RawValue(BigSize type)
     {

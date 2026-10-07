@@ -935,6 +935,40 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.ToTable("WalletAddresses");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletTransactionEntity", b =>
+                {
+                    b.Property<byte[]>("TransactionId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("BlockHash")
+                        .HasMaxLength(32)
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long?>("BlockHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("OurInputs")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("OurOutputs")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<byte[]>("RawTransaction")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<long>("Timestamp")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("TransactionId");
+
+                    b.HasIndex("BlockHeight");
+
+                    b.ToTable("WalletTransactions");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedOutpointEntity", b =>
                 {
                     b.Property<byte[]>("TransactionId")
@@ -1627,6 +1661,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.Property<byte>("State")
                         .HasColumnType("tinyint");
+
+                    b.Property<byte[]>("WireCustomRecords")
+                        .HasColumnType("varbinary(max)");
 
                     b.HasKey("ChannelId", "HtlcId", "Direction");
 

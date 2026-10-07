@@ -199,10 +199,20 @@ internal static class ClientApp
                 case "payroute":
                 case "pay-route":
                     var payRouteArgs = ParsePayRouteOptions(commandArgs, out _)!;
+                    if (payRouteArgs.Attach && (labels.Label is not null || labels.Tags.Count > 0))
+                    {
+                        Console.Error.WriteLine("Error: --label and --tag belong to the payment's first payroute "
+                                              + "call; an attached call keeps them.");
+                        return Failure;
+                    }
+
                     var suppliedRoutes = await PayRouteRoutesJson.ReadAsync(payRouteArgs.RoutesPath, Console.In,
                                                                            cancellationToken);
-                    var payRoute = await client.PayRouteAsync(payRouteArgs, suppliedRoutes, cancellationToken,
-                                                             labels);
+                    var payRoute = payRouteArgs.Attach
+                                       ? await client.PayRouteAttachAsync(payRouteArgs, suppliedRoutes,
+                                                                          cancellationToken)
+                                       : await client.PayRouteAsync(payRouteArgs, suppliedRoutes, cancellationToken,
+                                                                    labels);
                     new PayRoutePrinter().Print(payRoute);
                     if (payRoute.Payment.Status == PaymentStatus.Failed)
                         return Failure;
@@ -1302,7 +1312,7 @@ internal static class ClientApp
     /// <summary>The usage of payroute.</summary>
     internal const string PayRouteUsage =
         "<bolt11> | --payment-hash <64hex> [--payment-secret <64hex>] [--total-msat <msat>] --routes <file|-> "
-      + "[--max-fee-msat <msat>] [--timeout <seconds>]";
+      + "[--max-fee-msat <msat>] [--timeout <seconds>] [--attach]";
 
     /// <summary>
     /// The arguments of payroute (NL-1082): the payment identity — a BOLT 11 invoice positionally, or the raw form's
@@ -1322,12 +1332,20 @@ internal static class ClientApp
         string? routesPath = null;
         uint? timeout = null;
         ulong? maxFeeMsat = null;
+        var attach = false;
         for (var i = 0; i < commandArgs.Length; i++)
         {
             var argument = commandArgs[i];
             if (!argument.StartsWith("--", StringComparison.Ordinal))
             {
                 positional.Add(argument);
+                continue;
+            }
+
+            if (string.Equals(argument, "--attach", StringComparison.OrdinalIgnoreCase))
+            {
+                // NL-1276: a flag, no value
+                attach = true;
                 continue;
             }
 
@@ -1408,7 +1426,7 @@ internal static class ClientApp
                     break;
                 default:
                     error = $"Unknown option '{name}': expected --routes, --payment-hash, --payment-secret, "
-                          + "--total-msat, --max-fee-msat or --timeout.";
+                          + "--total-msat, --max-fee-msat, --timeout or --attach.";
                     return null;
             }
         }
@@ -1446,7 +1464,10 @@ internal static class ClientApp
         }
 
         error = null;
-        return new PayRouteArguments(bolt11, paymentHash, paymentSecret, totalMsat, routesPath, timeout, maxFeeMsat);
+        return new PayRouteArguments(bolt11, paymentHash, paymentSecret, totalMsat, routesPath, timeout, maxFeeMsat)
+        {
+            Attach = attach
+        };
     }
 
     /// <summary>The arguments of payoffer.</summary>
@@ -2123,7 +2144,14 @@ public sealed record PayRouteArguments(
     string RoutesPath,
     uint? TimeoutSeconds,
     ulong? MaxFeeMsat,
-    LabelArguments? Labels = null);
+    LabelArguments? Labels = null)
+{
+    /// <summary>
+    /// <c>--attach</c> (NL-1276): add the routes to the <c>payroute</c> payment of the hash still in flight
+    /// (ClientCommand 56) instead of starting one; the label and tags stay the first call's.
+    /// </summary>
+    public bool Attach { get; init; }
+}
 
 /// <summary>
 /// One validated route of the payroute routes file: the channel of ours the first HTLC leaves through (a channel id

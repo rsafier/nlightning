@@ -2,6 +2,8 @@ using System.Net;
 
 namespace NLightning.LndGrpc;
 
+using Application.Payments.Interception;
+
 /// <summary>
 /// <c>LndGrpc</c>: the subset of LND's gRPC API this node serves (<c>docs/agents/LND_GRPC_PLAN.md</c>, NL-1160), so an
 /// LND client can use the node as its backend. Always TLS (a self-signed <c>tls.cert</c> made at the first start, as
@@ -110,6 +112,25 @@ public sealed class LndGrpcOptions
 
     /// <summary>The most forwards held for the <c>HtlcInterceptor</c> client at once; more fail back.</summary>
     public int MaxHeldHtlcs { get; set; } = 1000;
+
+    /// <summary>
+    /// <c>HtlcInterceptor</c>: forwards wait for an interceptor client (LND's <c>requireinterceptor</c>, NL-1182). While
+    /// none is connected a new forward is failed back with <c>temporary_channel_failure</c> and one replayed after a
+    /// restart or a reconnection is held (the interceptor may have decided on it before); a client that disconnects
+    /// leaves its held forwards held for the next one. Off by default (held forwards then resume when the client leaves).
+    /// Only while the server runs (<see cref="Enabled"/>).
+    /// </summary>
+    public bool RequireInterceptor { get; set; }
+
+    /// <summary>The interceptor hub's settings these options stand for (the hub's limits and LND's
+    /// <c>requireinterceptor</c>, only while the server runs).</summary>
+    public HtlcInterceptorSettings ToInterceptorSettings() => new()
+    {
+        CltvRejectDelta = InterceptorCltvRejectDelta,
+        CltvInterceptDelta = InterceptorCltvInterceptDelta,
+        MaxHeld = MaxHeldHtlcs,
+        RequireInterceptor = Enabled && RequireInterceptor
+    };
 
     /// <summary>The configuration errors that refuse the start (the network rule is checked by the validator).</summary>
     public IReadOnlyList<string> GetValidationErrors()

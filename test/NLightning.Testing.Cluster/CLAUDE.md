@@ -119,7 +119,7 @@ every implementation, our own node included, is driven through the same seams.
     `bin/<config>/net10.0` of the tests, no restore in the image); `RunnerImage.FromEnvironment()` takes
     `NLTG_RUNNER_IMAGE` for a pushed image. Rebuild it after changing the tests.
 - `Images/ImageVersions`: the one version table (bitcoind 29.0 Polar and 31.1 official by digest, `custom_lnd:0.21.4-beta`
-  Never, CLN v26.06.8 by digest, `nltg-eclair:0.14.3` Never, `nltg-ldk-server:dc02b76c` Never, postgres 16.2-alpine by
+  Never, CLN v26.06.9 by digest, `nltg-eclair:0.14.3` Never, `nltg-ldk-server:dc02b76c` Never, postgres 16.2-alpine by
   digest, busybox).
 - `Nodes/Postgres/` (phase 4): `PostgresNode.DeployAsync(run, PostgresNodeOptions, timeout, ct)` (the fixture's image,
   user/password `superuser`, database `nlightning`, `PGDATA` under an `emptyDir` by default, readiness = `pg_isready`

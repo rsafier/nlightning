@@ -16,11 +16,13 @@ using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Constants;
 using Domain.Node.Interfaces;
+using Domain.Payments.Keysend;
 using Domain.Payments.ValueObjects;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.ValueObjects;
+using Domain.Protocol.Tlv;
 using Handlers;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using static Handlers.NormalOperationTestContext;
@@ -32,6 +34,9 @@ using static Handlers.NormalOperationTestContext;
 public class ChannelOperationsServiceTests
 {
     private static readonly OnionPacket s_onion = new(Onion);
+
+    private static readonly byte[] s_pathKey =
+        Convert.FromHexString("02c93ca7dca44d2e45e3cc5419d92750f7fb3a0f180852b73a621f4051c0193a75");
 
     private readonly NormalOperationTestContext _context;
     private readonly Mock<IChannelMessagePublisher> _publisher = new();
@@ -371,6 +376,46 @@ public class ChannelOperationsServiceTests
             Times.Once);
         Assert.Equal(["save"], _context.Calls);
         Assert.Empty(_published);
+    }
+
+    [Fact]
+    public async Task Given_WireRecordsTooLargeWithABlindedPath_When_Offering_Then_RefusedWithNothingPersistedOrSent()
+    {
+        // Arrange - NL-1182: an add too large for BOLT 8 would be committed and persisted but never sent
+        var service = CreateService();
+        var hash = HashOf(SecretOf(1));
+        var pathKey = new BlindedPathTlv(new CompactPubKey(s_pathKey));
+        CustomRecord[] records = [new(65_537, new byte[WireCustomRecordCodec.MaxEncodedLength(true) - 7])];
+
+        // Act
+        var offer = service.OfferHtlcAsync(TestChannelId, LightningMoney.MilliSatoshis(40_000_000), hash, 600,
+                                           s_onion, pathKey, HtlcOrigin.Local(hash), records,
+                                           TestContext.Current.CancellationToken);
+
+        // Assert
+        await Assert.ThrowsAsync<ArgumentException>(() => offer);
+        Assert.Empty(_context.Calls);
+        Assert.Empty(_published);
+        Assert.Null(_context.State.GetHtlc(HtlcDirection.Outgoing, 0));
+    }
+
+    [Fact]
+    public async Task Given_WireRecordsAtTheBoundWithABlindedPath_When_Offering_Then_TheAddCarriesThem()
+    {
+        // Arrange
+        var service = CreateService();
+        var hash = HashOf(SecretOf(1));
+        var pathKey = new BlindedPathTlv(new CompactPubKey(s_pathKey));
+        CustomRecord[] records = [new(65_537, new byte[WireCustomRecordCodec.MaxEncodedLength(true) - 8])];
+
+        // Act
+        await service.OfferHtlcAsync(TestChannelId, LightningMoney.MilliSatoshis(40_000_000), hash, 600, s_onion,
+                                     pathKey, HtlcOrigin.Local(hash), records, TestContext.Current.CancellationToken);
+
+        // Assert
+        var add = Assert.IsType<UpdateAddHtlcMessage>(Assert.Single(_published));
+        Assert.Equal(records, add.CustomRecords);
+        Assert.NotNull(add.BlindedPathTlv);
     }
 
     [Fact]

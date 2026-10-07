@@ -100,6 +100,17 @@ public class BroadcastTransactionDbRepository
     }
 
     /// <inheritdoc />
+    public async Task<bool> SetLabelAsync(TxId transactionId, string label)
+    {
+        var entity = await DbSet.FindAsync(transactionId);
+        if (entity is null)
+            return false;
+
+        entity.Label = label;
+        return true;
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<BroadcastTransactionModel>> GetPendingAsync()
     {
         const byte pending = (byte)BroadcastState.Pending;

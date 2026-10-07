@@ -72,6 +72,7 @@ public partial class BlockchainMonitorService
         var utxos = _serviceProvider.GetService<IUtxoMemoryRepository>();
         var outputs = new List<uint>();
         var inputs = new List<uint>();
+        var inputAmounts = new List<long>();
         long received = 0, spent = 0;
         for (var i = 0; i < transaction.Outputs.Count; i++)
         {
@@ -99,6 +100,7 @@ public partial class BlockchainMonitorService
             if (amount is not { } value)
                 continue;
             inputs.Add((uint)i);
+            inputAmounts.Add(value);
             spent += value;
         }
         if (outputs.Count == 0 && inputs.Count == 0)
@@ -109,7 +111,8 @@ public partial class BlockchainMonitorService
                       ? Math.Max(0, spent - transaction.Outputs.Sum(o => o.Value.Satoshi)) : 0);
         return new WalletTransactionEventArgs(WalletTransactionHex(transaction), received - spent, fee, height, blockHash,
                                               timestamp ?? row?.CreatedAt ?? _timeProvider.GetUtcNow(), row?.Label ?? "",
-                                              outputs, inputs, transactionHash.ToString());
+                                              outputs, inputs, transactionHash.ToString(),
+                                              ourInputAmounts: inputAmounts);
     }
 
     private static string WalletTransactionHex(Transaction transaction)

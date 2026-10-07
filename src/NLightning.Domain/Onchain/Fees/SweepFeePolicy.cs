@@ -142,6 +142,29 @@ public sealed class SweepFeePolicy
     }
 
     /// <summary>
+    /// The fee of a replacement an operator asked for with a budget (LND's walletrpc <c>BumpFee</c> <c>budget</c>,
+    /// NL-1186): <see cref="DecideReplacement"/>'s rule with the budget in place of <see cref="GetMaxFee"/> (never
+    /// leaving less than <paramref name="dustSat"/> in the output). Null when the BIP 125 minimum does not fit.
+    /// </summary>
+    public SweepFeeDecision? DecideReplacementWithBudget(ulong inputValueSat, ulong oldFeeSat, long weight,
+                                                         uint estimatePerKw, ulong budgetSat, ulong dustSat)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(weight);
+        if (inputValueSat <= dustSat)
+            return null;
+
+        var minimum = GetReplacementFee(oldFeeSat, SweepWeights.VirtualSize(weight));
+        var atEstimate = SweepWeights.FeeSat(ApplyFloor(estimatePerKw), weight);
+        var cap = Math.Min(budgetSat, inputValueSat - dustSat);
+        var wanted = Math.Max(minimum, atEstimate);
+        var fee = Math.Min(wanted, cap);
+        if (fee < minimum)
+            return null;
+
+        return new SweepFeeDecision(FeeratePerKw(fee, weight), fee, fee < wanted, false);
+    }
+
+    /// <summary>
     /// B5-REV-08: split a batched penalty into per-output transactions once a revoked output's deadline is within
     /// <see cref="SweepFeePolicyOptions.SecurityDelay"/> blocks.
     /// </summary>

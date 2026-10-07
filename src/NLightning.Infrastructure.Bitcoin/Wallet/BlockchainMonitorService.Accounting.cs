@@ -30,7 +30,7 @@ using Domain.Persistence.Interfaces;
 /// from change, a close or a sweep), and for every stored broadcast the block confirms
 /// <see cref="AccountingEventKind.AnchorCpfpFee"/> (anchor CPFP child), <see cref="AccountingEventKind.SweepFeeBump"/>
 /// (a sweep, HTLC claim or penalty that replaced another) or <see cref="AccountingEventKind.WalletSent"/>
-/// (<c>withdraw</c>). The guards are the existing ones: a deposit is recorded only when the UTXO is not known yet, a
+/// (<c>withdraw</c>; the net flow of a collaborative transaction, NL-1186). The guards are the existing ones: a deposit is recorded only when the UTXO is not known yet, a
 /// spend only when the UTXO is held, a confirmation only when the stored row was still pending; on top of that a fact
 /// whose confirmation is recorded and not reversed is never recorded again
 /// (<see cref="AccountingConfirmations.NextConfirmationKey"/>).</para>
@@ -201,6 +201,35 @@ public partial class BlockchainMonitorService
                                                           -checked(sentSat * 1_000), feeMsat, details)));
     }
 
+    /// <summary>
+    /// The net flow of a confirmed collaborative transaction (<see cref="BroadcastPurpose.WalletCollaborative"/>, a
+    /// payjoin or coinjoin published through walletrpc, NL-1186): its wallet movements post our spent inputs and our
+    /// outputs to the clearing account, and this <see cref="AccountingEventKind.WalletSent"/> of
+    /// <paramref name="walletDeltaMsat"/> (our outputs minus our inputs, as recorded in this block) nets it to zero:
+    /// transfers out when we put in more than we got back, transfers in otherwise. The fee is shared with the other
+    /// parties and unknown to us (part of the net flow).
+    /// </summary>
+    private void CollectWalletCollaborativeFlow(Transaction transaction, WalletTransactionSource source,
+                                                long walletDeltaMsat, BlockEffects effects)
+    {
+        if (walletDeltaMsat == 0)
+            return;
+
+        var txId = new TxId(transaction.GetHash().ToBytes());
+        var stored = source.Broadcast;
+        var details = AccountingDetailsCodec.Create(
+        [
+            ("purpose", nameof(BroadcastPurpose.WalletCollaborative)),
+            ("collaborative", "true"),
+            ("feeUnknown", "true"),
+            .. SourceLabels.FromStored(stored?.Label, stored?.Tags).ToDetailPairs()
+        ]);
+        effects.Accounting.Add(new AccountingCandidate(
+                                   AccountingEventKeys.WalletSent(txId),
+                                   key => NewOnchainEvent(key, AccountingEventKind.WalletSent, effects.Height, txId,
+                                                          null, source.ChannelId, walletDeltaMsat, 0, details)));
+    }
+
     /// <summary>Where a transaction that moves wallet funds comes from (the <c>source</c> detail).</summary>
     private WalletTransactionSource ClassifyWalletTransaction(Transaction transaction,
                                                              IUtxoMemoryRepository? utxoMemoryRepository,
@@ -209,7 +238,7 @@ public partial class BlockchainMonitorService
         var txId = transaction.GetHash();
         if (_pendingBroadcasts.TryGetValue(txId, out var broadcast)
          || effects.ConfirmedReplacedMembers.TryGetValue(txId, out broadcast))
-            return new WalletTransactionSource(BroadcastSource, broadcast.Purpose, broadcast.ChannelId);
+            return new WalletTransactionSource(BroadcastSource, broadcast.Purpose, broadcast.ChannelId, broadcast);
 
         if (_watchedTransactions.TryGetValue(txId, out var watched))
             return new WalletTransactionSource(ChannelSource, null, watched.ChannelId);
@@ -462,5 +491,7 @@ public partial class BlockchainMonitorService
     /// <param name="Source">One of the <c>*Source</c> constants.</param>
     /// <param name="Purpose">The stored broadcast's purpose, for <see cref="BroadcastSource"/>.</param>
     /// <param name="ChannelId">The channel the transaction belongs to, when known.</param>
-    private sealed record WalletTransactionSource(string Source, BroadcastPurpose? Purpose, ChannelId? ChannelId);
+    /// <param name="Broadcast">The stored broadcast, for <see cref="BroadcastSource"/>.</param>
+    private sealed record WalletTransactionSource(string Source, BroadcastPurpose? Purpose, ChannelId? ChannelId,
+                                                  BroadcastTransactionModel? Broadcast = null);
 }

@@ -44,4 +44,15 @@ public interface IAnchorCpfpService
     /// with a deadline. Returns at once.
     /// </summary>
     void OnPeerCommitmentInMempool(ChannelId channelId, SignedTransaction commitment, bool isNextCommitment);
+
+    /// <summary>
+    /// The operator's fee bump of the channel's force close (LND's walletrpc <c>BumpForceCloseFee</c>, or
+    /// <c>BumpFee</c> on <paramref name="anchor"/>, which must then be our anchor of an unconfirmed commitment of the
+    /// channel; NL-1186): its parameters apply to the CPFP child of the channel's unconfirmed commitment from the next
+    /// round, now when <see cref="Fees.OperatorFeeBumpRequest.Immediate"/>. The default supports none.
+    /// </summary>
+    Task<AnchorBumpOutcome> RequestBumpAsync(ChannelId channelId, Fees.OperatorFeeBumpRequest request,
+                                             (TxId TxId, uint Index)? anchor = null,
+                                             CancellationToken cancellationToken = default) =>
+        Task.FromResult(AnchorBumpOutcome.Disabled);
 }

@@ -32,7 +32,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// work: leases are reservations, only leased wallet inputs are signed, and every signature is checked here with
 /// NBitcoin's script interpreter.
 /// </summary>
-public class WalletPsbtServiceTests : IDisposable
+public partial class WalletPsbtServiceTests : IDisposable
 {
     private const uint Height = 200;
 
@@ -96,6 +96,13 @@ public class WalletPsbtServiceTests : IDisposable
                    .Returns((uint index, bool isChange) => GetP2WpkhExtKey(index, isChange).ToBytes());
         _keyManager.Setup(k => k.GetDepositP2TrKeyAtIndex(It.IsAny<uint>(), It.IsAny<bool>()))
                    .Returns((uint index, bool isChange) => GetP2TrExtKey(index, isChange).ToBytes());
+        // NL-1186: the accounts the PSBT key paths are derived from (P2WPKH at m, P2TR at m/2)
+        var fingerprint = s_masterKey.Neuter().PubKey.GetHDFingerPrint().ToBytes();
+        _keyManager.Setup(k => k.GetDepositAccount(AddressType.P2Wpkh))
+                   .Returns(new DepositAccountInfo(s_masterKey.Neuter().ToString(Network.RegTest), "m", fingerprint));
+        _keyManager.Setup(k => k.GetDepositAccount(AddressType.P2Tr))
+                   .Returns(new DepositAccountInfo(s_masterKey.Derive(2).Neuter().ToString(Network.RegTest), "m/2",
+                                                   fingerprint));
 
         var services = new ServiceCollection();
         services.AddScoped(_ => _unitOfWork.Object);
@@ -109,7 +116,7 @@ public class WalletPsbtServiceTests : IDisposable
                                               new SilentPaymentTestKeys(_keyManager.Object), _utxos);
         _service = new WalletPsbtService(_selector, _anchorReserve.Object, _utxos, signer, _monitor.Object,
                                          scopeFactory, nodeOptions, _logger,
-                                         _chain.Object, _time);
+                                         _chain.Object, _time, _keyManager.Object);
     }
 
     public void Dispose() => _service.Dispose();
@@ -139,6 +146,10 @@ public class WalletPsbtServiceTests : IDisposable
         {
             Inputs = [(Model.TxId, Model.Index)]
         }, Ct);
+        var psbt = PSBT.Load(funded.Psbt, Network.RegTest);
+        Assert.Null(psbt.Inputs[0].TaprootInternalKey);
+        Assert.Empty(psbt.Inputs[0].HDKeyPaths);
+        Assert.Empty(psbt.Inputs[0].HDTaprootKeyPaths);
 
         // Act
         var finalized = await _service.FinalizePsbtAsync(funded.Psbt, Ct);
@@ -549,7 +560,7 @@ public class WalletPsbtServiceTests : IDisposable
         s_masterKey.Derive(isChange ? 1u : 0u).Derive(index);
 
     private static ExtKey GetP2TrExtKey(uint index, bool isChange) =>
-        s_masterKey.Derive(isChange ? 3u : 2u).Derive(index);
+        s_masterKey.Derive(2).Derive(isChange ? 1u : 0u).Derive(index);
 
     private (UtxoModel Model, OutPoint OutPoint, TxOut TxOut) AddWalletUtxo(AddressType type, uint index,
                                                                            long amountSat, uint blockHeight = 100)

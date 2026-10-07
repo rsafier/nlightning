@@ -30,7 +30,7 @@ public sealed class ClnFixture : IAsyncLifetime
     /// </summary>
     public const string ClnImage = "elementsproject/lightningd";
 
-    public const string ClnTag = "v26.06.8";
+    public const string ClnTag = "v26.06.9";
 
     /// <summary>CLN's p2p port in its pod.</summary>
     public const int ClnP2PPort = 9735;

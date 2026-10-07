@@ -207,6 +207,11 @@ public static class NodeServiceExtensions
             new PayRouteClientHandler(GetPaymentLayerService<IPaymentService>(sp),
                                       sp.GetService<IBlockchainMonitor>(),
                                       sp.GetService<IChannelMemoryRepository>()));
+        // Attach replacement routes to a payroute payment in flight (NL-1276, ClientCommand 56)
+        services.AddScoped<IClientCommandHandler<PayRouteAttachClientRequest, PayRouteClientResponse>>(sp =>
+            new PayRouteAttachClientHandler(new PayRouteClientHandler(GetPaymentLayerService<IPaymentService>(sp),
+                                                                      sp.GetService<IBlockchainMonitor>(),
+                                                                      sp.GetService<IChannelMemoryRepository>())));
         services.TryAddSingleton(TimeProvider.System);
 
         // Cooperative close (ClientCommand 13, BOLT2 plan N10); IChannelCloseService comes from AddApplicationServices
@@ -271,6 +276,7 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, GetRouteIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, DescribeGraphIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, PayRouteIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, PayRouteAttachIpcHandler>();
 
         // Static channel backups and restore (wave rf1 R1, ClientCommand 21-23) and the operator commands (wave rf1
         // R4, disconnect = ClientCommand 24); each registers its client and IPC handlers once

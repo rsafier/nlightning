@@ -19,8 +19,8 @@ public class ImageVersionsTests
     public void Given_APinnedImage_When_Referenced_Then_TagAndDigestAreBothThere()
     {
         // Assert
-        Assert.Equal("elementsproject/lightningd:v26.06.8@sha256:"
-                   + "56f1cebe829fbb3c7d5674be8cd1212c7e02527ab32403b695033a29bcd2abce",
+        Assert.Equal("elementsproject/lightningd:v26.06.9@sha256:"
+                   + "de74289ddcccb68cd60543b08b2b8594002d819125d200492e17a95166d56577",
                      ImageVersions.Cln.Reference);
         Assert.Equal("IfNotPresent", ImageVersions.Cln.PullPolicyValue);
     }

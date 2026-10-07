@@ -963,6 +963,10 @@ public sealed class RemoteCommitResolver : IOutputResolver
             return accepted;
 
         var channelId = context.Channel.ChannelId;
+
+        // Settled by the HTLC interceptor while the channel was closing on chain (NL-1182)
+        if (await InterceptorClaims.GetSettledPreimageAsync(unitOfWork, channelId, record) is { } intercepted)
+            return intercepted;
         var outgoing = (await unitOfWork.ChannelStateDbRepository.FindHtlcsByOriginAsync(
                             HtlcOrigin.Forwarded(channelId, record.Id))).ToList();
         var circuit = await unitOfWork.ForwardCircuitDbRepository.GetByIncomingAsync(channelId, record.Id);

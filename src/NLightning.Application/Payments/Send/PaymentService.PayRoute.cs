@@ -172,25 +172,44 @@ public sealed partial class PaymentService
                 nameof(request));
         }
 
-        var multipart = parsedRoutes.Count > 1 || delivered.Any(amount => amount < total);
+        // An attached round is one more part of a multi-part payment; a shard of an LND set (IndependentShards) may
+        // carry part of the total only, and the rest comes in later calls
+        var multipart = parsedRoutes.Count > 1 || delivered.Any(amount => amount < total)
+                     || request.Attach == PayRouteAttachMode.Required;
         if (multipart && !supportsMpp)
             throw new ArgumentException(
                 "The payment is multi-part but the invoice does not offer basic_mpp.", nameof(request));
         var deliveredSum = delivered.Aggregate(LightningMoney.Zero, (sum, amount) => sum + amount);
-        if (deliveredSum < total)
-            throw new ArgumentException(
-                $"The routes deliver {deliveredSum.MilliSatoshi} msat together, less than the total "
-              + $"{total.MilliSatoshi} msat; the payee would never complete the set.", nameof(request));
-        if (deliveredSum > total && _logger.IsEnabled(LogLevel.Information))
-            _logger.LogInformation(
-                "PayRoute {PaymentHash}: the routes deliver {Delivered} msat together, over the total {Total} msat "
-              + "(the payee accepts the surplus)", paymentHash, deliveredSum.MilliSatoshi, total.MilliSatoshi);
+        if (request.IndependentShards)
+        {
+            // LND: the attempted value may not exceed the payment amount (the parts in flight are added under the
+            // hash's lock, when the call attaches)
+            if (deliveredSum > total)
+                throw new ArgumentException(
+                    $"The routes deliver {deliveredSum.MilliSatoshi} msat together, over the payment's total "
+                  + $"{total.MilliSatoshi} msat.", nameof(request));
+        }
+        else if (request.Attach == PayRouteAttachMode.Never)
+        {
+            if (deliveredSum < total)
+                throw new ArgumentException(
+                    $"The routes deliver {deliveredSum.MilliSatoshi} msat together, less than the total "
+                  + $"{total.MilliSatoshi} msat; the payee would never complete the set.", nameof(request));
+            if (deliveredSum > total && _logger.IsEnabled(LogLevel.Information))
+                _logger.LogInformation(
+                    "PayRoute {PaymentHash}: the routes deliver {Delivered} msat together, over the total {Total} msat "
+                  + "(the payee accepts the surplus)", paymentHash, deliveredSum.MilliSatoshi, total.MilliSatoshi);
+        }
 
-        // ---- Fees and, route by route, the PaymentRoute itself (its constructor re-checks the invariants)
+        // ---- Fees and, route by route, the PaymentRoute itself (its constructor re-checks the invariants). An
+        // attached round's fees are checked with the fees of the parts in flight, under the hash's lock
+        // LND's sendToRoute applies no fee limit ("we are not requesting routes"): an LND shard without an explicit
+        // limit is not checked against the default one, alone or with the shards in flight
+        var unlimitedFee = request.IndependentShards && options.MaxFee is null;
         var maxFee = options.MaxFee ?? _sendOptions.Value.GetMaxFee(total);
         var fee = parsedRoutes.Select(r => r.Supplied.FirstHopAmount - r.Supplied.Hops[^1].AmountToForward)
                               .Aggregate(LightningMoney.Zero, (sum, part) => sum + part);
-        if (fee > maxFee)
+        if (!unlimitedFee && fee > maxFee && request.Attach != PayRouteAttachMode.Required)
             throw new ArgumentException(
                 $"The routes pay {fee.MilliSatoshi} msat in fees, over the limit of {maxFee.MilliSatoshi} msat "
               + "(:--max-fee-msat raises it).", nameof(request));
@@ -213,7 +232,17 @@ public sealed partial class PaymentService
             paymentRoutes.Add(new SuppliedRoutePart(ToCandidate(channel), route));
         }
 
-        ValidateFirstHopLiquidity(paymentRoutes);
+        try
+        {
+            ValidateFirstHopLiquidity(paymentRoutes);
+        }
+        catch (PayRouteLiquidityException e) when (request is { IndependentShards: true, SkipTemporaryFailures: false })
+        {
+            // LND: the shard's attempt fails at our own channel and, without skip_temp_err, fails the payment in
+            // flight pending (NL-1276)
+            await FailPayRouteSessionPendingAsync(paymentHash, e.Message, cancellationToken);
+            throw;
+        }
 
         // ---- The session: one attempt, exactly these routes, nothing re-planned
         var target = invoiceTarget
@@ -222,16 +251,22 @@ public sealed partial class PaymentService
         if (target.PayeeNodeId == _secureKeyManager.GetNodePubKey())
             throw new ArgumentException("The payee is this node.", nameof(request));
 
-        var now = _timeProvider.GetUtcNow();
-        DateTimeOffset? deadline = options.Timeout == Timeout.InfiniteTimeSpan ? null : now + options.Timeout;
-        var session = new PaymentSession(target, bolt11, total, maxFee, request.Routes.Count, request.Routes.Count,
-                                         deadline, now)
+        // ---- Start a session over exactly these routes, or attach them to the one in flight (NL-1276)
+        var call = new PayRouteCall(request, options, target, bolt11, total, maxFee, fee, deliveredSum, keysend,
+                                    paymentRoutes);
+        var (session, round) = await StartOrAttachPayRouteAsync(call, cancellationToken);
+
+        if (request.IndependentShards)
         {
-            SuppliedRoutes = paymentRoutes,
-            Keysend = keysend,
-            Labels = options.Labels
-        };
-        await RunSessionAsync(session, options.Timeout, cancellationToken);
+            // A shard of an LND set answers with its own routes' outcomes (the payment may go on with other shards)
+            await WaitAsync(session.WhenPartsResolvedAsync(round), options.Timeout, cancellationToken);
+        }
+        else
+        {
+            await WaitAsync(session.Completion.Task, options.Timeout, cancellationToken);
+            if (cancellationToken.IsCancellationRequested && request.Attach == PayRouteAttachMode.Never)
+                session.StopRequested = true;
+        }
 
         var payment = await GetPaymentAsync(paymentHash, CancellationToken.None)
                    ?? throw new InvalidOperationException($"Payment {paymentHash} was not stored.");
@@ -241,17 +276,212 @@ public sealed partial class PaymentService
         var settled = payment.Status == PaymentStatus.Succeeded;
         if (settled)
             await SettleLeftoverPartRowsAsync(session);
-        var outcomes = session.Parts.Select(
-                                     (part, index) => new RouteOutcome(
-                                         index,
-                                         part.Status == PaymentPartStatus.InFlight && settled
-                                             ? PaymentPartState.Succeeded
-                                             : ToPartState(part.Status),
-                                         part.HtlcId, part.Failure?.Code, part.Failure?.SourceIndex,
-                                         part.Failure?.Reason))
-                                 .ToList();
+        var outcomes = round.Select((part, index) =>
+                                    {
+                                        var settledLate = part.Status == PaymentPartStatus.InFlight && settled;
+                                        return new RouteOutcome(index,
+                                                                settledLate
+                                                                    ? PaymentPartState.Succeeded
+                                                                    : ToPartState(part.Status),
+                                                                part.HtlcId, part.Failure?.Code,
+                                                                part.Failure?.SourceIndex, part.Failure?.Reason)
+                                        {
+                                            OfferedAt = part.OfferedAt,
+                                            ResolvedAt = part.ResolvedAt
+                                                      ?? (settledLate ? payment.CompletedAt : null)
+                                        };
+                                    })
+                            .ToList();
         return new PayRouteResult(payment, outcomes);
     }
+
+    /// <summary>
+    /// Marks the <c>payroute</c> session of <paramref name="paymentHash"/> still in flight, when there is one, failed
+    /// pending (<see cref="PaymentSession.PendingFailure"/>, NL-1276).
+    /// </summary>
+    private async Task FailPayRouteSessionPendingAsync(Hash paymentHash, string reason,
+                                                       CancellationToken cancellationToken)
+    {
+        using (await AcquireHashLockAsync(paymentHash, cancellationToken))
+        {
+            if (_sessions.TryGetValue(paymentHash, out var session) && session.ManualRoutes)
+                session.PendingFailure ??= reason;
+        }
+    }
+
+    /// <summary>What one <c>payroute</c> call validated, for <see cref="StartOrAttachPayRouteAsync"/>.</summary>
+    private sealed record PayRouteCall(PayRouteRequest Request, PayInvoiceOptions Options, PaymentTarget Target,
+                                       string? Bolt11, LightningMoney Total, LightningMoney MaxFee, LightningMoney Fee,
+                                       LightningMoney Delivered, KeysendFinalRecords? Keysend,
+                                       IReadOnlyList<SuppliedRoutePart> Routes);
+
+    /// <summary>
+    /// Under the payment hash's lock: attaches the call's routes to the <c>payroute</c> session of the hash still in
+    /// flight (<see cref="PayRouteRequest.Attach"/>, NL-1276), or starts a session over them.
+    /// </summary>
+    /// <returns>The session and the call's own parts, in the routes' order.</returns>
+    /// <exception cref="InvalidOperationException">Attaching was required but no <c>payroute</c> payment of the hash
+    /// is in flight (it succeeded, failed or never started, or the node restarted since), or a payment of the hash is
+    /// in flight that cannot take more routes (a <c>payinvoice</c>, keysend or other session) or already succeeded.
+    /// Nothing was sent.</exception>
+    /// <exception cref="ArgumentException">The attached routes do not fit the payment in flight (another secret,
+    /// total or payee, past the attach window, over the fee limit with the parts in flight, too many parts, or the
+    /// parts would deliver less (or, for LND shards, more) than the total). Nothing was sent.</exception>
+    private async Task<(PaymentSession Session, IReadOnlyList<PaymentPart> Round)> StartOrAttachPayRouteAsync(
+        PayRouteCall call, CancellationToken cancellationToken)
+    {
+        var request = call.Request;
+        var paymentHash = call.Target.PaymentHash;
+        using (await AcquireHashLockAsync(paymentHash, cancellationToken))
+        {
+            if (request.Attach != PayRouteAttachMode.Never && _sessions.TryGetValue(paymentHash, out var existing))
+                return (existing, await AttachPayRouteLockedAsync(existing, call));
+
+            if (request.Attach == PayRouteAttachMode.Required)
+            {
+                var stored = await GetPaymentAsync(paymentHash, CancellationToken.None);
+                throw new InvalidOperationException(
+                    stored?.Status == PaymentStatus.Succeeded
+                        ? $"The payment for payment hash {paymentHash} already succeeded; there is nothing to "
+                        + "attach to."
+                        : $"No payroute payment for payment hash {paymentHash} is in flight to attach to (it ended, "
+                        + "never started, or the node restarted since); start one with payroute without --attach.");
+            }
+
+            await ThrowIfPaymentExistsAsync(paymentHash);
+            var now = _timeProvider.GetUtcNow();
+            DateTimeOffset? deadline = call.Options.Timeout == Timeout.InfiniteTimeSpan
+                                           ? null
+                                           : now + call.Options.Timeout;
+            var session = new PaymentSession(call.Target, call.Bolt11, call.Total, call.MaxFee, call.Routes.Count,
+                                             call.Routes.Count, deadline, now)
+            {
+                SuppliedRoutes = call.Routes,
+                Keysend = call.Keysend,
+                Labels = call.Options.Labels
+            };
+            _sessions[paymentHash] = session;
+            try
+            {
+                return (session, await RunManualRoundAsync(session, call.Routes,
+                                                           failsPaymentOnFailure: FailsPaymentOnFailure(request)));
+            }
+            catch
+            {
+                if (!session.HasPartsInFlight)
+                    CompleteSession(session);
+                throw;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Attaches the call's routes to <paramref name="session"/> (NL-1276, plan §6) after checking they fit it, then
+    /// offers them as one more manual round. Call it under the hash's lock: a session still registered then has a
+    /// part in flight (one without is decided and removed under the same lock).
+    /// </summary>
+    private async Task<IReadOnlyList<PaymentPart>> AttachPayRouteLockedAsync(PaymentSession session,
+                                                                            PayRouteCall call)
+    {
+        var request = call.Request;
+        var paymentHash = session.PaymentHash;
+        if (!session.ManualRoutes)
+            throw new InvalidOperationException(
+                $"A payment for payment hash {paymentHash} is already {PaymentStatus.InFlight}, sent by the node's "
+              + "planner (payinvoice, keysend or an offer); payroute can attach only to a payroute payment.");
+        if (session.Keysend is not null || call.Keysend is not null)
+            throw new InvalidOperationException(
+                $"A keysend payment for payment hash {paymentHash} goes over one route; nothing can be attached to "
+              + "it.");
+        if (session.PendingFailure is { } pendingFailure)
+            throw new InvalidOperationException(
+                $"The payment for payment hash {paymentHash} is pending failed (a part failed: {pendingFailure}); "
+              + "nothing more can be attached until its parts in flight are resolved and it fails (LND: payment "
+              + "pending failed).");
+
+        if (call.Target.PaymentSecret != session.Target.PaymentSecret)
+            throw new ArgumentException(
+                "The payment secret differs from the one of the payment in flight; every part of a set carries the "
+              + "same one.", nameof(call));
+        if (call.Total != session.Amount)
+            throw new ArgumentException(
+                $"The total {call.Total.MilliSatoshi} msat differs from the {session.Amount.MilliSatoshi} msat every "
+              + "part of the payment in flight reports.", nameof(call));
+        if (call.Target.PayeeNodeId != session.Target.PayeeNodeId)
+            throw new ArgumentException(
+                $"The routes end at {call.Target.PayeeNodeId}, not at the payee {session.Target.PayeeNodeId} of the "
+              + "payment in flight.", nameof(call));
+        if (session.Parts.Count + call.Routes.Count > byte.MaxValue + 1)
+            throw new ArgumentException(
+                $"The payment already has {session.Parts.Count} parts; at most {byte.MaxValue + 1} can be stored.",
+                nameof(call));
+
+        var window = _sendOptions.Value.PayRouteAttachWindow;
+        var now = _timeProvider.GetUtcNow();
+        if (request.Attach == PayRouteAttachMode.Required
+         && session.InFlightParts.Select(p => p.OfferedAt).Min() is { } oldest
+         && now - oldest > window)
+            throw new ArgumentException(
+                $"Too late: the oldest part in flight was offered {(now - oldest).TotalSeconds:F0} s ago, past the "
+              + $"{window.TotalSeconds:F0} s attach window (the payee fails the parts it holds after its "
+              + "mpp_timeout); wait for the payment to end and pay again.", nameof(call));
+
+        var inFlightDelivered = LightningMoney.MilliSatoshis(
+            session.InFlightParts.Aggregate(0UL, (sum, p) => sum + p.Route.Amount.MilliSatoshi));
+        var delivered = inFlightDelivered + call.Delivered;
+        if (request.IndependentShards)
+        {
+            if (delivered > call.Total)
+                throw new ArgumentException(
+                    $"The parts in flight deliver {inFlightDelivered.MilliSatoshi} msat; with these routes "
+                  + $"{delivered.MilliSatoshi} msat, over the payment's total {call.Total.MilliSatoshi} msat.",
+                    nameof(call));
+        }
+        else if (delivered < call.Total)
+        {
+            throw new ArgumentException(
+                $"The parts in flight deliver {inFlightDelivered.MilliSatoshi} msat; with these routes "
+              + $"{delivered.MilliSatoshi} msat, less than the total {call.Total.MilliSatoshi} msat, so the payee "
+              + "would never complete the set.", nameof(call));
+        }
+        else if (inFlightDelivered >= call.Total)
+        {
+            // Nothing failed to replace: the parts in flight are only slow (LND caps the attempted value at the
+            // amount, ErrValueExceedsAmt)
+            throw new ArgumentException(
+                $"The parts in flight already deliver {inFlightDelivered.MilliSatoshi} msat, the whole total "
+              + $"{call.Total.MilliSatoshi} msat; there is nothing to replace (wait for them to resolve).",
+                nameof(call));
+        }
+        else if (call.Routes.Count > 1
+              && delivered.MilliSatoshi - call.Routes.Max(r => r.Route.Amount.MilliSatoshi) > call.Total.MilliSatoshi)
+        {
+            // Even without its largest route the round overpays: some of its routes are not needed
+            throw new ArgumentException(
+                $"With the parts in flight these routes deliver {delivered.MilliSatoshi} msat, over the total "
+              + $"{call.Total.MilliSatoshi} msat even without the largest of them; attach only what is missing.",
+                nameof(call));
+        }
+
+        var maxFee = call.Options.MaxFee ?? session.MaxFee;
+        var fees = LightningMoney.MilliSatoshis(session.FeesInFlightMsat) + call.Fee;
+        // LND's sendToRoute applies no fee limit: an LND shard without an explicit one is not checked
+        if (!(request.IndependentShards && call.Options.MaxFee is null) && fees > maxFee)
+            throw new ArgumentException(
+                $"The parts in flight pay {session.FeesInFlightMsat} msat in fees; with these routes "
+              + $"{fees.MilliSatoshi} msat, over the limit of {maxFee.MilliSatoshi} msat (--max-fee-msat raises it).",
+                nameof(call));
+
+        _logger.LogInformation("PayRoute {PaymentHash}: attaching {Routes} route(s) delivering {Delivered} msat to "
+                             + "the {InFlight} part(s) in flight", paymentHash, call.Routes.Count,
+                               call.Delivered.MilliSatoshi, session.InFlightParts.Count());
+        return await RunManualRoundAsync(session, call.Routes, "attached route", FailsPaymentOnFailure(request));
+    }
+
+    /// <summary>Whether any failure of the call's routes fails the payment pending: an LND shard without
+    /// <c>skip_temp_err</c> (<see cref="PayRouteRequest.SkipTemporaryFailures"/>).</summary>
+    private static bool FailsPaymentOnFailure(PayRouteRequest request) =>
+        request is { IndependentShards: true, SkipTemporaryFailures: false };
 
     /// <summary>
     /// Rejects a supplied route whose hops do not pay the forwarding fees the graph knows (<see cref="ForwardingFee"/>
@@ -326,14 +556,16 @@ public sealed partial class PaymentService
 
     /// <summary>
     /// Marks the part rows a succeeded shard set left <c>InFlight</c> (their fulfill arrived after the session was
-    /// completed, so no outcome handler updated them) as <c>Succeeded</c> — the payee settled the whole set.
+    /// completed, so no outcome handler updated them) as <c>Succeeded</c> — the payee settled the whole set. Every
+    /// part of the session, not only the calling round's: an earlier call may have returned at its own timeout
+    /// (NL-1276). The fulfill handler marks the row of such a part too when its fulfill arrives later.
     /// </summary>
     private async Task SettleLeftoverPartRowsAsync(PaymentSession session)
     {
         try
         {
             using var scope = _serviceScopeFactory.CreateScope();
-            foreach (var part in session.Parts.Where(
+            foreach (var part in session.Parts.ToList().Where(
                          p => p is { Status: PaymentPartStatus.InFlight, HtlcId: not null }))
                 await UpdateStoredPartAsync(scope, session.PaymentHash, part.Channel.ChannelId, part.HtlcId!.Value,
                                             PaymentPartState.Succeeded);

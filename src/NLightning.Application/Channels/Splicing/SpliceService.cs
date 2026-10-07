@@ -1895,7 +1895,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
     /// P2TR output has a 34-byte script too, and its shared input is a key-path spend).
     /// </summary>
     private static long GetInitiatorSharedWeight(bool simpleTaproot) =>
-        CollaborativeFeeCalculator.CommonFieldsWeight + SpliceFundingScripts.GetSharedInputWeight(simpleTaproot)
+        CollaborativeFeeCalculator.CommonFieldsWeight + SpliceFundingScripts.GetSharedInputFeeWeight(simpleTaproot)
       + CollaborativeFeeCalculator.OutputWeight(new BitcoinScript(new byte[34]));
 
     /// <summary>D16: the fee a splice-out we initiate pays from our channel balance.</summary>

@@ -208,6 +208,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
                 await SilentPaymentAccounting.StageFactAsync(work, output, spender, block, height, labels, nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork(), cancellationToken);
         await SilentPaymentAccounting.StageSettlementsAsync(work, block, height, labels,
             nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork(), _time, cancellationToken, recoveryCatalogue: catalogue);
+        await WalletRecoveryAccounting.StageWalletHistoryAsync(work, block, height, cancellationToken);
         await RequireCanonicalAsync(block, height, cancellationToken);
         await work.SilentPaymentDbRepository.SetScanStateAsync(state with
         { RescanCursorHeight = height, RescanCursorHash = blockValue.BlockHash, PrevoutSource = scanner.PrevoutSource }, cancellationToken);
@@ -264,6 +265,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
                     catalogue = await StageOrdinaryBlockAsync(uow, block, height, catalogue, cancellationToken);
                 await SilentPaymentAccounting.StageSettlementsAsync(uow, block, height, labels,
                     nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork(), _time, cancellationToken, recoveryCatalogue: catalogue);
+                await WalletRecoveryAccounting.StageWalletHistoryAsync(uow, block, height, cancellationToken);
                 await RequireCanonicalAsync(block, height, cancellationToken);
                 if (height == uint.MaxValue) break;
             }
@@ -371,6 +373,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
             catalogue = await StageOrdinaryBlockAsync(uow, block, height, catalogue, cancellationToken);
             await SilentPaymentAccounting.StageSettlementsAsync(uow, block, height, labels,
                 nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork(), _time, cancellationToken, recoveryCatalogue: catalogue);
+            await WalletRecoveryAccounting.StageWalletHistoryAsync(uow, block, height, cancellationToken);
             await RequireCanonicalAsync(block, height, cancellationToken);
             if (height == uint.MaxValue) break;
         }

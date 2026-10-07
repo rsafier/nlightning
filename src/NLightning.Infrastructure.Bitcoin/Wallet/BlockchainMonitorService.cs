@@ -30,6 +30,7 @@ using Domain.Protocol.ValueObjects;
 using Interfaces;
 using Networks;
 using Options;
+using SilentPayments;
 
 /// <summary>
 /// Follows the chain: ZMQ <c>rawblock</c> for new blocks, RPC to catch up, one unit of work per block.
@@ -1317,8 +1318,11 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         await StageSilentPaymentReceiptsAsync(silentPayments, uow, effects, block);
         StageWalletMovements(transactions, height, block.Header.BlockTime, uow, effects);
         await StageSilentPaymentSpendsAndStateAsync(silentPayments, height, uow, effects, block);
+        await StageWalletHistoryAsync(transactions, block.Header.BlockTime, uow, effects);
         await StageAccountingAsync(uow, effects);
         await StageSilentPaymentSettlementsAsync(silentPayments, uow, effects, block);
+        if (silentPayments is not null)
+            await WalletRecoveryAccounting.StageWalletHistoryAsync(uow, block, height, CancellationToken.None);
         await StageWatchedSpendsAsync(transactions, height, blockHash, uow, effects);
         StageWatchedTransactionDepths(height, uow, effects);
 
@@ -1392,6 +1396,10 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         {
             var txId = transaction.GetHash();
             WalletTransactionSource? source = null;
+            // The wallet's change of this transaction as the feed records it (deposits minus spends, NL-1186 review: a
+            // collaborative transaction books its net flow against the clearing account the movements post to)
+            long recordedWalletDeltaMsat = 0;
+            var recordedMovement = false;
             if (DescribeWalletTransaction(transaction, blockHeight, new uint256((byte[])effects.BlockHash).ToString(),
                                           effects.StagedDeposits, timestamp: blockTime) is { } observed)
                 effects.WalletTransactions.Add(observed);
@@ -1432,6 +1440,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 // NL-602/NL-603: the deposit in the accounting feed (memory guard above: once per output)
                 source ??= ClassifyWalletTransaction(transaction, utxoMemoryRepository, effects);
                 CollectWalletReceived(utxo, watchedAddress, source, effects);
+                recordedWalletDeltaMsat += checked((long)utxo.Amount.MilliSatoshi);
+                recordedMovement = true;
 
                 // The address stays watched (as after a restart, which reloads every wallet address): the wallet hands
                 // an address out again once its deposits are spent, and two channels closing at once can get the
@@ -1461,7 +1471,85 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 source ??= ClassifyWalletTransaction(transaction, utxoMemoryRepository, effects);
                 CollectWalletOutputSpent(spent, transaction, source, utxoMemoryRepository, effects,
                     spent.SilentPayment is not null ? blockTime : null);
+                recordedWalletDeltaMsat -= checked((long)spent.Amount.MilliSatoshi);
+                recordedMovement = true;
             }
+
+            if (recordedMovement && source is { Purpose: BroadcastPurpose.WalletCollaborative })
+                CollectWalletCollaborativeFlow(transaction, source, recordedWalletDeltaMsat, effects);
+        }
+    }
+
+    /// <summary>
+    /// Stages the block's wallet transactions in the wallet's durable history (NL-1187), in the block's own save: the
+    /// raw transaction, the block and the wallet's outputs and inputs as <see cref="DescribeWalletTransaction"/> found
+    /// them (the same description <c>SubscribeTransactions</c> publishes). A stored transaction a reorg unconfirmed is
+    /// confirmed again by any block that holds it, whatever the description finds (a spend without a wallet output whose
+    /// inputs the rollback could not restore, because bitcoind's mempool still spends them, is described as nothing),
+    /// and is removed once a block confirms a conflicting spend of one of its inputs.
+    /// </summary>
+    private async Task StageWalletHistoryAsync(List<Transaction> transactions, DateTimeOffset blockTime,
+                                               IUnitOfWork uow, BlockEffects effects)
+    {
+        if (uow.WalletTransactionDbRepository is not { } history)
+            return;
+
+        var staged = new HashSet<TxId>();
+        foreach (var observed in effects.WalletTransactions)
+        {
+            var inputs = new List<WalletTransactionInput>(observed.OurInputs.Count);
+            for (var i = 0; i < observed.OurInputs.Count && i < observed.OurInputAmounts.Count; i++)
+                inputs.Add(new WalletTransactionInput(observed.OurInputs[i], observed.OurInputAmounts[i]));
+
+            var txId = new TxId(uint256.Parse(observed.TxHash).ToBytes());
+            staged.Add(txId);
+            await history.StageConfirmedAsync(new WalletTransactionRecord(
+                txId, Convert.FromHexString(observed.RawTransactionHex), effects.Height, effects.BlockHash,
+                observed.Timestamp, observed.OurOutputs.ToList(), inputs));
+        }
+
+        var unconfirmed = await history.GetUnconfirmedAsync(CancellationToken.None);
+        if (unconfirmed.Count == 0)
+            return;
+
+        var inBlock = new Dictionary<TxId, Transaction>(transactions.Count);
+        var spentInBlock = new Dictionary<OutPoint, uint256>();
+        foreach (var transaction in transactions)
+        {
+            var hash = transaction.GetHash();
+            inBlock[new TxId(hash.ToBytes())] = transaction;
+            if (transaction.IsCoinBase)
+                continue;
+
+            foreach (var input in transaction.Inputs)
+                spentInBlock.TryAdd(input.PrevOut, hash);
+        }
+
+        foreach (var record in unconfirmed)
+        {
+            if (staged.Contains(record.TxId))
+                continue;
+
+            if (inBlock.TryGetValue(record.TxId, out var confirmed))
+            {
+                // Its stored ownership is kept (the record carries none to add)
+                await history.StageConfirmedAsync(new WalletTransactionRecord(
+                    record.TxId, confirmed.ToBytes(), effects.Height, effects.BlockHash, blockTime, [], []));
+                continue;
+            }
+
+            Transaction stored;
+            try
+            {
+                stored = Transaction.Load(record.RawTransaction, _network);
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+
+            if (!stored.IsCoinBase && stored.Inputs.Any(i => spentInBlock.ContainsKey(i.PrevOut)))
+                await history.StageRemoveAsync(record.TxId);
         }
     }
 
@@ -1649,6 +1737,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
 
                 var clearedSpends = await uow.WatchedOutpointDbRepository.ClearSpendsAboveAsync(forkHeight);
                 var unconfirmed = await uow.BroadcastTransactionDbRepository.UnconfirmAboveAsync(forkHeight);
+                // NL-1187: the wallet's history follows the rewind in the same save
+                if (uow.WalletTransactionDbRepository is { } walletHistory)
+                    await walletHistory.UnconfirmAboveAsync(forkHeight);
                 var (removedDeposits, restoredSpends) = await StageWalletRollbackAsync(uow, forkHeight, restoredUtxos);
                 await StageReorgReversalsAsync(uow, forkHeight, removedDeposits, restoredSpends);
                 await uow.BlockHeaderDbRepository.DeleteAboveAsync(forkHeight);

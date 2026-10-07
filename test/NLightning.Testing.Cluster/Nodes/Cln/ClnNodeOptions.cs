@@ -11,7 +11,7 @@ using Kube;
 /// </summary>
 public sealed record ClnNodeOptions
 {
-    /// <summary>The image; the version table's CLN (v26.06.8 by digest) by default.</summary>
+    /// <summary>The image; the version table's CLN (v26.06.9 by digest) by default.</summary>
     public ImageRef Image { get; init; } = ImageVersions.Cln;
 
     /// <summary>

@@ -1,6 +1,8 @@
 # Silent payments validation
 
-Branch: `wip/silent-payments`, based on `wip/fafo` at `a608db64`.
+Branch: `wip/silent-payments`, merged with `wip/fafo` at `27c4ebc2`.
+
+The previous-base batch `sp-core-final2` completed three consecutive full green Core runs. Fresh validation on the merged base is pending; previous-base results do not certify the new durable-history integration.
 
 This record distinguishes completed runtime checks from pending acceptance gates. All cluster proofs use the repository's `scripts/run-cluster.sh` wrapper and owned namespaces. The owner requested normal Bitcoin Core for proofs; rbitcoin is not required or used.
 

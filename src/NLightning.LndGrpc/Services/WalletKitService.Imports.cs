@@ -14,6 +14,54 @@ using Walletrpc;
 
 public sealed partial class WalletKitService
 {
+    /// <summary>
+    /// <c>ImportPublicKey</c> (NL-1186): watches the simple output script of a public key from now on, as LND: a P2WPKH
+    /// (<c>WITNESS_PUBKEY_HASH</c>, a 33- or 65-byte key, compressed for the script), a nested P2WPKH
+    /// (<c>NESTED_WITNESS_PUBKEY_HASH</c>) or a BIP 86 P2TR (<c>TAPROOT_PUBKEY</c>, a 32-byte x-only key). The output
+    /// is watch-only like an <c>ImportTapscript</c> import (the same tracker: listed by <c>ListUnspent</c> and
+    /// <c>GetTransactions</c>, never spent, reserved or booked); importing it again changes nothing.
+    /// </summary>
+    public override Task<ImportPublicKeyResponse> ImportPublicKey(ImportPublicKeyRequest request,
+                                                                  ServerCallContext context) => SignerService.Run(async () =>
+    {
+        Script script;
+        byte[] internalKey;
+        PubKey compressed;
+        switch (request.AddressType)
+        {
+            case AddressType.TaprootPubkey:
+                if (request.PublicKey.Length != 32 || !TaprootInternalPubKey.TryCreate(request.PublicKey.ToByteArray(),
+                                                                                     out var taprootKey))
+                    throw new ArgumentException("a taproot public key must be a 32-byte x-only key");
+                script = taprootKey.GetTaprootFullPubKey().ScriptPubKey;
+                internalKey = request.PublicKey.ToByteArray();
+                compressed = new PubKey([0x02, .. internalKey]);
+                break;
+            case AddressType.WitnessPubkeyHash or AddressType.NestedWitnessPubkeyHash:
+                if (!PubKey.TryCreatePubKey(request.PublicKey.ToByteArray(), out var key))
+                    throw new ArgumentException("invalid public key");
+                compressed = key.Compress();
+                script = request.AddressType == AddressType.WitnessPubkeyHash
+                             ? compressed.WitHash.ScriptPubKey
+                             : compressed.WitHash.ScriptPubKey.Hash.ScriptPubKey;
+                // The import's key column holds 32 bytes: the key's x coordinate (the full request is its definition)
+                internalKey = compressed.ToBytes()[1..];
+                break;
+            default:
+                throw new ArgumentException($"address type {request.AddressType} cannot be imported");
+        }
+
+        var tracker = _serviceProvider.GetRequiredService<ImportedTapscriptTracker>();
+        var height = _serviceProvider.GetRequiredService<IBlockchainMonitor>().LastProcessedBlockHeight;
+        if (height == 0) throw new InvalidOperationException("chain monitor is not ready");
+        await tracker.ImportAsync(new ImportedTapscript(script.ToBytes(), internalKey, request.ToByteArray(), height),
+                                  context.CancellationToken);
+        return new ImportPublicKeyResponse
+        {
+            Status = $"public key {Convert.ToHexStringLower(compressed.ToBytes())} imported"
+        };
+    });
+
     public override Task<ImportTapscriptResponse> ImportTapscript(ImportTapscriptRequest request,
                                                                   ServerCallContext context) => SignerService.Run(async () =>
     {

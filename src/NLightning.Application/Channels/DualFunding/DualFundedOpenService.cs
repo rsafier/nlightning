@@ -785,7 +785,20 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         // replace what we announce, and one that cannot apply to a dual-funded open refuses it
         var decision = await DecideOpenAsync(message, peerPubKey, cancellationToken);
         (localParams, minimumDepth) = ApplyOpenDecision(decision, message, peerPubKey, localParams, minimumDepth,
-                                                        total);
+                                                        total, negotiatedFeatures);
+
+        // NL-1181: an acceptor's values that hold only with our contribution (a reserve_sat above the reserve of the
+        // opener's funding alone) make our contribution all or nothing: an open we could not fund is refused instead
+        // of going on without our share and breaking what the acceptor asked
+        var requiresLocalShare = decision is not null && !localContribution.IsZero
+                              && ChannelOpenDecisionRules.TryApply(
+                                     decision, ToOpenRequest(message, peerPubKey),
+                                     CreateLocalParams(DualFundingRules.GetChannelReserve(
+                                                           payload.FundingAmount,
+                                                           Max(payload.DustLimitAmount, _nodeOptions.DustLimitAmount)),
+                                                       GetAnnouncedMaxHtlcValueInFlight(payload.FundingAmount,
+                                                           negotiatedFeatures)),
+                                     minimumDepth, payload.FundingAmount, out _, out _, negotiatedFeatures) is not null;
 
         var keyIndex = _lightningSigner.CreateNewChannel(out var basepoints, out var firstPoint);
         var secondPoint = _lightningSigner.GetPerCommitmentPoint(keyIndex, 1);
@@ -838,7 +851,10 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             RemoteShare = payload.FundingAmount,
             FundingFeeratePerKw = payload.FundingFeeRatePerKw,
             Locktime = payload.Locktime,
-            RemoteRequiresConfirmedInputs = message.RequireConfirmedInputsTlv is not null
+            RemoteRequiresConfirmedInputs = message.RequireConfirmedInputsTlv is not null,
+            LocalShareRequired = requiresLocalShare,
+            OpenDecision = decision,
+            OpenRequest = decision is null ? null : ToOpenRequest(message, peerPubKey)
         };
         negotiation.Host = new DualFundHost(this, negotiation);
         var channel = CreateChannel(channelParams, channelId, CreateLocalKeySet(keyIndex, basepoints, firstPoint),
@@ -903,7 +919,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                                     _nodeOptions.DustLimitAmount));
             localParams = CreateLocalParams(reserve, GetAnnouncedMaxHtlcValueInFlight(total, negotiatedFeatures));
             (localParams, minimumDepth) = ApplyOpenDecision(decision, message, peerPubKey, localParams, minimumDepth,
-                                                            total);
+                                                            total, negotiatedFeatures);
             remoteParams = new ChannelParty(payload.DustLimitAmount, reserve, payload.HtlcMinimumAmount,
                                             payload.MaxAcceptedHtlcs, payload.MaxHtlcValueInFlightAmount,
                                             payload.ToSelfDelay, NonEmpty(message.UpfrontShutdownScriptTlv));
@@ -933,7 +949,11 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                         basepoints.RevocationBasepoint, basepoints.PaymentBasepoint,
                                                         basepoints.DelayedPaymentBasepoint,
                                                         basepoints.HtlcBasepoint, firstPoint, secondPoint,
-                                                        message.ChannelTypeTlv, new UpfrontShutdownScriptTlv(Array.Empty<byte>()),
+                                                        message.ChannelTypeTlv,
+                                                        // NL-1181: an acceptor's upfront_shutdown, else none
+                                                        new UpfrontShutdownScriptTlv(
+                                                            localParams.UpfrontShutdownScript
+                                                         ?? (BitcoinScript)Array.Empty<byte>()),
                                                         willFund: negotiation.AttemptLiquidity?.WillFund)
         ];
     }
@@ -955,17 +975,22 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                         decision.Error);
     }
 
-    /// <summary>Our announced values and depth with an acceptance's values applied (unchanged without one).</summary>
+    /// <summary>
+    /// Our announced values and depth with an acceptance's values applied (unchanged without one; NL-1181: an
+    /// acceptance without values still has to allow a zero-conf channel_type).
+    /// </summary>
     private (ChannelParty Local, uint MinimumDepth) ApplyOpenDecision(ChannelOpenDecision? decision,
                                                                      OpenChannel2Message message,
                                                                      CompactPubKey peerPubKey, ChannelParty local,
-                                                                     uint minimumDepth, LightningMoney capacity)
+                                                                     uint minimumDepth, LightningMoney capacity,
+                                                                     FeatureOptions negotiatedFeatures)
     {
-        if (decision is not { HasOverrides: true })
+        if (decision is null)
             return (local, minimumDepth);
 
         if (ChannelOpenDecisionRules.TryApply(decision, ToOpenRequest(message, peerPubKey), local, minimumDepth,
-                                              capacity, out var newLocal, out var newMinimumDepth) is { } error)
+                                              capacity, out var newLocal, out var newMinimumDepth,
+                                              negotiatedFeatures) is { } error)
         {
             _logger.LogWarning("Refusing open_channel2 {TemporaryChannelId}: the channel acceptor's answer cannot apply "
                              + "({Error})", message.Payload.ChannelId, error);
@@ -1049,6 +1074,15 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                     negotiation.Locktime, request), negotiation.Host!,
                                         cancellationToken);
                 return;
+            }
+            catch (InsufficientFundsException e) when (negotiation.LocalShareRequired)
+            {
+                // NL-1181: the channel acceptor's values hold only with our contribution
+                _logger.LogWarning("Cannot contribute {Amount} to the open of {ChannelId} ({Reason}), which the channel "
+                                 + "acceptor's values need: refusing it", negotiation.LocalShare, negotiation.ChannelId,
+                                   e.Message);
+                throw new ChannelErrorException($"Cannot fund our contribution: {e.Message}",
+                                                negotiation.TemporaryChannelId, ChannelOpenDecision.GenericRejection);
             }
             catch (InsufficientFundsException e) when (negotiation.AttemptLiquidity is not null)
             {
@@ -1521,6 +1555,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         foreach (var negotiation in _negotiations.Values.Distinct().ToList())
         {
             if (negotiation.CompletedTxIds.Count == 0
+             || !IsStillOpening(negotiation.ChannelId)
              || driver.GetInfo(negotiation.ChannelId) is not { } info
              || info is { SessionId: null, RbfRequested: false })
                 continue;
@@ -1553,6 +1588,17 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     }
 
     /// <summary>
+    /// Whether the channel's dual-funded open is still waiting for its funding (<see cref="ChannelState.V1FundingSigned"/>
+    /// in memory), the only time an interactive-tx session on it can be an RBF attempt of the open (NL-1293). The open's
+    /// negotiation stays in memory after the channel is open, and the driver's session on an open channel is a splice
+    /// (its own RBF rules are <c>SpliceService</c>'s): before this check a block during a splice negotiation found the
+    /// open's confirmed funding and aborted the splice with "an earlier attempt ... confirmed".
+    /// </summary>
+    private bool IsStillOpening(ChannelId channelId) =>
+        _channelMemoryRepository.TryGetChannel(channelId, out var channel)
+     && channel is { Version: ChannelVersion.V2, State: ChannelState.V1FundingSigned };
+
+    /// <summary>
     /// Under the channel's lock: the running RBF attempt (or our unanswered <c>tx_init_rbf</c>) is abandoned when an
     /// earlier attempt confirmed; returns our <c>tx_abort</c> (to publish), empty when nothing was abandoned. After our
     /// <c>tx_signatures</c> nothing is (IT-ABT-01): the attempt double-spends the confirmed one and never confirms.
@@ -1561,7 +1607,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                                                  IUnitOfWork? unitOfWork)
     {
         var driver = _serviceProvider.GetService<IInteractiveTxDriver>();
-        if (driver?.GetInfo(negotiation.ChannelId) is not { } info || info is { SessionId: null, RbfRequested: false }
+        if (!IsStillOpening(negotiation.ChannelId)
+         || driver?.GetInfo(negotiation.ChannelId) is not { } info || info is { SessionId: null, RbfRequested: false }
          || info.State is InteractiveTxSessionState.TxSignaturesSent or InteractiveTxSessionState.Signed
          || await GetConfirmedAttemptAsync(negotiation, unitOfWork) is not { } confirmed)
             return [];
@@ -1655,8 +1702,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             }
             catch (InsufficientFundsException e)
             {
-                _logger.LogWarning("Cannot contribute {Amount} to the RBF of {ChannelId} ({Reason}); accepting it "
-                                 + "without our funds", localShare, negotiation.ChannelId, e.Message);
+                // NL-1181: without our share the attempt must still meet a channel acceptor's values (checked below)
+                _logger.LogWarning("Cannot contribute {Amount} to the RBF of {ChannelId} ({Reason}); trying it without "
+                                 + "our funds", localShare, negotiation.ChannelId, e.Message);
                 localShare = LightningMoney.Zero;
                 if (GetRbfShareViolation(negotiation, localShare, theirs) is { } withoutUs)
                     return InteractiveTxRbfDecision.Reject(withoutUs);
@@ -1844,7 +1892,45 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
          && GetNegotiatedFeatures(negotiation.Peer).LargeChannels == FeatureSupport.No)
             return $"a funding output of {total} is a large channel, which is not negotiated";
 
-        return null;
+        return GetOpenDecisionRbfViolation(negotiation, channel, total);
+    }
+
+    /// <summary>
+    /// Why an RBF attempt of an open we accept with a funding of <paramref name="total"/> breaks the channel acceptor's
+    /// values applied to the open, or null (NL-1181 review). The values are applied again with the attempt's total, as
+    /// for the first attempt: the reserve BOLT 2 fixes (1 % of the total) must still meet a <c>reserve_sat</c>, and
+    /// <c>min_htlc_in</c> must stay below the capacity, so the opener (or our own empty wallet) cannot lower a
+    /// contribution under them in an RBF. After a restart the answer is not known
+    /// (<see cref="DualFundNegotiation.OpenDecisionUnknown"/>): the total may then not go below the last signed
+    /// attempt's, under which every such value still holds.
+    /// </summary>
+    private string? GetOpenDecisionRbfViolation(DualFundNegotiation negotiation, ChannelModel channel,
+                                                LightningMoney total)
+    {
+        if (negotiation.IsOpener)
+            return null;
+
+        if (negotiation is { OpenDecision: { } decision, OpenRequest: { } request })
+        {
+            var channelParams = WithCapacity(channel.ChannelParams, total);
+            var error = ChannelOpenDecisionRules.TryApply(decision, request, channelParams.Local,
+                                                          channelParams.MinimumDepth, total, out _, out _,
+                                                          GetNegotiatedFeatures(negotiation.Peer));
+            return error is null
+                       ? null
+                       : $"the channel acceptor's values of this open do not hold for a funding of {total} ({error})";
+        }
+
+        if (!negotiation.OpenDecisionUnknown)
+            return null;
+
+        var (signedLocal, signedRemote) = negotiation.SharesBeforeRbf
+                                       ?? (negotiation.LocalShare, negotiation.RemoteShare);
+        var signedTotal = LightningMoney.MilliSatoshis(signedLocal.MilliSatoshi + signedRemote.MilliSatoshi);
+        return total < signedTotal
+                   ? $"a funding of {total} is below the signed attempt's {signedTotal}, and whether a channel "
+                   + "acceptor's values apply to this open is not known after a restart"
+                   : null;
     }
 
     private void ChangeSharesForRbf(DualFundNegotiation negotiation, LightningMoney localShare,
@@ -2031,7 +2117,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             FundingFeeratePerKw = latest.FeeratePerKw,
             Locktime = latest.Locktime,
             LastContribution = latest.LocalContribution,
-            LastFeeratePerKw = latest.FeeratePerKw
+            LastFeeratePerKw = latest.FeeratePerKw,
+            // NL-1181: a channel acceptor's answer is memory only, so an open we accept cannot tell after a restart
+            OpenDecisionUnknown = !channel.IsInitiator
         };
         foreach (var purchase in purchasesByTxId)
             negotiation.Purchases[purchase.Key] = purchase.Value;

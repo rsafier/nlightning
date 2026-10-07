@@ -59,4 +59,47 @@ public sealed partial class LndGrpcWave3HostTests
         Assert.Equal(Convert.ToHexStringLower(script.ToBytes()), output.PkScript);
         Assert.Equal(2, output.OutputIndex);
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_DurableSilentPaymentSpend_When_FeedIsAbsentOrOverlaps_Then_PrunedHistoryRetainsExactOwnership(bool overlappingFeed)
+    {
+        // Arrange: a silent-payment input pays an external recipient and our actual P2TR change output.
+        using var changeKey = new Key();
+        var changeScript = new Script([0x51, 0x20, .. changeKey.PubKey.ToBytes()[1..]]);
+        var address = changeScript.GetDestinationAddress(Network.RegTest)!.ToString();
+        var previous = new TxId(RandomUtils.GetUInt256().ToBytes());
+        var spend = Network.RegTest.CreateTransaction();
+        spend.Inputs.Add(new TxIn(new NBitcoin.OutPoint(new uint256((byte[])previous), 3)));
+        spend.Outputs.Add(Money.Satoshis(60_000), new Key().PubKey.WitHash.ScriptPubKey);
+        spend.Outputs.Add(Money.Satoshis(39_000), changeScript);
+        var txid = new TxId(spend.GetHash().ToBytes());
+        var blockHash = RandomUtils.GetUInt256();
+        _walletHistory.Add(new WalletTransactionRecord(txid, spend.ToBytes(), 120, blockHash.ToBytes(),
+            DateTimeOffset.FromUnixTimeSeconds(1_700), [1], [new WalletTransactionInput(0, 100_000)]));
+        if (overlappingFeed)
+        {
+            AddEvent(AccountingEventKind.WalletReceived, txid, 1, 120, 39_000_000,
+                ("address", address), ("silentPayment", "true"));
+            AddEvent(AccountingEventKind.WalletOutputSpent, previous, 3, 120, -100_000_000,
+                ("spentBy", txid.ToString()), ("silentPayment", "true"));
+        }
+        using var connection = Connect(LndMacaroonFiles.ReadOnlyFileName);
+        // Act
+        var response = await connection.LightningClient.GetTransactionsAsync(new GetTransactionsRequest(), cancellationToken: Ct);
+        // Assert: durable raw history works without bitcoind or A1 and unions overlapping SP events once.
+        var listed = Assert.Single(response.Transactions);
+        Assert.Equal(-61_000, listed.Amount);
+        Assert.Equal(1_000, listed.TotalFees);
+        Assert.Equal(blockHash.ToString(), listed.BlockHash);
+        Assert.Equal(Convert.ToHexStringLower(spend.ToBytes()), listed.RawTxHex);
+        Assert.Equal(new[] { false, true }, listed.OutputDetails.Select(o => o.IsOurAddress));
+        var ours = Assert.Single(listed.OutputDetails, output => output.IsOurAddress);
+        Assert.Equal(address, ours.Address);
+        Assert.Equal(OutputScriptType.ScriptTypeWitnessV1Taproot, ours.OutputType);
+        Assert.Equal(Convert.ToHexStringLower(changeScript.ToBytes()), ours.PkScript);
+        Assert.True(Assert.Single(listed.PreviousOutpoints).IsOurOutput);
+    }
+
 }

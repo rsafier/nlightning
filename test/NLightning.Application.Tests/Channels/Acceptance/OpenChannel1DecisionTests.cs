@@ -45,6 +45,7 @@ public class OpenChannel1DecisionTests
     private readonly ChannelOpenDecisionGate _gate = new(NullLogger<ChannelOpenDecisionGate>.Instance);
     private ChannelParty? _announced;
     private uint? _announcedDepth;
+    private UpfrontShutdownScriptTlv? _announcedUpfront;
 
     [Fact]
     public async Task Given_ADeciderThatRejects_When_Opened_Then_TheOpenerGetsItsErrorAndNothingIsCreated()
@@ -78,7 +79,9 @@ public class OpenChannel1DecisionTests
             ToSelfDelay = 500,
             MaxAcceptedHtlcs = 20,
             HtlcMinimum = LightningMoney.MilliSatoshis(2_000),
-            MinimumDepth = 6
+            MinimumDepth = 6,
+            ChannelReserve = LightningMoney.Satoshis(2_500),
+            MaxHtlcValueInFlight = LightningMoney.Satoshis(40_000)
         }));
 
         // Act
@@ -90,11 +93,66 @@ public class OpenChannel1DecisionTests
         Assert.Equal((ushort)500, _announced.Value.ToSelfDelay);
         Assert.Equal((ushort)20, _announced.Value.MaxAcceptedHtlcs);
         Assert.Equal(LightningMoney.MilliSatoshis(2_000), _announced.Value.HtlcMinimumAmount);
+        Assert.Equal(LightningMoney.Satoshis(2_500), _announced.Value.ChannelReserveAmount);
+        Assert.Equal(LightningMoney.Satoshis(40_000), _announced.Value.MaxHtlcValueInFlight);
         Assert.Equal(6U, _announcedDepth);
     }
 
     [Fact]
-    public async Task Given_ADeciderThatAsksForZeroConf_When_Opened_Then_TheOpenIsRefused()
+    public async Task Given_AZeroConfOpenTheDeciderAccepts_When_Opened_Then_AcceptChannelAsksForDepthZero()
+    {
+        // Arrange: the opener's channel_type has option_zeroconf (NL-1181, LND's acceptor zero_conf)
+        var handler = CreateHandler();
+        using var registration = _gate.Register(
+            new ChannelOpenDecisionGateTests.FixedDecider(new ChannelOpenDecision { Accept = true, ZeroConf = true }));
+
+        // Act
+        await handler.HandleAsync(CreateMessage(ZeroConfChannelType()), ChannelState.None, new FeatureOptions(),
+                                  s_pubKey);
+
+        // Assert
+        Assert.Equal(0U, _announcedDepth);
+    }
+
+    [Fact]
+    public async Task Given_AZeroConfOpenTheDeciderAcceptsWithoutZeroConf_When_Opened_Then_TheOpenIsRefused()
+    {
+        // Arrange: LND's "channel acceptor blocked zero-conf channel negotiation"
+        var handler = CreateHandler();
+        using var registration = _gate.Register(
+            new ChannelOpenDecisionGateTests.FixedDecider(ChannelOpenDecision.Accepted));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+            () => handler.HandleAsync(CreateMessage(ZeroConfChannelType()), ChannelState.None, new FeatureOptions(),
+                                      s_pubKey));
+
+        // Assert
+        Assert.Contains("blocked zero-conf", exception.Message);
+        Assert.Equal(ChannelOpenDecision.GenericRejection, exception.PeerMessage);
+        Assert.Null(_announced);
+    }
+
+    [Fact]
+    public async Task Given_AnUpfrontScriptWithTheFeature_When_Opened_Then_AcceptChannelCarriesIt()
+    {
+        // Arrange
+        var handler = CreateHandler();
+        var script = new BitcoinScript([0x00, 0x14, .. Enumerable.Repeat((byte)0x01, 20)]);
+        using var registration = _gate.Register(new ChannelOpenDecisionGateTests.FixedDecider(
+                                                    new ChannelOpenDecision { Accept = true, UpfrontShutdownScript = script }));
+
+        // Act
+        await handler.HandleAsync(CreateMessage(), ChannelState.None,
+                                  new FeatureOptions { UpfrontShutdownScript = FeatureSupport.Optional }, s_pubKey);
+
+        // Assert
+        Assert.Equal(script, _announced!.Value.UpfrontShutdownScript);
+        Assert.Equal(script, _announcedUpfront!.ShutdownScriptPubkey);
+    }
+
+    [Fact]
+    public async Task Given_ADeciderThatAsksForZeroConfWithoutTheChannelType_When_Opened_Then_TheOpenIsRefused()
     {
         // Arrange
         var handler = CreateHandler();
@@ -165,10 +223,11 @@ public class OpenChannel1DecisionTests
                                                      It.IsAny<UpfrontShutdownScriptTlv>()))
            .Callback((ChannelParty local, ChannelTypeTlv _, CompactPubKey _, CompactPubKey _, CompactPubKey _,
                       CompactPubKey _, uint depth, CompactPubKey _, CompactPubKey _, ChannelId _,
-                      UpfrontShutdownScriptTlv _) =>
+                      UpfrontShutdownScriptTlv upfront) =>
             {
                 _announced = local;
                 _announcedDepth = depth;
+                _announcedUpfront = upfront;
             })
            .Returns(new AcceptChannel1Message(
                         new AcceptChannel1Payload(ChannelId.Zero, reserve, s_pubKey, dust, s_pubKey, s_pubKey,
@@ -184,7 +243,15 @@ public class OpenChannel1DecisionTests
                                               openDecisionGate: _gate);
     }
 
-    private static OpenChannel1Message CreateMessage()
+    private static FeatureSet ZeroConfChannelType()
+    {
+        var channelType = FeatureSet.NewBasicChannelType();
+        channelType.SetFeature(Feature.OptionScidAlias, true);
+        channelType.SetFeature(Feature.OptionZeroconf, true);
+        return channelType;
+    }
+
+    private static OpenChannel1Message CreateMessage(FeatureSet? channelType = null)
     {
         var payload = new OpenChannel1Payload(BitcoinNetwork.Regtest.ChainHash, new ChannelFlags(ChannelFlag.None),
                                               ChannelId.Zero, LightningMoney.Satoshis(1_000), s_pubKey,
@@ -192,6 +259,6 @@ public class OpenChannel1DecisionTests
                                               LightningMoney.Satoshis(100_000), s_pubKey, s_pubKey,
                                               LightningMoney.Satoshis(1), 10, LightningMoney.Satoshis(100_000),
                                               s_pubKey, LightningMoney.Zero, s_pubKey, 144);
-        return new OpenChannel1Message(payload, new ChannelTypeTlv(FeatureSet.NewBasicChannelType()));
+        return new OpenChannel1Message(payload, new ChannelTypeTlv(channelType ?? FeatureSet.NewBasicChannelType()));
     }
 }

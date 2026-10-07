@@ -20,7 +20,7 @@ public class SpliceRbfContributionTests
 
     /// <summary>Common fields + the shared input + a P2WSH funding output: what the RBF initiator pays for.</summary>
     private static readonly long s_initiatorWeight =
-        CollaborativeFeeCalculator.CommonFieldsWeight + SpliceFundingScripts.SharedInputWeight
+        CollaborativeFeeCalculator.CommonFieldsWeight + SpliceFundingScripts.SharedInputFeeWeight
       + CollaborativeFeeCalculator.OutputWeight(new BitcoinScript(new byte[34]));
 
     [Fact]
