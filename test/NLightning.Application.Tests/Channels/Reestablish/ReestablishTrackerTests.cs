@@ -14,6 +14,22 @@ public class ReestablishTrackerTests
     private static readonly CompactPubKey s_otherPeer = NormalOperationTestContext.Point(0x0B);
 
     [Fact]
+    public void Given_SentReestablish_When_CompletedAndReset_Then_UsabilityNotificationsSeeCurrentState()
+    {
+        var tracker = new ReestablishTracker();
+        var states = new List<bool>();
+        tracker.OnUsabilityChanged += (_, id) => states.Add(tracker.IsReestablished(id));
+        tracker.MarkSent(s_channel, s_peer);
+        Assert.Empty(states);
+        Assert.True(tracker.TryMarkReestablished(s_channel));
+        Assert.False(tracker.TryMarkReestablished(s_channel));
+        tracker.ResetPeer(s_peer);
+        tracker.MarkOpened(s_channel, s_peer);
+        tracker.Reset(s_channel);
+        Assert.Equal([true, false, true, false], states);
+    }
+
+    [Fact]
     public void Given_UnknownChannel_When_Asked_Then_NotReestablished()
     {
         // Arrange

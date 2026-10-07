@@ -1217,8 +1217,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
         // NL-138: the channel is registered (accept_channel2 added it), so the open's progress — for the first attempt
         // the V1Opening -> V1FundingSigned move the client's open subscription waits for — must go through
-        // UpdateChannel for OnChannelUpdated to fire (the save itself follows in the driver's staged round)
-        _channelMemoryRepository.UpdateChannel(channel);
+        // UpdateStagedChannel keeps operational waiters informed while passive feeds wait for PublishAsync.
+        _channelMemoryRepository.UpdateStagedChannel(channel);
 
         // The funding is watched from our commitment_signed on: once our tx_signatures go out the peer can broadcast
         // it, whether or not its own tx_signatures ever reach us (BOLT 2: "MUST remember the channel")

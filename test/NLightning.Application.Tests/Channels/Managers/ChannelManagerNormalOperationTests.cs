@@ -403,7 +403,7 @@ public class ChannelManagerNormalOperationTests
 
         // Assert
         Assert.Empty(_context.Calls);
-        _context.ChannelMemoryRepository.Verify(r => r.AddChannel(_context.Channel), Times.Once);
+        _context.ChannelMemoryRepository.Verify(r => r.LoadChannel(_context.Channel), Times.Once);
     }
 
     [Fact]
@@ -463,7 +463,7 @@ public class ChannelManagerNormalOperationTests
         await channelManager.RegisterExistingChannelAsync(_context.Channel);
 
         // Assert
-        _context.ChannelMemoryRepository.Verify(r => r.AddChannel(_context.Channel), Times.Once);
+        _context.ChannelMemoryRepository.Verify(r => r.LoadChannel(_context.Channel), Times.Once);
         _htlcSwitch.Verify(s => s.HandleAsync(It.IsAny<IChannelDomainEvent>(), It.IsAny<CancellationToken>()),
                            Times.Never);
     }
@@ -566,7 +566,7 @@ public class ChannelManagerNormalOperationTests
         await channelManager.RegisterExistingChannelAsync(context.Channel);
 
         // Assert
-        context.ChannelMemoryRepository.Verify(r => r.AddChannel(context.Channel), Times.Once);
+        context.ChannelMemoryRepository.Verify(r => r.LoadChannel(context.Channel), Times.Once);
         context.LightningSigner.Verify(s => s.RegisterChannel(TestChannelId, It.IsAny<ChannelSigningInfo>()),
                                        Times.Once);
     }

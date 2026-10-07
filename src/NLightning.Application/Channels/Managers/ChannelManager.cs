@@ -130,8 +130,8 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         if (!await ResumeStartupStateAsync(scope, channel))
             return;
 
-        // Add the channel to the memory repository
-        _channelMemoryRepository.AddChannel(channel);
+        // Startup registrations are not new pending-open notifications.
+        _channelMemoryRepository.LoadChannel(channel);
 
         // A signer with an IChannelSigningInfoSource loads the channel from the database on first use, with its
         // commitment number and the S1 mark of a persisted commitment broadcast (NL-067, NL-343). One without a source

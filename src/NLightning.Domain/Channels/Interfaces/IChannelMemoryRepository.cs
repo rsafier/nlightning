@@ -10,6 +10,18 @@ using ValueObjects;
 
 public interface IChannelMemoryRepository
 {
+    /// <summary>A new persisted channel was installed (startup loads do not raise this).</summary>
+    event EventHandler<ChannelUpdatedEventArgs>? OnChannelAdded;
+
+    /// <summary>A channel was removed after its terminal state was persisted.</summary>
+    event EventHandler<ChannelUpdatedEventArgs>? OnChannelRemoved;
+
+    /// <summary>Loads an existing channel without publishing a new pending open.</summary>
+    void LoadChannel(ChannelModel channel) => AddChannel(channel);
+
+    /// <summary>Publishes operational progress before its interactive-tx save; passive lifecycle feeds omit it.</summary>
+    void UpdateStagedChannel(ChannelModel channel) => UpdateChannel(channel);
+
     /// <summary>
     /// Event triggered when a channel has been successfully upgraded.
     /// </summary>

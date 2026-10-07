@@ -1532,7 +1532,7 @@ public partial class BlockchainMonitorServiceTests
                      Times.Never);
     }
 
-    private BlockchainMonitorService CreateService(FakeBitcoinChain chain, string network = "regtest",
+    private BlockchainMonitorService CreateService(IBitcoinChainService chain, string network = "regtest",
                                                    ILogger<BlockchainMonitorService>? logger = null,
                                                    TimeSpan? tipPollInterval = null,
                                                    Action<BitcoinOptions>? configure = null)

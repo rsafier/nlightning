@@ -25,7 +25,7 @@ using Macaroons;
 
 /// <summary>
 /// LND's <c>lnrpc.Lightning</c> service over this node (<c>docs/agents/LND_GRPC_PLAN.md</c> §3, NL-1161): the wave 1
-/// read surface (node, wallet, channels, peers, graph, invoices, payments, forwards), <c>AddInvoice</c>,
+/// read surface (node, wallet, channels, peers, graph, invoices, payments, forwards), live subscriptions, <c>AddInvoice</c>,
 /// <c>DecodePayReq</c> and LND's message signatures. Every method not overridden answers <c>UNIMPLEMENTED</c>.
 /// Callers are authorized before they get here (<see cref="Macaroons.MacaroonAuthInterceptor"/>).
 /// </summary>

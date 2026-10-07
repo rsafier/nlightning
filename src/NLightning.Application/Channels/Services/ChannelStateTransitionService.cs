@@ -23,6 +23,7 @@ using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Domain.Serialization.Interfaces;
 using Interfaces;
+using Payments.Events;
 using Quiescence;
 using Taproot;
 
@@ -63,6 +64,7 @@ public sealed class ChannelStateTransitionService
     private readonly ISecretStorageServiceFactory _secretStorageServiceFactory;
     private readonly IStfuReleaseScheduler? _stfuReleaseScheduler;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly HtlcEventMonitor? _htlcMonitor;
 
     public ChannelStateTransitionService(IChannelMemoryRepository channelMemoryRepository,
                                          ChannelDomainEventQueue eventQueue, ICommitmentSigner commitmentSigner,
@@ -72,8 +74,9 @@ public sealed class ChannelStateTransitionService
                                          ISecretStorageServiceFactory secretStorageServiceFactory,
                                          IUnitOfWork unitOfWork, IStfuReleaseScheduler? stfuReleaseScheduler = null,
                                          ICommitmentVerifier? commitmentVerifier = null,
-                                         ICommitScheduler? commitScheduler = null)
+                                         ICommitScheduler? commitScheduler = null, HtlcEventMonitor? htlcMonitor = null)
     {
+        _htlcMonitor = htlcMonitor;
         _stfuReleaseScheduler = stfuReleaseScheduler;
         _commitmentVerifier = commitmentVerifier;
         _commitScheduler = commitScheduler;
@@ -203,6 +206,7 @@ public sealed class ChannelStateTransitionService
         channel.UpdateCommitments(result.Next, extras);
         _channelMemoryRepository.UpdateChannel(channel);
         _eventQueue.Enqueue(result.Events);
+        _htlcMonitor?.ObserveCommitted(channel, result);
         _stfuReleaseScheduler?.ScheduleRelease(channel.ChannelId);
     }
 

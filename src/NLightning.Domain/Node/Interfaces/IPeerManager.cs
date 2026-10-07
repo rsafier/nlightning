@@ -10,6 +10,9 @@ using ValueObjects;
 /// </summary>
 public interface IPeerManager
 {
+    /// <summary>Live session transitions after the init exchange, including inbound connections.</summary>
+    event EventHandler<Events.PeerStateChangedEventArgs>? OnPeerStateChanged;
+
     /// <summary>
     /// Starts the peer manager asynchronously.
     /// </summary>

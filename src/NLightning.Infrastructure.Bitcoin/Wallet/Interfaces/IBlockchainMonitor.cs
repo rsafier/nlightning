@@ -52,6 +52,14 @@ public interface IBlockchainMonitor : IChainBroadcaster, IOutpointWatcher
     event EventHandler<TransactionConfirmedEventArgs> OnTransactionConfirmed;
     event EventHandler<WalletMovementEventArgs>? OnWalletMovementDetected;
 
+    /// <summary>Live wallet transaction discovery, confirmation and unconfirmation. Handlers must only enqueue;
+    /// confirmed and rewound observations are raised after persistence. No historical replay.</summary>
+    event EventHandler<WalletTransactionEventArgs>? OnWalletTransactionObserved
+    {
+        add { }
+        remove { }
+    }
+
     /// <summary>
     /// Saves the watch and a pending <see cref="BroadcastTransactionModel"/> for the transaction
     /// (purpose <c>Unspecified</c>) in one save, then publishes it. A refused publish throws, and the stored row makes

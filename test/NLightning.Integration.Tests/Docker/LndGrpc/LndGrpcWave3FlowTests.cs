@@ -43,7 +43,7 @@ using Transaction = NLightning.Testing.Lnd.Walletrpc.Transaction;
 /// </list>
 /// </summary>
 [Collection(LightningRegtestNetworkFixtureCollection.Name)]
-public class LndGrpcWave3FlowTests : IAsyncLifetime
+public partial class LndGrpcWave3FlowTests : IAsyncLifetime
 {
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(120);
     private const string RejectionText = "nltg acceptor: not this one";
@@ -97,6 +97,7 @@ public class LndGrpcWave3FlowTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         var alice = _fixture.GetLndNode("alice");
         using var ours = LndNodeConnection.CreateWithoutNodeInfo(Settings(LndMacaroonFiles.AdminFileName));
+        await using var subscriptions = await ObserveSubscriptionsAsync(ours, ct);
 
         // Arrange: our wallet backs the anchors reserves; the payee keeps its own as fundee (NL-379)
         await EnsureLndWalletFundedAsync(alice, ct);
@@ -113,7 +114,8 @@ public class LndGrpcWave3FlowTests : IAsyncLifetime
         var toPayee = await Node.OpenChannelAsync(new OpenChannelClientRequest(Payee.Address,
                                                                                LightningMoney.Satoshis(1_000_000))
         {
-            FeeRatePerKw = LightningMoney.Satoshis(10_000)
+            FeeRatePerKw = LightningMoney.Satoshis(10_000),
+            IsPublic = true
         }, ct);
         await Poll.UntilAsync(async () =>
         {
@@ -135,6 +137,7 @@ public class LndGrpcWave3FlowTests : IAsyncLifetime
 
         // Act / Assert 3: WalletKit and GetTransactions over the real wallet
         await WalletFlowAsync(ours, alice, ct);
+        await subscriptions.AssertObservedAsync(this, ours, alice, toPayee.ChannelId, ct);
     }
 
     private async Task<ulong> AcceptorFlowAsync(LndNodeConnection ours, LndNodeConnection alice, CancellationToken ct)

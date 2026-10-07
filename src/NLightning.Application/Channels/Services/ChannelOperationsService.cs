@@ -90,6 +90,7 @@ public sealed class ChannelOperationsService : IChannelOperations
     private readonly IQuiescenceService? _quiescenceService;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly TimeProvider _timeProvider;
+    private readonly Payments.Events.HtlcEventMonitor? _htlcMonitor;
 
     public ChannelOperationsService(IChannelLockProvider channelLockProvider,
                                     IChannelMemoryRepository channelMemoryRepository,
@@ -98,8 +99,9 @@ public sealed class ChannelOperationsService : IChannelOperations
                                     IPeerLivenessProbe peerLivenessProbe, IServiceScopeFactory serviceScopeFactory,
                                     IBlockchainMonitor? blockchainMonitor = null, TimeProvider? timeProvider = null,
                                     IQuiescenceService? quiescenceService = null,
-                                    INodeDrainState? nodeDrainState = null)
+                                    INodeDrainState? nodeDrainState = null, Payments.Events.HtlcEventMonitor? htlcMonitor = null)
     {
+        _htlcMonitor = htlcMonitor;
         _nodeDrainState = nodeDrainState;
         _quiescenceService = quiescenceService;
         _timeProvider = timeProvider ?? TimeProvider.System;
@@ -134,6 +136,7 @@ public sealed class ChannelOperationsService : IChannelOperations
         if (_nodeDrainState is { IsDraining: true })
             throw new CommitmentRefusedException(NodeDrain.RequirementId, NodeDrain.Refusal(AddOperation));
 
+        using var observedOrigin = _htlcMonitor?.WithOrigin(origin);
         var height = _blockchainMonitor?.LastProcessedBlockHeight;
         var result = await RunAsync(channelId, AddOperation,
                                     c => c.SendAdd(amount.MilliSatoshi, paymentHash, cltvExpiry, onion.ToBytes(),

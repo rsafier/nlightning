@@ -31,6 +31,8 @@ public sealed class ReestablishTracker : IReestablishTracker
 {
     private readonly ConcurrentDictionary<ChannelId, Entry> _channels = new();
 
+    public event EventHandler<ChannelId>? OnUsabilityChanged;
+
     /// <inheritdoc />
     public bool IsReestablished(ChannelId channelId) =>
         _channels.TryGetValue(channelId, out var entry)
@@ -59,7 +61,10 @@ public sealed class ReestablishTracker : IReestablishTracker
         if (!_channels.TryGetValue(channelId, out var entry) || entry.Status != ReestablishStatus.Sent)
             return false;
 
-        return _channels.TryUpdate(channelId, entry with { Status = ReestablishStatus.Reestablished }, entry);
+        var changed = _channels.TryUpdate(channelId, entry with { Status = ReestablishStatus.Reestablished }, entry);
+        if (changed)
+            NotifyUsability(channelId);
+        return changed;
     }
 
     /// <summary>
@@ -67,14 +72,21 @@ public sealed class ReestablishTracker : IReestablishTracker
     /// normal operation). Its reestablish status is kept: a <c>channel_reestablish</c> the peer still sends on this
     /// connection is answered with ours if ours did not go out yet.
     /// </summary>
-    public void MarkOpened(ChannelId channelId, CompactPubKey peerPubKey) =>
+    public void MarkOpened(ChannelId channelId, CompactPubKey peerPubKey)
+    {
         _channels.AddOrUpdate(channelId, _ => new Entry(peerPubKey, ReestablishStatus.Awaiting, true),
                               (_, entry) => entry.PeerPubKey == peerPubKey
                                                 ? entry with { OpenedHere = true }
                                                 : new Entry(peerPubKey, ReestablishStatus.Awaiting, true));
+        NotifyUsability(channelId);
+    }
 
     /// <summary>Forgets the channel's state (it goes back to <see cref="ReestablishStatus.Awaiting"/>).</summary>
-    public void Reset(ChannelId channelId) => _channels.TryRemove(channelId, out _);
+    public void Reset(ChannelId channelId)
+    {
+        if (_channels.TryRemove(channelId, out _))
+            NotifyUsability(channelId);
+    }
 
     /// <summary>
     /// Forgets every channel of <paramref name="peerPubKey"/>: its connection dropped or was replaced.
@@ -82,8 +94,24 @@ public sealed class ReestablishTracker : IReestablishTracker
     public void ResetPeer(CompactPubKey peerPubKey)
     {
         foreach (var pair in _channels)
-            if (pair.Value.PeerPubKey == peerPubKey)
-                _channels.TryRemove(pair);
+            if (pair.Value.PeerPubKey == peerPubKey && _channels.TryRemove(pair))
+                NotifyUsability(pair.Key);
+    }
+
+    private void NotifyUsability(ChannelId channelId)
+    {
+        if (OnUsabilityChanged is not { } handlers)
+            return;
+        foreach (var callback in handlers.GetInvocationList().Cast<EventHandler<ChannelId>>())
+            try
+            {
+                callback(this, channelId);
+            }
+            catch (Exception exception)
+            {
+                // Passive observers cannot stop channel_reestablish or connection teardown.
+                System.Diagnostics.Trace.TraceError("Channel usability observer failed: {0}", exception);
+            }
     }
 
     private sealed record Entry(CompactPubKey PeerPubKey, ReestablishStatus Status, bool OpenedHere);

@@ -185,6 +185,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
     private readonly ISecureKeyManager? _secureKeyManager;
     private readonly ITrampolineFailureOnionService? _trampolineFailureOnionService;
     private readonly IPaymentEventPublisher? _paymentEventPublisher;
+    private readonly Events.HtlcEventMonitor? _htlcMonitor;
     private readonly IHtlcForwardInterceptor? _forwardInterceptor;
     private volatile bool _disposed;
 
@@ -204,8 +205,9 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
                       ITrampolineHtlcHandler? trampolineHandler = null,
                       ITrampolineFailureOnionService? trampolineFailureOnionService = null,
                       IPaymentEventPublisher? paymentEventPublisher = null,
-                      IHtlcForwardInterceptor? forwardInterceptor = null)
+                      IHtlcForwardInterceptor? forwardInterceptor = null, Events.HtlcEventMonitor? htlcMonitor = null)
     {
+        _htlcMonitor = htlcMonitor;
         _forwardInterceptor = forwardInterceptor;
         _trampolineHandler = trampolineHandler;
         _paymentEventPublisher = paymentEventPublisher;
@@ -304,6 +306,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
                     await HandleOutgoingSettledAsync(settled, cancellationToken);
                     break;
                 case IncomingHtlcSettled incomingSettled:
+                    _htlcMonitor?.ForgetIncoming(incomingSettled.ChannelId, incomingSettled.HtlcId);
                     await PruneAsync(incomingSettled.ChannelId,
                                      new HtlcKey(HtlcDirection.Incoming, incomingSettled.HtlcId), cancellationToken);
                     // NL-995: losing any part of a held set (the deadline monitor's fail-back is the guard) cancels
@@ -344,6 +347,8 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
             return;
         }
 
+        // Before a final-hop onion is decoded, a local link refusal belongs to the incoming forwarding link.
+        _htlcMonitor?.ClassifyIncoming(channelId, htlcId, Domain.Payments.Events.HtlcActivityRole.Forward);
         ForwardCircuitModel? circuit;
         Secret? storedSecret;
         TrampolineRelayPartModel? relayPart = null;
@@ -520,6 +525,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
                                     bool firstHandling, CancellationToken cancellationToken,
                                     TrampolineFailureKeys? trampoline = null)
     {
+        _htlcMonitor?.ClassifyIncoming(channelId, htlc.Id, Domain.Payments.Events.HtlcActivityRole.Receive);
         var amount = LightningMoney.MilliSatoshis(htlc.AmountMsat);
         using var paymentHashLock = await _paymentHashLocks.AcquireAsync(htlc.PaymentHash, cancellationToken);
 
@@ -1170,6 +1176,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
     private async Task ForwardAsync(ChannelId incomingChannelId, HtlcRecord htlc, IncomingOnionForward forward,
                                     bool firstHandling, CancellationToken cancellationToken, bool intercept = true)
     {
+        _htlcMonitor?.ClassifyIncoming(incomingChannelId, htlc.Id, Domain.Payments.Events.HtlcActivityRole.Forward);
         var height = CurrentHeight;
         var introduction = forward.Blinded?.IsIntroduction ?? false;
 
@@ -1241,6 +1248,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
             await unitOfWork.SaveChangesAsync();
         }
 
+        _htlcMonitor?.CaptureForward(circuit);
         ulong outgoingHtlcId;
         try
         {
@@ -1479,6 +1487,8 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
     private async Task HandleOutgoingFulfilledAsync(OutgoingHtlcFulfilled fulfilled,
                                                     CancellationToken cancellationToken)
     {
+        if (IsOnchain(fulfilled.ChannelId))
+            _htlcMonitor?.ForgetOutgoing(fulfilled.ChannelId, fulfilled.HtlcId);
         var origin = await GetOriginAsync(fulfilled.ChannelId, fulfilled.HtlcId);
         switch (origin)
         {
@@ -1522,6 +1532,8 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
 
     private async Task HandleOutgoingFailedAsync(OutgoingHtlcFailed failed, CancellationToken cancellationToken)
     {
+        if (IsOnchain(failed.ChannelId))
+            _htlcMonitor?.ForgetOutgoing(failed.ChannelId, failed.HtlcId);
         var origin = await GetOriginAsync(failed.ChannelId, failed.HtlcId);
         switch (origin)
         {
@@ -1970,6 +1982,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
         if (failure.Code == FailureCode.InvalidOnionBlinding)
             await DelayBlindedErrorAsync(cancellationToken);
 
+        using var observedFailure = _htlcMonitor?.WithLocalFailure((ushort)failure.Code);
         if (AddsAttribution(incoming))
         {
             var holdTime = await _channelOperations.GetHoldTimeAsync(channelId, htlcId, cancellationToken);

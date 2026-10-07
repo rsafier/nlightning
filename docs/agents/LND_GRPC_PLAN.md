@@ -353,3 +353,13 @@ run when registered (`AddLndGrpc` does).
   except two load flakes recorded as NL-1188 (`FinancialHeldOutsideTests`) and NL-1189
   (`DualFundLiquidityAdsRefusalTests`), each class green alone; net11.0 daemon compile 0 warnings;
   `check-sln-configs.py` OK. No schema change (leases reuse `FeeInputReservations`).
+
+
+## Passive subscription follow-up (2026-10-06)
+
+The five passive feeds are implemented on `wip/lnd-subscriptions`: SubscribeHtlcEvents,
+SubscribePeerEvents, SubscribeChannelEvents, SubscribeTransactions and
+SubscribeChannelGraph. See [LND_SUBSCRIPTIONS_PLAN.md](LND_SUBSCRIPTIONS_PLAN.md) for
+publication points, overflow/reconnect behavior, verification and the explicit
+on-chain HTLC/imported-transaction limits. These streams add live visibility, not a
+durable audit history or cursor API.

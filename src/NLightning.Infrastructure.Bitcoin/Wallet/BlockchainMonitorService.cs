@@ -417,6 +417,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
 
         // Publish the tx; a refusal is the caller's to handle, the stored row keeps it for rebroadcast
         await _bitcoinChainService.SendTransactionAsync(transaction);
+        ObserveUnconfirmedWalletTransaction(transaction, broadcast);
     }
 
     public async Task WatchTransactionAsync(ChannelId channelId, TxId txId, uint requiredDepth)
@@ -456,7 +457,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Publishing transaction {TxId}", signedTransaction.TxId);
 
-        await _bitcoinChainService.SendTransactionAsync(Transaction.Load(signedTransaction.RawTxBytes, _network));
+        var transaction = Transaction.Load(signedTransaction.RawTxBytes, _network);
+        await _bitcoinChainService.SendTransactionAsync(transaction);
+        ObserveUnconfirmedWalletTransaction(transaction);
     }
 
     /// <inheritdoc />
@@ -470,7 +473,10 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Publishing {Purpose} transaction {TxId}", Enum.GetName(transaction.Purpose), txId);
 
-        return await TrySendAsync(transaction);
+        var accepted = await TrySendAsync(transaction);
+        if (accepted && transaction.State == BroadcastState.Pending)
+            ObserveUnconfirmedWalletTransaction(Transaction.Load(transaction.RawTransaction, _network), transaction);
+        return accepted;
     }
 
     /// <inheritdoc />
@@ -926,6 +932,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     {
         ArgumentNullException.ThrowIfNull(transaction);
         var txId = transaction.GetHash();
+        ObserveUnconfirmedWalletTransaction(transaction);
         var spends = new List<MempoolSpendEventArgs>();
         lock (_mempoolLock)
         {
@@ -1297,7 +1304,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             }
         }
 
-        StageWalletMovements(transactions, height, uow, effects);
+        StageWalletMovements(transactions, height, block.Header.BlockTime, uow, effects);
         await StageAccountingAsync(uow, effects);
         await StageWatchedSpendsAsync(transactions, height, blockHash, uow, effects);
         StageWatchedTransactionDepths(height, uow, effects);
@@ -1357,7 +1364,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         }
     }
 
-    private void StageWalletMovements(List<Transaction> transactions, uint blockHeight, IUnitOfWork uow,
+    private void StageWalletMovements(List<Transaction> transactions, uint blockHeight, DateTimeOffset blockTime, IUnitOfWork uow,
                                       BlockEffects effects)
     {
         if (_watchedAddresses.IsEmpty)
@@ -1372,6 +1379,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         {
             var txId = transaction.GetHash();
             WalletTransactionSource? source = null;
+            if (DescribeWalletTransaction(transaction, blockHeight, new uint256((byte[])effects.BlockHash).ToString(),
+                                          effects.StagedDeposits, timestamp: blockTime) is { } observed)
+                effects.WalletTransactions.Add(observed);
 
             // Check each output for deposits
             for (var i = 0; i < transaction.Outputs.Count; i++)
@@ -1527,6 +1537,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             Raise(() => OnTransactionConfirmed?.Invoke(this, new TransactionConfirmedEventArgs(confirmed,
                                                           effects.Height)), "transaction confirmation");
 
+        foreach (var observed in effects.WalletTransactions)
+            RaiseWalletTransaction(observed);
+
         foreach (var movement in effects.Movements)
             Raise(() => OnWalletMovementDetected?.Invoke(this, movement), "wallet movement");
 
@@ -1584,6 +1597,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 disconnected.Insert(0, new BlockHeaderModel(_lastProcessedBlockHeight,
                                                             _blockchainState.LastProcessedBlockHash, Hash.Empty));
 
+            var disconnectedWalletTransactions = await DescribeDisconnectedWalletTransactionsAsync(disconnected);
             var rewoundState = new BlockchainState(forkHeight, forkHash, DateTime.UtcNow) { Id = _blockchainState.Id };
 
             // NL-293: wallet outputs spent in the disconnected blocks that are unspent in the active chain again (a
@@ -1639,6 +1653,10 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 _headers.Remove(header.Height);
             _blockchainState = rewoundState;
             _lastProcessedBlockHeight = forkHeight;
+
+            // The rewind is committed. Publish before any subsequent reload or chain RPC can fail.
+            foreach (var observed in disconnectedWalletTransactions)
+                RaiseWalletTransaction(observed);
 
             // Memory follows the saved rows
             using (var scope = _serviceProvider.CreateScope())
@@ -2303,6 +2321,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         /// movement of one of them comes from our broadcast.</summary>
         public Dictionary<uint256, BroadcastTransactionModel> ConfirmedReplacedMembers { get; } = [];
         public List<WalletMovementEventArgs> Movements { get; } = [];
+        public List<WalletTransactionEventArgs> WalletTransactions { get; } = [];
         public List<OutpointSpentEventArgs> Spends { get; } = [];
 
         /// <summary>The wallet outputs this block deposited (a later transaction of the block may spend one).</summary>

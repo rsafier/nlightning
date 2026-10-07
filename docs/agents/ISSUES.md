@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Updated 2026-10-06 by `wip/lnd-p2` from `wip/fafo` d074fe01: NL-1170, NL-1171 and NL-1172 fixed; NL-1190/NL-1196 regtest matrix complete (`lnd-p2-proof6`, 1/1), Mutinynet trial prepared but pending access/server confirmation/owner approval. New and fixed NL-1226 (onion reply metric assertion race) and NL-1228 (same-height chain-sync barrier); new open NL-1227 (unchanged accounting adjustment assertion failed once under load, passed on both frameworks in isolation). NL-1198 reproduced under load, passed alone on both frameworks. Summary recounted: 942 entries, no duplicate IDs; no schema change.
 
+Updated 2026-10-07 by `wip/lnd-subscriptions` from `wip/fafo` 45f71673: NL-1230 fixed with five passive LND feeds, warning-free net10/net11 Release build, final focused suites 190/78/210 green and real LND proof `lnd-subs-proof2` 1/1 green. Initial broad failures cleared by targeted reruns; NL-1198 timing failure passed alone. NL-1231/NL-1232 remain open for on-chain HTLC and imported-only transaction feeds. Summary: 951 unique classified entries. No schema or live-node configuration change.
+
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
 Updated 2026-10-04 by the zc-int integrator (branch `zc-int` from `wip/fafo` at `cd5c2c5d`, `origin/wip/zcleanup1` merged with `--no-ff`; the migration `AddTrampolineRelayBlindedDelta` regenerated after `AddDualFundTaprootAttempts`): NL-1006 and NL-1007 (low) new and fixed. Summary recounted from the entries (856), no duplicate IDs.
@@ -179,12 +181,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 0 | 96 | 96 |
+| open | 0 | 0 | 0 | 98 | 98 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 234 | 495 | 813 |
+| fixed | 15 | 69 | 235 | 495 | 814 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **69** | **250** | **614** | **948** |
+| **Total** | **15** | **69** | **251** | **616** | **951** |
 
 ### Epics
 
@@ -9991,3 +9993,34 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** the codec-cleanup integration's full net10.0 run (2026-10-06, `wip/fafo` at `963e48e9`, beside a cluster build) failed it after 325 ms; the class passed 11/11 three times alone and the next full run (at `e9595727`) passed it. Not a codec regression: the interop matrix (lnd, cln, eclair, ldk, gossip, eclair2, taproot) was green on the same code.
 - **Fix sketch:** find the harness wait that races the two announcements (both nodes reaching the depth and exchanging `announcement_signatures_2` nonces) and make it event-driven.
 - **Blocks/Blocked-by:** none
+
+
+### NL-1230 LND-compatible passive HTLC, peer, channel, wallet transaction and graph subscriptions
+- **Status:** fixed (wip/lnd-subscriptions)
+- **Severity:** medium
+- **Kind:** feature
+- **Location:** LndGrpc `RouterService.HtlcEvents`, `LightningService.{Subscriptions,TransactionSubscriptions,GraphSubscriptions}`, Application `Payments/Events/HtlcEvent{Hub,Monitor}`, peer/reestablish/channel/graph hooks, Bitcoin wallet monitor snapshots
+- **Evidence:** Owner request 2026-10-06: expose the five passive subscription RPCs so external processes can observe HTLC outcomes, peers, channels, transactions and graph changes. Previously those RPCs inherited UNIMPLEMENTED despite existing operational events. The branch implements the pinned LND wire types and permissions, live-only semantics, subscription readiness, bounded per-reader queues, explicit overflow, cancellation cleanup and immutable event mapping. HTLC observations use an independent FIFO worker and captured origin/circuit metadata; monitoring reads and reader cancellation callbacks never run on the channel funds path. Startup operational replay and staged channel state do not become new passive activity. Includes committed CHANNEL_UPDATE. Wallet reorg snapshots publish immediately after committed rewind, retain confirmation state, and use cached observations when old blocks are unavailable.
+- **Fix sketch:** Implemented and verified: warning-free net10/net11 Release build, formatting, Application 190/190, normal/Poll wallet monitor 78/78, LND gRPC 210/210, real LND cluster proof `lnd-subs-proof2` 1/1 (4 peer, 77 channel, 21 graph, 9 wallet, 15 HTLC events). Initial broad run failures were corrected startup expectations and synthetic zero-input serialization; all cleared by focused reruns. NL-1198 timing check passed alone. Source/client tests cover failed-save exclusion, fast-prune attribution, stalled workers, blocking/throwing cancellation callbacks, graph versions/removals, peer initialization and replacement, channel reestablishment, transaction discovery/confirmation/reorg, TLS/macaroons, immutable payloads and detach.
+- **Blocks/Blocked-by:** Part of NL-1160; remaining scoped gaps NL-1231, NL-1232
+- **Plan ref:** LND_SUBSCRIPTIONS_PLAN.md
+
+### NL-1231 Passive HTLC subscriptions do not publish BOLT 5 on-chain outcomes
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** Application `OnchainResolutionExecutor`, `Payments/Events/HtlcEventMonitor`; Router SubscribeHtlcEvents
+- **Evidence:** The passive source observes fresh committed off-chain transitions. On-chain resolvers deliberately replay operational settle/fail outcomes until the switch handles them; their current persistence does not distinguish a first passive notification from a recovery replay. Publishing those callbacks directly would present repeated activity as fresh. ChainNotifier still supplies on-chain confirmation/spend notifications. No durable passive history is added.
+- **Fix sketch:** Add a durable first-publication checkpoint or a resolver result contract distinguishing newly committed outcome facts, then publish on-chain HTLC settle/fail/final with Offchain=false without changing operational recovery replay.
+- **Blocks/Blocked-by:** Follow-up of NL-1230
+- **Plan ref:** LND_SUBSCRIPTIONS_PLAN.md Limits
+
+### NL-1232 Passive transaction subscriptions exclude imported-only tapscript transactions
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** Bitcoin `ImportedTapscriptTracker`, `BlockchainMonitorService.TransactionEvents`; Lightning SubscribeTransactions
+- **Evidence:** Canonical wallet discovery, own broadcasts, confirmations and rewinds are streamed. Imported-only tapscript history is reconstructed lazily by the imported tracker, which has no committed push source; forcing its full historical rescan on every tip for a subscriber would worsen NL-1197. Those transactions remain available through GetTransactions and ChainNotifier. Incoming mempool discoveries also depend on monitor mode: Poll confirms them but does not discover every incoming unconfirmed wallet transaction.
+- **Fix sketch:** Extend the NL-1197 incremental/reorg-aware imported index with committed immutable transaction notifications and connect them to the passive wallet feed, deduplicating transactions shared with the canonical wallet.
+- **Blocks/Blocked-by:** NL-1197; follow-up of NL-1230
+- **Plan ref:** LND_SUBSCRIPTIONS_PLAN.md Limits

@@ -105,6 +105,12 @@ public static class DependencyInjection
         services.TryAddSingleton<Payments.Interception.HtlcInterceptorHub>();
         services.TryAddSingleton<Domain.Payments.Interception.IHtlcForwardInterceptor>(
             sp => sp.GetRequiredService<Payments.Interception.HtlcInterceptorHub>());
+        services.TryAddSingleton<Payments.Events.HtlcEventHub>();
+        services.TryAddSingleton<Domain.Payments.Interfaces.IHtlcEventSource>(
+            sp => sp.GetRequiredService<Payments.Events.HtlcEventHub>());
+        services.TryAddSingleton<Domain.Payments.Interfaces.IHtlcEventPublisher>(
+            sp => sp.GetRequiredService<Payments.Events.HtlcEventHub>());
+        services.TryAddSingleton<Payments.Events.HtlcEventMonitor>();
         services.AddSingleton(sp =>
         {
             var blockchainMonitor = sp.GetRequiredService<IBlockchainMonitor>();
