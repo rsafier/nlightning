@@ -1957,7 +1957,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5 ("Backups")
 
 ### NL-1215 A recovery channel followed past a simple taproot splice by its commitment or the peer's blob keeps stale funding keys
-- **Status:** fixed (this commit; schema 04ff2a4c)
+- **Status:** fixed (59ee7cc2; schema 04ff2a4c)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Backup/ChainFundingSpendLocator.cs` (`CheckTaprootOutputAsync`), `ChannelRestoreService.FollowPeerStorageHintAsync`
@@ -9637,7 +9637,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1180
 
 ### NL-1182 LND gRPC HtlcInterceptor: gaps against LND
-- **Status:** open (SETTLE accounting fixed in 56595f0d, NL-1205; callback/stream reliability fixed in this commit, NL-1230)
+- **Status:** open (SETTLE accounting fixed in 56595f0d, NL-1205; callback/stream reliability fixed in b3976b0d, NL-1230)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `Application/Payments/Interception/HtlcInterceptorHub`, `HtlcSwitch.Interception.cs`, `RouterService.Interceptor.cs`
@@ -9790,7 +9790,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1197 Imported watch history rescans blocks per RPC
-- **Status:** fixed (this commit; schema 04ff2a4c)
+- **Status:** fixed (8fbb2383; schema 04ff2a4c)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/Imports/ImportedTapscriptTracker.cs`
@@ -9997,10 +9997,11 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1230 Interceptor callback and outbound stream failures can strand held forwards
-- **Status:** fixed (this commit; SHA recorded in batch closeout)
+- **Status:** fixed (b3976b0d)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `Application/Payments/Interception/HtlcInterceptorHub.cs`, `Payments/Switch/HtlcSwitch.Interception.cs`, `LndGrpc/Services/RouterService.Interceptor.cs`
 - **Evidence:** The hub removed a hold before running its callback, swallowed callback exceptions and returned Resolved; a refused or failed save lost both retry ownership and hub expiry protection. The gRPC method awaited the reader while an independent failed writer left the hub connected. Found during the NL-1182 review.
 - **Fix:** Retain holds until callback success, report Failed/InProgress and preserve serialized resolution/expiry retries; propagate commitment refusals to the hub. Monitor both stream directions, cancel the other and disconnect/release holds when either ends. Regression tests cover failed callbacks, repeated expiry, concurrent resolve/disconnect and an idle reader with a failed outbound writer.
 - **Blocks/Blocked-by:** Related NL-1182 (remaining feature parity stays open)
+- **Batch validation (2026-10-06, NL-1215 / NL-1197 / NL-1182):** Release net10.0 build: 0 warnings/errors; format verification clean; solution configuration check: 40 projects OK. Full non-Docker/non-SqlServer run: 17,221 passed, 75 not executed, only known timing flakes NL-1198 and NL-729 failed; their classes passed alone (44/44 GraphPathfinderTests, 53/53 ClassificationEngineTests). Final persistence/model coverage passed 28/28, including both new initial/rotated unknown-key cases (also independently 2/2). Every test used the 5-minute hang timeout. No Infrastructure/Crypto changes or Native gate required.

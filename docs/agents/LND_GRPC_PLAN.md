@@ -353,3 +353,6 @@ run when registered (`AddLndGrpc` does).
   except two load flakes recorded as NL-1188 (`FinancialHeldOutsideTests`) and NL-1189
   (`DualFundLiquidityAdsRefusalTests`), each class green alone; net11.0 daemon compile 0 warnings;
   `check-sln-configs.py` OK. No schema change (leases reuse `FeeInputReservations`).
+
+
+NL-1182 reliability follow-up (`b3976b0d`, NL-1230): the hub retains holds until callbacks succeed, returns failure/in-progress results and retries failed expiry/disconnect resolutions. The gRPC service observes both directions and cancels/disconnects if either ends. Broader RESUME_MODIFIED, requireinterceptor and on-chain interception gaps remain open under NL-1182.
