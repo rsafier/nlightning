@@ -288,7 +288,7 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         var work = after.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var settlements = await work.AccountingEventDbRepository.GetByKeyPrefixAsync("wsend:", TestContext.Current.CancellationToken);
         Assert.Equal(3, settlements.Count);
-        var reversal = Assert.Single(settlements.Where(fact => fact.Kind == AccountingEventKind.Reversal));
+        var reversal = Assert.Single(settlements, fact => fact.Kind == AccountingEventKind.Reversal);
         Assert.Equal("recovered_custody_policy_changed", reversal.Details["reason"]);
         var events = await work.AccountingEventDbRepository.GetByKeyPrefixAsync("wallet:", TestContext.Current.CancellationToken);
         AssertRecoveredBooks(events.Concat(settlements), 500_000, -20_000_000, 10_000_000, 9_500_000);
