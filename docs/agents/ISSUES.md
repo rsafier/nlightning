@@ -192,19 +192,19 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 8 | 101 | 109 |
+| open | 0 | 0 | 8 | 99 | 107 |
 | in-progress | 0 | 0 | 4 | 0 | 4 |
-| fixed | 15 | 70 | 249 | 517 | 851 |
+| fixed | 15 | 70 | 249 | 523 | 857 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **70** | **270** | **640** | **995** |
+| **Total** | **15** | **70** | **270** | **644** | **999** |
 
 ### Epics
 
 - NL-1254: Silent payments (BIP 352) send and receive (open, medium; plan `docs/agents/SILENT_PAYMENTS_PLAN.md`, owner decisions D-SP1..D-SP14: SP-C codec and maths NL-1255, NL-1256; SP-S send NL-1257, NL-1258; SP-R receive NL-1259..NL-1266; SP-T proofs NL-1267; SP-X tweak-index source, LND visibility and refusals, mainnet NL-1268..NL-1270)
 - NL-1190: Loop gRPC L0–L4 (in-progress, medium; service implementation NL-1191..NL-1195 fixed, external interoperability/failure proofs NL-1196, scanner indexing NL-1197)
 
-- NL-1160: LND gRPC compatibility (in-progress, medium; plan `docs/agents/LND_GRPC_PLAN.md`: wave 1 read/invoice/message surface with real macaroons NL-1161..NL-1163 fixed, wave 2 pay/channels/hold invoices/streams NL-1164..NL-1167, NL-1169 fixed, wave 3 acceptor/interceptor/walletrpc/history NL-1168 fixed (NL-1180, NL-1183..NL-1185); bos/RTL tool gaps NL-1242..NL-1249 fixed; follow-ups NL-1170..NL-1172, NL-1181, NL-1182, NL-1186, NL-1187; NL-1205 fixed)
+- NL-1160: LND gRPC compatibility (in-progress, medium; plan `docs/agents/LND_GRPC_PLAN.md`: wave 1 read/invoice/message surface with real macaroons NL-1161..NL-1163 fixed, wave 2 pay/channels/hold invoices/streams NL-1164..NL-1167, NL-1169 fixed, wave 3 acceptor/interceptor/walletrpc/history NL-1168 fixed (NL-1180, NL-1183..NL-1185); bos/RTL tool gaps NL-1242..NL-1249 fixed; follow-ups NL-1170..NL-1172, NL-1181, NL-1182, NL-1187, NL-1253 fixed, NL-1186 partial; open NL-1186, NL-1280, NL-1283, NL-1289; NL-1205 fixed)
 - NL-990: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-991 (fixed), C1 CDK gRPC payment processor NL-992 (fixed, BOLT 11; follow-ups NL-997), C2 proof NL-993 (fixed, on the cluster harness), C3 native wallet NL-994, C4 hold invoices NL-995; integration review NL-998, NL-999, NL-1001..NL-1004 fixed, NL-1000 fixed, NL-1010 and NL-1011 open; BOLT 12 and on-chain NL-997 fixed)
 - NL-877: Simple taproot channels (`option_simple_taproot`) (open, medium; plan `docs/agents/TAPROOT_CHANNELS_PLAN.md` T0-T6; spec merged 2026-05-04, LND 0.21 and Eclair 0.14 run it as private channels; taproot gossip NL-878 waits for BOLTs #1059)
 - NL-875: Trampoline routing (BOLTs PR #836): client, relay and target (in-progress, medium; plan `docs/agents/TRAMPOLINE_PLAN.md`, TR0-TR5 built on `wip/fafo` 2026-10-03, merges `7f5c5d85` TR0, `e958b8eb` TR1, `9f0d1050` TR3-P, `165acd77` TR2, `fb2b07ca` TR5 phase 1, `1c09e718` TR4, `dd48b26d` TR3, `c1811bbf` TR5 phase 2; experimental until an owner decision; follow-ups NL-895..NL-899)
@@ -9523,7 +9523,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1151
 
 ### NL-1160 LND gRPC compatibility: serve a subset of LND's gRPC API (epic)
-- **Status:** in-progress (waves 0-3 done; open follow-ups: NL-1181, NL-1182, NL-1186, NL-1187, NL-1253)
+- **Status:** in-progress (waves 0-3 done; follow-ups NL-1181, NL-1182, NL-1187, NL-1253 fixed (integration `wip/u-integrate`, 2026-10-07); open: NL-1186 (walletrpc remainder), NL-1280, NL-1283, NL-1289)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `docs/agents/LND_GRPC_PLAN.md`; branch `wip/lnd-grpc-compat`
@@ -9539,6 +9539,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
   - the REST gateway NL-1250.
 
   Proven against loopd (signet), Lightning Terminal, bos 24.2.2 and RTL 0.15.13. Still open: NL-1181 (ChannelAcceptor values applied), NL-1182 (interceptor gaps), NL-1186 (walletrpc parts), NL-1187 (GetTransactions history), NL-1253 (canonical/imported overlap).
+- **Update (2026-10-07, integration `wip/u-integrate`):** fixed: NL-1181 (44f06a38, review 86e26df7: ChannelAcceptor `zero_conf`, v2 `reserve_sat`/`upfront_shutdown`, held across dual-funded RBF), NL-1182 (70189886, review d439866b: interceptor `RESUME_MODIFIED`, `requireinterceptor`, on-chain interception), NL-1187 and NL-1253 (3e78e451, review 2db66356: durable wallet history for `GetTransactions`, migration `AddWalletTransactions`), NL-1286 (13ecaa6f); also NL-1276 (payroute phase C: `SendToRouteV2` MPP shards join one payment with LND `sendToRoute` failure semantics). Partial: NL-1186 (13ecaa6f, review 2658ccc6: SignPsbt, mixed-PSBT finalize, bumps, labels, packages, message signing; the remainder stays open). Still open: NL-1186 (walletrpc remainder), NL-1280 (zero-conf fundee waits for the first confirmation), NL-1283 (remaining interceptor differences), NL-1289 (history that needs a rescan).
 
 ### NL-1161 LND gRPC wave 1: lnrpc.Lightning read/invoice/message surface with TLS and real macaroons
 - **Status:** fixed (34821ac0)
