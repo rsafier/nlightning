@@ -1475,7 +1475,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 recordedMovement = true;
             }
 
-            if (recordedMovement && source is { Purpose: BroadcastPurpose.WalletCollaborative })
+            if (_silentPaymentScanner is null && recordedMovement && source is { Purpose: BroadcastPurpose.WalletCollaborative })
                 CollectWalletCollaborativeFlow(transaction, source, recordedWalletDeltaMsat, effects);
         }
     }

@@ -293,7 +293,7 @@ Ordinary recovery starts with 30 indices on each receive/change chain, preserves
 
 Seed recovery does not restore operator labels beyond the selected search range, prior rules/overrides, original lot basis or original transaction purpose. In a fresh database, an already spent ordinary input can have no retained provenance, so an otherwise found SP receipt can be classified as an external equity transfer. Default external receipts post to equity transfers in, rather than income, and acquire lots at historical block-time value. Original tax basis and any custom income classification require the original accounting/database backup or a separately reviewed accounting import.
 
-### 3.9 IPC and client (next free `ClientCommand` is 52; `src/NLightning.Domain/Client/Enums/ClientCommand.cs` ends at `CancelHoldInvoice = 51`)
+### 3.9 IPC and client (silent payments assigned 52–55; `PayRouteAttach = 56`; next free `ClientCommand` is 57)
 
 | Value | Verb | Request | Response |
 |---|---|---|---|
@@ -469,7 +469,7 @@ NL-1260 owns the single migration. Later tasks that need a column add it in a mi
   - We pay its address, and its full-node scanner finds it.
   - Bitcoin Core's own wallet support, if a release carries it by then, is an alternative: PR #35301 (BIP 352 logic in `common/`) merged 2026-09-23; wallet sending is #35302 and receiving #32966, both open at the time of writing.
   - Sparrow 2.5+ and Cake Wallet need a GUI or an Electrum/Frigate server, so they suit only a manual signet check. Record that manual check in §8 if done.
-- Acceptance: the suite green 3 times in a row on the cluster (`-n 3`); interop both directions green once.
+- Acceptance: one successful complete normal Bitcoin Core wrapper run, including both ZMQ/Poll modes and independent interoperability in both directions (owner choice, 2026-10-07). The harness's general three-run default is unchanged; this feature uses the explicit one-pass acceptance override.
 
 ### Wave SP-X: extras
 
@@ -553,6 +553,8 @@ NL-1260 owns the single migration. Later tasks that need a column add it in a mi
 9. **Backups.** Static channel backups carry no birthday today. Without one the operator must remember it, or rescan from the key file's `HeightOfBirth`.
 
 ## 8. Record
+
+**Owner acceptance choice (2026-10-07):** one successful complete normal Bitcoin Core wrapper run is sufficient for NL-1267. This replaces this feature's earlier three-consecutive-run requirement and preserves the harness's general three-run default. A partial or failed run does not satisfy acceptance.
 
 ### NL-1261: actual Core prevout evidence (2026-10-07)
 

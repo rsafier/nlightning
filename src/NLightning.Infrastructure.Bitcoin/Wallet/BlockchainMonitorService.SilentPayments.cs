@@ -106,7 +106,13 @@ public partial class BlockchainMonitorService
     private async Task StageSilentPaymentSettlementsAsync(PreparedSilentPaymentBlock? prepared,
         IUnitOfWork unitOfWork, BlockEffects effects, Block block)
     {
-        if (prepared is null || _silentPaymentScanner is null || effects.SilentPaymentInputs.Count == 0) return;
+        if (prepared is null || _silentPaymentScanner is null) return;
+        if (effects.SilentPaymentInputs.Count == 0)
+        {
+            await SilentPaymentAccounting.StageCollaborativeFlowsAsync(unitOfWork, block, effects.Height,
+                _timeProvider, CancellationToken.None);
+            return;
+        }
         await WalletRecoveryAccounting.StageInputSpendsAsync(unitOfWork, block, effects.Height, CancellationToken.None);
         var memory = _serviceProvider.GetService<Domain.Bitcoin.Interfaces.IUtxoMemoryRepository>();
         var excluded = block.Transactions.Where(transaction => !transaction.Inputs.Any(input =>
@@ -224,7 +230,7 @@ public partial class BlockchainMonitorService
         var state = await unitOfWork.SilentPaymentDbRepository.GetScanStateAsync();
         if (state is not null && (state.LiveCursorHeight > forkHeight || state.RescanCursorHeight > forkHeight))
         {
-            Hash? forkHash = TryGetKnownHash(forkHeight, out var knownFork) ? knownFork : (Hash?)null;
+            var forkHash = TryGetKnownHash(forkHeight, out var knownFork) ? knownFork : (Hash?)null;
             await unitOfWork.SilentPaymentDbRepository.SetScanStateAsync(state with
             {
                 LiveCursorHeight = state.LiveCursorHeight > forkHeight ? forkHeight : state.LiveCursorHeight,

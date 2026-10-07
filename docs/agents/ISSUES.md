@@ -1,8 +1,8 @@
 # NLightning Issue Ledger
 
-Merge update 2026-10-07: retained upstream NL-1181, NL-1182, NL-1186, NL-1187, NL-1253 and NL-1276 resolutions and new NL-1292/NL-1293 alongside the silent-payment implementation. Summary recounted: 1001 unique classified IDs, no duplicates. NL-1267 remains pending full proof on the merged base; earlier-base runs do not close that gate.
+Merge update 2026-10-07: retained upstream NL-1181, NL-1182, NL-1186, NL-1187, NL-1253 and NL-1276 resolutions and new NL-1292/NL-1293 alongside the silent-payment implementation. Summary recounted: 1001 unique classified IDs, no duplicates. NL-1267 is accepted by the complete merged-base `sp-core-merged1-2` pass on `f92c75a2` under the owner's one-pass choice; earlier partial/old-base runs were not used to close the gate.
 
-Updated 2026-10-07 by `wip/silent-payments` through frozen source `df8642ad`: implemented NL-1253, NL-1255..NL-1266 and NL-1269. NL-1254 is in-progress pending NL-1267's three final consecutive Core regtest proofs; NL-1268 optional remote scanning and NL-1270 mainnet activation/canary remain open. Resolution evidence is attached to each implemented entry; final acceptance is tracked separately in `SILENT_PAYMENTS_VALIDATION.md`. No live-node activation is claimed. Summary recounted: 993 unique classified IDs, no duplicates.
+Updated 2026-10-07 by `wip/silent-payments` through frozen source `df8642ad`: implemented NL-1253, NL-1255..NL-1266 and NL-1269. NL-1254 remains in-progress in the ledger; NL-1267 now has its accepted complete merged-base Core proof (owner one-pass choice 2026-10-07); NL-1268 optional remote scanning and NL-1270 mainnet activation/canary remain open. Resolution evidence is attached to each implemented entry; final acceptance is tracked separately in `SILENT_PAYMENTS_VALIDATION.md`. No live-node activation is claimed. Summary recounted: 993 unique classified IDs, no duplicates.
 
 Updated 2026-10-07 by `wip/accounting-review` from latest `wip/fafo` 89d8c7be: new and fixed NL-1271 (late-valuation retry cache), NL-1272 (atomic journal clear), NL-1273 (verification under the financial writer gate), NL-1274 (atomic imported-basis replacement); filed on the branch as NL-1254..NL-1257, renumbered at integration because the silent payments epic landed those IDs first. Nine regressions failed on the original behavior. Validation: net10/net11 Release solution builds with zero warnings/errors; full formatting verification; final net10 Application accounting 299 and broad non-Docker/non-SqlServer/non-cluster Integration 1,162 passed. Fresh cluster proof `accounting-review-proof1`: 1/1 wrapper, 39/39 inner tests, 112 s, including six PostgreSQL fault-recovery cases and real ABCD zero-drift operational reconciliation and balanced financial books; all owned namespaces cleaned. Review and remaining issues are recorded in ACCOUNTING_PLAN section 12. NL-1207's rounding correction is already in the base; NL-758, NL-759, NL-1253 and the other documented follow-ups remain open. Summary: 976 unique classified entries. No schema or live-node configuration change. Implementation commit: `7c9b8e73`.
 
@@ -196,16 +196,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 0 | 93 | 93 |
+| open | 0 | 0 | 0 | 92 | 92 |
 | in-progress | 0 | 0 | 5 | 0 | 5 |
-| fixed | 15 | 71 | 257 | 529 | 872 |
+| fixed | 15 | 71 | 257 | 530 | 873 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
 | **Total** | **15** | **71** | **271** | **644** | **1001** |
 
 ### Epics
 
-- NL-1254: Silent payments (BIP 352) send and receive (in-progress, medium; final Core proof NL-1267 pending; plan `docs/agents/SILENT_PAYMENTS_PLAN.md`, owner decisions D-SP1..D-SP14: SP-C codec and maths NL-1255, NL-1256; SP-S send NL-1257, NL-1258; SP-R receive NL-1259..NL-1266; SP-T proofs NL-1267; SP-X tweak-index source, LND visibility and refusals, mainnet NL-1268..NL-1270)
+- NL-1254: Silent payments (BIP 352) send and receive (in-progress, medium; final Core proof NL-1267 accepted; optional extras open; plan `docs/agents/SILENT_PAYMENTS_PLAN.md`, owner decisions D-SP1..D-SP14: SP-C codec and maths NL-1255, NL-1256; SP-S send NL-1257, NL-1258; SP-R receive NL-1259..NL-1266; SP-T proofs NL-1267; SP-X tweak-index source, LND visibility and refusals, mainnet NL-1268..NL-1270)
 - NL-1190: Loop gRPC L0–L4 (in-progress, medium; service implementation NL-1191..NL-1195 fixed, external interoperability/failure proofs NL-1196, scanner indexing NL-1197)
 
 - NL-1160: LND gRPC compatibility (in-progress, medium; plan `docs/agents/LND_GRPC_PLAN.md`: wave 1 read/invoice/message surface with real macaroons NL-1161..NL-1163 fixed, wave 2 pay/channels/hold invoices/streams NL-1164..NL-1167, NL-1169 fixed, wave 3 acceptor/interceptor/walletrpc/history NL-1168 fixed (NL-1180, NL-1183..NL-1185); bos/RTL tool gaps NL-1242..NL-1249 fixed; follow-ups NL-1170..NL-1172, NL-1181, NL-1182, NL-1187, NL-1253 fixed, NL-1186 partial; open NL-1186, NL-1280, NL-1283, NL-1289; NL-1205 fixed)
@@ -10287,11 +10287,11 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 ## Silent payments (BIP 352)
 
 ### NL-1254 Silent payments (BIP 352): send to and receive on static silent payment addresses (epic)
-- **Status:** in-progress (implementation on `wip/silent-payments`; final Core acceptance NL-1267 pending)
+- **Status:** in-progress (implementation and final Core acceptance complete; optional NL-1268/NL-1270 remain open)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `docs/agents/SILENT_PAYMENTS_PLAN.md`
-- **Evidence:** Codec, crypto, sending, receiving, schema, signing, accounting, rescan, labels and LND/IPC surfaces are implemented and covered by focused tests. Final repeated Core end-to-end acceptance remains pending in NL-1267. Optional remote scanning NL-1268 and a separately authorized mainnet canary NL-1270 remain open; neither is silently activated.
+- **Evidence:** Codec, crypto, sending, receiving, schema, signing, accounting, rescan, labels and LND/IPC surfaces are implemented and covered by focused tests. Final Core end-to-end acceptance passed in NL-1267 under the owner's one-pass choice. Optional remote scanning NL-1268 and a separately authorized mainnet canary NL-1270 remain open; neither is silently activated.
 - **Fix sketch:** the waves of the plan:
   - SP-C (shared core): address codec NL-1255, maths and vectors NL-1256.
   - SP-S (send): `withdraw` NL-1257, LND `SendCoins` NL-1258.
@@ -10517,15 +10517,15 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Resolution evidence (2026-10-07):** `getspaddress --label` and `splabels` allocate persisted monotonic named labels; the virtual change label zero is always scanned. Optional SP change is derived from the exact selected input set and becomes custody at confirmation. `SilentPaymentServiceTests` covers concurrent allocation/restart and recovery counts; official label vectors, scanner tests and `WalletSpendServiceSilentChangeTests` cover label search and change outputs.
 
 ### NL-1267 No end-to-end or interop proof of silent payments
-- **Status:** open
+- **Status:** fixed (2026-10-07; `sp-core-merged1-2` on `f92c75a2`, owner one-pass acceptance)
 - **Severity:** low
 - **Kind:** test
 - **Location:** cluster suite `silentpayments`, `SilentPaymentsFlowTests`, `SilentPaymentPrevoutClusterTests`, and `test/Docker/silentpayments_reference` (pinned upstream reference oracle)
-- **Evidence:** Official vectors, in-process SQLite recovery/monitor regressions and initial Core 31.1 preflight interoperability/source checks have run. The preflight failed its reorg wait and does not count as a green full proof. Final Core acceptance remains pending on the newly merged base; runs on the earlier silent-payment-only base do not close this gate. Do not mark this entry fixed until the complete merged-base results are recorded. The independent oracle is the pinned upstream BIP 352 Python reference, not an unexecuted Rust-wallet claim.
+- **Evidence:** Final complete merged-base Core proof `sp-core-merged1-2` on `f92c75a2` passed: wrapper exit 0, 2 outer tests, 4 Core inner tests and 1 PostgreSQL inner test, zero errors/failures (164 s wall time). Both ZMQ and Poll completed all interoperability, receipt/spend/reorg/reconfirmation, encrypted-key-file empty-database restore and channel funding markers with actual silent-payment inputs. All three prevout routes and PostgreSQL migration/metadata checks passed. The owner explicitly accepted one complete successful normal Core wrapper run on 2026-10-07; queued repetition is unnecessary for this feature. The pinned upstream Python BIP 352 reference supplies independent interoperability in both directions.
 - **Fix sketch:**
   - two NLightning nodes on Core 31.1 regtest: labeled and unlabeled payments, found in ZMQ and in Poll mode, spent in a channel open, a reorg, one node wiped and restored by `sprescan`, accounting reconciled;
   - interop in both directions with the pinned independent upstream BIP 352 reference in its isolated harness;
-  - green 3 times in a row.
+  - one complete successful normal Core wrapper run, including both node modes and independent interoperability (owner override 2026-10-07; the harness general default remains three runs).
 - **Blocks/Blocked-by:** blocked by NL-1257..NL-1266
 - **Plan ref:** `SILENT_PAYMENTS_PLAN.md` §5, NL-1267 SP-T1
 

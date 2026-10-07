@@ -1,39 +1,46 @@
 # Silent payments validation
 
-Branch: `wip/silent-payments`, merged with `wip/fafo` at `27c4ebc2`.
+Branch: `wip/silent-payments`, merged with `wip/fafo` at `27c4ebc2`. Core proof source: `f92c75a2`; the subsequent collaborative accounting correction has the focused verification below.
 
-The previous-base batch `sp-core-final2` completed three consecutive full green Core runs. Fresh validation on the merged base is pending; previous-base results do not certify the new durable-history integration.
+## Completed Core proof
 
-This record distinguishes completed runtime checks from pending acceptance gates. All cluster proofs use the repository's `scripts/run-cluster.sh` wrapper and owned namespaces. The owner requested normal Bitcoin Core for proofs; rbitcoin is not required or used.
+The owner specified normal Bitcoin Core and one complete successful pass. `sp-core-merged1-2` passed on the merged source: two outer wrapper tests, four inner Core tests and one inner PostgreSQL test, zero errors or failures, 164 s wall time. Further queued attempts were stopped and owned namespaces cleaned. The proof uses `scripts/run-cluster.sh`, Bitcoin Core 31.1 and the pinned upstream BIP 352 v1.1.1 Python reference wallet.
 
-## Completed Core preflight
+Both ZMQ and polling modes proved labeled/unlabeled receipts, independent interoperability in both directions, withdrawal, two-block reorg, exact custody rollback with pending-input reservations retained, reconfirmation, restart and encrypted-key-file recovery into an empty database. Recovery matched every silent and ordinary wallet outpoint and the complete balance: **2,398,697 sat** in each mode. A real channel became usable after funding it with a confirmed silent-payment input; operational and financial reconciliation stayed clean.
 
-Run `sp-core-preflight1` used Bitcoin Core 31.1 and the independent, pinned BIP 352 v1.1.1 Python reference implementation. Both ZMQ and polling modes demonstrated payments from the reference wallet to NLightning and from NLightning to the reference wallet, verified on chain.
+All three prevout routes agreed on P2PKH, P2SH-P2WPKH, P2WPKH, P2TR key-path, P2TR script-path and P2WSH inputs, including an in-block child. REST and `getblock` also passed without `txindex`. Pruned history was refused before recovery writes, with the actual prune floor. The captured Core response remains in `test/NLightning.Infrastructure.Bitcoin.Tests/Wallet/Fixtures/core31-prevouts.json`.
 
-All three prevout routes agreed on actual P2PKH, P2SH-P2WPKH, P2WPKH, P2TR key-path, P2TR script-path and P2WSH inputs, including an in-block child. REST and `getblock` also passed without `txindex`. Pruned history was refused with the actual prune floor. The authentic response is retained in `test/NLightning.Infrastructure.Bitcoin.Tests/Wallet/Fixtures/core31-prevouts.json`, with wire hashes and image identity.
+PostgreSQL migration and durable SP metadata tests passed in the runner pod. SQLite migration, atomicity and accounting tests also passed. SQL Server compiled-model and migration-history guards passed; SQL Server runtime execution is not claimed.
 
-The full preflight failed: both node modes timed out after invalidation while awaiting a smaller tip. The revised proof mines empty replacement blocks before asserting rollback and then explicitly reconfirms the disconnected withdrawal. A successful preflight interoperability check does not count as a green full proof.
+[core-merged-proof.json](proofs/silent-payments/core-merged-proof.json) records source/image identity, result counts, custody balance, proof markers and the full output-log hash. Host artifacts remain under `TestResults/cluster/sp-core-merged1/sp-core-merged1-2/`.
 
-## First final Core run: partial success, not an acceptance pass
+Earlier preflights exposed test setup errors in reorg notification, reservation-aware custody comparison and channel funding amount; the successful trial retains the strengthened assertions. The first merged attempt failed two miner startup/readiness checks during scratch-disk pressure, before their source RPC proofs; that attempt is excluded from acceptance.
 
-The first final Core run passed the PostgreSQL migration and durable metadata checks. Both ZMQ and polling modes passed independent interoperability, spend/reorg/reconfirmation and encrypted-key-file recovery into an empty database. The restored wallet matched all ordinary and silent-payment custody exactly: 2,398,697 sat in each mode.
+## Fresh merged-source tests
 
-The run failed only the channel-funding assertion: its 500,000 sat request was fully covered by ordinary coins, so the selected inputs did not include a silent-payment coin. The fixture correction in `aa897ba0` requests the total ordinary balance plus 500,000 sat, requiring a silent-payment input. That correction and the three consecutive full green Core runs remain unverified here. Partial successes do not count toward the three-run acceptance gate.
+| Suite | Passed | Scope |
+|---|---:|---|
+| Infrastructure.Bitcoin | 2,391 | Full suite; three platform skips. Includes official vectors, both key parities, reservations and mixed SP/foreign PSBT validation with an extra-TapTweak negative control. |
+| Integration | 1,194 | Excludes Docker, SQL Server runtime and Cluster tests. Includes all three compiled models, final model guards, chronological migration-designer guards, accounting, failed saves, restarts and reorgs. |
+| LND gRPC | 311 | Full suite, including durable SP history, canonical/imported ownership and upstream wallet/route changes. |
+| Application | 115 | SP recovery/history, splice-out refusal, PayRoute/Attach, splice RBF and channel-acceptor compatibility. |
+| Daemon | 89 | SP CLI/IPC, withdraw, Cashu and PayRouteAttach IPC. |
+| Domain | 42 | Focused SP suite. |
 
-## Unit checks and scanner measurements
+Recovery history tests prove raw transactions and complete owned input amounts survive failed commits, mixed ordinary/SP inputs, final spend audits and reorg replay. The broad Application suite previously passed 4,473 tests before the final changes; that earlier run is not presented as final-source verification.
 
-The fresh full Release net10 build passed with zero warnings/errors in 4 min 2 s. Final executed suites passed: Bitcoin 2,375 (three platform skips), focused Domain 42, Daemon 84, LND gRPC 259 and Integration 1,185 (5.01 min). Bitcoin coverage includes official BIP 352 vectors, both key parities, signing, reservations, change recovery and captured Core responses. PostgreSQL runtime migration and metadata verification passed in the first final Core run; SQL Server runtime migration execution is not claimed.
+Full solution Release net10 passed with zero warnings/errors in 3 min 51 s; full solution Release net11 compile check passed with zero warnings/errors in 6 min 42 s. Production Native compilation on `f92c75a2` passed with zero warnings/errors in 4 min; full formatter verification passed. Solution configuration check passed for all 40 projects; `git diff --check` passed.
 
-The final Application targeted run is pending its fixture-only correction and must not be reported green yet. Earlier, the historical/helper service-and-splice selection passed 22 cases; the broad Application suite passed 4,473 tests before the final historical-settlement fixes. Six optional tool/benchmark/real-node checks reported unavailable in that broad run. Those earlier results do not validate later source changes.
+## Final collaborative accounting verification
 
-The optimized synthetic scanner measurement used Debian 13 x64, .NET 10.0.12, four logical CPUs, 4,000 transactions, 2,000 eligible transactions and 100 recovery labels, with two warmups and ten samples. Normal median/p95 were 1,666.899/1,815.703 ms. Adversarial K_max (2,323 discovered outputs per sample) median/p95 were 2,505.377/2,591.922 ms. Preparation reduced normal p95 by 60.5% against the initial measurement. The adversarial initial run had only three samples, so its percentage comparison is weaker.
+A narrow follow-up to the accepted `f92c75a2` Core proof corrects collaborative-spend accounting: a transaction with our 75,000 sat input and 44,000 sat change records the wallet's **−31,000 sat** delta, including silent-payment ownership discovered from durable metadata only. Recovery promotion into live custody must preserve that delta and the 44,000 sat change without duplicate settlement or custody.
 
-The measurements include parsing and scanner mathematics with preloaded prevouts, excluding RPC/database. The adversarial cloud result meets the 60 s budget. The normal cloud result is above 1 s; the Mac reference-machine goal remains unverified. Raw results are in [scanner-normal-cloud.json](proofs/silent-payments/scanner-normal-cloud.json) and [scanner-adversarial-cloud.json](proofs/silent-payments/scanner-adversarial-cloud.json).
+Final correction checks passed: 24 SQLite integration tests (including the three new collaborative cases), 25 Application recovery tests and 212 Bitcoin signer/PSBT tests, zero failures or skips. The changed production graph compiled for net11 and Release.Native with zero warnings/errors; the updated integration project compiled for net10 with zero warnings/errors. Full solution formatting verification passed again after the correction. The completed Core proof above retains its exact `f92c75a2` identity. Historical promotion uses the recovery writers explicitly; changing receive policy alone does not replay already processed live blocks.
 
-## Pending final validation
+## Scanner measurements and remaining limits
 
-- Refreshed Application targeted tests after the fixture-only correction.
-- Three consecutive green full Core regtest runs after the channel-funding fixture correction, including encrypted-key-file restore into an empty database, actual silent-payment channel inputs, spend/reorg/reconfirmation, accounting and independent interoperability.
-- Release net11, native backend compilation, formatting and solution configuration checks.
+The unchanged optimized scanner was measured on Debian 13 x64, .NET 10.0.12, four logical CPUs, 4,000 transactions, 2,000 eligible transactions and 100 recovery labels, with two warmups and ten samples. Normal median/p95 were 1,666.899/1,815.703 ms. Adversarial K_max (2,323 discovered outputs per sample) median/p95 were 2,505.377/2,591.922 ms. Preparation reduced normal p95 by 60.5%. The adversarial baseline had only three samples, so its percentage comparison is weaker.
 
-Optional remote/light scanning (NL-1268) and mainnet activation/canary (NL-1270) remain separate work. No live-node configuration is changed by this branch.
+Measurements cover parsing and scanner mathematics with preloaded prevouts, excluding RPC/database. The adversarial cloud result meets the 60 s budget. The normal cloud result is above 1 s; the Mac reference-machine target remains unverified. Raw results: [normal](proofs/silent-payments/scanner-normal-cloud.json) and [adversarial](proofs/silent-payments/scanner-adversarial-cloud.json).
+
+Receiving stays opt-in. Optional remote/light scanning (NL-1268) and mainnet activation/canary (NL-1270) remain separate work; this branch changes no live-node configuration. Key-only recovery restores funds within the documented address gap, while original accounting basis, imported scripts and operator metadata require a database backup. See [operator instructions](SILENT_PAYMENTS_OPERATOR.md).

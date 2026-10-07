@@ -128,7 +128,7 @@ public sealed class FakeBitcoinChain : IBitcoinChainService
             var tx = _blocks[height].Transactions.FirstOrDefault(t => t.GetHash() == outPoint.Hash);
             if (tx is null || outPoint.N >= tx.Outputs.Count)
                 continue;
-            IEnumerable<Transaction> transactions = _blocks.SelectMany(b => b.Transactions);
+            var transactions = _blocks.SelectMany(b => b.Transactions);
             if (includeMempool)
                 transactions = transactions.Concat(Mempool);
             var spent = transactions.SelectMany(t => t.Inputs).Any(i => i.PrevOut == outPoint);

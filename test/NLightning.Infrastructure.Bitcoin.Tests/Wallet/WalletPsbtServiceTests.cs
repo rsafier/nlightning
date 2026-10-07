@@ -125,7 +125,7 @@ public partial class WalletPsbtServiceTests : IDisposable
     public async Task Given_ASilentPaymentCoin_When_ListUnspent_Then_ItIsShownAsAnOrdinaryTaprootOutput()
     {
         // Arrange
-        var (Model, PrevOut) = AddSilentPaymentUtxo();
+        var (model, prevOut) = AddSilentPaymentUtxo();
 
         // Act
         var outputs = await _service.ListUnspentAsync(1, uint.MaxValue, Ct);
@@ -133,7 +133,7 @@ public partial class WalletPsbtServiceTests : IDisposable
         // Assert
         var output = Assert.Single(outputs);
         Assert.Equal(AddressType.P2Tr, output.AddressType);
-        Assert.Equal(PrevOut.ScriptPubKey.ToBytes(), (byte[])output.ScriptPubKey);
+        Assert.Equal(prevOut.ScriptPubKey.ToBytes(), (byte[])output.ScriptPubKey);
         Assert.StartsWith("bcrt1p", output.Address);
     }
 
@@ -141,10 +141,10 @@ public partial class WalletPsbtServiceTests : IDisposable
     public async Task Given_AFundedSilentPaymentPsbt_When_FinalizedAndPublished_Then_TheRawKeySpendVerifies()
     {
         // Arrange: explicit coin selection exercises leases, PSBT signing and publishing together.
-        var (Model, PrevOut) = AddSilentPaymentUtxo();
+        var (model, prevOut) = AddSilentPaymentUtxo();
         var funded = await _service.FundPsbtAsync(Request(20_000) with
         {
-            Inputs = [(Model.TxId, Model.Index)]
+            Inputs = [(model.TxId, model.Index)]
         }, Ct);
         var psbt = PSBT.Load(funded.Psbt, Network.RegTest);
         Assert.Null(psbt.Inputs[0].TaprootInternalKey);
@@ -156,7 +156,7 @@ public partial class WalletPsbtServiceTests : IDisposable
         var tx = Transaction.Load(finalized.RawFinalTx, Network.RegTest);
 
         // Assert: the witness spends P directly, with no BIP86 tweak.
-        Assert.True(tx.CreateValidator([PrevOut]).ValidateInput(0).Error is null or ScriptError.OK);
+        Assert.True(tx.CreateValidator([prevOut]).ValidateInput(0).Error is null or ScriptError.OK);
         await _service.PublishAsync(finalized.RawFinalTx, "silent payment", Ct);
         Assert.Single(_published);
     }

@@ -5,6 +5,7 @@ namespace NLightning.Infrastructure.Bitcoin.Wallet.SilentPayments;
 
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
+using Domain.Accounting.Labels;
 using Domain.Accounting.Models;
 using Domain.Accounting.Services;
 using Domain.Bitcoin.ValueObjects;
@@ -14,6 +15,80 @@ using Domain.Persistence.Interfaces;
 /// <summary>Shared immutable custody and transaction settlement facts for live scanning and historical recovery.</summary>
 public static class SilentPaymentAccounting
 {
+    /// <summary>Settles an authorized collaborative broadcast from the custody legs actually recorded, including
+    /// metadata-only inputs and newly accepted change. Foreign inputs and the shared fee remain unknown.</summary>
+    public static async Task StageCollaborativeFlowsAsync(IUnitOfWork uow, Block block, uint height,
+        TimeProvider time, CancellationToken cancellationToken)
+    {
+        foreach (var transaction in block.Transactions.Where(transaction => !transaction.IsCoinBase))
+        {
+            var transactionId = new TxId(transaction.GetHash().ToBytes());
+            var broadcast = await uow.BroadcastTransactionDbRepository.GetByTransactionIdAsync(transactionId);
+            if (broadcast?.Purpose != Domain.Onchain.Enums.BroadcastPurpose.WalletCollaborative) continue;
+            long delta = 0;
+            for (uint index = 0; index < transaction.Outputs.Count; index++)
+            {
+                var key = AccountingEventKeys.WalletReceived(transactionId, index);
+                var facts = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync(key, cancellationToken);
+                var receipt = AccountingConfirmations.FindStanding(key, facts);
+                if (receipt?.Details.GetValueOrDefault(AccountingDetailKeys.Source) is
+                    AccountingDetailKeys.WalletSource or AccountingDetailKeys.BroadcastSource)
+                    delta = checked(delta + receipt.AmountMsat);
+            }
+            foreach (var input in transaction.Inputs)
+            {
+                var key = AccountingEventKeys.WalletOutputSpent(new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N);
+                var facts = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync(key, cancellationToken);
+                var spent = AccountingConfirmations.FindStanding(key, facts);
+                if (spent is null || spent.Details.GetValueOrDefault("spentBy") != transactionId.ToString()) continue;
+                if (spent.AmountMsat > 0)
+                    throw new InvalidOperationException("Collaborative input custody must be a debit.");
+                delta = checked(delta + spent.AmountMsat);
+            }
+            var baseKey = AccountingEventKeys.WalletSent(transactionId);
+            var prior = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync(baseKey, cancellationToken);
+            var standing = AccountingConfirmations.FindStanding(baseKey, prior);
+            if ((standing is null && delta == 0) || (standing is not null && standing.AmountMsat == delta && standing.FeeMsat == 0))
+                continue;
+            var confirmation = AccountingConfirmations.NextConfirmationKey(baseKey, prior);
+            if (standing is not null)
+            {
+                var reversal = new AccountingEventModel
+                {
+                    EventKey = AccountingEventKeys.Reversal(standing.EventKey, standing.BlockHeight!.Value),
+                    Kind = AccountingEventKind.Reversal,
+                    OccurredAt = time.GetUtcNow(),
+                    BlockHeight = standing.BlockHeight,
+                    TxId = transactionId,
+                    ChannelId = standing.ChannelId,
+                    AmountMsat = -standing.AmountMsat,
+                    FeeMsat = -standing.FeeMsat,
+                    Finality = AccountingFinality.Confirmed,
+                    Details = AccountingDetailsCodec.Create((AccountingConfirmations.ReversesDetail, standing.EventKey),
+                        (AccountingConfirmations.OriginalKindDetail, standing.Kind.ToString()), ("reason", "collaborative_custody_changed"))
+                };
+                uow.AccountingEventDbRepository.Add(reversal);
+                confirmation = AccountingConfirmations.NextConfirmationKey(baseKey, prior.Append(reversal).ToArray());
+            }
+            uow.AccountingEventDbRepository.Add(new AccountingEventModel
+            {
+                EventKey = confirmation!,
+                Kind = AccountingEventKind.WalletSent,
+                OccurredAt = block.Header.BlockTime,
+                BlockHeight = height,
+                TxId = transactionId,
+                ChannelId = broadcast.ChannelId,
+                AmountMsat = delta,
+                Finality = AccountingFinality.Confirmed,
+                Details = AccountingDetailsCodec.Create([
+                    ("purpose", nameof(Domain.Onchain.Enums.BroadcastPurpose.WalletCollaborative)),
+                    ("collaborative", "true"), ("feeUnknown", "true"),
+                    .. SourceLabels.FromStored(broadcast.Label, broadcast.Tags).ToDetailPairs()
+                ])
+            });
+        }
+    }
+
     // Historical custody facts must also settle Clearing. Recover the complete transaction only when every
     // input belongs to the recovered wallet; shared transactions require their retained purpose/accounting context.
     public static async Task StageSettlementsAsync(IUnitOfWork uow, Block block, uint height,
@@ -21,6 +96,7 @@ public static class SilentPaymentAccounting
         CancellationToken cancellationToken, IReadOnlySet<TxId>? excludedTransactions = null,
         IReadOnlyList<WalletAddressModel>? recoveryCatalogue = null)
     {
+        await StageCollaborativeFlowsAsync(uow, block, height, time, cancellationToken);
         var addresses = uow.WalletAddressesDbRepository.GetAllAddresses().Concat(recoveryCatalogue ?? [])
             .Select(address => address.Address).ToHashSet();
         foreach (var transaction in block.Transactions.Where(transaction => !transaction.IsCoinBase))
