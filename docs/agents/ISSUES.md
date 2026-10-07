@@ -10094,7 +10094,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Validation (2026-10-06):** `go vet ./...`, `go test -race -count=1 ./...` in `tools/lnc`; an in-process test drives the stock client's auth data check and per-RPC credentials through the Noise handshake, the bridge and a backend. Live Terminal trial on signet is the operator's.
 
 ### NL-1239 Lightning Terminal through the LNC bridge: `FeeReport` unimplemented, `ListPayments` capped at 100, sat amounts rounded
-- **Status:** fixed (pending)
+- **Status:** fixed (7e0a635d)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.LndGrpc/Services/LightningService.Fees.cs`, `LightningService.Payments.cs`, `LightningService.Info.cs`, `RouterService.Payments.cs`, `tools/lnc/terminal_test.go`, `tools/lnc/README.md`
