@@ -174,7 +174,9 @@ public sealed partial class LightningService
         var stored = await unitOfWork.ChannelDbRepository.GetAllAsync();
         var closes = (await unitOfWork.OnchainResolutionDbRepository.GetClosesAsync())
                     .ToDictionary(c => c.ChannelId);
-        var chainHash = _nodeOptions.BitcoinNetwork.ChainHash.ToString();
+        // LND prints the genesis hash in display order (chainhash.Hash.String()); ChainHash has no hex ToString
+        // (NL-1244)
+        var chainHash = DisplayHex(_nodeOptions.BitcoinNetwork.ChainHash.Value);
         var response = new ClosedChannelsResponse();
         foreach (var channel in stored.Where(c => c.State is ChannelState.Closed or ChannelState.Stale))
         {

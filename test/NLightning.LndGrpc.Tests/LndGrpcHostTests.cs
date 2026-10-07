@@ -82,6 +82,7 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
     private readonly List<ChannelCloseModel> _closes = [];
     private readonly UtxoMemoryRepository _utxos = new();
 
+    private Domain.Bitcoin.ValueObjects.BlockchainState? _chainState;
     private ServiceProvider? _services;
     private LndGrpcHost? _host;
 
@@ -619,6 +620,7 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
                                   _forwards.OrderByDescending(f => f.CreatedAt).Skip(query.Skip).Take(query.Take)
                                            .ToList());
         var state = new Mock<IBlockchainStateDbRepository>();
+        state.Setup(x => x.GetStateAsync()).ReturnsAsync(() => _chainState);
         var stored = new Mock<IChannelDbRepository>();
         stored.Setup(x => x.GetAllAsync()).ReturnsAsync(() => _closedChannels.ToList());
         var resolutions = new Mock<IOnchainResolutionDbRepository>();

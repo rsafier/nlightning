@@ -57,7 +57,7 @@ public sealed partial class LightningService
             await using var scope = CreateScope();
             if (await UnitOfWork(scope).BlockchainStateDbRepository.GetStateAsync() is { } state)
             {
-                response.BlockHash = state.LastProcessedBlockHash.ToString();
+                response.BlockHash = DisplayHex(state.LastProcessedBlockHash);
                 response.BestHeaderTimestamp = new DateTimeOffset(DateTime.SpecifyKind(state.LastProcessedAt,
                                                                       DateTimeKind.Utc)).ToUnixTimeSeconds();
             }

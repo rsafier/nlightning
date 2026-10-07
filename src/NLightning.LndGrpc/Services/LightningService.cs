@@ -120,6 +120,18 @@ public sealed partial class LightningService : Lnrpc.Lightning.LightningBase
 
     private static RpcException Unimplemented(string message) => new(new Status(StatusCode.Unimplemented, message));
 
+    /// <summary>
+    /// A block hash as LND (and bitcoind) print it: the hex of the reversed bytes. The node stores block hashes in
+    /// internal (serialized) order, whose <see cref="Domain.Crypto.ValueObjects.Hash.ToString"/> is not the display
+    /// form (NL-1244).
+    /// </summary>
+    internal static string DisplayHex(Domain.Crypto.ValueObjects.Hash hash)
+    {
+        var bytes = ((byte[])hash).ToArray();
+        Array.Reverse(bytes);
+        return Convert.ToHexStringLower(bytes);
+    }
+
     /// <summary>Unix nanoseconds (LND's <c>*_ns</c> fields).</summary>
     internal static long UnixNanos(DateTimeOffset time) =>
         (time.UtcTicks - DateTimeOffset.UnixEpoch.UtcTicks) * 100;

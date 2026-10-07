@@ -193,7 +193,7 @@ public sealed partial class LightningService
     {
         ChannelPoint = ChannelPoint(channel),
         ChanId = ToChanId(channel.ShortChannelId),
-        ChainHash = _nodeOptions.BitcoinNetwork.ChainHash.ToString(),
+        ChainHash = DisplayHex(_nodeOptions.BitcoinNetwork.ChainHash.Value),
         ClosingTxHash = channel.ClosingTransaction?.TxId.ToString() ?? string.Empty,
         RemotePubkey = channel.RemoteNodeId.ToString(),
         Capacity = channel.FundingOutput?.Amount.Satoshi ?? 0,

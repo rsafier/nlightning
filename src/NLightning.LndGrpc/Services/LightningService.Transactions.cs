@@ -214,7 +214,7 @@ public sealed partial class LightningService
             Label = row?.Label ?? ""
         };
         if (entry.Height is { } confirmedAt)
-            rpc.BlockHash = row?.ConfirmedBlockHash?.ToString()
+            rpc.BlockHash = (row?.ConfirmedBlockHash is { } confirmedHash ? DisplayHex(confirmedHash) : null)
                          ?? await BlockHashAsync(confirmedAt, chain, blockHashes);
 
         NBitcoin.Transaction? tx = null;

@@ -189,10 +189,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 0 | 96 | 96 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 70 | 241 | 499 | 825 |
+| fixed | 15 | 70 | 241 | 501 | 827 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **70** | **257** | **618** | **960** |
+| **Total** | **15** | **70** | **257** | **620** | **962** |
 
 ### Epics
 
@@ -10122,3 +10122,23 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix:** `BatchOpenChannel` (ffbb07bf) as LND v0.21.4 for a batch of one channel: the node's open (the `OpenChannelSync` path, `sat_per_vbyte`/`label` from the batch), answered at the published funding with one `PendingUpdate`, then `use_base_fee`/`use_fee_rate` as the channel's routing policy (a refusal is logged, the open stays); a batch of several channels (LND funds them from one transaction; the node funds one channel per transaction), `pending_chan_id`, `spend_unconfirmed` and coin selection strategies are refused before anything is funded. Bridge: `--profile admin` = `wallet` plus `OpenChannel`, `OpenChannelSync`, `BatchOpenChannel`, `CloseChannel`, `UpdateChannelPolicy`, `EstimateFee`, walletrpc `ListUnspent`/`EstimateFee` and the autopilot writes; still a per-session scoped macaroon (never the node admin macaroon), never macaroon administration, signrpc, walletrpc PSBT/lease/signing, the channel acceptor or the HTLC interceptor. README warning that it opens and closes channels and moves funds.
 - **Validation (2026-10-07):** `test/NLightning.LndGrpc.Tests/LndGrpcHostTests.BatchOpen.cs` (3 tests: Terminal's exact one-channel batch opened with its policy at the published funding; a refused policy still answers; seven refused batches dispatch nothing); LndGrpc.Tests 221/221 on net10.0; Release solution build (net10.0) 0 warnings, 0 errors; `dotnet format --verify-no-changes` clean. `tools/lnc`: `go vet`, `go test -race -count=1 ./...` (44 tests; the profile test now bans macaroon administration, signrpc, PSBT/lease/raw signing and the node hooks from every profile including admin; `TestAdminProfileGrantsTerminalChannelManagement`). Deploy: rebuild and restart the node daemon (for `BatchOpenChannel`), rebuild the bridge, create a `--profile admin` session and pair Terminal again.
 - **Blocks/Blocked-by:** a multi-channel batch needs funding several channels from one transaction (not supported by the node)
+
+### NL-1243 LND gRPC: unimplemented methods and services answer without grpc-go's `unknown method`/`unknown service` text
+- **Status:** fixed (pending pin)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.LndGrpc/LndUnknownMethods.cs`, `src/NLightning.LndGrpc/LndGrpcHost.cs`, `test/NLightning.LndGrpc.Tests/LndGrpcHostTests.ToolGaps.cs`
+- **Evidence:** bos 24.2.2 / ln-service against the signet node (2026-10-07, `LND_TOOLS_COMPAT.md`): every method the node does not override answered `UNIMPLEMENTED` with empty details (the generated base method), and services that are not registered (`chainrpc.ChainKit`, `autopilotrpc`, `wtclientrpc`, `watchtowerrpc`) answered grpc-dotnet's "Service is unimplemented.". LND (grpc-go) answers `unknown method <M> for service <S>` and `unknown service <S>`, and ln-service matches that text (`/unknown/`, `unknown service walletrpc.WalletKit`, ...) to fall back (e.g. ListAccounts → `CreationOfTaprootAddressesUnsupported`, ListSweeps → `BackingLndDoesNotSupportListingSweeps`); with empty details each fallback was skipped and the call hard-failed.
+- **Fix:** a middleware in front of the gRPC endpoints (`LndUnknownMethods`, before the macaroon interceptor, as grpc-go refuses unknown methods before any interceptor) answers a gRPC call trailers-only with `UNIMPLEMENTED` and `unknown service <package.Service>` when no registered service has that name, and `unknown method <Method> for service <package.Service>` when the method is not in the service's descriptor or the registered implementation does not override the generated base method (reflection over the registered service types at the start).
+- **Validation (2026-10-07):** `LndGrpcHostTests.ToolGaps.cs`: GetDebugInfo (declared, not implemented) and ChainKit.GetBestBlock (service not registered) over the real TLS listener get grpc-go's text; the path classifier on LightningService. LndGrpc.Tests green on net10.0.
+- **Blocks/Blocked-by:** none
+
+### NL-1244 LND gRPC: `GetInfo.block_hash` byte-reversed; `ClosedChannels`/`SubscribeChannelEvents` `chain_hash` was the type name
+- **Status:** fixed (pending pin)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.LndGrpc/Services/LightningService.cs` (`DisplayHex`), `LightningService.Info.cs`, `LightningService.Transactions.cs`, `LightningService.Channels.cs`, `LightningService.Subscriptions.cs`
+- **Evidence:** `LND_TOOLS_COMPAT.md` (2026-10-07): `GetInfo.block_hash` was `cda80e4f…02000000` where bitcoind showed `00000002835912ed…0ea8cd` for the same height: `Hash.ToString()` prints the internal (serialized) byte order the chain monitor stores. Audit of every hash/txid field: `GetTransactions.block_hash` had the same mistake whenever the transaction's `BroadcastTransactions` row carried `ConfirmedBlockHash` (rows without it used bitcoind's display hash, which is why the probe saw it right); `ChannelCloseSummary.chain_hash` (ClosedChannels, SubscribeChannelEvents closed events) printed `ChainHash.ToString()`, which `ChainHash` does not override, i.e. the type name. Txids (`TxId.ToString()` is display order since NL-519), ChainNotifier's byte fields (internal order, as LND) and the channel acceptor's `chain_hash` bytes (wire order, as LND) were right.
+- **Fix:** `LightningService.DisplayHex` (reversed hex) for `GetInfo.block_hash`, `Transaction.block_hash` from a stored row and both `chain_hash` fields (the genesis hash in display order, as LND's `chainhash.Hash.String()`).
+- **Validation (2026-10-07):** `LndGrpcHostTests.ToolGaps.cs`: GetInfo's hash from a stored internal-order hash comes back reversed; ClosedChannels' `chain_hash` is regtest's `0f9188f1…466e2206`. LndGrpc.Tests green on net10.0.
+- **Blocks/Blocked-by:** none
