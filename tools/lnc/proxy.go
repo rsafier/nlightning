@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -62,20 +63,36 @@ func DialBackend(ctx context.Context, target, tlsCertPath, serverName string) (*
 			grpc.MaxCallSendMsgSize(maxProxyMessageBytes)), grpc.WithBlock())
 }
 
+// ProxyConfig holds a session proxy's optional behavior.
+type ProxyConfig struct {
+	// Local maps full method names the bridge answers itself (read-only
+	// litrpc shims) to their encoded response; their request is read and
+	// ignored. Every other method is forwarded to the backend.
+	Local map[string]func() []byte
+	// OnAuthenticated runs on every call that presented the session credential,
+	// before it is answered or forwarded.
+	OnAuthenticated func()
+	// LogRPC, when set, receives each call's method, final status code and
+	// duration. It never receives payloads or metadata.
+	LogRPC func(method string, code codes.Code, elapsed time.Duration)
+}
+
 // NewSessionProxy binds a bridge to exactly one session credential. Noise's
 // AuthData gives that credential to the paired client; accepting arbitrary
 // caller macaroons here would let a compromised client escape its session.
 func NewSessionProxy(backend grpc.ClientConnInterface, macaroonHex string,
 	options ...grpc.ServerOption) (*grpc.Server, error) {
+	return NewSessionProxyWith(backend, macaroonHex, ProxyConfig{}, options...)
+}
+
+// NewSessionProxyWith is NewSessionProxy with a ProxyConfig.
+func NewSessionProxyWith(backend grpc.ClientConnInterface, macaroonHex string, config ProxyConfig,
+	options ...grpc.ServerOption) (*grpc.Server, error) {
 	credential, err := hex.DecodeString(macaroonHex)
 	if err != nil || len(credential) == 0 {
 		return nil, errors.New("session macaroon must be nonempty hexadecimal")
 	}
-	handler := func(_ interface{}, inbound grpc.ServerStream) error {
-		method, ok := grpc.MethodFromServerStream(inbound)
-		if !ok {
-			return status.Error(codes.Internal, "missing RPC method")
-		}
+	forward := func(method string, inbound grpc.ServerStream) error {
 		md, _ := metadata.FromIncomingContext(inbound.Context())
 		values := md.Get("macaroon")
 		if len(values) != 1 {
@@ -84,6 +101,17 @@ func NewSessionProxy(backend grpc.ClientConnInterface, macaroonHex string,
 		provided, err := hex.DecodeString(values[0])
 		if err != nil || subtle.ConstantTimeCompare(provided, credential) != 1 {
 			return status.Error(codes.Unauthenticated, "invalid session credential")
+		}
+		if config.OnAuthenticated != nil {
+			config.OnAuthenticated()
+		}
+		if local, ok := config.Local[method]; ok {
+			var request []byte
+			if err := inbound.RecvMsg(&request); err != nil {
+				return err
+			}
+			response := local()
+			return inbound.SendMsg(&response)
 		}
 		outgoing := md.Copy()
 		outgoing.Set("macaroon", hex.EncodeToString(credential))
@@ -144,6 +172,19 @@ func NewSessionProxy(backend grpc.ClientConnInterface, macaroonHex string,
 				return err
 			}
 		}
+	}
+	handler := func(_ interface{}, inbound grpc.ServerStream) error {
+		method, ok := grpc.MethodFromServerStream(inbound)
+		if !ok {
+			return status.Error(codes.Internal, "missing RPC method")
+		}
+		if config.LogRPC == nil {
+			return forward(method, inbound)
+		}
+		start := time.Now()
+		err := forward(method, inbound)
+		config.LogRPC(method, status.Code(err), time.Since(start))
+		return err
 	}
 	options = append(options, grpc.ForceServerCodec(opaqueCodec{}), grpc.UnknownServiceHandler(handler),
 		grpc.MaxRecvMsgSize(maxProxyMessageBytes), grpc.MaxSendMsgSize(maxProxyMessageBytes))

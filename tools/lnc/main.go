@@ -2,27 +2,16 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"sync"
 	"syscall"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/gofrs/flock"
-	"github.com/lightninglabs/lightning-node-connect/mailbox"
-	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"gopkg.in/macaroon.v2"
 )
@@ -58,7 +47,7 @@ func run(ctx context.Context, command string, args []string) error {
 		}
 		rows := []map[string]any{}
 		for _, s := range sessions {
-			rows = append(rows, map[string]any{"id": s.ID, "name": s.Name, "expires_at": s.ExpiresAt, "revoked": s.Revoked, "root_key_deleted": s.RootKeyDeleted, "paired": s.RemoteKey != "", "permissions": s.AllowedMethods})
+			rows = append(rows, map[string]any{"id": s.ID, "name": s.Name, "expires_at": s.ExpiresAt, "revoked": s.Revoked, "root_key_deleted": s.RootKeyDeleted, "paired": s.RemoteKey != "", "confirmed": s.RemoteKey != "" && !s.canRepair(), "permissions": s.AllowedMethods})
 		}
 		return json.NewEncoder(os.Stdout).Encode(rows)
 	}
@@ -117,7 +106,9 @@ func run(ctx context.Context, command string, args []string) error {
 	for i, method := range methods {
 		permissions[i] = &lnrpc.MacaroonPermission{Entity: "uri", Action: method}
 	}
-	response, e := client.BakeMacaroon(adminCtx, &lnrpc.BakeMacaroonRequest{RootKeyId: session.RootKeyID, Permissions: permissions})
+	// The litrpc URIs are not node methods, so the backend accepts them only as
+	// external permissions; it never serves them (the bridge does, lit.go).
+	response, e := client.BakeMacaroon(adminCtx, &lnrpc.BakeMacaroonRequest{RootKeyId: session.RootKeyID, Permissions: permissions, AllowExternalPermissions: true})
 	if e != nil {
 		return e
 	}
@@ -148,129 +139,3 @@ func run(ctx context.Context, command string, args []string) error {
 	persisted = true
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{"id": session.ID, "pairing_phrase": phrase, "relay": c.Relay, "expires_at": session.ExpiresAt, "permissions": methods})
 }
-
-type onceListener struct {
-	net.Listener
-	once sync.Once
-	err  error
-}
-
-func (l *onceListener) Close() error { l.once.Do(func() { l.err = l.Listener.Close() }); return l.err }
-
-type runningSession struct {
-	server   *grpc.Server
-	listener *onceListener
-	once     sync.Once
-}
-
-func (r *runningSession) stop() { r.once.Do(func() { r.server.Stop(); _ = r.listener.Close() }) }
-func relayCredentials(c Config) (credentials.TransportCredentials, error) {
-	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
-	if c.RelayTLSCert != "" {
-		data, e := os.ReadFile(c.RelayTLSCert)
-		if e != nil {
-			return nil, e
-		}
-		roots := x509.NewCertPool()
-		if !roots.AppendCertsFromPEM(data) {
-			return nil, errors.New("invalid relay TLS PEM")
-		}
-		cfg.RootCAs = roots
-	}
-	return credentials.NewTLS(cfg), nil
-}
-func serve(ctx context.Context, c Config, store *Store, backend *grpc.ClientConn) error {
-	lock := flock.New(filepath.Join(store.Dir, "serve.lock"))
-	ok, e := lock.TryLock()
-	if e != nil {
-		return e
-	}
-	if !ok {
-		return errors.New("another serve process is using this state directory")
-	}
-	defer lock.Unlock()
-	relayCreds, e := relayCredentials(c)
-	if e != nil {
-		return e
-	}
-	running := map[string]*runningSession{}
-	failure := make(chan error, 1)
-	defer func() {
-		for _, r := range running {
-			r.stop()
-		}
-	}()
-	tick := time.NewTicker(time.Second)
-	defer tick.Stop()
-	for {
-		sessions, e := store.list()
-		if e != nil {
-			return e
-		}
-		active := map[string]bool{}
-		for _, s := range sessions {
-			if s.Revoked || !time.Now().Before(s.ExpiresAt) {
-				continue
-			}
-			active[s.ID] = true
-			if running[s.ID] != nil {
-				continue
-			}
-			keyBytes, e := hex.DecodeString(s.PrivateKey)
-			if e != nil || len(keyBytes) != 32 {
-				return errors.New("invalid stored transport key")
-			}
-			key, _ := btcec.PrivKeyFromBytes(keyBytes)
-			entropy, e := hex.DecodeString(s.Entropy)
-			if e != nil {
-				return e
-			}
-			var remote *btcec.PublicKey
-			if s.RemoteKey != "" {
-				remote, e = btcec.ParsePubKey(mustDecode(s.RemoteKey))
-				if e != nil {
-					return e
-				}
-			} else if len(entropy) != mailbox.NumPassphraseEntropyBytes {
-				return errors.New("invalid stored pairing entropy")
-			}
-			id := s.ID
-			connData := mailbox.NewConnData(&keychain.PrivKeyECDH{PrivKey: key}, remote, entropy, []byte("macaroon: "+s.Macaroon), func(pub *btcec.PublicKey) error { return store.bindRemote(id, pub) }, nil)
-			listener, e := newMailboxListener(ctx, c.Relay, connData, nil, grpc.WithTransportCredentials(relayCreds.Clone()))
-			if e != nil {
-				return e
-			}
-			noise := serverNoiseCredentials(connData)
-			server, e := NewSessionProxy(backend, s.Macaroon, grpc.Creds(noise))
-			if e != nil {
-				_ = listener.Close()
-				return e
-			}
-			r := &runningSession{server: server, listener: &onceListener{Listener: listener}}
-			running[id] = r
-			go func(id string, r *runningSession) {
-				if e := r.server.Serve(r.listener); e != nil && ctx.Err() == nil {
-					select {
-					case failure <- fmt.Errorf("session %s transport stopped (restart serve): %w", id, e):
-					default:
-					}
-				}
-			}(id, r)
-			fmt.Fprintf(os.Stderr, "session %s listening via %s\n", id, c.Relay)
-		}
-		for id, r := range running {
-			if !active[id] {
-				r.stop()
-				delete(running, id)
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case err := <-failure:
-			return err
-		case <-tick.C:
-		}
-	}
-}
-func mustDecode(s string) []byte { b, _ := hex.DecodeString(s); return b }

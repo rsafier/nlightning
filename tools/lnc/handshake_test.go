@@ -25,7 +25,7 @@ func TestDefaultClientNegotiatesVersion2AndPinsBothIdentities(t *testing.T) {
 		t.Fatal(err)
 	}
 	var serverPins, clientPins atomic.Int32
-	serverData := mailbox.NewConnData(&keychain.PrivKeyECDH{PrivKey: serverKey}, nil, entropy[:], []byte("macaroon: cafe"), func(key *btcec.PublicKey) error {
+	serverData := mailbox.NewConnData(&keychain.PrivKeyECDH{PrivKey: serverKey}, nil, entropy[:], sessionAuthData("cafe"), func(key *btcec.PublicKey) error {
 		if !key.IsEqual(clientKey.PubKey()) {
 			t.Error("wrong client identity")
 		}
@@ -72,7 +72,7 @@ func TestDefaultClientNegotiatesVersion2AndPinsBothIdentities(t *testing.T) {
 	if serverSID != clientSID || serverSID == originalSID {
 		t.Fatal("session ID did not rotate to authenticated ECDH identities")
 	}
-	if string(clientData.AuthData()) != "macaroon: cafe" {
+	if string(clientData.AuthData()) != "Macaroon: cafe" {
 		t.Fatal("encrypted credential not transferred")
 	}
 }

@@ -28,7 +28,12 @@ type Session struct {
 	CreatedAt      time.Time `json:"created_at"`
 	Revoked        bool      `json:"revoked"`
 	RootKeyDeleted bool      `json:"root_key_deleted"`
-	AllowedMethods []string  `json:"allowed_methods"`
+	// Confirmed is set by the first RPC that presents the session credential
+	// over a transport bound to RemoteKey. Until then the pairing phrase stays
+	// valid, so a client whose handshake completed here but failed on its own
+	// side (and so never kept its keys) can pair again; confirming erases it.
+	Confirmed      bool     `json:"confirmed,omitempty"`
+	AllowedMethods []string `json:"allowed_methods"`
 }
 
 type Store struct{ Dir string }
@@ -179,17 +184,50 @@ func newSession(name string, expiry time.Time, methods []string) (*Session, stri
 	}
 	return &Session{ID: hex.EncodeToString(id), Name: name, PrivateKey: hex.EncodeToString(key.Serialize()), Entropy: hex.EncodeToString(entropy[:]), RootKeyID: root, CreatedAt: time.Now().UTC(), ExpiresAt: expiry.UTC(), AllowedMethods: methods}, strings.Join(words[:], " "), nil
 }
+
+// bindRemote records the client identity a handshake authenticated. The same
+// identity is always accepted. Another identity replaces it only while the
+// binding is unconfirmed and the pairing entropy is still stored, i.e. when the
+// phrase was used again before any authenticated RPC proved the first client
+// completed its side of the handshake.
 func (s *Store) bindRemote(id string, key *btcec.PublicKey) error {
 	encoded := hex.EncodeToString(key.SerializeCompressed())
 	return s.update(id, func(session *Session) error {
 		if session.Revoked || !time.Now().Before(session.ExpiresAt) {
 			return errors.New("session revoked or expired")
 		}
-		if session.RemoteKey != "" && session.RemoteKey != encoded {
+		if session.RemoteKey == encoded {
+			return nil
+		}
+		if session.RemoteKey != "" && !session.canRepair() {
 			return fmt.Errorf("session already paired with another identity")
 		}
+		if session.Entropy == "" {
+			return errors.New("session has no pairing phrase")
+		}
 		session.RemoteKey = encoded
+		session.Confirmed = false
+		return nil
+	})
+}
+
+// canRepair reports whether the pairing phrase may still bind a new identity.
+// Sessions paired before confirmation existed have no entropy left and are
+// treated as confirmed.
+func (s *Session) canRepair() bool { return !s.Confirmed && s.Entropy != "" }
+
+// confirm marks the binding to key as proven by an authenticated RPC and erases
+// the pairing entropy, ending re-pairing with the phrase. A key that is no
+// longer the bound one is ignored.
+func (s *Store) confirm(id, key string) error {
+	return s.update(id, func(session *Session) error {
+		if session.RemoteKey == "" || session.RemoteKey != key {
+			return errStaleConfirmation
+		}
+		session.Confirmed = true
 		session.Entropy = ""
 		return nil
 	})
 }
+
+var errStaleConfirmation = errors.New("confirmation for an identity that is not bound")

@@ -26,6 +26,7 @@ type mailboxListener struct {
 	relay     *grpc.ClientConn
 	client    hashmailrpc.HashMailClient
 	status    func(mailbox.ServerStatus)
+	log       btclog.Logger
 	ctx       context.Context
 	cancel    context.CancelFunc
 	acceptMu  sync.Mutex
@@ -37,7 +38,10 @@ type mailboxListener struct {
 }
 
 func newMailboxListener(ctx context.Context, host string, data *mailbox.ConnData,
-	status func(mailbox.ServerStatus), opts ...grpc.DialOption) (net.Listener, error) {
+	status func(mailbox.ServerStatus), logger btclog.Logger, opts ...grpc.DialOption) (net.Listener, error) {
+	if logger == nil {
+		logger = btclog.Disabled
+	}
 	sid, err := data.SID()
 	if err != nil {
 		return nil, err
@@ -47,7 +51,7 @@ func newMailboxListener(ctx context.Context, host string, data *mailbox.ConnData
 		return nil, err
 	}
 	lifecycle, cancel := context.WithCancel(ctx)
-	return &mailboxListener{host: host, data: data, relay: relay, client: hashmailrpc.NewHashMailClient(relay), status: status, ctx: lifecycle, cancel: cancel, sid: sid}, nil
+	return &mailboxListener{host: host, data: data, relay: relay, client: hashmailrpc.NewHashMailClient(relay), status: status, log: logger, ctx: lifecycle, cancel: cancel, sid: sid}, nil
 }
 
 func (l *mailboxListener) Accept() (net.Conn, error) {
@@ -79,7 +83,7 @@ func (l *mailboxListener) Accept() (net.Conn, error) {
 	l.addrMu.Unlock()
 	var next *mailbox.ServerConn
 	if l.conn == nil {
-		next, err = mailbox.NewServerConn(l.ctx, l.host, l.client, sid, btclog.Disabled, l.status)
+		next, err = mailbox.NewServerConn(l.ctx, l.host, l.client, sid, l.log, l.status)
 	} else {
 		next, err = mailbox.RefreshServerConn(l.conn)
 	}
