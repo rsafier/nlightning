@@ -10114,7 +10114,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** a working Autopilot on signet needs an autopilot server that serves signet (none exists; `--autopilot-server testnet` is possible but unsanctioned); AutoOpen needs the node's `BatchOpenChannel` and the `channel-constraint`/`on-chain-budget` rules
 
 ### NL-1241 Lightning Terminal's channel and fee management through the LNC bridge: no admin profile, no `BatchOpenChannel`
-- **Status:** fixed (ffbb07bf, pending)
+- **Status:** fixed (ffbb07bf, cc66676d)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `tools/lnc/config.go`, `tools/lnc/README.md`, `src/NLightning.LndGrpc/Services/LightningService.BatchOpen.cs`, `test/NLightning.LndGrpc.Tests/LndGrpcHostTests.BatchOpen.cs`
