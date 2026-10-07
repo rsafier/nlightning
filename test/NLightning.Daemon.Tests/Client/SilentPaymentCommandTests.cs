@@ -47,6 +47,8 @@ public class SilentPaymentCommandTests
 
     [Theory]
     [InlineData("getspaddress", "--label")]
+    [InlineData("getspaddress", "--label --label")]
+    [InlineData("getspaddress", "--label --cancel")]
     [InlineData("getspaddress", "--label store --label again")]
     [InlineData("getspaddress", "--unknown")]
     [InlineData("sprescan", "")]
