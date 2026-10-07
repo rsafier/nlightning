@@ -189,10 +189,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 0 | 96 | 96 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 70 | 242 | 501 | 828 |
+| fixed | 15 | 70 | 242 | 502 | 829 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **70** | **258** | **620** | **963** |
+| **Total** | **15** | **70** | **258** | **621** | **964** |
 
 ### Epics
 
@@ -10151,4 +10151,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** `LND_TOOLS_COMPAT.md` (2026-10-07): `GetInfo.block_hash` was `cda80e4f…02000000` where bitcoind showed `00000002835912ed…0ea8cd` for the same height: `Hash.ToString()` prints the internal (serialized) byte order the chain monitor stores. Audit of every hash/txid field: `GetTransactions.block_hash` had the same mistake whenever the transaction's `BroadcastTransactions` row carried `ConfirmedBlockHash` (rows without it used bitcoind's display hash, which is why the probe saw it right); `ChannelCloseSummary.chain_hash` (ClosedChannels, SubscribeChannelEvents closed events) printed `ChainHash.ToString()`, which `ChainHash` does not override, i.e. the type name. Txids (`TxId.ToString()` is display order since NL-519), ChainNotifier's byte fields (internal order, as LND) and the channel acceptor's `chain_hash` bytes (wire order, as LND) were right.
 - **Fix:** `LightningService.DisplayHex` (reversed hex) for `GetInfo.block_hash`, `Transaction.block_hash` from a stored row and both `chain_hash` fields (the genesis hash in display order, as LND's `chainhash.Hash.String()`).
 - **Validation (2026-10-07):** `LndGrpcHostTests.ToolGaps.cs`: GetInfo's hash from a stored internal-order hash comes back reversed; ClosedChannels' `chain_hash` is regtest's `0f9188f1…466e2206`. LndGrpc.Tests green on net10.0.
+- **Blocks/Blocked-by:** none
+
+### NL-1245 LND gRPC: walletrpc `ListSweeps` and `PendingSweeps` unimplemented (bos chart-chain-fees and accounting)
+- **Status:** fixed (pending pin)
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `src/NLightning.LndGrpc/Services/WalletKitService.Sweeps.cs`, `LightningService.Transactions.cs` (`ListWalletTransactionsAsync`), `test/NLightning.LndGrpc.Tests/Wave3/LndGrpcWave3HostTests.Sweeps.cs`
+- **Evidence:** `LND_TOOLS_COMPAT.md` (2026-10-07): bos `chart-chain-fees` and `accounting chain-fees`/`chain-receives`/`chain-sends`/`invoices`/`payments` fail with `UnexpectedGetSweepTxError` (ln-service `getSweepTransactions` → `walletrpc.ListSweeps` UNIMPLEMENTED); `PendingSweeps` (ln-service `getPendingSweeps`) unimplemented too.
+- **Fix:** `ListSweeps`: the `BroadcastTransactions` rows of every channel with a recorded close plus the pending rows whose purpose is one LND's sweeper publishes (Sweep, HtlcTransaction, HtlcClaim, Penalty, AnchorCpfp, AnchorSweep), replaced and abandoned attempts left out; `start_height` keeps the sweeps confirmed at or above it plus the unconfirmed ones, -1 only the unconfirmed ones; not verbose: the txids in display order; verbose: `GetTransactions`' wallet history filtered to those txids (LND reads its wallet's history the same way, so a sweep that moved no wallet output is listed only by txid). `PendingSweeps`: every output of a closed channel still Pending/Waiting/Broadcast that is ours to take, with LND's witness type for its descriptor (to_local `COMMITMENT_TIME_LOCK`, to_remote `COMMITMENT_TO_REMOTE_CONFIRMED` on anchors else `COMMITMENT_NO_DELAY_TWEAKLESS`, our commitment's HTLCs the second-level types, the peer's HTLCs `HTLC_OFFERED_REMOTE_TIMEOUT`/`HTLC_ACCEPTED_REMOTE_SUCCESS`, revoked outputs the revoke types, our anchor `COMMITMENT_ANCHOR`), amount, `broadcast_attempts` (1 once its transaction is out), that transaction's feerate as `sat_per_vbyte`, `deadline_height`, `maturity_height`. Not distinguished: the taproot witness types; `budget`, `immediate` and `requested_sat_per_vbyte` stay 0. Permission entries (onchain read) already existed.
+- **Validation (2026-10-07):** `LndGrpcWave3HostTests.Sweeps.cs` (2: a confirmed sweep, a pending penalty, a replaced attempt and a commitment, listed plain, unconfirmed-only and verbose; a waiting to_local and a broadcast HTLC claim listed with their witness types, maturity, deadline and feerate, a resolved and a peer output left out). LndGrpc.Tests green on net10.0.
 - **Blocks/Blocked-by:** none

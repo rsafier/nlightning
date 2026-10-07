@@ -50,7 +50,7 @@ using ListUnspentRequest = Testing.Lnd.Walletrpc.ListUnspentRequest;
 /// interceptor against the real <see cref="HtlcInterceptorHub"/>, WalletKit over a mocked wallet PSBT service and
 /// GetTransactions over a mocked accounting feed.
 /// </summary>
-public sealed class LndGrpcWave3HostTests : IAsyncLifetime
+public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -60,6 +60,9 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
     private readonly Mock<IWalletPsbtService> _psbt = new();
     private readonly Mock<IBitcoinChainService> _chain = new();
     private readonly List<AccountingEventModel> _accountingEvents = [];
+    private readonly List<BroadcastTransactionModel> _broadcastRows = [];
+    private readonly List<ChannelCloseModel> _closes = [];
+    private readonly List<OutputResolutionModel> _outputs = [];
 
     private ServiceProvider? _services;
     private LndGrpcHost? _host;
@@ -607,10 +610,19 @@ public sealed class LndGrpcWave3HostTests : IAsyncLifetime
                                                                    || query.Kinds.Contains(e.Kind)))
                                                          .Take(query.Take).ToList());
             var broadcasts = new Mock<IBroadcastTransactionDbRepository>();
-            broadcasts.Setup(x => x.GetPendingAsync()).ReturnsAsync([]);
+            broadcasts.Setup(x => x.GetPendingAsync())
+                      .ReturnsAsync(() => _broadcastRows.Where(r => r.State == Domain.Onchain.Enums.BroadcastState.Pending)
+                                                        .ToList());
             broadcasts.Setup(x => x.GetByTransactionIdAsync(It.IsAny<TxId>()))
-                      .ReturnsAsync((BroadcastTransactionModel?)null);
+                      .ReturnsAsync((TxId id) => _broadcastRows.FirstOrDefault(r => r.TransactionId == id));
+            broadcasts.Setup(x => x.GetByChannelIdAsync(It.IsAny<ChannelId>()))
+                      .ReturnsAsync((ChannelId id) => _broadcastRows.Where(r => r.ChannelId == id).ToList());
+            var resolutions = new Mock<IOnchainResolutionDbRepository>();
+            resolutions.Setup(x => x.GetClosesAsync()).ReturnsAsync(() => _closes.ToList());
+            resolutions.Setup(x => x.GetOutputsByChannelIdAsync(It.IsAny<ChannelId>()))
+                       .ReturnsAsync((ChannelId id) => _outputs.Where(o => o.ChannelId == id).ToList());
             var unitOfWork = new Mock<IUnitOfWork>();
+            unitOfWork.SetupGet(x => x.OnchainResolutionDbRepository).Returns(resolutions.Object);
             unitOfWork.SetupGet(x => x.AccountingEventDbRepository).Returns(accounting.Object);
             unitOfWork.SetupGet(x => x.BroadcastTransactionDbRepository).Returns(broadcasts.Object);
             return unitOfWork.Object;

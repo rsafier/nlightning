@@ -36,11 +36,24 @@ public sealed partial class LightningService
     /// no <c>txindex</c> is needed) while it still has them; <c>total_fees</c> is our broadcast row's, or computed when
     /// every input was ours.
     /// </remarks>
-    public override async Task<TransactionDetails> GetTransactions(GetTransactionsRequest request,
-                                                                   ServerCallContext context)
+    public override Task<TransactionDetails> GetTransactions(GetTransactionsRequest request,
+                                                             ServerCallContext context)
     {
         if (request.Account.Length > 0 && request.Account != "default")
             throw NotFound($"account {request.Account} not found");
+
+        return ListWalletTransactionsAsync(request, null, false, context.CancellationToken);
+    }
+
+    /// <summary>
+    /// <c>GetTransactions</c>' history (see there), limited to <paramref name="only"/> when given and to the
+    /// unconfirmed transactions with <paramref name="unconfirmedOnly"/> (walletrpc <c>ListSweeps</c>' verbose answer,
+    /// NL-1245, is this history filtered to the sweeps).
+    /// </summary>
+    internal async Task<TransactionDetails> ListWalletTransactionsAsync(GetTransactionsRequest request,
+                                                                       IReadOnlySet<TxId>? only, bool unconfirmedOnly,
+                                                                       CancellationToken cancellationToken)
+    {
 
         var tip = _blockchainMonitor?.LastProcessedBlockHeight ?? 0;
         var includeUnconfirmed = request.EndHeight is -1 or 0;
@@ -53,7 +66,7 @@ public sealed partial class LightningService
         {
             try
             {
-                await sealer.SealNowAsync(context.CancellationToken);
+                await sealer.SealNowAsync(cancellationToken);
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
@@ -63,7 +76,7 @@ public sealed partial class LightningService
 
         var entries = new Dictionary<TxId, HistoryEntry>();
         foreach (var accountingEvent in await ReadWalletEventsAsync(unitOfWork.AccountingEventDbRepository,
-                                                                    context.CancellationToken))
+                                                                    cancellationToken))
         {
             switch (accountingEvent.Kind)
             {
@@ -128,7 +141,7 @@ public sealed partial class LightningService
         if (scope.ServiceProvider.GetService<ImportedTapscriptTracker>() is { } imported)
         {
             ImportedWatchSnapshot snapshot;
-            try { snapshot = await imported.SnapshotAsync(context.CancellationToken); }
+            try { snapshot = await imported.SnapshotAsync(cancellationToken); }
             catch (InvalidOperationException e)
             {
                 throw new RpcException(new Status(StatusCode.FailedPrecondition, e.Message));
@@ -150,8 +163,9 @@ public sealed partial class LightningService
         }
 
         var selected = entries.Values
+                              .Where(e => only is null || only.Contains(e.TxId))
                               .Where(e => e.Height is { } height
-                                              ? height >= startHeight && height <= endHeight
+                                              ? !unconfirmedOnly && height >= startHeight && height <= endHeight
                                               : includeUnconfirmed)
                               .OrderBy(e => e.Height ?? uint.MaxValue).ThenBy(e => e.Time)
                               .ThenBy(e => e.TxId.ToString(), StringComparer.Ordinal)
