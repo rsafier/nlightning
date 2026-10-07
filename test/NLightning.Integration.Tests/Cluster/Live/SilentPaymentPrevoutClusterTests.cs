@@ -149,7 +149,7 @@ public sealed class SilentPaymentPrevoutClusterTests
         request.Headers.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{miner.Options.RpcUser}:{miner.Options.RpcPassword}")));
         using var response = await node.HttpClient.SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
-        Log($"CAPTURE core31-block {block.ToHex()}");
+        Log($"CAPTURE core31-block {Convert.ToHexString(block.ToBytes())}");
         Log($"CAPTURE core31-getblock3 {Convert.ToBase64String(Encoding.UTF8.GetBytes(new Newtonsoft.Json.Linq.JObject { ["result"] = verbose.Result, ["error"] = null }.ToString()))}");
         Log($"CAPTURE core31-rest {Convert.ToBase64String(await response.Content.ReadAsByteArrayAsync(ct))}");
     }
