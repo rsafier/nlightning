@@ -33,4 +33,11 @@ public sealed class WithdrawClientRequest
     /// daemon (<c>SourceLabelRules</c>).
     /// </summary>
     public IReadOnlyList<string> Tags { get; init; } = [];
+
+    /// <summary>
+    /// The wallet outputs to spend, as <c>txid:vout</c> with the txid in display order (NL-1296, <c>--utxo</c>,
+    /// repeatable); empty lets the wallet choose. Exactly these are spent, silent payment coins included. Checked by
+    /// the daemon.
+    /// </summary>
+    public IReadOnlyList<string> Utxos { get; init; } = [];
 }

@@ -173,10 +173,23 @@ public sealed class SilentPaymentScanner(IBlockPrevoutSource prevouts, ISilentPa
                 ? match with { SpentByTransactionId = null, SpentAtHeight = null }
                 : match;
             await unitOfWork.SilentPaymentDbRepository.UpsertOutputAsync(receipt, cancellationToken);
-            if (receipt.Ignored) continue;
+            if (receipt.Ignored)
+            {
+                logger.LogInformation(
+                    "Silent payment output {TxId}:{Index} of {Amount} sat at height {Height} found and ignored (below "
+                  + "the receive minimum)", receipt.TransactionId, receipt.Index, receipt.AmountSats, receipt.BlockHeight);
+                continue;
+            }
+
             var coin = new UtxoModel(receipt);
             if (materializeUtxos) unitOfWork.AddUtxo(coin);
             received.Add(coin);
+            // NL-1298: every received silent payment is logged (the save follows in the same block's unit of work)
+            logger.LogInformation(
+                "Silent payment output {TxId}:{Index} of {Amount} sat received at height {Height} (label {Label}){Wallet}",
+                receipt.TransactionId, receipt.Index, receipt.AmountSats, receipt.BlockHeight,
+                receipt.Label?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none",
+                materializeUtxos ? "; added to the wallet" : "; recovered, added once proven unspent");
         }
         return received;
     }
@@ -201,6 +214,9 @@ public sealed class SilentPaymentScanner(IBlockPrevoutSource prevouts, ISilentPa
                 await unitOfWork.SilentPaymentDbRepository.UpsertOutputAsync(output with
                 { SpentByTransactionId = spender, SpentAtHeight = height }, cancellationToken);
                 if (!output.Ignored) unitOfWork.TrySpendUtxo(output.TransactionId, output.Index);
+                logger.LogInformation("Silent payment output {TxId}:{Index} of {Amount} sat spent by {Spender} at height "
+                                    + "{Height}", output.TransactionId, output.Index, output.AmountSats, spender,
+                                      height);
                 spent.Add((output, spender));
             }
         }

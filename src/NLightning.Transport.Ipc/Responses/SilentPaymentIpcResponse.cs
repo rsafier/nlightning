@@ -63,6 +63,9 @@ public sealed class SilentPaymentStatusIpcInfo
     [Key(14)] public double? LastScanMilliseconds { get; init; }
     [Key(15)] public string? LastError { get; init; }
 
+    /// <summary>The unspent outputs (NL-1296), or null from an older daemon.</summary>
+    [Key(16)] public List<SilentPaymentUnspentIpcInfo>? Unspent { get; init; }
+
     public static SilentPaymentStatusIpcInfo FromDomain(SilentPaymentStatus status) => new()
     {
         Enabled = status.Enabled,
@@ -80,6 +83,25 @@ public sealed class SilentPaymentStatusIpcInfo
         IgnoredOutputs = status.IgnoredOutputs,
         UnspentOutputs = status.UnspentOutputs,
         LastScanMilliseconds = status.LastScanMilliseconds,
-        LastError = status.LastError
+        LastError = status.LastError,
+        Unspent = status.Unspent.Select(output => new SilentPaymentUnspentIpcInfo
+        {
+            TxId = output.TxId,
+            Index = output.Index,
+            AmountSats = output.AmountSats,
+            BlockHeight = output.BlockHeight,
+            Label = output.Label
+        }).ToList()
     };
+}
+
+[MessagePackObject]
+public sealed class SilentPaymentUnspentIpcInfo
+{
+    /// <summary>The txid in display order.</summary>
+    [Key(0)] public string? TxId { get; init; }
+    [Key(1)] public uint Index { get; init; }
+    [Key(2)] public long AmountSats { get; init; }
+    [Key(3)] public uint BlockHeight { get; init; }
+    [Key(4)] public uint? Label { get; init; }
 }

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NBitcoin;
 
@@ -58,6 +59,14 @@ public partial class BlockchainMonitorService
             await repository.SetScanStateAsync(state, cancellationToken);
             await unitOfWork.SaveChangesAsync();
         }
+
+        // NL-1298: say at start whether and from where silent payments are scanned
+        _logger.LogInformation(
+            "Silent payment scanning {State}: birthday {Birthday}, live from {LiveFrom}, live cursor {Cursor}, prevouts "
+          + "from {Source}{Rescan}", _silentPaymentScanner.Enabled ? "on" : "off (receive disabled)",
+            state.BirthdayHeight, state.LiveFromHeight, state.LiveCursorHeight?.ToString() ?? "none",
+            _silentPaymentScanner.PrevoutSource,
+            state.RescanTargetHeight is { } target ? $", rescanning to {target}" : string.Empty);
     }
 
     private async Task<PreparedSilentPaymentBlock?> PrepareSilentPaymentBlockAsync(Block block, uint height,
