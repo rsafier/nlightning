@@ -151,10 +151,17 @@ public sealed class SilentPaymentsFlowTests
         await MineAsync(core, nodeRpc, mineAddress, 2, [a, b], ct);
         Assert.True(SilentCoins(b).Count < beforeSpend.Length);
         await nodeRpc.InvalidateBlockAsync(await nodeRpc.GetBlockHashAsync((int)spentHeight, ct), ct);
+        // A replacement block announces the fork to the rawblock ZMQ subscriber. Exclude the
+        // disconnected withdrawal until both nodes have committed and audited its rollback.
+        for (var i = 0; i < 3; i++)
+            await nodeRpc.SendCommandAsync("generateblock", mineAddress.ToString(), Array.Empty<string>()).WaitAsync(ct);
         await WaitAtTipAsync(nodeRpc, [a, b], ct);
         Assert.Equal(beforeSpend, SilentCoins(b).Select(Outpoint).Order().ToArray());
         await ReconcileAsync(b, ct);
-        await MineAsync(core, nodeRpc, mineAddress, 5, [a, b], ct);
+        await nodeRpc.SendCommandAsync("generateblock", mineAddress.ToString(),
+            new[] { new uint256((byte[])spendResult.TxId).ToString() }).WaitAsync(ct);
+        await MineAsync(core, nodeRpc, mineAddress, 4, [a, b], ct);
+        Assert.True(SilentCoins(b).Count < beforeSpend.Length);
         var recoveredSet = SilentCoins(b).Select(Outpoint).Order().ToArray();
         await b.StopAsync();
         await b.StartAsync(ct);

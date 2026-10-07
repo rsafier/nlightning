@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -232,48 +233,59 @@ public sealed class BlockPrevoutSource : IBlockPrevoutSource
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException($"REST spenttxouts unavailable (HTTP {(int)response.StatusCode}); enable -rest; undo data may be pruned.");
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        return ParseRest(stream, block);
+        return await ParseRestAsync(stream, block, cancellationToken);
     }
 
     // Core 31 rest.cpp SerializeBlockUndo: CompactSize tx count (coinbase included), then per-tx
     // CompactSize input count and ordinary CTxOut serialization (int64 satoshis, CompactSize script bytes).
-    internal static IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>> ParseRest(Stream stream, Block block)
+    internal static async Task<IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>>> ParseRestAsync(
+        Stream stream, Block block, CancellationToken cancellationToken = default)
     {
-        using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
-        if (ReadSize(reader) != (ulong)block.Transactions.Count)
+        var scalar = new byte[8];
+        if (await ReadSizeAsync(stream, scalar, cancellationToken) != (ulong)block.Transactions.Count)
             throw new InvalidDataException("REST spenttxouts transaction count mismatch.");
         Dictionary<TxId, IReadOnlyList<BitcoinPrevout>> result = [];
         foreach (var tx in block.Transactions)
         {
-            var count = ReadSize(reader);
+            var count = await ReadSizeAsync(stream, scalar, cancellationToken);
             if (count != (ulong)(tx.IsCoinBase ? 0 : tx.Inputs.Count))
                 throw new InvalidDataException("REST spenttxouts input count mismatch.");
             var candidate = IsCandidate(tx);
             List<BitcoinPrevout> previous = [];
             for (ulong i = 0; i < count; i++)
             {
-                var amount = reader.ReadInt64();
-                var length = ReadSize(reader);
+                await stream.ReadExactlyAsync(scalar, cancellationToken);
+                var amount = BinaryPrimitives.ReadInt64LittleEndian(scalar);
+                var length = await ReadSizeAsync(stream, scalar, cancellationToken);
                 if (amount < 0 || length > 10_000)
                     throw new InvalidDataException("Invalid REST previous output.");
-                var script = reader.ReadBytes((int)length);
-                if (script.Length != (int)length)
-                    throw new EndOfStreamException("Truncated REST previous output script.");
+                var script = new byte[(int)length];
+                await stream.ReadExactlyAsync(script, cancellationToken);
                 if (candidate)
                     previous.Add(new BitcoinPrevout((ulong)amount, new BitcoinScript(script)));
             }
             if (candidate)
                 result.Add(new TxId(tx.GetHash().ToBytes()), previous);
         }
-        if (stream.ReadByte() != -1)
+        if (await stream.ReadAsync(scalar.AsMemory(0, 1), cancellationToken) != 0)
             throw new InvalidDataException("Unexpected bytes after REST spenttxouts.");
         return result;
     }
 
-    private static ulong ReadSize(BinaryReader reader)
+    private static async ValueTask<ulong> ReadSizeAsync(Stream stream, byte[] scalar, CancellationToken cancellationToken)
     {
-        var first = reader.ReadByte();
-        var value = first switch { 253 => reader.ReadUInt16(), 254 => reader.ReadUInt32(), 255 => reader.ReadUInt64(), _ => (ulong)first };
+        await stream.ReadExactlyAsync(scalar.AsMemory(0, 1), cancellationToken);
+        var first = scalar[0];
+        var width = first switch { 253 => 2, 254 => 4, 255 => 8, _ => 0 };
+        if (width == 0)
+            return first;
+        await stream.ReadExactlyAsync(scalar.AsMemory(0, width), cancellationToken);
+        var value = first switch
+        {
+            253 => BinaryPrimitives.ReadUInt16LittleEndian(scalar),
+            254 => BinaryPrimitives.ReadUInt32LittleEndian(scalar),
+            _ => BinaryPrimitives.ReadUInt64LittleEndian(scalar)
+        };
         if ((first == 253 && value < 253) || (first == 254 && value <= ushort.MaxValue) || (first == 255 && value <= uint.MaxValue))
             throw new InvalidDataException("Noncanonical CompactSize in REST spenttxouts.");
         return value;

@@ -107,14 +107,14 @@ public class BlockPrevoutSourceTests
     }
 
     [Fact]
-    public void Given_CoreRestWireFormat_When_Read_Then_CoinbaseIsEmptyAndOutputsMatch()
+    public async Task Given_CoreRestWireFormat_When_Read_Then_CoinbaseIsEmptyAndOutputsMatch()
     {
         // Arrange: Core SerializeBlockUndo emits normal CTxOut, not the on-disk compressed Coin format.
         var block = CreateBlock();
         using var stream = CreateRest();
 
         // Act
-        var previous = BlockPrevoutSource.ParseRest(stream, block);
+        var previous = await BlockPrevoutSource.ParseRestAsync(stream, block, TestContext.Current.CancellationToken);
 
         // Assert
         var values = Assert.Single(previous).Value;
@@ -129,7 +129,7 @@ public class BlockPrevoutSourceTests
     [InlineData(3)]
     [InlineData(10)]
     [InlineData(40)]
-    public void Given_TruncatedRestData_When_Read_Then_ItFails(int length)
+    public async Task Given_TruncatedRestData_When_Read_Then_ItFails(int length)
     {
         // Arrange
         var block = CreateBlock();
@@ -137,28 +137,45 @@ public class BlockPrevoutSourceTests
         using var truncated = new MemoryStream(valid.ToArray()[..length]);
 
         // Act / Assert
-        Assert.ThrowsAny<Exception>(() => BlockPrevoutSource.ParseRest(truncated, block));
+        await Assert.ThrowsAnyAsync<Exception>(() => BlockPrevoutSource.ParseRestAsync(truncated, block, TestContext.Current.CancellationToken));
     }
 
     [Fact]
-    public void Given_NoncanonicalRestCount_When_Read_Then_ItFails()
+    public async Task Given_NoncanonicalRestCount_When_Read_Then_ItFails()
     {
         // Arrange
         using var stream = new MemoryStream([253, 2, 0]);
 
         // Act / Assert
-        Assert.Throws<InvalidDataException>(() => BlockPrevoutSource.ParseRest(stream, CreateBlock()));
+        await Assert.ThrowsAsync<InvalidDataException>(() => BlockPrevoutSource.ParseRestAsync(stream, CreateBlock(), TestContext.Current.CancellationToken));
     }
 
     [Fact]
-    public void Given_TrailingRestData_When_Read_Then_ItFails()
+    public async Task Given_TrailingRestData_When_Read_Then_ItFails()
     {
         // Arrange
         using var valid = CreateRest();
         using var stream = new MemoryStream([.. valid.ToArray(), 0]);
 
         // Act / Assert
-        Assert.Throws<InvalidDataException>(() => BlockPrevoutSource.ParseRest(stream, CreateBlock()));
+        await Assert.ThrowsAsync<InvalidDataException>(() => BlockPrevoutSource.ParseRestAsync(stream, CreateBlock(), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Given_StalledRestBody_When_Cancelled_Then_ParsingStops()
+    {
+        // Arrange: consume the transaction vector header, then stall on a network body read.
+        using var valid = CreateRest();
+        using var stream = new StalledReadStream(valid.ToArray()[..3]);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var parsing = BlockPrevoutSource.ParseRestAsync(stream, CreateBlock(), cancellation.Token);
+        await stream.Stalled.Task.WaitAsync(TestContext.Current.CancellationToken);
+
+        // Act
+        cancellation.Cancel();
+
+        // Assert
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => parsing);
     }
 
     [Fact]
@@ -338,4 +355,19 @@ public class BlockPrevoutSourceTests
         stream.Position = 0;
         return stream;
     }
+
+    private sealed class StalledReadStream(byte[] prefix) : MemoryStream(prefix)
+    {
+        public TaskCompletionSource Stalled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (Position < Length)
+                return await base.ReadAsync(buffer, cancellationToken);
+            Stalled.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0;
+        }
+    }
+
 }
