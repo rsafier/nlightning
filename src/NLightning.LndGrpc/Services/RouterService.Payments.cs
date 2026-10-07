@@ -187,8 +187,8 @@ public sealed partial class RouterService
                         await responseStream.WriteAsync(new Payment
                         {
                             PaymentHash = started.PaymentHash.ToString(),
-                            Value = started.Amount.Satoshi,
-                            ValueSat = started.Amount.Satoshi,
+                            Value = LightningService.Sat(started.Amount),
+                            ValueSat = LightningService.Sat(started.Amount),
                             ValueMsat = (long)started.Amount.MilliSatoshi,
                             PaymentRequest = started.PaymentRequest ?? string.Empty,
                             PaymentIndex = started.PaymentIndex,

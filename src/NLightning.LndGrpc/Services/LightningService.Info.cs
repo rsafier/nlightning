@@ -31,7 +31,7 @@ public sealed partial class LightningService
             Alias = _nodeOptions.Alias,
             Color = "#" + _nodeOptions.Color.TrimStart('#').ToLowerInvariant(),
             NumActiveChannels = (uint)channels.Count(IsActive),
-            NumInactiveChannels = (uint)channels.Count(c => c.State == ChannelState.Open && !IsActive(c)),
+            NumInactiveChannels = (uint)channels.Count(c => IsListed(c) && !IsActive(c)),
             NumPendingChannels = (uint)channels.Count(IsPendingOpen),
             NumPeers = (uint)_peerManager.ListPeers().Count,
             BlockHeight = height,

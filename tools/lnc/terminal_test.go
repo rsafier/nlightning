@@ -287,6 +287,30 @@ func TestEveryProfileGrantsTerminalLitrpcReads(t *testing.T) {
 	}
 }
 
+// Lightning Terminal's dashboard calls these node reads on every refresh; both
+// profiles must grant them (NL-1239: FeeReport was refused before the node
+// implemented it).
+func TestEveryProfileGrantsTerminalDashboardReads(t *testing.T) {
+	reads := []string{"/lnrpc.Lightning/FeeReport", "/lnrpc.Lightning/ForwardingHistory",
+		"/lnrpc.Lightning/ListPayments", "/lnrpc.Lightning/ListInvoices", "/lnrpc.Lightning/GetTransactions",
+		"/lnrpc.Lightning/GetChanInfo", "/lnrpc.Lightning/ClosedChannels", "/lnrpc.Lightning/PendingChannels"}
+	for _, profile := range []string{"readonly", "wallet"} {
+		methods, e := profileMethods(profile)
+		if e != nil {
+			t.Fatal(e)
+		}
+		granted := map[string]bool{}
+		for _, m := range methods {
+			granted[m] = true
+		}
+		for _, m := range reads {
+			if !granted[m] {
+				t.Fatal(profile, "lacks", m)
+			}
+		}
+	}
+}
+
 func TestReconcileServesPhraseUntilConfirmed(t *testing.T) {
 	now := time.Now()
 	key := strings.Repeat("02", 33)
