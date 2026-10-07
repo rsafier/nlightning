@@ -25,6 +25,23 @@ public static class SpliceFundingScripts
     public const int SharedInputWeight = CollaborativeFeeCalculator.InputBaseWeight + SharedInputWitnessWeight;
 
     /// <summary>
+    /// The weight of the 2-of-2 shared input a splice initiator pays for (NL-1292): <see cref="SharedInputWeight"/> plus
+    /// one. Core Lightning's <c>bitcoin_tx_input_weight</c> adds a witness item count on top of
+    /// <c>bitcoin_tx_2of2_input_witness_weight</c>, which counts it already, so CLN charges the initiator 387 wu for
+    /// this input, and since v26.06.9 its accepter enforces that minimum fee (<c>tx_abort</c> "Your fee ... was too
+    /// low"); one weight unit more is at most one satoshi at 1,000 sat/kw. A peer's fee is still checked against the
+    /// exact <see cref="SharedInputWeight"/>.
+    /// </summary>
+    public const int SharedInputFeeWeight = SharedInputWeight + 1;
+
+    /// <summary>
+    /// The weight of the shared input a splice initiator pays for: <see cref="SharedInputFeeWeight"/>, or
+    /// <see cref="TaprootSharedInputWeight"/> for a simple taproot channel (CLN's key-path count matches it).
+    /// </summary>
+    public static int GetSharedInputFeeWeight(bool simpleTaproot) =>
+        simpleTaproot ? TaprootSharedInputWeight : SharedInputFeeWeight;
+
+    /// <summary>
     /// The witness weight of a simple taproot funding input (BIP 341 key path): item count (1), the 64-byte
     /// <c>SIGHASH_DEFAULT</c> signature with its length (1 + 64).
     /// </summary>
