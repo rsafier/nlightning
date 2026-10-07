@@ -1,0 +1,57 @@
+using MessagePack;
+
+namespace NLightning.Daemon.Tests.Ipc.Formatters;
+
+using Domain.Bitcoin.SilentPayments.Models;
+using Domain.Client.Enums;
+using Domain.Client.Responses;
+using Transport.Ipc.MessagePack;
+using Transport.Ipc.Requests;
+using Transport.Ipc.Responses;
+
+public class SilentPaymentMessagePackTests
+{
+    [Fact]
+    public void Given_FullStatusAddressAndLabels_When_MessagePackRoundTrip_Then_AllRecoveryFieldsSurvive()
+    {
+        // Arrange
+        var status = new SilentPaymentStatus(true, true, true, true, 10, 20, 30, 40, 50, 100,
+            "RpcVerbosity3", 7, 2, 5, 123.45, "prevout unavailable");
+        var wire = SilentPaymentIpcResponse.FromClientResponse(new SilentPaymentClientResponse(
+            new SilentPaymentAddressResult("sprt1qaddress", 7, "store", true),
+            [new SilentPaymentLabelInfo(7, "store", 10, "sprt1qlabel"),
+             new SilentPaymentLabelInfo(0, "change", 10, "sprt1qchange", true)], status));
+        // Act
+        var bytes = MessagePackSerializer.Serialize(wire, NLightningMessagePackOptions.Options);
+        var restored = MessagePackSerializer.Deserialize<SilentPaymentIpcResponse>(bytes, NLightningMessagePackOptions.Options);
+        // Assert
+        Assert.Equal(("sprt1qaddress", (uint?)7, "store", true),
+            (restored.Address, restored.Label, restored.LabelName, restored.RecoverableElsewhere));
+        var labels = Assert.IsType<List<SilentPaymentLabelIpcInfo>>(restored.Labels);
+        Assert.Equal(2, labels.Count);
+        Assert.Equal((7u, "store", 10u, "sprt1qlabel", false),
+            (labels[0].M, labels[0].Name, labels[0].CreatedAtHeight, labels[0].Address, labels[0].IsChange));
+        Assert.True(labels[1].IsChange);
+        var result = Assert.IsType<SilentPaymentStatusIpcInfo>(restored.Status);
+        Assert.Equal((true, true, true, true, (uint?)10, (uint?)20, (uint?)30, (uint?)40, (uint?)50,
+                      100u, "RpcVerbosity3", 7, 2, 5, (double?)123.45, "prevout unavailable"),
+            (result.Enabled, result.Send, result.Receive, result.RecoverableElsewhere, result.BirthdayHeight,
+             result.LiveFromHeight, result.LiveCursorHeight, result.RescanCursorHeight, result.RescanTargetHeight,
+             result.RecoveryLabelCount, result.PrevoutSource, result.FoundOutputs, result.IgnoredOutputs,
+             result.UnspentOutputs, result.LastScanMilliseconds, result.LastError));
+    }
+
+    [Fact]
+    public void Given_RescanRequest_When_MessagePackRoundTrip_Then_RangeAndRecoveryLabelsReachDomain()
+    {
+        // Arrange
+        var request = new SilentPaymentIpcRequest { Label = "store", FromHeight = 123, RecoveryLabels = 100, Cancel = true };
+        // Act
+        var bytes = MessagePackSerializer.Serialize(request, NLightningMessagePackOptions.Options);
+        var restored = MessagePackSerializer.Deserialize<SilentPaymentIpcRequest>(bytes, NLightningMessagePackOptions.Options)
+            .ToClientRequest(ClientCommand.SilentPaymentRescan);
+        // Assert
+        Assert.Equal((ClientCommand.SilentPaymentRescan, "store", (uint?)123, (uint?)100, true),
+            (restored.Command, restored.Label, restored.FromHeight, restored.RecoveryLabels, restored.Cancel));
+    }
+}
