@@ -234,6 +234,60 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Given_OneHistoricalSpenderWithMoreInputsThanTheBatchLimit_When_Finalized_Then_AllCustodyAndSettlementCommitTogether()
+    {
+        // Arrange: the 100-output proof batch contains only part of this single 205-input transaction.
+        AddReceiptGroup(1, 205, 100);
+        var points = _unspent.Keys.ToArray();
+        var transaction = Transaction.Create(Network.RegTest);
+        foreach (var point in points)
+        {
+            transaction.Inputs.Add(new TxIn(point));
+            _unspent.Remove(point);
+        }
+        transaction.Outputs.Add(new TxOut(Money.Satoshis(20_000), Script.Empty));
+        _blocks[5].Transactions.Add(transaction);
+        _blocks[5].UpdateMerkleRoot();
+        var spender = new TxId(transaction.GetHash().ToBytes());
+        using var service = CreateService();
+        await service.GetAddressAsync(cancellationToken: TestContext.Current.CancellationToken);
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+        for (var i = 0; i < 4; i++)
+            Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+
+        // Act: the first finalization commit must include the complete spender, without a partial clearing balance.
+        Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+
+        // Assert
+        using (var scope = _provider.CreateScope())
+        {
+            var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var outputs = await uow.SilentPaymentDbRepository.GetOutputsAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(205, outputs.Count);
+            Assert.All(outputs, output =>
+            {
+                Assert.Equal(spender, output.SpentByTransactionId);
+                Assert.Equal(5u, output.SpentAtHeight);
+            });
+            var custody = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wallet:", TestContext.Current.CancellationToken);
+            Assert.Equal(205, custody.Count(fact => fact.Kind == AccountingEventKind.WalletReceived));
+            Assert.Equal(205, custody.Count(fact => fact.Kind == AccountingEventKind.WalletOutputSpent));
+            var settlement = Assert.Single(await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wsend:", TestContext.Current.CancellationToken));
+            Assert.Equal(-20_000_000L, settlement.AmountMsat);
+            Assert.Equal(500_000L, settlement.FeeMsat);
+            AssertRecoveredBooks(custody.Append(settlement), 0, -20_500_000, 20_000_000, 500_000);
+        }
+        Assert.Empty(await UnspentAsync());
+        using var restarted = CreateService();
+        Assert.True(await restarted.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        Assert.False((await restarted.GetStatusAsync(TestContext.Current.CancellationToken)).IsRescanning);
+        using var finalScope = _provider.CreateScope();
+        var finalUow = finalScope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        Assert.Single(await finalUow.AccountingEventDbRepository.GetByKeyPrefixAsync("wsend:", TestContext.Current.CancellationToken));
+        Assert.Equal(410, (await finalUow.AccountingEventDbRepository.GetByKeyPrefixAsync("wallet:", TestContext.Current.CancellationToken)).Count);
+    }
+
+    [Fact]
     public async Task Given_CancelledRecovery_When_Restarted_Then_DiscoveriesRemainAndTheJobDoesNotResume()
     {
         // Arrange
