@@ -26,6 +26,9 @@ public sealed class NodeInfoPrinter : IPrinter<NodeInfoIpcResponse>
         if (item.OnionAddress is not null)
             _output.WriteLine("  Onion address:     {0}", item.OnionAddress);
 
+        if (item.SilentPaymentRecoverableElsewhere is { } recoverable)
+            _output.WriteLine("  SP recoverable_elsewhere: {0}", recoverable.ToString().ToLowerInvariant());
+
         if (item.PeerCount is not null)
             _output.WriteLine("  Peers:             {0}", item.PeerCount);
         if (item.ActiveChannelCount is not null)

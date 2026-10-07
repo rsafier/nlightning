@@ -4,6 +4,8 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Daemon.Services;
 
 using Contracts.Control;
+using Domain.Bitcoin.SilentPayments;
+using Domain.Bitcoin.SilentPayments.Interfaces;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
@@ -63,6 +65,8 @@ public sealed class NodeInfoQueryService : INodeInfoQueryService
 
         return new NodeInfoResponse
         {
+            SilentPaymentRecoverableElsewhere = _services.GetService<IOptions<SilentPaymentsOptions>>()?.Value.Enabled == true
+                ? (_secureKeyManager as ISilentPaymentKeySource)?.RecoverableElsewhere : null,
             PubKey = pubKeyString,
             ListeningTo = listeningToString,
             Network = _nodeOptions.BitcoinNetwork,

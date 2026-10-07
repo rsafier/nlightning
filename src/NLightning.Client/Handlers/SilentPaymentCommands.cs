@@ -36,7 +36,8 @@ internal static class SilentPaymentCommands
                 continue;
             }
             if (kind == ClientCommand.GetSilentPaymentAddress && option == "--label" && label is null
-             && i + 1 < args.Length && !string.IsNullOrWhiteSpace(args[i + 1]))
+             && i + 1 < args.Length && !string.IsNullOrWhiteSpace(args[i + 1])
+             && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
             {
                 label = args[++i];
                 continue;
