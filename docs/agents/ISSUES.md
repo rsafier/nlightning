@@ -181,12 +181,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 0 | 97 | 97 |
+| open | 0 | 0 | 0 | 98 | 98 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
 | fixed | 15 | 69 | 237 | 497 | 818 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **69** | **253** | **617** | **954** |
+| **Total** | **15** | **69** | **253** | **618** | **955** |
 
 ### Epics
 
@@ -10047,6 +10047,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** run the test under load in a loop. Check whether the FAIL can be answered before the hold is registered with the switch, or whether the assertion polls with a fixed deadline. Make the wait event-driven.
 - **Blocks/Blocked-by:** related NL-1234, NL-1182
 
+### NL-1236 LND gRPC `WalletBalance` calls an output confirmed only at 4 confirmations; LND does at 1
+- **Status:** open
+- **Severity:** low
+- **Kind:** interop
+- **Location:** `src/NLightning.LndGrpc/Services/LightningService.Info.cs` (`WalletBalance`, lines 93-94); `UtxoMemoryRepository.GetConfirmedBalance` (BlockHeight + 3 <= tip)
+- **Evidence:** public signet Loop trial (`LOOP_SIGNET_TRIAL.md`, 2026-10-06). Outputs from loopd's sweep and its cooperative static withdrawal stayed "unconfirmed" in `WalletBalance` for 3 blocks after they confirmed. Our wallet applies its 4-confirmation spend rule to every address type, which is correct for `walletbalance`. LND's `WalletBalance` counts an output as confirmed from 1 confirmation, so LND clients (loopd, dashboards) see a balance that lags.
+- **Fix sketch:** in the gRPC response only, split confirmed and unconfirmed at LND's 1 confirmation. Keep the node's own spend rule and `walletbalance`. Add a unit test. Cosmetic, same area: `WalletPsbtService.PublishTransactionAsync` should log a client's republish of a transaction bitcoind already has (loopd republishes every block until 3 confirmations) as already known, not as a fresh broadcast.
+- **Blocks/Blocked-by:** none
 ### NL-1233 A final payload without `payment_data` answered `invalid_onion_payload`, so LND probes (Loop's static loop-in) saw us unreachable
 - **Status:** fixed (91759661)
 - **Severity:** medium
