@@ -154,7 +154,7 @@ public partial class BlockchainMonitorService
         var state = await unitOfWork.SilentPaymentDbRepository.GetScanStateAsync();
         if (state is not null && (state.LiveCursorHeight > forkHeight || state.RescanCursorHeight > forkHeight))
         {
-            Hash? forkHash = TryGetKnownHash(forkHeight, out var knownFork) ? knownFork : null;
+            Hash? forkHash = TryGetKnownHash(forkHeight, out var knownFork) ? knownFork : (Hash?)null;
             await unitOfWork.SilentPaymentDbRepository.SetScanStateAsync(state with
             {
                 LiveCursorHeight = state.LiveCursorHeight > forkHeight ? forkHeight : state.LiveCursorHeight,
