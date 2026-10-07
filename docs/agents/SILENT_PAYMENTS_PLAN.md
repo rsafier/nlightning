@@ -98,7 +98,7 @@ Notation: `G` is the generator, `n` the curve order, and `hash_tag(x) = SHA256(S
    - on a match, record `(outpoint, P, t_k, m?)`, remove the output and continue with `k+1`;
    - stop when nothing matches.
    - A match that wallet policy later ignores (dust, D-SP12) **still** advances `k`.
-5. **Spend key** of a found output: `d = b_spend + t_k (+ label_m) mod n`, where `label_m = hash_Label(ser256(b_scan) || ser32(m))`. It is a **raw** BIP340 key-path spend. There is **no** BIP86/BIP341 tweak: the output key `P` is the key itself. If `P` has odd Y, negate `d` before signing. NBitcoin's `SignTaprootKeySpend` on an `ECPrivKey` built from `d` with no merkle-root tweak does this; verify it against the vectors' `signature` field: `reference.py` signs `msg = SHA256("message")` with `aux = SHA256("random auxiliary data")`.
+5. **Spend key** of a found output: `d = b_spend + t_k (+ label_m) mod n`, where `label_m = hash_Label(ser256(b_scan) || ser32(m))`. It is a **raw** BIP340 key-path spend. There is **no** BIP86/BIP341 tweak: the output key `P` is the key itself. If `P` has odd Y, negate `d` before signing. Use raw `ECPrivKey.SignBIP340` for the received output's key. NBitcoin's `SignTaprootKeySpend` adds a BIP341 output-key tweak even when the merkle root is null, so it must not sign silent-payment outputs. Verify raw signing against the vectors' `signature` field: `reference.py` signs `msg = SHA256("message")` with `aux = SHA256("random auxiliary data")`.
 6. Address: `B_m = B_spend + label_m·G` (none for the plain address). Encoding is bech32m:
    - HRP `sp` on mainnet, `tsp` on testnet, testnet4, signet and Mutinynet, `sprt` on regtest (Bitcoin Core `chainparams.cpp` `silent_payments_hrp`);
    - data = version 0 (`q`) followed by the 66 bytes `serP(B_scan) || serP(B_m)` in 5-bit groups.
@@ -458,7 +458,7 @@ NL-1260 owns the single migration. Later tasks that need a column add it in a mi
   4. a two-block reorg mid-way;
   5. B is wiped and restored by `sprescan`;
   6. accounting reconciles on both.
-- **Interop:** a reference wallet on the same regtest, packaged as an image `nltg-spike-spwallet:<commit>`. Recommended: a small CLI over the Rust `silent-payments` crates (the `rust-silentpayments` lineage, plus SPDK, which builds on it), because it runs headless in a pod.
+- **Interop:** the independent upstream Python BIP 352 reference, unchanged and pinned to `bitcoin/bips` commit `c2ac36f48f71615984087fd151f410457edfed72` (BIP version 1.1.1), is packaged in `nltg-spike-spwallet:bip352-1.1.1`. A small JSON CLI wrapper calls its sender and scanner against actual regtest inputs/outputs. Production BIP352 code is not the oracle; the upstream reference semantics must remain unchanged. This test-only Python image runs headless in the same cluster service network.
   - The reference wallet pays our address, and we find it.
   - We pay its address, and its full-node scanner finds it.
   - Bitcoin Core's own wallet support, if a release carries it by then, is an alternative: PR #35301 (BIP 352 logic in `common/`) merged 2026-09-23; wallet sending is #35302 and receiving #32966, both open at the time of writing.
@@ -539,7 +539,7 @@ NL-1260 owns the single migration. Later tasks that need a column add it in a mi
 1. **Performance of managed secp256k1.** NBitcoin.Secp256k1 is a managed port. Constant-time multiplications cost several hundred µs each, so 2,000 eligible transactions per block may take about 0.5-1 s even when parallel. Mitigations, in order: parallelism; the variable-time path for public-only maths; batching the label lookups. As a last resort, libsecp256k1 0.8.0's silentpayments module (released 2026-08-03, full-node scanning, PR #1765) through P/Invoke behind the `ISilentPaymentCrypto` port. That would add a native dependency (see `CRYPTO_NATIVE`), so it is an owner decision if needed.
 2. **REST `spenttxouts`.** Verified on Core 31.1: `-rest` is required, `-txindex` is unnecessary, and the payload contains ordinary serialized `CTxOut` values. Old pruned blocks cannot be recovered; see §8.
 3. **Backend scope.** The owner explicitly selected Bitcoin Core for this implementation and proof. rbitcoin compatibility has not been verified by this work and is not an acceptance requirement.
-4. **Core wallet support is still in review** (#35302 send, #32966 receive). Interop proofs rely on Rust tooling until a Core release ships it. If Core picks a different default regtest HRP or path, follow Core and record it here.
+4. **Core wallet support is still in review** (#35302 send, #32966 receive). Interop proofs use the pinned independent Python reference until a Core release ships wallet support. If Core picks a different default regtest HRP or path, follow Core and record it here.
 5. **The BIP is "Complete" but still versioned** (1.1.0 added K_max in March 2026, 1.1.1 a vector in April 2026). New vectors must be pulled deliberately (pinned SHA, §0).
 6. **Schema change to `Utxos`.** Making the address FK nullable touches every wallet reader. The NL-1260 audit is the risk control, and a missed reader would mis-sign or crash on an SP coin. The NL-1263 in-process spends through every path are the safety net.
 7. **Accounting dedup on rescan.** Confirm in NL-1264 that the A1 dedup key cannot collapse a rescan finding into a live one, or the reverse after a reorg.
