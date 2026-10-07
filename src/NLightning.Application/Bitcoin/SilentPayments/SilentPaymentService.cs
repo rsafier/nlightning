@@ -288,7 +288,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
             }
             uow.AddUtxo(new UtxoModel(output));
         }
-        var ordinaryPending = await StageOrdinaryFinalizationAsync(uow, state, tip, labels, cancellationToken);
+        var (ordinaryPending, ordinaryBlocked) = await StageOrdinaryFinalizationAsync(uow, state, tip, labels, cancellationToken);
         if (await chain.GetCurrentBlockHeightAsync().WaitAsync(cancellationToken) != tip ||
             await chain.GetBlockHashAsync(tip).WaitAsync(cancellationToken) != tipHash)
             throw new InvalidOperationException("Chain changed during silent payment recovery finalization.");
@@ -298,7 +298,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
         cancellationToken.ThrowIfCancellationRequested();
         await uow.SaveChangesAsync();
         foreach (var address in catalogue) monitor.WatchBitcoinAddress(address);
-        return !pendingSpends;
+        return !pendingSpends && !ordinaryBlocked;
     }
 
     private async Task<IReadOnlyList<WalletAddressModel>> StageRecoveryAddressesAsync(IUnitOfWork uow,
@@ -328,10 +328,10 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
         }
     }
 
-    private async Task<bool> StageOrdinaryFinalizationAsync(IUnitOfWork uow, SilentPaymentScanState state, uint tip,
+    private async Task<(bool Pending, bool Blocked)> StageOrdinaryFinalizationAsync(IUnitOfWork uow, SilentPaymentScanState state, uint tip,
         IReadOnlyList<SilentPaymentLabelModel> labels, CancellationToken cancellationToken)
     {
-        if (recoveryAddresses is null) return false;
+        if (recoveryAddresses is null) return (false, false);
         var catalogue = await StageRecoveryAddressesAsync(uow, cancellationToken);
         var current = (await uow.UtxoDbRepository.GetUnspentAsync()).Select(coin => (coin.TxId, coin.Index)).ToHashSet();
         var candidates = (await WalletRecoveryAccounting.GetUnspentAsync(uow, cancellationToken, catalogue))
@@ -379,7 +379,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
         if (auditNeeded.Count != 0)
             throw new InvalidOperationException("A recovered ordinary output is spent but confirmed spender evidence is unavailable; recovery remains pending.");
         var remaining = await WalletRecoveryAccounting.GetUnspentAsync(uow, cancellationToken, catalogue);
-        return pending || remaining.Any(candidate => !current.Contains((candidate.Coin.TxId, candidate.Coin.Index)));
+        return (pending || remaining.Any(candidate => !current.Contains((candidate.Coin.TxId, candidate.Coin.Index))), pending);
     }
 
     private async Task<SilentPaymentScanState> EnsureStateAsync(IUnitOfWork uow, CancellationToken cancellationToken)
