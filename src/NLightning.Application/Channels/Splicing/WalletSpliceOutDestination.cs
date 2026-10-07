@@ -36,6 +36,10 @@ public sealed class WalletSpliceOutDestination : ISpliceOutDestination
     {
         if (!string.IsNullOrWhiteSpace(address))
         {
+            if (address.StartsWith("sp1", StringComparison.OrdinalIgnoreCase) ||
+                address.StartsWith("tsp1", StringComparison.OrdinalIgnoreCase) ||
+                address.StartsWith("sprt1", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("Silent payment destinations are not supported for splice-out: pay the wallet, then `withdraw` to the silent payment address.", nameof(address));
             try
             {
                 return BitcoinAddress.Create(address, _network).ScriptPubKey.ToBytes();

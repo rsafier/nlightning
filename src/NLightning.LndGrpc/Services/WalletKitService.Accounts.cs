@@ -79,7 +79,8 @@ public sealed partial class WalletKitService
         await using var scope = _scopeFactory.CreateAsyncScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var balances = new Dictionary<string, long>(StringComparer.Ordinal);
-        foreach (var utxo in await unitOfWork.UtxoDbRepository.GetUnspentAsync(includeWalletAddress: true))
+        var unspent = await unitOfWork.UtxoDbRepository.GetUnspentAsync(includeWalletAddress: true);
+        foreach (var utxo in unspent)
         {
             if (utxo.WalletAddress?.Address is { } address)
                 balances[address] = balances.GetValueOrDefault(address) + utxo.Amount.Satoshi;
@@ -112,6 +113,23 @@ public sealed partial class WalletKitService
                     PublicKey = ByteString.CopyFrom(xpub.Derive(branch).Derive(address.Index).PubKey.ToBytes())
                 });
             }
+
+            if (ours == AddressType.P2Tr)
+                foreach (var group in unspent.Where(u => u.SilentPayment is not null)
+                                             .GroupBy(u => Convert.ToHexStringLower(u.SilentPayment!.OutputKey))
+                                             .OrderBy(g => g.Key, StringComparer.Ordinal))
+                {
+                    var output = group.First().SilentPayment!;
+                    var script = new Script(new byte[] { 0x51, 0x20 }.Concat(output.OutputKey).ToArray());
+                    item.Addresses.Add(new AddressProperty
+                    {
+                        Address = script.GetDestinationAddress(_network)!.ToString(),
+                        IsInternal = output.Label == 0,
+                        Balance = group.Sum(u => u.Amount.Satoshi),
+                        // A BIP 352 output has no BIP32 derivation path. Expose its actual output key.
+                        PublicKey = ByteString.CopyFrom(new byte[] { 2 }.Concat(output.OutputKey).ToArray())
+                    });
+                }
 
             response.AccountWithAddresses.Add(item);
         }
