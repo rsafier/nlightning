@@ -1,5 +1,3 @@
-using NBitcoin.Crypto;
-
 namespace NLightning.Infrastructure.Bitcoin.Crypto.SilentPayments;
 
 using Domain.Bitcoin.SilentPayments;
@@ -14,7 +12,7 @@ public sealed class SilentPaymentCrypto : ISilentPaymentCrypto
     public bool TryGetInputPublicKey(ReadOnlySpan<byte> prevoutScript, ReadOnlySpan<byte> scriptSig,
                                      IReadOnlyList<byte[]> witness, out CompactPubKey key) =>
         SilentPaymentInputClassifier.TryGetInputPublicKey(prevoutScript, scriptSig, witness, out key,
-            bytes => Hashes.Hash160(bytes).ToBytes(), IsValidPoint);
+            bytes => NBitcoin.Crypto.Hashes.Hash160(bytes).ToBytes(), IsValidPoint);
 
     public bool TrySumPublicKeys(IReadOnlyList<CompactPubKey> keys, out CompactPubKey sum) =>
         Bip352.TrySumPublicKeys(keys, out sum);
