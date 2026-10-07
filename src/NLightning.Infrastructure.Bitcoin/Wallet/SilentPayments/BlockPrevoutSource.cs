@@ -117,8 +117,16 @@ public sealed class BlockPrevoutSource : IBlockPrevoutSource
                                             new AggregateException(failures));
     }
 
-    public async Task<IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>>> GetPrevoutsAsync(
-        BitcoinBlock block, uint height, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>>> GetPrevoutsAsync(
+        BitcoinBlock block, uint height, CancellationToken cancellationToken = default) =>
+        ReadBlockAsync(block, height, false, cancellationToken);
+
+    public Task<IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>>> GetAllPrevoutsAsync(
+        BitcoinBlock block, uint height, CancellationToken cancellationToken = default) =>
+        ReadBlockAsync(block, height, true, cancellationToken);
+
+    private async Task<IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>>> ReadBlockAsync(
+        BitcoinBlock block, uint height, bool allTransactions, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
         try
@@ -126,15 +134,15 @@ public sealed class BlockPrevoutSource : IBlockPrevoutSource
             var parsed = Block.Load(block.BlockData, _network);
             if (!parsed.GetHash().ToBytes().AsSpan().SequenceEqual((byte[])block.BlockHash))
                 throw new InvalidDataException("Block bytes do not match the requested block hash.");
-            if (!parsed.Transactions.Any(IsCandidate))
+            if (!parsed.Transactions.Any(tx => !tx.IsCoinBase && (allTransactions || IsCandidate(tx))))
                 return new Dictionary<TxId, IReadOnlyList<BitcoinPrevout>>();
             await ProbeCoreAsync(cancellationToken);
             await ValidateHeightAsync(height, cancellationToken);
             return Source switch
             {
-                SilentPaymentPrevoutSource.GetBlock => await ReadVerboseAsync(parsed, cancellationToken),
-                SilentPaymentPrevoutSource.Rest => await ReadRestAsync(parsed, cancellationToken),
-                SilentPaymentPrevoutSource.GetRawTransaction => await ReadTransactionsAsync(parsed, cancellationToken),
+                SilentPaymentPrevoutSource.GetBlock => await ReadVerboseAsync(parsed, cancellationToken, requireAll: allTransactions),
+                SilentPaymentPrevoutSource.Rest => await ReadRestAsync(parsed, cancellationToken, allTransactions),
+                SilentPaymentPrevoutSource.GetRawTransaction => await ReadTransactionsAsync(parsed, cancellationToken, allTransactions),
                 _ => throw new InvalidOperationException("No prevout source selected.")
             };
         }
@@ -223,7 +231,7 @@ public sealed class BlockPrevoutSource : IBlockPrevoutSource
     }
 
     private async Task<IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>>> ReadRestAsync(
-        Block block, CancellationToken cancellationToken)
+        Block block, CancellationToken cancellationToken, bool allTransactions = false)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(_address,
             $"/rest/spenttxouts/{block.GetHash()}.bin"));
@@ -232,13 +240,13 @@ public sealed class BlockPrevoutSource : IBlockPrevoutSource
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException($"REST spenttxouts unavailable (HTTP {(int)response.StatusCode}); enable -rest; undo data may be pruned.");
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        return await ParseRestAsync(stream, block, cancellationToken);
+        return await ParseRestAsync(stream, block, cancellationToken, allTransactions);
     }
 
     // Core 31 rest.cpp SerializeBlockUndo: CompactSize tx count (coinbase included), then per-tx
     // CompactSize input count and ordinary CTxOut serialization (int64 satoshis, CompactSize script bytes).
     internal static async Task<IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>>> ParseRestAsync(
-        Stream stream, Block block, CancellationToken cancellationToken = default)
+        Stream stream, Block block, CancellationToken cancellationToken = default, bool allTransactions = false)
     {
         var scalar = new byte[8];
         if (await ReadSizeAsync(stream, scalar, cancellationToken) != (ulong)block.Transactions.Count)
@@ -249,7 +257,7 @@ public sealed class BlockPrevoutSource : IBlockPrevoutSource
             var count = await ReadSizeAsync(stream, scalar, cancellationToken);
             if (count != (ulong)(tx.IsCoinBase ? 0 : tx.Inputs.Count))
                 throw new InvalidDataException("REST spenttxouts input count mismatch.");
-            var candidate = IsCandidate(tx);
+            var candidate = !tx.IsCoinBase && (allTransactions || IsCandidate(tx));
             List<BitcoinPrevout> previous = [];
             for (ulong i = 0; i < count; i++)
             {
@@ -291,13 +299,13 @@ public sealed class BlockPrevoutSource : IBlockPrevoutSource
     }
 
     private async Task<IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>>> ReadTransactionsAsync(
-        Block block, CancellationToken cancellationToken)
+        Block block, CancellationToken cancellationToken, bool allTransactions = false)
     {
         Dictionary<OutPoint, TxOut> earlier = [];
         Dictionary<TxId, IReadOnlyList<BitcoinPrevout>> result = [];
         foreach (var tx in block.Transactions)
         {
-            if (IsCandidate(tx))
+            if (!tx.IsCoinBase && (allTransactions || IsCandidate(tx)))
             {
                 List<BitcoinPrevout> prevouts = [];
                 foreach (var input in tx.Inputs)

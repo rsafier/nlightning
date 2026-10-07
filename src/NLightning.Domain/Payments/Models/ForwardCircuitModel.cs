@@ -80,6 +80,13 @@ public sealed class ForwardCircuitModel
     /// </summary>
     public LightningMoney Fee => IncomingAmount - OutgoingAmount;
 
+    /// <summary>Actual channel custody, before an interceptor's interpretation override.</summary>
+    public LightningMoney ActualIncomingAmount { get; private set; }
+
+    public Secret? IncomingClaimedPreimage { get; private set; }
+
+    public LightningMoney ActualFee => ActualIncomingAmount - OutgoingAmount;
+
     public ForwardCircuitModel(ChannelId incomingChannelId, ulong incomingHtlcId, LightningMoney incomingAmount,
                                uint incomingCltvExpiry, Hash paymentHash, Secret incomingSharedSecret,
                                ShortChannelId outgoingShortChannelId, LightningMoney outgoingAmount,
@@ -97,6 +104,7 @@ public sealed class ForwardCircuitModel
         IncomingChannelId = incomingChannelId;
         IncomingHtlcId = incomingHtlcId;
         IncomingAmount = incomingAmount;
+        ActualIncomingAmount = incomingAmount;
         IncomingCltvExpiry = incomingCltvExpiry;
         PaymentHash = paymentHash;
         IncomingSharedSecret = incomingSharedSecret;
@@ -117,7 +125,8 @@ public sealed class ForwardCircuitModel
                                               uint outgoingCltvExpiry, DateTimeOffset createdAt,
                                               ForwardCircuitStatus status, ChannelId? outgoingChannelId,
                                               ulong? outgoingHtlcId, DateTimeOffset? resolvedAt,
-                                              ushort? failureCode = null, ChannelId? failureSource = null)
+                                              ushort? failureCode = null, ChannelId? failureSource = null,
+                                              LightningMoney? actualIncomingAmount = null, Secret? incomingClaimedPreimage = null)
     {
         if (!Enum.IsDefined(status))
             throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown circuit status.");
@@ -132,10 +141,19 @@ public sealed class ForwardCircuitModel
         if ((failureCode is not null || failureSource is not null) && status != ForwardCircuitStatus.Failed)
             throw new ArgumentException("Only a failed circuit carries a failure reason.", nameof(failureCode));
 
+        if (actualIncomingAmount is not null && actualIncomingAmount < outgoingAmount)
+            throw new ArgumentException("The actual incoming amount must cover the outgoing amount.", nameof(actualIncomingAmount));
+
+        if (incomingClaimedPreimage is { } claimed &&
+            new Hash(System.Security.Cryptography.SHA256.HashData((byte[])claimed)) != paymentHash)
+            throw new ArgumentException("The claimed preimage must match the payment hash.", nameof(incomingClaimedPreimage));
+
         return new ForwardCircuitModel(incomingChannelId, incomingHtlcId, incomingAmount, incomingCltvExpiry,
                                        paymentHash, incomingSharedSecret, outgoingShortChannelId, outgoingAmount,
                                        outgoingCltvExpiry, createdAt)
         {
+            ActualIncomingAmount = actualIncomingAmount ?? incomingAmount,
+            IncomingClaimedPreimage = incomingClaimedPreimage,
             Status = status,
             OutgoingChannelId = outgoingChannelId,
             OutgoingHtlcId = outgoingHtlcId,
@@ -143,6 +161,23 @@ public sealed class ForwardCircuitModel
             FailureCode = failureCode,
             FailureSource = failureSource
         };
+    }
+
+    /// <summary>Persists an incoming onchain interceptor claim independently of the channel HTLC row lifetime.</summary>
+    public void MarkIncomingClaimed(Secret preimage)
+    {
+        if (new Hash(System.Security.Cryptography.SHA256.HashData((byte[])preimage)) != PaymentHash)
+            throw new ArgumentException("The claimed preimage must match the payment hash.", nameof(preimage));
+        IncomingClaimedPreimage = preimage;
+    }
+
+    /// <summary>Retains the real incoming amount for accounting when IncomingAmount is overridden.</summary>
+    public void SetActualIncomingAmount(LightningMoney amount)
+    {
+        ArgumentNullException.ThrowIfNull(amount);
+        if (Status != ForwardCircuitStatus.Pending || amount < OutgoingAmount)
+            throw new InvalidOperationException("Actual custody must cover the outgoing amount before offering.");
+        ActualIncomingAmount = amount;
     }
 
     /// <summary>

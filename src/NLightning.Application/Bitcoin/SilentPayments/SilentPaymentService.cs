@@ -27,7 +27,8 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
     IBlockchainMonitor monitor, IBlockPrevoutSource prevouts, SilentPaymentScanner scanner,
     ISilentPaymentKeySource keys, ISilentPaymentCrypto crypto, IOptions<SilentPaymentsOptions> options,
     IOptions<NodeOptions> nodeOptions, ILogger<SilentPaymentService> logger, TimeProvider? timeProvider = null,
-    ISilentPaymentRecoveryAddressSource? recoveryAddresses = null)
+    ISilentPaymentRecoveryAddressSource? recoveryAddresses = null,
+    Domain.Bitcoin.Wallet.Interfaces.IWalletHistoryGate? historyGate = null)
     : BackgroundService, ISilentPaymentService
 {
     private const int FinalizationBatchSize = 100;
@@ -173,6 +174,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
     internal async Task<bool> ProcessNextBlockAsync(CancellationToken cancellationToken)
     {
         using var held = await scanner.EnterAsync(cancellationToken);
+        using var historyLease = historyGate is { } gate ? await gate.EnterAsync(cancellationToken) : null;
         SilentPaymentScanState? state;
         IReadOnlyList<SilentPaymentLabelModel> labels;
         await using (var read = scopes.CreateAsyncScope())
@@ -310,7 +312,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
                 fact.Details.ContainsKey("recoveryAddressIndex"))
             .Select(fact => uint.Parse(fact.Details["recoveryAddressIndex"], CultureInfo.InvariantCulture))
             .DefaultIfEmpty(0u).Max();
-        var storedCount = uow.WalletAddressesDbRepository.GetAllAddresses().Select(address => checked(address.Index + 1))
+        var storedCount = uow.WalletAddressesDbRepository.GetAllAddresses().Where(address => address.AccountIndex == 0).Select(address => checked(address.Index + 1))
             .DefaultIfEmpty(0u).Max();
         return await recoveryAddresses.StageAddressesAsync(uow, Math.Max(storedCount, checked(highest + 30)), cancellationToken);
     }

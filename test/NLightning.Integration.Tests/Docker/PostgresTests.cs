@@ -13,7 +13,7 @@ using Persistence;
 
 [Collection("postgres")]
 [Trait("Database", "Postgres")]
-public class PostgresTests
+public partial class PostgresTests
 {
     private readonly PostgresFixture _fixture;
 

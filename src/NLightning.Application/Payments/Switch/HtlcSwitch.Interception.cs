@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Application.Payments.Switch;
 
+using Domain.Accounting.Constants;
 using Domain.Channels.Commitments;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
@@ -30,16 +31,19 @@ public sealed partial class HtlcSwitch
                                                IncomingOnionForward forward, uint height, bool isReplay,
                                                CancellationToken cancellationToken)
     {
-        if (_forwardInterceptor is not { } interceptor || (!interceptor.IsActive && !interceptor.IsRequired)
-         || !_channelMemoryRepository.TryGetChannel(incomingChannelId, out var incomingChannel))
+        if (!_channelMemoryRepository.TryGetChannel(incomingChannelId, out var incomingChannel))
             return false;
 
         var intercepted = ToInterceptedForward(incomingChannel, htlc, forward);
         var incomingScid = intercepted.IncomingShortChannelId;
         var introduction = forward.Blinded?.IsIntroduction ?? false;
-        switch (interceptor.Intercept(intercepted, height, isReplay,
-                                      resolution => ResolveInterceptedAsync(incomingChannelId, htlc.Id, forward,
-                                                                            resolution)))
+        var outcome = _forwardInterceptor is { } interceptor
+            ? interceptor.Intercept(intercepted, height, isReplay,
+                resolution => ResolveInterceptedAsync(incomingChannelId, htlc.Id, forward, resolution))
+            : (long)htlc.CltvExpiry - 19 > int.MaxValue ? ForwardInterceptOutcome.ExpiryTooFar
+            : htlc.CltvExpiry < height + 22UL ? ForwardInterceptOutcome.ExpiryTooSoon
+            : ForwardInterceptOutcome.NotIntercepted;
+        switch (outcome)
         {
             case ForwardInterceptOutcome.Held:
                 if (_logger.IsEnabled(LogLevel.Debug))
@@ -75,9 +79,8 @@ public sealed partial class HtlcSwitch
     /// <summary>
     /// Holds a forward whose incoming channel is closing on chain for an interceptor's settle (NL-1182, LND's on-chain
     /// interception: the preimage it gives lets the resolvers claim the HTLC on chain). Nothing is forwarded or failed
-    /// from such a channel. Held only while an interceptor is connected or required, or when the forward was already
-    /// held off chain; the resolvers hand the HTLC to the switch every round, so a client that connects later is offered
-    /// it at the next block. True when it is held (or was settled already).
+    /// from such a channel. Held even without a connected client; a later client receives the offer immediately.
+    /// The resolvers retry each round if the hold capacity was full. True when held or settled already.
     /// </summary>
     private bool TryInterceptOnChain(ChannelId incomingChannelId, HtlcRecord htlc, IncomingOnionForward forward)
     {
@@ -116,13 +119,6 @@ public sealed partial class HtlcSwitch
         if (GetAwaitingIncomingHtlc(incomingChannelId, htlcId) is not { } htlc)
             return;
 
-        using (var scope = _serviceScopeFactory.CreateScope())
-        {
-            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-            if (await unitOfWork.ForwardCircuitDbRepository.GetByIncomingAsync(incomingChannelId, htlcId) is not null)
-                return;
-        }
-
         // NL-1182: a channel closing on chain carries no update any more; only the preimage helps (LND refuses resume
         // and fail of an HTLC on chain)
         if (IsOnchain(incomingChannelId))
@@ -133,6 +129,13 @@ public sealed partial class HtlcSwitch
 
             await SettleInterceptedOnchainAsync(incomingChannelId, htlc, forward, resolution, cancellationToken);
             return;
+        }
+
+        using (var scope = _serviceScopeFactory.CreateScope())
+        {
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            if (await unitOfWork.ForwardCircuitDbRepository.GetByIncomingAsync(incomingChannelId, htlcId) is not null)
+                return;
         }
 
         var introduction = forward.Blinded?.IsIntroduction ?? false;
@@ -211,8 +214,20 @@ public sealed partial class HtlcSwitch
         }
 
         if (!await MarkPartAsync(incomingChannelId, htlc.Id, preimage,
-                                 unitOfWork => StageInterceptedSettleAsync(unitOfWork, incomingChannelId, htlc, forward,
-                                                                           cancellationToken),
+                                 async unitOfWork =>
+                                 {
+                                     var circuit = await unitOfWork.ForwardCircuitDbRepository.GetByIncomingAsync(incomingChannelId, htlc.Id);
+                                     if (circuit is not null)
+                                     {
+                                         circuit.MarkIncomingClaimed(preimage);
+                                         await unitOfWork.ForwardCircuitDbRepository.UpdateAsync(circuit);
+                                     }
+                                     // A live outgoing leg may still take custody: do not book the incoming amount twice.
+                                     if (circuit is null)
+                                         await StageInterceptedSettleAsync(unitOfWork, incomingChannelId, htlc, forward, cancellationToken);
+                                     else if (circuit.Status == Domain.Payments.Enums.ForwardCircuitStatus.Failed)
+                                         await StageClaimedFailedForwardAsync(unitOfWork, circuit);
+                                 },
                                  cancellationToken))
             return;
 
@@ -236,6 +251,27 @@ public sealed partial class HtlcSwitch
                     forward.NextNodeId,
                     forward.AmountToForward, _timeProvider.GetUtcNow(), CurrentHeight);
             }, _logger, cancellationToken);
+
+    // Called under the same incoming HTLC lock and unit of work as a downstream failure transition.
+    // The known preimage survives restarts; the event key makes repeated/replayed failures idempotent.
+    private async Task<bool> StageClaimedFailedForwardAsync(IUnitOfWork unitOfWork, Domain.Payments.Models.ForwardCircuitModel circuit)
+    {
+        if (circuit.Status != Domain.Payments.Enums.ForwardCircuitStatus.Failed ||
+            circuit.IncomingClaimedPreimage is not { } known || !Hashes(known, circuit.PaymentHash))
+            return false;
+        if (await unitOfWork.AccountingEventDbRepository.ExistsAsync(
+                AccountingEventKeys.InterceptedHtlcSettled(circuit.IncomingChannelId, circuit.IncomingHtlcId)))
+            return false;
+        await PaymentAccountingEvents.StageInterceptedHtlcSettledStrictAsync(unitOfWork, circuit.IncomingChannelId,
+            circuit.IncomingHtlcId, () =>
+            {
+                _channelMemoryRepository.TryGetChannel(circuit.IncomingChannelId, out var incoming);
+                return PaymentAccountingEvents.InterceptedHtlcSettled(circuit.IncomingChannelId,
+                    circuit.IncomingHtlcId, circuit.PaymentHash, circuit.ActualIncomingAmount, incoming,
+                    circuit.OutgoingShortChannelId, null, circuit.OutgoingAmount, _timeProvider.GetUtcNow(), CurrentHeight);
+            }, _disposeCts.Token);
+        return true;
+    }
 
     /// <summary>The held forward as the interceptor sees it (LND's <c>InterceptedPacket</c>).</summary>
     private static InterceptedForward ToInterceptedForward(ChannelModel incomingChannel, HtlcRecord htlc,

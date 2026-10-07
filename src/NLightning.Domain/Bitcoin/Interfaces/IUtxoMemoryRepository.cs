@@ -11,6 +11,10 @@ public interface IUtxoMemoryRepository
 {
     void Add(UtxoModel utxoModel);
     void Spend(UtxoModel utxoModel);
+    /// <summary>Transient mempool custody, excluded from confirmed balances and ordinary selection.</summary>
+    void AddUnconfirmed(UtxoModel utxo) => throw new NotSupportedException("No mempool wallet catalogue.");
+    void RemoveUnconfirmed(TxId txId, uint index) { }
+    IReadOnlyList<UtxoModel> GetUnconfirmedUtxos() => [];
     bool TryGetUtxo(TxId txId, uint index, [MaybeNullWhen(false)] out UtxoModel utxoModel);
     LightningMoney GetConfirmedBalance(uint currentBlockHeight);
     LightningMoney GetUnconfirmedBalance(uint currentBlockHeight);

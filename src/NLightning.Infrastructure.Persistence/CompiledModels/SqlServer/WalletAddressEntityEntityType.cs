@@ -28,7 +28,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 "NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletAddressEntity",
                 typeof(WalletAddressEntity),
                 baseEntityType,
-                propertyCount: 5,
+                propertyCount: 8,
                 navigationCount: 1,
                 keyCount: 1);
 
@@ -195,6 +195,117 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             addressType.SetSentinelFromProviderValue((byte)0);
             addressType.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
+            var accountIndex = runtimeEntityType.AddProperty(
+                "AccountIndex",
+                typeof(uint),
+                propertyInfo: typeof(WalletAddressEntity).GetProperty("AccountIndex", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(WalletAddressEntity).GetField("<AccountIndex>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                valueGenerated: ValueGenerated.OnAdd);
+            accountIndex.SetGetter(
+                uint (WalletAddressEntity instance) => WalletAddressEntityUnsafeAccessors.AccountIndex(instance),
+                bool (WalletAddressEntity instance) => WalletAddressEntityUnsafeAccessors.AccountIndex(instance) == 0U);
+            accountIndex.SetSetter(
+                WalletAddressEntity (WalletAddressEntity instance, uint value) =>
+                {
+                    WalletAddressEntityUnsafeAccessors.AccountIndex(instance) = value;
+                    return instance;
+                });
+            accountIndex.SetMaterializationSetter(
+                WalletAddressEntity (WalletAddressEntity instance, uint value) =>
+                {
+                    WalletAddressEntityUnsafeAccessors.AccountIndex(instance) = value;
+                    return instance;
+                });
+            accountIndex.SetAccessors(
+                uint (IInternalEntry entry) => (entry.FlaggedAsStoreGenerated(3) ? entry.ReadStoreGeneratedValue<uint>(0) : (entry.FlaggedAsTemporary(3) && WalletAddressEntityUnsafeAccessors.AccountIndex(((WalletAddressEntity)(entry.Entity))) == 0U ? entry.ReadTemporaryValue<uint>(0) : WalletAddressEntityUnsafeAccessors.AccountIndex(((WalletAddressEntity)(entry.Entity))))),
+                uint (IInternalEntry entry) => WalletAddressEntityUnsafeAccessors.AccountIndex(((WalletAddressEntity)(entry.Entity))),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(accountIndex, 3),
+                uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(accountIndex));
+            accountIndex.SetPropertyIndexes(
+                index: 3,
+                originalValueIndex: 3,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: 0);
+            accountIndex.TypeMapping = SqlServerLongTypeMapping.Default.Clone(
+                comparer: new ValueComparer<uint>(
+                    bool (uint v1, uint v2) => v1 == v2,
+                    int (uint v) => ((int)v),
+                    uint (uint v) => v),
+                keyComparer: new ValueComparer<uint>(
+                    bool (uint v1, uint v2) => v1 == v2,
+                    int (uint v) => ((int)v),
+                    uint (uint v) => v),
+                providerValueComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                converter: new ValueConverter<uint, long>(
+                    long (uint v) => ((long)v),
+                    uint (long v) => ((uint)v)),
+                jsonValueReaderWriter: new JsonConvertedValueReaderWriter<uint, long>(
+                    JsonInt64ReaderWriter.Instance,
+                    new ValueConverter<uint, long>(
+                        long (uint v) => ((long)v),
+                        uint (long v) => ((uint)v))));
+            accountIndex.SetSentinelFromProviderValue(0L);
+            accountIndex.AddAnnotation("Relational:DefaultValue", 0u);
+            accountIndex.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
+
+            var accountName = runtimeEntityType.AddProperty(
+                "AccountName",
+                typeof(string),
+                propertyInfo: typeof(WalletAddressEntity).GetProperty("AccountName", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(WalletAddressEntity).GetField("<AccountName>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                valueGenerated: ValueGenerated.OnAdd,
+                maxLength: 128);
+            accountName.SetGetter(
+                string (WalletAddressEntity instance) => WalletAddressEntityUnsafeAccessors.AccountName(instance),
+                bool (WalletAddressEntity instance) => WalletAddressEntityUnsafeAccessors.AccountName(instance) == null);
+            accountName.SetSetter(
+                WalletAddressEntity (WalletAddressEntity instance, string value) =>
+                {
+                    WalletAddressEntityUnsafeAccessors.AccountName(instance) = value;
+                    return instance;
+                });
+            accountName.SetMaterializationSetter(
+                WalletAddressEntity (WalletAddressEntity instance, string value) =>
+                {
+                    WalletAddressEntityUnsafeAccessors.AccountName(instance) = value;
+                    return instance;
+                });
+            accountName.SetAccessors(
+                string (IInternalEntry entry) => (entry.FlaggedAsStoreGenerated(4) ? entry.ReadStoreGeneratedValue<string>(1) : (entry.FlaggedAsTemporary(4) && WalletAddressEntityUnsafeAccessors.AccountName(((WalletAddressEntity)(entry.Entity))) == null ? entry.ReadTemporaryValue<string>(1) : WalletAddressEntityUnsafeAccessors.AccountName(((WalletAddressEntity)(entry.Entity))))),
+                string (IInternalEntry entry) => WalletAddressEntityUnsafeAccessors.AccountName(((WalletAddressEntity)(entry.Entity))),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(accountName, 4),
+                string (IInternalEntry entry) => entry.GetCurrentValue<string>(accountName));
+            accountName.SetPropertyIndexes(
+                index: 4,
+                originalValueIndex: 4,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: 1);
+            accountName.TypeMapping = SqlServerStringTypeMapping.Default.Clone(
+                comparer: new ValueComparer<string>(
+                    bool (string v1, string v2) => v1 == v2,
+                    int (string v) => ((object)v).GetHashCode(),
+                    string (string v) => v),
+                keyComparer: new ValueComparer<string>(
+                    bool (string v1, string v2) => v1 == v2,
+                    int (string v) => ((object)v).GetHashCode(),
+                    string (string v) => v),
+                providerValueComparer: new ValueComparer<string>(
+                    bool (string v1, string v2) => v1 == v2,
+                    int (string v) => ((object)v).GetHashCode(),
+                    string (string v) => v),
+                mappingInfo: new RelationalTypeMappingInfo(
+                    storeTypeName: "nvarchar(128)",
+                    size: 128,
+                    unicode: true,
+                    dbType: System.Data.DbType.String));
+            accountName.AddAnnotation("Relational:DefaultValue", "default");
+            accountName.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
+
             var address = runtimeEntityType.AddProperty(
                 "Address",
                 typeof(string),
@@ -218,11 +329,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             address.SetAccessors(
                 string (IInternalEntry entry) => WalletAddressEntityUnsafeAccessors.Address(((WalletAddressEntity)(entry.Entity))),
                 string (IInternalEntry entry) => WalletAddressEntityUnsafeAccessors.Address(((WalletAddressEntity)(entry.Entity))),
-                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(address, 3),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(address, 5),
                 string (IInternalEntry entry) => entry.GetCurrentValue<string>(address));
             address.SetPropertyIndexes(
-                index: 3,
-                originalValueIndex: 3,
+                index: 5,
+                originalValueIndex: 5,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -245,6 +356,63 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     dbType: System.Data.DbType.String),
                 storeTypePostfix: StoreTypePostfix.None);
             address.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
+
+            var derivationIndex = runtimeEntityType.AddProperty(
+                "DerivationIndex",
+                typeof(uint?),
+                propertyInfo: typeof(WalletAddressEntity).GetProperty("DerivationIndex", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(WalletAddressEntity).GetField("<DerivationIndex>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            derivationIndex.SetGetter(
+                uint? (WalletAddressEntity instance) => WalletAddressEntityUnsafeAccessors.DerivationIndex(instance),
+                bool (WalletAddressEntity instance) => !(WalletAddressEntityUnsafeAccessors.DerivationIndex(instance).HasValue));
+            derivationIndex.SetSetter(
+                WalletAddressEntity (WalletAddressEntity instance, uint? value) =>
+                {
+                    WalletAddressEntityUnsafeAccessors.DerivationIndex(instance) = value;
+                    return instance;
+                });
+            derivationIndex.SetMaterializationSetter(
+                WalletAddressEntity (WalletAddressEntity instance, uint? value) =>
+                {
+                    WalletAddressEntityUnsafeAccessors.DerivationIndex(instance) = value;
+                    return instance;
+                });
+            derivationIndex.SetAccessors(
+                uint? (IInternalEntry entry) => WalletAddressEntityUnsafeAccessors.DerivationIndex(((WalletAddressEntity)(entry.Entity))),
+                uint? (IInternalEntry entry) => WalletAddressEntityUnsafeAccessors.DerivationIndex(((WalletAddressEntity)(entry.Entity))),
+                uint? (IInternalEntry entry) => entry.ReadOriginalValue<uint?>(derivationIndex, 6),
+                uint? (IInternalEntry entry) => entry.GetCurrentValue<uint?>(derivationIndex));
+            derivationIndex.SetPropertyIndexes(
+                index: 6,
+                originalValueIndex: 6,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            derivationIndex.TypeMapping = SqlServerLongTypeMapping.Default.Clone(
+                comparer: new ValueComparer<uint>(
+                    bool (uint v1, uint v2) => v1 == v2,
+                    int (uint v) => ((int)v),
+                    uint (uint v) => v),
+                keyComparer: new ValueComparer<uint>(
+                    bool (uint v1, uint v2) => v1 == v2,
+                    int (uint v) => ((int)v),
+                    uint (uint v) => v),
+                providerValueComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                converter: new ValueConverter<uint, long>(
+                    long (uint v) => ((long)v),
+                    uint (long v) => ((uint)v)),
+                jsonValueReaderWriter: new JsonConvertedValueReaderWriter<uint, long>(
+                    JsonInt64ReaderWriter.Instance,
+                    new ValueConverter<uint, long>(
+                        long (uint v) => ((long)v),
+                        uint (long v) => ((uint)v))));
+            derivationIndex.SetComparer(new NullableValueComparer<uint>(derivationIndex.TypeMapping.Comparer));
+            derivationIndex.SetKeyComparer(new NullableValueComparer<uint>(derivationIndex.TypeMapping.KeyComparer));
+            derivationIndex.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
             var isReserved = runtimeEntityType.AddProperty(
                 "IsReserved",
@@ -270,11 +438,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             isReserved.SetAccessors(
                 bool (IInternalEntry entry) => WalletAddressEntityUnsafeAccessors.IsReserved(((WalletAddressEntity)(entry.Entity))),
                 bool (IInternalEntry entry) => WalletAddressEntityUnsafeAccessors.IsReserved(((WalletAddressEntity)(entry.Entity))),
-                bool (IInternalEntry entry) => entry.ReadOriginalValue<bool>(isReserved, 4),
+                bool (IInternalEntry entry) => entry.ReadOriginalValue<bool>(isReserved, 7),
                 bool (IInternalEntry entry) => entry.GetCurrentValue<bool>(isReserved));
             isReserved.SetPropertyIndexes(
-                index: 4,
-                originalValueIndex: 4,
+                index: 7,
+                originalValueIndex: 7,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -305,7 +473,10 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             var index = runtimeEntityType.FindProperty("Index");
             var isChange = runtimeEntityType.FindProperty("IsChange");
             var addressType = runtimeEntityType.FindProperty("AddressType");
+            var accountIndex = runtimeEntityType.FindProperty("AccountIndex");
+            var accountName = runtimeEntityType.FindProperty("AccountName");
             var address = runtimeEntityType.FindProperty("Address");
+            var derivationIndex = runtimeEntityType.FindProperty("DerivationIndex");
             var isReserved = runtimeEntityType.FindProperty("IsReserved");
             var key = runtimeEntityType.FindKey(new[] { index, isChange, addressType });
             key.SetPrincipalKeyValueFactory(KeyValueFactoryFactory.CreateCompositeFactory(key));
@@ -315,12 +486,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType = ((WalletAddressEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<uint, bool, AddressType, string, bool>(((ValueComparer<uint>)(((IProperty)index).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(index)), ((ValueComparer<bool>)(((IProperty)isChange).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(isChange)), ((ValueComparer<AddressType>)(((IProperty)addressType).GetValueComparer())).Snapshot(source.GetCurrentValue<AddressType>(addressType)), (source.GetCurrentValue<string>(address) == null ? null : ((ValueComparer<string>)(((IProperty)address).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(address))), ((ValueComparer<bool>)(((IProperty)isReserved).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(isReserved)))));
+                    return ((ISnapshot)(new Snapshot<uint, bool, AddressType, uint, string, string, uint?, bool>(((ValueComparer<uint>)(((IProperty)index).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(index)), ((ValueComparer<bool>)(((IProperty)isChange).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(isChange)), ((ValueComparer<AddressType>)(((IProperty)addressType).GetValueComparer())).Snapshot(source.GetCurrentValue<AddressType>(addressType)), ((ValueComparer<uint>)(((IProperty)accountIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(accountIndex)), (source.GetCurrentValue<string>(accountName) == null ? null : ((ValueComparer<string>)(((IProperty)accountName).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(accountName))), (source.GetCurrentValue<string>(address) == null ? null : ((ValueComparer<string>)(((IProperty)address).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(address))), (source.GetCurrentValue<uint?>(derivationIndex) == null ? null : ((ValueComparer<uint?>)(((IProperty)derivationIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(derivationIndex))), ((ValueComparer<bool>)(((IProperty)isReserved).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(isReserved)))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
-                ISnapshot () => Snapshot.Empty);
+                ISnapshot () => ((ISnapshot)(new Snapshot<uint, string>(((ValueComparer<uint>)(((IProperty)accountIndex).GetValueComparer())).Snapshot(default(uint)), (default(string) == null ? null : ((ValueComparer<string>)(((IProperty)accountName).GetValueComparer())).Snapshot(default(string)))))));
             runtimeEntityType.SetTemporaryValuesFactory(
-                ISnapshot (IInternalEntry source) => Snapshot.Empty);
+                ISnapshot (IInternalEntry source) => ((ISnapshot)(new Snapshot<uint, string>(default(uint), default(string)))));
             runtimeEntityType.SetShadowValuesFactory(
                 ISnapshot (IDictionary<string, object> source) => Snapshot.Empty);
             runtimeEntityType.SetEmptyShadowValuesFactory(
@@ -332,14 +503,14 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     return ((ISnapshot)(new Snapshot<uint, bool, AddressType, object>(((ValueComparer<uint>)(((IProperty)index).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<uint>(index)), ((ValueComparer<bool>)(((IProperty)isChange).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<bool>(isChange)), ((ValueComparer<AddressType>)(((IProperty)addressType).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<AddressType>(addressType)), SnapshotFactoryFactory.SnapshotCollection(source.GetCurrentValue<IEnumerable<UtxoEntity>>(utxos)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 5,
+                propertyCount: 8,
                 navigationCount: 1,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 5,
+                originalValueCount: 8,
                 shadowCount: 0,
                 relationshipCount: 4,
-                storeGeneratedCount: 0));
+                storeGeneratedCount: 2));
             runtimeEntityType.AddAnnotation("Relational:FunctionName", null);
             runtimeEntityType.AddAnnotation("Relational:Schema", null);
             runtimeEntityType.AddAnnotation("Relational:SqlQuery", null);

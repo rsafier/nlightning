@@ -18,7 +18,7 @@ using ValueObjects;
 /// <param name="OurInputs">Its inputs that spend a wallet output, with the value they spend.</param>
 public sealed record WalletTransactionRecord(TxId TxId, byte[] RawTransaction, uint? BlockHeight, byte[]? BlockHash,
                                              DateTimeOffset Timestamp, IReadOnlyList<uint> OurOutputs,
-                                             IReadOnlyList<WalletTransactionInput> OurInputs);
+                                             IReadOnlyList<WalletTransactionInput> OurInputs, string? OwnershipSummary = null);
 
 /// <summary>An input of a wallet transaction that spends a wallet output.</summary>
 /// <param name="InputIndex">The input's position in the transaction.</param>

@@ -31,7 +31,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 "NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletTransactionEntity",
                 typeof(WalletTransactionEntity),
                 baseEntityType,
-                propertyCount: 7,
+                propertyCount: 8,
                 unnamedIndexCount: 1,
                 keyCount: 1);
 
@@ -308,6 +308,58 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 storeTypePostfix: StoreTypePostfix.None);
             ourOutputs.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
+            var ownershipSummary = runtimeEntityType.AddProperty(
+                "OwnershipSummary",
+                typeof(string),
+                propertyInfo: typeof(WalletTransactionEntity).GetProperty("OwnershipSummary", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(WalletTransactionEntity).GetField("<OwnershipSummary>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            ownershipSummary.SetGetter(
+                string (WalletTransactionEntity instance) => WalletTransactionEntityUnsafeAccessors.OwnershipSummary(instance),
+                bool (WalletTransactionEntity instance) => WalletTransactionEntityUnsafeAccessors.OwnershipSummary(instance) == null);
+            ownershipSummary.SetSetter(
+                WalletTransactionEntity (WalletTransactionEntity instance, string value) =>
+                {
+                    WalletTransactionEntityUnsafeAccessors.OwnershipSummary(instance) = value;
+                    return instance;
+                });
+            ownershipSummary.SetMaterializationSetter(
+                WalletTransactionEntity (WalletTransactionEntity instance, string value) =>
+                {
+                    WalletTransactionEntityUnsafeAccessors.OwnershipSummary(instance) = value;
+                    return instance;
+                });
+            ownershipSummary.SetAccessors(
+                string (IInternalEntry entry) => WalletTransactionEntityUnsafeAccessors.OwnershipSummary(((WalletTransactionEntity)(entry.Entity))),
+                string (IInternalEntry entry) => WalletTransactionEntityUnsafeAccessors.OwnershipSummary(((WalletTransactionEntity)(entry.Entity))),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(ownershipSummary, 5),
+                string (IInternalEntry entry) => entry.GetCurrentValue<string>(ownershipSummary));
+            ownershipSummary.SetPropertyIndexes(
+                index: 5,
+                originalValueIndex: 5,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            ownershipSummary.TypeMapping = SqlServerStringTypeMapping.Default.Clone(
+                comparer: new ValueComparer<string>(
+                    bool (string v1, string v2) => v1 == v2,
+                    int (string v) => ((object)v).GetHashCode(),
+                    string (string v) => v),
+                keyComparer: new ValueComparer<string>(
+                    bool (string v1, string v2) => v1 == v2,
+                    int (string v) => ((object)v).GetHashCode(),
+                    string (string v) => v),
+                providerValueComparer: new ValueComparer<string>(
+                    bool (string v1, string v2) => v1 == v2,
+                    int (string v) => ((object)v).GetHashCode(),
+                    string (string v) => v),
+                mappingInfo: new RelationalTypeMappingInfo(
+                    storeTypeName: "nvarchar(max)",
+                    unicode: true,
+                    dbType: System.Data.DbType.String),
+                storeTypePostfix: StoreTypePostfix.None);
+            ownershipSummary.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
+
             var rawTransaction = runtimeEntityType.AddProperty(
                 "RawTransaction",
                 typeof(byte[]),
@@ -331,11 +383,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             rawTransaction.SetAccessors(
                 byte[] (IInternalEntry entry) => WalletTransactionEntityUnsafeAccessors.RawTransaction(((WalletTransactionEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => WalletTransactionEntityUnsafeAccessors.RawTransaction(((WalletTransactionEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(rawTransaction, 5),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(rawTransaction, 6),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(rawTransaction));
             rawTransaction.SetPropertyIndexes(
-                index: 5,
-                originalValueIndex: 5,
+                index: 6,
+                originalValueIndex: 6,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -383,11 +435,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             timestamp.SetAccessors(
                 DateTimeOffset (IInternalEntry entry) => WalletTransactionEntityUnsafeAccessors.Timestamp(((WalletTransactionEntity)(entry.Entity))),
                 DateTimeOffset (IInternalEntry entry) => WalletTransactionEntityUnsafeAccessors.Timestamp(((WalletTransactionEntity)(entry.Entity))),
-                DateTimeOffset (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset>(timestamp, 6),
+                DateTimeOffset (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset>(timestamp, 7),
                 DateTimeOffset (IInternalEntry entry) => entry.GetCurrentValue<DateTimeOffset>(timestamp));
             timestamp.SetPropertyIndexes(
-                index: 6,
-                originalValueIndex: 6,
+                index: 7,
+                originalValueIndex: 7,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -432,6 +484,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             var blockHeight = runtimeEntityType.FindProperty("BlockHeight");
             var ourInputs = runtimeEntityType.FindProperty("OurInputs");
             var ourOutputs = runtimeEntityType.FindProperty("OurOutputs");
+            var ownershipSummary = runtimeEntityType.FindProperty("OwnershipSummary");
             var rawTransaction = runtimeEntityType.FindProperty("RawTransaction");
             var timestamp = runtimeEntityType.FindProperty("Timestamp");
             var key = runtimeEntityType.FindKey(new[] { transactionId });
@@ -441,7 +494,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType = ((WalletTransactionEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<TxId, byte[], uint?, string, string, byte[], DateTimeOffset>(((ValueComparer<TxId>)(((IProperty)transactionId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId>(transactionId)), (source.GetCurrentValue<byte[]>(blockHash) == null ? null : ((ValueComparer<byte[]>)(((IProperty)blockHash).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(blockHash))), (source.GetCurrentValue<uint?>(blockHeight) == null ? null : ((ValueComparer<uint?>)(((IProperty)blockHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(blockHeight))), (source.GetCurrentValue<string>(ourInputs) == null ? null : ((ValueComparer<string>)(((IProperty)ourInputs).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(ourInputs))), (source.GetCurrentValue<string>(ourOutputs) == null ? null : ((ValueComparer<string>)(((IProperty)ourOutputs).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(ourOutputs))), (source.GetCurrentValue<byte[]>(rawTransaction) == null ? null : ((ValueComparer<byte[]>)(((IProperty)rawTransaction).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(rawTransaction))), ((ValueComparer<DateTimeOffset>)(((IProperty)timestamp).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(timestamp)))));
+                    return ((ISnapshot)(new Snapshot<TxId, byte[], uint?, string, string, string, byte[], DateTimeOffset>(((ValueComparer<TxId>)(((IProperty)transactionId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId>(transactionId)), (source.GetCurrentValue<byte[]>(blockHash) == null ? null : ((ValueComparer<byte[]>)(((IProperty)blockHash).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(blockHash))), (source.GetCurrentValue<uint?>(blockHeight) == null ? null : ((ValueComparer<uint?>)(((IProperty)blockHeight).GetValueComparer())).Snapshot(source.GetCurrentValue<uint?>(blockHeight))), (source.GetCurrentValue<string>(ourInputs) == null ? null : ((ValueComparer<string>)(((IProperty)ourInputs).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(ourInputs))), (source.GetCurrentValue<string>(ourOutputs) == null ? null : ((ValueComparer<string>)(((IProperty)ourOutputs).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(ourOutputs))), (source.GetCurrentValue<string>(ownershipSummary) == null ? null : ((ValueComparer<string>)(((IProperty)ownershipSummary).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(ownershipSummary))), (source.GetCurrentValue<byte[]>(rawTransaction) == null ? null : ((ValueComparer<byte[]>)(((IProperty)rawTransaction).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(rawTransaction))), ((ValueComparer<DateTimeOffset>)(((IProperty)timestamp).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(timestamp)))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => Snapshot.Empty);
@@ -458,11 +511,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     return ((ISnapshot)(new Snapshot<TxId>(((ValueComparer<TxId>)(((IProperty)transactionId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<TxId>(transactionId)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 7,
+                propertyCount: 8,
                 navigationCount: 0,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 7,
+                originalValueCount: 8,
                 shadowCount: 0,
                 relationshipCount: 1,
                 storeGeneratedCount: 0));

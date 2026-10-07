@@ -25,6 +25,8 @@ public interface IUnitOfWork : IDisposable
     IBlockchainStateDbRepository BlockchainStateDbRepository { get; }
     IWatchedTransactionDbRepository WatchedTransactionDbRepository { get; }
     IWalletAddressesDbRepository WalletAddressesDbRepository { get; }
+    Bitcoin.Wallet.Interfaces.IWalletAccountDbRepository WalletAccountDbRepository =>
+        Bitcoin.Wallet.Interfaces.NullWalletAccountDbRepository.Instance;
     IUtxoDbRepository UtxoDbRepository { get; }
     ISilentPaymentDbRepository SilentPaymentDbRepository =>
         throw new NotSupportedException("This unit of work does not store silent payments.");

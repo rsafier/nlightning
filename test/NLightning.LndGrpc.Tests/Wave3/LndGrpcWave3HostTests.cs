@@ -69,6 +69,7 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
     private readonly List<WalletAddressModel> _walletAddresses = [];
     private readonly List<UtxoModel> _unspent = [];
     private readonly List<WalletTransactionRecord> _walletHistory = [];
+    private readonly Dictionary<TxId, string> _walletLabels = [];
     private readonly Mock<ISecureKeyManager> _keys = new();
     private readonly Mock<ILightningSigner> _signer = new();
     private readonly Mock<IChannelMemoryRepository> _channels = new();
@@ -712,8 +713,25 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
                                                                          ? height >= start && height <= end
                                                                          : unconfirmed)
                                                          .ToList());
+            walletHistory.Setup(x => x.GetHistoryPageAsync(It.IsAny<uint>(), It.IsAny<uint>(), It.IsAny<bool>(),
+                    It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((uint start, uint end, bool unconfirmed, int offset, int limit, CancellationToken _) =>
+                    _walletHistory.Where(r => r.BlockHeight is { } height ? height >= start && height <= end : unconfirmed)
+                        .OrderBy(r => r.TxId.ToString()).Skip(offset).Take(limit).ToList());
+            walletHistory.Setup(x => x.GetByIdAsync(It.IsAny<TxId>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((TxId id, CancellationToken _) => _walletHistory.FirstOrDefault(r => r.TxId == id));
             walletHistory.Setup(x => x.GetHeightsAsync(It.IsAny<CancellationToken>()))
                          .ReturnsAsync(() => _walletHistory.ToDictionary(r => r.TxId, r => r.BlockHeight));
+            walletHistory.Setup(x => x.GetLabelAsync(It.IsAny<TxId>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((TxId id, CancellationToken _) => _walletLabels.GetValueOrDefault(id));
+            walletHistory.Setup(x => x.StageLabelAsync(It.IsAny<TxId>(), It.IsAny<string>(), It.IsAny<bool>(),
+                                                       It.IsAny<CancellationToken>()))
+                .ReturnsAsync((TxId id, string label, bool overwrite, CancellationToken _) =>
+                {
+                    if (!overwrite && _walletLabels.ContainsKey(id)) return false;
+                    _walletLabels[id] = label;
+                    return true;
+                });
             var unitOfWork = new Mock<IUnitOfWork>();
             unitOfWork.Setup(x => x.SaveChangesAsync()).Returns(Task.CompletedTask);
             unitOfWork.SetupGet(x => x.WalletTransactionDbRepository).Returns(walletHistory.Object);

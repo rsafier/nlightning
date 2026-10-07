@@ -12,6 +12,8 @@ public sealed record AccountingPricesClientResponse(string Currency)
 {
     public IReadOnlyList<AccountingPrice>? Prices { get; init; }
 
+    public IReadOnlyList<AccountingPriceReplacementAudit>? Replacements { get; init; }
+
     public AccountingPriceImportResult? Import { get; init; }
 
     public AccountingPriceFetchResult? Fetch { get; init; }

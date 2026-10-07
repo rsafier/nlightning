@@ -437,6 +437,9 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// <param name="satPerVbyte">The fee rate in sat/vB; null for the node's estimate.</param>
     /// <param name="ct">Cancels the call.</param>
     /// <param name="labels">The operator's label and tags (NL-602 A3-T1), or null for none.</param>
+    public Task<WalletHistoryIpcResponse> WalletHistoryAsync(WalletHistoryIpcRequest request, CancellationToken ct) =>
+        SendRequestAsync<WalletHistoryIpcRequest, WalletHistoryIpcResponse>(ClientCommand.WalletHistory, request, ct);
+
     public Task<SilentPaymentIpcResponse> SilentPaymentAsync(ClientCommand command, SilentPaymentIpcRequest request,
                                                               CancellationToken ct = default)
     {

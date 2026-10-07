@@ -3,6 +3,7 @@ using Google.Protobuf;
 using Grpc.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using NBitcoin;
 using NLightning.Testing.Lnd;
 using NLightning.Testing.Lnd.Lnrpc;
@@ -18,7 +19,9 @@ using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Payments.Enums;
+using Domain.Protocol.ValueObjects;
 using Fixtures;
+using Infrastructure.Bitcoin.Managers;
 using LndGrpc;
 using LndGrpc.Macaroons;
 using LndGrpc.Tls;
@@ -54,6 +57,7 @@ public partial class LndGrpcWave3FlowTests : IAsyncLifetime
     private readonly string _directory =
         Path.Combine(Path.GetTempPath(), "nltg-lndgrpc3-" + Guid.NewGuid().ToString("N")[..12]);
     private readonly List<NLightningTestNode> _nodes = [];
+    private readonly List<SecureKeyManager> _keys = [];
 
     private NLightningTestNode? _node;
     private NLightningTestNode? _payee;
@@ -72,22 +76,37 @@ public partial class LndGrpcWave3FlowTests : IAsyncLifetime
     public async ValueTask InitializeAsync()
     {
         var ct = TestContext.Current.CancellationToken;
+        _fixture.SkipIfUnavailable();
         _port = await PortPoolUtil.GetAvailablePortAsync();
-        _node = await NLightningTestNode.CreateAsync(_fixture, "lndgrpc3");
+        Directory.CreateDirectory(_directory);
+        var birthday = (uint)await _fixture.Bitcoin.GetBlockCountAsync(ct);
+        var nodeKeys = SecureKeyManager.CreateNew(BitcoinNetwork.Regtest, Path.Combine(_directory, "node-keys.json"), birthday);
+        _keys.Add(nodeKeys);
+        _node = await NLightningTestNode.CreateAsync(_fixture, "lndgrpc3", secureKeyManager: nodeKeys);
         _nodes.Add(_node);
+        Node.ExtraConfiguration["SilentPayments:Enabled"] = "true";
         Node.ExtraConfiguration["LndGrpc:Enabled"] = "true";
         Node.ExtraConfiguration["LndGrpc:ListenAddress"] = "127.0.0.1";
         Node.ExtraConfiguration["LndGrpc:Port"] = _port.ToString();
         Node.ExtraConfiguration["LndGrpc:DataDirectory"] = _directory;
         Node.ExtraConfiguration["Node:Alias"] = "nltg-lndgrpc3";
-        Node.ConfigureServices = services => services.AddLndGrpcHost(_directory);
+        Node.ConfigureServices = services =>
+        {
+            services.AddLndGrpcHost(_directory);
+            services.AddLogging(builder => builder.AddFilter("Microsoft.EntityFrameworkCore", LogLevel.Warning));
+        };
         await Node.StartAsync(ct);
         _host = Node.Services.GetServices<IHostedService>().OfType<LndGrpcHost>().Single();
         await _host.StartAsync(ct);
         Console.WriteLine($"LND gRPC listening on 127.0.0.1:{_host.BoundPort}, files in {_directory}");
 
-        _payee = await NLightningTestNode.CreateAsync(_fixture, "lndgrpc3-payee");
+        var payeeKeys = SecureKeyManager.CreateNew(BitcoinNetwork.Regtest, Path.Combine(_directory, "payee-keys.json"), birthday);
+        _keys.Add(payeeKeys);
+        _payee = await NLightningTestNode.CreateAsync(_fixture, "lndgrpc3-payee", secureKeyManager: payeeKeys);
         _nodes.Add(_payee);
+        Payee.ExtraConfiguration["SilentPayments:Enabled"] = "true";
+        Payee.ConfigureServices = services =>
+            services.AddLogging(builder => builder.AddFilter("Microsoft.EntityFrameworkCore", LogLevel.Warning));
         await Payee.StartAsync(ct);
     }
 
@@ -404,6 +423,8 @@ public partial class LndGrpcWave3FlowTests : IAsyncLifetime
             await _host.StopAsync(CancellationToken.None);
         foreach (var node in _nodes)
             await node.DisposeAsync();
+        foreach (var keys in _keys)
+            keys.Dispose();
         PortPoolUtil.ReleasePort(_port);
         if (Directory.Exists(_directory))
             Directory.Delete(_directory, true);

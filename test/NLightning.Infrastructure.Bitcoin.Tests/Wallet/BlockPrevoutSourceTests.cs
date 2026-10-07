@@ -14,6 +14,26 @@ public class BlockPrevoutSourceTests
     private static readonly byte[] s_script = [0x00, 0x14, .. new byte[20]];
 
     [Fact]
+    public async Task Given_NoTaprootOutput_When_HistoryRequiresAllInputs_Then_JsonAndRestStillProveEveryPrevout()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var block = CreateBlock();
+        block.Transactions[1].Outputs[0].ScriptPubKey = new Script(s_script);
+        using var rest = CreateRest();
+
+        // Act
+        var json = await BlockPrevoutSource.ParseVerboseAsync(new StringReader(CreateVerbose(block).ToString()), block,
+            requireAll: true, cancellationToken: ct);
+        var binary = await BlockPrevoutSource.ParseRestAsync(rest, block, ct, allTransactions: true);
+
+        // Assert
+        Assert.Equal(2, Assert.Single(json).Value.Count);
+        Assert.Equal(2, Assert.Single(binary).Value.Count);
+        Assert.All(Assert.Single(binary).Value, previous => Assert.Equal(125_000UL, previous.AmountSat));
+    }
+
+    [Fact]
     public async Task Given_ActualCore31Capture_When_WireSourcesAreParsed_Then_AllSixSpentScriptTypesAgree()
     {
         // Arrange: captured from the real cluster proof, whose raw transaction source also agrees.

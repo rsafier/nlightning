@@ -15,6 +15,7 @@ using Domain.Money;
 internal sealed class FakeWalletUtxoRepository : IUtxoMemoryRepository
 {
     private readonly Dictionary<(TxId, uint), UtxoModel> _utxos = [];
+    private readonly Dictionary<(TxId, uint), UtxoModel> _unconfirmed = [];
     private readonly Dictionary<(TxId, uint), Guid> _reservations = [];
     private readonly Lock _lock = new();
 
@@ -24,20 +25,34 @@ internal sealed class FakeWalletUtxoRepository : IUtxoMemoryRepository
     public void Add(UtxoModel utxoModel)
     {
         lock (_lock)
+        {
             _utxos.Add((utxoModel.TxId, utxoModel.Index), utxoModel);
+            _unconfirmed.Remove((utxoModel.TxId, utxoModel.Index));
+        }
     }
 
     public void Spend(UtxoModel utxoModel)
     {
         lock (_lock)
+        {
             _utxos.Remove((utxoModel.TxId, utxoModel.Index));
+            _unconfirmed.Remove((utxoModel.TxId, utxoModel.Index));
+        }
     }
 
     public bool TryGetUtxo(TxId txId, uint index, [MaybeNullWhen(false)] out UtxoModel utxoModel)
     {
         lock (_lock)
-            return _utxos.TryGetValue((txId, index), out utxoModel);
+            return _utxos.TryGetValue((txId, index), out utxoModel) || _unconfirmed.TryGetValue((txId, index), out utxoModel);
     }
+
+    public void AddUnconfirmed(UtxoModel utxo)
+    {
+        if (utxo.BlockHeight != 0 || utxo.WalletAddress is null) throw new ArgumentException("Expected transient wallet coin.");
+        lock (_lock) _unconfirmed[(utxo.TxId, utxo.Index)] = utxo;
+    }
+    public void RemoveUnconfirmed(TxId txId, uint index) { lock (_lock) _unconfirmed.Remove((txId, index)); }
+    public IReadOnlyList<UtxoModel> GetUnconfirmedUtxos() { lock (_lock) return _unconfirmed.Values.ToArray(); }
 
     public LightningMoney GetConfirmedBalance(uint currentBlockHeight) => throw new NotSupportedException();
     public LightningMoney GetUnconfirmedBalance(uint currentBlockHeight) => throw new NotSupportedException();
@@ -86,7 +101,7 @@ internal sealed class FakeWalletUtxoRepository : IUtxoMemoryRepository
         BeforeReserve?.Invoke();
         lock (_lock)
         {
-            if (outpoints.Count == 0 || outpoints.Any(o => !_utxos.TryGetValue(o, out var u)
+            if (outpoints.Count == 0 || outpoints.Any(o => (!_utxos.TryGetValue(o, out var u) && !_unconfirmed.TryGetValue(o, out u))
                                                          || u.LockedToChannelId is not null
                                                          || _reservations.ContainsKey(o)))
                 return false;

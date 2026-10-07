@@ -7,8 +7,15 @@ using Models;
 public interface IBitcoinChainService
 {
     Task<uint256> SendTransactionAsync(Transaction transaction);
+    Task<uint> GetIncrementalRelayFeeRatePerKwAsync() => Task.FromResult(250u);
+    Task<IReadOnlyList<uint256>> GetMempoolTransactionIdsAsync() => Task.FromResult<IReadOnlyList<uint256>>([]);
+    Task<WalletMempoolEntry?> GetMempoolEntryAsync(uint256 txId) => Task.FromResult<WalletMempoolEntry?>(null);
+    /// <summary>Unconfirmed and unspent with mempool spends included; confirmed coins are not returned.</summary>
+    Task<TxOut?> GetMempoolUnspentOutputAsync(OutPoint outpoint) => Task.FromResult<TxOut?>(null);
     Task<Transaction?> GetTransactionAsync(uint256 txId);
     Task<uint> GetCurrentBlockHeightAsync();
+    /// <summary>Lowest block whose full data is retained (Core pruneheight, or zero on an unpruned node).</summary>
+    Task<uint> GetBlockDataStartHeightAsync() => Task.FromResult(0u);
     Task<Block?> GetBlockAsync(uint height);
 
     /// <summary>The hash of the active chain's block at <paramref name="height"/>.</summary>

@@ -26,6 +26,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<OurOutputs>k__BackingField")]
         public static extern ref string OurOutputs(WalletTransactionEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<OwnershipSummary>k__BackingField")]
+        public static extern ref string OwnershipSummary(WalletTransactionEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<RawTransaction>k__BackingField")]
         public static extern ref byte[] RawTransaction(WalletTransactionEntity @this);
 

@@ -475,6 +475,52 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.ToTable("AccountingPrices");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingPriceReplacementAuditEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<decimal>("NewPrice")
+                        .HasPrecision(28, 8)
+                        .HasColumnType("decimal(28,8)");
+
+                    b.Property<byte>("NewSource")
+                        .HasColumnType("tinyint");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<long>("OldFetchedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("OldPrice")
+                        .HasPrecision(28, 8)
+                        .HasColumnType("decimal(28,8)");
+
+                    b.Property<byte>("OldSource")
+                        .HasColumnType("tinyint");
+
+                    b.Property<string>("OperatorSource")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<long>("PriceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ReplacedAt")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PriceId", "ReplacedAt", "Id");
+
+                    b.ToTable("AccountingPriceReplacementAudits");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingRuleEntity", b =>
                 {
                     b.Property<long>("Id")
@@ -912,6 +958,49 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         });
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletAccountEntity", b =>
+                {
+                    b.Property<string>("Name")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<long>("AccountIndex")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("AddressType")
+                        .HasColumnType("tinyint");
+
+                    b.Property<long>("BirthdayHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("DerivationPath")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("ExtendedPublicKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<long>("ExternalKeyCount")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("InternalKeyCount")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("MasterFingerprint")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<bool>("WatchOnly")
+                        .HasColumnType("bit");
+
+                    b.HasKey("Name");
+
+                    b.ToTable("WalletAccounts");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletAddressEntity", b =>
                 {
                     b.Property<long>("Index")
@@ -923,9 +1012,24 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte>("AddressType")
                         .HasColumnType("tinyint");
 
+                    b.Property<long>("AccountIndex")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L);
+
+                    b.Property<string>("AccountName")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasDefaultValue("default");
+
                     b.Property<string>("Address")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<long?>("DerivationIndex")
+                        .HasColumnType("bigint");
 
                     b.Property<bool>("IsReserved")
                         .HasColumnType("bit");
@@ -933,6 +1037,48 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.HasKey("Index", "IsChange", "AddressType");
 
                     b.ToTable("WalletAddresses");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletHistoryRescanStateEntity", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("int");
+
+                    b.Property<long>("AddressCount")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("AvailableFromHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("CursorHash")
+                        .HasMaxLength(32)
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long?>("CursorHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
+                    b.Property<Guid>("Generation")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsPartial")
+                        .HasColumnType("bit");
+
+                    b.Property<long>("RequestedFromHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("TargetHeight")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("WalletHistoryRescanStates");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletTransactionEntity", b =>
@@ -955,6 +1101,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("OwnershipSummary")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<byte[]>("RawTransaction")
                         .IsRequired()
                         .HasColumnType("varbinary(max)");
@@ -967,6 +1116,21 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.HasIndex("BlockHeight");
 
                     b.ToTable("WalletTransactions");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletTransactionLabelEntity", b =>
+                {
+                    b.Property<byte[]>("TransactionId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.HasKey("TransactionId");
+
+                    b.ToTable("WalletTransactionLabels");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedOutpointEntity", b =>
@@ -2286,6 +2450,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<decimal>("IncomingHtlcId")
                         .HasColumnType("decimal(20,0)");
 
+                    b.Property<long?>("ActualIncomingAmountMsat")
+                        .HasColumnType("bigint");
+
                     b.Property<long>("CreatedAt")
                         .HasColumnType("bigint");
 
@@ -2297,6 +2464,10 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.Property<long>("IncomingAmountMsat")
                         .HasColumnType("bigint");
+
+                    b.Property<byte[]>("IncomingClaimedPreimage")
+                        .HasMaxLength(32)
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long>("IncomingCltvExpiry")
                         .HasColumnType("bigint");
@@ -2915,6 +3086,15 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .WithMany()
                         .HasForeignKey("Book", "LedgerSeq", "Adjustment")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingPriceReplacementAuditEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingPriceEntity", null)
+                        .WithMany()
+                        .HasForeignKey("PriceId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
 

@@ -28,7 +28,8 @@ public sealed class WalletTransactionDbRepository(NLightningDbContext context)
                 BlockHash = record.BlockHash,
                 Timestamp = record.Timestamp,
                 OurOutputs = EncodeOutputs(record.OurOutputs),
-                OurInputs = EncodeInputs(record.OurInputs)
+                OurInputs = EncodeInputs(record.OurInputs),
+                OwnershipSummary = record.OwnershipSummary
             });
             return;
         }
@@ -46,6 +47,17 @@ public sealed class WalletTransactionDbRepository(NLightningDbContext context)
         entity.Timestamp = record.Timestamp;
         entity.OurOutputs = EncodeOutputs(outputs);
         entity.OurInputs = EncodeInputs(inputs.Values.OrderBy(i => i.InputIndex));
+        var summary = MergeSummary(entity.OwnershipSummary, record.OwnershipSummary);
+        if (summary is not null)
+        {
+            var keys = summary.Split(';', StringSplitOptions.RemoveEmptyEntries)
+                .Select(part => part[..part.IndexOf(':', part.IndexOf(':') + 1)]).ToHashSet(StringComparer.Ordinal);
+            // A legacy row may know inputs the replay cannot rediscover. Never promote a partial projection:
+            // keep the raw fallback until a backfill supplies every retained ownership identity.
+            if (outputs.Any(index => !keys.Contains($"o:{index}")) || inputs.Keys.Any(index => !keys.Contains($"i:{index}")))
+                summary = null;
+        }
+        entity.OwnershipSummary = summary;
     }
 
     /// <inheritdoc />
@@ -99,9 +111,87 @@ public sealed class WalletTransactionDbRepository(NLightningDbContext context)
         return entities.Select(ToRecord).ToList();
     }
 
+    public async Task<WalletTransactionRecord?> GetByIdAsync(TxId txId, CancellationToken cancellationToken)
+    {
+        var entity = await DbSet.FindAsync([txId], cancellationToken);
+        return entity is null ? null : ToRecord(entity);
+    }
+
+    public async Task<IReadOnlyList<WalletTransactionRecord>> GetByIdsAsync(IReadOnlyCollection<TxId> txIds, CancellationToken cancellationToken)
+    {
+        if (txIds.Count > 500) throw new ArgumentOutOfRangeException(nameof(txIds));
+        var rows = await DbSet.AsNoTracking().Where(e => txIds.Contains(e.TransactionId)).ToListAsync(cancellationToken);
+        return rows.Select(ToRecord).ToList();
+    }
+
+    public async Task<IReadOnlyList<WalletTransactionRecord>> GetHistoryPageAsync(uint startHeight, uint endHeight,
+        bool includeUnconfirmed, int offset, int limit, CancellationToken cancellationToken)
+    {
+        if (offset < 0 || limit is < 1 or > 1000) throw new ArgumentOutOfRangeException(nameof(limit));
+        var page = await DbSet.AsNoTracking()
+            .Where(e => (e.BlockHeight != null && e.BlockHeight >= startHeight && e.BlockHeight <= endHeight)
+                || (includeUnconfirmed && e.BlockHeight == null))
+            .OrderBy(e => e.TransactionId).Skip(offset).Take(limit)
+            .Select(e => new WalletTransactionEntity
+            {
+                TransactionId = e.TransactionId,
+                BlockHeight = e.BlockHeight,
+                BlockHash = e.BlockHash,
+                Timestamp = e.Timestamp,
+                OurOutputs = e.OurOutputs,
+                OurInputs = e.OurInputs,
+                OwnershipSummary = e.OwnershipSummary,
+                RawTransaction = e.OwnershipSummary == null ? e.RawTransaction : Array.Empty<byte>()
+            }).ToListAsync(cancellationToken);
+        return page.Select(ToRecord).ToList();
+    }
+
+    public async Task<WalletHistoryRescanState?> GetRescanStateAsync(CancellationToken cancellationToken)
+    {
+        var e = await Context.WalletHistoryRescanStates.AsNoTracking().SingleOrDefaultAsync(e => e.Id == 1, cancellationToken);
+        return e is null ? null : new(e.Generation, e.RequestedFromHeight, e.AvailableFromHeight, e.TargetHeight,
+            e.CursorHeight, e.CursorHash, e.AddressCount, e.IsActive, e.IsPartial, e.Error);
+    }
+
+    public async Task StageRescanStateAsync(WalletHistoryRescanState state, CancellationToken cancellationToken)
+    {
+        var set = Context.WalletHistoryRescanStates;
+        var e = await set.FindAsync([1], cancellationToken);
+        if (e is null) { e = new WalletHistoryRescanStateEntity(); set.Add(e); }
+        e.Generation = state.Generation; e.RequestedFromHeight = state.RequestedFromHeight;
+        e.AvailableFromHeight = state.AvailableFromHeight; e.TargetHeight = state.TargetHeight;
+        e.CursorHeight = state.CursorHeight; e.CursorHash = state.CursorHash; e.AddressCount = state.AddressCount;
+        e.IsActive = state.IsActive; e.IsPartial = state.IsPartial; e.Error = state.Error;
+    }
+
+    public async Task<string?> GetLabelAsync(TxId txId, CancellationToken cancellationToken) =>
+        (await Context.WalletTransactionLabels.AsNoTracking().SingleOrDefaultAsync(e => e.TransactionId == txId,
+            cancellationToken))?.Label;
+
+    public async Task<bool> StageLabelAsync(TxId txId, string label, bool overwrite, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(label);
+        if (label.Length > 500) throw new ArgumentOutOfRangeException(nameof(label));
+        var e = await Context.WalletTransactionLabels.FindAsync([txId], cancellationToken);
+        if (e is not null && !overwrite) return false;
+        if (e is null) Context.WalletTransactionLabels.Add(new WalletTransactionLabelEntity { TransactionId = txId, Label = label });
+        else e.Label = label;
+        return true;
+    }
+
+    private static string? MergeSummary(string? existing, string? incoming)
+    {
+        if (incoming is null) return existing;
+        if (existing is null) return incoming;
+        var parts = existing.Split(';', StringSplitOptions.RemoveEmptyEntries).ToDictionary(Key);
+        foreach (var part in incoming.Split(';', StringSplitOptions.RemoveEmptyEntries)) parts[Key(part)] = part;
+        return string.Join(';', parts.OrderBy(part => part.Key, StringComparer.Ordinal).Select(part => part.Value));
+        static string Key(string part) => part[..part.IndexOf(':', part.IndexOf(':') + 1)];
+    }
+
     private static WalletTransactionRecord ToRecord(WalletTransactionEntity e) =>
         new(e.TransactionId, e.RawTransaction, e.BlockHeight, e.BlockHash, e.Timestamp, DecodeOutputs(e.OurOutputs),
-            DecodeInputs(e.OurInputs));
+            DecodeInputs(e.OurInputs), e.OwnershipSummary);
 
     internal static string EncodeOutputs(IEnumerable<uint> outputs) =>
         string.Join(',', outputs.Select(o => o.ToString(CultureInfo.InvariantCulture)));

@@ -462,6 +462,50 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.ToTable("AccountingPrices");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingPriceReplacementAuditEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("NewPrice")
+                        .HasPrecision(28, 8)
+                        .HasColumnType("TEXT");
+
+                    b.Property<byte>("NewSource")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(300)
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("OldFetchedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("OldPrice")
+                        .HasPrecision(28, 8)
+                        .HasColumnType("TEXT");
+
+                    b.Property<byte>("OldSource")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("OperatorSource")
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("PriceId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("ReplacedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PriceId", "ReplacedAt", "Id");
+
+                    b.ToTable("AccountingPriceReplacementAudits");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingRuleEntity", b =>
                 {
                     b.Property<long>("Id")
@@ -892,6 +936,49 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         });
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletAccountEntity", b =>
+                {
+                    b.Property<string>("Name")
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<uint>("AccountIndex")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte>("AddressType")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("BirthdayHeight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("DerivationPath")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ExtendedPublicKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<uint>("ExternalKeyCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("InternalKeyCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("MasterFingerprint")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<bool>("WatchOnly")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Name");
+
+                    b.ToTable("WalletAccounts");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletAddressEntity", b =>
                 {
                     b.Property<uint>("Index")
@@ -903,9 +990,24 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<byte>("AddressType")
                         .HasColumnType("INTEGER");
 
+                    b.Property<uint>("AccountIndex")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0u);
+
+                    b.Property<string>("AccountName")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("default");
+
                     b.Property<string>("Address")
                         .IsRequired()
                         .HasColumnType("TEXT");
+
+                    b.Property<uint?>("DerivationIndex")
+                        .HasColumnType("INTEGER");
 
                     b.Property<bool>("IsReserved")
                         .HasColumnType("INTEGER");
@@ -913,6 +1015,48 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.HasKey("Index", "IsChange", "AddressType");
 
                     b.ToTable("WalletAddresses");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletHistoryRescanStateEntity", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("AddressCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("AvailableFromHeight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("CursorHash")
+                        .HasMaxLength(32)
+                        .HasColumnType("BLOB");
+
+                    b.Property<uint?>("CursorHeight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(1024)
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("Generation")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsPartial")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("RequestedFromHeight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("TargetHeight")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("WalletHistoryRescanStates");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletTransactionEntity", b =>
@@ -935,6 +1079,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("OwnershipSummary")
+                        .HasColumnType("TEXT");
+
                     b.Property<byte[]>("RawTransaction")
                         .IsRequired()
                         .HasColumnType("BLOB");
@@ -947,6 +1094,21 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.HasIndex("BlockHeight");
 
                     b.ToTable("WalletTransactions");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletTransactionLabelEntity", b =>
+                {
+                    b.Property<byte[]>("TransactionId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("TransactionId");
+
+                    b.ToTable("WalletTransactionLabels");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedOutpointEntity", b =>
@@ -2264,6 +2426,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<ulong>("IncomingHtlcId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<long?>("ActualIncomingAmountMsat")
+                        .HasColumnType("INTEGER");
+
                     b.Property<long>("CreatedAt")
                         .HasColumnType("INTEGER");
 
@@ -2275,6 +2440,10 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 
                     b.Property<long>("IncomingAmountMsat")
                         .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("IncomingClaimedPreimage")
+                        .HasMaxLength(32)
+                        .HasColumnType("BLOB");
 
                     b.Property<uint>("IncomingCltvExpiry")
                         .HasColumnType("INTEGER");
@@ -2890,6 +3059,15 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .WithMany()
                         .HasForeignKey("Book", "LedgerSeq", "Adjustment")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingPriceReplacementAuditEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingPriceEntity", null)
+                        .WithMany()
+                        .HasForeignKey("PriceId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
 

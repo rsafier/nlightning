@@ -111,10 +111,6 @@ public sealed class HtlcInterceptorHub : IHtlcForwardInterceptor, IDisposable
         lock (_lock)
         {
             client = _client;
-            // No interceptor and none required: the forward goes on (LND without requireinterceptor)
-            if (client is null && !_settings.RequireInterceptor)
-                return ForwardInterceptOutcome.NotIntercepted;
-
             var key = (forward.IncomingChannelId, forward.IncomingHtlcId);
             if (_held.ContainsKey(key))
                 return ForwardInterceptOutcome.Held;
@@ -126,6 +122,10 @@ public sealed class HtlcInterceptorHub : IHtlcForwardInterceptor, IDisposable
             // LND: no time left to resolve it before the expiry: fail it at once instead of offering it
             if (forward.IncomingExpiry < currentHeight + (ulong)_settings.CltvInterceptDelta)
                 return ForwardInterceptOutcome.ExpiryTooSoon;
+
+            // Expiry safety applies even without a connected or required interceptor (LND handleExpired).
+            if (client is null && !_settings.RequireInterceptor)
+                return ForwardInterceptOutcome.NotIntercepted;
 
             // NL-1182, LND's requireinterceptor: a new forward the interceptor never saw can still be failed; a replay
             // waits, since the interceptor may have decided on it before the restart
@@ -172,12 +172,8 @@ public sealed class HtlcInterceptorHub : IHtlcForwardInterceptor, IDisposable
                 if (existing.Resolving)
                     return true;
             }
-            else if (_client is null && !_settings.RequireInterceptor)
-            {
-                // Nobody to settle it: the resolvers hand it to the switch every round, so a client that connects later
-                // is offered it at the next block
+            else if (_held.Count >= _settings.MaxHeld)
                 return false;
-            }
 
             held = forward with { AutoFailHeight = forward.IncomingExpiry, IsOnChain = true };
             if (existing is not null)

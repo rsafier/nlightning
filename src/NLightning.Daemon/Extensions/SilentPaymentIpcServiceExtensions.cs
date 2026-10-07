@@ -19,6 +19,8 @@ public static class SilentPaymentIpcServiceExtensions
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IIpcCommandHandler, SilentPaymentLabelsIpcHandler>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IIpcCommandHandler, SilentPaymentRescanIpcHandler>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IIpcCommandHandler, SilentPaymentStatusIpcHandler>());
+        services.TryAddScoped<IClientCommandHandler<WalletHistoryClientRequest, WalletHistoryClientResponse>, WalletHistoryClientHandler>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IIpcCommandHandler, WalletHistoryIpcHandler>());
         return services;
     }
 }

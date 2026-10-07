@@ -28,10 +28,6 @@ public sealed class AccountingFinancialExportService : IAccountingFinancialExpor
     /// <summary>The largest page.</summary>
     public const int MaxTake = 1_000;
 
-    // How far before the first entry the header looks for the prices it declares (a posting takes the nearest price at
-    // or before it within Accounting:Prices:MaxAge, 26 h by default); a price outside is read by its id
-    private static readonly TimeSpan s_priceLookback = TimeSpan.FromDays(7);
-
     private readonly AccountingFinancialAccess _access;
     private readonly IServiceScopeFactory _scopeFactory;
 
@@ -83,14 +79,12 @@ public sealed class AccountingFinancialExportService : IAccountingFinancialExpor
                               AfterAdjustment = query.AfterAdjustment ?? int.MaxValue
                           }, cancellationToken);
         var events = await LoadEventsAsync(unitOfWork.AccountingEventDbRepository, entries, cancellationToken);
-        var prices = await LoadPricesAsync(unitOfWork.AccountingPriceDbRepository,
-                                           entries.SelectMany(e => e.Postings)
-                                                  .Select(p => p.PriceId)
-                                                  .OfType<long>()
-                                                  .ToHashSet(), cancellationToken);
         foreach (var entry in entries)
+        {
+            var prices = await LoadEntryPricesAsync(unitOfWork, entry, cancellationToken);
             formatter.WriteEntry(builder, new AccountingFinancialExportItem(
-                                     entry, events.GetValueOrDefault(entry.LedgerSeq), prices));
+                entry, events.GetValueOrDefault(entry.LedgerSeq), prices));
+        }
 
         return entries.Count == 0
                    ? new AccountingFinancialExportChunk(builder.ToString(), query.AfterLedgerSeq, query.AfterAdjustment,
@@ -143,6 +137,36 @@ public sealed class AccountingFinancialExportService : IAccountingFinancialExpor
         return found;
     }
 
+    // Closed entries declare their immutable valuation provenance, never a corrected mutable row (D-A8).
+    private static async Task<Dictionary<long, AccountingPrice>> LoadEntryPricesAsync(IUnitOfWork unitOfWork,
+        AccountingEntry entry, CancellationToken cancellationToken)
+    {
+        var prices = await LoadPricesAsync(unitOfWork.AccountingPriceDbRepository,
+            entry.Postings.Select(p => p.PriceId).OfType<long>().ToHashSet(), cancellationToken);
+        if (entry.ClosedPeriodId is not { } periodId) return prices;
+        var period = await unitOfWork.AccountingPeriodDbRepository.GetAsync(periodId, cancellationToken)
+                  ?? throw new InvalidOperationException($"Closed period {periodId} is missing.");
+        var state = AccountingClosingState.Decode(period.ClosingState);
+        foreach (var id in prices.Keys.ToArray())
+        {
+            if (state.Prices.FirstOrDefault(p => p.Id == id) is { } snapshot)
+            {
+                prices[id] = snapshot;
+                continue;
+            }
+            var current = prices[id];
+            if (period.ClosedAt is { } closedAt && current.FetchedAt <= closedAt) continue;
+            var audit = (await unitOfWork.AccountingPriceDbRepository.ListReplacementAuditsAsync(id, cancellationToken))
+                .FirstOrDefault(a => a.ReplacedAt > period.ClosedAt);
+            if (audit is not null && audit.OldFetchedAt <= period.ClosedAt)
+                prices[id] = current with { Price = audit.OldPrice, Source = audit.OldSource, FetchedAt = audit.OldFetchedAt };
+            else
+                // A legacy correction without durable provenance cannot supply the price originally used.
+                prices.Remove(id);
+        }
+        return prices;
+    }
+
     // The header of the journals: one pass over the period's entries (the accounts, the earliest date, the prices)
     private static async Task<AccountingFinancialExportHeader> ScanAsync(IUnitOfWork unitOfWork,
                                                                          AccountingFinancialExportQuery query,
@@ -151,7 +175,7 @@ public sealed class AccountingFinancialExportService : IAccountingFinancialExpor
     {
         var books = unitOfWork.AccountingBooksDbRepository;
         var builder = new AccountingFinancialExportHeaderBuilder(currency);
-        DateTimeOffset? lastDate = null;
+        var usedPrices = new List<AccountingPrice>();
         var afterSeq = 0L;
         var afterAdjustment = int.MaxValue;
         while (true)
@@ -165,8 +189,7 @@ public sealed class AccountingFinancialExportService : IAccountingFinancialExpor
             foreach (var entry in page)
             {
                 builder.Add(entry);
-                if (lastDate is null || entry.OccurredAt > lastDate)
-                    lastDate = entry.OccurredAt;
+                usedPrices.AddRange((await LoadEntryPricesAsync(unitOfWork, entry, cancellationToken)).Values);
             }
 
             if (page.Count < MaxTake)
@@ -175,21 +198,9 @@ public sealed class AccountingFinancialExportService : IAccountingFinancialExpor
             (afterSeq, afterAdjustment) = (page[^1].LedgerSeq, page[^1].Adjustment);
         }
 
-        var prices = new Dictionary<long, AccountingPrice>();
-        if (builder.PriceIds.Count > 0 && builder.FirstDate is { } first && lastDate is { } end)
-        {
-            // The prices around the period in one read, the others by id
-            foreach (var price in await unitOfWork.AccountingPriceDbRepository.ListAsync(
-                                      currency, first - s_priceLookback, end.AddTicks(1), 100_000, cancellationToken))
-                if (builder.PriceIds.Contains(price.Id))
-                    prices[price.Id] = price;
-
-            var missing = builder.PriceIds.Where(id => !prices.ContainsKey(id)).ToList();
-            foreach (var (id, price) in await LoadPricesAsync(unitOfWork.AccountingPriceDbRepository, missing,
-                                                              cancellationToken))
-                prices[id] = price;
-        }
-
-        return builder.Build(prices.Values);
+        // Multiple closes may have used different versions of one timestamp. Their explicit posting costs remain
+        // authoritative; omit ambiguous global directives rather than declare one version for both periods.
+        return builder.Build(usedPrices.GroupBy(p => (p.Currency, p.Time))
+            .Where(group => group.Select(p => p.Price).Distinct().Count() == 1).SelectMany(group => group));
     }
 }

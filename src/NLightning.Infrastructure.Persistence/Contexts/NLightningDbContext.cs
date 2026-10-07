@@ -37,6 +37,7 @@ public class NLightningDbContext : DbContext
     public DbSet<BlockchainStateEntity> BlockchainStates { get; set; }
     public DbSet<WatchedTransactionEntity> WatchedTransactions { get; set; }
     public DbSet<WalletAddressEntity> WalletAddresses { get; set; }
+    public DbSet<WalletAccountEntity> WalletAccounts { get; set; }
     public DbSet<UtxoEntity> Utxos { get; set; }
     public DbSet<SilentPaymentOutputEntity> SilentPaymentOutputs { get; set; }
     public DbSet<SilentPaymentLabelEntity> SilentPaymentLabels { get; set; }
@@ -69,6 +70,8 @@ public class NLightningDbContext : DbContext
     public DbSet<ImportedTapscriptEntity> ImportedTapscripts { get; set; }
     public DbSet<ImportedWatchIndexEntity> ImportedWatchIndexes { get; set; }
     public DbSet<WalletTransactionEntity> WalletTransactions { get; set; }
+    public DbSet<WalletHistoryRescanStateEntity> WalletHistoryRescanStates { get; set; }
+    public DbSet<WalletTransactionLabelEntity> WalletTransactionLabels { get; set; }
     public DbSet<KeyRingKeyEntity> KeyRingKeys { get; set; }
 
     // Node DbSets
@@ -101,6 +104,7 @@ public class NLightningDbContext : DbContext
 
     // Accounting financial books (NL-602 A3, migration AddAccountingFinancial)
     public DbSet<AccountingPriceEntity> AccountingPrices { get; set; }
+    public DbSet<AccountingPriceReplacementAuditEntity> AccountingPriceReplacementAudits { get; set; }
     public DbSet<AccountingRuleEntity> AccountingRules { get; set; }
     public DbSet<AccountingOverrideEntity> AccountingOverrides { get; set; }
     public DbSet<AccountingLotEntity> AccountingLots { get; set; }
@@ -135,6 +139,8 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureBlockHeaderEntity(_databaseType);
         modelBuilder.ConfigureFeeInputReservationEntity(_databaseType);
         modelBuilder.ConfigureWalletTransactionEntity(_databaseType);
+        modelBuilder.ConfigureWalletAccountEntity(_databaseType);
+        modelBuilder.ConfigureWalletHistoryEntities(_databaseType);
 
         // Channel entities
         modelBuilder.ConfigureChannelEntity(_databaseType);

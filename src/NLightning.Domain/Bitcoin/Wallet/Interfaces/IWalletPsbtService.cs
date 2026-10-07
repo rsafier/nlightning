@@ -16,6 +16,10 @@ using ValueObjects;
 /// </remarks>
 public interface IWalletPsbtService
 {
+    /// <summary>Publishes a child spending the named live wallet mempool output at an ancestor-package target.</summary>
+    Task<TxId> BumpOutputAsync(TxId txId, uint index, long feeRatePerKw, long? budgetSat = null,
+                             CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Wallet CPFP is unavailable.");
     /// <summary>The wallet outputs free to spend (not leased, reserved, locked to a channel or spent by a pending
     /// broadcast of ours) with <paramref name="minConfirmations"/> to <paramref name="maxConfirmations"/>
     /// confirmations.</summary>
@@ -26,6 +30,12 @@ public interface IWalletPsbtService
     /// <exception cref="Exceptions.WalletPsbtException">Unknown, locked, reserved or leased under another id.</exception>
     Task<WalletLease> LeaseAsync(byte[] lockId, TxId txId, uint index, TimeSpan duration,
                                  CancellationToken cancellationToken = default);
+
+    /// <summary>Leases an output until its confirmed spend reaches the requested depth.</summary>
+    Task<WalletLease> LeaseAsync(byte[] lockId, TxId txId, uint index, TimeSpan duration,
+        uint releaseAfterSpendConfs, CancellationToken cancellationToken = default) =>
+        releaseAfterSpendConfs == 0 ? LeaseAsync(lockId, txId, index, duration, cancellationToken)
+        : throw new NotSupportedException("Confirmation-depth leases are unavailable.");
 
     /// <summary>Ends the lease of one output (the id must match).</summary>
     /// <exception cref="Exceptions.WalletPsbtException">Not leased, or leased under another id.</exception>

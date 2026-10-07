@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
+using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Integration.Tests.Persistence;
 
@@ -66,6 +67,123 @@ public sealed class AccountingBackfillTests : IAsyncLifetime
             await _provider.DisposeAsync();
         if (_db is not null)
             await _db.DisposeAsync();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_AFailedCircuitWithNoIncomingHtlc_When_TheFeedCutoverRecovers_Then_OnlyClaimedIncomeIsMemoed(
+        bool claimed)
+    {
+        // Arrange: no channel or HTLC row exists; only the circuit retains independently validated claim evidence.
+        var circuit = ClaimedCircuit(claimed);
+        circuit.MarkFailed(s_cutoverAt.AddMinutes(-1));
+        var gate = new AccountingFeedGate();
+        gate.Hold("cutover not ready");
+        using (var work = new UnitOfWork(Db.CreateDbContext(), NullLogger<UnitOfWork>.Instance, Db.Sha256,
+                   new UtxoMemoryRepository(), _clock, accountingFeedGate: gate))
+        {
+            await work.ForwardCircuitDbRepository.AddAsync(circuit);
+            if (claimed)
+                await StageClaimedIncomeAsync(work, circuit);
+            await work.SaveChangesAsync();
+        }
+        Assert.Empty(await ReadEventsAsync());
+        await using var backfill = CreateBackfill();
+        await backfill.EnsureCutoverAsync(TestContext.Current.CancellationToken);
+
+        // Act
+        var result = await backfill.RunMemoBackfillAsync(TestContext.Current.CancellationToken);
+
+        // Assert: exact real amount, original idempotency key, and no second posting on top of opening balances.
+        Assert.Equal(claimed ? 1 : 0, result.Forwards);
+        var facts = (await ReadEventsAsync()).Where(e => e.Kind == AccountingEventKind.InterceptedHtlcSettled).ToList();
+        if (claimed)
+        {
+            var fact = Assert.Single(facts);
+            Assert.Equal(AccountingEventKeys.InterceptedHtlcSettled(circuit.IncomingChannelId, circuit.IncomingHtlcId), fact.EventKey);
+            Assert.Equal(52_000, fact.AmountMsat);
+            Assert.Equal("true", fact.Details["memo"]);
+            Assert.Empty(AccountingPostingRules.Evaluate(fact, _ => null).Postings);
+        }
+        else Assert.Empty(facts);
+        var again = await backfill.RunMemoBackfillAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(0, again.Written);
+    }
+
+    [Fact]
+    public async Task Given_AClaimedCircuit_When_ItsFailureSaveCrashes_Then_CircuitAndIncomeRollBackAndRetryCommitsBoth()
+    {
+        // Arrange
+        var circuit = ClaimedCircuit(true);
+        using (var work = CreateUnitOfWork())
+        {
+            await work.ForwardCircuitDbRepository.AddAsync(circuit);
+            await work.SaveChangesAsync();
+        }
+        var crash = new CrashAfterCommandInterceptor();
+        crash.Arm(1);
+        using (var work = new UnitOfWork(Db.CreateDbContext(crash), NullLogger<UnitOfWork>.Instance, Db.Sha256,
+                   new UtxoMemoryRepository(), _clock))
+        {
+            var pending = (await work.ForwardCircuitDbRepository.GetByIncomingAsync(circuit.IncomingChannelId, circuit.IncomingHtlcId))!;
+            pending.MarkFailed(s_cutoverAt.AddMinutes(-1));
+            await work.ForwardCircuitDbRepository.UpdateAsync(pending);
+            await StageClaimedIncomeAsync(work, pending);
+            var failure = await Assert.ThrowsAsync<Microsoft.EntityFrameworkCore.DbUpdateException>(() => work.SaveChangesAsync());
+            Assert.IsType<SimulatedCrashException>(failure.InnerException);
+        }
+        using (var work = CreateUnitOfWork())
+        {
+            var recovered = (await work.ForwardCircuitDbRepository.GetByIncomingAsync(circuit.IncomingChannelId, circuit.IncomingHtlcId))!;
+            Assert.Equal(ForwardCircuitStatus.Offered, recovered.Status);
+            Assert.Empty(await work.AccountingEventDbRepository.GetUnsealedAsync(100, TestContext.Current.CancellationToken));
+            recovered.MarkFailed(s_cutoverAt.AddMinutes(-1));
+            await work.ForwardCircuitDbRepository.UpdateAsync(recovered);
+            await StageClaimedIncomeAsync(work, recovered);
+            await work.SaveChangesAsync();
+        }
+        using (var work = CreateUnitOfWork())
+        {
+            var recovered = (await work.ForwardCircuitDbRepository.GetByIncomingAsync(circuit.IncomingChannelId, circuit.IncomingHtlcId))!;
+            Assert.Equal(ForwardCircuitStatus.Failed, recovered.Status);
+            await StageClaimedIncomeAsync(work, recovered);
+            await work.SaveChangesAsync();
+            Assert.Equal(52_000, Assert.Single(await work.AccountingEventDbRepository.GetUnsealedAsync(100, TestContext.Current.CancellationToken)).AmountMsat);
+        }
+    }
+
+    private static ForwardCircuitModel ClaimedCircuit(bool claimed)
+    {
+        var preimage = new Secret(Fill(0x77));
+        var circuit = new ForwardCircuitModel(new ChannelId(Fill(0xA7)), 5, LightningMoney.MilliSatoshis(53_000), 900,
+            new Hash(System.Security.Cryptography.SHA256.HashData((byte[])preimage)), new Secret(Fill(0x78)),
+            new ShortChannelId(800, 1, 1), LightningMoney.MilliSatoshis(50_000), 850, s_cutoverAt.AddMinutes(-2));
+        circuit.SetActualIncomingAmount(LightningMoney.MilliSatoshis(52_000));
+        circuit.AddOutgoingHtlc(new ChannelId(Fill(0xA8)), 6);
+        if (claimed) circuit.MarkIncomingClaimed(preimage);
+        return circuit;
+    }
+
+    private static async Task StageClaimedIncomeAsync(IUnitOfWork work, ForwardCircuitModel circuit)
+    {
+        var key = AccountingEventKeys.InterceptedHtlcSettled(circuit.IncomingChannelId, circuit.IncomingHtlcId);
+        if (await work.AccountingEventDbRepository.ExistsAsync(key, TestContext.Current.CancellationToken))
+            return;
+        work.AccountingEventDbRepository.Add(new AccountingEventModel
+        {
+            EventKey = key,
+            Kind = AccountingEventKind.InterceptedHtlcSettled,
+            OccurredAt = circuit.ResolvedAt ?? s_cutoverAt,
+            ChannelId = circuit.IncomingChannelId,
+            PaymentHash = circuit.PaymentHash,
+            AmountMsat = checked((long)circuit.ActualIncomingAmount.MilliSatoshi),
+            Finality = AccountingFinality.Final,
+            Details = AccountingDetailsCodec.Create(("kind", "intercepted"),
+                ("incomingChannelId", circuit.IncomingChannelId.ToString()),
+                ("incomingHtlcId", circuit.IncomingHtlcId.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                ("incomingAmountMsat", circuit.ActualIncomingAmount.MilliSatoshi.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+        });
     }
 
     [Fact]

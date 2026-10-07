@@ -21,8 +21,17 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<AddressType>k__BackingField")]
         public static extern ref AddressType AddressType(WalletAddressEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<AccountIndex>k__BackingField")]
+        public static extern ref uint AccountIndex(WalletAddressEntity @this);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<AccountName>k__BackingField")]
+        public static extern ref string AccountName(WalletAddressEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Address>k__BackingField")]
         public static extern ref string Address(WalletAddressEntity @this);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<DerivationIndex>k__BackingField")]
+        public static extern ref uint? DerivationIndex(WalletAddressEntity @this);
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<IsReserved>k__BackingField")]
         public static extern ref bool IsReserved(WalletAddressEntity @this);

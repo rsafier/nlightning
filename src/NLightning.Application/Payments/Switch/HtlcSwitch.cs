@@ -187,6 +187,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
     private readonly IPaymentEventPublisher? _paymentEventPublisher;
     private readonly Events.HtlcEventMonitor? _htlcMonitor;
     private readonly IHtlcForwardInterceptor? _forwardInterceptor;
+    private readonly ulong? _maxDustMsat;
     private volatile bool _disposed;
 
     public HtlcSwitch(IChannelLockProvider channelLockProvider, IChannelMemoryRepository channelMemoryRepository,
@@ -207,6 +208,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
                       IPaymentEventPublisher? paymentEventPublisher = null,
                       IHtlcForwardInterceptor? forwardInterceptor = null, Events.HtlcEventMonitor? htlcMonitor = null)
     {
+        _maxDustMsat = nodeOptions is null ? NodeOptions.DefaultMaxDustHtlcExposureMsat : nodeOptions.Value.MaxDustHtlcExposureMsat;
         _htlcMonitor = htlcMonitor;
         _forwardInterceptor = forwardInterceptor;
         _trampolineHandler = trampolineHandler;
@@ -368,6 +370,13 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
 
         if (circuit is not null)
         {
+            if (IsOnchain(channelId) && htlc.KnownPreimage is null && circuit.Status != ForwardCircuitStatus.Fulfilled)
+            {
+                var onchainOnion = await _onionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash,
+                    replayOwner: null, htlc.PathKey, LightningMoney.MilliSatoshis(htlc.AmountMsat), htlc.CltvExpiry);
+                if (onchainOnion is IncomingOnionForward pendingOnchainForward)
+                    TryInterceptOnChain(channelId, htlc, pendingOnchainForward);
+            }
             await ResumeCircuitAsync(circuit, cancellationToken);
             return;
         }
@@ -1182,7 +1191,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
     /// Forward (M4-T4): resolve, check the policy, persist the circuit, offer, record the offer.
     /// </summary>
     /// <param name="modification">An interceptor's <c>RESUME_MODIFIED</c> (NL-1182): its incoming amount is what the
-    /// policy checks the forward against (never what the circuit records: the books follow the channel), its outgoing
+    /// policy and circuit interpret the forward against (actual channel custody is persisted separately), its outgoing
     /// amount and custom records go on the <c>update_add_htlc</c>.</param>
     private async Task ForwardAsync(ChannelId incomingChannelId, HtlcRecord htlc, IncomingOnionForward forward,
                                     bool firstHandling, CancellationToken cancellationToken, bool intercept = true,
@@ -1267,10 +1276,34 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
             return;
         }
 
-        var circuit = new ForwardCircuitModel(incomingChannelId, htlc.Id, incomingAmount, htlc.CltvExpiry,
+        // No negotiated custom-channel capability proves that a peer understands mandatory even wire types.
+        // Refuse before persistence, avoiding a retransmitted unknown add that would force-close the channel.
+        if (outWireCustomRecords.Any(record => record.Type % 2 == 0))
+        {
+            await FailBackAsync(incomingChannelId, htlc, forward.SharedSecret,
+                FailureMessage.TemporaryChannelFailure(UpdateFor(outgoingChannel, requestedScid)),
+                cancellationToken, introduction);
+            return;
+        }
+
+        if (modification?.InAmount is { } interpreted &&
+            _channelMemoryRepository.TryGetChannel(incomingChannelId, out var incomingChannel) &&
+            incomingChannel.Commitments is { } incomingCommitments &&
+            Channels.Fees.DustExposurePolicy.Resolve(incomingCommitments, _maxDustMsat) is { } dustLimit &&
+            Channels.Fees.DustExposurePolicy.CheckLockedInIncoming(incomingCommitments,
+                htlc with { AmountMsat = interpreted.MilliSatoshi }, dustLimit) is not null)
+        {
+            await FailBackAsync(incomingChannelId, htlc, forward.SharedSecret,
+                FailureMessage.TemporaryChannelFailure(UpdateFor(incomingChannel, ScidOf(incomingChannel))),
+                cancellationToken, introduction);
+            return;
+        }
+
+        var circuit = new ForwardCircuitModel(incomingChannelId, htlc.Id, modification?.InAmount ?? incomingAmount, htlc.CltvExpiry,
                                               htlc.PaymentHash, forward.SharedSecret, requestedScid,
                                               amountToForward, forward.OutgoingCltvValue,
                                               _timeProvider.GetUtcNow());
+        circuit.SetActualIncomingAmount(incomingAmount);
         using (var scope = _serviceScopeFactory.CreateScope())
         {
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -1279,15 +1312,6 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
         }
 
         _htlcMonitor?.CaptureForward(circuit);
-
-        // NL-1182: like LND we send even custom record types too, but a peer that does not know one (CLN, Eclair,
-        // LDK, NLightning) refuses the add with a warning and disconnects; the add is persisted, so every
-        // reconnection retransmits it until the HTLC deadline monitor fails the channel (NL-1283)
-        if (outWireCustomRecords.Any(r => r.Type % 2 == 0))
-            _logger.LogWarning("Interceptor's modified forward of HTLC {HtlcId} of channel {ChannelId} carries even "
-                             + "update_add_htlc custom record types ({Types}); a peer that does not understand them "
-                             + "will refuse the add", htlc.Id, incomingChannelId,
-                               string.Join(", ", outWireCustomRecords.Where(r => r.Type % 2 == 0).Select(r => r.Type)));
 
         ulong outgoingHtlcId;
         try
@@ -1509,7 +1533,8 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
     private async Task FailCircuitUpstreamLocallyAsync(ForwardCircuitModel circuit,
                                                        CancellationToken cancellationToken)
     {
-        if (GetAwaitingIncomingHtlc(circuit.IncomingChannelId, circuit.IncomingHtlcId) is not { } htlc)
+        if (IsOnchain(circuit.IncomingChannelId) ||
+            GetAwaitingIncomingHtlc(circuit.IncomingChannelId, circuit.IncomingHtlcId) is not { } htlc)
             return;
 
         var outgoing = ResolveOutgoingChannel(circuit.OutgoingShortChannelId);
@@ -1653,6 +1678,8 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
                                               OutgoingHtlcFailed failed, CancellationToken cancellationToken)
     {
         var awaiting = GetAwaitingIncomingHtlc(incomingChannelId, incomingHtlcId);
+        if (IsOnchain(incomingChannelId))
+            awaiting = null;
         if (awaiting is not null && await FailBlindedUpstreamAsync(incomingChannelId, awaiting, failed,
                                                                    cancellationToken))
         {
@@ -2588,8 +2615,14 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var circuit = await unitOfWork.ForwardCircuitDbRepository.GetByIncomingAsync(incomingChannelId,
                                                                                         incomingHtlcId);
-        if (circuit is null || !when(circuit))
+        if (circuit is null)
             return;
+        if (!when(circuit))
+        {
+            if (await StageClaimedFailedForwardAsync(unitOfWork, circuit))
+                await unitOfWork.SaveChangesAsync();
+            return;
+        }
 
         var before = circuit.Status;
         try
@@ -2618,6 +2651,7 @@ public sealed partial class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposa
             }, _logger);
         }
 
+        await StageClaimedFailedForwardAsync(unitOfWork, circuit);
         await unitOfWork.SaveChangesAsync();
 
         // NL-892: a forward settled after its incoming channel's close, whose incoming HTLC the close trimmed

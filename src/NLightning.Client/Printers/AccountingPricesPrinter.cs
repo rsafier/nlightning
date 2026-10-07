@@ -28,6 +28,11 @@ public sealed class AccountingPricesPrinter : IPrinter<AccountingPricesIpcRespon
             {
                 _output.WriteLine($"  {Time(price.TimeUnixSeconds)}  {price.Price,20}  {price.SourceName,-6}  "
                                 + $"(time {price.TimeUnixSeconds}, id {price.Id})");
+                foreach (var audit in (item.Replacements ?? []).Where(a => a.PriceId == price.Id))
+                    _output.WriteLine($"    replaced {Time(audit.ReplacedAtUnixSeconds)}: {audit.OldPrice} ({audit.OldSource}, "
+                                    + $"stored {Time(audit.OldFetchedAtUnixSeconds)}) -> {audit.NewPrice} ({audit.NewSource})"
+                                    + (audit.OperatorSource is null ? "" : $"; source {audit.OperatorSource}")
+                                    + (audit.Note is null ? "" : $"; note {audit.Note}"));
             }
 
             if (prices.Count > 0)

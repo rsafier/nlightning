@@ -25,6 +25,25 @@ public class HtlcInterceptorHubParityTests
 
     private readonly List<ForwardInterceptResolution> _resolutions = [];
 
+    [Theory]
+    [InlineData(121u, ForwardInterceptOutcome.ExpiryTooSoon)]
+    [InlineData(122u, ForwardInterceptOutcome.NotIntercepted)]
+    [InlineData(2147483667u, ForwardInterceptOutcome.ExpiryTooFar)]
+    public void Given_NoInterceptor_When_ForwardExpiryIsChecked_Then_LndSafetyBoundsStillApply(uint expiry,
+        ForwardInterceptOutcome expected)
+    {
+        // Arrange
+        using var hub = CreateHub(require: false);
+        var forward = Forward(1) with { IncomingExpiry = expiry };
+
+        // Act
+        var outcome = hub.Intercept(forward, 100, false, Record);
+
+        // Assert
+        Assert.Equal(expected, outcome);
+        Assert.Equal(0, hub.HeldCount);
+    }
+
     [Fact]
     public void Given_AnInterceptorRequiredAndNoClient_When_ANewForwardArrives_Then_ItIsRefused()
     {
@@ -226,14 +245,17 @@ public class HtlcInterceptorHubParityTests
     }
 
     [Fact]
-    public void Given_NoClientAndNoneRequired_When_AForwardGoesOnChain_Then_ItIsNotHeld()
+    public void Given_NoClientAndNoneRequired_When_AForwardGoesOnChain_Then_ItWaitsForALaterClient()
     {
         // Arrange
         var hub = CreateHub(require: false);
 
         // Act / Assert
-        Assert.False(hub.InterceptOnChain(Forward(1), Record));
-        Assert.Equal(0, hub.HeldCount);
+        Assert.True(hub.InterceptOnChain(Forward(1), Record));
+        Assert.Equal(1, hub.HeldCount);
+        var client = new Client();
+        using var connection = hub.Connect(client);
+        Assert.True(Assert.Single(client.Offered).IsOnChain);
     }
 
     [Fact]

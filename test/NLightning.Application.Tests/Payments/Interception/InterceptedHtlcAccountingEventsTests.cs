@@ -71,6 +71,35 @@ public class InterceptedHtlcAccountingEventsTests
     }
 
     [Fact]
+    public async Task Given_AnAtomicClaimedCircuitWriter_When_EventStagingFails_Then_SaveStopsAndRetryDeduplicates()
+    {
+        // Arrange
+        var (unitOfWork, staged) = UnitOfWork();
+        var events = Mock.Get(unitOfWork.Object.AccountingEventDbRepository);
+        var fail = true;
+        events.Setup(e => e.Add(It.IsAny<AccountingEventModel>())).Callback<AccountingEventModel>(fact =>
+        {
+            if (fail) throw new InvalidOperationException("event staging failed");
+            staged.Add(fact);
+        });
+        async Task CommitAsync()
+        {
+            await PaymentAccountingEvents.StageInterceptedHtlcSettledStrictAsync(unitOfWork.Object, TestChannelId, 5,
+                Settled, TestContext.Current.CancellationToken);
+            await unitOfWork.Object.SaveChangesAsync();
+        }
+
+        // Act / Assert: an event failure must propagate before the durable circuit transition can commit.
+        await Assert.ThrowsAsync<InvalidOperationException>(CommitAsync);
+        Assert.Empty(staged);
+        unitOfWork.Verify(u => u.SaveChangesAsync(), Times.Never);
+        fail = false;
+        await CommitAsync();
+        await CommitAsync();
+        Assert.Single(staged);
+    }
+
+    [Fact]
     public async Task Given_AStoreThatFails_When_Staged_Then_NothingIsThrown()
     {
         // Arrange

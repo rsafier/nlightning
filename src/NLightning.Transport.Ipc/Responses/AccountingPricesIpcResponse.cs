@@ -28,12 +28,16 @@ public sealed class AccountingPricesIpcResponse
     /// <summary>replace: what the replacement changed (NL-693).</summary>
     [Key(4)] public AccountingPriceReplaceIpc? Replace { get; init; }
 
+    /// <summary>list: immutable replacement history of the listed prices (NL-758).</summary>
+    [Key(5)] public List<AccountingPriceReplacementAuditIpc>? Replacements { get; init; }
+
     public static AccountingPricesIpcResponse FromClientResponse(AccountingPricesClientResponse response)
     {
         ArgumentNullException.ThrowIfNull(response);
         return new AccountingPricesIpcResponse
         {
             Currency = response.Currency,
+            Replacements = response.Replacements?.Select(AccountingPriceReplacementAuditIpc.From).ToList(),
             Prices = response.Prices?.Select(AccountingPriceIpc.From).ToList(),
             Import = response.Import is { } import
                          ? new AccountingPriceImportIpc
@@ -186,4 +190,34 @@ public sealed class AccountingValuationRoundIpc
                 Unpriced = round.Unpriced,
                 Deferred = round.Deferred
             };
+}
+
+/// <summary>Durable provenance of one operator price correction; monetary values are invariant decimal text.</summary>
+[MessagePackObject]
+public sealed class AccountingPriceReplacementAuditIpc
+{
+    [Key(0)] public long Id { get; init; }
+    [Key(1)] public long PriceId { get; init; }
+    [Key(2)] public required string OldPrice { get; init; }
+    [Key(3)] public required string NewPrice { get; init; }
+    [Key(4)] public required string OldSource { get; init; }
+    [Key(5)] public required string NewSource { get; init; }
+    [Key(6)] public long OldFetchedAtUnixSeconds { get; init; }
+    [Key(7)] public long ReplacedAtUnixSeconds { get; init; }
+    [Key(8)] public string? OperatorSource { get; init; }
+    [Key(9)] public string? Note { get; init; }
+
+    public static AccountingPriceReplacementAuditIpc From(AccountingPriceReplacementAudit audit) => new()
+    {
+        Id = audit.Id,
+        PriceId = audit.PriceId,
+        OldPrice = audit.OldPrice.ToString(CultureInfo.InvariantCulture),
+        NewPrice = audit.NewPrice.ToString(CultureInfo.InvariantCulture),
+        OldSource = audit.OldSource.ToString(),
+        NewSource = audit.NewSource.ToString(),
+        OldFetchedAtUnixSeconds = audit.OldFetchedAt.ToUnixTimeSeconds(),
+        ReplacedAtUnixSeconds = audit.ReplacedAt.ToUnixTimeSeconds(),
+        OperatorSource = audit.OperatorSource,
+        Note = audit.Note
+    };
 }

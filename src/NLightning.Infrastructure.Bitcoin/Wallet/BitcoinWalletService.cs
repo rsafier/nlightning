@@ -146,7 +146,7 @@ public class BitcoinWalletService : IBitcoinWalletService
             return highestIndex + 1;
 
         var hasAny = _uow.WalletAddressesDbRepository.GetAllAddresses()
-                         .Any(a => a.AddressType == addressType && a.IsChange == isChange);
+                         .Any(a => a.AccountIndex == 0 && a.AddressType == addressType && a.IsChange == isChange);
         return hasAny ? 1u : 0u;
     }
 }

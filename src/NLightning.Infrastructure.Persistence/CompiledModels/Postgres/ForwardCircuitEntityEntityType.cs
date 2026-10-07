@@ -33,7 +33,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 "NLightning.Infrastructure.Persistence.Entities.Payment.ForwardCircuitEntity",
                 typeof(ForwardCircuitEntity),
                 baseEntityType,
-                propertyCount: 16,
+                propertyCount: 18,
                 unnamedIndexCount: 2,
                 keyCount: 1);
 
@@ -158,6 +158,56 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             incomingHtlcId.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
             incomingHtlcId.AddAnnotation("Relational:ColumnName", "incoming_htlc_id");
 
+            var actualIncomingAmountMsat = runtimeEntityType.AddProperty(
+                "ActualIncomingAmountMsat",
+                typeof(long?),
+                propertyInfo: typeof(ForwardCircuitEntity).GetProperty("ActualIncomingAmountMsat", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(ForwardCircuitEntity).GetField("<ActualIncomingAmountMsat>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            actualIncomingAmountMsat.SetGetter(
+                long? (ForwardCircuitEntity instance) => ForwardCircuitEntityUnsafeAccessors.ActualIncomingAmountMsat(instance),
+                bool (ForwardCircuitEntity instance) => !(ForwardCircuitEntityUnsafeAccessors.ActualIncomingAmountMsat(instance).HasValue));
+            actualIncomingAmountMsat.SetSetter(
+                ForwardCircuitEntity (ForwardCircuitEntity instance, long? value) =>
+                {
+                    ForwardCircuitEntityUnsafeAccessors.ActualIncomingAmountMsat(instance) = value;
+                    return instance;
+                });
+            actualIncomingAmountMsat.SetMaterializationSetter(
+                ForwardCircuitEntity (ForwardCircuitEntity instance, long? value) =>
+                {
+                    ForwardCircuitEntityUnsafeAccessors.ActualIncomingAmountMsat(instance) = value;
+                    return instance;
+                });
+            actualIncomingAmountMsat.SetAccessors(
+                long? (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.ActualIncomingAmountMsat(((ForwardCircuitEntity)(entry.Entity))),
+                long? (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.ActualIncomingAmountMsat(((ForwardCircuitEntity)(entry.Entity))),
+                long? (IInternalEntry entry) => entry.ReadOriginalValue<long?>(actualIncomingAmountMsat, 2),
+                long? (IInternalEntry entry) => entry.GetCurrentValue<long?>(actualIncomingAmountMsat));
+            actualIncomingAmountMsat.SetPropertyIndexes(
+                index: 2,
+                originalValueIndex: 2,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            actualIncomingAmountMsat.TypeMapping = LongTypeMapping.Default.Clone(
+                comparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                keyComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v),
+                providerValueComparer: new ValueComparer<long>(
+                    bool (long v1, long v2) => v1 == v2,
+                    int (long v) => ((object)v).GetHashCode(),
+                    long (long v) => v));
+            actualIncomingAmountMsat.SetComparer(new NullableValueComparer<long>(actualIncomingAmountMsat.TypeMapping.Comparer));
+            actualIncomingAmountMsat.SetKeyComparer(new NullableValueComparer<long>(actualIncomingAmountMsat.TypeMapping.KeyComparer));
+            actualIncomingAmountMsat.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
+            actualIncomingAmountMsat.AddAnnotation("Relational:ColumnName", "actual_incoming_amount_msat");
+
             var createdAt = runtimeEntityType.AddProperty(
                 "CreatedAt",
                 typeof(DateTimeOffset),
@@ -182,11 +232,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             createdAt.SetAccessors(
                 DateTimeOffset (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.CreatedAt(((ForwardCircuitEntity)(entry.Entity))),
                 DateTimeOffset (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.CreatedAt(((ForwardCircuitEntity)(entry.Entity))),
-                DateTimeOffset (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset>(createdAt, 2),
+                DateTimeOffset (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset>(createdAt, 3),
                 DateTimeOffset (IInternalEntry entry) => entry.GetCurrentValue<DateTimeOffset>(createdAt));
             createdAt.SetPropertyIndexes(
-                index: 2,
-                originalValueIndex: 2,
+                index: 3,
+                originalValueIndex: 3,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -239,11 +289,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             failureCode.SetAccessors(
                 ushort? (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.FailureCode(((ForwardCircuitEntity)(entry.Entity))),
                 ushort? (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.FailureCode(((ForwardCircuitEntity)(entry.Entity))),
-                ushort? (IInternalEntry entry) => entry.ReadOriginalValue<ushort?>(failureCode, 3),
+                ushort? (IInternalEntry entry) => entry.ReadOriginalValue<ushort?>(failureCode, 4),
                 ushort? (IInternalEntry entry) => entry.GetCurrentValue<ushort?>(failureCode));
             failureCode.SetPropertyIndexes(
-                index: 3,
-                originalValueIndex: 3,
+                index: 4,
+                originalValueIndex: 4,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -300,11 +350,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             failureSource.SetAccessors(
                 ChannelId? (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.FailureSource(((ForwardCircuitEntity)(entry.Entity))),
                 ChannelId? (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.FailureSource(((ForwardCircuitEntity)(entry.Entity))),
-                ChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ChannelId?>(failureSource, 4),
+                ChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ChannelId?>(failureSource, 5),
                 ChannelId? (IInternalEntry entry) => entry.GetCurrentValue<ChannelId?>(failureSource));
             failureSource.SetPropertyIndexes(
-                index: 4,
-                originalValueIndex: 4,
+                index: 5,
+                originalValueIndex: 5,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -358,11 +408,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             incomingAmountMsat.SetAccessors(
                 long (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.IncomingAmountMsat(((ForwardCircuitEntity)(entry.Entity))),
                 long (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.IncomingAmountMsat(((ForwardCircuitEntity)(entry.Entity))),
-                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(incomingAmountMsat, 5),
+                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(incomingAmountMsat, 6),
                 long (IInternalEntry entry) => entry.GetCurrentValue<long>(incomingAmountMsat));
             incomingAmountMsat.SetPropertyIndexes(
-                index: 5,
-                originalValueIndex: 5,
+                index: 6,
+                originalValueIndex: 6,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -381,6 +431,57 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                     long (long v) => v));
             incomingAmountMsat.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
             incomingAmountMsat.AddAnnotation("Relational:ColumnName", "incoming_amount_msat");
+
+            var incomingClaimedPreimage = runtimeEntityType.AddProperty(
+                "IncomingClaimedPreimage",
+                typeof(byte[]),
+                propertyInfo: typeof(ForwardCircuitEntity).GetProperty("IncomingClaimedPreimage", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(ForwardCircuitEntity).GetField("<IncomingClaimedPreimage>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true,
+                maxLength: 32);
+            incomingClaimedPreimage.SetGetter(
+                byte[] (ForwardCircuitEntity instance) => ForwardCircuitEntityUnsafeAccessors.IncomingClaimedPreimage(instance),
+                bool (ForwardCircuitEntity instance) => ForwardCircuitEntityUnsafeAccessors.IncomingClaimedPreimage(instance) == null);
+            incomingClaimedPreimage.SetSetter(
+                ForwardCircuitEntity (ForwardCircuitEntity instance, byte[] value) =>
+                {
+                    ForwardCircuitEntityUnsafeAccessors.IncomingClaimedPreimage(instance) = value;
+                    return instance;
+                });
+            incomingClaimedPreimage.SetMaterializationSetter(
+                ForwardCircuitEntity (ForwardCircuitEntity instance, byte[] value) =>
+                {
+                    ForwardCircuitEntityUnsafeAccessors.IncomingClaimedPreimage(instance) = value;
+                    return instance;
+                });
+            incomingClaimedPreimage.SetAccessors(
+                byte[] (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.IncomingClaimedPreimage(((ForwardCircuitEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.IncomingClaimedPreimage(((ForwardCircuitEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(incomingClaimedPreimage, 7),
+                byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(incomingClaimedPreimage));
+            incomingClaimedPreimage.SetPropertyIndexes(
+                index: 7,
+                originalValueIndex: 7,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            incomingClaimedPreimage.TypeMapping = NpgsqlByteArrayTypeMapping.Default.Clone(
+                comparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => ((object)v).GetHashCode(),
+                    byte[] (byte[] v) => v),
+                keyComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()),
+                providerValueComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()),
+                mappingInfo: new RelationalTypeMappingInfo(
+                    size: 32));
+            incomingClaimedPreimage.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
+            incomingClaimedPreimage.AddAnnotation("Relational:ColumnName", "incoming_claimed_preimage");
 
             var incomingCltvExpiry = runtimeEntityType.AddProperty(
                 "IncomingCltvExpiry",
@@ -405,11 +506,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             incomingCltvExpiry.SetAccessors(
                 uint (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.IncomingCltvExpiry(((ForwardCircuitEntity)(entry.Entity))),
                 uint (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.IncomingCltvExpiry(((ForwardCircuitEntity)(entry.Entity))),
-                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(incomingCltvExpiry, 6),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(incomingCltvExpiry, 8),
                 uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(incomingCltvExpiry));
             incomingCltvExpiry.SetPropertyIndexes(
-                index: 6,
-                originalValueIndex: 6,
+                index: 8,
+                originalValueIndex: 8,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -461,11 +562,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             incomingSharedSecret.SetAccessors(
                 byte[] (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.IncomingSharedSecret(((ForwardCircuitEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.IncomingSharedSecret(((ForwardCircuitEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(incomingSharedSecret, 7),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(incomingSharedSecret, 9),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(incomingSharedSecret));
             incomingSharedSecret.SetPropertyIndexes(
-                index: 7,
-                originalValueIndex: 7,
+                index: 9,
+                originalValueIndex: 9,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -509,11 +610,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             outgoingAmountMsat.SetAccessors(
                 long (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.OutgoingAmountMsat(((ForwardCircuitEntity)(entry.Entity))),
                 long (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.OutgoingAmountMsat(((ForwardCircuitEntity)(entry.Entity))),
-                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(outgoingAmountMsat, 8),
+                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(outgoingAmountMsat, 10),
                 long (IInternalEntry entry) => entry.GetCurrentValue<long>(outgoingAmountMsat));
             outgoingAmountMsat.SetPropertyIndexes(
-                index: 8,
-                originalValueIndex: 8,
+                index: 10,
+                originalValueIndex: 10,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -558,11 +659,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             outgoingChannelId.SetAccessors(
                 ChannelId? (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.OutgoingChannelId(((ForwardCircuitEntity)(entry.Entity))),
                 ChannelId? (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.OutgoingChannelId(((ForwardCircuitEntity)(entry.Entity))),
-                ChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ChannelId?>(outgoingChannelId, 9),
+                ChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ChannelId?>(outgoingChannelId, 11),
                 ChannelId? (IInternalEntry entry) => entry.GetCurrentValue<ChannelId?>(outgoingChannelId));
             outgoingChannelId.SetPropertyIndexes(
-                index: 9,
-                originalValueIndex: 9,
+                index: 11,
+                originalValueIndex: 11,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -615,11 +716,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             outgoingCltvExpiry.SetAccessors(
                 uint (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.OutgoingCltvExpiry(((ForwardCircuitEntity)(entry.Entity))),
                 uint (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.OutgoingCltvExpiry(((ForwardCircuitEntity)(entry.Entity))),
-                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(outgoingCltvExpiry, 10),
+                uint (IInternalEntry entry) => entry.ReadOriginalValue<uint>(outgoingCltvExpiry, 12),
                 uint (IInternalEntry entry) => entry.GetCurrentValue<uint>(outgoingCltvExpiry));
             outgoingCltvExpiry.SetPropertyIndexes(
-                index: 10,
-                originalValueIndex: 10,
+                index: 12,
+                originalValueIndex: 12,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -672,11 +773,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             outgoingHtlcId.SetAccessors(
                 ulong? (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.OutgoingHtlcId(((ForwardCircuitEntity)(entry.Entity))),
                 ulong? (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.OutgoingHtlcId(((ForwardCircuitEntity)(entry.Entity))),
-                ulong? (IInternalEntry entry) => entry.ReadOriginalValue<ulong?>(outgoingHtlcId, 11),
+                ulong? (IInternalEntry entry) => entry.ReadOriginalValue<ulong?>(outgoingHtlcId, 13),
                 ulong? (IInternalEntry entry) => entry.GetCurrentValue<ulong?>(outgoingHtlcId));
             outgoingHtlcId.SetPropertyIndexes(
-                index: 11,
-                originalValueIndex: 11,
+                index: 13,
+                originalValueIndex: 13,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -734,11 +835,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             outgoingShortChannelId.SetAccessors(
                 ShortChannelId (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.OutgoingShortChannelId(((ForwardCircuitEntity)(entry.Entity))),
                 ShortChannelId (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.OutgoingShortChannelId(((ForwardCircuitEntity)(entry.Entity))),
-                ShortChannelId (IInternalEntry entry) => entry.ReadOriginalValue<ShortChannelId>(outgoingShortChannelId, 12),
+                ShortChannelId (IInternalEntry entry) => entry.ReadOriginalValue<ShortChannelId>(outgoingShortChannelId, 14),
                 ShortChannelId (IInternalEntry entry) => entry.GetCurrentValue<ShortChannelId>(outgoingShortChannelId));
             outgoingShortChannelId.SetPropertyIndexes(
-                index: 12,
-                originalValueIndex: 12,
+                index: 14,
+                originalValueIndex: 14,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -791,11 +892,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             paymentHash.SetAccessors(
                 Hash (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.PaymentHash(((ForwardCircuitEntity)(entry.Entity))),
                 Hash (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.PaymentHash(((ForwardCircuitEntity)(entry.Entity))),
-                Hash (IInternalEntry entry) => entry.ReadOriginalValue<Hash>(paymentHash, 13),
+                Hash (IInternalEntry entry) => entry.ReadOriginalValue<Hash>(paymentHash, 15),
                 Hash (IInternalEntry entry) => entry.GetCurrentValue<Hash>(paymentHash));
             paymentHash.SetPropertyIndexes(
-                index: 13,
-                originalValueIndex: 13,
+                index: 15,
+                originalValueIndex: 15,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -849,11 +950,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             resolvedAt.SetAccessors(
                 DateTimeOffset? (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.ResolvedAt(((ForwardCircuitEntity)(entry.Entity))),
                 DateTimeOffset? (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.ResolvedAt(((ForwardCircuitEntity)(entry.Entity))),
-                DateTimeOffset? (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset?>(resolvedAt, 14),
+                DateTimeOffset? (IInternalEntry entry) => entry.ReadOriginalValue<DateTimeOffset?>(resolvedAt, 16),
                 DateTimeOffset? (IInternalEntry entry) => entry.GetCurrentValue<DateTimeOffset?>(resolvedAt));
             resolvedAt.SetPropertyIndexes(
-                index: 14,
-                originalValueIndex: 14,
+                index: 16,
+                originalValueIndex: 16,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -907,11 +1008,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             status.SetAccessors(
                 byte (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.Status(((ForwardCircuitEntity)(entry.Entity))),
                 byte (IInternalEntry entry) => ForwardCircuitEntityUnsafeAccessors.Status(((ForwardCircuitEntity)(entry.Entity))),
-                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(status, 15),
+                byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(status, 17),
                 byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(status));
             status.SetPropertyIndexes(
-                index: 15,
-                originalValueIndex: 15,
+                index: 17,
+                originalValueIndex: 17,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -953,10 +1054,12 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         {
             var incomingChannelId = runtimeEntityType.FindProperty("IncomingChannelId");
             var incomingHtlcId = runtimeEntityType.FindProperty("IncomingHtlcId");
+            var actualIncomingAmountMsat = runtimeEntityType.FindProperty("ActualIncomingAmountMsat");
             var createdAt = runtimeEntityType.FindProperty("CreatedAt");
             var failureCode = runtimeEntityType.FindProperty("FailureCode");
             var failureSource = runtimeEntityType.FindProperty("FailureSource");
             var incomingAmountMsat = runtimeEntityType.FindProperty("IncomingAmountMsat");
+            var incomingClaimedPreimage = runtimeEntityType.FindProperty("IncomingClaimedPreimage");
             var incomingCltvExpiry = runtimeEntityType.FindProperty("IncomingCltvExpiry");
             var incomingSharedSecret = runtimeEntityType.FindProperty("IncomingSharedSecret");
             var outgoingAmountMsat = runtimeEntityType.FindProperty("OutgoingAmountMsat");
@@ -974,7 +1077,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType1 = ((ForwardCircuitEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<ChannelId, ulong, DateTimeOffset, ushort?, ChannelId?, long, uint, byte[], long, ChannelId?, uint, ulong?, ShortChannelId, Hash, DateTimeOffset?, byte>(((ValueComparer<ChannelId>)(((IProperty)incomingChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(incomingChannelId)), ((ValueComparer<ulong>)(((IProperty)incomingHtlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(incomingHtlcId)), ((ValueComparer<DateTimeOffset>)(((IProperty)createdAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(createdAt)), (source.GetCurrentValue<ushort?>(failureCode) == null ? null : ((ValueComparer<ushort?>)(((IProperty)failureCode).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort?>(failureCode))), (source.GetCurrentValue<ChannelId?>(failureSource) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)failureSource).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(failureSource))), ((ValueComparer<long>)(((IProperty)incomingAmountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(incomingAmountMsat)), ((ValueComparer<uint>)(((IProperty)incomingCltvExpiry).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(incomingCltvExpiry)), (source.GetCurrentValue<byte[]>(incomingSharedSecret) == null ? null : ((ValueComparer<byte[]>)(((IProperty)incomingSharedSecret).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(incomingSharedSecret))), ((ValueComparer<long>)(((IProperty)outgoingAmountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(outgoingAmountMsat)), (source.GetCurrentValue<ChannelId?>(outgoingChannelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)outgoingChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(outgoingChannelId))), ((ValueComparer<uint>)(((IProperty)outgoingCltvExpiry).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(outgoingCltvExpiry)), (source.GetCurrentValue<ulong?>(outgoingHtlcId) == null ? null : ((ValueComparer<ulong?>)(((IProperty)outgoingHtlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(outgoingHtlcId))), ((ValueComparer<ShortChannelId>)(((IProperty)outgoingShortChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId>(outgoingShortChannelId)), ((ValueComparer<Hash>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash>(paymentHash)), (source.GetCurrentValue<DateTimeOffset?>(resolvedAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)resolvedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(resolvedAt))), ((ValueComparer<byte>)(((IProperty)status).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(status)))));
+                    return ((ISnapshot)(new Snapshot<ChannelId, ulong, long?, DateTimeOffset, ushort?, ChannelId?, long, byte[], uint, byte[], long, ChannelId?, uint, ulong?, ShortChannelId, Hash, DateTimeOffset?, byte>(((ValueComparer<ChannelId>)(((IProperty)incomingChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(incomingChannelId)), ((ValueComparer<ulong>)(((IProperty)incomingHtlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(incomingHtlcId)), (source.GetCurrentValue<long?>(actualIncomingAmountMsat) == null ? null : ((ValueComparer<long?>)(((IProperty)actualIncomingAmountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long?>(actualIncomingAmountMsat))), ((ValueComparer<DateTimeOffset>)(((IProperty)createdAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(createdAt)), (source.GetCurrentValue<ushort?>(failureCode) == null ? null : ((ValueComparer<ushort?>)(((IProperty)failureCode).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort?>(failureCode))), (source.GetCurrentValue<ChannelId?>(failureSource) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)failureSource).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(failureSource))), ((ValueComparer<long>)(((IProperty)incomingAmountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(incomingAmountMsat)), (source.GetCurrentValue<byte[]>(incomingClaimedPreimage) == null ? null : ((ValueComparer<byte[]>)(((IProperty)incomingClaimedPreimage).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(incomingClaimedPreimage))), ((ValueComparer<uint>)(((IProperty)incomingCltvExpiry).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(incomingCltvExpiry)), (source.GetCurrentValue<byte[]>(incomingSharedSecret) == null ? null : ((ValueComparer<byte[]>)(((IProperty)incomingSharedSecret).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(incomingSharedSecret))), ((ValueComparer<long>)(((IProperty)outgoingAmountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(outgoingAmountMsat)), (source.GetCurrentValue<ChannelId?>(outgoingChannelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)outgoingChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(outgoingChannelId))), ((ValueComparer<uint>)(((IProperty)outgoingCltvExpiry).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(outgoingCltvExpiry)), (source.GetCurrentValue<ulong?>(outgoingHtlcId) == null ? null : ((ValueComparer<ulong?>)(((IProperty)outgoingHtlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(outgoingHtlcId))), ((ValueComparer<ShortChannelId>)(((IProperty)outgoingShortChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ShortChannelId>(outgoingShortChannelId)), ((ValueComparer<Hash>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash>(paymentHash)), (source.GetCurrentValue<DateTimeOffset?>(resolvedAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)resolvedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(resolvedAt))), ((ValueComparer<byte>)(((IProperty)status).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(status)))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => Snapshot.Empty);
@@ -991,11 +1094,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                     return ((ISnapshot)(new Snapshot<ChannelId, ulong>(((ValueComparer<ChannelId>)(((IProperty)incomingChannelId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(incomingChannelId)), ((ValueComparer<ulong>)(((IProperty)incomingHtlcId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<ulong>(incomingHtlcId)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 16,
+                propertyCount: 18,
                 navigationCount: 0,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 16,
+                originalValueCount: 18,
                 shadowCount: 0,
                 relationshipCount: 2,
                 storeGeneratedCount: 0));

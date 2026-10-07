@@ -59,6 +59,35 @@ public class AccountingPriceDbRepository : IAccountingPriceDbRepository
     }
 
     /// <inheritdoc />
+    public void AddReplacementAudit(AccountingPriceReplacementAudit audit)
+    {
+        ArgumentNullException.ThrowIfNull(audit);
+        _context.AccountingPriceReplacementAudits.Add(new AccountingPriceReplacementAuditEntity
+        {
+            PriceId = audit.PriceId,
+            OldPrice = audit.OldPrice,
+            NewPrice = audit.NewPrice,
+            OldSource = (byte)audit.OldSource,
+            NewSource = (byte)audit.NewSource,
+            OldFetchedAt = audit.OldFetchedAt,
+            ReplacedAt = audit.ReplacedAt,
+            OperatorSource = audit.OperatorSource,
+            Note = audit.Note
+        });
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<AccountingPriceReplacementAudit>> ListReplacementAuditsAsync(long priceId,
+        CancellationToken cancellationToken = default)
+    {
+        var rows = await _context.AccountingPriceReplacementAudits.AsNoTracking().Where(a => a.PriceId == priceId)
+            .OrderBy(a => a.ReplacedAt).ThenBy(a => a.Id).ToListAsync(cancellationToken);
+        return rows.Select(a => new AccountingPriceReplacementAudit(a.Id, a.PriceId, a.OldPrice, a.NewPrice,
+            (AccountingPriceSource)a.OldSource, (AccountingPriceSource)a.NewSource, a.OldFetchedAt,
+            a.ReplacedAt, a.OperatorSource, a.Note)).ToList();
+    }
+
+    /// <inheritdoc />
     public async Task<AccountingPrice?> GetByIdAsync(long id, CancellationToken cancellationToken = default)
     {
         var entity = await _context.AccountingPrices.AsNoTracking()

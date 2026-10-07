@@ -6,7 +6,6 @@ namespace NLightning.LndGrpc.Services;
 using Application.Onchain.Anchors;
 using Application.Onchain.Fees;
 using Application.Onchain.Interfaces;
-using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Interfaces;
 using Domain.Onchain.Enums;
@@ -22,8 +21,8 @@ using Walletrpc;
 /// its sweeper's (<see cref="OperatorFeeBumps"/>): for a force close they steer the CPFP child of the unconfirmed
 /// commitment through our anchor (<see cref="IAnchorCpfpService"/>), for one of the channel's outputs its sweep, claim or
 /// penalty (<see cref="SweepScheduler"/>), which a fresh request replaces at once instead of after the RBF interval.
-/// Not supported: a CPFP of an unconfirmed wallet output (the wallet never spends unconfirmed outputs), and the
-/// wallet-funded HTLC transactions of anchors channels, which their resolver bumps on its own schedule.
+/// Wallet mempool outputs use the wallet's exact leased-input CPFP path with Core's complete ancestor package.
+/// Wallet-funded HTLC transactions of anchors channels are bumped by their resolver on its own schedule.
 /// </remarks>
 public sealed partial class WalletKitService
 {
@@ -104,13 +103,14 @@ public sealed partial class WalletKitService
             return new BumpFeeResponse { Status = "Successfully registered rbf-tx with sweeper" };
         }
 
-        if (_serviceProvider.GetService<IUtxoMemoryRepository>()?.TryGetUtxo(txId, index, out _) == true)
-            throw new RpcException(new Status(StatusCode.Unimplemented,
-                                              "a CPFP of a wallet output is not supported: the wallet never spends "
-                                            + "unconfirmed outputs"));
+        if (bump.BudgetSat is > long.MaxValue)
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "wallet CPFP budget exceeds supported satoshi range"));
+        var feeRate = bump.StartingFeeratePerKw is { } requested ? Domain.Money.LightningMoney.Satoshis(requested)
+            : await (_feeService ?? throw new RpcException(new Status(StatusCode.Unavailable, "fee estimator unavailable")))
+                .GetFeeRatePerKwAsync(bump.ConfTarget ?? 6, context.CancellationToken);
+        await Run(() => Psbt.BumpOutputAsync(txId, index, feeRate.Satoshi, bump.BudgetSat is { } budget ? checked((long)budget) : null, context.CancellationToken));
+        return new BumpFeeResponse { Status = "Successfully published wallet CPFP transaction" };
 
-        throw new RpcException(new Status(StatusCode.NotFound,
-                                          $"the outpoint {txId}:{index} is neither swept by this node nor ours"));
     }
 
     private IAnchorCpfpService Anchors =>

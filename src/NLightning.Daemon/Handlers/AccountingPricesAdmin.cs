@@ -40,7 +40,10 @@ internal static class AccountingPricesAdmin
                                                         arguments.Limit, ct);
                     return new AccountingPricesClientResponse(arguments.Currency?.Trim().ToUpperInvariant()
                                                            ?? prices.Currency)
-                    { Prices = listed };
+                    {
+                        Prices = listed,
+                        Replacements = await prices.ListReplacementAuditsAsync(listed.Select(p => p.Id).ToArray(), ct)
+                    };
                 case AccountingAdminAction.PricesFetch:
                     if (arguments.Since is not { } since)
                         throw new ClientException(ErrorCodes.InvalidOperation, "prices fetch needs --since.");

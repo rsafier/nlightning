@@ -14,11 +14,27 @@ The receive source tries `getblock` verbosity 3, then Core 31.1's REST `spenttxo
 - `nltg getspaddress --label sales` creates or reuses a durable operator label.
 - `nltg splabels` lists labeled addresses, including reserved change label 0.
 - `nltg withdraw <silent-payment-address> <amount_sat|all>` sends through the wallet's normal reservation, signing and publication path. Existing fee and accounting label options remain available.
-- `nltg spstatus` reports receiving/sending gates, birthday, live/recovery checkpoints, output counts and the latest scan duration/error.
+- `nltg spstatus` reports receiving/sending gates, birthday, live/recovery checkpoints, output counts, the latest scan duration/error and unspent silent-payment outpoints with their amount, block height and label. Use the displayed transaction ID and output index for `--utxo`.
 
 The HRP is `sp` on mainnet, `tsp` on test networks/signets and `sprt` on regtest. Receipts become selectable only after block confirmation. A silent payment is a normal P2TR output on chain, with its derived spending metadata stored locally. LND-compatible wallet history, balances and unspent outputs show the actual P2TR script/address. Channel accept/funding delivery, cooperative close and splice-out destinations require normal Bitcoin addresses; receive into the wallet and then withdraw to a silent-payment recipient.
 
 `AvoidMixing` defaults to true: selection first tries ordinary coins, then a single silent-payment coin, then coins with the same silent-payment label. If the amount needs mixed ownership, the wallet falls back to a mixed selection and logs it. Sending uses the exact reserved input set for derivation and signature verification. Reusing a transaction with a changed input set requires fresh derivation.
+
+## Choose exact inputs
+
+Use repeated `--utxo <txid>:<vout>` to spend exactly the named confirmed wallet outputs, including received silent-payment coins, to either an ordinary or silent-payment address:
+
+```
+nltg spstatus
+nltg withdraw <silent-payment-address> 20000 --utxo <txid>:<vout>
+nltg withdraw <silent-payment-address> all --utxo <first-txid>:<vout> --utxo <second-txid>:<vout>
+```
+
+Transaction IDs use explorer/Bitcoin Core display order. A normal amount returns change; `all` sends the sum of only those named outputs minus the fee, with no change. The sender derives BIP 352 outputs from the exact reserved inputs before signing. It never adds an unchosen coin to pay the amount or fee. Unknown, duplicate, unconfirmed, channel-locked, reserved or pending-spent inputs are refused. Existing fee limits and network/feature gates still apply.
+
+Explicit choice opts into linking the named coins and bypasses `AvoidMixing`'s automatic preferences. It does not bypass the anchors reserve: the remaining eligible confirmed coins plus this spend's change must back the reserve. For `all`, other confirmed coins must back it. A coin can appear in `spstatus` while a reservation or pending spend makes it unavailable; `spstatus` lists custody, and the withdrawal validates spend availability. Send logs report the amount, transaction ID, fee, change, input count, explicit-choice flag and required anchors reserve.
+
+Silent-payment sends use BIP86 P2TR change by default. When `ChangeToSilentPayment` is enabled, receiving must also be enabled; change large enough for the configured receive minimum uses the wallet's reserved silent-payment change label 0. Smaller change falls back to ordinary BIP86 change so the scanner does not ignore it.
 
 ## Restore or recover a receiving gap
 

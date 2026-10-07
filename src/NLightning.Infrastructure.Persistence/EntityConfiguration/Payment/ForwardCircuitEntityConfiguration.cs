@@ -24,6 +24,8 @@ public static class ForwardCircuitEntityConfiguration
                   .IsRequired();
             entity.Property(e => e.IncomingHtlcId).IsRequired();
             entity.Property(e => e.IncomingAmountMsat).IsRequired();
+            entity.Property(e => e.ActualIncomingAmountMsat).IsRequired(false);
+            entity.Property(e => e.IncomingClaimedPreimage).IsRequired(false).HasMaxLength(CryptoConstants.SecretLen);
             entity.Property(e => e.IncomingCltvExpiry).IsRequired();
             entity.Property(e => e.PaymentHash)
                   .HasConversion<HashConverter>()
@@ -64,6 +66,7 @@ public static class ForwardCircuitEntityConfiguration
     {
         entity.Property(e => e.IncomingChannelId).HasColumnType($"varbinary({ChannelConstants.ChannelIdLength})");
         entity.Property(e => e.PaymentHash).HasColumnType($"varbinary({CryptoConstants.Sha256HashLen})");
+        entity.Property(e => e.IncomingClaimedPreimage).HasColumnType($"varbinary({CryptoConstants.SecretLen})");
         entity.Property(e => e.IncomingSharedSecret).HasColumnType($"varbinary({CryptoConstants.SecretLen})");
         entity.Property(e => e.OutgoingShortChannelId).HasColumnType($"varbinary({ShortChannelId.Length})");
         entity.Property(e => e.OutgoingChannelId).HasColumnType($"varbinary({ChannelConstants.ChannelIdLength})");

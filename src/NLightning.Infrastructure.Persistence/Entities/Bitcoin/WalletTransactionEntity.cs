@@ -20,6 +20,9 @@ public sealed class WalletTransactionEntity
     /// <summary>The wallet's inputs as index:value in sat, comma separated (<c>1:5000,3:7000</c>).</summary>
     public required string OurInputs { get; set; }
 
+    /// <summary>Owned output values/scripts and input outpoints/values; null until historical backfill.</summary>
+    public string? OwnershipSummary { get; set; }
+
     // Default constructor for EF Core
     internal WalletTransactionEntity() { }
 }

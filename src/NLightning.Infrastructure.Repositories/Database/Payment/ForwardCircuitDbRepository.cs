@@ -40,6 +40,7 @@ public class ForwardCircuitDbRepository : BaseDbRepository<ForwardCircuitEntity>
             IncomingChannelId = circuit.IncomingChannelId,
             IncomingHtlcId = circuit.IncomingHtlcId,
             IncomingAmountMsat = ToMsat(circuit.IncomingAmount),
+            ActualIncomingAmountMsat = circuit.ActualIncomingAmount == circuit.IncomingAmount ? null : ToMsat(circuit.ActualIncomingAmount),
             IncomingCltvExpiry = circuit.IncomingCltvExpiry,
             PaymentHash = circuit.PaymentHash,
             IncomingSharedSecret = ((byte[])circuit.IncomingSharedSecret).ToArray(),
@@ -179,11 +180,13 @@ public class ForwardCircuitDbRepository : BaseDbRepository<ForwardCircuitEntity>
                                            entity.OutgoingCltvExpiry, entity.CreatedAt,
                                            (ForwardCircuitStatus)entity.Status, entity.OutgoingChannelId,
                                            entity.OutgoingHtlcId, entity.ResolvedAt, entity.FailureCode,
-                                           entity.FailureSource);
+                                           entity.FailureSource, entity.ActualIncomingAmountMsat is { } actual ? ToMoney(actual) : null,
+                                           entity.IncomingClaimedPreimage is { } claimed ? new Secret(claimed) : (Secret?)null);
     }
 
     private static void MapMutableFields(ForwardCircuitModel circuit, ForwardCircuitEntity entity)
     {
+        entity.IncomingClaimedPreimage = circuit.IncomingClaimedPreimage is { } claimed ? ((byte[])claimed).ToArray() : null;
         entity.Status = (byte)circuit.Status;
         entity.OutgoingChannelId = circuit.OutgoingChannelId;
         entity.OutgoingHtlcId = circuit.OutgoingHtlcId;

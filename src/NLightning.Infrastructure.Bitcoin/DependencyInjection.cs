@@ -45,6 +45,7 @@ public static class DependencyInjection
     public static IServiceCollection AddBitcoinInfrastructure(this IServiceCollection services)
     {
         services.AddSilentPaymentBitcoinServices();
+        services.AddSingleton<Domain.Bitcoin.Wallet.Interfaces.IWalletHistoryGate, Wallet.WalletHistoryGate>();
         services.AddOptions<KeyRing.KeyRingOptions>();
         services.AddSingleton<KeyRing.KeyRingService>();
         services.AddSingleton<KeyRing.SwapSigner>();
@@ -113,6 +114,7 @@ public static class DependencyInjection
         services.AddSingleton<IBolt12Signer, Bolt12Signer>();
 
         // Fee inputs for CPFP and anchor HTLC transactions (BOLT 5 plan O7-T1)
+        services.AddSingleton<IWalletMempoolCatalog, WalletMempoolCatalog>();
         services.AddSingleton<IFeeInputSelector, FeeInputSelector>();
 
         // The wallet reserve of anchors channels and the channel funding selection that keeps it (NL-379, NL-385)
@@ -124,6 +126,7 @@ public static class DependencyInjection
 
         // Register Scoped Services
         services.AddScoped<IBitcoinWalletService, BitcoinWalletService>();
+        services.AddScoped<WalletAccountService>();
 
         return services;
     }

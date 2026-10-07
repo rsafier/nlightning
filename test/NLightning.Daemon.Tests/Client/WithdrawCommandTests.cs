@@ -44,20 +44,26 @@ public class WithdrawCommandTests
         Assert.Null(ClientApp.ValidateArguments("sendcoins", args));
     }
 
-    [Fact]
-    public void Given_UtxoOptions_When_Parsed_Then_TheyAreKeptInOrder()
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void Given_UtxoOptions_When_Parsed_Then_TheyAreKeptInOrder(bool silentPayment, bool all)
     {
         // Arrange (NL-1296)
         var first = new string('a', 64) + ":0";
         var second = new string('b', 64) + ":12";
-        string[] args = [Address, "--utxo", first, "all", $"--utxo={second}"];
+        var destination = silentPayment ? "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv" : Address;
+        string[] args = [destination, "--utxo", first, all ? "all" : "20000", $"--utxo={second}"];
 
         // Act
         var parsed = ClientApp.ParseWithdrawOptions(args, out var error);
 
         // Assert
         Assert.Null(error);
-        Assert.Null(parsed!.AmountSat);
+        Assert.Equal(all ? (ulong?)null : 20_000UL, parsed!.AmountSat);
+        Assert.Equal(destination, parsed.Address);
         Assert.Equal([first, second], parsed.Utxos);
         Assert.Null(ClientApp.ValidateArguments("withdraw", args));
     }

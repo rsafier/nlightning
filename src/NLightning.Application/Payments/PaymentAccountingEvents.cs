@@ -198,7 +198,7 @@ internal static class PaymentAccountingEvents
             ShortChannelId = ScidOf(incoming),
             PaymentHash = circuit.PaymentHash,
             Counterparty = incoming?.RemoteNodeId,
-            AmountMsat = checked((long)circuit.Fee.MilliSatoshi),
+            AmountMsat = checked((long)circuit.ActualFee.MilliSatoshi),
             FeeMsat = 0,
             Finality = AccountingFinality.Final,
             Details = ForwardDetails(circuit, incoming, outgoing)
@@ -257,6 +257,17 @@ internal static class PaymentAccountingEvents
             Finality = AccountingFinality.Final,
             Details = details
         };
+    }
+
+    /// <summary>Stages an interceptor income fact atomically with a durable circuit transition; errors abort the save.</summary>
+    public static async Task StageInterceptedHtlcSettledStrictAsync(IUnitOfWork unitOfWork, ChannelId incomingChannelId,
+        ulong incomingHtlcId, Func<AccountingEventModel> build, CancellationToken cancellationToken = default)
+    {
+        var events = unitOfWork.AccountingEventDbRepository;
+        if (await events.ExistsAsync(AccountingEventKeys.InterceptedHtlcSettled(incomingChannelId, incomingHtlcId),
+                                     cancellationToken))
+            return;
+        events.Add(build());
     }
 
     /// <summary>
@@ -433,7 +444,7 @@ internal static class PaymentAccountingEvents
             ShortChannelId = ScidOf(incoming),
             PaymentHash = circuit.PaymentHash,
             Counterparty = incoming?.RemoteNodeId,
-            AmountMsat = -checked((long)circuit.IncomingAmount.MilliSatoshi),
+            AmountMsat = -checked((long)circuit.ActualIncomingAmount.MilliSatoshi),
             FeeMsat = 0,
             Finality = AccountingFinality.Confirmed,
             Details = details
@@ -693,7 +704,8 @@ internal static class PaymentAccountingEvents
             ("incomingChannelId", circuit.IncomingChannelId.ToString()),
             ("incomingHtlcId", circuit.IncomingHtlcId.ToString(CultureInfo.InvariantCulture)),
             (AccountingDetailKeys.IncomingScid, ScidOf(incoming)?.ToString()),
-            ("incomingAmountMsat", Msat(circuit.IncomingAmount)),
+            ("incomingAmountMsat", Msat(circuit.ActualIncomingAmount)),
+            ("interpretedIncomingAmountMsat", circuit.IncomingAmount != circuit.ActualIncomingAmount ? Msat(circuit.IncomingAmount) : null),
             ("outgoingChannelId", circuit.OutgoingChannelId?.ToString()),
             ("outgoingHtlcId", circuit.OutgoingHtlcId?.ToString(CultureInfo.InvariantCulture)),
             (AccountingDetailKeys.OutgoingScid, (ScidOf(outgoing) ?? circuit.OutgoingShortChannelId).ToString()),

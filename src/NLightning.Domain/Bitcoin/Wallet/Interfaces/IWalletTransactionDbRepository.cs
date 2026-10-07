@@ -45,6 +45,16 @@ public interface IWalletTransactionDbRepository
     Task<IReadOnlyList<WalletTransactionRecord>> GetHistoryAsync(uint startHeight, uint endHeight,
                                                                  bool includeUnconfirmed,
                                                                  CancellationToken cancellationToken);
+
+    Task<WalletTransactionRecord?> GetByIdAsync(TxId txId, CancellationToken cancellationToken);
+    Task<IReadOnlyList<WalletTransactionRecord>> GetByIdsAsync(IReadOnlyCollection<TxId> txIds, CancellationToken cancellationToken);
+    Task<IReadOnlyList<WalletTransactionRecord>> GetHistoryPageAsync(uint startHeight, uint endHeight,
+        bool includeUnconfirmed, int offset, int limit, CancellationToken cancellationToken);
+    Task<WalletHistoryRescanState?> GetRescanStateAsync(CancellationToken cancellationToken);
+    Task StageRescanStateAsync(WalletHistoryRescanState state, CancellationToken cancellationToken);
+    Task<string?> GetLabelAsync(TxId txId, CancellationToken cancellationToken);
+    Task<bool> StageLabelAsync(TxId txId, string label, bool overwrite, CancellationToken cancellationToken);
+
 }
 
 /// <summary>The history of a unit of work that keeps none (test doubles): writes are dropped, reads are empty.</summary>
@@ -79,4 +89,18 @@ public sealed class NullWalletTransactionDbRepository : IWalletTransactionDbRepo
                                                                         bool includeUnconfirmed,
                                                                         CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<WalletTransactionRecord>>([]);
+
+    public Task<WalletTransactionRecord?> GetByIdAsync(TxId txId, CancellationToken cancellationToken) =>
+        Task.FromResult<WalletTransactionRecord?>(null);
+    public Task<IReadOnlyList<WalletTransactionRecord>> GetByIdsAsync(IReadOnlyCollection<TxId> txIds, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<WalletTransactionRecord>>([]);
+    public Task<IReadOnlyList<WalletTransactionRecord>> GetHistoryPageAsync(uint startHeight, uint endHeight,
+        bool includeUnconfirmed, int offset, int limit, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<WalletTransactionRecord>>([]);
+    public Task<WalletHistoryRescanState?> GetRescanStateAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<WalletHistoryRescanState?>(null);
+    public Task StageRescanStateAsync(WalletHistoryRescanState state, CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task<string?> GetLabelAsync(TxId txId, CancellationToken cancellationToken) => Task.FromResult<string?>(null);
+    public Task<bool> StageLabelAsync(TxId txId, string label, bool overwrite, CancellationToken cancellationToken) => Task.FromResult(false);
+
 }
