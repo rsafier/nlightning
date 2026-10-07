@@ -27,7 +27,7 @@ using Onion;
 /// This class ensures that the private key remains inaccessible from regular memory
 /// and is securely wiped when no longer needed.
 /// </summary>
-public class SecureKeyManager : ISecureKeyManager, IDisposable
+public partial class SecureKeyManager : ISecureKeyManager, IDisposable
 {
     /// <summary>
     /// BIP32 path of the node key for <see cref="KeyDerivationScheme.Bip32"/> (version 3 key files, NL-159). It follows
@@ -1044,7 +1044,11 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
 
     private void ReleaseUnmanagedResources()
     {
-        FreeSecure(ref _secureMasterKeyPtr, ref _masterKeyLength);
+        lock (_silentPaymentKeyLock)
+        {
+            FreeSecure(ref _secureScanKeyPtr, ref _scanKeyLength);
+            FreeSecure(ref _secureMasterKeyPtr, ref _masterKeyLength);
+        }
         FreeSecure(ref _secureNodeKeyPtr, ref _nodeKeyLength);
     }
 
