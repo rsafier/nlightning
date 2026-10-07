@@ -148,7 +148,7 @@ public sealed partial class LightningService
             // Imported watches may cover an output already owned by the wallet (including an SP receipt).
             // Merge by outpoint; transaction-level net amounts cannot represent partial ownership overlap.
             var importedAmounts = snapshot.Transactions.SelectMany(watched => watched.OurOutputs.Select(index =>
-                (Outpoint: new OutPoint(watched.Transaction.GetHash(), index),
+                (Outpoint: new NBitcoin.OutPoint(watched.Transaction.GetHash(), index),
                  Amount: watched.Transaction.Outputs[(int)index].Value.Satoshi)))
                 .ToDictionary(output => output.Outpoint, output => output.Amount);
             foreach (var watched in snapshot.Transactions)
