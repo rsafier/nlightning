@@ -1,6 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
+using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
 
@@ -56,6 +58,7 @@ public class WalletPsbtServiceTests : IDisposable
     private readonly List<FeeInputReservation> _stored = [];
     private readonly List<BroadcastTransactionModel> _published = [];
     private readonly SettableTime _time = new();
+    private readonly RecordingLogger<WalletPsbtService> _logger = new();
     private readonly FeeInputSelector _selector;
     private readonly WalletPsbtService _service;
     private long _reserveSat;
@@ -105,7 +108,7 @@ public class WalletPsbtServiceTests : IDisposable
                                               NullLogger<LocalLightningSigner>.Instance, nodeOptions.Value,
                                               _keyManager.Object, _utxos);
         _service = new WalletPsbtService(_selector, _anchorReserve.Object, _utxos, signer, _monitor.Object,
-                                         scopeFactory, nodeOptions, NullLogger<WalletPsbtService>.Instance,
+                                         scopeFactory, nodeOptions, _logger,
                                          _chain.Object, _time);
     }
 
@@ -350,6 +353,50 @@ public class WalletPsbtServiceTests : IDisposable
         Assert.True(published);
         Assert.Empty(_published);
         _chain.Verify(c => c.SendTransactionAsync(It.IsAny<Transaction>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ATransactionWithoutWalletInputs_When_PublishedFirst_Then_ItIsLoggedAsPublished()
+    {
+        // Arrange
+        var foreign = Network.RegTest.CreateTransaction();
+        foreign.Inputs.Add(new TxIn(new OutPoint(RandomUtils.GetUInt256(), 0)));
+        foreign.Outputs.Add(Money.Satoshis(10_000), s_destination);
+
+        // Act
+        var published = await _service.PublishAsync(foreign.ToBytes(), null, Ct);
+
+        // Assert
+        Assert.True(published);
+        Assert.Contains(_logger.At(LogLevel.Information),
+                        m => m == $"Published transaction {foreign.GetHash()} (no wallet input)");
+        Assert.DoesNotContain(_logger.Entries, e => e.Message.Contains("already known"));
+    }
+
+    [Theory]
+    [InlineData(NBitcoin.RPC.RPCErrorCode.RPC_VERIFY_ALREADY_IN_CHAIN, "Transaction outputs already in utxo set")]
+    [InlineData(NBitcoin.RPC.RPCErrorCode.RPC_VERIFY_ALREADY_IN_CHAIN, "txn-already-in-mempool")]
+    [InlineData(NBitcoin.RPC.RPCErrorCode.RPC_VERIFY_REJECTED, "txn-already-known")]
+    public async Task Given_BitcoindAlreadyHasATransactionWithoutWalletInputs_When_Republished_Then_ItSucceedsAsKnown(
+        NBitcoin.RPC.RPCErrorCode code, string reason)
+    {
+        // Arrange: loopd publishes its sweep again every block until it confirms (NL-1236)
+        var foreign = Network.RegTest.CreateTransaction();
+        foreign.Inputs.Add(new TxIn(new OutPoint(RandomUtils.GetUInt256(), 0)));
+        foreign.Outputs.Add(Money.Satoshis(10_000), s_destination);
+        _chain.Setup(c => c.SendTransactionAsync(It.IsAny<Transaction>()))
+              .ThrowsAsync(new NBitcoin.RPC.RPCException(code, reason, null!));
+
+        // Act
+        var published = await _service.PublishAsync(foreign.ToBytes(), null, Ct);
+
+        // Assert
+        Assert.True(published);
+        Assert.Empty(_published);
+        Assert.Contains(_logger.At(LogLevel.Debug),
+                        m => m == $"Transaction {foreign.GetHash()} (no wallet input) is already known to bitcoind");
+        Assert.DoesNotContain(_logger.Entries, e => e.Message.StartsWith("Published transaction"));
+        Assert.Empty(_logger.At(LogLevel.Warning));
     }
 
     [Fact]

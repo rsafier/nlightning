@@ -79,9 +79,11 @@ public sealed partial class LightningService
     }
 
     /// <summary>
-    /// <c>WalletBalance</c>: the confirmed and unconfirmed wallet balance (as <c>walletbalance</c>), the anchors reserve
-    /// as <c>reserved_balance_anchor_chan</c> and the outputs locked to channel fundings as <c>locked_balance</c>; one
-    /// account, <c>default</c>.
+    /// <c>WalletBalance</c> by LND's rule (NL-1236): <c>confirmed_balance</c> is the wallet outputs with at least
+    /// <c>min_confs</c> confirmations (1 when unset), <c>total_balance</c> every output, mined or not, and
+    /// <c>unconfirmed_balance</c> the difference; the node's own <c>walletbalance</c> and its spend rules keep their
+    /// 4-confirmation rule. The anchors reserve is <c>reserved_balance_anchor_chan</c> and the outputs locked to channel
+    /// fundings or leased as <c>locked_balance</c>; one account, <c>default</c>, with the same split.
     /// </summary>
     public override async Task<WalletBalanceResponse> WalletBalance(WalletBalanceRequest request,
                                                                     ServerCallContext context)
@@ -89,15 +91,18 @@ public sealed partial class LightningService
         if (request.Account is { Length: > 0 } account && account != "default")
             throw NotFound($"account {account} not found");
 
+        // LND: total = outputs with >= 0 confirmations, confirmed = >= min_confs (default 1), unconfirmed = the rest
+        var minConfirmations = request.MinConfs > 0 ? (uint)request.MinConfs : 1u;
         var height = _blockchainMonitor?.LastProcessedBlockHeight ?? 0;
-        var confirmed = _utxos?.GetConfirmedBalance(height).Satoshi ?? 0;
-        var unconfirmed = _utxos?.GetUnconfirmedBalance(height).Satoshi ?? 0;
+        var total = _utxos?.GetBalanceWithConfirmations(height, 0).Satoshi ?? 0;
+        var confirmed = _utxos?.GetBalanceWithConfirmations(height, minConfirmations).Satoshi ?? 0;
+        var unconfirmed = total - confirmed;
         var reserve = _anchorReserve is null ? null : await _anchorReserve.GetStatusAsync(context.CancellationToken);
         var response = new WalletBalanceResponse
         {
             ConfirmedBalance = confirmed,
             UnconfirmedBalance = unconfirmed,
-            TotalBalance = confirmed + unconfirmed,
+            TotalBalance = total,
             LockedBalance = _utxos?.GetLockedBalance().Satoshi ?? 0,
             ReservedBalanceAnchorChan = reserve?.RequiredReserve.Satoshi ?? 0
         };

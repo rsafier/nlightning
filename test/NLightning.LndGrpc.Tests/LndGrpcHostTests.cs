@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Grpc.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -15,6 +16,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Interfaces;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -36,6 +38,7 @@ using Google.Protobuf;
 using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Signers;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Infrastructure.Repositories.Memory;
 using LndGrpc.Macaroons;
 using LndGrpc.Services;
 using LndGrpc.Tls;
@@ -77,6 +80,7 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
     private readonly List<ChannelModel> _closedChannels = [];
     private readonly List<OutputResolutionModel> _outputs = [];
     private readonly List<ChannelCloseModel> _closes = [];
+    private readonly UtxoMemoryRepository _utxos = new();
 
     private ServiceProvider? _services;
     private LndGrpcHost? _host;
@@ -195,7 +199,9 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
     [Fact]
     public async Task Given_TheReadOnlyMacaroon_When_Writing_Then_PermissionDeniedButReadsWork()
     {
-        // Arrange
+        // Arrange: at height 150, 70,000 sat mined at 140 and 5,000 sat not mined yet
+        AddUtxo(70_000, 140);
+        AddUtxo(5_000, 0);
         using var connection = await ConnectAsync(LndMacaroonFiles.ReadOnlyFileName);
 
         // Act
@@ -215,6 +221,36 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
         Assert.Equal(5_000, balance.UnconfirmedBalance);
         Assert.Equal(75_000, balance.TotalBalance);
         Assert.Equal(70_000, balance.AccountBalance["default"].ConfirmedBalance);
+    }
+
+    [Fact]
+    public async Task Given_OutputsWith0And1And4Confirmations_When_WalletBalance_Then_ConfirmedFromOneConfirmationLikeLnd()
+    {
+        // Arrange: at height 150, 1,000 sat in the mempool, 20,000 sat mined at the tip (1 confirmation) and 300,000 sat
+        // mined at 147 (4 confirmations); the node's own walletbalance confirms only the last one (NL-1236)
+        AddUtxo(1_000, 0);
+        AddUtxo(20_000, 150);
+        AddUtxo(300_000, 147);
+        using var connection = await ConnectAsync(LndMacaroonFiles.ReadOnlyFileName);
+
+        // Act
+        var balance = await connection.LightningClient.WalletBalanceAsync(new WalletBalanceRequest(),
+                                                                           cancellationToken: Ct);
+        var fourConfirmations = await connection.LightningClient.WalletBalanceAsync(
+                                    new WalletBalanceRequest { MinConfs = 4 }, cancellationToken: Ct);
+
+        // Assert
+        Assert.Equal(320_000, balance.ConfirmedBalance);
+        Assert.Equal(1_000, balance.UnconfirmedBalance);
+        Assert.Equal(321_000, balance.TotalBalance);
+        Assert.Equal(0, balance.LockedBalance);
+        Assert.Equal(320_000, balance.AccountBalance["default"].ConfirmedBalance);
+        Assert.Equal(1_000, balance.AccountBalance["default"].UnconfirmedBalance);
+        Assert.Equal(300_000, fourConfirmations.ConfirmedBalance);
+        Assert.Equal(21_000, fourConfirmations.UnconfirmedBalance);
+        Assert.Equal(321_000, fourConfirmations.TotalBalance);
+        // The node's own 4-confirmation rule is unchanged: the output mined at the tip is still unconfirmed there
+        Assert.Equal(LightningMoney.Satoshis(20_000), _utxos.GetUnconfirmedBalance(150));
     }
 
     [Fact]
@@ -468,6 +504,10 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
 
     /// <summary>A connection with one of the baked macaroons; <c>GetInfo</c> is called unless the macaroon cannot
     /// (the invoice macaroon has no <c>info:read</c>, as in LND).</summary>
+    private void AddUtxo(long satoshis, uint blockHeight) =>
+        _utxos.Add(new UtxoModel(new TxId(RandomNumberGenerator.GetBytes(32)), 0, LightningMoney.Satoshis(satoshis),
+                                 blockHeight, 0, false, Domain.Bitcoin.Enums.AddressType.P2Wpkh));
+
     private async Task<LndNodeConnection> ConnectAsync(string macaroonFile)
     {
         var settings = LndSettings.FromFiles(Endpoint, Path.Combine(_directory, LndTlsFiles.CertificateFileName),
@@ -532,11 +572,7 @@ public sealed partial class LndGrpcHostTests : IAsyncLifetime
         monitor.SetupGet(x => x.LastProcessedBlockHeight).Returns(150);
         services.AddSingleton(monitor.Object);
 
-        var utxos = new Mock<IUtxoMemoryRepository>();
-        utxos.Setup(x => x.GetConfirmedBalance(150)).Returns(LightningMoney.Satoshis(70_000));
-        utxos.Setup(x => x.GetUnconfirmedBalance(150)).Returns(LightningMoney.Satoshis(5_000));
-        utxos.Setup(x => x.GetLockedBalance()).Returns(LightningMoney.Zero);
-        services.AddSingleton(utxos.Object);
+        services.AddSingleton<IUtxoMemoryRepository>(_utxos);
 
         services.AddScoped(_ => CreateUnitOfWork());
         services.AddScoped(_ => _wallet.Object);

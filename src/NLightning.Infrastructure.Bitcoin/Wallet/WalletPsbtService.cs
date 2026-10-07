@@ -434,8 +434,12 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
             if (_bitcoinChainService is null)
                 throw new WalletPsbtException(WalletPsbtError.FailedPrecondition, "no chain service to publish with");
 
-            await SendOrRefuseAsync(tx);
-            _logger.LogInformation("Published transaction {TxId} (no wallet input)", tx.GetHash());
+            // NL-1236: LND clients (loopd) publish their sweeps again every block until they confirm; bitcoind's
+            // "already known" answer is still a success, but not a fresh broadcast
+            if (await SendOrRefuseAsync(tx))
+                _logger.LogInformation("Published transaction {TxId} (no wallet input)", tx.GetHash());
+            else
+                _logger.LogDebug("Transaction {TxId} (no wallet input) is already known to bitcoind", tx.GetHash());
             return true;
         }
 
@@ -504,13 +508,15 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
 
     /// <summary>
     /// Sends <paramref name="tx"/>; bitcoind's refusal becomes LND's error (<see cref="MapRefusal"/>), an "already known"
-    /// answer counts as published (LND ignores those too).
+    /// answer counts as published (LND ignores those too). True when bitcoind took it now, false when it already had it
+    /// (mempool or chain).
     /// </summary>
-    private async Task SendOrRefuseAsync(Transaction tx)
+    private async Task<bool> SendOrRefuseAsync(Transaction tx)
     {
         try
         {
             await _bitcoinChainService!.SendTransactionAsync(tx);
+            return true;
         }
         catch (NBitcoin.RPC.RPCException e)
         {
@@ -519,6 +525,8 @@ public sealed class WalletPsbtService : IWalletPsbtService, IDisposable
                 _logger.LogWarning("bitcoind refused {TxId}: {Reason}", tx.GetHash(), e.Message);
                 throw new WalletPsbtException(WalletPsbtError.PublishRefused, error);
             }
+
+            return false;
         }
     }
 
