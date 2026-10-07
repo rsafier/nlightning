@@ -375,7 +375,9 @@ gaps, closed on `wip/lnd-gaps` (ledger NL-1242..NL-1249; details and validation 
   ignored nodes and directed pairs, outgoing channels, last hop, route hints, mission control on or off, LND's exact
   final expiry; no route = `unable to find a path to destination`) and `SendToRouteV2` over `payroute` (mpp record,
   keysend record, LND failure codes and indexes). Not supported: `source_pub_key` other than ours, blinded paths, a
-  circular `SendToRouteV2` (bos `rebalance`), several parallel shards of one hash.
+  circular `SendToRouteV2` (bos `rebalance`), several parallel shards of one hash (the last one since NL-1276:
+  a `SendToRouteV2` with the hash of a `payroute` payment in flight joins it as one more shard, same `mpp_record`,
+  the shards in flight never above the total, each call answered with its own HTLC; `PAYROUTE_PLAN.md` §6).
 - **NL-1243** grpc-go's `unknown method M for service S` / `unknown service S` for everything not implemented
   (`LndUnknownMethods`, before the macaroon check), so ln-service's fallbacks work.
 - **NL-1244** block and chain hashes in display order (`GetInfo.block_hash`, a stored `GetTransactions.block_hash`,

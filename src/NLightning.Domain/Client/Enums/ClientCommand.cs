@@ -141,5 +141,14 @@ public enum ClientCommand
     /// Cancels a hold invoice (NL-995, <c>cancelholdinvoice</c>): a held set's parts are failed back and the invoice
     /// is <c>Canceled</c>; an open one is simply canceled.
     /// </summary>
-    CancelHoldInvoice = 51
+    CancelHoldInvoice = 51,
+
+    // 52-55 are reserved for the silent payments commands (docs/agents/SILENT_PAYMENTS_PLAN.md §3.9)
+
+    /// <summary>
+    /// Attaches routes to a <c>payroute</c> payment still in flight (NL-1276, <c>payroute --attach</c>): replacement
+    /// shards for parts that failed while the payee holds the others, with the same hash, secret and total, inside
+    /// the attach window (the payee's <c>mpp_timeout</c>).
+    /// </summary>
+    PayRouteAttach = 56
 }

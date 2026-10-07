@@ -120,6 +120,7 @@ public class PayRouteIpcHandlerTests
         AssertResponseEnvelope(envelope, response);
         Assert.NotNull(captured);
         Assert.Equal("lnbcrt1pay", captured.Bolt11);
+        Assert.Equal(PayRouteAttachMode.Never, captured.Attach);
         Assert.Null(captured.PaymentHash);
         Assert.Null(captured.PaymentSecret);
         Assert.Equal(200_000UL, captured.TotalAmount!.MilliSatoshi);

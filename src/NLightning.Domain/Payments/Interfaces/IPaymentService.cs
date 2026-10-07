@@ -128,7 +128,16 @@ public interface IPaymentService
     /// offered in order; a refusal or a decrypted failure ends that route only. Everything else behaves like
     /// <see cref="PayInvoiceAsync(string, LightningMoney?, PayInvoiceOptions, CancellationToken)"/>: one row per
     /// hash, part rows for restart-safe failure decryption, mission control learns from failures.
+    /// <para>NL-1276: with <see cref="PayRouteRequest.Attach"/> the routes join the <c>payroute</c> payment of the
+    /// hash still in flight (the same secret, total and payee; within the attach window for
+    /// <see cref="PayRouteAttachMode.Required"/>; with the parts in flight at least the total, or at most it for
+    /// <see cref="PayRouteRequest.IndependentShards"/>; the fees of the parts in flight counted), and the result
+    /// reports only this call's routes. An <see cref="PayRouteRequest.IndependentShards"/> call answers once its own
+    /// routes are resolved.</para>
     /// </remarks>
+    /// <exception cref="InvalidOperationException">A payment for the hash is in flight (not attachable, or
+    /// <see cref="PayRouteAttachMode.Never"/>) or succeeded, or <see cref="PayRouteAttachMode.Required"/> found no
+    /// <c>payroute</c> payment in flight. Nothing was sent.</exception>
     Task<PayRouteResult> PayRouteAsync(PayRouteRequest request, PayInvoiceOptions options,
                                        CancellationToken cancellationToken = default);
 
