@@ -35,6 +35,21 @@ public class BlockPrevoutSourceTests
     }
 
     [Fact]
+    public async Task Given_LargeExactBtcAmount_When_Read_Then_NoSatoshiIsRoundedThroughFloatingPoint()
+    {
+        // Arrange: sixteen significant digits exceed double-to-decimal's guaranteed precision.
+        var block = CreateBlock();
+        var json = CreateVerbose(block);
+        json["result"]!["tx"]![1]!["vin"]![0]!["prevout"]!["value"] = 12_345_678.12345678m;
+
+        // Act
+        var previous = await BlockPrevoutSource.ParseVerboseAsync(new StringReader(json.ToString()), block);
+
+        // Assert
+        Assert.Equal(1_234_567_812_345_678UL, Assert.Single(previous).Value[0].AmountSat);
+    }
+
+    [Fact]
     public async Task Given_MissingUndoData_When_Read_Then_ItFailsInsteadOfSkippingTheInput()
     {
         // Arrange

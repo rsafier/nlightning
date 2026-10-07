@@ -170,7 +170,7 @@ public sealed class BlockPrevoutSource : IBlockPrevoutSource
     internal static async Task<IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>>> ParseVerboseAsync(
         TextReader text, Block block, bool requireAll = false, CancellationToken cancellationToken = default)
     {
-        using var reader = new JsonTextReader(text);
+        using var reader = new JsonTextReader(text) { FloatParseHandling = FloatParseHandling.Decimal };
         Dictionary<TxId, IReadOnlyList<BitcoinPrevout>> result = [];
         var candidates = block.Transactions.Where(t => !t.IsCoinBase && (requireAll || IsCandidate(t))).ToDictionary(t => t.GetHash().ToString());
         var sawArray = false;
