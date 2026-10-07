@@ -111,7 +111,9 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
         if (state.LiveFromHeight == 0 || fromHeight >= state.LiveFromHeight)
             throw new ArgumentOutOfRangeException(nameof(fromHeight), "Rescan starts before the live scanning boundary.");
         uint? cursor = fromHeight == 0 ? null : fromHeight - 1;
-        Hash? cursorHash = cursor is { } height ? new Hash((await chain.GetBlockHashAsync(height).WaitAsync(cancellationToken)).ToBytes()) : null;
+        Hash? cursorHash = null;
+        if (cursor is { } height)
+            cursorHash = new Hash((await chain.GetBlockHashAsync(height).WaitAsync(cancellationToken)).ToBytes());
         await uow.SilentPaymentDbRepository.SetScanStateAsync(state with
         {
             BirthdayHeight = Math.Min(state.BirthdayHeight, fromHeight),
@@ -336,8 +338,8 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
 
     private async Task ValidateCursorAsync(SilentPaymentScanState state, CancellationToken cancellationToken)
     {
-        if (state.RescanCursorHeight is { } height &&
-            new Hash((await chain.GetBlockHashAsync(height).WaitAsync(cancellationToken)).ToBytes()) != state.RescanCursorHash)
+        if (state.RescanCursorHeight is { } height && state.RescanCursorHash is { } hash &&
+            new Hash((await chain.GetBlockHashAsync(height).WaitAsync(cancellationToken)).ToBytes()) != hash)
             throw new InvalidOperationException("Recovery checkpoint was reorganized; waiting for the wallet rollback before advancing.");
     }
 
