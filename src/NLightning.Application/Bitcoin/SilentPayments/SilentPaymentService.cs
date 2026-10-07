@@ -206,6 +206,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
         foreach (var (output, spender) in spent)
             if (!output.Ignored)
                 await StageFactAsync(work, output, spender, block, height, labels, cancellationToken);
+        await StageHistoricalSettlementsAsync(work, block, height, cancellationToken);
         await RequireCanonicalAsync(block, height, cancellationToken);
         await work.SilentPaymentDbRepository.SetScanStateAsync(state with
         { RescanCursorHeight = height, RescanCursorHash = blockValue.BlockHash, PrevoutSource = scanner.PrevoutSource }, cancellationToken);
@@ -256,6 +257,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
                             spender, height, cancellationToken);
                         await StageFactAsync(uow, output, spender, block, height, labels, cancellationToken);
                     }
+                await StageHistoricalSettlementsAsync(uow, block, height, cancellationToken);
                 await RequireCanonicalAsync(block, height, cancellationToken);
                 if (height == uint.MaxValue) break;
             }
@@ -285,6 +287,90 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
         cancellationToken.ThrowIfCancellationRequested();
         await uow.SaveChangesAsync();
         return !pendingSpends;
+    }
+
+    // Historical custody facts must also settle Clearing. Recover the complete transaction only when every
+    // input belongs to the recovered wallet; shared transactions require their retained purpose/accounting context.
+    private async Task StageHistoricalSettlementsAsync(IUnitOfWork uow, Block block, uint height,
+                                                       CancellationToken cancellationToken)
+    {
+        var network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
+        var addresses = uow.WalletAddressesDbRepository.GetAllAddresses().Select(address => address.Address).ToHashSet();
+        foreach (var transaction in block.Transactions.Where(transaction => !transaction.IsCoinBase))
+        {
+            var transactionId = new TxId(transaction.GetHash().ToBytes());
+            var inputs = new List<SilentPaymentOutputModel?>();
+            foreach (var input in transaction.Inputs)
+                inputs.Add(await uow.SilentPaymentDbRepository.GetOutputAsync(new TxId(input.PrevOut.Hash.ToBytes()),
+                    input.PrevOut.N, cancellationToken));
+            if (!inputs.Any(input => input is { Ignored: false } && input.SpentByTransactionId == transactionId))
+                continue;
+            var baseKey = AccountingEventKeys.WalletSent(transactionId);
+            var prior = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync(baseKey, cancellationToken);
+            var key = AccountingConfirmations.NextConfirmationKey(baseKey, prior);
+            if (key is null) continue;
+            // A retained broadcast may represent funding, a sweep or a shared transaction. Its original writer
+            // owns settlement; never relabel those movements as a recovered withdrawal.
+            var broadcast = await uow.BroadcastTransactionDbRepository.GetByTransactionIdAsync(transactionId);
+            if (broadcast is not null && broadcast.Purpose != Domain.Bitcoin.Enums.BroadcastPurpose.WalletSend)
+                continue;
+            long inputSat = 0;
+            for (var index = 0; index < inputs.Count; index++)
+            {
+                if (inputs[index] is { Ignored: false } owned)
+                    inputSat = checked(inputSat + owned.AmountSats);
+                else
+                {
+                    // Ordinary wallet custody already journaled by the normal monitor is usable proof after its
+                    // UTXO was deleted. No script guess or label-zero heuristic establishes input ownership.
+                    var point = transaction.Inputs[index].PrevOut;
+                    var receipts = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync(
+                        AccountingEventKeys.WalletReceived(new TxId(point.Hash.ToBytes()), point.N), cancellationToken);
+                    var receivedKey = AccountingEventKeys.WalletReceived(new TxId(point.Hash.ToBytes()), point.N);
+                    var received = AccountingConfirmations.FindStanding(receivedKey, receipts);
+                    var spends = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync(
+                        AccountingEventKeys.WalletOutputSpent(new TxId(point.Hash.ToBytes()), point.N), cancellationToken);
+                    var spentKey = AccountingEventKeys.WalletOutputSpent(new TxId(point.Hash.ToBytes()), point.N);
+                    var spent = AccountingConfirmations.FindStanding(spentKey, spends);
+                    if (received is null || spent is null || spent.BlockHeight != height ||
+                        !spent.Details.TryGetValue("spentBy", out var spentBy) || spentBy != transactionId.ToString())
+                        throw new InvalidOperationException("Recovered spend has an input without complete wallet accounting provenance; restore its original ledger before continuing.");
+                    inputSat = checked(inputSat + received.AmountMsat / 1000);
+                }
+            }
+            long externalSat = 0;
+            long outputSat = 0;
+            var externalOutputs = 0;
+            for (var index = 0; index < transaction.Outputs.Count; index++)
+            {
+                var output = transaction.Outputs[index];
+                outputSat = checked(outputSat + output.Value.Satoshi);
+                var owned = await uow.SilentPaymentDbRepository.GetOutputAsync(transactionId, (uint)index, cancellationToken);
+                var address = output.ScriptPubKey.GetDestinationAddress(network)?.ToString();
+                if (owned is { Ignored: false }) continue;
+                if (address is not null && addresses.Contains(address))
+                {
+                    var receivedKey = AccountingEventKeys.WalletReceived(transactionId, (uint)index);
+                    var receipts = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync(receivedKey, cancellationToken);
+                    if (AccountingConfirmations.FindStanding(receivedKey, receipts) is null)
+                        throw new InvalidOperationException("Recovered spend returns ordinary wallet change without its custody journal; restore the ordinary wallet ledger before continuing.");
+                    continue;
+                }
+                // Ignored SP outputs were deliberately excluded from custody and remain an equity transfer out.
+                externalSat = checked(externalSat + output.Value.Satoshi);
+                externalOutputs++;
+            }
+            var feeSat = checked(inputSat - outputSat);
+            if (feeSat < 0) throw new InvalidOperationException("Recovered spend outputs exceed its proven wallet inputs.");
+            uow.AccountingEventDbRepository.Add(new AccountingEventModel
+            {
+                EventKey = key, Kind = AccountingEventKind.WalletSent, OccurredAt = block.Header.BlockTime,
+                BlockHeight = height, TxId = transactionId, AmountMsat = -checked(externalSat * 1000),
+                FeeMsat = checked(feeSat * 1000), Finality = AccountingFinality.Confirmed,
+                Details = AccountingDetailsCodec.Create(("recovered", "true"), ("purposeUnknown", broadcast is null ? "true" : null),
+                    ("externalOutputs", externalOutputs.ToString(CultureInfo.InvariantCulture)))
+            });
+        }
     }
 
     private async Task StageFactAsync(IUnitOfWork uow, SilentPaymentOutputModel output, TxId? spender,
