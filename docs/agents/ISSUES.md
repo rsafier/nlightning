@@ -9659,13 +9659,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** part of NL-1168
 
 ### NL-1181 LND gRPC ChannelAcceptor: values refused instead of applied
-- **Status:** open
+- **Status:** fixed (44f06a38)
 - **Severity:** low
 - **Kind:** gap
-- **Location:** `ChannelOpenDecisionRules.TryApply`
-- **Evidence:** `zero_conf` (and `min_accept_depth` 0) refuses the open (no zero-conf channels); on `open_channel2`, `reserve_sat` (BOLT 2 fixes the v2 reserve) and `upfront_shutdown` refuse it. The request carries no `wants_zero_conf` behavior beyond the flag, and LND's acceptor sees only v1 opens while ours also sees v2 ones (our contribution is not in the request).
-- **Fix sketch:** zero-conf channels (an alias SCID and `channel_ready` at depth 0) would make `zero_conf` applicable; an upfront script for the dual-funded accepter needs `accept_channel2`'s TLV filled from the decision.
-- **Blocks/Blocked-by:** follow-up of NL-1180
+- **Location:** `ChannelOpenDecisionRules.TryApply`, `OpenChannel1MessageHandler.ApplyOpenDecision`, `DualFundedOpenService.ApplyOpenDecision`/`AcceptCoreAsync`
+- **Evidence:** `zero_conf` (and `min_accept_depth` 0) refused every open (no zero-conf channels); on `open_channel2`, `reserve_sat` (BOLT 2 fixes the v2 reserve) and `upfront_shutdown` refused it. The request carries no `wants_zero_conf` behavior beyond the flag, and LND's acceptor sees only v1 opens while ours also sees v2 ones (our contribution is not in the request).
+- **Fix:** `ChannelOpenDecisionRules.TryApply` applies an acceptance as LND's funding manager does, and both accept builders now run it for every acceptance (also one without values): an open whose `channel_type` has `option_zeroconf` needs `zero_conf` (or `min_accept_depth` 0) from the acceptor, else it is refused with LND's "channel acceptor blocked zero-conf channel negotiation"; with it we ask for depth 0 (the node's own `Features:ZeroConf` gate in `ChannelOpenValidator` still decides whether such a type is taken at all). `zero_conf` on an open without that type stays refused (LND would turn it into a zero-conf channel through `option_scid_alias`; NLightning has no zero-conf channels of its own, NL-1280), as does `zero_conf` with a non-zero depth. `upfront_shutdown` is checked in the Domain (LND's `errUpfrontShutdownScriptNotSupported` without `option_upfront_shutdown_script`, a valid shutdown form) and goes in `accept_channel2`'s `upfront_shutdown_script` on a dual-funded open (stored as our `ChannelParams.Local.UpfrontShutdownScript`, so the close uses it). A dual-funded `reserve_sat` applies when the reserve BOLT 2 fixes (1 % of the total, at least the dust limit) meets it, else the open is refused; when only our contribution makes it meet (`DualFundNegotiation.LocalShareRequired`), an open we cannot fund is refused instead of going on without our share. The text of a rejection is still the acceptor's error, else LND's generic `channel rejected`. Tests: Domain `ChannelOpenDecisionRulesTests` (zero-conf table, v2 reserve, upfront feature and form), Application `OpenChannel1DecisionTests` (depth 0, blocked zero-conf, upfront in `accept_channel`, reserve and in-flight applied), `DualFundOpenDecisionTests` (v2 reserve met, met only with Bob's share with and without funds, refused above, upfront in `accept_channel2` with and without the feature), LndGrpc `LndGrpcWave3HostTests.AcceptorValues` (every `ChannelAcceptResponse` field through the stream, the gate and `TryApply`).
+- **Blocks/Blocked-by:** follow-up of NL-1180; related NL-1280
 
 ### NL-1182 LND gRPC HtlcInterceptor: gaps against LND
 - **Status:** open (SETTLE accounting fixed in 56595f0d, NL-1205; callback/stream reliability fixed in b3976b0d, NL-1234)
@@ -10584,3 +10584,12 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** split out of the NL-1082 epic at its close (2026-10-07). payroute offers all shards in one call, so a failed shard cannot be replaced while the rest are held by the payee. Phase C was designed but deferred (plan §6, "Phase C — deferred (design only)").
 - **Fix sketch:** implement plan §6: a follow-up IPC call (and the LND `SendToRouteV2` path with the same payment hash, which NL-1242 refuses today) attaches new shards to the pending manual payment inside the payee's `mpp_timeout` window.
 - **Blocks/Blocked-by:** part of NL-1082 (closed); related NL-1242
+
+### NL-1280 option_zeroconf fundee asks for depth 0 but sends channel_ready only after the first confirmation
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Domain/Channels/Validators/ChannelOpenValidator.cs` (minimum depth 0 for an `option_zeroconf` type), `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (funding watches complete only in a processed block)
+- **Evidence:** found by NL-1181. With `Features:ZeroConf` on, an inbound `open_channel` whose `channel_type` has `option_zeroconf` gets `minimum_depth` 0 in our `accept_channel` (and, since NL-1181, an LND `ChannelAcceptor` may accept it with `zero_conf`), but the funding watch of required depth 0 completes only when the funding transaction is in a block, so our `channel_ready` (with its alias) goes out after the first confirmation, not at depth 0 as BOLT 2 zero-conf peers expect. Nothing is unsafe (we wait longer than asked); the channel is just not usable before a block. `Features:ZeroConf` defaults to No.
+- **Fix sketch:** zero-conf channels as first-class (`REMAINING_WORK.md`): send `channel_ready` with the alias once the funding is in our mempool (or at once when the opener funds), route by the alias until the confirmation, and fail the channel when the funding is double-spent.
+- **Blocks/Blocked-by:** related NL-1181

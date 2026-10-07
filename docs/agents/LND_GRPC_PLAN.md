@@ -288,9 +288,14 @@ run when registered (`AddLndGrpc` does).
   rejects. `OpenChannel1MessageHandler` asks after the cheap refusals and **before the factory** (no key index used for a
   rejected open); `DualFundedOpenService` before it makes keys. The accepted values replace what we announce
   (`ChannelOpenDecisionRules.TryApply`, `ChannelModel.ApplyOpenDecision`): csv_delay (our `to_self_delay` on the opener),
-  reserve_sat (v1), in_flight_max_msat, max_htlc_count (at most 483), min_htlc_in, min_accept_depth, upfront_shutdown
-  (v1, needs `option_upfront_shutdown_script`, as LND); refused with the generic `channel rejected`: zero_conf (and depth
-  0), reserve_sat or upfront_shutdown on a dual-funded open, a reserve below either dust limit (NL-1181). Each RPC stream
+  reserve_sat, in_flight_max_msat, max_htlc_count (at most 483), min_htlc_in, min_accept_depth, upfront_shutdown
+  (needs `option_upfront_shutdown_script` and a valid shutdown form, as LND; on a dual-funded open it goes in
+  `accept_channel2`), zero_conf. Since NL-1181 every acceptance goes through it: an opener's `option_zeroconf`
+  `channel_type` needs `zero_conf` (or depth 0) from the acceptor, else LND's "channel acceptor blocked zero-conf channel
+  negotiation"; with it we ask for depth 0. Refused with the generic `channel rejected`: zero_conf on an open without that
+  type (LND would make it zero-conf over `option_scid_alias`; we have no zero-conf channels of our own, NL-1280) or with a
+  non-zero depth, a reserve below either dust limit, and on a dual-funded open a reserve_sat the reserve BOLT 2 fixes
+  (1 % of the total) does not meet; one that only our contribution makes it meet makes that contribution all or nothing. Each RPC stream
   is an `RpcChannelAcceptor`: the request in LND's units and LND's commitment-type reading of `channel_type`, LND's
   `validateAcceptorResponse` (accept with an error, an error over 500 characters, a bad upfront address or a reserve below
   the opener's dust limit reject generically), answers matched by `pending_chan_id` (zero-padded), at most
