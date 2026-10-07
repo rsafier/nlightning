@@ -161,6 +161,7 @@ public class SilentPaymentScannerTests
     {
         public SilentPaymentPrevoutSource Source => SilentPaymentPrevoutSource.GetRawTransaction;
         public Task ProbeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task ValidateHeightAsync(uint height, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task<IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>>> GetPrevoutsAsync(BitcoinBlock block,
             uint height, CancellationToken cancellationToken = default) => Task.FromResult(previous);
     }
