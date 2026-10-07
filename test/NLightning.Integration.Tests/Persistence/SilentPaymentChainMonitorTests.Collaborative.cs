@@ -9,7 +9,6 @@ using Application.Accounting.Books;
 using Domain.Accounting.Books;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Services;
-using Domain.Bitcoin.SilentPayments.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Interfaces;
@@ -155,9 +154,9 @@ public sealed partial class SilentPaymentChainMonitorTests
             var metadataChange = Assert.Single(matches, match => match.TransactionId == Id(collaborative));
             var proof = await harness.Chain.GetConfirmedUnspentOutputAsync(new OutPoint(collaborative.GetHash(), 1));
             Assert.NotNull(proof);
-            var confirmed = proof!.Value;
-            Assert.Equal(metadataChange.AmountSats, confirmed.Output.Value.Satoshi);
-            Assert.Equal(collaborative.Outputs[1].ScriptPubKey, confirmed.Output.ScriptPubKey);
+            var (output, _) = proof!.Value;
+            Assert.Equal(metadataChange.AmountSats, output.Value.Satoshi);
+            Assert.Equal(collaborative.Outputs[1].ScriptPubKey, output.ScriptPubKey);
             work.AddUtxo(new UtxoModel(metadataChange));
             await work.SaveChangesAsync();
             // A second recovery round observes the standing corrected flow and appends nothing.
