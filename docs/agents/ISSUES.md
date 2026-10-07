@@ -2,6 +2,8 @@
 
 The single durable issue ledger for this repo. GitHub issues are disabled on the fork, so this file replaces them. Every known bug, gap, spec violation, missing feature, test/CI hygiene problem and tech-debt item lives here, so nothing is lost between agent sessions.
 
+Updated 2026-10-06 by `wip/lnc` from latest `wip/fafo` dff5931f: NL-1237 fixed with a separate scoped LNC sidecar and upstream-client regtest proof `lnc-proof3` (1/1, 130 s). Summary recounted: 956 unique classified entries; no schema or live-node configuration change.
+
 Updated 2026-10-06 by `wip/lnd-p2` from `wip/fafo` d074fe01: NL-1170, NL-1171 and NL-1172 fixed; NL-1190/NL-1196 regtest matrix complete (`lnd-p2-proof6`, 1/1), Mutinynet trial prepared but pending access/server confirmation/owner approval. New and fixed NL-1226 (onion reply metric assertion race) and NL-1228 (same-height chain-sync barrier); new open NL-1227 (unchanged accounting adjustment assertion failed once under load, passed on both frameworks in isolation). NL-1198 reproduced under load, passed alone on both frameworks. Summary recounted: 942 entries, no duplicate IDs; no schema change.
 
 Updated 2026-10-07 by `wip/lnd-subscriptions` from `wip/fafo` 45f71673: NL-1230 fixed in `ae737a97` with five passive LND feeds, warning-free net10/net11 Release build, final focused suites 190/78/210 green and real LND proof `lnd-subs-proof2` 1/1 green. Initial broad failures cleared by targeted reruns; NL-1198 timing failure passed alone. NL-1231/NL-1232 remain open for on-chain HTLC and imported-only transaction feeds. Summary: 951 unique classified entries. No schema or live-node configuration change.
@@ -183,10 +185,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 0 | 96 | 96 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 69 | 237 | 499 | 820 |
+| fixed | 15 | 69 | 238 | 499 | 821 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **69** | **253** | **618** | **955** |
+| **Total** | **15** | **69** | **254** | **618** | **956** |
 
 ### Epics
 
@@ -10066,3 +10068,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** public signet Loop trial (`LOOP_SIGNET_TRIAL.md`, 2026-10-06): `loop static in` failed with the server's "loop in failed" after its probe logged "target unreachable". The Loop server probes the client node with a random payment hash and no MPP record (260,000,000 msat); our switch failed it with `invalid_onion_payload` on type 8. BOLT 4 answers a missing required `payment_secret` and an unknown `payment_hash` with `incorrect_or_unknown_payment_details`, and LND counts only that as the destination reached. Classic loop-in was not affected (its probe invoice carries a payment secret).
 - **Fix:** the validator no longer requires `payment_data` at a non-blinded final hop. `FinalHopProcessor` already refuses a payment without it (keysend aside) with `incorrect_or_unknown_payment_details` ("The final payload has no payment_data."). Trampoline outer payloads and blinded hops keep their own rules. Tests updated: `HopPayloadValidatorTests`, `HopPayloadValidatorKeysendTests`, `HopPayloadValidatorTrampolineTests`, `IncomingOnionProcessorTests`; `FinalHopProcessorTests.Given_NoPaymentData_*` already pins the 0x400F answer.
 - **Blocks/Blocked-by:** none
+
+
+### NL-1237 Lightning Node Connect transport for NLightning's LND-compatible gRPC server
+- **Status:** fixed (implementation commit; SHA recorded in follow-up)
+- **Severity:** medium
+- **Kind:** feature
+- **Location:** `tools/lnc`, `docs/agents/LNC_PLAN.md`, `test/NLightning.Integration.Tests/Cluster/Lnc`
+- **Evidence:** `wip/lnc` from latest `wip/fafo` (`dff5931f`). The LND-compatible gRPC surface exists, but no LNC PAKE/Noise mailbox endpoint or persistent pairing sessions exist. Upstream LNC exposes a generic gRPC transport usable with a scoped-macaroon proxy. Stock Lightning Terminal additionally requires RPC middleware and custom macaroon caveats that our server does not implement.
+- **Fix:** a separate Go sidecar reusing pinned upstream LNC; scoped, expiring and revocable sessions; TLS-authenticated backend; transparent unary/stream forwarding. Prove with upstream LNC client against our actual node on regtest; document the operator's separate Signet trial.
+- **Blocks/Blocked-by:** no signer prerequisite; full Lightning Terminal product compatibility is separate scope
+- **Validation (2026-10-06):** Final Go suite: 19 tests under the race detector, plus vet, module verification and formatting. Actual upstream default LNC client against NLightning and LND on regtest: `lnc-proof3`, 1/1 green in 130 s; gRPC and WebSocket pairing/GetInfo, read-only write denial, incoming invoice subscription/settlement, outgoing `SendPaymentV2`, persistent reconnect after bridge restart, active HTLC stream cutoff on revocation, revoked/expired reconnect refusal, unaffected control session. All run namespaces removed. Full net11 Release solution and final net10/net11 integration fixture builds: zero warnings/errors; C# format and 40-project solution configuration checks pass. No schema or live-node configuration change. Operator Signet trial remains separate.

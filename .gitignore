@@ -519,3 +519,8 @@ fee_estimation_cache.bin
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# Local LNC bridge binaries and session credentials
+/tools/lnc/nltg-lnc
+/tools/lnc/nltg-lnc-proof
+lnc-state/
