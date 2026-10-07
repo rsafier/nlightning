@@ -67,6 +67,13 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
     private readonly List<WalletAddressModel> _walletAddresses = [];
     private readonly List<UtxoModel> _unspent = [];
     private readonly Mock<ISecureKeyManager> _keys = new();
+    private readonly Mock<ILightningSigner> _signer = new();
+    private readonly Mock<IChannelMemoryRepository> _channels = new();
+    private readonly Mock<IAnchorReserveService> _reserve = new();
+    private readonly Mock<Application.Onchain.Anchors.IAnchorCpfpService> _anchors = new();
+    private readonly Mock<Application.Onchain.Interfaces.IOnchainResolutionExecutor> _executor = new();
+    private readonly Application.Onchain.Fees.OperatorFeeBumps _bumps = new();
+    private readonly List<ImportedTapscript> _imported = [];
 
     private ServiceProvider? _services;
     private LndGrpcHost? _host;
@@ -607,8 +614,12 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
         services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
         services.AddSingleton(Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }));
-        services.AddSingleton(new Mock<ILightningSigner>().Object);
-        services.AddSingleton(new Mock<IChannelMemoryRepository>().Object);
+        services.AddSingleton(_signer.Object);
+        services.AddSingleton(_channels.Object);
+        services.AddSingleton(_reserve.Object);
+        services.AddSingleton(_anchors.Object);
+        services.AddSingleton(_executor.Object);
+        services.AddSingleton(_bumps);
         services.AddSingleton(new Mock<IPeerManager>().Object);
         services.AddSingleton(new Mock<IInvoiceService>().Object);
         services.AddSingleton<IChannelOpenDecisionGate>(_gate);
@@ -651,16 +662,41 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
                       .ReturnsAsync((TxId id) => _broadcastRows.FirstOrDefault(r => r.TransactionId == id));
             broadcasts.Setup(x => x.GetByChannelIdAsync(It.IsAny<ChannelId>()))
                       .ReturnsAsync((ChannelId id) => _broadcastRows.Where(r => r.ChannelId == id).ToList());
+            broadcasts.Setup(x => x.SetLabelAsync(It.IsAny<TxId>(), It.IsAny<string>()))
+                      .ReturnsAsync((TxId id, string label) =>
+                      {
+                          if (_broadcastRows.FirstOrDefault(r => r.TransactionId == id) is not { } row)
+                              return false;
+                          row.Label = label;
+                          return true;
+                      });
+            broadcasts.Setup(x => x.MarkAbandonedAsync(It.IsAny<TxId>()))
+                      .ReturnsAsync((TxId id) =>
+                      {
+                          if (_broadcastRows.FirstOrDefault(r => r.TransactionId == id) is not { } row)
+                              return false;
+                          row.MarkAbandoned();
+                          return true;
+                      });
             var resolutions = new Mock<IOnchainResolutionDbRepository>();
             resolutions.Setup(x => x.GetClosesAsync()).ReturnsAsync(() => _closes.ToList());
             resolutions.Setup(x => x.GetOutputsByChannelIdAsync(It.IsAny<ChannelId>()))
                        .ReturnsAsync((ChannelId id) => _outputs.Where(o => o.ChannelId == id).ToList());
+            resolutions.Setup(x => x.GetOutputAsync(It.IsAny<TxId>(), It.IsAny<uint>()))
+                       .ReturnsAsync((TxId id, uint index) => _outputs.FirstOrDefault(o => o.TransactionId == id
+                                                                                       && o.OutputIndex == index));
             var addresses = new Mock<IWalletAddressesDbRepository>();
             addresses.Setup(x => x.GetAllAddresses()).Returns(() => _walletAddresses.ToList());
             var utxoRows = new Mock<IUtxoDbRepository>();
             utxoRows.Setup(x => x.GetUnspentAsync(It.IsAny<bool>()))
                     .ReturnsAsync(() => _unspent.ToList());
+            var imports = new Mock<IImportedTapscriptDbRepository>();
+            imports.Setup(x => x.ListAsync()).ReturnsAsync(() => _imported.ToList());
+            imports.Setup(x => x.GetAsync(It.IsAny<byte[]>()))
+                   .ReturnsAsync((byte[] script) => _imported.FirstOrDefault(i => i.Script.SequenceEqual(script)));
+            imports.Setup(x => x.Add(It.IsAny<ImportedTapscript>())).Callback<ImportedTapscript>(_imported.Add);
             var unitOfWork = new Mock<IUnitOfWork>();
+            unitOfWork.SetupGet(x => x.ImportedTapscriptDbRepository).Returns(imports.Object);
             unitOfWork.SetupGet(x => x.WalletAddressesDbRepository).Returns(addresses.Object);
             unitOfWork.SetupGet(x => x.UtxoDbRepository).Returns(utxoRows.Object);
             unitOfWork.SetupGet(x => x.OnchainResolutionDbRepository).Returns(resolutions.Object);
@@ -672,6 +708,7 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
         services.AddSingleton<LightningService>();
         services.AddSingleton<RouterService>();
         services.AddSingleton<WalletKitService>();
+        services.AddSingleton<Infrastructure.Bitcoin.Wallet.Imports.ImportedTapscriptTracker>();
         services.AddSingleton(_keys.Object);
         return services.BuildServiceProvider();
     }
