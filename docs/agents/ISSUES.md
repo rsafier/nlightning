@@ -192,12 +192,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 8 | 99 | 107 |
-| in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 70 | 246 | 516 | 847 |
+| open | 0 | 0 | 8 | 101 | 109 |
+| in-progress | 0 | 0 | 4 | 0 | 4 |
+| fixed | 15 | 70 | 249 | 517 | 851 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **70** | **270** | **638** | **993** |
+| **Total** | **15** | **70** | **270** | **640** | **995** |
 
 ### Epics
 
@@ -2428,7 +2428,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-877 [EPIC] Simple taproot channels (`option_simple_taproot`, bits 80/81) not implemented
-- **Status:** in-progress (wip/fafo; T0-T6 done, landed in cd5c2c5d; left: owner decision D-T2, T7 gossip NL-878, follow-ups)
+- **Status:** in-progress (implemented; T0-T7 landed, D-T2 decided; open only as the experimental-to-default promotion decision)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** none yet; plan `docs/agents/TAPROOT_CHANNELS_PLAN.md` (T0-T6)
@@ -2443,6 +2443,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 ## BOLT 4: Onion routing
 - **Audit 2026-10-04:** waves t01-t03 landed (T0-T6, LND and Eclair interop incl. force close and penalty, live on Mutinynet 2026-10-04). Left: D-T2 (advertise Optional; `OptionSimpleTaproot` stays in `FeatureOptions.ExperimentalFeatures`), T7 taproot gossip (NL-878, waits for BOLTs #1059), follow-ups NL-1050, NL-1059, NL-1061, NL-1062, NL-958, NL-911, NL-914, NL-915, NL-967, NL-968. Location/Evidence above describe the start of the epic.
+- **Update (2026-10-07, ledger review):** D-T2 is decided: our own opens stay anchors unless asked. T7 (taproot gossip, NL-878) has landed. All the work is in. `option_simple_taproot` stays in `FeatureOptions.ExperimentalFeatures` by owner decision, and the epic stays open only for the promotion to default. Interop follow-up: NL-1275.
 
 ### NL-070 [EPIC] Error onions: failure messages, create / wrap / decrypt (ONION M3)
 - **Status:** fixed (ded60a1, ce3cfeb, 9b2e294, 37df603, a657719, 3c1d68a, a42c33b)
@@ -3029,7 +3030,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT12_PLAN.md` OM0-T1
 
 ### NL-875 [EPIC] Trampoline routing (BOLTs PR #836): pay through a trampoline, relay as one, receive as the final trampoline
-- **Status:** in-progress (`wip/fafo`)
+- **Status:** in-progress (implemented, experimental; open: NL-896)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** new Domain onion TLVs 14/20/21/22, failure codes 0x2019/0x201A/0x401B, `Feature.OptionTrampolineRouting` (56/57); `Infrastructure.Bitcoin/Onion/Trampoline/`; `Application/Payments/Trampoline/`, `IncomingOnionProcessor`, `HtlcSwitch`, `PaymentService`; tables `TrampolineRelays`, `TrampolineRelayParts`, `PaymentTrampolineHops` (migration `AddTrampolineRelays`); `HtlcOriginKind.Trampoline = 3`
@@ -3038,6 +3039,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Plan `docs/agents/TRAMPOLINE_PLAN.md`: TR0 contracts, TR1 trampoline onion crypto with the three spec vector files byte-exact, TR2 target, TR3 relay engine (payment-backed, origin 3), TR4 client (`Node:Payments:Trampoline`, `--trampoline`), TR5 in-process multi-node proofs (no Docker, owner decision 2026-10-03). Spec format only (D-TR1); experimental until TR5 and an owner decision. Follow-ups: interop proofs against Eclair (after #2819) and LDK.
 - **Blocks/Blocked-by:** Related NL-080 (onion messages), NL-447 (BOLT 12), NL-459 (keysend pattern)
 - **Plan ref:** TRAMPOLINE_PLAN TR0-TR5
+- **Update (2026-10-07, ledger review):** payer, relay and target are implemented behind the experimental `OptionTrampolineRouting`. Follow-ups NL-895, NL-897, NL-898 and NL-899 are fixed. The only open item is NL-896 (interop proofs against Eclair and LDK). The epic stays open for those and for the promotion out of the experimental set.
 
 ### NL-895 Blinded hops as trampoline hops (BOLT 12 recipient with bit 57) do not relay
 - **Status:** fixed (3dcd390d; product `053bb672`, payer vector check `5e9042d8`)
@@ -4335,7 +4337,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G3-T3
 
 ### NL-878 Taproot gossip (`channel_announcement_2` and related; public taproot channels) not implemented
-- **Status:** in-progress (branch `wip/taproot-t7`, plan `TAPROOT_CHANNELS_PLAN.md` T7)
+- **Status:** fixed (e4984d15, 9f9db672; experimental)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/`, `src/NLightning.Domain/Gossip/` (v1 messages only)
@@ -4350,6 +4352,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Update (T7 stages 3 and 5, 2026-10-05):** lane G (merged `39dcf57f`) built the graph side: versions on graph channels/policies/nodes (migration `AddGossipV2`), `GossipIngress.V2.cs` (draft receiver rules, `GossipV2SignatureVerifier` channel proof against the funding output), inbound fees and block-height staleness in pathfinding, v2 query sync (`block_height_range`, v2 range replies only to v2 requesters, block-height timestamps and checksums) and v2 relay to v2 peers (follow-ups NL-1140, NL-1141; NL-1142 and NL-1143 fixed in `d9deb009`). Goal proof `Application.Tests/Gossip/TaprootGossipProofTests` (in process): Alice and Bob announce their public taproot channel through their channel managers, Carol learns it from Bob by gossip queries (real ingress checking the MuSig2 proof against the P2TR output) and pays Alice's hint-less invoice over Carol → Bob → Alice. Plan `TAPROOT_CHANNELS_PLAN.md` T7 and "Wave t7 record" (D-T5, D-T6). Stays in progress: no interop proof (LND master has the v2 wire types but no announcement flow), the spec is a draft. Gates: Release and AOT builds 0 warnings, format clean, full non-Docker suite 16,447 passed (one NL-729 flake, green alone), cluster `--matrix taproot,gossip,day0` green (mx-20261005114312: 30/30, 6/6, 6/6).
 
 - **Update (regtest e2e, 2026-10-05, `wip/t7-regtest`):** `Integration.Tests/Docker/Taproot/TaprootPublicChannelFlowTests` (cluster suite `taproot`, three NLightning daemons on the taproot network's regtest bitcoind): (1) `openchannel --public --channel-type taproot` (dual-funded by NL-551) announced at depth 6 over `announcement_signatures_2`, both graphs v2-only with both `channel_update_2`s and `node_announcement_2`s, the MuSig2 proof valid against the P2TR output the real `FundingOutputLookup` reads, no 256/259 on the wire; (2) a third node synced by queries (its ingress `Verified`) pays a hint-free invoice over carol → bob → alice; (4) simple close, every graph marks the spend and forgets the channel 72 blocks later; (3) the peer stopped between depth 3 and 6: both `channel_reestablish`es carry TLV 7 and the announcement completes; a node without `option_gossip_v2` neither opens nor is opened a public taproot channel. Found NL-1144 (fixed). NL-1080 (the Mutinynet trial) stays open.
+- **Closed (2026-10-07, ledger review):** T7 is merged into `wip/fafo`; `wip/taproot-t7` is no longer the working branch. Taproot gossip v2 is implemented behind the experimental `option_gossip_v2` gate and proven in-process and in the regtest e2e between three NLightning nodes (`TaprootPublicChannelFlowTests`). The interop proof against LND waits for LND to merge gossip v2 and is tracked as NL-1275.
 
 ### NL-1131 Splicing a public simple taproot channel is refused: its re-announcement is not implemented
 - **Status:** fixed (8be037ac, merged with its proofs in a793bc8e; relay fix NL-1145 0b8de5c8)
@@ -8928,7 +8931,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 ## Cashu (ecash)
 
 ### NL-990 Cashu ecash integration (epic)
-- **Status:** in-progress (C0-C2 done; open: NL-994 C3, NL-995 C4, NL-1010, NL-1011)
+- **Status:** in-progress (C0-C2 and C4 (NL-995, fixed aa07ad78) done; open: NL-994 C3, NL-1010, NL-1011)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `docs/agents/CASHU_PLAN.md`; branch `wip/cashu`
@@ -9328,7 +9331,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Update (2026-10-07, waves 1 and 2):** Invalid or malformed v2 channel proofs at promotion score the original announcement sender by node id through the existing misbehaviour tracker. The peer supplying the promoting update is not blamed; threshold bans remain effective even without the original connection. Regression coverage checks attribution and bans.
 
 ### NL-1082 [EPIC] payroute: full IPC control over the payment path (single routes and MPP shard sets)
-- **Status:** in-progress (`wip/fafo`; phases A and B done (NL-1083), phase C deferred)
+- **Status:** fixed (1199cad8, 5772c2af; phase C split out as NL-1276)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** plan `docs/agents/PAYROUTE_PLAN.md`
@@ -9336,6 +9339,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** Phase A single route + Phase B shard sets are NL-1083; Phase C (attach replacement shards to an in-flight manual payment) deferred, plan §6.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** `docs/agents/PAYROUTE_PLAN.md`
+- **Closed (2026-10-07, ledger review):** phases A and B (NL-1083) are done. Phase C (attaching replacement shards to an in-flight manual payment, plan §6) was "deferred" with no entry tracking it; it is now NL-1276.
 
 ### NL-1083 payroute implementation: PayRouteAsync, the manual round, IPC command 48, the CLI verb
 - **Status:** fixed (1199cad8, 5772c2af)
@@ -9519,7 +9523,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1151
 
 ### NL-1160 LND gRPC compatibility: serve a subset of LND's gRPC API (epic)
-- **Status:** in-progress (wave 0 plan done; wave 1 NL-1161..NL-1163, wave 2 NL-1164..NL-1167, NL-1169 and wave 3 NL-1168 (NL-1180, NL-1183..NL-1185) fixed; open: follow-ups NL-1170..NL-1172, NL-1181, NL-1182, NL-1186, NL-1187; NL-1205 fixed)
+- **Status:** in-progress (waves 0-3 done; open follow-ups: NL-1181, NL-1182, NL-1186, NL-1187, NL-1253)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `docs/agents/LND_GRPC_PLAN.md`; branch `wip/lnd-grpc-compat`
@@ -9527,6 +9531,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** Waves of `LND_GRPC_PLAN.md`: wave 1 the read/invoice/message surface with real LND-format macaroons and TLS (NL-1161..NL-1163), wave 2 pay/channels/hold invoices and the streams (NL-1164), wave 3 ChannelAcceptor, walletrpc and the HTLC interceptor (NL-1168).
 - **Blocks/Blocked-by:** NL-1161..NL-1169, NL-1180..NL-1187
 - **Plan ref:** `docs/agents/LND_GRPC_PLAN.md`
+- **Update (2026-10-07, ledger review):** NL-1170..NL-1172 are fixed (aa4601ee). Since then the following landed:
+  - passive subscription feeds NL-1230..NL-1232;
+  - interceptor reliability NL-1234; WalletBalance confirmations NL-1236;
+  - the LNC bridge (NL-1237), plus Lightning Terminal fixes NL-1238..NL-1241;
+  - the bos/RTL gaps NL-1242..NL-1249, NL-1251 and NL-1252;
+  - the REST gateway NL-1250.
+
+  Proven against loopd (signet), Lightning Terminal, bos 24.2.2 and RTL 0.15.13. Still open: NL-1181 (ChannelAcceptor values applied), NL-1182 (interceptor gaps), NL-1186 (walletrpc parts), NL-1187 (GetTransactions history), NL-1253 (canonical/imported overlap).
 
 ### NL-1161 LND gRPC wave 1: lnrpc.Lightning read/invoice/message surface with TLS and real macaroons
 - **Status:** fixed (34821ac0)
@@ -9740,14 +9752,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1190 Loop gRPC compatibility L0–L4
-- **Status:** in-progress
+- **Status:** fixed (1bd0f7f0)
 - **Severity:** medium
 - **Kind:** epic
 - **Location:** `docs/agents/LOOP_GRPC_PLAN.md`
 - **Evidence:** Implemented from PR #14 at 525347f6 and continued from wip/fafo d074fe01. The complete owned regtest recovery matrix passed in lnd-p2-proof6 (1/1, 756.866 seconds), including server/signer failure refund, retained-state restarts, static cooperative withdrawal, deposit/spend reorgs and CSV sweep. LND client gaps NL-1170..NL-1172 are fixed. The one-node Mutinynet static Loop In trial is prepared but remains pending node access, a confirmed Mutinynet-compatible Loop server and explicit owner approval. No FAFO node was changed or funded.
 - **Fix sketch:** Run the approved one-node Mutinynet trial and record its terminal state/on-chain evidence; keep the signer opt-in explicit.
 - **Blocks/Blocked-by:** NL-1196
-
+- **Closed (2026-10-07, ledger review):** the pending "Mutinynet trial" cannot run, because Mutinynet has no Loop server. The public signet trial against Lightning Labs' signet Loop server replaced it (`docs/agents/LOOP_SIGNET_TRIAL.md`, merge `1bd0f7f0`). Unmodified loopd v0.35.0 on NLightning's LND gRPC completed Loop Out (normal and fast), classic Loop In, static Loop In and the cooperative static withdrawal. It found and fixed NL-1233. The signer stays opt-in (`LndGrpc:EnableSigner`).
 
 ### NL-1191 Loop startup RPCs and invoice preimages
 - **Status:** fixed
@@ -9800,14 +9812,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1196 Complete Loop interoperability and failure-recovery proof matrix
-- **Status:** in-progress
+- **Status:** fixed (1bd0f7f0)
 - **Severity:** medium
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Cluster/Live/LoopClusterTests.cs`
 - **Evidence:** Owned pinned Loop PR 1222/Aperture 0.4.0/LND 0.21.4/Core 29 run lnd-p2-proof6 passed 1/1 in 756.866 seconds: real keysend and TrackPayments starts, classic out/in resumed across both restarts, server loss plus refused refund signature recovered through confirmed timeout refund and terminal restart, confirmed static deposits survived both/loopd-only restarts, real static in and cooperative withdrawal, disconnected/reconfirmed withdrawal spend and deposit UTXO/history, 4,321-block CSV expiry sweep, historical notifier and six raw/four mixed MuSig2 parity cases. A staged test-owned server extension supplies cooperative withdrawal; the upstream client is unchanged. Logs: TestResults/cluster/lnd-p2-proof6/lnd-p2-proof6-1/output.log.gz. The static restart uses the confirmed-deposit checkpoint because upstream pre-signing recovery deliberately aborts instead of reusing nonces. The regtest matrix is complete; the requested Mutinynet canary is prepared, unrun and gated on access/server confirmation/owner approval.
 - **Fix sketch:** Execute the authorized one-node Mutinynet trial from LOOP_MUTINYNET_TRIAL.md; never substitute regtest results for its proof.
 - **Blocks/Blocked-by:** NL-1190
-
+- **Closed (2026-10-07, ledger review):** the regtest matrix (lnd-p2-proof6) plus the live public signet run against Lightning Labs' server (`LOOP_SIGNET_TRIAL.md`, `1bd0f7f0`) complete the proof. The Mutinynet canary is moot: there is no Mutinynet Loop server. The deposit's 1,500-block timeout sweep is proven on regtest only.
 
 ### NL-1197 Imported watch history rescans blocks per RPC
 - **Status:** fixed (8fbb2383; schema 04ff2a4c)
@@ -10554,3 +10566,21 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix:** Stage deletion of imported lots and reliefs in the same unit of work as their replacements. A failed save preserves the original acquisition amounts, costs and reliefs. The preceding financial reset remains a separately committed, recoverable reset; the original imports survive it and replay can restore the derived book.
 - **Validation:** `AccountingFinancialRollbackTests.Given_ImportedBasis_When_AReplacementSaveFails_Then_TheOriginalBasisAndReliefsSurvive` failed before the fix; retry replaces basis once. Accounting review verification recorded in ACCOUNTING_PLAN.
 - **Blocks/Blocked-by:** Related NL-602, NL-657
+
+### NL-1275 Taproot gossip v2 interop proof against LND
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Taproot/` (new cluster proof); taproot gossip in `src/NLightning.Application/Gossip/`
+- **Evidence:** split out of NL-878 at its close (2026-10-07). Taproot gossip v2 (BOLTs PR #1059 draft head `4eef3dfa`) is proven only between NLightning nodes. LND has the v2 wire types only (lnd #11164); its gossip v2 is not merged, so no interop run is possible yet.
+- **Fix sketch:** once an LND release speaks gossip v2, add a cluster proof (suite `taproot`): a public taproot channel between NLightning and LND announced with `channel_announcement_2`, both graphs holding it, and payments over it without hints. Recheck the BOLTs #1059 head first.
+- **Blocks/Blocked-by:** blocked by LND gossip v2 and BOLTs #1059; related NL-877, NL-878
+
+### NL-1276 payroute phase C: attach replacement shards to an in-flight manual payment
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.PayRoute.cs`; plan `docs/agents/PAYROUTE_PLAN.md` §6
+- **Evidence:** split out of the NL-1082 epic at its close (2026-10-07). payroute offers all shards in one call, so a failed shard cannot be replaced while the rest are held by the payee. Phase C was designed but deferred (plan §6, "Phase C — deferred (design only)").
+- **Fix sketch:** implement plan §6: a follow-up IPC call (and the LND `SendToRouteV2` path with the same payment hash, which NL-1242 refuses today) attaches new shards to the pending manual payment inside the payee's `mpp_timeout` window.
+- **Blocks/Blocked-by:** part of NL-1082 (closed); related NL-1242
