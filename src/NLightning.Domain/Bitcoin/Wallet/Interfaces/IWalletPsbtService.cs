@@ -38,14 +38,29 @@ public interface IWalletPsbtService
     /// <exception cref="Exceptions.WalletPsbtException">The request cannot be funded.</exception>
     Task<PsbtFundResult> FundPsbtAsync(PsbtFundRequest request, CancellationToken cancellationToken = default);
 
-    /// <summary>Signs every input of <paramref name="psbt"/>, each of which must be a leased wallet output.</summary>
-    /// <exception cref="Exceptions.WalletPsbtException">An input is not a leased wallet output, or the PSBT does not
-    /// parse.</exception>
+    /// <summary>
+    /// Signs and finalizes the wallet inputs of <paramref name="psbt"/>, each of which must be a leased wallet output; every
+    /// other input must already be finalized and carry its UTXO (LND: we are the last signer), and the whole transaction
+    /// must then verify.
+    /// </summary>
+    /// <exception cref="Exceptions.WalletPsbtException">A wallet input is not leased, another input is not finalized or
+    /// has no UTXO, or the PSBT does not parse.</exception>
     Task<PsbtFinalizeResult> FinalizePsbtAsync(byte[] psbt, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Publishes a signed transaction. One that spends wallet outputs must spend leased ones only (it is then stored
-    /// and rebroadcast after every block until it confirms, like <c>withdraw</c>); one that spends none is sent once.
+    /// Signs the wallet inputs of <paramref name="psbt"/> without finalizing anything (LND's <c>SignPsbt</c>, NL-1186):
+    /// each wallet input must be a leased wallet output, other inputs are left as they are; an input already finalized
+    /// is skipped. A PSBT without a wallet input comes back unchanged with no signed input.
+    /// </summary>
+    /// <exception cref="Exceptions.WalletPsbtException">A wallet input is not leased, a P2TR wallet input lacks the
+    /// other spent outputs, or the PSBT does not parse.</exception>
+    Task<PsbtSignResult> SignPsbtAsync(byte[] psbt, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Publishes a signed transaction. Its wallet inputs must be leased. One that spends only wallet outputs is stored
+    /// and rebroadcast after every block until it confirms, like <c>withdraw</c>; one that also spends others' outputs
+    /// (a collaborative transaction, NL-1186) is stored and rebroadcast too, but booked only by its wallet movements;
+    /// one that spends no wallet output is sent once.
     /// </summary>
     /// <returns>Whether bitcoind accepted it now.</returns>
     Task<bool> PublishAsync(byte[] rawTransaction, string? label, CancellationToken cancellationToken = default);

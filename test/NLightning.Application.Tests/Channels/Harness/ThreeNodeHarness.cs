@@ -877,6 +877,7 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
     public IPeerDbRepository PeerDbRepository => inner.PeerDbRepository;
     public Domain.Crypto.KeyRing.IKeyRingDbRepository KeyRingDbRepository => inner.KeyRingDbRepository;
     public Domain.Bitcoin.Wallet.Interfaces.IImportedTapscriptDbRepository ImportedTapscriptDbRepository => inner.ImportedTapscriptDbRepository;
+    public Domain.Bitcoin.Wallet.Interfaces.IWalletTransactionDbRepository WalletTransactionDbRepository => inner.WalletTransactionDbRepository;
     public IPeerStorageDbRepository PeerStorageDbRepository => inner.PeerStorageDbRepository;
     public IInvoiceDbRepository InvoiceDbRepository => new HookedInvoiceRepository(inner.InvoiceDbRepository, node);
     public IPaymentDbRepository PaymentDbRepository => inner.PaymentDbRepository;

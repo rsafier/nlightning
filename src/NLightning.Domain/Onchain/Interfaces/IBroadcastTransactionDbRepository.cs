@@ -40,6 +40,12 @@ public interface IBroadcastTransactionDbRepository
     Task<bool> MarkPendingAsync(TxId transactionId);
 
     /// <summary>
+    /// Stages the operator's label of a broadcast (LND's walletrpc <c>LabelTransaction</c>, NL-1186), whatever its state.
+    /// Returns false when there is no row. The default stores nothing (test doubles).
+    /// </summary>
+    Task<bool> SetLabelAsync(TxId transactionId, string label) => Task.FromResult(false);
+
+    /// <summary>
     /// Every broadcast given up (<see cref="Enums.BroadcastState.Abandoned"/>), oldest first: by the chain monitor after
     /// permanent refusals (NL-294), or by the on-chain resolution after a conflicting spend. Read by
     /// <c>pendingsweeps</c>. The default reads none (test doubles).

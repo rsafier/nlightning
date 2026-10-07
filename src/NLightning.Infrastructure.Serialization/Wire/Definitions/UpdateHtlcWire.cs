@@ -8,6 +8,7 @@ using NLightning.Domain.Protocol.Tlv;
 
 namespace NLightning.Infrastructure.Serialization.Wire.Definitions;
 
+using Domain.Payments.Keysend;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 
@@ -76,10 +77,14 @@ internal static class UpdateAddHtlcWire
         var cltvExpiry = reader.U32();
         var onion = reader.BytesArray(OnionConstants.PacketLength);
 
+        // NL-1182: the custom records (types of 65536 or more, LND's wire custom records) are kept; an unknown even one
+        // already failed the strict extension read (BOLT 1)
         return tlvs => new UpdateAddHtlcMessage(
             new UpdateAddHtlcPayload(LightningMoney.MilliSatoshis(amountMsat), channelId, cltvExpiry, id, paymentHash,
                                      onion),
-            tlvs.Get<BlindedPathTlv>(TlvConstants.BlindedPath));
+            tlvs.Get<BlindedPathTlv>(TlvConstants.BlindedPath),
+            tlvs.RawRecords.Where(r => r.Type.Value >= CustomRecordCodec.MinType)
+                .Select(r => new CustomRecord(r.Type.Value, r.Value)));
     }
 }
 

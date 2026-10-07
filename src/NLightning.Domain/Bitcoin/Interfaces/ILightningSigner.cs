@@ -136,6 +136,20 @@ public interface ILightningSigner
         throw new NotSupportedException("LND message signing (NL-1162)");
 
     /// <summary>
+    /// Signs <paramref name="message"/> with the key of the wallet address <paramref name="address"/> the way LND's
+    /// walletrpc <c>SignMessageWithAddr</c> does (Bitcoin Core's message format, NL-1186): the digest is SHA256d of
+    /// <c>varstr("Bitcoin Signed Message:\n") || varstr(message)</c>, the signature a 65-byte recoverable compact one
+    /// (header <c>31 + recovery id</c>, then <c>r || s</c>); a P2TR address signs with its untweaked internal key.
+    /// </summary>
+    /// <remarks>The prefix is added here, inside the signer, so a wallet key never signs a raw hash (a transaction's
+    /// sighash) through this method. The key derived from the address's index must give the address itself, else
+    /// nothing is signed.</remarks>
+    /// <exception cref="Exceptions.SignerException">The address is not a P2WPKH or P2TR wallet address, or its derived
+    /// key does not match it.</exception>
+    byte[] SignWalletMessage(Bitcoin.Wallet.Models.WalletAddressModel address, byte[] message) =>
+        throw new NotSupportedException("wallet message signing (NL-1186)");
+
+    /// <summary>
     /// Generate the per-commitment point of one of our commitment transactions.
     /// </summary>
     /// <param name="channelKeyIndex">The channel key index.</param>

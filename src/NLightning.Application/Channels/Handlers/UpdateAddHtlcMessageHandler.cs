@@ -7,6 +7,7 @@ using Domain.Channels.Enums;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Options;
+using Domain.Payments.Keysend;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Interfaces;
@@ -52,7 +53,8 @@ public class UpdateAddHtlcMessageHandler : IChannelMessageHandler<UpdateAddHtlcM
         {
             result = channel.Commitments!.ReceiveAdd(payload.Id, payload.Amount.MilliSatoshi,
                                                      new Hash(payload.PaymentHash.ToArray()), payload.CltvExpiry,
-                                                     payload.OnionRoutingPacket, message.BlindedPathTlv?.PathKey);
+                                                     payload.OnionRoutingPacket, message.BlindedPathTlv?.PathKey,
+                                                     WireCustomRecordCodec.Encode(message.CustomRecords));
         }
         catch (CommitmentViolationException e)
         {

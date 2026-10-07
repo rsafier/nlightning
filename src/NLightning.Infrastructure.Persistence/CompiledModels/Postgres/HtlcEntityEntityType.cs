@@ -33,7 +33,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 "NLightning.Infrastructure.Persistence.Entities.Channel.HtlcEntity",
                 typeof(HtlcEntity),
                 baseEntityType,
-                propertyCount: 23,
+                propertyCount: 24,
                 foreignKeyCount: 1,
                 unnamedIndexCount: 2,
                 keyCount: 1);
@@ -1247,6 +1247,54 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             state.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
             state.AddAnnotation("Relational:ColumnName", "state");
 
+            var wireCustomRecords = runtimeEntityType.AddProperty(
+                "WireCustomRecords",
+                typeof(byte[]),
+                propertyInfo: typeof(HtlcEntity).GetProperty("WireCustomRecords", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(HtlcEntity).GetField("<WireCustomRecords>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            wireCustomRecords.SetGetter(
+                byte[] (HtlcEntity instance) => HtlcEntityUnsafeAccessors.WireCustomRecords(instance),
+                bool (HtlcEntity instance) => HtlcEntityUnsafeAccessors.WireCustomRecords(instance) == null);
+            wireCustomRecords.SetSetter(
+                HtlcEntity (HtlcEntity instance, byte[] value) =>
+                {
+                    HtlcEntityUnsafeAccessors.WireCustomRecords(instance) = value;
+                    return instance;
+                });
+            wireCustomRecords.SetMaterializationSetter(
+                HtlcEntity (HtlcEntity instance, byte[] value) =>
+                {
+                    HtlcEntityUnsafeAccessors.WireCustomRecords(instance) = value;
+                    return instance;
+                });
+            wireCustomRecords.SetAccessors(
+                byte[] (IInternalEntry entry) => HtlcEntityUnsafeAccessors.WireCustomRecords(((HtlcEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => HtlcEntityUnsafeAccessors.WireCustomRecords(((HtlcEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(wireCustomRecords, 23),
+                byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(wireCustomRecords));
+            wireCustomRecords.SetPropertyIndexes(
+                index: 23,
+                originalValueIndex: 23,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            wireCustomRecords.TypeMapping = NpgsqlByteArrayTypeMapping.Default.Clone(
+                comparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => ((object)v).GetHashCode(),
+                    byte[] (byte[] v) => v),
+                keyComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()),
+                providerValueComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()));
+            wireCustomRecords.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
+            wireCustomRecords.AddAnnotation("Relational:ColumnName", "wire_custom_records");
+
             var key = runtimeEntityType.AddKey(
                 new[] { channelId, htlcId, direction });
             runtimeEntityType.SetPrimaryKey(key);
@@ -1339,6 +1387,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             var removalKind = runtimeEntityType.FindProperty("RemovalKind");
             var sha256OfOnion = runtimeEntityType.FindProperty("Sha256OfOnion");
             var state = runtimeEntityType.FindProperty("State");
+            var wireCustomRecords = runtimeEntityType.FindProperty("WireCustomRecords");
             var key = runtimeEntityType.FindKey(new[] { channelId, htlcId, direction });
             key.SetPrincipalKeyValueFactory(KeyValueFactoryFactory.CreateCompositeFactory(key));
             key.SetIdentityMapFactory(IdentityMapFactoryFactory.CreateFactory<IReadOnlyList<object>>(key));
@@ -1346,7 +1395,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType1 = ((HtlcEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<ChannelId, ulong, byte, DateTimeOffset?, ulong, byte[], uint, byte[], ushort?, byte[], byte[], byte[], byte[], ChannelId?, ulong?, byte?, byte[], byte[], byte[], byte[], byte?, byte[], byte>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<ulong>)(((IProperty)htlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(htlcId)), ((ValueComparer<byte>)(((IProperty)direction).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(direction)), (source.GetCurrentValue<DateTimeOffset?>(addedAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)addedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(addedAt))), ((ValueComparer<ulong>)(((IProperty)amountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(amountMsat)), (source.GetCurrentValue<byte[]>(attributionData) == null ? null : ((ValueComparer<byte[]>)(((IProperty)attributionData).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(attributionData))), ((ValueComparer<uint>)(((IProperty)cltvExpiry).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(cltvExpiry)), (source.GetCurrentValue<byte[]>(failReason) == null ? null : ((ValueComparer<byte[]>)(((IProperty)failReason).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(failReason))), (source.GetCurrentValue<ushort?>(failureCode) == null ? null : ((ValueComparer<ushort?>)(((IProperty)failureCode).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort?>(failureCode))), (source.GetCurrentValue<byte[]>(fulfillmentPayload) == null ? null : ((ValueComparer<byte[]>)(((IProperty)fulfillmentPayload).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(fulfillmentPayload))), (source.GetCurrentValue<byte[]>(knownPreimage) == null ? null : ((ValueComparer<byte[]>)(((IProperty)knownPreimage).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(knownPreimage))), (source.GetCurrentValue<byte[]>(onionRoutingPacket) == null ? null : ((ValueComparer<byte[]>)(((IProperty)onionRoutingPacket).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(onionRoutingPacket))), (source.GetCurrentValue<byte[]>(onionSharedSecret) == null ? null : ((ValueComparer<byte[]>)(((IProperty)onionSharedSecret).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(onionSharedSecret))), (source.GetCurrentValue<ChannelId?>(originIncomingChannelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)originIncomingChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(originIncomingChannelId))), (source.GetCurrentValue<ulong?>(originIncomingHtlcId) == null ? null : ((ValueComparer<ulong?>)(((IProperty)originIncomingHtlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(originIncomingHtlcId))), (source.GetCurrentValue<byte?>(originKind) == null ? null : ((ValueComparer<byte?>)(((IProperty)originKind).GetValueComparer())).Snapshot(source.GetCurrentValue<byte?>(originKind))), (source.GetCurrentValue<byte[]>(originPaymentHash) == null ? null : ((ValueComparer<byte[]>)(((IProperty)originPaymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(originPaymentHash))), (source.GetCurrentValue<byte[]>(pathKey) == null ? null : ((ValueComparer<byte[]>)(((IProperty)pathKey).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(pathKey))), (source.GetCurrentValue<byte[]>(paymentHash) == null ? null : ((ValueComparer<byte[]>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(paymentHash))), (source.GetCurrentValue<byte[]>(paymentPreimage) == null ? null : ((ValueComparer<byte[]>)(((IProperty)paymentPreimage).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(paymentPreimage))), (source.GetCurrentValue<byte?>(removalKind) == null ? null : ((ValueComparer<byte?>)(((IProperty)removalKind).GetValueComparer())).Snapshot(source.GetCurrentValue<byte?>(removalKind))), (source.GetCurrentValue<byte[]>(sha256OfOnion) == null ? null : ((ValueComparer<byte[]>)(((IProperty)sha256OfOnion).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(sha256OfOnion))), ((ValueComparer<byte>)(((IProperty)state).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(state)))));
+                    return ((ISnapshot)(new Snapshot<ChannelId, ulong, byte, DateTimeOffset?, ulong, byte[], uint, byte[], ushort?, byte[], byte[], byte[], byte[], ChannelId?, ulong?, byte?, byte[], byte[], byte[], byte[], byte?, byte[], byte, byte[]>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<ulong>)(((IProperty)htlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(htlcId)), ((ValueComparer<byte>)(((IProperty)direction).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(direction)), (source.GetCurrentValue<DateTimeOffset?>(addedAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)addedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(addedAt))), ((ValueComparer<ulong>)(((IProperty)amountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(amountMsat)), (source.GetCurrentValue<byte[]>(attributionData) == null ? null : ((ValueComparer<byte[]>)(((IProperty)attributionData).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(attributionData))), ((ValueComparer<uint>)(((IProperty)cltvExpiry).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(cltvExpiry)), (source.GetCurrentValue<byte[]>(failReason) == null ? null : ((ValueComparer<byte[]>)(((IProperty)failReason).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(failReason))), (source.GetCurrentValue<ushort?>(failureCode) == null ? null : ((ValueComparer<ushort?>)(((IProperty)failureCode).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort?>(failureCode))), (source.GetCurrentValue<byte[]>(fulfillmentPayload) == null ? null : ((ValueComparer<byte[]>)(((IProperty)fulfillmentPayload).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(fulfillmentPayload))), (source.GetCurrentValue<byte[]>(knownPreimage) == null ? null : ((ValueComparer<byte[]>)(((IProperty)knownPreimage).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(knownPreimage))), (source.GetCurrentValue<byte[]>(onionRoutingPacket) == null ? null : ((ValueComparer<byte[]>)(((IProperty)onionRoutingPacket).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(onionRoutingPacket))), (source.GetCurrentValue<byte[]>(onionSharedSecret) == null ? null : ((ValueComparer<byte[]>)(((IProperty)onionSharedSecret).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(onionSharedSecret))), (source.GetCurrentValue<ChannelId?>(originIncomingChannelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)originIncomingChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(originIncomingChannelId))), (source.GetCurrentValue<ulong?>(originIncomingHtlcId) == null ? null : ((ValueComparer<ulong?>)(((IProperty)originIncomingHtlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(originIncomingHtlcId))), (source.GetCurrentValue<byte?>(originKind) == null ? null : ((ValueComparer<byte?>)(((IProperty)originKind).GetValueComparer())).Snapshot(source.GetCurrentValue<byte?>(originKind))), (source.GetCurrentValue<byte[]>(originPaymentHash) == null ? null : ((ValueComparer<byte[]>)(((IProperty)originPaymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(originPaymentHash))), (source.GetCurrentValue<byte[]>(pathKey) == null ? null : ((ValueComparer<byte[]>)(((IProperty)pathKey).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(pathKey))), (source.GetCurrentValue<byte[]>(paymentHash) == null ? null : ((ValueComparer<byte[]>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(paymentHash))), (source.GetCurrentValue<byte[]>(paymentPreimage) == null ? null : ((ValueComparer<byte[]>)(((IProperty)paymentPreimage).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(paymentPreimage))), (source.GetCurrentValue<byte?>(removalKind) == null ? null : ((ValueComparer<byte?>)(((IProperty)removalKind).GetValueComparer())).Snapshot(source.GetCurrentValue<byte?>(removalKind))), (source.GetCurrentValue<byte[]>(sha256OfOnion) == null ? null : ((ValueComparer<byte[]>)(((IProperty)sha256OfOnion).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(sha256OfOnion))), ((ValueComparer<byte>)(((IProperty)state).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(state)), (source.GetCurrentValue<byte[]>(wireCustomRecords) == null ? null : ((ValueComparer<byte[]>)(((IProperty)wireCustomRecords).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(wireCustomRecords))))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => ((ISnapshot)(new Snapshot<ChannelId>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(default(ChannelId))))));
@@ -1363,11 +1412,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                     return ((ISnapshot)(new Snapshot<ChannelId, ulong, byte>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<ulong>)(((IProperty)htlcId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<ulong>(htlcId)), ((ValueComparer<byte>)(((IProperty)direction).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<byte>(direction)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 23,
+                propertyCount: 24,
                 navigationCount: 0,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 23,
+                originalValueCount: 24,
                 shadowCount: 0,
                 relationshipCount: 3,
                 storeGeneratedCount: 1));

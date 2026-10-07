@@ -73,3 +73,20 @@ public sealed record PackageSubmitResult(PackageSubmitStatus Status, string? Mes
     internal static bool IsFeeReason(string? reason) =>
         reason is not null && s_feeReasons.Any(r => reason.Contains(r, StringComparison.OrdinalIgnoreCase));
 }
+
+/// <summary>One transaction's entry in bitcoind's <c>submitpackage</c> <c>tx-results</c> (NL-1186).</summary>
+/// <param name="Wtxid">The key: the transaction's wtxid (hex, display order).</param>
+/// <param name="Txid">Its txid (hex, display order).</param>
+/// <param name="Error">bitcoind's reason when it was refused (or <c>unevaluated</c>); null when accepted.</param>
+/// <param name="OtherWtxid">The wtxid of a transaction with the same txid and another witness already in the
+/// mempool; null otherwise.</param>
+public sealed record RawPackageTransactionResult(string Wtxid, string Txid, string? Error, string? OtherWtxid);
+
+/// <summary>bitcoind's whole <c>submitpackage</c> answer, as LND's walletrpc <c>SubmitPackage</c> returns it (NL-1186).
+/// </summary>
+/// <param name="PackageMessage">bitcoind's <c>package_msg</c> (<c>success</c> when every transaction is in the mempool).
+/// </param>
+/// <param name="Transactions">Each transaction's result.</param>
+/// <param name="ReplacedTransactions">The txids package RBF evicted.</param>
+public sealed record RawPackageSubmitResult(string PackageMessage, IReadOnlyList<RawPackageTransactionResult> Transactions,
+                                            IReadOnlyList<string> ReplacedTransactions);

@@ -675,6 +675,34 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
         return SendRequestAsync<PayRouteIpcRequest, PayRouteIpcResponse>(ClientCommand.PayRoute, req, ct);
     }
 
+    /// <summary>
+    /// Attaches routes to the <c>payroute</c> payment of the identity's hash still in flight (<c>payroute --attach</c>,
+    /// ClientCommand 56, NL-1276); the response's route outcomes are these routes.
+    /// </summary>
+    /// <param name="arguments">The parsed <c>payroute</c> arguments: the payment's identity (its invoice, or its hash
+    /// with its secret and total) and the limits.</param>
+    /// <param name="routes">The validated routes of the <c>--routes</c> input.</param>
+    /// <param name="ct">Cancels the call (the payment itself keeps going in the daemon).</param>
+    public Task<PayRouteIpcResponse> PayRouteAttachAsync(PayRouteArguments arguments,
+                                                         IReadOnlyList<PayRouteRouteArguments> routes,
+                                                         CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        ArgumentNullException.ThrowIfNull(routes);
+        var req = new PayRouteAttachIpcRequest
+        {
+            Bolt11 = arguments.Bolt11,
+            PaymentHash = ToHash(arguments.PaymentHash),
+            PaymentSecret = ToSecret(arguments.PaymentSecret),
+            TotalMsatMsat = arguments.TotalMsat,
+            Routes = [.. routes.Select(ToRouteInfo)],
+            TimeoutSeconds = arguments.TimeoutSeconds ?? 60,
+            MaxFeeMsat = arguments.MaxFeeMsat
+        };
+        return SendRequestAsync<PayRouteAttachIpcRequest, PayRouteIpcResponse>(ClientCommand.PayRouteAttach, req,
+                                                                               ct);
+    }
+
     /// <summary>The raw form's payment hash (64-hex, validated by the parser), or null for the invoice form.</summary>
     private static Hash? ToHash(string? hex)
     {

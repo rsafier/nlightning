@@ -288,9 +288,14 @@ run when registered (`AddLndGrpc` does).
   rejects. `OpenChannel1MessageHandler` asks after the cheap refusals and **before the factory** (no key index used for a
   rejected open); `DualFundedOpenService` before it makes keys. The accepted values replace what we announce
   (`ChannelOpenDecisionRules.TryApply`, `ChannelModel.ApplyOpenDecision`): csv_delay (our `to_self_delay` on the opener),
-  reserve_sat (v1), in_flight_max_msat, max_htlc_count (at most 483), min_htlc_in, min_accept_depth, upfront_shutdown
-  (v1, needs `option_upfront_shutdown_script`, as LND); refused with the generic `channel rejected`: zero_conf (and depth
-  0), reserve_sat or upfront_shutdown on a dual-funded open, a reserve below either dust limit (NL-1181). Each RPC stream
+  reserve_sat, in_flight_max_msat, max_htlc_count (at most 483), min_htlc_in, min_accept_depth, upfront_shutdown
+  (needs `option_upfront_shutdown_script` and a valid shutdown form, as LND; on a dual-funded open it goes in
+  `accept_channel2`), zero_conf. Since NL-1181 every acceptance goes through it: an opener's `option_zeroconf`
+  `channel_type` needs `zero_conf` from the acceptor (depth 0 without it is refused: LND reads it as unset), else LND's "channel acceptor blocked zero-conf channel
+  negotiation"; with it we ask for depth 0. Refused with the generic `channel rejected`: zero_conf on an open without that
+  type (LND would make it zero-conf over `option_scid_alias`; we have no zero-conf channels of our own, NL-1280) or with a
+  non-zero depth, a reserve below either dust limit, and on a dual-funded open a reserve_sat the reserve BOLT 2 fixes
+  (1 % of the total) does not meet; one that only our contribution makes it meet makes that contribution all or nothing; every RBF attempt of the open is checked against the same answer with its own total (`tx_abort` when it breaks it; after a restart, which forgets the answer, an RBF may not lower the total). Each RPC stream
   is an `RpcChannelAcceptor`: the request in LND's units and LND's commitment-type reading of `channel_type`, LND's
   `validateAcceptorResponse` (accept with an error, an error over 500 characters, a bad upfront address or a reserve below
   the opener's dust limit reject generically), answers matched by `pending_chan_id` (zero-padded), at most
@@ -329,11 +334,15 @@ run when registered (`AddLndGrpc` does).
   lndclient ignores `publish_error`, so a refusal reported there would look published) and keeps nothing; an accepted or
   already-known spend of leased outputs is then stored as a `WalletSend` row (rebroadcast, booked as a wallet send), a
   transaction without wallet inputs is sent once. EstimateFee's `min_relay_fee_sat_per_kw` is bitcoind's
-  `mempoolminfee` (at least 253). Refused or UNIMPLEMENTED: NL-1186.
+  `mempoolminfee` (at least 253). The rest of walletrpc: NL-1186 (below).
 - **GetTransactions (NL-1185).** The accounting feed (sealed first): `WalletReceived` by creating transaction and
   `WalletOutputSpent` by its `spentBy`, reorg reversals removed; pending broadcasts and unconfirmed deposits as
   unconfirmed entries; label and fee from our broadcast rows; the raw transaction from the row, else from bitcoind (out of its block, no
-  `txindex` needed, or the mempool). Gaps NL-1187.
+  `txindex` needed, or the mempool). NL-1187/NL-1253: the chain monitor's durable `WalletTransactions` rows (raw
+  transaction, block, wallet outputs and inputs, unconfirmed by a rewind) are the first source, merged with the feed,
+  the outputs held since before the accounting cutover and the imported tapscript history by output index and spent
+  outpoint (each counted once); a stored row's height, null included, overrides the other sources'; `total_fees`
+  follows btcwallet (0 unless every input is the wallet's). Remaining: NL-1289.
 - **Tests:** Domain `Channels/Acceptance` (14), Application `Channels/Acceptance` (gate, v1 handler, dual-funded harness:
   rejection, accepted values on `accept_channel2`, refused reserve), `Payments/Interception/HtlcInterceptorHubTests`,
   `Payments/Switch/HtlcInterceptionSwitchTests` (three-node harness: FAIL decrypted at Alice as Bob's
@@ -364,7 +373,16 @@ publication points, overflow/reconnect behavior, verification and the explicit
 on-chain HTLC/imported-transaction limits. These streams add live visibility, not a
 durable audit history or cursor API.
 
-NL-1182 reliability follow-up (`b3976b0d`, NL-1234): the hub retains holds until callbacks succeed, returns failure/in-progress results and retries failed expiry/disconnect resolutions. The gRPC service observes both directions and cancels/disconnects if either ends. Broader RESUME_MODIFIED, requireinterceptor and on-chain interception gaps remain open under NL-1182.
+NL-1182 reliability follow-up (`b3976b0d`, NL-1234): the hub retains holds until callbacks succeed, returns failure/in-progress results and retries failed expiry/disconnect resolutions. The gRPC service observes both directions and cancels/disconnects if either ends.
+
+## HtlcInterceptor LND parity (NL-1182, lane nl1182, 2026-10-07)
+
+Checked against LND v0.21.4's `htlcswitch/interceptable_switch.go`, `held_htlc_set.go`, `lnrpc/routerrpc/forward_interceptor.go` and `witness_beacon.go`:
+
+- **RESUME_MODIFIED**: `in_amount_msat`/`out_amount_msat` (0 = unchanged) and `out_wire_custom_records` (every type 65536+, else INVALID_ARGUMENT "failed to validate custom records: custom records entry with TLV type below min: 65536"). The forwarding checks use the overridden incoming amount; the `update_add_htlc` carries the outgoing amount and exactly the interceptor's records (the forwarded add starts without any, as LND's `link.go` builds it), persisted with the HTLC (`Htlcs.WireCustomRecords`, migration `AddHtlcWireCustomRecords`) so a retransmission carries them. Records whose encoding does not fit BOLT 8's 65,535-byte plaintext next to the add's fixed 1,452 bytes and a `blinded_path` TLV (64,048 bytes, `WireCustomRecordCodec.MaxEncodedLength`) are refused with INVALID_ARGUMENT "failed to validate custom records: ...", and `OfferHtlcAsync` checks the same bound before anything is staged (an add too large to send would be committed and persisted but never reach the peer). Even types are sent as LND sends them, with a warning in the log: a peer that does not know one (CLN, Eclair, LDK, NLightning) refuses the add with a warning and disconnects, and every reconnection retransmits it until the HTLC deadline monitor fails the channel (NL-1283). `in_wire_custom_records` reports the incoming add's records (odd types only: an unknown even type still fails the message, BOLT 1). Deviations: the forwarding history (circuit) keeps the real incoming amount (LND records the override), the incoming dust exposure is not re-checked against it, and a forward that would send more than the incoming HTLC brings in is failed with `temporary_channel_failure` (no custom/aux channels here).
+- **requireinterceptor**: `LndGrpc:RequireInterceptor` (only with `Enabled`; `GetInfo.require_htlc_interceptor` reports it). Without a client a new forward fails with `temporary_channel_failure`, a replayed one (restart, reconnection) is held for the next client; a disconnect keeps every hold; the 22/19-block rules and `expiry_too_far` (auto-fail height above int32) apply as in LND.
+- **On-chain interception**: a forward without an outgoing leg whose incoming channel goes on chain is offered (again) with `auto_fail_height` = its incoming expiry (LND's `OnChainSettleDeadline`), held across disconnects, dropped at that height; only SETTLE is accepted (FAIL/RESUME/RESUME_MODIFIED end the stream with UNKNOWN "cannot fail/resume held htlc in the on-chain flow", the hold stays). The settle's preimage goes on the incoming HTLC record with `InterceptedHtlcSettled` and the BOLT 5 resolvers claim the HTLC with it. Deviation: LND offers every non-exit HTLC its contest resolver waits on, including forwards whose outgoing HTLC is in flight; we offer only forwards that never left (NL-1283). On-chain holds are offered only while a client is connected or one is required (the resolvers re-raise every block, so a later client sees them at the next block).
+- Not proven against LND on the cluster yet (no cluster run in this lane).
 
 ## Tool gaps record (2026-10-07, wip/lnd-gaps)
 
@@ -375,7 +393,9 @@ gaps, closed on `wip/lnd-gaps` (ledger NL-1242..NL-1249; details and validation 
   ignored nodes and directed pairs, outgoing channels, last hop, route hints, mission control on or off, LND's exact
   final expiry; no route = `unable to find a path to destination`) and `SendToRouteV2` over `payroute` (mpp record,
   keysend record, LND failure codes and indexes). Not supported: `source_pub_key` other than ours, blinded paths, a
-  circular `SendToRouteV2` (bos `rebalance`), several parallel shards of one hash.
+  circular `SendToRouteV2` (bos `rebalance`), several parallel shards of one hash (the last one since NL-1276:
+  a `SendToRouteV2` with the hash of a `payroute` payment in flight joins it as one more shard, same `mpp_record`,
+  the shards in flight never above the total, each call answered with its own HTLC; `PAYROUTE_PLAN.md` §6).
 - **NL-1243** grpc-go's `unknown method M for service S` / `unknown service S` for everything not implemented
   (`LndUnknownMethods`, before the macaroon check), so ln-service's fallbacks work.
 - **NL-1244** block and chain hashes in display order (`GetInfo.block_hash`, a stored `GetTransactions.block_hash`,
@@ -388,6 +408,24 @@ gaps, closed on `wip/lnd-gaps` (ledger NL-1242..NL-1249; details and validation 
   `LndGrpc:AllowChannelBackupRestore` (default off).
 - **NL-1249** ListPeers traffic, ping, errors, sync type and flaps, ListChannels lifetime, uptime and sent/received
   totals (memory tracking since the server's start; totals from the stored history).
+- **NL-1186** the rest of walletrpc. `SignPsbt` (partial P2WPKH signatures, P2TR key path signatures) and
+  `FinalizePsbt` of mixed PSBTs: only wallet outputs leased here are signed, other parties' inputs are never touched
+  (FinalizePsbt needs them finalized with their UTXO and verifies the whole transaction); FundPsbt and SignPsbt add the
+  BIP 32 derivation and the P2TR internal key. A published spend with other parties' inputs is a `WalletCollaborative`
+  row (purpose 13: rebroadcast; booked by its wallet movements and one `WalletSent` of our net flow, fee unknown, so
+  the clearing account nets to zero). FundPsbt: P2TR change, `max_fee_ratio` (LND's `sanityCheckFee` text; unset is
+  LND's default 0.2), strategy LARGEST. `GetTransaction` (GetTransactions' entry), `LabelTransaction` (our broadcast
+  rows only; LND's 500 characters and our 256 UTF-8 bytes), `RemoveTransaction` (an unconfirmed `WalletSend` held by
+  walletrpc leases or withdraw reservations, or a `WalletCollaborative` row, abandoned; never the anchor CPFP reclaim), `RequiredReserve` (`IAnchorReserveService`), `SubmitPackage` (bitcoind's
+  `submitpackage` as given, `maxfeerate` from `sat_per_vbyte`), `SignMessageWithAddr`/`VerifyMessageWithAddr` (Bitcoin
+  Core's message format, signed inside the signer with the address's key, P2TR untweaked; Core's `rpc_signmessage.py`
+  vector byte-exact), `ImportPublicKey` (P2WPKH, nested P2WPKH, BIP 86 P2TR through the imported-script tracker),
+  `BumpForceCloseFee` and `BumpFee` (operator parameters in memory, `Application/Onchain/Fees/OperatorFeeBumps`: our
+  anchor CPFP child, or the sweep, claim or penalty of a resolution output; a fresh request replaces at once; a
+  budget never lowers the cap that protects an output with a deadline, an HTLC claim or a penalty).
+  Remaining: `ImportAccount`, `XCreateAccount`, `coin_select` templates, unconfirmed spends (`spend_unconfirmed`,
+  leases of unconfirmed outputs, a CPFP of an unconfirmed wallet output), the confirmation-controlled lease release,
+  labels of deposits, BumpFee of anchors HTLC transactions (see the ledger entry).
 
 Still unimplemented (answered `unknown method`): `GetDebugInfo`, `ListPermissions`, `GetNodeMetrics`, `ListAliases`,
 routerrpc `QueryMissionControl`/`GetMissionControlConfig`, and the `chainrpc.ChainKit`, `autopilotrpc`,

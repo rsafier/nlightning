@@ -29,8 +29,18 @@ public sealed partial class RouterService
     /// A failed HTLC is an <c>HTLCAttempt</c> with LND's <c>failure</c> (<c>code</c>, <c>failure_source_index</c>: 0
     /// is this node, 1 our peer, the hop count the destination); our channel unable to carry the HTLC is
     /// <c>TEMPORARY_CHANNEL_FAILURE</c> at index 0, as LND reports it. The attempt goes on if the caller leaves.
-    /// Refused: <c>first_hop_custom_records</c>, AMP, blinded hops, a route back to this node; <c>skip_temp_err</c>
-    /// changes nothing (the node never retries a supplied route). Not filled: <c>failure.channel_update</c>.
+    /// A call with an <c>mpp_record</c> and the hash of a <c>payroute</c> payment in flight is one more shard of it
+    /// (NL-1276, LND's MPP <c>SendToRouteV2</c> over several calls): it must carry the same <c>mpp_record</c> (payment
+    /// address and total; a mismatch is <c>InvalidArgument</c>), the shards in flight may not deliver more than the
+    /// total together, and each call answers with its own HTLC's outcome (a held shard resolves when the payee settles
+    /// or fails the set). A call without an <c>mpp_record</c> never joins: a payment of the hash in flight refuses it
+    /// (<c>FailedPrecondition</c>, LND's <c>ErrPaymentInFlight</c>). As in LND, a failed shard sent without
+    /// <c>skip_temp_err</c> (the default), or any shard failing with a failure the node would never retry, fails the
+    /// payment pending: later shards are refused (<c>FailedPrecondition</c>, LND's "payment pending failed") until
+    /// the shards in flight are resolved; with <c>skip_temp_err</c> a temporary failure leaves the payment open for a
+    /// replacement shard. No fee limit applies to the shards, as in LND's <c>sendToRoute</c>. Each attempt reports
+    /// its own HTLC's offer and resolution times. Refused: <c>first_hop_custom_records</c>, AMP, blinded hops, a route
+    /// back to this node. Not filled: <c>failure.channel_update</c>.
     /// </summary>
     public override async Task<HTLCAttempt> SendToRouteV2(SendToRouteRequest request, ServerCallContext context)
     {
@@ -85,8 +95,14 @@ public sealed partial class RouterService
         {
             AttemptId = outcome?.HtlcId ?? 0,
             Route = route,
-            AttemptTimeNs = LightningService.UnixNanos(payment.CreatedAt),
-            ResolveTimeNs = payment.CompletedAt is { } completed ? LightningService.UnixNanos(completed) : 0
+            // The shard's own times (NL-1276): another shard of the set may have been offered first, and the set may
+            // still be in flight when this one failed
+            AttemptTimeNs = LightningService.UnixNanos(outcome?.OfferedAt ?? payment.CreatedAt),
+            ResolveTimeNs = outcome?.ResolvedAt is { } resolved
+                                ? LightningService.UnixNanos(resolved)
+                                : outcome is null or { Status: not PaymentPartState.InFlight }
+                                    ? LightningService.UnixNanos(_timeProvider.GetUtcNow())
+                                    : 0
         };
         switch (outcome?.Status)
         {
@@ -183,7 +199,14 @@ public sealed partial class RouterService
             Routes =
             [
                 new PayRouteRoute(OutgoingChannel(route.Hops[0].ChanId), firstHopAmount, route.TotalTimeLock, hops)
-            ]
+            ],
+            // NL-1276: an MPP set sent over several calls (ln-service's multi-path pay sends its shards in parallel
+            // and replaces a failed one) joins the payroute payment of the hash in flight, as LND registers each
+            // call as one more attempt of the payment. LND tolerates a payment in flight only for an MPP shard
+            // (InitPayment's ErrPaymentInFlight is refused without an mpp_record)
+            Attach = final.MppRecord is null ? PayRouteAttachMode.Never : PayRouteAttachMode.IfInFlight,
+            IndependentShards = true,
+            SkipTemporaryFailures = request.SkipTempErr
         };
     }
 

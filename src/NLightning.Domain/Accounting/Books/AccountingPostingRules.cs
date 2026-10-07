@@ -400,10 +400,11 @@ public static class AccountingPostingRules
     }
 
     /// <summary>AmountMsat = −x (what left to outputs that are not ours): Dr TransfersOut x; Dr FeeWithdraw fee; Cr
-    /// Clearing (x + fee).</summary>
+    /// Clearing (x + fee). A collaborative transaction's net flow (NL-1186) can be positive (it paid us more than our
+    /// inputs, a payjoin we received): Dr Clearing; Cr TransfersIn.</summary>
     private static string? PostWalletSent(AccountingEventModel e, Lines lines)
     {
-        lines.Add(AccountRole.TransfersOut, -e.AmountMsat);
+        lines.Add(e.AmountMsat > 0 ? AccountRole.TransfersIn : AccountRole.TransfersOut, -e.AmountMsat);
         lines.Add(AccountRole.FeeWithdraw, e.FeeMsat);
         lines.Add(AccountRole.Clearing, checked(e.AmountMsat - e.FeeMsat));
         return null;

@@ -2,6 +2,7 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Channels.ValueObjects;
 using Domain.Money;
+using Domain.Payments.Keysend;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
@@ -246,6 +247,110 @@ public class UpdateAddHtlcMessageTests
         Assert.Throws<ArgumentException>(() => new UpdateAddHtlcPayload(LightningMoney.MilliSatoshis(1),
                                                                          ChannelId.Zero, 3u, 0UL, s_paymentHash,
                                                                          onionRoutingPacket));
+    }
+
+    #endregion
+
+    #region Custom records (NL-1182)
+
+    private const string CustomRecordTlvHex = "FE0001000102CAFE";
+
+    [Fact]
+    public async Task Given_AnOddCustomRecord_When_DeserializeAsync_Then_ItIsKeptWithTheBlindedPath()
+    {
+        // Arrange: LND's wire custom records (types of 65536 or more) after the blinded path
+        var stream = new MemoryStream(Convert.FromHexString(PayloadHeaderHex + OnionHex + BlindedPathTlvHex
+                                                          + CustomRecordTlvHex));
+
+        // Act
+        var message = await _updateAddHtlcMessageTypeSerializer.DeserializeAsync(stream);
+
+        // Assert
+        Assert.NotNull(message.BlindedPathTlv);
+        var record = Assert.Single(message.CustomRecords);
+        Assert.Equal(65_537UL, record.Type);
+        Assert.Equal(new byte[] { 0xCA, 0xFE }, record.Value.ToArray());
+    }
+
+    [Fact]
+    public async Task Given_AnUnknownEvenCustomRecord_When_DeserializeAsync_Then_ThrowsMessageSerializationException()
+    {
+        // Arrange: BOLT 1 still applies at and above 65536 - an unknown even type fails the stream
+        var stream = new MemoryStream(Convert.FromHexString(PayloadHeaderHex + OnionHex + "FE0001000000"));
+
+        // Act & Assert
+        await Assert.ThrowsAsync<MessageSerializationException>(() => _updateAddHtlcMessageTypeSerializer
+                                                                   .DeserializeAsync(stream));
+    }
+
+    [Fact]
+    public async Task Given_ACustomRecordAndABlindedPath_When_SerializeAsync_Then_TheyGoInIncreasingTypeOrder()
+    {
+        // Arrange
+        var pathKey = Convert.FromHexString("02c93ca7dca44d2e45e3cc5419d92750f7fb3a0f180852b73a621f4051c0193a75");
+        var message = new UpdateAddHtlcMessage(
+            new UpdateAddHtlcPayload(LightningMoney.MilliSatoshis(1), ChannelId.Zero, 3u, 0UL, s_paymentHash,
+                                     Convert.FromHexString(OnionHex)),
+            new BlindedPathTlv(pathKey), [new CustomRecord(65_537, [0xCA, 0xFE])]);
+        var stream = new MemoryStream();
+
+        // Act
+        await _updateAddHtlcMessageTypeSerializer.SerializeAsync(message, stream);
+
+        // Assert
+        Assert.Equal(Convert.FromHexString(PayloadHeaderHex + OnionHex + BlindedPathTlvHex + CustomRecordTlvHex),
+                     stream.ToArray());
+    }
+
+    [Fact]
+    public async Task Given_CustomRecordsAtTheBoundAndABlindedPath_When_SerializeAsync_Then_TheMessageIsBolt8sLargest()
+    {
+        // Arrange: NL-1182, the largest records an add may carry (WireCustomRecordCodec.MaxEncodedLength)
+        var pathKey = Convert.FromHexString("02c93ca7dca44d2e45e3cc5419d92750f7fb3a0f180852b73a621f4051c0193a75");
+        var max = WireCustomRecordCodec.MaxEncodedLength(true);
+        var message = new UpdateAddHtlcMessage(
+            new UpdateAddHtlcPayload(LightningMoney.MilliSatoshis(1), ChannelId.Zero, 3u, 0UL, s_paymentHash,
+                                     Convert.FromHexString(OnionHex)),
+            new BlindedPathTlv(pathKey), [new CustomRecord(65_537, new byte[max - 8])]);
+        var stream = new MemoryStream();
+
+        // Act
+        await _updateAddHtlcMessageTypeSerializer.SerializeAsync(message, stream);
+
+        // Assert: with the 2-byte type, exactly BOLT 8's 65,535-byte plaintext
+        Assert.Equal(WireCustomRecordCodec.MaxLightningMessageLength, stream.Length + 2);
+    }
+
+    [Fact]
+    public async Task Given_CustomRecordsOnly_When_RoundTripped_Then_TheBytesAndRecordsMatch()
+    {
+        // Arrange: given out of order; the message sorts them
+        var message = new UpdateAddHtlcMessage(
+            new UpdateAddHtlcPayload(LightningMoney.MilliSatoshis(1), ChannelId.Zero, 3u, 0UL, s_paymentHash,
+                                     Convert.FromHexString(OnionHex)),
+            null, [new CustomRecord(70_001, [9]), new CustomRecord(65_537, [0xCA, 0xFE])]);
+        var stream = new MemoryStream();
+
+        // Act
+        await _updateAddHtlcMessageTypeSerializer.SerializeAsync(message, stream);
+        stream.Position = 0;
+        var decoded = await _updateAddHtlcMessageTypeSerializer.DeserializeAsync(stream);
+
+        // Assert
+        Assert.Null(decoded.BlindedPathTlv);
+        Assert.Equal([65_537UL, 70_001UL], decoded.CustomRecords.Select(r => r.Type));
+        Assert.Equal(message.CustomRecords, decoded.CustomRecords);
+    }
+
+    [Fact]
+    public void Given_ACustomRecordBelowTheMinimum_When_BuildingTheMessage_Then_ItIsRefused()
+    {
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => new UpdateAddHtlcMessage(
+                                             new UpdateAddHtlcPayload(LightningMoney.MilliSatoshis(1), ChannelId.Zero,
+                                                                      3u, 0UL, s_paymentHash,
+                                                                      Convert.FromHexString(OnionHex)),
+                                             null, [new CustomRecord(65_535, [1])]));
     }
 
     #endregion

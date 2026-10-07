@@ -13,8 +13,11 @@ public sealed partial class WalletKitService
 {
     public override async Task<SendOutputsResponse> SendOutputs(SendOutputsRequest request, ServerCallContext context)
     {
-        if (request.SpendUnconfirmed || request.CoinSelectionStrategy != Lnrpc.CoinSelectionStrategy.StrategyUseGlobalConfig)
-            throw new RpcException(new Status(StatusCode.Unimplemented, "unconfirmed selection and custom strategy are not supported"));
+        if (request.SpendUnconfirmed)
+            throw new RpcException(new Status(StatusCode.Unimplemented, "spend_unconfirmed is not supported"));
+        CheckCoinSelectionStrategy(request.CoinSelectionStrategy);
+        if (request.Label.Length > 0)
+            CheckLabel(request.Label);
         if (request.SatPerKw <= 0 || request.MinConfs < 0 || request.Outputs.Any(o => o.Value <= 0))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "invalid fee rate, confirmations or output value"));
         var spend = _serviceProvider.GetRequiredService<IWalletSpendService>();

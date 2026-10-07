@@ -15,6 +15,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Payments.Keysend;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -488,11 +489,13 @@ public sealed class ChannelStateTransitionService
         var channelId = channel.ChannelId;
         return outbound switch
         {
-            OutboundAddHtlc { Htlc: var htlc } when htlc.PathKey is { } pathKey =>
+            // NL-1182: the add's custom records (an interceptor's RESUME_MODIFIED) go out with every transmission
+            OutboundAddHtlc { Htlc: var htlc } when htlc.PathKey is not null || !htlc.WireCustomRecords.IsEmpty =>
                 new UpdateAddHtlcMessage(new UpdateAddHtlcPayload(LightningMoney.MilliSatoshis(htlc.AmountMsat), channelId,
                                                                   htlc.CltvExpiry, htlc.Id, htlc.PaymentHash,
                                                                   htlc.OnionRoutingPacket),
-                                         new BlindedPathTlv(pathKey)),
+                                         htlc.PathKey is { } pathKey ? new BlindedPathTlv(pathKey) : null,
+                                         WireCustomRecordCodec.Decode(htlc.WireCustomRecords)),
             OutboundAddHtlc { Htlc: var htlc } =>
                 _messageFactory.CreateUpdateAddHtlcMessage(channelId, htlc.Id, htlc.AmountMsat, htlc.PaymentHash,
                                                            htlc.CltvExpiry, htlc.OnionRoutingPacket),
