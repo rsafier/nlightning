@@ -10685,7 +10685,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1187
 
 ### NL-1296 A received silent payment coin could not be spent by `withdraw` while the anchors reserve exceeded it
-- **Status:** fixed (see the commit that adds this entry)
+- **Status:** fixed (7e3f0e5b)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/WalletSpendService.cs` (`WithdrawLockedAsync`), `Wallet/FeeInputSelector.cs` (`SelectWithPolicy`, new `SelectExact`), Domain `WalletSelectionPolicy.Inputs`, `WalletWithdrawRequest.Inputs`, `WalletSpendError.InputUnavailable`, Daemon `WithdrawClientHandler.ParseUtxos`, Client `ParseWithdrawOptions`, `SilentPaymentStatus.Unspent`
@@ -10694,7 +10694,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** follow-up of NL-1263 (D-SP13)
 
 ### NL-1297 No log line when a silent payment output is found or spent
-- **Status:** fixed (see the commit that adds this entry)
+- **Status:** fixed (7e3f0e5b)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/SilentPayments/SilentPaymentScanner.cs` (`StageReceiptsAsync`, `StageSpendsAsync`), `Wallet/BlockchainMonitorService.SilentPayments.cs` (`InitializeSilentPaymentsAsync`)
