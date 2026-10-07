@@ -88,7 +88,7 @@ public sealed class LocalLightningSignerSilentPaymentTests : IDisposable
         tx.Inputs.Add(new TxIn(silent.Outpoint));
         tx.Inputs.Add(new TxIn(deposit.Outpoint));
         tx.Outputs.Add(output);
-        _signer.RegisterChannel(channel, new ChannelSigningInfo(tx.GetHash().ToBytes(), 0, 50_000,
+        _signer.RegisterChannel(channel, new ChannelSigningInfo(tx.GetHash().ToBytes(), 0, LightningMoney.Satoshis(50_000),
             local.PubKey.ToBytes(), remote.PubKey.ToBytes(), 0));
         var signed = ToSigned(tx);
 
