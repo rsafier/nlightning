@@ -12,6 +12,16 @@ All three prevout routes agreed on actual P2PKH, P2SH-P2WPKH, P2WPKH, P2TR key-p
 
 The full preflight failed: both node modes timed out after invalidation while awaiting a smaller tip. The revised proof mines empty replacement blocks before asserting rollback and then explicitly reconfirms the disconnected withdrawal. A successful preflight interoperability check does not count as a green full proof.
 
+## Unit checks and scanner measurements
+
+The final Bitcoin build had zero warnings/errors. The full suite executed 2,370 passing tests, with three platform skips and two explicit tests not run. The sender-inclusive targeted selection passed 323 tests with the same three platform skips. This includes official BIP 352 vectors, both key parities, signing, reservations, change recovery and the captured Core responses.
+
+The broad Application suite passed 4,473 tests before the final historical-settlement fixes. Six optional tool/benchmark/real-node checks reported unavailable; that run does not validate later source changes. The initial CLI/IPC/withdraw/Cashu selection passed 65 tests; final startup-gate and shuffled-output-index cases still need the refreshed build.
+
+The optimized synthetic scanner measurement used Debian 13 x64, .NET 10.0.12, four logical CPUs, 4,000 transactions, 2,000 eligible transactions and 100 recovery labels, with two warmups and ten samples. Normal median/p95 were 1,666.899/1,815.703 ms. Adversarial K_max (2,323 discovered outputs per sample) median/p95 were 2,505.377/2,591.922 ms. Preparation reduced normal p95 by 60.5% against the initial measurement. The adversarial initial run had only three samples, so its percentage comparison is weaker.
+
+The measurements include parsing and scanner mathematics with preloaded prevouts, excluding RPC/database. The adversarial cloud result meets the 60 s budget. The normal cloud result is above 1 s; the Mac reference-machine goal remains unverified. Raw results are in [scanner-normal-cloud.json](proofs/silent-payments/scanner-normal-cloud.json) and [scanner-adversarial-cloud.json](proofs/silent-payments/scanner-adversarial-cloud.json).
+
 ## Pending final validation
 
 - Rebuilt unit and integration suites after the final fixes.
