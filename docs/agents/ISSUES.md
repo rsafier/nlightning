@@ -198,10 +198,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 0 | 92 | 92 |
 | in-progress | 0 | 0 | 5 | 0 | 5 |
-| fixed | 15 | 71 | 257 | 530 | 873 |
+| fixed | 15 | 71 | 258 | 531 | 875 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **71** | **271** | **644** | **1001** |
+| **Total** | **15** | **71** | **272** | **645** | **1003** |
 
 ### Epics
 
