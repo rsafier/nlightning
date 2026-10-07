@@ -894,6 +894,7 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
     public IOnionReplayDbRepository OnionReplayDbRepository => inner.OnionReplayDbRepository;
     public IChannelFundingDbRepository ChannelFundingDbRepository => inner.ChannelFundingDbRepository;
     public IChannelPolicyDbRepository ChannelPolicyDbRepository => inner.ChannelPolicyDbRepository;
+    public NLightning.Domain.Bitcoin.Interfaces.ISilentPaymentDbRepository SilentPaymentDbRepository => inner.SilentPaymentDbRepository;
     public IAccountingEventDbRepository AccountingEventDbRepository => inner.AccountingEventDbRepository;
     public IAccountingBooksDbRepository AccountingBooksDbRepository => inner.AccountingBooksDbRepository;
     public IAccountingPriceDbRepository AccountingPriceDbRepository => inner.AccountingPriceDbRepository;

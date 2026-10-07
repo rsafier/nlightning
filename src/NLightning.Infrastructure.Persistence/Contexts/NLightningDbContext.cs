@@ -38,6 +38,9 @@ public class NLightningDbContext : DbContext
     public DbSet<WatchedTransactionEntity> WatchedTransactions { get; set; }
     public DbSet<WalletAddressEntity> WalletAddresses { get; set; }
     public DbSet<UtxoEntity> Utxos { get; set; }
+    public DbSet<SilentPaymentOutputEntity> SilentPaymentOutputs { get; set; }
+    public DbSet<SilentPaymentLabelEntity> SilentPaymentLabels { get; set; }
+    public DbSet<SilentPaymentScanStateEntity> SilentPaymentScanState { get; set; }
     public DbSet<WatchedOutpointEntity> WatchedOutpoints { get; set; }
     public DbSet<BroadcastTransactionEntity> BroadcastTransactions { get; set; }
     public DbSet<BlockHeaderEntity> BlockHeaders { get; set; }
@@ -125,6 +128,7 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureWatchedTransactionEntity(_databaseType);
         modelBuilder.ConfigureWalletAddressEntity(_databaseType);
         modelBuilder.ConfigureUtxoEntity(_databaseType);
+        modelBuilder.ConfigureSilentPaymentEntities(_databaseType);
         modelBuilder.ConfigureWatchedOutpointEntity(_databaseType);
         modelBuilder.ConfigureBroadcastTransactionEntity(_databaseType);
         modelBuilder.ConfigureBlockHeaderEntity(_databaseType);
