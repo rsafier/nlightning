@@ -387,6 +387,47 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         Assert.Equal(alreadySpent ? 0 : 500_000L, events.Sum(fact => fact.AmountMsat));
     }
 
+    [Fact]
+    public async Task Given_MoreThanOneRecoveryBatch_When_RestartedAndTipRaces_Then_RpcBudgetAndCommittedProgressArePreserved()
+    {
+        // Arrange
+        AddReceiptGroup(1, 205, 100);
+        using var service = CreateService();
+        await service.GetAddressAsync(cancellationToken: TestContext.Current.CancellationToken);
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+        for (var i = 0; i < 4; i++)
+            await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken);
+        _chain.Invocations.Clear();
+
+        // Act: materialize only the first bounded batch, then restart with the rest still durable.
+        Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(100, (await UnspentAsync()).Length);
+        Assert.True((await service.GetStatusAsync(TestContext.Current.CancellationToken)).IsRescanning);
+        Assert.Equal(100, _chain.Invocations.Count(call => call.Method.Name == nameof(IBitcoinChainService.GetConfirmedUnspentOutputAsync)));
+        using var restarted = CreateService();
+        _chain.SetupSequence(chain => chain.GetCurrentBlockHeightAsync()).ReturnsAsync(5u).ReturnsAsync(6u);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => restarted.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(100, (await UnspentAsync()).Length);
+        _chain.Setup(chain => chain.GetCurrentBlockHeightAsync()).ReturnsAsync(5u);
+        _chain.Invocations.Clear();
+        Assert.True(await restarted.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(200, (await UnspentAsync()).Length);
+        Assert.Equal(100, _chain.Invocations.Count(call => call.Method.Name == nameof(IBitcoinChainService.GetConfirmedUnspentOutputAsync)));
+        using var last = CreateService();
+        _chain.Invocations.Clear();
+        Assert.True(await last.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+
+        // Assert: already committed coins require no repeat RPC proofs or journal facts.
+        Assert.Equal(205, (await UnspentAsync()).Length);
+        Assert.Equal(5, _chain.Invocations.Count(call => call.Method.Name == nameof(IBitcoinChainService.GetConfirmedUnspentOutputAsync)));
+        Assert.False((await last.GetStatusAsync(TestContext.Current.CancellationToken)).IsRescanning);
+        using var scope = _provider.CreateScope();
+        var events = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().AccountingEventDbRepository
+            .GetByKeyPrefixAsync("wallet:", TestContext.Current.CancellationToken);
+        Assert.Equal(205, events.Count);
+        Assert.Equal(20_500_000L, events.Sum(fact => fact.AmountMsat));
+    }
+
     private SilentPaymentService CreateService(IServiceScopeFactory? scopes = null) => new(scopes ?? _provider.GetRequiredService<IServiceScopeFactory>(), _chain.Object,
         _monitor.Object, _prevouts.Object, _scanner, _keys, _crypto, MsOptions.Create(_options),
         MsOptions.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }), NullLogger<SilentPaymentService>.Instance);
@@ -412,6 +453,22 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         var point = new OutPoint(transaction.GetHash(), 0);
         _unspent[point] = (transaction.Outputs[0], height);
         return point;
+    }
+
+    private void AddReceiptGroup(uint height, int count, long amount)
+    {
+        using var sender = new Key(FixtureKeys.Secret(1));
+        var previous = new OutPoint(new uint256(height), 0);
+        var recipients = Enumerable.Range(0, count).Select(_ => new SilentPaymentRecipient(_keys.ScanPubKey, _keys.SpendPubKey)).ToArray();
+        var outputs = _crypto.DeriveOutputs([new SilentPaymentSenderInput(previous.ToBytes(), sender.ToBytes(), false)], recipients);
+        var transaction = Transaction.Create(Network.RegTest);
+        transaction.Inputs.Add(new TxIn(previous) { WitScript = new WitScript([new byte[64], sender.PubKey.ToBytes()]) });
+        foreach (var output in outputs)
+            transaction.Outputs.Add(new TxOut(Money.Satoshis(amount), new Script(new byte[] { 0x51, 0x20 }.Concat(output.OutputKey32).ToArray())));
+        _blocks[height].Transactions.Add(transaction);
+        _blocks[height].UpdateMerkleRoot();
+        for (uint index = 0; index < transaction.Outputs.Count; index++)
+            _unspent[new OutPoint(transaction.GetHash(), index)] = (transaction.Outputs[(int)index], height);
     }
 
     private void AddSpend(uint height, OutPoint point)

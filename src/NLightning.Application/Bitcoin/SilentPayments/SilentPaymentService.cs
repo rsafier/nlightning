@@ -33,6 +33,7 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
     IOptions<NodeOptions> nodeOptions, ILogger<SilentPaymentService> logger, TimeProvider? timeProvider = null)
     : BackgroundService, ISilentPaymentService
 {
+    private const int FinalizationBatchSize = 100;
     private readonly SilentPaymentsOptions _options = options.Value;
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private string? _lastError;
@@ -222,39 +223,50 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
         var tipHash = await chain.GetBlockHashAsync(tip).WaitAsync(cancellationToken);
         await using var scope = scopes.CreateAsyncScope();
         var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var current = (await uow.UtxoDbRepository.GetUnspentAsync()).Select(coin => (coin.TxId, coin.Index)).ToHashSet();
         var outputs = await uow.SilentPaymentDbRepository.GetOutputsAsync(cancellationToken);
+        var missing = outputs.Where(output => !output.Ignored && output.SpentByTransactionId is null &&
+            !current.Contains((output.TransactionId, output.Index))).ToArray();
+        var batch = missing.Take(FinalizationBatchSize).ToDictionary(output => (output.TransactionId, output.Index));
         var auditNeeded = new HashSet<(TxId, uint)>();
-        foreach (var output in outputs.Where(output => !output.Ignored && output.SpentByTransactionId is null))
-            if (await chain.GetConfirmedUnspentOutputAsync(new OutPoint(new uint256(output.TransactionId), output.Index))
-                    .WaitAsync(cancellationToken) is null)
-                auditNeeded.Add((output.TransactionId, output.Index));
-        // Live may have observed these spends before historical discovery existed. Audit inputs only, never ordinary wallet facts.
-        var auditedSpends = new HashSet<(TxId, uint)>();
-        if (auditNeeded.Count != 0)
-            for (var height = state.LiveFromHeight; height <= tip; height++)
-            {
-                var block = await chain.GetBlockAsync(height).WaitAsync(cancellationToken)
-                    ?? throw new InvalidOperationException($"Block {height} unavailable for silent payment spend recovery.");
-                var spent = await scanner.StageSpendsAsync(ToBlock(block), height, uow, [], cancellationToken);
-                foreach (var (output, spender) in spent)
-                {
-                    auditedSpends.Add((output.TransactionId, output.Index));
-                    if (!output.Ignored)
-                        await StageFactAsync(uow, output, spender, block, height, labels, cancellationToken);
-                }
-                await RequireCanonicalAsync(block, height, cancellationToken);
-                if (height == uint.MaxValue) break;
-            }
-        var pendingSpends = false;
-        foreach (var output in outputs.Where(output => !output.Ignored && output.SpentByTransactionId is null))
+        var proofs = new Dictionary<(TxId, uint), (TxOut Output, uint Height)>();
+        foreach (var (point, output) in batch)
         {
-            if (auditedSpends.Contains((output.TransactionId, output.Index))) continue;
             var proof = await chain.GetConfirmedUnspentOutputAsync(new OutPoint(new uint256(output.TransactionId), output.Index))
                 .WaitAsync(cancellationToken);
             if (proof is null)
-                throw new InvalidOperationException("A recovered output is spent but its confirmed spender was not found; recovery remains pending.");
-            if (proof.Value.Output.Value.Satoshi != output.AmountSats ||
-                !proof.Value.Output.ScriptPubKey.ToBytes().AsSpan().SequenceEqual(new byte[] { 0x51, 0x20 }.Concat(output.OutputKey).ToArray()))
+                auditNeeded.Add(point);
+            else
+                proofs.Add(point, proof.Value);
+        }
+        // Live may have observed these spends before historical discovery existed. Audit only this batch's missing points.
+        if (auditNeeded.Count != 0)
+            for (var height = state.LiveFromHeight; height <= tip && auditNeeded.Count != 0; height++)
+            {
+                var block = await chain.GetBlockAsync(height).WaitAsync(cancellationToken)
+                    ?? throw new InvalidOperationException($"Block {height} unavailable for silent payment spend recovery.");
+                foreach (var transaction in block.Transactions.Where(transaction => !transaction.IsCoinBase))
+                    foreach (var input in transaction.Inputs)
+                    {
+                        var point = (new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N);
+                        if (!auditNeeded.Remove(point)) continue;
+                        var output = batch[point];
+                        var spender = new TxId(transaction.GetHash().ToBytes());
+                        await uow.SilentPaymentDbRepository.SetSpentAsync(output.TransactionId, output.Index,
+                            spender, height, cancellationToken);
+                        await StageFactAsync(uow, output, spender, block, height, labels, cancellationToken);
+                    }
+                await RequireCanonicalAsync(block, height, cancellationToken);
+                if (height == uint.MaxValue) break;
+            }
+        if (auditNeeded.Count != 0)
+            throw new InvalidOperationException("A recovered output is spent but its confirmed spender was not found; recovery remains pending.");
+        var pendingSpends = false;
+        foreach (var (point, proof) in proofs)
+        {
+            var output = batch[point];
+            if (proof.Output.Value.Satoshi != output.AmountSats ||
+                !proof.Output.ScriptPubKey.ToBytes().AsSpan().SequenceEqual(new byte[] { 0x51, 0x20 }.Concat(output.OutputKey).ToArray()))
                 throw new InvalidOperationException("Recovered output differs from its current-chain proof.");
             if (await chain.GetUnspentOutputAsync(new OutPoint(new uint256(output.TransactionId), output.Index))
                     .WaitAsync(cancellationToken) is null)
@@ -262,15 +274,14 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
                 pendingSpends = true;
                 continue;
             }
-            if (await uow.UtxoDbRepository.GetByIdAsync(output.TransactionId, output.Index) is null)
-                uow.AddUtxo(new UtxoModel(output));
+            uow.AddUtxo(new UtxoModel(output));
         }
         if (await chain.GetCurrentBlockHeightAsync().WaitAsync(cancellationToken) != tip ||
             await chain.GetBlockHashAsync(tip).WaitAsync(cancellationToken) != tipHash)
             throw new InvalidOperationException("Chain changed during silent payment recovery finalization.");
         await ValidateCursorAsync(state, cancellationToken);
         await uow.SilentPaymentDbRepository.SetScanStateAsync(state with
-        { RescanTargetHeight = pendingSpends ? state.RescanTargetHeight : null }, cancellationToken);
+        { RescanTargetHeight = pendingSpends || missing.Length > batch.Count ? state.RescanTargetHeight : null }, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         await uow.SaveChangesAsync();
         return !pendingSpends;
