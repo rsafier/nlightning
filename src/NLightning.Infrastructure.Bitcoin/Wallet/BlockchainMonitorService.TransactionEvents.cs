@@ -7,6 +7,7 @@ using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Persistence.Interfaces;
 using Domain.Onchain.Models;
 
 public partial class BlockchainMonitorService
@@ -163,6 +164,16 @@ public partial class BlockchainMonitorService
                     transactions[transaction.GetHash()] = transaction;
         }
         var previous = new Dictionary<OutPoint, TxOut>();
+        var silentPayments = new Dictionary<OutPoint, UtxoModel>();
+        if (_silentPaymentScanner is not null)
+        {
+            using var scope = _serviceProvider.CreateScope();
+            using var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            foreach (var output in await unitOfWork.SilentPaymentDbRepository.GetOutputsAsync())
+                if (!output.Ignored)
+                    silentPayments[new OutPoint(new uint256((byte[])output.TransactionId), output.Index)] =
+                        new UtxoModel(output with { SpentByTransactionId = null, SpentAtHeight = null });
+        }
         foreach (var transaction in transactions.Values.ToArray())
         {
             if (alreadyDescribed.Contains(transaction.GetHash().ToString()))
@@ -181,7 +192,7 @@ public partial class BlockchainMonitorService
                 if (parent is not null && outpoint.N < parent.Outputs.Count)
                     previous[outpoint] = parent.Outputs[(int)outpoint.N];
             }
-            if (DescribeWalletTransaction(transaction, 0, "", previous: previous) is { } observed)
+            if (DescribeWalletTransaction(transaction, 0, "", staged: silentPayments, previous: previous) is { } observed)
             {
                 result.Add(new WalletTransactionEventArgs(observed.RawTransactionHex, observed.AmountSat,
                     observed.FeeSat, 0, "", observed.Timestamp, observed.Label, observed.OurOutputs,
