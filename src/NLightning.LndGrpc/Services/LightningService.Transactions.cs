@@ -130,7 +130,11 @@ public sealed partial class LightningService
                 continue;
 
             entry.AmountSat += utxo.Amount.Satoshi;
-            entry.OurOutputs.Add((utxo.Index, utxo.Amount.Satoshi, utxo.WalletAddress?.Address));
+            var address = utxo.WalletAddress?.Address;
+            if (utxo.SilentPayment is { } silent)
+                address = new Script(new byte[] { 0x51, 0x20 }.Concat(silent.OutputKey).ToArray())
+                    .GetDestinationAddress(_nodeOptions.BitcoinNetwork.ToNBitcoinNetwork())?.ToString();
+            entry.OurOutputs.Add((utxo.Index, utxo.Amount.Satoshi, address));
         }
 
         if (scope.ServiceProvider.GetService<ImportedTapscriptTracker>() is { } imported)
@@ -267,14 +271,21 @@ public sealed partial class LightningService
         else
         {
             foreach (var (index, amountSat, address) in entry.OurOutputs.OrderBy(o => o.Index))
+            {
+                Script? script = null;
+                if (address is not null)
+                    try { script = BitcoinAddress.Create(address, network).ScriptPubKey; }
+                    catch (FormatException) { /* Keep historical ownership even when an address is unavailable. */ }
                 rpc.OutputDetails.Add(new OutputDetail
                 {
                     Address = address ?? "",
+                    PkScript = script is null ? "" : Convert.ToHexStringLower(script.ToBytes()),
                     OutputIndex = index,
                     Amount = amountSat,
                     IsOurAddress = true,
-                    OutputType = OutputScriptType.ScriptTypeWitnessV0PubkeyHash
+                    OutputType = script is null ? OutputScriptType.ScriptTypeWitnessV0PubkeyHash : ScriptTypeOf(script)
                 });
+            }
             foreach (var outpoint in entry.PreviousOutpoints)
                 rpc.PreviousOutpoints.Add(new PreviousOutPoint { Outpoint = outpoint, IsOurOutput = true });
         }

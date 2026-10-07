@@ -158,6 +158,7 @@ public sealed partial class LightningService
                                             IServerStreamWriter<CloseStatusUpdate> responseStream,
                                             ServerCallContext context)
     {
+        RefuseSilentPaymentChannelDestination(request.DeliveryAddress);
         if (!string.IsNullOrEmpty(request.DeliveryAddress))
             throw Unimplemented("delivery_address: the node closes to its own wallet or the upfront shutdown script");
         if (request.MaxFeePerVbyte != 0)
@@ -397,6 +398,7 @@ public sealed partial class LightningService
     {
         if (request.FundingShim is not null || request.FundMax || request.Outpoints.Count > 0)
             throw Unimplemented("funding shims, fund_max and chosen outpoints are not supported");
+        RefuseSilentPaymentChannelDestination(request.CloseAddress);
         if (!string.IsNullOrEmpty(request.CloseAddress))
             throw Unimplemented("close_address is not supported; the node reserves its own upfront shutdown address");
         if (request.MaxLocalCsv != 0 || request.UseBaseFee || request.UseFeeRate || request.SpendUnconfirmed)
@@ -441,6 +443,14 @@ public sealed partial class LightningService
     }
 
     /// <summary>Runs a node command, its refusals as gRPC statuses.</summary>
+    private static void RefuseSilentPaymentChannelDestination(string? address)
+    {
+        if (address is not null && (address.StartsWith("sp1", StringComparison.OrdinalIgnoreCase) ||
+                                   address.StartsWith("tsp1", StringComparison.OrdinalIgnoreCase) ||
+                                   address.StartsWith("sprt1", StringComparison.OrdinalIgnoreCase)))
+            throw InvalidArgument("Silent payment destinations are not supported for channel closes: pay the wallet, then `withdraw` to the silent payment address.");
+    }
+
     private Task<TResponse> DispatchAsync<TRequest, TResponse>(TRequest request, ServerCallContext context)
         where TRequest : notnull =>
         DispatchAsync<TRequest, TResponse>(request, context.CancellationToken);
