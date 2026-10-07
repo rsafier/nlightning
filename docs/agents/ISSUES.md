@@ -189,10 +189,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 0 | 96 | 96 |
 | in-progress | 0 | 0 | 7 | 1 | 8 |
-| fixed | 15 | 70 | 242 | 504 | 831 |
+| fixed | 15 | 70 | 242 | 505 | 832 |
 | wontfix | 0 | 0 | 6 | 15 | 21 |
 | duplicate | 0 | 0 | 3 | 7 | 10 |
-| **Total** | **15** | **70** | **258** | **623** | **966** |
+| **Total** | **15** | **70** | **258** | **624** | **967** |
 
 ### Epics
 
@@ -10181,4 +10181,14 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Evidence:** `LND_TOOLS_COMPAT.md` (2026-10-07): bos `chain-deposit` (p2tr by default) fails with `UnexpectedErrorCheckingTaprootSupport` (ln-service `getMasterPublicKeys` → `walletrpc.ListAccounts` UNIMPLEMENTED); `ListAddresses` (ln-service `getChainAddresses`) unimplemented too. `NewAddress` TAPROOT_PUBKEY already worked (`/v1/newaddress?type=4` passed).
 - **Fix:** `ListAccounts`: the `default` account per address type the wallet holds, P2WPKH (`m/84'/0'/0'`) and P2TR (`m/86'/0'/0'`; the node derives under coin type 0 on every network), with its account extended public key (new public-only `ISecureKeyManager.GetDepositAccount`, a default member returning null for other managers; plain BIP32 `xpub`/`tpub`, where LND uses the scope's SLIP-132 version), the master fingerprint, the external and change key counts (highest handed-out or funded index + 1), never watch-only; `name` and `address_type` filters (another name lists nothing; LND's nested P2SH account does not exist here). `ListAddresses`: per account type, every address handed out or funded (look-ahead addresses nobody was given left out) with `is_internal`, its balance from the unspent wallet outputs, its full derivation path and its derived public key (P2TR: the untweaked internal key); `show_custom_accounts` adds nothing. Permission entries (onchain read) already existed.
 - **Validation (2026-10-07):** `Infrastructure.Bitcoin.Tests/Managers/SecureKeyManagerTests` (the BIP84 vector's account xpub, paths and fingerprint; the P2TR xpub derives the wallet's keys); `LndGrpc.Tests/Wave3/LndGrpcWave3HostTests.Accounts.cs` (2: both accounts with counts, xpub and fingerprint, the filters; addresses with balance, path and key, look-ahead left out). LndGrpc.Tests green on net10.0.
+- **Blocks/Blocked-by:** none
+
+### NL-1248 LND gRPC: channel backup RPCs unimplemented (bos report, RTL's backup page and every RTL load)
+- **Status:** fixed (pending pin)
+- **Severity:** low
+- **Kind:** feature
+- **Location:** `src/NLightning.LndGrpc/Services/LightningService.Backups.cs`, `src/NLightning.LndGrpc/LndGrpcOptions.cs` (`AllowChannelBackupRestore`), `test/NLightning.LndGrpc.Tests/LndGrpcHostTests.Backups.cs`
+- **Evidence:** `LND_TOOLS_COMPAT.md` (2026-10-07): bos `report` fails with `UnexpectedErrorGettingAllChanBackups` (`ExportAllChannelBackups` UNIMPLEMENTED); RTL logs "Error in Channel Backup" on every page load (`GET /v1/channels/backup`) and its backup page fails (`ExportAllChannelBackups`/`ExportChannelBackup`); `VerifyChanBackup`, `RestoreChannelBackups` and `SubscribeChannelBackups` were unimplemented too.
+- **Fix:** the node's own static channel backups (`IChannelBackupService`, the `exportchanbackup` service; `NLSCB` blobs encrypted to the node key) in LND's message shapes. LND cannot read them and the node cannot read LND's; tools that store and hand back the blob work. `ExportChannelBackup`: the channel at `chan_point`, `NOT_FOUND` when unknown. `ExportAllChannelBackups`: `multi_chan_backup` = the one blob of every backed-up channel with its `chan_points`, plus one single backup per channel. `VerifyChanBackup`: the multi or each single backup must decrypt with the node key, be for this node and chain and re-derive each channel's keys; the answer lists its channel points; a failure is `INVALID_ARGUMENT` with the reason, and a blob without our header (an LND backup) is refused as "not an NLightning static channel backup of this node (LND-format backups are not supported; restore those with LND)". `RestoreChannelBackups`: refused (`FAILED_PRECONDITION`, pointing to `nltg restorechanbackup`) unless the new `LndGrpc:AllowChannelBackupRestore` (default false): a restore makes recovery channels whose peers are asked to force close, which belongs to the operator over the local IPC, not to a remote admin macaroon; when allowed it runs the same `IChannelRestoreService` as `restorechanbackup` (channels already in the database left alone, foreign blobs `INVALID_ARGUMENT`) and answers `num_restored`. `SubscribeChannelBackups`: a new snapshot (as ExportAllChannelBackups) whenever the set of backed-up channels changes, nothing at the start, as LND. Permission entries (offchain read/write) already existed.
+- **Validation (2026-10-07):** `LndGrpcHostTests.Backups.cs` (5: export all and one in LND's shapes; verify ours and refuse an LND blob; restore refused by default and nothing restored; restore allowed counts the recovery channels and refuses a foreign blob; a subscriber gets a snapshot when a channel is backed up). LndGrpc.Tests 244/244 on net10.0.
 - **Blocks/Blocked-by:** none
