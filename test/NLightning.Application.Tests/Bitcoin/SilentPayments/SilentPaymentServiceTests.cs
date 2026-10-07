@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using NBitcoin;
 using NBitcoin.Secp256k1;
+using NLightning.Tests.Utils.Mocks;
 using MsOptions = Microsoft.Extensions.Options.Options;
 
 namespace NLightning.Application.Tests.Bitcoin.SilentPayments;
@@ -224,7 +225,50 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         Assert.Equal(1u, (await service.GetStatusAsync(TestContext.Current.CancellationToken)).RescanCursorHeight);
     }
 
-    private SilentPaymentService CreateService() => new(_provider.GetRequiredService<IServiceScopeFactory>(), _chain.Object,
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_FailedRecoverySave_When_Retried_Then_CoinsJournalAndCheckpointCommitTogether(bool finalization)
+    {
+        // Arrange
+        AddReceipt(1, 20_000);
+        using var service = CreateService();
+        await service.GetAddressAsync(cancellationToken: TestContext.Current.CancellationToken);
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+        if (finalization)
+            for (var i = 0; i < 4; i++)
+                await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken);
+        using var crashing = CreateService(new CrashingScopeFactory(_provider.GetRequiredService<IServiceScopeFactory>()));
+
+        // Act
+        await Assert.ThrowsAsync<SimulatedCrashException>(() => crashing.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+
+        // Assert: neither a cursor nor a selectable coin escapes its failed database save.
+        var failed = await service.GetStatusAsync(TestContext.Current.CancellationToken);
+        Assert.True(failed.IsRescanning);
+        Assert.Equal(finalization ? 4u : 0u, failed.RescanCursorHeight);
+        Assert.Equal(finalization ? 1 : 0, failed.FoundOutputs);
+        Assert.Empty(await UnspentAsync());
+        Assert.Empty(_provider.GetRequiredService<IUtxoMemoryRepository>().GetUnreservedUtxos());
+        Assert.True(await crashing.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        if (finalization)
+        {
+            Assert.Single(await UnspentAsync());
+            Assert.Single(_provider.GetRequiredService<IUtxoMemoryRepository>().GetUnreservedUtxos());
+            Assert.False((await service.GetStatusAsync(TestContext.Current.CancellationToken)).IsRescanning);
+        }
+        else
+        {
+            Assert.Equal(1u, (await service.GetStatusAsync(TestContext.Current.CancellationToken)).RescanCursorHeight);
+            Assert.Empty(await UnspentAsync());
+        }
+        using var scope = _provider.CreateScope();
+        var journal = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().AccountingEventDbRepository
+            .GetByKeyPrefixAsync("wallet:", TestContext.Current.CancellationToken);
+        Assert.Single(journal);
+    }
+
+    private SilentPaymentService CreateService(IServiceScopeFactory? scopes = null) => new(scopes ?? _provider.GetRequiredService<IServiceScopeFactory>(), _chain.Object,
         _monitor.Object, _prevouts.Object, _scanner, _keys, _crypto, MsOptions.Create(_options),
         MsOptions.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }), NullLogger<SilentPaymentService>.Instance);
 
@@ -275,6 +319,26 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         return Block.Load(block.BlockData, Network.Main).Transactions.ToDictionary(transaction => new TxId(transaction.GetHash().ToBytes()),
             transaction => (IReadOnlyList<BitcoinPrevout>)transaction.Inputs.Select(_ =>
                 new BitcoinPrevout(100_000, new BitcoinScript(sender.PubKey.WitHash.ScriptPubKey.ToBytes()))).ToArray());
+    }
+
+    private sealed class CrashingScopeFactory(IServiceScopeFactory inner) : IServiceScopeFactory
+    {
+        private int _scopes;
+        public IServiceScope CreateScope()
+        {
+            var scope = inner.CreateScope();
+            return Interlocked.Increment(ref _scopes) == 2 ? new CrashingScope(scope) : scope;
+        }
+
+        private sealed class CrashingScope(IServiceScope inner) : IServiceScope, IServiceProvider
+        {
+            private CrashingUnitOfWork? _unitOfWork;
+            public IServiceProvider ServiceProvider => this;
+            public object? GetService(Type serviceType) => serviceType == typeof(IUnitOfWork)
+                ? _unitOfWork ??= new CrashingUnitOfWork(inner.ServiceProvider.GetRequiredService<IUnitOfWork>(), 1)
+                : inner.ServiceProvider.GetService(serviceType);
+            public void Dispose() => inner.Dispose();
+        }
     }
 
     private sealed class FixtureKeys : ISilentPaymentKeySource
