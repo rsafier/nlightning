@@ -58,7 +58,7 @@ Non-goals:
 | D-SP6 | Change of a send that pays a silent payment address | P2WPKH (today's `FeeInputSelector` change, line ~362); BIP86 P2TR; our own SP change label `m = 0` | **BIP86 P2TR change from the wallet (`GetUnusedAddressAsync(P2Tr, isChange: true)`) for any transaction with an SP output.** With P2WPKH change next to a P2TR payment, anyone can tell which output is the change. SP change (`m = 0`) is offered behind `SilentPayments:ChangeToSilentPayment` (default `false`). The sender knows the output at signing time and inserts it directly (§3.4). Other wallet sends keep their current change type. |
 | D-SP7 | Birthday height | wallet `HeightOfBirth`; tip at first enable; operator input | **The tip at the first start with `Receive` on, stored in `SilentPaymentScanState.BirthdayHeight`.** No address of ours existed before that. A restored node (`restorechanbackup` / new key file from a mnemonic) runs `sprescan --from-height <h>`. When the operator knows the seed was used for SP elsewhere, `SilentPayments:BirthdayHeight` overrides it. |
 | D-SP8 | Scanning on pruned nodes and Poll mode | live only; refuse when pruned | **Live scanning works on pruned nodes:** the tip's undo data exists. **Rescans are refused below `pruneheight`** (`getblockchaininfo`); the command says so. Poll mode (NL-1094) needs nothing extra: blocks reach the same `StageBlockAsync`. |
-| D-SP9 | Where prevouts come from | `getblock <hash> 3`; REST `/rest/spenttxouts/<hash>.bin`; `getrawtransaction` per prev tx | **`Auto`: probe at start in that order and use the first that works; `SilentPayments:PrevoutSource` forces one.** Details in §3.5. rbitcoin (NL-1095) answers only `getblock` 0/1 but finds confirmed transactions without a txindex, so it lands on the `getrawtransaction` path. |
+| D-SP9 | Where prevouts come from | `getblock <hash> 3`; REST `/rest/spenttxouts/<hash>.bin`; `getrawtransaction` per prev tx | **`Auto`: probe at start in that order and use the first that works; `SilentPayments:PrevoutSource` forces one.** Details in §3.5. The acceptance backend is Bitcoin Core 31.1. Other backend compatibility is outside this proof scope. |
 | D-SP10 | LND gRPC exposure | none; read-only visibility; `SendCoins` to `sp1` | **`SendCoins` accepts an `sp1…`/`tsp1…`/`sprt1…` address when `SilentPayments:Send` is on (an extension; LND itself refuses it). `NewAddress` stays as it is: LND's `AddressType` enum has no SP value, and a static address does not fit "new address" semantics. `ListUnspent` (walletrpc) and `GetTransactions` show SP UTXOs as `TAPROOT_PUBKEY` outputs.** `SendOutputs` (raw scripts) cannot express SP and stays unchanged. |
 | D-SP11 | Splice-out, sweeps, channel closes and dual-funded opens to an SP address | allow; refuse | **Refuse with a clear error ("pay the wallet, then `withdraw` to the silent payment address").** An SP output depends on the private keys of every eligible input. Splice and dual-fund transactions carry the peer's inputs, and their P2TR keys are unknown to us. Interactive-tx also lets inputs change after `tx_add_output`. A MuSig2 (taproot channel) funding input is eligible, but its key is shared. Sweeps spend P2WSH or NUMS-internal-key P2TR outputs, which are not eligible, so they have no eligible input at all. A cooperative close output is negotiated before signing and spends the shared funding key. |
 | D-SP12 | Dust and minimum outputs | | **Send:** refuse an SP output below `max(330 sat, SilentPayments:MinSendSat)` (default 546). **Receive:** an output below `SilentPayments:MinReceiveSat` (default 1,000 sat) is matched and counted, but it is not added to the wallet (metric `dust_ignored`). As the BIP warns, it still advances `k`. Operators may set the minimum to 0. |
@@ -218,8 +218,8 @@ A new `StageSilentPaymentsAsync(block, height, uow)` runs **before** `StageWalle
 
 **Prevouts** (`IBlockPrevoutSource`, Domain port, Infrastructure.Bitcoin implementation next to `BitcoinChainService`). Given a block, it returns, for each transaction that has a P2TR output, the prevout scriptPubKeys of all its inputs. It never fetches prevouts for transactions without a P2TR output.
 - **(1) `getblock <hash> 3`** (Bitcoin Core ≥ 25): every `vin` carries `prevout {scriptPubKey.hex, value}`, read from the block's undo data. **No `-txindex` needed** (verified 2026-10-07 on the signet node's Core 31.1 with no indexes: every input of block 325300 carried its `prevout`). It fails for a block whose data is pruned. Parse it with our own JSON reader, streamed, as `GetBlockTxIdsAsync` streams `getblock 1` (`BitcoinChainService.cs:350`). Read `scriptPubKey.hex` only, never `asm` (NL-1097). Cost: roughly 3-5x the raw block in JSON per block.
-- **(2) REST `GET /rest/spenttxouts/<hash>.bin`** (Bitcoin Core ≥ 30, PR #32540, merged 2025-06-27): the block's spent outputs per transaction, in binary from undo data. It needs `-rest`. BlindBit Oracle v2 uses it. Verify on Core 31.1 regtest before relying on it (the format, whether `-txindex` is needed (it should not be), and behaviour on a pruned block), and record the finding in §8. It is the cheapest source: about 200 KB against 13 MB of JSON per mainnet block.
-- **(3) `getrawtransaction <prev txid>`** per distinct previous transaction not created earlier in the same block. On Core it needs `-txindex` (or the transaction in the mempool). rbitcoin finds confirmed transactions without a txindex (NL-1095). It is the slowest, a fallback for small or test chains.
+- **(2) REST `GET /rest/spenttxouts/<hash>.bin`** (Bitcoin Core ≥ 30, PR #32540, merged 2025-06-27): the block's spent outputs per transaction, in binary from undo data. It needs `-rest`. BlindBit Oracle v2 uses it. Verified on pinned Core 31.1 regtest with and without `-txindex`; exact binary format and the prune refusal proof are recorded in §8. It is the cheapest source: about 200 KB against 13 MB of JSON per mainnet block.
+- **(3) `getrawtransaction <prev txid>`** per distinct previous transaction not created earlier in the same block. On Core it needs `-txindex` (or the transaction in the mempool). It is the slowest, a fallback for small or test chains.
 - **In-block shortcut:** a prevout created by an earlier transaction of the same block comes from the block itself in every source.
 - `Auto` probes (1) on the current tip at start, then (2), then (3). `spstatus` reports the source in use. When none works, `Receive` refuses to start, with a message naming `-txindex`/`-rest`. A per-block failure (pruned block, RPC error) retries with the monitor's retry policy. A persistent failure halts like any other block-processing failure (`chainstatus`, NL-216), because skipping a block would silently lose payments.
 
@@ -405,7 +405,7 @@ NL-1260 owns the single migration. Later tasks that need a column add it in a mi
 - Acceptance:
   - unit tests on captured Core 31.1 regtest answers for each source (record them with an `Explicit` capture test, as `ClnBolt12CaptureTests` does);
   - a cluster live test on a Core 31.1 regtest pod: all three sources give identical prevouts for a block with P2PKH, P2SH-P2WPKH, P2WPKH, P2TR key and script path, and P2WSH inputs. Source (3) needs `-txindex` on that pod;
-  - a contract run against rbitcoin (`RbitcoinContractClusterTests` pattern) shows `Auto` lands on (3) and works;
+  - a second Core 31.1 node with `-txindex=0` gives identical prevouts through sources (1) and (2); `Auto` fallback selection is covered by hermetic unsupported-source responses;
   - a pruned regtest (`-prune=550` after mining past it) refuses the old block with the "pruned" error.
 - Record the REST verification (D-SP9) in §8.
 
@@ -468,7 +468,7 @@ NL-1260 owns the single migration. Later tasks that need a column add it in a mi
 ### Wave SP-X: extras
 
 **NL-1268 SP-X1: optional light tweak-index source (M, optional)**
-- `IBlockTweakSource`, for nodes whose bitcoind cannot serve prevouts (pruned rescans, rbitcoin without the fallback). It fetches per block the 33-byte `input_hash·A` per eligible transaction from:
+- `IBlockTweakSource`, for nodes whose bitcoind cannot serve prevouts (pruned rescans without undo data). It fetches per block the 33-byte `input_hash·A` per eligible transaction from:
   - **(a) a BlindBit Oracle** (v2: gRPC `StreamComputeIndex`/`StreamBlockScanDataShort`, deprecated HTTP `/tweaks/:height`; it needs an unpruned Core ≥ 30 with REST);
   - **(b) Bitcoin Core's index**, if one lands. PR #28241 (`-bip352index`, `getsilentpaymentblockdata`) was closed in 2025, so none exists today.
 - **Trust model:** the server learns nothing secret. We still verify each candidate match against the block we already have (the outputs). A lying server can only hide payments, so the source is opt-in and never the default.
@@ -502,7 +502,7 @@ NL-1260 owns the single migration. Later tasks that need a column add it in a mi
    - re-derivation on input change;
    - malleated P2PKH, script-path inputs, every input type.
 3. **In-process wallet tests:** `Infrastructure.Bitcoin.Tests` and `Application.Tests` with the chain-monitor harnesses (stepped clocks, `SilentZmqEndpoint` from `test/NLightning.Tests.Utils/Mocks/`, never a fixed ZMQ port: NL-310), the SQLite persistence harnesses, crash injection between the scan stage and the save (the unit of work makes it atomic; prove it).
-4. **Cluster:** the NL-1267 suite through `scripts/run-cluster.sh` (CLAUDE.md "Running the integration suites"; flake rule: rerun only the failed class); the NL-1261 live prevout tests (Core 31.1, rbitcoin); the Postgres round trip in `postgres`.
+4. **Cluster:** the NL-1267 suite through `scripts/run-cluster.sh` (CLAUDE.md "Running the integration suites"; flake rule: rerun only the failed class); the NL-1261 live prevout tests (Bitcoin Core 31.1, including a node without txindex); the Postgres round trip in `postgres`.
 5. **Benchmarks:** `tools/NLightning.SilentPaymentBenchmark`: per-block scan time and the adversarial K_max block (§3.7). They are not part of CI; their numbers go into §8.
 6. **Standard cycle:** net10.0 only (`-f net10.0`), net11.0 compile check, `dotnet format`, no new warnings, Release and Release.Native builds (crypto code is in Infrastructure.Bitcoin, which does not switch backends, but build both anyway).
 
@@ -537,8 +537,8 @@ NL-1260 owns the single migration. Later tasks that need a column add it in a mi
 ## 7. Open questions and risks
 
 1. **Performance of managed secp256k1.** NBitcoin.Secp256k1 is a managed port. Constant-time multiplications cost several hundred µs each, so 2,000 eligible transactions per block may take about 0.5-1 s even when parallel. Mitigations, in order: parallelism; the variable-time path for public-only maths; batching the label lookups. As a last resort, libsecp256k1 0.8.0's silentpayments module (released 2026-08-03, full-node scanning, PR #1765) through P/Invoke behind the `ISilentPaymentCrypto` port. That would add a native dependency (see `CRYPTO_NATIVE`), so it is an owner decision if needed.
-2. **REST `spenttxouts`.** Its exact requirements on Core 31.1 (`-rest`; `-txindex` reported by one summary, not expected from an undo-data reader) must be verified in NL-1261 before we recommend it.
-3. **rbitcoin** answers only `getblock` verbosity 0/1. The fallback (3) makes SP receiving work there but slowly. A pruned rbitcoin cannot rescan. We may ask rbitcoin for verbosity 3, or for a spent-outputs call, upstream.
+2. **REST `spenttxouts`.** Verified on Core 31.1: `-rest` is required, `-txindex` is unnecessary, and the payload contains ordinary serialized `CTxOut` values. Old pruned blocks cannot be recovered; see §8.
+3. **Backend scope.** The owner explicitly selected Bitcoin Core for this implementation and proof. rbitcoin compatibility has not been verified by this work and is not an acceptance requirement.
 4. **Core wallet support is still in review** (#35302 send, #32966 receive). Interop proofs rely on Rust tooling until a Core release ships it. If Core picks a different default regtest HRP or path, follow Core and record it here.
 5. **The BIP is "Complete" but still versioned** (1.1.0 added K_max in March 2026, 1.1.1 a vector in April 2026). New vectors must be pulled deliberately (pinned SHA, §0).
 6. **Schema change to `Utxos`.** Making the address FK nullable touches every wallet reader. The NL-1260 audit is the risk control, and a missed reader would mis-sign or crash on an SP coin. The NL-1263 in-process spends through every path are the safety net.
@@ -548,7 +548,19 @@ NL-1260 owns the single migration. Later tasks that need a column add it in a mi
 
 ## 8. Record
 
-(Empty. Implementers add: owner decisions taken, measured budgets, REST verification, interop runs, the mainnet canary.)
+### NL-1261: actual Core prevout evidence (2026-10-07)
+
+The owner selected normal Bitcoin Core and removed rbitcoin proof from the scope. The first real cluster preflight used `bitcoin/bitcoin:31.1@sha256:da25cedc66b1daefff9f412ee196c901a899c3fa68a33b20849c3e08b5c40d63`. `SilentPaymentPrevoutClusterTests` passed both explicit facts. It compared `getblock 3`, REST `spenttxouts`, and `getrawtransaction` on seven candidate transactions: P2PKH, P2SH-P2WPKH, P2WPKH, P2TR key path, P2TR script path, P2WSH, and a child spending an earlier output in the same block. Every input amount and script agreed. A second node with no txindex returned identical `getblock 3` and REST prevouts.
+
+REST requires `-rest`. Its actual payload is CompactSize transaction count, including coinbase; per transaction, CompactSize input count; per input, ordinary `CTxOut` serialization: signed int64 little-endian satoshis followed by CompactSize script length and script bytes. Coinbase has zero previous outputs. This is not the compressed on-disk undo `Coin` format. The parser rejects missing/truncated outputs, negative amounts, noncanonical lengths, mismatched counts, and trailing bytes; body reads are asynchronous and cancellable with bounded buffers.
+
+The actual wire capture is retained in `test/NLightning.Infrastructure.Bitcoin.Tests/Wallet/Fixtures/core31-prevouts.json`, extracted from `TestResults/cluster/sp-core-preflight1/sp-core-preflight1-1/output.log` by `scripts/silent-payments/extract-prevout-capture.py`. The fixture records the image digest and SHA256 of each captured wire value:
+
+- raw block: `abc11459e37db6cbd8ccb767ab80171ba9f4fff1f7998817c4b2fe3d28747e4e`;
+- original getblock-3 JSON response: `6f35dac0fbf28c77e05fcd114f65f5710335700087a2b10ed4f8d017596215f2`;
+- REST bytes: `007f457c53b63d19a4720b8f8f0ac1202b6c3af70dd97ebdca7407f23e1e85c0`.
+
+A separate Core pod with `-prune=550 -fastprune=1`, no txindex, and 1001 generated blocks reported `pruneheight=508`. Core refused old block10 as pruned; the source refused height10 before a recovery cursor could be written. Full silent-payment flow completion is tracked separately: this first preflight proved independent-wallet interoperability in both modes, but the reorg fixture timed out after tip shrink and required an empty replacement branch before the remaining recovery/channel proof could run.
 
 ## References
 
