@@ -17,6 +17,7 @@ using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Protocol.ValueObjects;
+using Domain.Protocol.Interfaces;
 using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Crypto.SilentPayments;
 using Infrastructure.Bitcoin.Managers;
@@ -56,7 +57,7 @@ public sealed class LocalLightningSignerSilentPaymentTests : IDisposable
         var signed = ToSigned(tx);
 
         // Act
-        Assert.True(_signer.SignWalletTransaction(signed, [], reservation));
+        Assert.True(_signer.SignWalletTransaction(signed, reservation, []));
 
         // Assert: an accidental BIP86 tweak fails the independent script interpreter.
         var result = Transaction.Load(signed.RawTxBytes, Network.RegTest);
@@ -109,7 +110,7 @@ public sealed class LocalLightningSignerSilentPaymentTests : IDisposable
         var before = signed.RawTxBytes.ToArray();
 
         // Act / Assert
-        Assert.Throws<SignerException>(() => _signer.SignWalletTransaction(signed, [], reservation));
+        Assert.Throws<SignerException>(() => _signer.SignWalletTransaction(signed, reservation, []));
         Assert.Equal(before, signed.RawTxBytes);
     }
 
