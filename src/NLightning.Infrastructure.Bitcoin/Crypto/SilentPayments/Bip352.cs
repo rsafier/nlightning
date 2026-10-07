@@ -87,7 +87,7 @@ internal static class Bip352
                 if (input.IsTaproot)
                 {
                     var point = Ctx.EcMultGenContext.MultGen(scalar).ToGroupElement();
-                    scalar = scalar.CondNegate(point.y.Normalize().IsOdd);
+                    NormalizeSecret(ref scalar, point);
                 }
                 aggregate = aggregate.Add(scalar);
                 Scalar.Clear(ref scalar);
@@ -256,7 +256,7 @@ internal static class Bip352
             secret = secret.Add(t).Add(label);
             if (secret.IsZero) throw new ArgumentException("Derived spend key is zero.");
             var point = Ctx.EcMultGenContext.MultGen(secret).ToGroupElement();
-            secret = secret.CondNegate(point.y.Normalize().IsOdd);
+            NormalizeSecret(ref secret, point);
             var result = new byte[32];
             secret.WriteToSpan(result);
             return result;
@@ -305,6 +305,13 @@ internal static class Bip352
             return result.ToGroupElementVariable();
         }
         finally { Scalar.Clear(ref scalar); }
+    }
+
+    private static void NormalizeSecret(ref Scalar secret, GE point)
+    {
+        var negated = secret.Negate();
+        try { Scalar.CMov(ref secret, negated, point.y.Normalize().IsOdd ? 1 : 0); }
+        finally { Scalar.Clear(ref negated); }
     }
 
     private static Scalar CheckedScalar(ReadOnlySpan<byte> bytes)
