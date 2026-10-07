@@ -30,7 +30,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// <see cref="LocalLightningSigner"/>, an in-memory UTXO set, a mocked unit of work and a mocked anchors reserve. Every
 /// signed transaction is checked here with NBitcoin's script interpreter, independently of the service's own check.
 /// </summary>
-public class WalletSpendServiceTests
+public partial class WalletSpendServiceTests
 {
     private const uint Height = 200;
     private const long FeeRatePerKw = 1_000;
