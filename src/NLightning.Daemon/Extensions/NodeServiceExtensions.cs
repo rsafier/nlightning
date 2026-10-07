@@ -46,6 +46,7 @@ using Domain.Client.Interfaces;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Node.Options;
+using Domain.Bitcoin.SilentPayments;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
