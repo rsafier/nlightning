@@ -1,5 +1,5 @@
 using System.Buffers.Binary;
-using System.Security.Cryptography;
+using SHA256 = System.Security.Cryptography.SHA256;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -150,7 +150,7 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         // Assert
         var current = Assert.Single(await UnspentAsync());
         Assert.Equal(new TxId(held.Hash.ToBytes()), current.TxId);
-        Assert.Equal(30_000UL, current.Amount.Satoshi);
+        Assert.Equal(30_000L, current.Amount.Satoshi);
         Assert.False((await restarted.GetStatusAsync(TestContext.Current.CancellationToken)).IsRescanning);
         using var scope = _provider.CreateScope();
         var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
