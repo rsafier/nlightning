@@ -146,7 +146,7 @@ public class WalletPsbtServiceTests : IDisposable
 
         // Assert: the witness spends P directly, with no BIP86 tweak.
         Assert.True(tx.CreateValidator([silent.PrevOut]).ValidateInput(0).Error is null or ScriptError.OK);
-        await _service.PublishTransactionAsync(finalized.RawFinalTx, "silent payment", Ct);
+        await _service.PublishAsync(finalized.RawFinalTx, "silent payment", Ct);
         Assert.Single(_published);
     }
 
@@ -167,10 +167,10 @@ public class WalletPsbtServiceTests : IDisposable
         public byte[] GetSilentPaymentSpendKey(ReadOnlySpan<byte> tweak32, uint? label) => RawScalar();
         public BitcoinKeyPath ChannelKeyPath => deposit.ChannelKeyPath;
         public uint HeightOfBirth => deposit.HeightOfBirth;
-        public Domain.Crypto.ValueObjects.ExtPrivKey GetNextChannelKey(out uint index) => deposit.GetNextChannelKey(out index);
-        public Domain.Crypto.ValueObjects.ExtPrivKey GetChannelKeyAtIndex(uint index) => deposit.GetChannelKeyAtIndex(index);
-        public Domain.Crypto.ValueObjects.ExtPrivKey GetDepositP2TrKeyAtIndex(uint index, bool isChange) => deposit.GetDepositP2TrKeyAtIndex(index, isChange);
-        public Domain.Crypto.ValueObjects.ExtPrivKey GetDepositP2WpkhKeyAtIndex(uint index, bool isChange) => deposit.GetDepositP2WpkhKeyAtIndex(index, isChange);
+        public ExtPrivKey GetNextChannelKey(out uint index) => deposit.GetNextChannelKey(out index);
+        public ExtPrivKey GetChannelKeyAtIndex(uint index) => deposit.GetChannelKeyAtIndex(index);
+        public ExtPrivKey GetDepositP2TrKeyAtIndex(uint index, bool isChange) => deposit.GetDepositP2TrKeyAtIndex(index, isChange);
+        public ExtPrivKey GetDepositP2WpkhKeyAtIndex(uint index, bool isChange) => deposit.GetDepositP2WpkhKeyAtIndex(index, isChange);
         public Domain.Crypto.ValueObjects.CryptoKeyPair GetNodeKeyPair() => deposit.GetNodeKeyPair();
         public Domain.Crypto.ValueObjects.CompactPubKey GetNodePubKey() => deposit.GetNodePubKey();
         public void ComputeNodeSharedSecret(ReadOnlySpan<byte> publicKey, Span<byte> sharedSecret) => deposit.ComputeNodeSharedSecret(publicKey, sharedSecret);
