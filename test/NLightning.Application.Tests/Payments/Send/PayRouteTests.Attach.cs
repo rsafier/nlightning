@@ -106,6 +106,13 @@ public partial class PayRouteTests
                                                          ViaCarol(harness, LightningMoney.MilliSatoshis(10_000_000)))));
         Assert.Contains("less than the total", tooLittle.Message);
 
+        // Act / Assert: with the part in flight the set would overpay even without the largest attached route
+        var tooMuch = await Assert.ThrowsAsync<ArgumentException>(
+            () => PayRouteAsync(harness, AttachByInvoice(invoice.Bolt11!,
+                                                         ViaCarol(harness, LightningMoney.MilliSatoshis(30_000_000)),
+                                                         ViaCarol(harness, LightningMoney.MilliSatoshis(30_000_000)))));
+        Assert.Contains("even without the largest", tooMuch.Message);
+
         // Act / Assert: no payroute payment of that hash in flight
         var nothing = await Assert.ThrowsAsync<InvalidOperationException>(
             () => PayRouteAsync(harness, AttachByInvoice(otherInvoice.Bolt11!, replacement)));
@@ -196,7 +203,8 @@ public partial class PayRouteTests
     public async Task Given_LndShardsSentOneCallEach_When_OneFailsAndIsReplaced_Then_EachCallAnswersItsOwnShardAndTheSetSettles()
     {
         // Arrange: SendToRouteV2's form (NL-1276): one shard per call, the raw identity with its mpp record (secret
-        // and total), joining the payroute payment of the hash; Carol fails her second forward
+        // and total), joining the payroute payment of the hash, sent with skip_temp_err (a temporary failure leaves
+        // the payment open for a replacement); Carol fails her second forward
         using var harness = new PaymentHarness();
         var ct = TestContext.Current.CancellationToken;
         var invoice = await harness.David.CreateMppInvoiceAsync(s_total, []);
@@ -207,8 +215,8 @@ public partial class PayRouteTests
         var options = new PayInvoiceOptions { Timeout = Timeout.InfiniteTimeSpan };
 
         // Act: the first shard is held by the payee and its call waits
-        var firstTask = harness.Bob.PaymentService.PayRouteAsync(LndShard(invoice, ViaCarol(harness, s_firstShard)),
-                                                                 options, ct);
+        var firstTask = harness.Bob.PaymentService.PayRouteAsync(
+            LndShard(invoice, ViaCarol(harness, s_firstShard), skipTempErr: true), options, ct);
         await WaitFor.TrueAsync(async () =>
         {
             await harness.PumpAsync();
@@ -217,24 +225,29 @@ public partial class PayRouteTests
 
         // Act: the second shard fails at Carol and its call answers at once, the first still held
         var failed = await harness.RunAsync(
-            harness.Bob.PaymentService.PayRouteAsync(LndShard(invoice, ViaCarol(harness, s_secondShard)), options,
-                                                     ct));
+            harness.Bob.PaymentService.PayRouteAsync(
+                LndShard(invoice, ViaCarol(harness, s_secondShard), skipTempErr: true), options, ct));
         Assert.False(firstTask.IsCompleted);
 
         // Act: a shard that would exceed the total with the one in flight is refused (LND: value exceeds amount)
         var over = await Assert.ThrowsAsync<ArgumentException>(
-            () => PayRouteAsync(harness, LndShard(invoice, ViaCarol(harness, LightningMoney.MilliSatoshis(40_000_000)))));
+            () => PayRouteAsync(harness, LndShard(invoice, ViaCarol(harness, LightningMoney.MilliSatoshis(40_000_000)),
+                                                  skipTempErr: true)));
 
         // Act: the replacement completes the set
         var replaced = await harness.RunAsync(
-            harness.Bob.PaymentService.PayRouteAsync(LndShard(invoice, ViaCarol(harness, s_secondShard)), options,
-                                                     ct));
+            harness.Bob.PaymentService.PayRouteAsync(
+                LndShard(invoice, ViaCarol(harness, s_secondShard), skipTempErr: true), options, ct));
         var first = await harness.RunAsync(firstTask);
 
-        // Assert: each call answered its own shard, the failed one attributed to Carol
+        // Assert: each call answered its own shard, the failed one attributed to Carol, with its own times
         Assert.Equal(PaymentPartState.Failed, Assert.Single(failed.Outcomes).Status);
         Assert.Equal(FailureCode.TemporaryChannelFailure, failed.Outcomes[0].FailureCode);
         Assert.Equal(0, failed.Outcomes[0].FailureSourceIndex);
+        Assert.NotNull(failed.Outcomes[0].OfferedAt);
+        Assert.NotNull(failed.Outcomes[0].ResolvedAt);
+        Assert.NotNull(replaced.Outcomes[0].OfferedAt);
+        Assert.NotNull(replaced.Outcomes[0].ResolvedAt);
         Assert.Equal(PaymentStatus.InFlight, failed.Payment.Status);
         Assert.Contains("over the payment's total", over.Message);
         Assert.Equal(PaymentPartState.Succeeded, Assert.Single(replaced.Outcomes).Status);
@@ -244,6 +257,103 @@ public partial class PayRouteTests
         Assert.Equal(3, forwards);
         Assert.Equal(s_total.MilliSatoshi,
                      harness.David.Switch.Received.ToArray().Aggregate(0UL, (sum, r) => sum + r.AmountMsat));
+        AssertNoPendingHtlcs(harness);
+    }
+
+    [Fact]
+    public async Task Given_LndShardsWithoutSkipTempErr_When_OneFails_Then_ThePaymentIsPendingFailedAndNoShardJoins()
+    {
+        // Arrange: LND's default (skip_temp_err false): a failed shard fails the payment (FailPayment), so a later
+        // shard is refused while the held one is in flight (ErrPaymentPendingFailed); Carol fails her second forward
+        using var harness = new PaymentHarness();
+        var ct = TestContext.Current.CancellationToken;
+        var invoice = await harness.David.CreateMppInvoiceAsync(s_total, []);
+        var forwards = 0;
+        harness.Carol.Switch.ForwardInterceptor = (_, _) => Interlocked.Increment(ref forwards) == 2
+            ? FailureMessage.TemporaryChannelFailure()
+            : null;
+        var options = new PayInvoiceOptions { Timeout = Timeout.InfiniteTimeSpan };
+        var firstTask = harness.Bob.PaymentService.PayRouteAsync(LndShard(invoice, ViaCarol(harness, s_firstShard)),
+                                                                 options, ct);
+        await WaitFor.TrueAsync(async () =>
+        {
+            await harness.PumpAsync();
+            return harness.David.Switch.HeldPaymentHashes.Contains(invoice.PaymentHash);
+        }, TimeSpan.FromSeconds(10), "the payee to hold the first shard", ct);
+
+        // Act: the second shard fails at Carol, then its replacement is sent
+        var failed = await harness.RunAsync(
+            harness.Bob.PaymentService.PayRouteAsync(LndShard(invoice, ViaCarol(harness, s_secondShard)), options,
+                                                     ct));
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => PayRouteAsync(harness, LndShard(invoice, ViaCarol(harness, s_secondShard))));
+
+        // Assert: the failed shard answered, the replacement was refused before anything was offered
+        Assert.Equal(PaymentPartState.Failed, Assert.Single(failed.Outcomes).Status);
+        Assert.Contains("pending failed", refused.Message);
+        Assert.Equal(2, forwards);
+        Assert.False(firstTask.IsCompleted);
+
+        // Act: the payee's mpp_timeout fails the held shard
+        harness.David.Clock.Advance(HtlcSwitchOptions.DefaultMppTimeout + TimeSpan.FromSeconds(1));
+        await harness.David.Switch.WhenIdleAsync();
+        var first = await harness.RunAsync(firstTask);
+
+        // Assert: the held shard's call answers its own failure and the payment failed
+        Assert.Equal(FailureCode.MppTimeout, Assert.Single(first.Outcomes).FailureCode);
+        await WaitFor.TrueAsync(async () =>
+        {
+            await harness.PumpAsync();
+            return (await harness.Bob.PaymentService.GetPaymentAsync(invoice.PaymentHash, ct))?.Status
+                == PaymentStatus.Failed;
+        }, TimeSpan.FromSeconds(10), "the payment to fail once its last shard failed", ct);
+        Assert.Equal(InvoiceStatus.Open,
+                     (await harness.David.Invoices.GetByPaymentHashAsync(invoice.PaymentHash))!.Status);
+        AssertNoPendingHtlcs(harness);
+    }
+
+    [Fact]
+    public async Task Given_TheFirstCallReturnedAtItsTimeout_When_AnAttachedReplacementSettlesTheSet_Then_EveryPartRowIsResolved()
+    {
+        // Arrange: the first call stops waiting (its 30 s timeout) while the payee holds its second shard
+        using var harness = new PaymentHarness();
+        var (invoice, payTask, _) = await StartHeldSetAsync(harness);
+        harness.Bob.Clock.Advance(s_timeout + TimeSpan.FromSeconds(1));
+        var first = await harness.RunAsync(payTask);
+        Assert.Equal(PaymentStatus.InFlight, first.Payment.Status);
+
+        // Act: the replacement, attached inside the window, completes the set
+        var attached = await PayRouteAsync(harness, AttachByInvoice(invoice.Bolt11!, ViaCarol(harness, s_firstShard)));
+        await harness.PumpAsync();
+
+        // Assert: the payment succeeded and no part row stays in flight (the held part of the first call included)
+        Assert.Equal(PaymentStatus.Succeeded, attached.Payment.Status);
+        var rows = await harness.Bob.Parts.GetForPaymentAsync(invoice.PaymentHash);
+        Assert.DoesNotContain(rows, r => r.State == PaymentPartState.InFlight);
+        Assert.Equal(2, rows.Count(r => r.State == PaymentPartState.Succeeded));
+        AssertNoPendingHtlcs(harness);
+    }
+
+    [Fact]
+    public async Task Given_AnLndShardPayingMoreThanTheDefaultFeeLimit_When_Sent_Then_ItIsNotChecked()
+    {
+        // Arrange: Carol is overpaid by 300,000 msat, over the default limit of the payment (0.5 %)
+        using var harness = new PaymentHarness();
+        var invoice = await harness.David.CreateMppInvoiceAsync(s_total, []);
+        var route = ViaCarol(harness, s_total) with
+        {
+            FirstHopAmount = s_total + LightningMoney.MilliSatoshis(300_000 + Fee(harness.Carol, s_total.MilliSatoshi))
+        };
+
+        // Act: payroute refuses it, an LND shard (sendToRoute applies no fee limit) pays it
+        var refused = await Assert.ThrowsAsync<ArgumentException>(
+            () => PayRouteAsync(harness, ByInvoice(invoice.Bolt11!, route)));
+        var paid = await PayRouteAsync(harness, LndShard(invoice, route));
+
+        // Assert
+        Assert.Contains("over the limit", refused.Message);
+        Assert.Equal(PaymentStatus.Succeeded, paid.Payment.Status);
+        Assert.Equal(PaymentPartState.Succeeded, Assert.Single(paid.Outcomes).Status);
         AssertNoPendingHtlcs(harness);
     }
 
@@ -278,14 +388,17 @@ public partial class PayRouteTests
     private static PayRouteRequest AttachByInvoice(string bolt11, params PayRouteRoute[] routes) =>
         new() { Bolt11 = bolt11, Routes = routes, Attach = PayRouteAttachMode.Required };
 
-    /// <summary>One shard as LND's <c>SendToRouteV2</c> sends it (raw form with the mpp record).</summary>
-    private static PayRouteRequest LndShard(InvoiceModel invoice, PayRouteRoute route) => new()
-    {
-        PaymentHash = invoice.PaymentHash,
-        PaymentSecret = invoice.PaymentSecret,
-        TotalAmount = s_total,
-        Routes = [route],
-        Attach = PayRouteAttachMode.IfInFlight,
-        IndependentShards = true
-    };
+    /// <summary>One shard as LND's <c>SendToRouteV2</c> sends it (raw form with the mpp record), with or without
+    /// <c>skip_temp_err</c>.</summary>
+    private static PayRouteRequest LndShard(InvoiceModel invoice, PayRouteRoute route, bool skipTempErr = false) =>
+        new()
+        {
+            PaymentHash = invoice.PaymentHash,
+            PaymentSecret = invoice.PaymentSecret,
+            TotalAmount = s_total,
+            Routes = [route],
+            Attach = PayRouteAttachMode.IfInFlight,
+            IndependentShards = true,
+            SkipTemporaryFailures = skipTempErr
+        };
 }

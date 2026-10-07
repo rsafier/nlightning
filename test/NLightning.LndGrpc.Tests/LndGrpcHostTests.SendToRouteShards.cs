@@ -77,6 +77,7 @@ public partial class LndGrpcHostTests
         {
             Assert.Equal(PayRouteAttachMode.IfInFlight, request.Attach);
             Assert.True(request.IndependentShards);
+            Assert.False(request.SkipTemporaryFailures);
             Assert.Equal(hash, request.PaymentHash);
             Assert.Equal(20_000ul, request.TotalAmount!.MilliSatoshi);
             Assert.Equal(Enumerable.Repeat((byte)0x66, 32).ToArray(), (byte[])request.PaymentSecret!.Value);
@@ -90,6 +91,81 @@ public partial class LndGrpcHostTests
         Assert.Equal(HTLCAttempt.Types.HTLCStatus.Succeeded, attemptA.Status);
         Assert.Equal(1ul, attemptA.AttemptId);
         Assert.Equal((byte[])preimage, attemptA.Preimage.ToByteArray());
+    }
+
+    [Fact]
+    public async Task Given_SkipTempErrAndShardTimes_When_SendToRouteV2_Then_TheFlagIsPassedAndTheAttemptCarriesItsOwnTimes()
+    {
+        // Arrange: a shard that failed while the payment stays in flight (another shard of it is held), offered and
+        // resolved at its own times, later than the payment row's creation
+        var channel = CreateChannel(7, ChannelState.Open);
+        _channels.Add(channel);
+        var destination = RealKey();
+        var hash = new Hash(RandomNumberGenerator.GetBytes(32));
+        var created = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
+        var offered = created + TimeSpan.FromSeconds(20);
+        var resolved = created + TimeSpan.FromSeconds(25);
+        var inFlight = new PaymentModel(hash, null, destination, LightningMoney.MilliSatoshis(20_000),
+                                        LightningMoney.MilliSatoshis(1_000), created);
+        PayRouteRequest? captured = null;
+        _paymentService.Setup(x => x.PayRouteAsync(It.IsAny<PayRouteRequest>(), It.IsAny<PayInvoiceOptions>(),
+                                                   It.IsAny<CancellationToken>()))
+                       .Callback((PayRouteRequest request, PayInvoiceOptions _, CancellationToken _) =>
+                                     captured = request)
+                       .ReturnsAsync(new PayRouteResult(inFlight,
+                       [
+                           new RouteOutcome(0, PaymentPartState.Failed, 3, FailureCode.TemporaryChannelFailure, 0,
+                                            "our peer could not forward")
+                           {
+                               OfferedAt = offered,
+                               ResolvedAt = resolved
+                           }
+                       ]));
+        var request = Shard(hash, channel.RemoteNodeId, destination);
+        request.SkipTempErr = true;
+        using var connection = await ConnectAsync(LndMacaroonFiles.AdminFileName);
+
+        // Act
+        var attempt = await connection.RouterClient.SendToRouteV2Async(request, cancellationToken: Ct);
+
+        // Assert: skip_temp_err reaches payroute, the attempt reports the shard's own times
+        Assert.NotNull(captured);
+        Assert.True(captured.SkipTemporaryFailures);
+        Assert.Equal(PayRouteAttachMode.IfInFlight, captured.Attach);
+        Assert.Equal(HTLCAttempt.Types.HTLCStatus.Failed, attempt.Status);
+        Assert.Equal(offered.ToUnixTimeMilliseconds() * 1_000_000, attempt.AttemptTimeNs);
+        Assert.Equal(resolved.ToUnixTimeMilliseconds() * 1_000_000, attempt.ResolveTimeNs);
+    }
+
+    [Fact]
+    public async Task Given_ARouteWithoutAnMppRecord_When_SendToRouteV2_Then_ItNeverJoinsAPaymentInFlight()
+    {
+        // Arrange: LND refuses a non-MPP route for a hash in flight (ErrPaymentInFlight); payroute refuses it too
+        var channel = CreateChannel(7, ChannelState.Open);
+        _channels.Add(channel);
+        var hash = new Hash(RandomNumberGenerator.GetBytes(32));
+        PayRouteRequest? captured = null;
+        _paymentService.Setup(x => x.PayRouteAsync(It.IsAny<PayRouteRequest>(), It.IsAny<PayInvoiceOptions>(),
+                                                   It.IsAny<CancellationToken>()))
+                       .Callback((PayRouteRequest request, PayInvoiceOptions _, CancellationToken _) =>
+                                     captured = request)
+                       .ThrowsAsync(new InvalidOperationException(
+                                        $"A payment for payment hash {hash} is already InFlight (being retried)."));
+        using var connection = await ConnectAsync(LndMacaroonFiles.AdminFileName);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<RpcException>(async () =>
+            await connection.RouterClient.SendToRouteV2Async(new SendToRouteRequest
+            {
+                PaymentHash = ByteString.CopyFrom((byte[])hash),
+                Route = TwoHopRoute(channel.RemoteNodeId, RealKey())
+            }, cancellationToken: Ct));
+
+        // Assert
+        Assert.NotNull(captured);
+        Assert.Equal(PayRouteAttachMode.Never, captured.Attach);
+        Assert.Equal(StatusCode.FailedPrecondition, exception.StatusCode);
+        Assert.Contains("already InFlight", exception.Status.Detail);
     }
 
     [Fact]

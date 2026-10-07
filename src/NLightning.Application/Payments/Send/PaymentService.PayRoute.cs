@@ -203,10 +203,13 @@ public sealed partial class PaymentService
 
         // ---- Fees and, route by route, the PaymentRoute itself (its constructor re-checks the invariants). An
         // attached round's fees are checked with the fees of the parts in flight, under the hash's lock
+        // LND's sendToRoute applies no fee limit ("we are not requesting routes"): an LND shard without an explicit
+        // limit is not checked against the default one, alone or with the shards in flight
+        var unlimitedFee = request.IndependentShards && options.MaxFee is null;
         var maxFee = options.MaxFee ?? _sendOptions.Value.GetMaxFee(total);
         var fee = parsedRoutes.Select(r => r.Supplied.FirstHopAmount - r.Supplied.Hops[^1].AmountToForward)
                               .Aggregate(LightningMoney.Zero, (sum, part) => sum + part);
-        if (fee > maxFee && request.Attach != PayRouteAttachMode.Required)
+        if (!unlimitedFee && fee > maxFee && request.Attach != PayRouteAttachMode.Required)
             throw new ArgumentException(
                 $"The routes pay {fee.MilliSatoshi} msat in fees, over the limit of {maxFee.MilliSatoshi} msat "
               + "(:--max-fee-msat raises it).", nameof(request));
@@ -229,7 +232,17 @@ public sealed partial class PaymentService
             paymentRoutes.Add(new SuppliedRoutePart(ToCandidate(channel), route));
         }
 
-        ValidateFirstHopLiquidity(paymentRoutes);
+        try
+        {
+            ValidateFirstHopLiquidity(paymentRoutes);
+        }
+        catch (PayRouteLiquidityException e) when (request is { IndependentShards: true, SkipTemporaryFailures: false })
+        {
+            // LND: the shard's attempt fails at our own channel and, without skip_temp_err, fails the payment in
+            // flight pending (NL-1276)
+            await FailPayRouteSessionPendingAsync(paymentHash, e.Message, cancellationToken);
+            throw;
+        }
 
         // ---- The session: one attempt, exactly these routes, nothing re-planned
         var target = invoiceTarget
@@ -262,16 +275,38 @@ public sealed partial class PaymentService
         // whose fulfill arrived after the session was completed (their part is still InFlight in the snapshot)
         var settled = payment.Status == PaymentStatus.Succeeded;
         if (settled)
-            await SettleLeftoverPartRowsAsync(session, round);
-        var outcomes = round.Select((part, index) => new RouteOutcome(
-                                        index,
-                                        part.Status == PaymentPartStatus.InFlight && settled
-                                            ? PaymentPartState.Succeeded
-                                            : ToPartState(part.Status),
-                                        part.HtlcId, part.Failure?.Code, part.Failure?.SourceIndex,
-                                        part.Failure?.Reason))
+            await SettleLeftoverPartRowsAsync(session);
+        var outcomes = round.Select((part, index) =>
+                                    {
+                                        var settledLate = part.Status == PaymentPartStatus.InFlight && settled;
+                                        return new RouteOutcome(index,
+                                                                settledLate
+                                                                    ? PaymentPartState.Succeeded
+                                                                    : ToPartState(part.Status),
+                                                                part.HtlcId, part.Failure?.Code,
+                                                                part.Failure?.SourceIndex, part.Failure?.Reason)
+                                        {
+                                            OfferedAt = part.OfferedAt,
+                                            ResolvedAt = part.ResolvedAt
+                                                      ?? (settledLate ? payment.CompletedAt : null)
+                                        };
+                                    })
                             .ToList();
         return new PayRouteResult(payment, outcomes);
+    }
+
+    /// <summary>
+    /// Marks the <c>payroute</c> session of <paramref name="paymentHash"/> still in flight, when there is one, failed
+    /// pending (<see cref="PaymentSession.PendingFailure"/>, NL-1276).
+    /// </summary>
+    private async Task FailPayRouteSessionPendingAsync(Hash paymentHash, string reason,
+                                                       CancellationToken cancellationToken)
+    {
+        using (await AcquireHashLockAsync(paymentHash, cancellationToken))
+        {
+            if (_sessions.TryGetValue(paymentHash, out var session) && session.ManualRoutes)
+                session.PendingFailure ??= reason;
+        }
     }
 
     /// <summary>What one <c>payroute</c> call validated, for <see cref="StartOrAttachPayRouteAsync"/>.</summary>
@@ -328,7 +363,8 @@ public sealed partial class PaymentService
             _sessions[paymentHash] = session;
             try
             {
-                return (session, await RunManualRoundAsync(session, call.Routes));
+                return (session, await RunManualRoundAsync(session, call.Routes,
+                                                           failsPaymentOnFailure: FailsPaymentOnFailure(request)));
             }
             catch
             {
@@ -357,6 +393,11 @@ public sealed partial class PaymentService
             throw new InvalidOperationException(
                 $"A keysend payment for payment hash {paymentHash} goes over one route; nothing can be attached to "
               + "it.");
+        if (session.PendingFailure is { } pendingFailure)
+            throw new InvalidOperationException(
+                $"The payment for payment hash {paymentHash} is pending failed (a part failed: {pendingFailure}); "
+              + "nothing more can be attached until its parts in flight are resolved and it fails (LND: payment "
+              + "pending failed).");
 
         if (call.Target.PaymentSecret != session.Target.PaymentSecret)
             throw new ArgumentException(
@@ -403,10 +444,29 @@ public sealed partial class PaymentService
               + $"{delivered.MilliSatoshi} msat, less than the total {call.Total.MilliSatoshi} msat, so the payee "
               + "would never complete the set.", nameof(call));
         }
+        else if (inFlightDelivered >= call.Total)
+        {
+            // Nothing failed to replace: the parts in flight are only slow (LND caps the attempted value at the
+            // amount, ErrValueExceedsAmt)
+            throw new ArgumentException(
+                $"The parts in flight already deliver {inFlightDelivered.MilliSatoshi} msat, the whole total "
+              + $"{call.Total.MilliSatoshi} msat; there is nothing to replace (wait for them to resolve).",
+                nameof(call));
+        }
+        else if (call.Routes.Count > 1
+              && delivered.MilliSatoshi - call.Routes.Max(r => r.Route.Amount.MilliSatoshi) > call.Total.MilliSatoshi)
+        {
+            // Even without its largest route the round overpays: some of its routes are not needed
+            throw new ArgumentException(
+                $"With the parts in flight these routes deliver {delivered.MilliSatoshi} msat, over the total "
+              + $"{call.Total.MilliSatoshi} msat even without the largest of them; attach only what is missing.",
+                nameof(call));
+        }
 
         var maxFee = call.Options.MaxFee ?? session.MaxFee;
         var fees = LightningMoney.MilliSatoshis(session.FeesInFlightMsat) + call.Fee;
-        if (fees > maxFee)
+        // LND's sendToRoute applies no fee limit: an LND shard without an explicit one is not checked
+        if (!(request.IndependentShards && call.Options.MaxFee is null) && fees > maxFee)
             throw new ArgumentException(
                 $"The parts in flight pay {session.FeesInFlightMsat} msat in fees; with these routes "
               + $"{fees.MilliSatoshi} msat, over the limit of {maxFee.MilliSatoshi} msat (--max-fee-msat raises it).",
@@ -415,8 +475,13 @@ public sealed partial class PaymentService
         _logger.LogInformation("PayRoute {PaymentHash}: attaching {Routes} route(s) delivering {Delivered} msat to "
                              + "the {InFlight} part(s) in flight", paymentHash, call.Routes.Count,
                                call.Delivered.MilliSatoshi, session.InFlightParts.Count());
-        return await RunManualRoundAsync(session, call.Routes, "attached route");
+        return await RunManualRoundAsync(session, call.Routes, "attached route", FailsPaymentOnFailure(request));
     }
+
+    /// <summary>Whether any failure of the call's routes fails the payment pending: an LND shard without
+    /// <c>skip_temp_err</c> (<see cref="PayRouteRequest.SkipTemporaryFailures"/>).</summary>
+    private static bool FailsPaymentOnFailure(PayRouteRequest request) =>
+        request is { IndependentShards: true, SkipTemporaryFailures: false };
 
     /// <summary>
     /// Rejects a supplied route whose hops do not pay the forwarding fees the graph knows (<see cref="ForwardingFee"/>
@@ -491,14 +556,16 @@ public sealed partial class PaymentService
 
     /// <summary>
     /// Marks the part rows a succeeded shard set left <c>InFlight</c> (their fulfill arrived after the session was
-    /// completed, so no outcome handler updated them) as <c>Succeeded</c> — the payee settled the whole set.
+    /// completed, so no outcome handler updated them) as <c>Succeeded</c> — the payee settled the whole set. Every
+    /// part of the session, not only the calling round's: an earlier call may have returned at its own timeout
+    /// (NL-1276). The fulfill handler marks the row of such a part too when its fulfill arrives later.
     /// </summary>
-    private async Task SettleLeftoverPartRowsAsync(PaymentSession session, IReadOnlyList<PaymentPart> round)
+    private async Task SettleLeftoverPartRowsAsync(PaymentSession session)
     {
         try
         {
             using var scope = _serviceScopeFactory.CreateScope();
-            foreach (var part in round.Where(
+            foreach (var part in session.Parts.ToList().Where(
                          p => p is { Status: PaymentPartStatus.InFlight, HtlcId: not null }))
                 await UpdateStoredPartAsync(scope, session.PaymentHash, part.Channel.ChannelId, part.HtlcId!.Value,
                                             PaymentPartState.Succeeded);

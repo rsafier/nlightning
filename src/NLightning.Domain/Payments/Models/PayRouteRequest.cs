@@ -74,6 +74,18 @@ public sealed class PayRouteRequest
     /// together, and the call answers once its own routes are resolved instead of when the payment is.
     /// </summary>
     public bool IndependentShards { get; init; }
+
+    /// <summary>
+    /// For an <see cref="IndependentShards"/> call (LND <c>SendToRouteV2</c>'s <c>skip_temp_err</c>, NL-1276): a
+    /// temporary failure of the call's routes leaves the payment open for more shards. False (LND's default): any
+    /// failure of the call's routes, an offer our channel refuses included, fails the payment pending: no more routes
+    /// may attach while its other parts are in flight, and it fails once they are resolved (LND
+    /// <c>ErrPaymentPendingFailed</c>). A failure the node would never retry (the payee's permanent failure, an
+    /// unreadable error) fails the payment pending whatever the flag. Ignored for other calls: the routes of
+    /// <c>payroute</c> itself never end the set on a temporary failure; replacing them is what
+    /// <see cref="PayRouteAttachMode.Required"/> is for.
+    /// </summary>
+    public bool SkipTemporaryFailures { get; init; }
 }
 
 /// <summary>

@@ -173,6 +173,13 @@ internal sealed class PaymentSession
     /// <summary>Why the payment must not be retried any more (a permanent or local failure); null while it may.</summary>
     public string? TerminalReason { get; set; }
 
+    /// <summary>
+    /// Why a <c>payroute</c> payment is failed pending (NL-1276, LND's <c>FailPayment</c> of a <c>SendToRouteV2</c>
+    /// shard): no more routes may attach to it, and it fails once its parts in flight are resolved. Null while it may
+    /// take more routes.
+    /// </summary>
+    public string? PendingFailure { get; set; }
+
     /// <summary>The last failure of a part: code, erring hop index and its description.</summary>
     public (FailureCode? Code, int? SourceIndex, string Reason)? LastFailure { get; set; }
 
@@ -318,6 +325,15 @@ internal sealed class PaymentPart
     /// <summary>When the part's HTLC was offered (null until then); a <c>payroute --attach</c> must come within the
     /// payee's <c>mpp_timeout</c> of the oldest part still in flight (NL-1276).</summary>
     public DateTimeOffset? OfferedAt { get; set; }
+
+    /// <summary>When the part was resolved (fulfilled, failed or its offer refused); null while in flight.</summary>
+    public DateTimeOffset? ResolvedAt { get; set; }
+
+    /// <summary>
+    /// Any failure of the part fails its <c>payroute</c> payment pending (<see cref="PaymentSession.PendingFailure"/>):
+    /// an LND <c>SendToRouteV2</c> shard sent without <c>skip_temp_err</c> (NL-1276).
+    /// </summary>
+    public bool FailsPaymentOnFailure { get; init; }
 
     /// <summary>For a payment through a trampoline node: the attempt whose trampoline onion the part carries.</summary>
     public int? TrampolineAttempt { get; init; }
