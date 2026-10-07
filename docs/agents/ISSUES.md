@@ -1,6 +1,6 @@
 # NLightning Issue Ledger
 
-Updated 2026-10-07 by `wip/dangling` from `wip/fafo` e47ae080: implemented NL-758, NL-759, NL-1283, NL-1289 and new NL-1298; expanded NL-1186 with explicitly documented remaining compatibility limits. Focused runtime checks are recorded below; combined real-node acceptance is still pending in DANGLING_PLAN.md. SP performance evidence, optional remote scanning and mainnet activation are excluded. Summary recounted: 1004 unique classified IDs, no duplicates.
+Updated 2026-10-07 by `wip/dangling` from `wip/fafo` e47ae080: implemented NL-758, NL-759, NL-1283, NL-1289 and new NL-1298; expanded NL-1186 with explicitly documented remaining compatibility limits. Focused runtime checks are recorded below; one complete normal Core/LND acceptance run passed (`dangling-proof12-1`, 1/1 wrapper, 3/3 inner, 109 s; source `a168d2cd`) and is recorded in DANGLING_PLAN.md. SP performance evidence, optional remote scanning and mainnet activation are excluded. Summary recounted: 1004 unique classified IDs, no duplicates.
 
 Merge update 2026-10-07: retained upstream NL-1181, NL-1182, NL-1186, NL-1187, NL-1253 and NL-1276 resolutions and new NL-1292/NL-1293 alongside the silent-payment implementation. Summary recounted: 1001 unique classified IDs, no duplicates. NL-1267 is accepted by the complete merged-base `sp-core-merged1-2` pass on `f92c75a2` under the owner's one-pass choice; earlier partial/old-base runs were not used to close the gate.
 
@@ -8349,7 +8349,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-758 A price replacement's note and the replaced price are kept only in the log when no closed period used the price
-- **Status:** fixed (wip/dangling; implementation and focused tests complete, combined live proof pending)
+- **Status:** fixed (wip/dangling; implementation, focused tests and combined live proof complete)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs` (`ReplaceAsync`); `docs/agents/SECURITY_REVIEW.md` SR-22
@@ -8361,7 +8361,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Validation:** Release net10 solution build has zero warnings/errors. Final affected Application 388 and non-Docker/non-SqlServer/non-cluster Integration 1,251 passed; the combined Core/LND proof remains an explicit acceptance gate in DANGLING_PLAN.md.
 
 ### NL-759 After a price replacement, closed lots keep the old cost and a closed period's export prints the corrected price
-- **Status:** fixed (wip/dangling; implementation and focused tests complete, combined live proof pending)
+- **Status:** fixed (wip/dangling; implementation, focused tests and combined live proof complete)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs` (`RepriceAsync`), `Accounting/Financial/` lots and export
@@ -9729,7 +9729,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Validation (2026-10-07):** `Infrastructure.Bitcoin.Tests/Wallet/WalletPsbtServiceTests.Nl1186.cs` (11 cases: SignPsbt then NBitcoin's finalizer, a mixed PSBT signed/finalized/published as `WalletCollaborative`, a foreign input not finalized, an unleased input, a PSBT without wallet inputs, P2TR change fee, `max_fee_ratio`, message signatures P2WPKH/P2TR, a wrong index refused, Core's vector), `BitcoinChainServiceRawPackageTests` (3), `Application.Tests/Onchain/Fees/SweepSchedulerOperatorBumpTests` (4), `Onchain/Anchors/AnchorCpfpServiceTests.OperatorBumps.cs` (5), `LndGrpc.Tests/Wave3/LndGrpcWave3HostTests.Nl1186.cs` (18 cases), `Integration.Tests/Persistence/BroadcastLabelPersistenceTests` (SQLite). net10.0: Domain 4806 (+4 skipped), Infrastructure.Bitcoin 2180 (+2 skipped), Application 4464, LndGrpc 267, Daemon 1692, Integration 1221 (+1 new) green; Release build 0 warnings; `dotnet format` clean. No cluster proof (walletrpc against LND alice is NL-1184's `LndGrpcWave3FlowTests`).
 - **Review fixes (branch `wip/u-nl1186-r1`, 2026-10-07):** the sweep budget cap for outputs with a deadline (`SweepScheduler`), the net flow of a `WalletCollaborative` transaction booked as `WalletSent` (`BlockchainMonitorService.StageWalletMovements`, `AccountingPostingRules.PostWalletSent` posts a positive net flow to transfers in), FundPsbt's unset `max_fee_ratio` as LND's 0.2, and `RemoveTransaction` refused for wallet sends not held by walletrpc leases or withdraw reservations (the anchor CPFP reclaim). Tests: `SweepSchedulerTests.Given_AnOperatorBudgetBelowThePenaltyCap_*` (fails without the fix), `ChainMonitorAccountingTests.Given_ACollaborativeTransaction_*` (payjoin sent and received: clearing 0), `WalletPsbtServiceTests.Given_LndsDefaultMaxFeeRatio_*`, `LndGrpcWave3HostTests.Given_AFundPsbtWithoutMaxFeeRatio_*` and the extended RemoveTransaction case. net10.0: Domain 4806 (+4 skipped), Application 4465, Infrastructure.Bitcoin 2181 (+2 skipped), LndGrpc 268, Integration 1224, Daemon 1692 green; Release build 0 warnings; `dotnet format` clean.
 - **Blocks/Blocked-by:** follow-up of NL-1184
-- **Done (2026-10-07, wip/dangling):** Coin-select templates preserve input/output order and foreign PSBT maps, support existing zero-value change placeholders, and lease only added wallet inputs. Scoped BIP84/BIP86 owned accounts use durable discovery windows and real signer derivation; account-level public imports remain isolated watch-only and extend discovery over historical spent receipts. A Core-proven transient mempool pool enables explicit unconfirmed selection/leases without adding confirmed custody or anchor collateral. Confirmation-depth leases persist in reservation identities and inspect bounded history pages. Wallet CPFP prices all ancestors, persists intent before publishing, and supports exact-input child RBF with incremental relay, dust and budget checks. Deposit/imported/broadcast labels are independent durable records with explicit overwrite. See WALLET_ACCOUNTS_OPERATOR.md. Final LND RPC 312, CLI/accounting handler 90 and circuit model 22 passed; combined Core/LND trial pending.
+- **Done (2026-10-07, wip/dangling):** Coin-select templates preserve input/output order and foreign PSBT maps, support existing zero-value change placeholders, and lease only added wallet inputs. Scoped BIP84/BIP86 owned accounts use durable discovery windows and real signer derivation; account-level public imports remain isolated watch-only and extend discovery over historical spent receipts. A Core-proven transient mempool pool enables explicit unconfirmed selection/leases without adding confirmed custody or anchor collateral. Confirmation-depth leases persist in reservation identities and inspect bounded history pages. Wallet CPFP prices all ancestors, persists intent before publishing, and supports exact-input child RBF with incremental relay, dust and budget checks. Deposit/imported/broadcast labels are independent durable records with explicit overwrite. See WALLET_ACCOUNTS_OPERATOR.md. Final LND RPC 312, CLI/accounting handler 90 and circuit model 22 passed; combined Core/LND trial passed in `dangling-proof12-1`. Final boundary fixes hydrate projected history before lease-release proof, round CPFP to whole virtual bytes and atomically promote transient coins when packages confirm; focused lease6/CPFP9/SQLite56 checks passed.
 
 - **Inputless-template recovery (2026-10-07, wip/dangling):** Core-generated BIP174 inputless packets receive bounded normalization instead of witness-marker decoding/transaction-clone failure; PSBTv2 inputless packets work too. Funded responses remain v0 with preserved transaction fields and metadata. Nine cases pass, including wallet signature verification and malformed-map refusal before leases.
 
@@ -10665,7 +10665,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** related NL-1181
 
 ### NL-1283 LND gRPC HtlcInterceptor: remaining differences from LND v0.21.4 after NL-1182
-- **Status:** fixed (wip/dangling; implementation and focused tests complete, combined live proof pending)
+- **Status:** fixed (wip/dangling; implementation, focused tests and combined live proof complete)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `Application/Payments/Switch/HtlcSwitch{,.Interception}.cs`, `Onchain/Resolvers/FinalHopClaims.cs`, `Payments/Interception/HtlcInterceptorHub.cs`
@@ -10688,7 +10688,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** found in NL-1186
 
 ### NL-1289 LND gRPC GetTransactions: history that needs a wallet rescan
-- **Status:** fixed (wip/dangling; implementation and focused tests complete, combined live proof pending)
+- **Status:** fixed (wip/dangling; implementation, focused tests and combined live proof complete)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.LndGrpc/Services/LightningService.Transactions.cs`; chain monitor wallet history (`WalletTransactions`)
@@ -10723,5 +10723,5 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Location:** `Infrastructure.Bitcoin/Wallet/WalletSpendService.SilentPayments.cs`, `WalletSpendService.cs`, `WalletSelectionPolicy`
 - **Evidence:** NL-1296 added exact `withdraw --utxo` for conventional destinations, but a silent-payment destination still rejected an explicit input list. Operators could not preserve the same exact-input/reserve policy for BIP352 sends.
 - **Fix:** Amount and send-all silent-payment withdrawals spend exactly the named confirmed eligible wallet outpoints, including received silent-payment outputs, preserving anchor reserve backing in other coins and refusing unavailable/duplicate/ineligible inputs. Send-all emits no change; amount withdrawals retain the normal deterministic BIP352 change/signature path. Operator instructions document input linkage, reserves, status and logs.
-- **Validation:** 75 initial selected-input/signing checks passed, including actual named-account signing. Final wallet/selector regressions passed 477 cases plus three corrected monitor reorg cases. Combined normal Core/upstream-LND exact-input receipt proof pending in DANGLING_PLAN.md.
+- **Validation:** 75 initial selected-input/signing checks passed, including actual named-account signing. Final wallet/selector regressions passed 477 cases plus three corrected monitor reorg cases. Combined normal Core/upstream-LND exact-input receipt proof passed in `dangling-proof12-1`; the chosen 40k coin was spent and the 800k coin left untouched. See DANGLING_PLAN.md.
 - **Blocks/Blocked-by:** follow-up of NL-1296; silent payments D-SP13.
