@@ -10104,7 +10104,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** none
 
 ### NL-1240 Lightning Terminal's Autopilot page through the LNC bridge
-- **Status:** fixed (pending)
+- **Status:** fixed (99282e47)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `tools/lnc/autopilot.go`, `autopilot_server.go`, `firewall.go`, `rules.go`, `privacy.go`, `actions.go`, `lit.go`, `proxy.go`, `serve.go`, `session.go`, `config.go`, `main.go`, `internal/litrpc`, `internal/autopilotserverrpc`, `proto/`, `docs/agents/LNC_AUTOPILOT_PLAN.md`, `tools/lnc/README.md`
