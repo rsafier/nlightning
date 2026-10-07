@@ -60,6 +60,7 @@ public sealed partial class SilentPaymentChainMonitorTests
         using var sealer = new AccountingEventSealerService(scopes, NullLogger<AccountingEventSealerService>.Instance);
         await using var books = new AccountingBooksService(scopes, NullLogger<AccountingBooksService>.Instance, sealer: sealer);
         await using var financial = new FinancialBooksProjector(scopes, NullLogger<FinancialBooksProjector>.Instance,
+            options: Options.Create(new AccountingOptions { Profile = AccountingProfile.Financial }),
             priceOptions: Options.Create(new AccountingPriceOptions { Source = AccountingPriceSourceMode.None }));
         await books.ProjectNowAsync(TestContext.Current.CancellationToken);
         await financial.ProjectAsync(TestContext.Current.CancellationToken);
