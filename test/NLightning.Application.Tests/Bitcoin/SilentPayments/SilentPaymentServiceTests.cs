@@ -257,7 +257,7 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         using var after = _provider.CreateScope();
         var uow = after.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var wallet = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wallet:", TestContext.Current.CancellationToken);
-        var recoveredChange = Assert.Single(wallet.Where(fact => fact.Details.GetValueOrDefault("receiptSource") == "wallet_recovery"));
+        var recoveredChange = Assert.Single(wallet, fact => fact.Details.GetValueOrDefault("receiptSource") == "wallet_recovery");
         Assert.Equal(AccountingDetailKeys.WalletSource, recoveredChange.Details[AccountingDetailKeys.Source]);
         Assert.Equal("true", recoveredChange.Details["change"]);
         var settlements = await uow.AccountingEventDbRepository.GetByKeyPrefixAsync("wsend:", TestContext.Current.CancellationToken);

@@ -7,6 +7,7 @@ using Bitcoin.Wallet;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Node.Options;
+using Domain.Protocol.ValueObjects;
 
 public partial class BitcoinWalletServiceTests
 {
