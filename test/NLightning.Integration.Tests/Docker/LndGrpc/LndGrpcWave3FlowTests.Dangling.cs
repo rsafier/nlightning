@@ -421,7 +421,8 @@ public partial class LndGrpcWave3FlowTests
         await rpc.SendCommandAsync("pruneblockchain", 700).WaitAsync(ct);
         var chain = new BitcoinChainService(Microsoft.Extensions.Options.Options.Create(new BitcoinOptions
         {
-            RpcEndpoint = core.ClusterRpcUrl,
+            // The test process reaches the pod by its IP (the Service DNS name resolves only inside the cluster)
+            RpcEndpoint = $"http://{core.GetHost(RpcRoute.PodIp)}:{BitcoinCorePorts.Rpc}",
             RpcUser = core.Options.RpcUser,
             RpcPassword = core.Options.RpcPassword
         }), NullLogger<BitcoinChainService>.Instance, Node.Services.GetRequiredService<IOptions<NodeOptions>>());
