@@ -40,6 +40,12 @@ public interface IFeeInputSelector
     Task<FeeInputReservation> ReserveAsync(LightningMoney targetFee, LightningMoney feeRatePerKw, int extraWeight,
                                            string purpose, CancellationToken cancellationToken = default);
 
+    /// <summary>Reserves with the coin and change policy needed for a silent payment.</summary>
+    Task<FeeInputReservation> ReserveAsync(LightningMoney targetFee, LightningMoney feeRatePerKw, int extraWeight,
+                                           string purpose, WalletSelectionPolicy policy,
+                                           CancellationToken cancellationToken = default) =>
+        ReserveAsync(targetFee, feeRatePerKw, extraWeight, purpose, cancellationToken);
+
     /// <summary>
     /// Returns the outputs of a reservation to the wallet: its spend was abandoned or replaced by one that does not use
     /// them. A no-op for an unknown id.
