@@ -1,6 +1,6 @@
 # NLightning Issue Ledger
 
-Updated 2026-10-07 by `wip/accounting-review` from latest `wip/fafo` 89d8c7be: new and fixed NL-1254 (late-valuation retry cache), NL-1255 (atomic journal clear), NL-1256 (verification under the financial writer gate), NL-1257 (atomic imported-basis replacement). Nine regressions failed on the original behavior. Validation: net10/net11 Release solution builds with zero warnings/errors; full formatting verification; final net10 Application accounting 299 and broad non-Docker/non-SqlServer/non-cluster Integration 1,162 passed. Fresh cluster proof `accounting-review-proof1`: 1/1 wrapper, 39/39 inner tests, 112 s, including six PostgreSQL fault-recovery cases and real ABCD zero-drift operational reconciliation and balanced financial books; all owned namespaces cleaned. Review and remaining issues are recorded in ACCOUNTING_PLAN section 12. NL-1207's rounding correction is already in the base; NL-758, NL-759, NL-1253 and the other documented follow-ups remain open. Summary: 976 unique classified entries. No schema or live-node configuration change. Implementation commit: pending.
+Updated 2026-10-07 by `wip/accounting-review` from latest `wip/fafo` 89d8c7be: new and fixed NL-1254 (late-valuation retry cache), NL-1255 (atomic journal clear), NL-1256 (verification under the financial writer gate), NL-1257 (atomic imported-basis replacement). Nine regressions failed on the original behavior. Validation: net10/net11 Release solution builds with zero warnings/errors; full formatting verification; final net10 Application accounting 299 and broad non-Docker/non-SqlServer/non-cluster Integration 1,162 passed. Fresh cluster proof `accounting-review-proof1`: 1/1 wrapper, 39/39 inner tests, 112 s, including six PostgreSQL fault-recovery cases and real ABCD zero-drift operational reconciliation and balanced financial books; all owned namespaces cleaned. Review and remaining issues are recorded in ACCOUNTING_PLAN section 12. NL-1207's rounding correction is already in the base; NL-758, NL-759, NL-1253 and the other documented follow-ups remain open. Summary: 976 unique classified entries. No schema or live-node configuration change. Implementation commit: `7c9b8e73`.
 
 
 The single durable issue ledger for this repo. GitHub issues are disabled on the fork, so this file replaces them. Every known bug, gap, spec violation, missing feature, test/CI hygiene problem and tech-debt item lives here, so nothing is lost between agent sessions.
@@ -10256,7 +10256,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Plan ref:** LND_SUBSCRIPTIONS_PLAN.md Limits
 
 ### NL-1254 Failed late-valuation save poisons the in-process adjustment cache
-- **Status:** fixed (wip/accounting-review)
+- **Status:** fixed (7c9b8e73; wip/accounting-review)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `Application/Accounting/Prices/PriceValuationService.cs`
@@ -10266,7 +10266,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** Related NL-602, NL-693
 
 ### NL-1255 Interrupted book clearing can delete journal rows while retaining the old replay cursor
-- **Status:** fixed (wip/accounting-review)
+- **Status:** fixed (7c9b8e73; wip/accounting-review)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `Infrastructure.Repositories/Database/Accounting/AccountingBooksDbRepository.cs`
@@ -10276,7 +10276,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** Related NL-602, NL-662
 
 ### NL-1256 Signed-close verification can read financial rows across a concurrent writer
-- **Status:** fixed (wip/accounting-review)
+- **Status:** fixed (7c9b8e73; wip/accounting-review)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `Application/Accounting/Financial/AccountingPeriodService.cs`
@@ -10286,7 +10286,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** Related NL-602
 
 ### NL-1257 A failed opening-lot replacement permanently deletes the imported cost basis
-- **Status:** fixed (wip/accounting-review)
+- **Status:** fixed (7c9b8e73; wip/accounting-review)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `Infrastructure.Repositories/Database/Accounting/AccountingLotDbRepository.cs`, `Domain/Accounting/Financial/IAccountingLotDbRepository.cs`

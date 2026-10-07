@@ -466,6 +466,7 @@ Nothing at startup may cost more as history grows. A node with a million settled
 ## 12. Accounting review (2026-10-07, wip/accounting-review)
 
 Reviewed from latest `wip/fafo` at `89d8c7be`, including the merged subscription/indexing and LND client work.
+Implementation: `7c9b8e73` (NL-1254..NL-1257).
 This is a code and regression review with local SQLite and regtest/PostgreSQL proofs. It is not a fresh audit of
 FAFO's current database. No live FAFO configuration was changed.
 
