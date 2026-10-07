@@ -210,6 +210,45 @@ public class Bip352VectorTests
                      addresses);
     }
 
+    [Fact]
+    public void Given_UnspendableTaprootOutputBesideAReceipt_When_Scanned_Then_ReceiptRetainsItsTransactionIndex()
+    {
+        // Arrange
+        var vector = Vectors[0].GetProperty("receiving")[0];
+        var expected = vector.GetProperty("expected");
+        var material = vector.GetProperty("given").GetProperty("key_material");
+        var spendKey = new CompactPubKey(Bip352.IndividualPublicKey(Hex(material.GetProperty("spend_priv_key"))));
+        var output = Hex(expected.GetProperty("outputs")[0].GetProperty("pub_key"));
+        SilentPaymentScanCandidate[] candidates =
+        [
+            new(0, Enumerable.Repeat((byte)0xff, 32).ToArray()),
+            new(1, output)
+        ];
+
+        // Act
+        var matches = _crypto.Scan(Hex(expected.GetProperty("shared_secret")), spendKey, candidates);
+
+        // Assert
+        var match = Assert.Single(matches);
+        Assert.Equal(1u, match.OutputIndex);
+        Assert.Equal(output, match.OutputKey32);
+        Assert.Equal(Hex(expected.GetProperty("outputs")[0].GetProperty("priv_key_tweak")), match.Tweak32);
+    }
+
+    [Theory]
+    [InlineData("0000000000000000000000000000000000000000000000000000000000000000")]
+    [InlineData("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141")]
+    [InlineData("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")]
+    public void Given_InvalidSecretScalar_When_UsedForSilentPayments_Then_FailsBeforeDerivingKeys(string scalar)
+    {
+        // Arrange
+        var secret = Convert.FromHexString(scalar);
+
+        // Act / Assert
+        Assert.Throws<ArgumentException>(() => Bip352.IndividualPublicKey(secret));
+        Assert.Throws<ArgumentException>(() => Bip352.ComputeLabelTweak(secret, 0));
+    }
+
     private static byte[] AddScalars(byte[] first, byte[] second)
     {
         var sum = (new BigInteger(first, true, true) + new BigInteger(second, true, true)) % s_order;
