@@ -9748,7 +9748,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1195 Equivalent encoded identities bypassed durable nonce-session lookup after restart
-- **Status:** fixed (wip/remotesigner, this follow-up)
+- **Status:** fixed (9d4e7b944ad16d9f6d2ae888b24200305a7ddf37)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `DurableSignerState.SessionKey`, `Remember`, `RequestRecoveryTests`

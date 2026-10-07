@@ -145,7 +145,7 @@ identity equality under VLS LND style does not imply channel-key compatibility.
 
 ## Follow-up validation record
 
-Verified on 2026-10-07 on `wip/remotesigner`:
+Verified on 2026-10-07 on `wip/remotesigner`, implementation commit `9d4e7b944ad16d9f6d2ae888b24200305a7ddf37`:
 
 | Check | Result |
 | --- | --- |
