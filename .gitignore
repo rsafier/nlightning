@@ -524,3 +524,7 @@ fee_estimation_cache.bin
 /tools/lnc/nltg-lnc
 /tools/lnc/nltg-lnc-proof
 lnc-state/
+
+# Local LND REST gateway binary and generated listener certificate
+/tools/lnd-rest/nltg-lnd-rest
+lnd-rest-tls/
