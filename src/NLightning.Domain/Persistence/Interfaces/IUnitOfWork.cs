@@ -61,6 +61,11 @@ public interface IUnitOfWork : IDisposable
     Bitcoin.Wallet.Interfaces.IImportedTapscriptDbRepository ImportedTapscriptDbRepository =>
         throw new NotSupportedException("This unit of work does not store imported tapscripts.");
 
+    // The wallet's durable transaction history (NL-1187, migration AddWalletTransactions); wrappers must forward it,
+    // the default keeps none
+    Bitcoin.Wallet.Interfaces.IWalletTransactionDbRepository WalletTransactionDbRepository =>
+        Bitcoin.Wallet.Interfaces.NullWalletTransactionDbRepository.Instance;
+
     Crypto.KeyRing.IKeyRingDbRepository KeyRingDbRepository =>
         throw new NotSupportedException("This unit of work does not store key ring keys.");
 

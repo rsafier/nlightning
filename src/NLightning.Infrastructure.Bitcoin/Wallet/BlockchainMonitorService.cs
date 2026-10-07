@@ -1306,6 +1306,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         }
 
         StageWalletMovements(transactions, height, block.Header.BlockTime, uow, effects);
+        await StageWalletHistoryAsync(uow, effects);
         await StageAccountingAsync(uow, effects);
         await StageWatchedSpendsAsync(transactions, height, blockHash, uow, effects);
         StageWatchedTransactionDepths(height, uow, effects);
@@ -1449,6 +1450,28 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 source ??= ClassifyWalletTransaction(transaction, utxoMemoryRepository, effects);
                 CollectWalletOutputSpent(spent, transaction, source, utxoMemoryRepository, effects);
             }
+        }
+    }
+
+    /// <summary>
+    /// Stages the block's wallet transactions in the wallet's durable history (NL-1187), in the block's own save: the
+    /// raw transaction, the block and the wallet's outputs and inputs as <see cref="DescribeWalletTransaction"/> found
+    /// them (the same description <c>SubscribeTransactions</c> publishes).
+    /// </summary>
+    private static async Task StageWalletHistoryAsync(IUnitOfWork uow, BlockEffects effects)
+    {
+        if (effects.WalletTransactions.Count == 0 || uow.WalletTransactionDbRepository is not { } history)
+            return;
+
+        foreach (var observed in effects.WalletTransactions)
+        {
+            var inputs = new List<WalletTransactionInput>(observed.OurInputs.Count);
+            for (var i = 0; i < observed.OurInputs.Count && i < observed.OurInputAmounts.Count; i++)
+                inputs.Add(new WalletTransactionInput(observed.OurInputs[i], observed.OurInputAmounts[i]));
+
+            await history.StageConfirmedAsync(new WalletTransactionRecord(
+                new TxId(uint256.Parse(observed.TxHash).ToBytes()), Convert.FromHexString(observed.RawTransactionHex),
+                effects.Height, effects.BlockHash, observed.Timestamp, observed.OurOutputs.ToList(), inputs));
         }
     }
 
@@ -1634,6 +1657,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
 
                 var clearedSpends = await uow.WatchedOutpointDbRepository.ClearSpendsAboveAsync(forkHeight);
                 var unconfirmed = await uow.BroadcastTransactionDbRepository.UnconfirmAboveAsync(forkHeight);
+                // NL-1187: the wallet's history follows the rewind in the same save
+                if (uow.WalletTransactionDbRepository is { } walletHistory)
+                    await walletHistory.UnconfirmAboveAsync(forkHeight);
                 var (removedDeposits, restoredSpends) = await StageWalletRollbackAsync(uow, forkHeight, restoredUtxos);
                 await StageReorgReversalsAsync(uow, forkHeight, removedDeposits, restoredSpends);
                 await uow.BlockHeaderDbRepository.DeleteAboveAsync(forkHeight);

@@ -78,12 +78,24 @@ write-behind remains asynchronous.
   overflow explicitly end affected subscriptions for reconciliation and reconnect.
   The source does not add imported-only mempool discovery, a replay cursor or a durable
   event outbox. A crash between index commit and fanout can lose live notifications.
-- NL-1187's indexed wallet-history query now limits sealed rows by wallet kind and
-  height and suppresses reversed rows through derived references, while retaining
-  transaction aggregation across event pages. Pre-accounting/disabled-accounting history
-  and pruned external raw transaction gaps remain open. The existing GetTransactions
-  canonical/imported shared-output double-counting defect is tracked separately as
-  NL-1253; the new subscription ownership merge does not share that defect.
+- NL-1187's indexed wallet-history query limits sealed rows by wallet kind and height
+  and suppresses reversed rows through derived references. Since NL-1187's completion
+  the chain monitor also writes the wallet's durable history (`WalletTransactions`,
+  migration `AddWalletTransactions`) in each block's save from the same description
+  SubscribeTransactions publishes (raw transaction, block hash and time, wallet output
+  indexes, wallet inputs with their values), independent of the accounting feed's gate;
+  a rewind's save makes its rows unconfirmed. GetTransactions merges that history, the
+  sealed feed (history from before the table), the outputs held since before the
+  accounting cutover, pending broadcasts, unconfirmed deposits and the imported tapscript
+  history by output index and spent outpoint, so a shared canonical/imported output or
+  input counts once (NL-1253 fixed). A row a reorg unconfirmed is listed unconfirmed only
+  while it is our pending broadcast, an unconfirmed deposit or in bitcoind's mempool.
+  `total_fees` follows btcwallet: our broadcast row's fee, else inputs less outputs when
+  every input is the wallet's, else 0. Remaining (NL-1289): transactions whose wallet
+  outputs were all spent before the accounting cutover need a wallet rescan; a
+  pre-cutover send whose change is still held is listed only when bitcoind returns its
+  parents; history known only to the feed (before the table existed) still reads its raw
+  transaction and block hash from bitcoind.
 - Incoming unconfirmed discovery follows the configured monitor. ZMQ observes it;
   Poll mode emits accepted own broadcasts and confirmations, without promising
   discovery of all incoming mempool transactions.

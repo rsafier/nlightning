@@ -65,6 +65,7 @@ public class NLightningDbContext : DbContext
 
     public DbSet<ImportedTapscriptEntity> ImportedTapscripts { get; set; }
     public DbSet<ImportedWatchIndexEntity> ImportedWatchIndexes { get; set; }
+    public DbSet<WalletTransactionEntity> WalletTransactions { get; set; }
     public DbSet<KeyRingKeyEntity> KeyRingKeys { get; set; }
 
     // Node DbSets
@@ -129,6 +130,7 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureBroadcastTransactionEntity(_databaseType);
         modelBuilder.ConfigureBlockHeaderEntity(_databaseType);
         modelBuilder.ConfigureFeeInputReservationEntity(_databaseType);
+        modelBuilder.ConfigureWalletTransactionEntity(_databaseType);
 
         // Channel entities
         modelBuilder.ConfigureChannelEntity(_databaseType);
