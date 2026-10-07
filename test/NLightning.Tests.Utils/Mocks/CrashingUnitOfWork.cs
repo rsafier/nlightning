@@ -71,6 +71,7 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IPeerDbRepository PeerDbRepository => inner.PeerDbRepository;
     public Domain.Crypto.KeyRing.IKeyRingDbRepository KeyRingDbRepository => inner.KeyRingDbRepository;
     public Domain.Bitcoin.Wallet.Interfaces.IImportedTapscriptDbRepository ImportedTapscriptDbRepository => inner.ImportedTapscriptDbRepository;
+    public Domain.Bitcoin.Wallet.Interfaces.IWalletTransactionDbRepository WalletTransactionDbRepository => inner.WalletTransactionDbRepository;
     public IPeerStorageDbRepository PeerStorageDbRepository => inner.PeerStorageDbRepository;
     public IPeerStorageRetrievalDbRepository PeerStorageRetrievalDbRepository =>
         inner.PeerStorageRetrievalDbRepository;

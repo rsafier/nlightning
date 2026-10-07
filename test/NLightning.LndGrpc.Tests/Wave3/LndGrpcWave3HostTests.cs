@@ -34,6 +34,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.ValueObjects;
 using Google.Protobuf;
+using Infrastructure.Bitcoin.Wallet.Imports;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using LndGrpc.Macaroons;
 using LndGrpc.Services;
@@ -67,6 +68,7 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
     private readonly List<OutputResolutionModel> _outputs = [];
     private readonly List<WalletAddressModel> _walletAddresses = [];
     private readonly List<UtxoModel> _unspent = [];
+    private readonly List<WalletTransactionRecord> _walletHistory = [];
     private readonly Mock<ISecureKeyManager> _keys = new();
     private readonly Mock<ILightningSigner> _signer = new();
     private readonly Mock<IChannelMemoryRepository> _channels = new();
@@ -698,7 +700,18 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
             imports.Setup(x => x.Add(It.IsAny<ImportedTapscript>())).Callback<ImportedTapscript>(_imported.Add);
             var reservations = new Mock<IFeeInputReservationDbRepository>();
             reservations.Setup(x => x.GetAllAsync()).ReturnsAsync(() => _feeReservations.ToList());
+            var walletHistory = new Mock<IWalletTransactionDbRepository>();
+            walletHistory.Setup(x => x.GetHistoryAsync(It.IsAny<uint>(), It.IsAny<uint>(), It.IsAny<bool>(),
+                                                       It.IsAny<CancellationToken>()))
+                         .ReturnsAsync((uint start, uint end, bool unconfirmed, CancellationToken _) =>
+                                           _walletHistory.Where(r => r.BlockHeight is { } height
+                                                                         ? height >= start && height <= end
+                                                                         : unconfirmed)
+                                                         .ToList());
+            walletHistory.Setup(x => x.GetHeightsAsync(It.IsAny<CancellationToken>()))
+                         .ReturnsAsync(() => _walletHistory.ToDictionary(r => r.TxId, r => r.BlockHeight));
             var unitOfWork = new Mock<IUnitOfWork>();
+            unitOfWork.SetupGet(x => x.WalletTransactionDbRepository).Returns(walletHistory.Object);
             unitOfWork.SetupGet(x => x.FeeInputReservationDbRepository).Returns(reservations.Object);
             unitOfWork.SetupGet(x => x.ImportedTapscriptDbRepository).Returns(imports.Object);
             unitOfWork.SetupGet(x => x.WalletAddressesDbRepository).Returns(addresses.Object);
@@ -709,6 +722,8 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
             return unitOfWork.Object;
         });
         services.AddSingleton(new Mock<IPaymentService>().Object);
+        services.AddSingleton(sp => new ImportedTapscriptTracker(sp.GetRequiredService<IServiceScopeFactory>(),
+                                                                 _chain.Object, monitor.Object));
         services.AddSingleton<LightningService>();
         services.AddSingleton<RouterService>();
         services.AddSingleton<WalletKitService>();

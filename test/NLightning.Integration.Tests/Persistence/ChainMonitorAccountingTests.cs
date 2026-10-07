@@ -30,7 +30,7 @@ using static ChainWatchSchemaRoundTrip;
 /// once in its block's save (never again for a replayed or retried block), and a reorg's reversals in the rewind's
 /// save, with the facts recorded again under their next confirmation key when they confirm on the new branch.
 /// </summary>
-public class ChainMonitorAccountingTests
+public partial class ChainMonitorAccountingTests
 {
     private const long DepositSat = 100_000;
     private const long SentSat = 60_000;

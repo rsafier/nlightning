@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
 {
     [DbContext(typeof(NLightningDbContext))]
-    [Migration("20261007134555_AddHtlcWireCustomRecords")]
-    partial class AddHtlcWireCustomRecords
+    [Migration("20261007133653_AddWalletTransactions")]
+    partial class AddWalletTransactions
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -1978,10 +1978,6 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.Property<byte>("State")
                         .HasColumnType("smallint")
                         .HasColumnName("state");
-
-                    b.Property<byte[]>("WireCustomRecords")
-                        .HasColumnType("bytea")
-                        .HasColumnName("wire_custom_records");
 
                     b.HasKey("ChannelId", "HtlcId", "Direction")
                         .HasName("pk_htlcs");

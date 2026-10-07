@@ -8,8 +8,10 @@ using Domain.Accounting.Enums;
 using Domain.Accounting.Interfaces;
 using Domain.Accounting.Models;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
+using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Networks;
 using Infrastructure.Bitcoin.Wallet.Imports;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -19,18 +21,25 @@ using Transaction = Lnrpc.Transaction;
 public sealed partial class LightningService
 {
     /// <summary>
-    /// LND's <c>GetTransactions</c> (NL-1185): the on-chain wallet's history, one entry per transaction that moved a
-    /// wallet output. Confirmed ones come from the accounting feed (sealed first): every wallet output a block deposits
-    /// (<c>WalletReceived</c>, keyed by the creating transaction) and every one it spends (<c>WalletOutputSpent</c>,
-    /// keyed by its spender), less what a reorg reversed; <c>amount</c> is their difference (LND's net amount, fee
-    /// included for a send). Our own broadcasts add the raw transaction, label and fee; unconfirmed ones are our pending
-    /// broadcasts and unconfirmed deposits.
+    /// LND's <c>GetTransactions</c> (NL-1185, NL-1187): the on-chain wallet's history, one entry per transaction that
+    /// moved a wallet output. The sources are merged by output and input identity, so each output and each spent
+    /// outpoint counts once whatever source reports it (NL-1253): the wallet's durable history (the chain monitor's
+    /// <c>WalletTransactions</c> rows, written in each block's save with the raw transaction and block, made unconfirmed
+    /// by a reorg's save), the sealed accounting feed (<c>WalletReceived</c>/<c>WalletOutputSpent</c> less what a reorg
+    /// reversed; the history from before the durable rows existed), the wallet outputs held since before the accounting
+    /// cutover, our pending broadcasts, unconfirmed deposits and the imported tapscript history. <c>amount</c> is the
+    /// wallet's outputs less its inputs (LND's net amount, fee included for a send).
     /// </summary>
     /// <remarks>
-    /// Gaps: history from before the accounting cutover (the opening balance) and with <c>Accounting:Enabled=false</c>
-    /// is not listed; <c>block_hash</c> and the raw transactions that are not ours come from bitcoind (out of the block, so
-    /// no <c>txindex</c> is needed) while it still has them; <c>total_fees</c> is our broadcast row's, or computed when
-    /// every input was ours.
+    /// <c>total_fees</c> follows btcwallet's rule: 0 unless every input is the wallet's (a dual-funded funding or a
+    /// splice reports 0), then our broadcast row's fee or the inputs less the outputs. The durable history's height is
+    /// authoritative for every transaction it stores (a reorg's unconfirmed verdict included), and a stored transaction
+    /// a confirmed conflicting spend invalidated is removed by the chain monitor. Remaining limits (NL-1187): a transaction whose wallet outputs were all spent before
+    /// the accounting cutover is not listed (spent outputs are deleted; only a chain rescan would find it); a transaction
+    /// that left a change output held since before the cutover is listed only when bitcoind can still return its parents
+    /// (its inputs' values), a deposit held since then is listed with its outputs only; the raw transaction and block hash
+    /// of a transaction known only to the accounting feed come from bitcoind (out of its block, so no <c>txindex</c> is
+    /// needed) while it still has the block.
     /// </remarks>
     public override Task<TransactionDetails> GetTransactions(GetTransactionsRequest request,
                                                              ServerCallContext context)
@@ -69,7 +78,23 @@ public sealed partial class LightningService
             }
         }
 
+        var network = _nodeOptions.BitcoinNetwork.ToNBitcoinNetwork();
+        var chain = scope.ServiceProvider.GetService<IBitcoinChainService>();
         var entries = new Dictionary<TxId, HistoryEntry>();
+
+        // The wallet's durable history (NL-1187): the raw transaction, its block and the wallet's outputs and inputs.
+        // Its height is authoritative for every transaction it stores, in or out of the range and null included: a
+        // feed event, an imported or held output at a height a reorg disconnected never overrides it
+        IReadOnlyDictionary<TxId, uint?> durableHeights = new Dictionary<TxId, uint?>();
+        if (unitOfWork.WalletTransactionDbRepository is { } walletHistory)
+        {
+            foreach (var record in await walletHistory.GetHistoryAsync(startHeight, endHeight, includeUnconfirmed,
+                                                                       cancellationToken))
+                AddWalletRecord(entries, record, network);
+            durableHeights = await walletHistory.GetHeightsAsync(cancellationToken);
+        }
+
+        // The sealed accounting feed: the history from before the durable rows existed
         foreach (var accountingEvent in await ReadWalletEventsAsync(unitOfWork.AccountingEventDbRepository,
                                                                     startHeight, endHeight, cancellationToken))
         {
@@ -77,61 +102,72 @@ public sealed partial class LightningService
             {
                 case AccountingEventKind.WalletReceived when accountingEvent.TxId is { } txId:
                     {
-                        var entry = Entry(entries, txId, accountingEvent);
-                        entry.AmountSat += accountingEvent.AmountMsat / 1_000;
-                        entry.OurOutputs.Add((accountingEvent.OutputIndex ?? 0, accountingEvent.AmountMsat / 1_000,
-                                              accountingEvent.Details.GetValueOrDefault("address")));
+                        var entry = Entry(entries, txId);
+                        entry.FeedHeight ??= accountingEvent.BlockHeight;
+                        entry.SetTime(accountingEvent.OccurredAt, TimeSource.Feed);
+                        entry.AddOutput(accountingEvent.OutputIndex ?? 0, accountingEvent.AmountMsat / 1_000,
+                                        accountingEvent.Details.GetValueOrDefault("address"));
                         break;
                     }
                 case AccountingEventKind.WalletOutputSpent
                     when accountingEvent.Details.GetValueOrDefault("spentBy") is { } spender
                       && TryParseTxId(spender, out var spenderId):
                     {
-                        var entry = Entry(entries, spenderId, accountingEvent);
-                        entry.AmountSat += accountingEvent.AmountMsat / 1_000;
-                        entry.SpentOurs += -accountingEvent.AmountMsat / 1_000;
-                        entry.PreviousOutpoints.Add($"{accountingEvent.TxId}:{accountingEvent.OutputIndex}");
+                        var entry = Entry(entries, spenderId);
+                        entry.FeedHeight ??= accountingEvent.BlockHeight;
+                        entry.SetTime(accountingEvent.OccurredAt, TimeSource.Feed);
+                        entry.AddInput($"{accountingEvent.TxId}:{accountingEvent.OutputIndex}",
+                                       -accountingEvent.AmountMsat / 1_000);
                         break;
                     }
             }
         }
 
+        ApplyDurableHeights(entries, durableHeights);
+
         // Our pending broadcasts: their wallet inputs are still in the UTXO set until a block holds them
         foreach (var pending in await unitOfWork.BroadcastTransactionDbRepository.GetPendingAsync())
         {
-            if (entries.ContainsKey(pending.TransactionId) || !IsWalletMovement(pending))
+            if (!IsWalletMovement(pending) || !TryLoad(pending.RawTransaction, out var tx))
                 continue;
 
-            var entry = new HistoryEntry(pending.TransactionId) { Time = pending.CreatedAt };
-            if (TryLoad(pending.RawTransaction, out var tx))
+            var known = entries.GetValueOrDefault(pending.TransactionId);
+            if (known?.Height is not null)
+                continue;
+
+            var entry = known ?? new HistoryEntry(pending.TransactionId);
+            var ours = false;
+            foreach (var input in tx.Inputs)
             {
-                foreach (var input in tx.Inputs)
-                {
-                    var prevTxId = new TxId(input.PrevOut.Hash.ToBytes());
-                    if (_utxos?.TryGetUtxo(prevTxId, input.PrevOut.N, out var utxo) == true)
-                    {
-                        entry.AmountSat -= utxo.Amount.Satoshi;
-                        entry.SpentOurs += utxo.Amount.Satoshi;
-                        entry.PreviousOutpoints.Add($"{prevTxId}:{input.PrevOut.N}");
-                    }
-                }
+                var prevTxId = new TxId(input.PrevOut.Hash.ToBytes());
+                if (_utxos is null || !_utxos.TryGetUtxo(prevTxId, input.PrevOut.N, out var utxo))
+                    continue;
+
+                entry.AddInput($"{prevTxId}:{input.PrevOut.N}", utxo.Amount.Satoshi);
+                ours = true;
             }
 
-            if (entry.PreviousOutpoints.Count > 0)
-                entries[pending.TransactionId] = entry;
+            if (!ours && known is null)
+                continue;
+
+            entry.Tx ??= tx;
+            entry.IsPendingBroadcast = true;
+            entry.SetTime(pending.CreatedAt, TimeSource.Broadcast);
+            entries[pending.TransactionId] = entry;
         }
 
         // Unconfirmed deposits the wallet already holds
         foreach (var utxo in _utxos?.GetUnreservedUtxos().Where(u => u.BlockHeight == 0) ?? [])
         {
-            if (!entries.TryGetValue(utxo.TxId, out var entry))
-                entries[utxo.TxId] = entry = new HistoryEntry(utxo.TxId) { Time = _timeProvider.GetUtcNow() };
-            if (entry.OurOutputs.Any(o => o.Index == utxo.Index))
-                continue;
-
-            entry.AmountSat += utxo.Amount.Satoshi;
-            entry.OurOutputs.Add((utxo.Index, utxo.Amount.Satoshi, utxo.WalletAddress?.Address));
+            var entry = Entry(entries, utxo.TxId);
+            entry.IsInMempool = true;
+            entry.SetTime(_timeProvider.GetUtcNow(), TimeSource.Observed);
+            entry.AddOutput(utxo.Index, utxo.Amount.Satoshi, utxo.WalletAddress?.Address);
         }
+
+        // Wallet outputs held since before the accounting cutover (or written while its gate was held): their creating
+        // transactions are known to no other source
+        await AddHeldOutputsAsync(entries, unitOfWork, chain, startHeight, endHeight, cancellationToken);
 
         if (scope.ServiceProvider.GetService<ImportedTapscriptTracker>() is { } imported)
         {
@@ -141,40 +177,51 @@ public sealed partial class LightningService
             {
                 throw new RpcException(new Status(StatusCode.FailedPrecondition, e.Message));
             }
-            foreach (var watched in snapshot.Transactions)
-            {
-                var txid = new TxId(watched.Transaction.GetHash().ToBytes());
-                if (!entries.TryGetValue(txid, out var entry))
-                    entries[txid] = entry = new HistoryEntry(txid) { Height = watched.Height, Time = watched.Time };
-                entry.AmountSat += watched.Amount;
-                foreach (var index in watched.OurOutputs)
-                {
-                    var output = watched.Transaction.Outputs[(int)index];
-                    entry.OurOutputs.Add((index, output.Value.Satoshi, output.ScriptPubKey.GetDestinationAddress(_nodeOptions.BitcoinNetwork.ToNBitcoinNetwork())!.ToString()));
-                }
-                foreach (var spent in watched.SpentOutputs)
-                    entry.PreviousOutpoints.Add($"{spent.Hash}:{spent.N}");
-            }
+
+            AddImportedHistory(entries, snapshot, network);
         }
 
-        var selected = entries.Values
-                              .Where(e => only is null || only.Contains(e.TxId))
-                              .Where(e => e.Height is { } height
-                                              ? !unconfirmedOnly && height >= startHeight && height <= endHeight
-                                              : includeUnconfirmed)
-                              .OrderBy(e => e.Height ?? uint.MaxValue).ThenBy(e => e.Time)
-                              .ThenBy(e => e.TxId.ToString(), StringComparer.Ordinal)
-                              .ToList();
+        ApplyDurableHeights(entries, durableHeights);
+
+        // Pre-cutover transactions with a change output are our own sends: their inputs are needed for an honest amount
+        var walletAddresses = new Lazy<HashSet<string>>(() => unitOfWork.WalletAddressesDbRepository.GetAllAddresses()
+                                                                         .Select(a => a.Address)
+                                                                         .ToHashSet(StringComparer.Ordinal));
+        var blocks = new Dictionary<uint, Block?>();
+        foreach (var entry in entries.Values.Where(e => e.IsHeldOutputOnly).ToList())
+        {
+            if (!await ResolveHeldOutputEntryAsync(entry, chain, walletAddresses, blocks, network))
+                entries.Remove(entry.TxId);
+        }
+
+        var candidates = entries.Values
+                                .Where(e => only is null || only.Contains(e.TxId))
+                                .Where(e => e.Height is { } height
+                                                ? !unconfirmedOnly && height >= startHeight && height <= endHeight
+                                                : includeUnconfirmed)
+                                .ToList();
+        var selected = new List<HistoryEntry>(candidates.Count);
+        foreach (var entry in candidates)
+        {
+            // A transaction a reorg disconnected stays listed (unconfirmed) while it is ours to send again or bitcoind's
+            // mempool still holds it; one the new branch conflicted is gone
+            if (entry.Height is null && !entry.IsPendingBroadcast && !entry.IsInMempool
+             && !await IsInMempoolAsync(entry.TxId, chain))
+                continue;
+
+            selected.Add(entry);
+        }
+
+        selected = selected.OrderBy(e => e.Height ?? uint.MaxValue).ThenBy(e => e.Time)
+                           .ThenBy(e => e.TxId.ToString(), StringComparer.Ordinal)
+                           .ToList();
         var offset = (int)Math.Min(request.IndexOffset, (uint)selected.Count);
         var page = request.MaxTransactions == 0
                        ? selected.Skip(offset).ToList()
                        : selected.Skip(offset).Take((int)Math.Min(request.MaxTransactions, int.MaxValue)).ToList();
 
         var response = new TransactionDetails { FirstIndex = (ulong)offset, LastIndex = (ulong)(offset + page.Count) };
-        var network = _nodeOptions.BitcoinNetwork.ToNBitcoinNetwork();
-        var chain = scope.ServiceProvider.GetService<IBitcoinChainService>();
         var blockHashes = new Dictionary<uint, string>();
-        var blocks = new Dictionary<uint, Block?>();
         foreach (var entry in page)
         {
             var row = await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(entry.TxId);
@@ -182,6 +229,217 @@ public sealed partial class LightningService
         }
 
         return response;
+    }
+
+    private void AddWalletRecord(Dictionary<TxId, HistoryEntry> entries, WalletTransactionRecord record,
+                                 Network network)
+    {
+        if (!TryLoad(record.RawTransaction, out var tx))
+            return;
+
+        var entry = Entry(entries, record.TxId);
+        entry.Tx = tx;
+        entry.SetDurableHeight(record.BlockHeight);
+        if (record.BlockHeight is not null)
+        {
+            if (record.BlockHash is { Length: 32 } hash)
+                entry.BlockHash ??= new uint256(hash).ToString();
+            entry.SetTime(record.Timestamp, TimeSource.Block);
+        }
+        else
+        {
+            entry.SetTime(record.Timestamp, TimeSource.Observed);
+        }
+
+        foreach (var index in record.OurOutputs)
+        {
+            if (index >= tx.Outputs.Count)
+                continue;
+
+            var output = tx.Outputs[(int)index];
+            entry.AddOutput(index, output.Value.Satoshi,
+                            output.ScriptPubKey.GetDestinationAddress(network)?.ToString());
+        }
+
+        foreach (var input in record.OurInputs)
+        {
+            if (input.InputIndex >= tx.Inputs.Count)
+                continue;
+
+            var prevOut = tx.Inputs[(int)input.InputIndex].PrevOut;
+            entry.AddInput($"{new TxId(prevOut.Hash.ToBytes())}:{prevOut.N}", input.AmountSat);
+        }
+    }
+
+    private static void ApplyDurableHeights(Dictionary<TxId, HistoryEntry> entries,
+                                            IReadOnlyDictionary<TxId, uint?> durableHeights)
+    {
+        if (durableHeights.Count == 0)
+            return;
+
+        foreach (var entry in entries.Values)
+        {
+            if (durableHeights.TryGetValue(entry.TxId, out var height))
+                entry.SetDurableHeight(height);
+        }
+    }
+
+    private static async Task AddHeldOutputsAsync(Dictionary<TxId, HistoryEntry> entries, IUnitOfWork unitOfWork,
+                                                  IBitcoinChainService? chain, uint startHeight, uint endHeight,
+                                                  CancellationToken cancellationToken)
+    {
+        IEnumerable<UtxoModel> held;
+        try
+        {
+            held = await unitOfWork.UtxoDbRepository.GetUnspentAsync(includeWalletAddress: true) ?? [];
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return;
+        }
+
+        var times = new Dictionary<uint, DateTimeOffset?>();
+        foreach (var utxo in held)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (utxo.BlockHeight == 0 || utxo.BlockHeight < startHeight || utxo.BlockHeight > endHeight)
+                continue;
+
+            if (entries.TryGetValue(utxo.TxId, out var known))
+            {
+                // Another source knows the transaction: the held output can only complete it
+                known.AddOutput(utxo.Index, utxo.Amount.Satoshi, utxo.WalletAddress?.Address);
+                continue;
+            }
+
+            var entry = new HistoryEntry(utxo.TxId)
+            {
+                HeldHeight = utxo.BlockHeight,
+                IsHeldOutputOnly = true
+            };
+            if (!times.TryGetValue(utxo.BlockHeight, out var time))
+                times[utxo.BlockHeight] = time = chain is null ? null : await BlockTimeAsync(chain, utxo.BlockHeight);
+            entry.SetTime(time ?? DateTimeOffset.UnixEpoch, TimeSource.Block);
+            entries[utxo.TxId] = entry;
+            entry.AddOutput(utxo.Index, utxo.Amount.Satoshi, utxo.WalletAddress?.Address);
+            entry.HasChangeOutput |= utxo.IsAddressChange;
+        }
+    }
+
+    private static async Task<DateTimeOffset?> BlockTimeAsync(IBitcoinChainService chain, uint height)
+    {
+        try
+        {
+            return await chain.GetBlockTimeAsync(height);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The imported tapscript history joined with the wallet's: an output or spent outpoint both report counts once.
+    /// </summary>
+    private static void AddImportedHistory(Dictionary<TxId, HistoryEntry> entries, ImportedWatchSnapshot snapshot,
+                                           Network network)
+    {
+        var importedValues = new Dictionary<NBitcoin.OutPoint, long>();
+        foreach (var watched in snapshot.Transactions)
+        {
+            foreach (var index in watched.OurOutputs)
+                importedValues[new NBitcoin.OutPoint(watched.Transaction.GetHash(), index)] =
+                    watched.Transaction.Outputs[(int)index].Value.Satoshi;
+        }
+
+        foreach (var watched in snapshot.Transactions)
+        {
+            var txid = new TxId(watched.Transaction.GetHash().ToBytes());
+            // The imported history knows none of the canonical wallet's inputs: a transaction otherwise known only by
+            // held outputs still has its wallet inputs resolved (a pre-cutover send with an imported output)
+            var entry = Entry(entries, txid, keepHeldOutputOnly: true);
+            entry.Tx ??= watched.Transaction;
+            entry.ImportedHeight = watched.Height;
+            entry.BlockHash ??= watched.BlockHash.ToString();
+            entry.SetTime(watched.Time, TimeSource.Block);
+            foreach (var index in watched.OurOutputs)
+            {
+                var output = watched.Transaction.Outputs[(int)index];
+                entry.AddOutput(index, output.Value.Satoshi,
+                                output.ScriptPubKey.GetDestinationAddress(network)?.ToString());
+            }
+
+            foreach (var spent in watched.SpentOutputs)
+            {
+                if (importedValues.TryGetValue(spent, out var value))
+                    entry.AddInput($"{new TxId(spent.Hash.ToBytes())}:{spent.N}", value);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Completes a transaction known only by wallet outputs held since before the accounting cutover: its raw
+    /// transaction from its block and, for our own send (a change output), the wallet inputs from their parents. False
+    /// when a send's inputs cannot be read (the amount would be a lie).
+    /// </summary>
+    private async Task<bool> ResolveHeldOutputEntryAsync(HistoryEntry entry, IBitcoinChainService? chain,
+                                                         Lazy<HashSet<string>> walletAddresses,
+                                                         Dictionary<uint, Block?> blocks, Network network)
+    {
+        if (!entry.HasChangeOutput)
+            return true;
+
+        if (chain is null)
+            return false;
+
+        var tx = entry.Tx ??= await FetchTransactionAsync(entry, chain, blocks);
+        if (tx is null)
+            return false;
+
+        foreach (var input in tx.Inputs)
+        {
+            if (tx.IsCoinBase)
+                break;
+
+            var outpoint = $"{new TxId(input.PrevOut.Hash.ToBytes())}:{input.PrevOut.N}";
+            if (entry.Inputs.ContainsKey(outpoint))
+                continue;
+
+            NBitcoin.Transaction? parent;
+            try
+            {
+                parent = await chain.GetTransactionAsync(input.PrevOut.Hash);
+            }
+            catch (Exception)
+            {
+                parent = null;
+            }
+
+            if (parent is null || input.PrevOut.N >= parent.Outputs.Count)
+                return false;
+
+            var spent = parent.Outputs[(int)input.PrevOut.N];
+            if (spent.ScriptPubKey.GetDestinationAddress(network)?.ToString() is { } address
+             && walletAddresses.Value.Contains(address))
+                entry.AddInput(outpoint, spent.Value.Satoshi);
+        }
+
+        return true;
+    }
+
+    private static async Task<bool> IsInMempoolAsync(TxId txId, IBitcoinChainService? chain)
+    {
+        if (chain is null)
+            return false;
+
+        try
+        {
+            return await chain.GetTransactionAsync(new uint256((byte[])txId)) is not null;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     private static async Task<IReadOnlyList<AccountingEventModel>> ReadWalletEventsAsync(
@@ -220,29 +478,37 @@ public sealed partial class LightningService
             Label = row?.Label ?? ""
         };
         if (entry.Height is { } confirmedAt)
-            rpc.BlockHash = (row?.ConfirmedBlockHash is { } confirmedHash ? DisplayHex(confirmedHash) : null)
+            rpc.BlockHash = (entry.IndexHeight is not null || entry.ImportedHeight is not null
+                                 ? entry.BlockHash
+                                 : null)
+                         ?? (row?.ConfirmedBlockHash is { } confirmedHash ? DisplayHex(confirmedHash) : null)
                          ?? await BlockHashAsync(confirmedAt, chain, blockHashes);
 
-        NBitcoin.Transaction? tx = null;
-        if (row is not null && TryLoad(row.RawTransaction, out var loaded))
+        var tx = entry.Tx;
+        if (tx is null && row is not null && TryLoad(row.RawTransaction, out var loaded))
             tx = loaded;
-        else if (chain is not null)
+        if (tx is null && chain is not null)
             tx = await FetchTransactionAsync(entry, chain, blocks);
         if (tx is not null)
             rpc.RawTxHex = Convert.ToHexString(tx.ToBytes()).ToLowerInvariant();
 
-        var outputsSat = tx?.Outputs.Sum(o => o.Value.Satoshi);
-        rpc.TotalFees = row?.Fee?.Satoshi
-                     ?? (tx is not null && entry.PreviousOutpoints.Count == tx.Inputs.Count
-                             ? Math.Max(0, entry.SpentOurs - outputsSat!.Value)
-                             : 0);
+        // btcwallet's rule (makeTxSummary): a fee only when every input is a wallet debit, so a dual-funded funding, a
+        // splice or anything else with a peer's input reports 0 even though our broadcast row knows its fee; when every
+        // input is ours the row's fee is the same value
+        if (tx is null)
+            rpc.TotalFees = row?.Fee?.Satoshi ?? 0;
+        else
+            rpc.TotalFees = !tx.IsCoinBase && tx.Inputs.Count > 0
+                         && tx.Inputs.All(i => entry.Inputs.ContainsKey(
+                                                  $"{new TxId(i.PrevOut.Hash.ToBytes())}:{i.PrevOut.N}"))
+                                ? row?.Fee?.Satoshi ?? Math.Max(0, entry.SpentSat - tx.Outputs.Sum(o => o.Value.Satoshi))
+                                : 0;
 
         if (tx is not null)
         {
             for (var i = 0; i < tx.Outputs.Count; i++)
             {
                 var output = tx.Outputs[i];
-                var ours = entry.OurOutputs.Any(o => o.Index == i);
                 rpc.OutputDetails.Add(new OutputDetail
                 {
                     OutputType = ScriptTypeOf(output.ScriptPubKey),
@@ -250,7 +516,7 @@ public sealed partial class LightningService
                     PkScript = Convert.ToHexString(output.ScriptPubKey.ToBytes()).ToLowerInvariant(),
                     OutputIndex = i,
                     Amount = output.Value.Satoshi,
-                    IsOurAddress = ours
+                    IsOurAddress = entry.Outputs.ContainsKey(i)
                 });
             }
 
@@ -260,13 +526,13 @@ public sealed partial class LightningService
                 rpc.PreviousOutpoints.Add(new PreviousOutPoint
                 {
                     Outpoint = outpoint,
-                    IsOurOutput = entry.PreviousOutpoints.Contains(outpoint)
+                    IsOurOutput = entry.Inputs.ContainsKey(outpoint)
                 });
             }
         }
         else
         {
-            foreach (var (index, amountSat, address) in entry.OurOutputs.OrderBy(o => o.Index))
+            foreach (var (index, (amountSat, address)) in entry.Outputs.OrderBy(o => o.Key))
                 rpc.OutputDetails.Add(new OutputDetail
                 {
                     Address = address ?? "",
@@ -275,7 +541,7 @@ public sealed partial class LightningService
                     IsOurAddress = true,
                     OutputType = OutputScriptType.ScriptTypeWitnessV0PubkeyHash
                 });
-            foreach (var outpoint in entry.PreviousOutpoints)
+            foreach (var outpoint in entry.Inputs.Keys)
                 rpc.PreviousOutpoints.Add(new PreviousOutPoint { Outpoint = outpoint, IsOurOutput = true });
         }
 
@@ -336,13 +602,12 @@ public sealed partial class LightningService
                     or BroadcastPurpose.WalletCollaborative;
 
     private static HistoryEntry Entry(Dictionary<TxId, HistoryEntry> entries, TxId txId,
-                                      AccountingEventModel accountingEvent)
+                                      bool keepHeldOutputOnly = false)
     {
         if (!entries.TryGetValue(txId, out var entry))
-            entries[txId] = entry = new HistoryEntry(txId) { Time = accountingEvent.OccurredAt };
-        entry.Height ??= accountingEvent.BlockHeight;
-        if (accountingEvent.OccurredAt < entry.Time)
-            entry.Time = accountingEvent.OccurredAt;
+            entries[txId] = entry = new HistoryEntry(txId);
+        else if (!keepHeldOutputOnly)
+            entry.IsHeldOutputOnly = false;
         return entry;
     }
 
@@ -387,21 +652,99 @@ public sealed partial class LightningService
         return OutputScriptType.ScriptTypeNonStandard;
     }
 
-    /// <summary>One wallet transaction being assembled.</summary>
+    /// <summary>Where an entry's time came from, most trusted last: a block's time wins over the others.</summary>
+    private enum TimeSource
+    {
+        None,
+        Observed,
+        Broadcast,
+        Feed,
+        Block
+    }
+
+    /// <summary>
+    /// One wallet transaction being assembled from every source, keyed by output index and spent outpoint so a source
+    /// that repeats another's output or input adds nothing (NL-1253).
+    /// </summary>
     private sealed class HistoryEntry(TxId txId)
     {
+        private TimeSource _timeSource;
+
         public TxId TxId { get; } = txId;
 
-        public uint? Height { get; set; }
+        /// <summary>The height the wallet's durable history confirmed it at (null: unconfirmed, or not stored).</summary>
+        public uint? IndexHeight { get; private set; }
 
-        public DateTimeOffset Time { get; set; }
+        /// <summary>The wallet's durable history stores it: its height is the only one that counts.</summary>
+        public bool IsDurable { get; private set; }
 
-        public long AmountSat { get; set; }
+        /// <summary>The height the accounting feed recorded.</summary>
+        public uint? FeedHeight { get; set; }
 
-        public long SpentOurs { get; set; }
+        /// <summary>The height the imported tapscript history found it at.</summary>
+        public uint? ImportedHeight { get; set; }
 
-        public List<(long Index, long AmountSat, string? Address)> OurOutputs { get; } = [];
+        /// <summary>The height of a wallet output held since before the cutover.</summary>
+        public uint? HeldHeight { get; set; }
 
-        public HashSet<string> PreviousOutpoints { get; } = new(StringComparer.Ordinal);
+        /// <summary>
+        /// The confirmation height: the durable history's whenever it stores the transaction (a reorg's unconfirmed
+        /// verdict included), else the first other source's.
+        /// </summary>
+        public uint? Height => IsDurable ? IndexHeight : FeedHeight ?? ImportedHeight ?? HeldHeight;
+
+        /// <summary>The display hash of the block that holds it, when a source stored it.</summary>
+        public string? BlockHash { get; set; }
+
+        public DateTimeOffset Time { get; private set; }
+
+        public NBitcoin.Transaction? Tx { get; set; }
+
+        public bool IsPendingBroadcast { get; set; }
+
+        public bool IsInMempool { get; set; }
+
+        /// <summary>Known only from wallet outputs held since before the accounting cutover.</summary>
+        public bool IsHeldOutputOnly { get; set; }
+
+        /// <summary>One of those outputs pays a change address (the transaction was our own send).</summary>
+        public bool HasChangeOutput { get; set; }
+
+        public Dictionary<long, (long AmountSat, string? Address)> Outputs { get; } = [];
+
+        public Dictionary<string, long> Inputs { get; } = new(StringComparer.Ordinal);
+
+        public long SpentSat => Inputs.Values.Sum();
+
+        public long AmountSat => Outputs.Values.Sum(o => o.AmountSat) - SpentSat;
+
+        public void AddOutput(long index, long amountSat, string? address)
+        {
+            if (Outputs.TryGetValue(index, out var known))
+            {
+                if (known.Address is null && address is not null)
+                    Outputs[index] = (known.AmountSat, address);
+                return;
+            }
+
+            Outputs[index] = (amountSat, address);
+        }
+
+        public void AddInput(string outpoint, long amountSat) => Inputs.TryAdd(outpoint, amountSat);
+
+        public void SetDurableHeight(uint? height)
+        {
+            IsDurable = true;
+            IndexHeight = height;
+        }
+
+        public void SetTime(DateTimeOffset time, TimeSource source)
+        {
+            if (source < _timeSource || (source == _timeSource && time >= Time && _timeSource != TimeSource.None))
+                return;
+
+            Time = time;
+            _timeSource = source;
+        }
     }
 }

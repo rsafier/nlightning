@@ -11,8 +11,8 @@ using NLightning.Infrastructure.Persistence.Contexts;
 namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 {
     [DbContext(typeof(NLightningDbContext))]
-    [Migration("20261007134559_AddHtlcWireCustomRecords")]
-    partial class AddHtlcWireCustomRecords
+    [Migration("20261007133659_AddWalletTransactions")]
+    partial class AddWalletTransactions
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -1521,9 +1521,6 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 
                     b.Property<byte>("State")
                         .HasColumnType("INTEGER");
-
-                    b.Property<byte[]>("WireCustomRecords")
-                        .HasColumnType("BLOB");
 
                     b.HasKey("ChannelId", "HtlcId", "Direction");
 

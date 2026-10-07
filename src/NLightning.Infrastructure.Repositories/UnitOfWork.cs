@@ -174,6 +174,10 @@ public class UnitOfWork : IUnitOfWork
     public Domain.Bitcoin.Wallet.Interfaces.IImportedTapscriptDbRepository ImportedTapscriptDbRepository =>
         _importedTapscriptDbRepository ??= new ImportedTapscriptDbRepository(_context);
 
+    private WalletTransactionDbRepository? _walletTransactionDbRepository;
+    public Domain.Bitcoin.Wallet.Interfaces.IWalletTransactionDbRepository WalletTransactionDbRepository =>
+        _walletTransactionDbRepository ??= new WalletTransactionDbRepository(_context);
+
     private KeyRingDbRepository? _keyRingDbRepository;
     public Domain.Crypto.KeyRing.IKeyRingDbRepository KeyRingDbRepository =>
         _keyRingDbRepository ??= new KeyRingDbRepository(_context);

@@ -9,6 +9,7 @@ using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Integration.Tests.Persistence;
 
+using Domain.Accounting.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
@@ -35,6 +36,9 @@ internal sealed class ChainMonitorHarness : IAsyncDisposable
 
     public SqliteTestDatabase Db { get; } = new();
     public FakeBitcoinChain Chain { get; }
+
+    /// <summary>The accounting feed's gate of every unit of work (open unless a test holds it, NL-619).</summary>
+    public AccountingFeedGate FeedGate { get; } = new();
     public BlockchainMonitorService Monitor { get; private set; }
 
     /// <summary>The harness's services: a Scoped <see cref="IUnitOfWork"/> over <see cref="Db"/>.</summary>
@@ -57,7 +61,8 @@ internal sealed class ChainMonitorHarness : IAsyncDisposable
         services.AddSingleton<IUtxoMemoryRepository, UtxoMemoryRepository>();
         services.AddScoped<IUnitOfWork>(sp => new UnitOfWork(Db.CreateContext(_interceptor),
                                                              NullLogger<UnitOfWork>.Instance, new Sha256(),
-                                                             sp.GetRequiredService<IUtxoMemoryRepository>()));
+                                                             sp.GetRequiredService<IUtxoMemoryRepository>(),
+                                                             accountingFeedGate: FeedGate));
         _services = services.BuildServiceProvider();
         Monitor = CreateMonitor();
     }
