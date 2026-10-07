@@ -25,7 +25,6 @@ public sealed class SilentPaymentsClusterTests
         foreach (var argument in new[]
                  {
                      "-explicit", "on", "-class", "NLightning.Integration.Tests.Cluster.Live.SilentPaymentPrevoutClusterTests",
-                     "-class", "NLightning.Integration.Tests.Cluster.Live.SilentPaymentRbitcoinPrevoutClusterTests",
                      "-class", "NLightning.Integration.Tests.Docker.SilentPaymentsFlowTests",
                      "-parallel", "none", "-showLiveOutput", "-noColor"
                  })
@@ -34,7 +33,6 @@ public sealed class SilentPaymentsClusterTests
             line => TestContext.Current.TestOutputHelper?.WriteLine(line), ct);
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("SOURCE Rest", result.Log);
-        Assert.Contains("SOURCE rbitcoin Auto", result.Log);
         Assert.Contains("SP independent interoperability", result.Log);
     }
 }

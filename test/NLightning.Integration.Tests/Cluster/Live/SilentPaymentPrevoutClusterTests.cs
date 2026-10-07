@@ -112,7 +112,7 @@ public sealed class SilentPaymentPrevoutClusterTests
         var domain = new BitcoinBlock(block.ToBytes(), new Hash(blockHash.ToBytes()), block.Transactions.Count);
         await Testing.Cluster.Poll.UntilAsync(async token =>
         {
-            var index = (await node.SendCommandAsync(token, "getindexinfo")).Result["txindex"];
+            var index = (await node.SendCommandAsync("getindexinfo").WaitAsync(token)).Result["txindex"];
             return (bool?)index?["synced"] == true && (uint?)index?["best_block_height"] >= height;
         }, TimeSpan.FromMinutes(2), TimeSpan.FromMilliseconds(250), "txindex reaches source block", ct);
         IReadOnlyDictionary<TxId, IReadOnlyList<BitcoinPrevout>>? expected = null;
@@ -149,7 +149,7 @@ public sealed class SilentPaymentPrevoutClusterTests
                 Assert.Equal(entry.Value, actual[entry.Key]);
             Log($"SOURCE {kind} without txindex: every input identical.");
         }
-        var verbose = await node.SendCommandAsync(ct, "getblock", blockHash.ToString(), 3);
+        var verbose = await node.SendCommandAsync("getblock", blockHash.ToString(), 3).WaitAsync(ct);
         using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(node.Address, $"/rest/spenttxouts/{blockHash}.bin"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{miner.Options.RpcUser}:{miner.Options.RpcPassword}")));
         using var response = await node.HttpClient.SendAsync(request, ct);
@@ -178,8 +178,8 @@ public sealed class SilentPaymentPrevoutClusterTests
         var address = await core.GetNewAddressAsync(ct);
         await core.GenerateToAddressAsync(1_001, address, ct);
         var oldHash = await node.GetBlockHashAsync(10, ct);
-        await node.SendCommandAsync(ct, "pruneblockchain", 700);
-        var info = (await node.SendCommandAsync(ct, "getblockchaininfo")).Result;
+        await node.SendCommandAsync("pruneblockchain", 700).WaitAsync(ct);
+        var info = (await node.SendCommandAsync("getblockchaininfo").WaitAsync(ct)).Result;
         Assert.True((bool)info["pruned"]!);
         Assert.True((uint)info["pruneheight"]! > 10);
         var unavailable = await Assert.ThrowsAsync<NBitcoin.RPC.RPCException>(() => node.GetBlockAsync(oldHash, ct));
