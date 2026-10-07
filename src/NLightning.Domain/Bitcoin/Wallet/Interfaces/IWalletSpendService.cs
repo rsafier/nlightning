@@ -16,6 +16,14 @@ using Models;
 /// </remarks>
 public interface IWalletSpendService
 {
+    /// <summary>Sends ordinary and silent payment destinations in one transaction with frozen inputs.</summary>
+    Task<WalletWithdrawResult> SendAsync(IReadOnlyList<WalletRecipient> recipients,
+                                         Money.LightningMoney? feeRatePerKw = null,
+                                         Money.LightningMoney? maxFee = null,
+                                         Accounting.Labels.SourceLabels? labels = null,
+                                         CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This wallet does not support address recipients.");
+
     /// <summary>Quotes a script output without key validation, reservation or publication (including dummy witness programs).</summary>
     Task<WalletWithdrawEstimate> EstimateOutputFeeAsync(ValueObjects.BitcoinScript script, Money.LightningMoney amount,
         Money.LightningMoney? feeRatePerKw, CancellationToken cancellationToken = default) =>
