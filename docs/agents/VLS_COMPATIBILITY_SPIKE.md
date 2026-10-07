@@ -3,6 +3,10 @@
 Research date: 2026-10-07. Branch: `wip/remotesigner`.
 Canonical VLS source: `cb8a64c71d3b214951e752281f05b9090e77f074`.
 
+## FAFO scope decision
+
+Owner clarification, 2026-10-07: the FAFO edition has one user and no requirement to preserve compatibility with prior NLightning versions. Start VLS with fresh identities, wallets and channels using stock VLS derivation. Existing-key/channel migration and custom legacy derivation are out of scope. The derivation mismatch below is a factual finding, not a blocker for this rollout. VLS supports regtest; the mismatch does not restrict testing to mainnet. Durable recovery of newly created VLS channels remains required.
+
 ## Scope and reproduction
 
 [The standalone Rust executable](../../tools/vls-compat-spike/README.md) exercises
@@ -111,7 +115,7 @@ appropriate `ALL` / `SINGLE|ANYONECANPAY` HTLC sighash semantics. Authenticate t
 Rust gateway transport and map policy refusals separately from timeouts; there
 must be no downgrade to the native signer.
 
-## Derivation and migration
+## Derivation findings (migration out of scope)
 
 NLightning's v3 node path is `m/1017'/0'/6'/0/0` for every network. VLS LND style
 uses coin type 0 for Bitcoin and 1 for regtest/testnet/signet. Consequently a
@@ -129,10 +133,10 @@ seed. None is the NLightning channel scheme. Rotated funding keys, shachain
 history, wallet account paths and allocated indexes require explicit equivalence
 vectors and custom derivation/state import to preserve existing channels.
 
-Start with **fresh VLS-backed nodes and new channels**. Do not import the native
-seed and imply channel compatibility. A future custom key-derivation backend
-must be measured and reviewed along with state conversion; supplying only a node
-secret does not reproduce the BIP32 root.
+Use **fresh VLS-backed nodes and new channels**. Do not import the native
+seed and imply channel compatibility. Custom legacy derivation and state import
+are not planned for FAFO. The comparisons above remain useful evidence about
+backend behavior; supplying only a node secret does not reproduce the BIP32 root.
 
 ## Unsupported subset and next gate
 

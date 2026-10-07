@@ -9734,7 +9734,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Kind:** gap
 - **Location:** `tools/vls-compat-spike/`, `docs/agents/VLS_COMPATIBILITY_SPIKE.md`, application commitment/revocation hooks
 - **Evidence:** pinned VLS core signing/validation, authorization refusals and derivation differences are executable research. The spike uses artificial funding fixtures and DummyPersister; it does not provide a C# adapter, authenticated protocol gateway, durable VLS state, live payment settlement or signer-capability negotiation. Stock splice/taproot support is insufficient for the current node feature set.
-- **Fix sketch:** implement a fresh-node ECDSA semantic adapter with explicit authorization and durable VLS persistence; suppress unsupported features before negotiation and prove live payments and all on-chain recovery paths without native fallback.
+- **Fix sketch:** FAFO owner decision (2026-10-07): only user, no prior-version compatibility requirement; use stock VLS derivation with fresh identities/wallets/channels and exclude legacy key/state migration. Implement a fresh-node ECDSA semantic adapter with explicit authorization and durable VLS persistence; suppress unsupported features before negotiation and prove live payments and all on-chain recovery paths without native fallback.
 - **Blocks/Blocked-by:** NL-1190; scope and acceptance gates in the VLS assessment
 
 ### NL-1194 Nitro signer deployment needs attested provisioning and trustworthy external state

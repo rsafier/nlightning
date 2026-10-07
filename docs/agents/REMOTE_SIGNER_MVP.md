@@ -142,6 +142,9 @@ unauthorized HTLC refusal and explicit keysend authorization. It proves core API
 compatibility with artificial funding fixtures and in-memory persistence. It does
 not add a VLS backend to the node. Its derivation vectors confirm that mainnet node
 identity equality under VLS LND style does not imply channel-key compatibility.
+The owner confirmed that FAFO has one user and no prior-version compatibility
+requirement: fresh VLS keys/channels are the target, and legacy migration is out
+of scope. This derivation finding is not a rollout blocker.
 
 ## Follow-up validation record
 
