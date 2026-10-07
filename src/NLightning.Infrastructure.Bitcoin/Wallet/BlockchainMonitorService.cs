@@ -1306,7 +1306,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         }
 
         StageWalletMovements(transactions, height, block.Header.BlockTime, uow, effects);
-        await StageWalletHistoryAsync(uow, effects);
+        await StageWalletHistoryAsync(transactions, block.Header.BlockTime, uow, effects);
         await StageAccountingAsync(uow, effects);
         await StageWatchedSpendsAsync(transactions, height, blockHash, uow, effects);
         StageWatchedTransactionDepths(height, uow, effects);
@@ -1456,22 +1456,73 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     /// <summary>
     /// Stages the block's wallet transactions in the wallet's durable history (NL-1187), in the block's own save: the
     /// raw transaction, the block and the wallet's outputs and inputs as <see cref="DescribeWalletTransaction"/> found
-    /// them (the same description <c>SubscribeTransactions</c> publishes).
+    /// them (the same description <c>SubscribeTransactions</c> publishes). A stored transaction a reorg unconfirmed is
+    /// confirmed again by any block that holds it, whatever the description finds (a spend without a wallet output whose
+    /// inputs the rollback could not restore, because bitcoind's mempool still spends them, is described as nothing),
+    /// and is removed once a block confirms a conflicting spend of one of its inputs.
     /// </summary>
-    private static async Task StageWalletHistoryAsync(IUnitOfWork uow, BlockEffects effects)
+    private async Task StageWalletHistoryAsync(List<Transaction> transactions, DateTimeOffset blockTime,
+                                               IUnitOfWork uow, BlockEffects effects)
     {
-        if (effects.WalletTransactions.Count == 0 || uow.WalletTransactionDbRepository is not { } history)
+        if (uow.WalletTransactionDbRepository is not { } history)
             return;
 
+        var staged = new HashSet<TxId>();
         foreach (var observed in effects.WalletTransactions)
         {
             var inputs = new List<WalletTransactionInput>(observed.OurInputs.Count);
             for (var i = 0; i < observed.OurInputs.Count && i < observed.OurInputAmounts.Count; i++)
                 inputs.Add(new WalletTransactionInput(observed.OurInputs[i], observed.OurInputAmounts[i]));
 
+            var txId = new TxId(uint256.Parse(observed.TxHash).ToBytes());
+            staged.Add(txId);
             await history.StageConfirmedAsync(new WalletTransactionRecord(
-                new TxId(uint256.Parse(observed.TxHash).ToBytes()), Convert.FromHexString(observed.RawTransactionHex),
-                effects.Height, effects.BlockHash, observed.Timestamp, observed.OurOutputs.ToList(), inputs));
+                txId, Convert.FromHexString(observed.RawTransactionHex), effects.Height, effects.BlockHash,
+                observed.Timestamp, observed.OurOutputs.ToList(), inputs));
+        }
+
+        var unconfirmed = await history.GetUnconfirmedAsync(CancellationToken.None);
+        if (unconfirmed.Count == 0)
+            return;
+
+        var inBlock = new Dictionary<TxId, Transaction>(transactions.Count);
+        var spentInBlock = new Dictionary<OutPoint, uint256>();
+        foreach (var transaction in transactions)
+        {
+            var hash = transaction.GetHash();
+            inBlock[new TxId(hash.ToBytes())] = transaction;
+            if (transaction.IsCoinBase)
+                continue;
+
+            foreach (var input in transaction.Inputs)
+                spentInBlock.TryAdd(input.PrevOut, hash);
+        }
+
+        foreach (var record in unconfirmed)
+        {
+            if (staged.Contains(record.TxId))
+                continue;
+
+            if (inBlock.TryGetValue(record.TxId, out var confirmed))
+            {
+                // Its stored ownership is kept (the record carries none to add)
+                await history.StageConfirmedAsync(new WalletTransactionRecord(
+                    record.TxId, confirmed.ToBytes(), effects.Height, effects.BlockHash, blockTime, [], []));
+                continue;
+            }
+
+            Transaction stored;
+            try
+            {
+                stored = Transaction.Load(record.RawTransaction, _network);
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+
+            if (!stored.IsCoinBase && stored.Inputs.Any(i => spentInBlock.ContainsKey(i.PrevOut)))
+                await history.StageRemoveAsync(record.TxId);
         }
     }
 

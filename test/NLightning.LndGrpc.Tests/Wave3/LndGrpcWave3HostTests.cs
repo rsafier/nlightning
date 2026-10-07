@@ -671,6 +671,8 @@ public sealed partial class LndGrpcWave3HostTests : IAsyncLifetime
                                                                          ? height >= start && height <= end
                                                                          : unconfirmed)
                                                          .ToList());
+            walletHistory.Setup(x => x.GetHeightsAsync(It.IsAny<CancellationToken>()))
+                         .ReturnsAsync(() => _walletHistory.ToDictionary(r => r.TxId, r => r.BlockHeight));
             var imported = new Mock<IImportedTapscriptDbRepository>();
             imported.Setup(x => x.ListAsync()).ReturnsAsync(() => _importedScripts.ToList());
             var unitOfWork = new Mock<IUnitOfWork>();

@@ -8,7 +8,9 @@ using Domain.Accounting.Enums;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Crypto.ValueObjects;
 using Domain.Money;
+using Domain.Onchain.Models;
 using LndGrpc.Macaroons;
 using LndGrpc.Services;
 using Testing.Lnd.Lnrpc;
@@ -173,6 +175,101 @@ public sealed partial class LndGrpcWave3HostTests
     }
 
     [Fact]
+    public async Task Given_ASpendAReorgPutBackInTheMempoolAndAStandingFeedEventAtItsOldHeight_When_GetTransactions_Then_ItIsListedUnconfirmed()
+    {
+        // Arrange: our 100,000 sat output (deposited below the fork) spent at 120; a reorg disconnected 120 and put the
+        // spend back into bitcoind's mempool, so the durable row is unconfirmed while the feed's WalletOutputSpent stays
+        // at 120 (the rollback restored nothing, so nothing reversed it)
+        var spend = Network.RegTest.CreateTransaction();
+        var spent = new NBitcoin.OutPoint(RandomUtils.GetUInt256(), 0);
+        spend.Inputs.Add(new TxIn(spent));
+        spend.Outputs.Add(Money.Satoshis(99_000), new Key().PubKey.WitHash.ScriptPubKey);
+        var spendId = new TxId(spend.GetHash().ToBytes());
+        _walletHistory.Add(new WalletTransactionRecord(spendId, spend.ToBytes(), null, null,
+                                                       DateTimeOffset.FromUnixTimeSeconds(1_200), [],
+                                                       [new WalletTransactionInput(0, 100_000)]));
+        AddEvent(AccountingEventKind.WalletOutputSpent, new TxId(spent.Hash.ToBytes()), 0, 120, -100_000_000,
+                 ("spentBy", spendId.ToString()));
+        _chain.Setup(c => c.GetTransactionAsync(spend.GetHash())).ReturnsAsync(spend);
+        using var connection = Connect(LndMacaroonFiles.ReadOnlyFileName);
+
+        // Act
+        var all = await connection.LightningClient.GetTransactionsAsync(
+                      new GetTransactionsRequest { EndHeight = -1 }, cancellationToken: Ct);
+        var confirmedOnly = await connection.LightningClient.GetTransactionsAsync(
+                                new GetTransactionsRequest { StartHeight = 1, EndHeight = (int)ChainTip },
+                                cancellationToken: Ct);
+
+        // Assert: unconfirmed as LND reports it (block_height 0), never confirmed at the disconnected height
+        var listed = Assert.Single(all.Transactions);
+        Assert.Equal(spend.GetHash().ToString(), listed.TxHash);
+        Assert.Equal(0, listed.BlockHeight);
+        Assert.Equal(0, listed.NumConfirmations);
+        Assert.Equal("", listed.BlockHash);
+        Assert.Equal(-100_000, listed.Amount);
+        Assert.Empty(confirmedOnly.Transactions);
+    }
+
+    [Fact]
+    public async Task Given_ADurableRowConfirmedAgainAtANewHeight_When_GetTransactionsOverTheOldHeight_Then_TheStaleFeedHeightIsIgnored()
+    {
+        // Arrange: the feed recorded the spend at 120; the new branch confirmed it at 145 (the durable row)
+        var spend = Network.RegTest.CreateTransaction();
+        var spent = new NBitcoin.OutPoint(RandomUtils.GetUInt256(), 0);
+        spend.Inputs.Add(new TxIn(spent));
+        spend.Outputs.Add(Money.Satoshis(99_000), new Key().PubKey.WitHash.ScriptPubKey);
+        var spendId = new TxId(spend.GetHash().ToBytes());
+        var blockHash = RandomUtils.GetUInt256();
+        _walletHistory.Add(new WalletTransactionRecord(spendId, spend.ToBytes(), 145, blockHash.ToBytes(),
+                                                       DateTimeOffset.FromUnixTimeSeconds(1_450), [],
+                                                       [new WalletTransactionInput(0, 100_000)]));
+        AddEvent(AccountingEventKind.WalletOutputSpent, new TxId(spent.Hash.ToBytes()), 0, 120, -100_000_000,
+                 ("spentBy", spendId.ToString()));
+        using var connection = Connect(LndMacaroonFiles.ReadOnlyFileName);
+
+        // Act
+        var oldRange = await connection.LightningClient.GetTransactionsAsync(
+                           new GetTransactionsRequest { StartHeight = 110, EndHeight = 130 }, cancellationToken: Ct);
+        var all = await connection.LightningClient.GetTransactionsAsync(new GetTransactionsRequest(),
+                                                                         cancellationToken: Ct);
+
+        // Assert
+        Assert.Empty(oldRange.Transactions);
+        var listed = Assert.Single(all.Transactions);
+        Assert.Equal(145, listed.BlockHeight);
+        Assert.Equal(blockHash.ToString(), listed.BlockHash);
+    }
+
+    [Fact]
+    public async Task Given_OurBroadcastWithAPeersInput_When_GetTransactions_Then_TotalFeesIsZeroAsInBtcwallet()
+    {
+        // Arrange: a dual-funded funding at 130: our 60,000 sat input and the peer's 50,000; our broadcast row knows
+        // the fee (1,000) but btcwallet reports a fee only when every input is a wallet debit
+        var funding = Network.RegTest.CreateTransaction();
+        funding.Inputs.Add(new TxIn(new NBitcoin.OutPoint(RandomUtils.GetUInt256(), 0)));
+        funding.Inputs.Add(new TxIn(new NBitcoin.OutPoint(RandomUtils.GetUInt256(), 1)));
+        funding.Outputs.Add(Money.Satoshis(109_000), new Key().PubKey.WitHash.ScriptPubKey);
+        var fundingId = new TxId(funding.GetHash().ToBytes());
+        _walletHistory.Add(new WalletTransactionRecord(fundingId, funding.ToBytes(), 130, new byte[32],
+                                                       DateTimeOffset.UnixEpoch, [],
+                                                       [new WalletTransactionInput(0, 60_000)]));
+        _broadcastRows.Add(BroadcastTransactionModel.Restore(fundingId, funding.ToBytes(),
+                                                             Domain.Onchain.Enums.BroadcastPurpose.Funding, null, 253,
+                                                             null, 125, Domain.Onchain.Enums.BroadcastState.Confirmed,
+                                                             130, new Hash(new byte[32]), DateTimeOffset.UnixEpoch,
+                                                             fee: LightningMoney.Satoshis(1_000)));
+        using var connection = Connect(LndMacaroonFiles.ReadOnlyFileName);
+
+        // Act
+        var listed = Assert.Single((await connection.LightningClient.GetTransactionsAsync(
+                                        new GetTransactionsRequest(), cancellationToken: Ct)).Transactions);
+
+        // Assert
+        Assert.Equal(-60_000, listed.Amount);
+        Assert.Equal(0, listed.TotalFees);
+    }
+
+    [Fact]
     public async Task Given_OutputsHeldSinceBeforeTheCutover_When_GetTransactions_Then_DepositsAndResolvableSendsAreListed()
     {
         // Arrange: no feed event and no durable row; the wallet holds a deposit from 90, the change of our own send at
@@ -221,6 +318,43 @@ public sealed partial class LndGrpcWave3HostTests
         Assert.Equal(1_000, listedSend.TotalFees);
         Assert.Equal(95, listedSend.BlockHeight);
         Assert.True(Assert.Single(listedSend.PreviousOutpoints).IsOurOutput);
+    }
+
+    [Fact]
+    public async Task Given_APreCutoverSendWithHeldChangeAndAnImportedOutput_When_GetTransactions_Then_ItsWalletInputIsResolved()
+    {
+        // Arrange: our send at 95 spends an 80,000 sat wallet output (its parent paid our address) to 40,000 away,
+        // 29,000 change (held since before the cutover) and 10,000 to a script imported as tapscript (fee 1,000)
+        var parentAddress = Address(1, false);
+        var changeAddress = Address(2, true);
+        _walletAddresses.AddRange([parentAddress, changeAddress]);
+        using var importedKey = new Key();
+        var importedScript = importedKey.PubKey.GetTaprootFullPubKey().ScriptPubKey;
+        var parent = Network.RegTest.CreateTransaction();
+        parent.Inputs.Add(new TxIn(new NBitcoin.OutPoint(RandomUtils.GetUInt256(), 0)));
+        parent.Outputs.Add(Money.Satoshis(80_000), BitcoinAddress.Create(parentAddress.Address, Network.RegTest));
+        var send = Network.RegTest.CreateTransaction();
+        send.Inputs.Add(new TxIn(new NBitcoin.OutPoint(parent.GetHash(), 0)));
+        send.Outputs.Add(Money.Satoshis(40_000), new Key().PubKey.WitHash.ScriptPubKey);
+        send.Outputs.Add(Money.Satoshis(29_000), BitcoinAddress.Create(changeAddress.Address, Network.RegTest));
+        send.Outputs.Add(Money.Satoshis(10_000), importedScript);
+        SetUpChain(90, ChainTip, (95, send));
+        _chain.Setup(c => c.GetTransactionAsync(parent.GetHash())).ReturnsAsync(parent);
+        _unspent.Add(new UtxoModel(new TxId(send.GetHash().ToBytes()), 1, LightningMoney.Satoshis(29_000), 95,
+                                   changeAddress));
+        _importedScripts.Add(new ImportedTapscript(importedScript.ToBytes(),
+                                                   importedKey.PubKey.TaprootInternalKey.ToBytes(), [2], 90));
+        using var connection = Connect(LndMacaroonFiles.ReadOnlyFileName);
+
+        // Act
+        var listed = Assert.Single((await connection.LightningClient.GetTransactionsAsync(
+                                        new GetTransactionsRequest(), cancellationToken: Ct)).Transactions);
+
+        // Assert: before the fix the imported output hid the held-only state, so the input was never resolved (+39,000)
+        Assert.Equal(send.GetHash().ToString(), listed.TxHash);
+        Assert.Equal(29_000 + 10_000 - 80_000, listed.Amount);
+        Assert.Equal(1_000, listed.TotalFees);
+        Assert.True(Assert.Single(listed.PreviousOutpoints).IsOurOutput);
     }
 
     [Fact]

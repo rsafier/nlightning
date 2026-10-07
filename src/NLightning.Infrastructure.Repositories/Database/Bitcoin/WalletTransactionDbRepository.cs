@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace NLightning.Infrastructure.Repositories.Database.Bitcoin;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Bitcoin.Wallet.Models;
 using Persistence.Contexts;
@@ -61,6 +62,31 @@ public sealed class WalletTransactionDbRepository(NLightningDbContext context)
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<WalletTransactionRecord>> GetUnconfirmedAsync(CancellationToken cancellationToken)
+    {
+        var entities = await DbSet.AsNoTracking()
+                                  .Where(e => e.BlockHeight == null)
+                                  .ToListAsync(cancellationToken);
+        return entities.Select(ToRecord).ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task StageRemoveAsync(TxId txId)
+    {
+        if (await DbSet.FindAsync(txId) is { } entity)
+            DbSet.Remove(entity);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<TxId, uint?>> GetHeightsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await DbSet.AsNoTracking()
+                              .Select(e => new { e.TransactionId, e.BlockHeight })
+                              .ToListAsync(cancellationToken);
+        return rows.ToDictionary(r => r.TransactionId, r => r.BlockHeight);
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<WalletTransactionRecord>> GetHistoryAsync(uint startHeight, uint endHeight,
                                                                                bool includeUnconfirmed,
                                                                                CancellationToken cancellationToken)
@@ -70,12 +96,12 @@ public sealed class WalletTransactionDbRepository(NLightningDbContext context)
                                                                      && e.BlockHeight <= endHeight)
                                            || (includeUnconfirmed && e.BlockHeight == null))
                                   .ToListAsync(cancellationToken);
-        return entities.Select(e => new WalletTransactionRecord(e.TransactionId, e.RawTransaction, e.BlockHeight,
-                                                                e.BlockHash, e.Timestamp,
-                                                                DecodeOutputs(e.OurOutputs),
-                                                                DecodeInputs(e.OurInputs)))
-                       .ToList();
+        return entities.Select(ToRecord).ToList();
     }
+
+    private static WalletTransactionRecord ToRecord(WalletTransactionEntity e) =>
+        new(e.TransactionId, e.RawTransaction, e.BlockHeight, e.BlockHash, e.Timestamp, DecodeOutputs(e.OurOutputs),
+            DecodeInputs(e.OurInputs));
 
     internal static string EncodeOutputs(IEnumerable<uint> outputs) =>
         string.Join(',', outputs.Select(o => o.ToString(CultureInfo.InvariantCulture)));

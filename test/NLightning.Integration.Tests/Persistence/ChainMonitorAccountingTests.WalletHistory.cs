@@ -108,6 +108,75 @@ public partial class ChainMonitorAccountingTests
     }
 
     [Fact]
+    public async Task Given_AReorgOfOurWithdrawalWithoutChange_When_ItReturnsToTheMempoolAndConfirmsAgain_Then_ItsHistoryRowIsConfirmedAtTheNewHeight()
+    {
+        // Arrange: 101 holds a deposit, 102 our withdrawal of all of it (no wallet output)
+        await using var harness = new ChainMonitorHarness();
+        var wallet = await SeedWalletAsync(harness, 1);
+        await harness.StartAsync(95);
+        var deposit = CreateDeposit(0x24, wallet[0], DepositSat);
+        await harness.MineAndDeliverAsync(deposit);
+        var external = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+        var withdrawal = CreateWithdrawal(deposit, 1, wallet[0], external, null);
+        await harness.Monitor.SaveAndPublishAsync(WalletSendRow(withdrawal));
+        await harness.MineAndDeliverAsync();
+        Assert.Equal(102u, Assert.Single(await LoadWalletHistoryAsync(harness),
+                                         r => r.TxId == TxIdOf(withdrawal)).BlockHeight);
+
+        // Act: a branch from 101 (the deposit stays below the fork); bitcoind puts the withdrawal back into its mempool,
+        // so gettxout reports the deposit's output spent and the rollback cannot restore it
+        harness.Chain.Reorg(101, 2);
+        harness.Chain.Mempool.Add(withdrawal);
+        await harness.DeliverTipAsync();
+
+        // Assert: unconfirmed by the rewind
+        var withdrawalRow = Assert.Single(await LoadWalletHistoryAsync(harness), r => r.TxId == TxIdOf(withdrawal));
+        Assert.Null(withdrawalRow.BlockHeight);
+
+        // Act: the new branch confirms it (no wallet output, no input the wallet still holds)
+        var again = await harness.MineAndDeliverAsync();
+
+        // Assert: confirmed at the new height with its stored ownership
+        withdrawalRow = Assert.Single(await LoadWalletHistoryAsync(harness), r => r.TxId == TxIdOf(withdrawal));
+        Assert.Equal(104u, withdrawalRow.BlockHeight);
+        Assert.Equal(again.GetHash().ToBytes(), withdrawalRow.BlockHash);
+        Assert.Equal(again.Header.BlockTime, withdrawalRow.Timestamp);
+        Assert.Empty(withdrawalRow.OurOutputs);
+        Assert.Equal(new[] { new WalletTransactionInput(0, DepositSat) }, withdrawalRow.OurInputs);
+    }
+
+    [Fact]
+    public async Task Given_AReorgedWithdrawal_When_TheNewBranchConfirmsAConflictingSpend_Then_ItsHistoryRowIsRemoved()
+    {
+        // Arrange: 101 holds a deposit, 102 our withdrawal of it
+        await using var harness = new ChainMonitorHarness();
+        var wallet = await SeedWalletAsync(harness, 2);
+        await harness.StartAsync(95);
+        var deposit = CreateDeposit(0x25, wallet[0], DepositSat);
+        await harness.MineAndDeliverAsync(deposit);
+        var external = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+        var withdrawal = CreateWithdrawal(deposit, 1, wallet[0], external, null);
+        await harness.Monitor.SaveAndPublishAsync(WalletSendRow(withdrawal));
+        await harness.MineAndDeliverAsync();
+        harness.Chain.Reorg(101, 1);
+        await harness.DeliverTipAsync();
+        Assert.Null(Assert.Single(await LoadWalletHistoryAsync(harness), r => r.TxId == TxIdOf(withdrawal))
+                          .BlockHeight);
+
+        // Act: a block of the new branch confirms another spend of the same output (to our change address)
+        var conflict = CreateWithdrawal(deposit, 1, wallet[0],
+                                        new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest),
+                                        wallet[1]);
+        harness.Chain.Mempool.Clear();
+        await harness.MineAndDeliverAsync(conflict);
+
+        // Assert: the withdrawal can never confirm, so it leaves the history; the conflict is recorded
+        var history = await LoadWalletHistoryAsync(harness);
+        Assert.DoesNotContain(history, r => r.TxId == TxIdOf(withdrawal));
+        Assert.Equal(103u, Assert.Single(history, r => r.TxId == TxIdOf(conflict)).BlockHeight);
+    }
+
+    [Fact]
     public async Task Given_StoredHistory_When_ReadByHeightRange_Then_OnlyTheRangeAndOptionallyTheUnconfirmedAreReturned()
     {
         // Arrange
@@ -128,11 +197,15 @@ public partial class ChainMonitorAccountingTests
         var repositoryReader = new WalletTransactionDbRepository(reader);
         var confirmed = await repositoryReader.GetHistoryAsync(110, 140, false, TestContext.Current.CancellationToken);
         var all = await repositoryReader.GetHistoryAsync(0, uint.MaxValue, true, TestContext.Current.CancellationToken);
+        var heights = await repositoryReader.GetHeightsAsync(TestContext.Current.CancellationToken);
+        var unconfirmed = await repositoryReader.GetUnconfirmedAsync(TestContext.Current.CancellationToken);
 
         // Assert
         Assert.Equal(120u, Assert.Single(confirmed).BlockHeight);
         Assert.Equal(3, all.Count);
         Assert.Single(all, r => r.BlockHeight is null);
+        Assert.Equal(new uint?[] { null, 101, 120 }, heights.Values.Order().ToArray());
+        Assert.Equal(heights.Single(h => h.Value is null).Key, Assert.Single(unconfirmed).TxId);
     }
 
     private static WalletTransactionRecord Record(byte seed, uint height)

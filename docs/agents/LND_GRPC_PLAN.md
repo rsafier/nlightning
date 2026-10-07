@@ -336,7 +336,8 @@ run when registered (`AddLndGrpc` does).
   `txindex` needed, or the mempool). NL-1187/NL-1253: the chain monitor's durable `WalletTransactions` rows (raw
   transaction, block, wallet outputs and inputs, unconfirmed by a rewind) are the first source, merged with the feed,
   the outputs held since before the accounting cutover and the imported tapscript history by output index and spent
-  outpoint (each counted once); `total_fees` follows btcwallet. Remaining: NL-1289.
+  outpoint (each counted once); a stored row's height, null included, overrides the other sources'; `total_fees`
+  follows btcwallet (0 unless every input is the wallet's). Remaining: NL-1289.
 - **Tests:** Domain `Channels/Acceptance` (14), Application `Channels/Acceptance` (gate, v1 handler, dual-funded harness:
   rejection, accepted values on `accept_channel2`, refused reserve), `Payments/Interception/HtlcInterceptorHubTests`,
   `Payments/Switch/HtlcInterceptionSwitchTests` (three-node harness: FAIL decrypted at Alice as Bob's

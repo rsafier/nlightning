@@ -89,9 +89,12 @@ write-behind remains asynchronous.
   accounting cutover, pending broadcasts, unconfirmed deposits and the imported tapscript
   history by output index and spent outpoint, so a shared canonical/imported output or
   input counts once (NL-1253 fixed). A row a reorg unconfirmed is listed unconfirmed only
-  while it is our pending broadcast, an unconfirmed deposit or in bitcoind's mempool.
-  `total_fees` follows btcwallet: our broadcast row's fee, else inputs less outputs when
-  every input is the wallet's, else 0. Remaining (NL-1289): transactions whose wallet
+  while it is our pending broadcast, an unconfirmed deposit or in bitcoind's mempool;
+  a stored row's height (null included) is authoritative over a stale feed, imported or
+  held height; any block that holds an unconfirmed row confirms it again, and a block
+  confirming a conflicting spend removes it. `total_fees` follows btcwallet: 0 unless
+  every input is the wallet's (a dual-funded funding or a splice reports 0), then our
+  broadcast row's fee or the inputs less the outputs. Remaining (NL-1289): transactions whose wallet
   outputs were all spent before the accounting cutover need a wallet rescan; a
   pre-cutover send whose change is still held is listed only when bitcoind returns its
   parents; history known only to the feed (before the table existed) still reads its raw
