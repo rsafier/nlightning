@@ -198,7 +198,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 - NL-1190: Loop gRPC L0–L4 (in-progress, medium; service implementation NL-1191..NL-1195 fixed, external interoperability/failure proofs NL-1196, scanner indexing NL-1197)
 
-- NL-1160: LND gRPC compatibility (in-progress, medium; plan `docs/agents/LND_GRPC_PLAN.md`: wave 1 read/invoice/message surface with real macaroons NL-1161..NL-1163 fixed, wave 2 pay/channels/hold invoices/streams NL-1164..NL-1167, NL-1169 fixed, wave 3 acceptor/interceptor/walletrpc/history NL-1168 fixed (NL-1180, NL-1183..NL-1185); follow-ups NL-1170..NL-1172, NL-1181, NL-1182, NL-1186, NL-1187; NL-1205 fixed)
+- NL-1160: LND gRPC compatibility (in-progress, medium; plan `docs/agents/LND_GRPC_PLAN.md`: wave 1 read/invoice/message surface with real macaroons NL-1161..NL-1163 fixed, wave 2 pay/channels/hold invoices/streams NL-1164..NL-1167, NL-1169 fixed, wave 3 acceptor/interceptor/walletrpc/history NL-1168 fixed (NL-1180, NL-1183..NL-1185); bos/RTL tool gaps NL-1242..NL-1249 fixed; follow-ups NL-1170..NL-1172, NL-1181, NL-1182, NL-1186, NL-1187; NL-1205 fixed)
 - NL-990: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-991 (fixed), C1 CDK gRPC payment processor NL-992 (fixed, BOLT 11; follow-ups NL-997), C2 proof NL-993 (fixed, on the cluster harness), C3 native wallet NL-994, C4 hold invoices NL-995; integration review NL-998, NL-999, NL-1001..NL-1004 fixed, NL-1000 fixed, NL-1010 and NL-1011 open; BOLT 12 and on-chain NL-997 fixed)
 - NL-877: Simple taproot channels (`option_simple_taproot`) (open, medium; plan `docs/agents/TAPROOT_CHANNELS_PLAN.md` T0-T6; spec merged 2026-05-04, LND 0.21 and Eclair 0.14 run it as private channels; taproot gossip NL-878 waits for BOLTs #1059)
 - NL-875: Trampoline routing (BOLTs PR #836): client, relay and target (in-progress, medium; plan `docs/agents/TRAMPOLINE_PLAN.md`, TR0-TR5 built on `wip/fafo` 2026-10-03, merges `7f5c5d85` TR0, `e958b8eb` TR1, `9f0d1050` TR3-P, `165acd77` TR2, `fb2b07ca` TR5 phase 1, `1c09e718` TR4, `dd48b26d` TR3, `c1811bbf` TR5 phase 2; experimental until an owner decision; follow-ups NL-895..NL-899)
@@ -10124,7 +10124,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** a multi-channel batch needs funding several channels from one transaction (not supported by the node)
 
 ### NL-1242 LND gRPC: `QueryRoutes` unimplemented (bos probe/send/pay, RTL Query Routes); `SendToRouteV2` missing too
-- **Status:** fixed (pending pin)
+- **Status:** fixed (fb8d832f)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `src/NLightning.LndGrpc/Services/LightningService.QueryRoutes.cs`, `RouterService.SendToRoute.cs`, `src/NLightning.Application/Payments/Send/PaymentService.QueryRoute.cs`, `Payments/Routing/RouteQueryRequest.cs`, `Routing/Interfaces/IRouteQueryService.cs`, `Routing/RouteConstraints.cs` (`ExcludedEdges`), `Routing/PaymentRoutePlanner.cs`, `Send/PaymentService.PayRoute.cs` (keysend routes, `PayRouteLiquidityException`), `src/NLightning.Domain/Payments/Models/PayRouteRequest.cs`
@@ -10134,7 +10134,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** bos `rebalance` needs a circular route through payroute (not supported); multi-path shards in parallel need several SendToRouteV2 calls joining one payment
 
 ### NL-1243 LND gRPC: unimplemented methods and services answer without grpc-go's `unknown method`/`unknown service` text
-- **Status:** fixed (pending pin)
+- **Status:** fixed (029a1874)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.LndGrpc/LndUnknownMethods.cs`, `src/NLightning.LndGrpc/LndGrpcHost.cs`, `test/NLightning.LndGrpc.Tests/LndGrpcHostTests.ToolGaps.cs`
@@ -10144,7 +10144,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** none
 
 ### NL-1244 LND gRPC: `GetInfo.block_hash` byte-reversed; `ClosedChannels`/`SubscribeChannelEvents` `chain_hash` was the type name
-- **Status:** fixed (pending pin)
+- **Status:** fixed (029a1874)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.LndGrpc/Services/LightningService.cs` (`DisplayHex`), `LightningService.Info.cs`, `LightningService.Transactions.cs`, `LightningService.Channels.cs`, `LightningService.Subscriptions.cs`
@@ -10154,7 +10154,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** none
 
 ### NL-1245 LND gRPC: walletrpc `ListSweeps` and `PendingSweeps` unimplemented (bos chart-chain-fees and accounting)
-- **Status:** fixed (pending pin)
+- **Status:** fixed (e743ce1a)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `src/NLightning.LndGrpc/Services/WalletKitService.Sweeps.cs`, `LightningService.Transactions.cs` (`ListWalletTransactionsAsync`), `test/NLightning.LndGrpc.Tests/Wave3/LndGrpcWave3HostTests.Sweeps.cs`
@@ -10164,7 +10164,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** none
 
 ### NL-1246 LND gRPC: `GetNetworkInfo` unimplemented (RTL calls it on every page)
-- **Status:** fixed (pending pin)
+- **Status:** fixed (f9c0a69f)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `src/NLightning.LndGrpc/Services/LightningService.NetworkInfo.cs`, `test/NLightning.LndGrpc.Tests/Mapping/NetworkInfoTests.cs`
@@ -10174,7 +10174,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** none
 
 ### NL-1247 LND gRPC: walletrpc `ListAccounts` and `ListAddresses` unimplemented (bos chain-deposit's taproot default)
-- **Status:** fixed (pending pin)
+- **Status:** fixed (00ab46be)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `src/NLightning.LndGrpc/Services/WalletKitService.Accounts.cs`, `src/NLightning.Domain/Protocol/Interfaces/ISecureKeyManager.cs` (`GetDepositAccount`, `DepositAccountInfo`), `src/NLightning.Infrastructure.Bitcoin/Managers/SecureKeyManager.cs`
@@ -10184,7 +10184,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** none
 
 ### NL-1248 LND gRPC: channel backup RPCs unimplemented (bos report, RTL's backup page and every RTL load)
-- **Status:** fixed (pending pin)
+- **Status:** fixed (2588e86c)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `src/NLightning.LndGrpc/Services/LightningService.Backups.cs`, `src/NLightning.LndGrpc/LndGrpcOptions.cs` (`AllowChannelBackupRestore`), `test/NLightning.LndGrpc.Tests/LndGrpcHostTests.Backups.cs`
@@ -10194,7 +10194,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Blocks/Blocked-by:** none
 
 ### NL-1249 LND gRPC: ListChannels and ListPeers fields always 0 (uptime, lifetime, totals, traffic, ping, sync type, flaps, errors)
-- **Status:** fixed (pending pin)
+- **Status:** fixed (ce92a05b)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.LndGrpc/Services/PeerLivenessTracker.cs`, `LightningService.Traffic.cs`, `LightningService.Info.cs` (ListPeers), `LightningService.Channels.cs` (ListChannels); `src/NLightning.Domain/Transport/ITransportService.cs`, `Protocol/Interfaces/IMessageService.cs`, `Protocol/Interfaces/IPingPongService.cs`, `Node/Interfaces/IPeerCommunicationService.cs`, `Node/Interfaces/IPeerService.cs` (default members); `src/NLightning.Infrastructure/Transport/Services/TransportService.cs`, `Protocol/Services/MessageService.cs`, `Protocol/Services/PingPongService.cs`, `Node/Services/PeerCommunicationService.cs`, `Node/Services/PeerService.cs`; `src/NLightning.Application/Gossip/Sync/Interfaces/IGossipSyncManager.cs` (`GetPeerStates` on the interface)
