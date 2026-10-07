@@ -4,7 +4,7 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Updated 2026-10-06 by `wip/lnd-p2` from `wip/fafo` d074fe01: NL-1170, NL-1171 and NL-1172 fixed; NL-1190/NL-1196 regtest matrix complete (`lnd-p2-proof6`, 1/1), Mutinynet trial prepared but pending access/server confirmation/owner approval. New and fixed NL-1226 (onion reply metric assertion race) and NL-1228 (same-height chain-sync barrier); new open NL-1227 (unchanged accounting adjustment assertion failed once under load, passed on both frameworks in isolation). NL-1198 reproduced under load, passed alone on both frameworks. Summary recounted: 942 entries, no duplicate IDs; no schema change.
 
-Updated 2026-10-07 by `wip/lnd-subscriptions` from `wip/fafo` 45f71673: NL-1230 fixed with five passive LND feeds, warning-free net10/net11 Release build, final focused suites 190/78/210 green and real LND proof `lnd-subs-proof2` 1/1 green. Initial broad failures cleared by targeted reruns; NL-1198 timing failure passed alone. NL-1231/NL-1232 remain open for on-chain HTLC and imported-only transaction feeds. Summary: 951 unique classified entries. No schema or live-node configuration change.
+Updated 2026-10-07 by `wip/lnd-subscriptions` from `wip/fafo` 45f71673: NL-1230 fixed in `ae737a97` with five passive LND feeds, warning-free net10/net11 Release build, final focused suites 190/78/210 green and real LND proof `lnd-subs-proof2` 1/1 green. Initial broad failures cleared by targeted reruns; NL-1198 timing failure passed alone. NL-1231/NL-1232 remain open for on-chain HTLC and imported-only transaction feeds. Summary: 951 unique classified entries. No schema or live-node configuration change.
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
@@ -9996,7 +9996,7 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 
 
 ### NL-1230 LND-compatible passive HTLC, peer, channel, wallet transaction and graph subscriptions
-- **Status:** fixed (wip/lnd-subscriptions)
+- **Status:** fixed (ae737a97; wip/lnd-subscriptions)
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** LndGrpc `RouterService.HtlcEvents`, `LightningService.{Subscriptions,TransactionSubscriptions,GraphSubscriptions}`, Application `Payments/Events/HtlcEvent{Hub,Monitor}`, peer/reestablish/channel/graph hooks, Bitcoin wallet monitor snapshots

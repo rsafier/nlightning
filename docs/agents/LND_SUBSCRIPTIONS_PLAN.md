@@ -65,6 +65,8 @@ write-behind remains asynchronous.
 
 ## Verification
 
+Implementation and proof record: `ae737a97` on `wip/lnd-subscriptions`.
+
 Final validation 2026-10-07:
 
 - Release solution build on net10.0 and net11.0: zero warnings/errors. Standard tests
