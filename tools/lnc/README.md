@@ -8,9 +8,10 @@ verified TLS using a dedicated, permission-scoped backend macaroon for each
 session.
 
 This executable is separate from the daemon. It does not require
-`LndGrpc:EnableSigner`, and it does not implement Lightning Terminal's own
-application services beyond three read-only litrpc answers that let the
-Terminal web app load (see "Lightning Terminal" below). A client's required
+`LndGrpc:EnableSigner`. Of Lightning Terminal's own application services it
+implements the litrpc status and Autopilot calls the Terminal web app uses,
+including AutoFees autopilot sessions behind a firewall (see "Lightning
+Terminal" below); Loop, Pool, Faraday and Taproot Assets are not provided. A client's required
 RPCs must exist in NLightning; the bridge preserves backend errors such as
 `UNIMPLEMENTED`. Each protobuf message
 is limited to 32 MiB in either direction; larger messages fail with
@@ -138,16 +139,19 @@ stock LNC WASM client (lnc-web). Against this bridge it needs, and gets:
   and sends it back as per-RPC metadata. The bridge still forwards with its own
   copy of that credential and rejects any other. The node admin macaroon is never
   sent.
-- **litrpc reads answered by the bridge.** After `GetInfo` Terminal refuses a
+- **litrpc answered by the bridge.** After `GetInfo` Terminal refuses a
   node whose macaroon lacks `/litrpc.Autopilot/ListAutopilotSessions` ("Custodial
   accounts are not currently supported"), and it reads `litrpc.Status` to decide
   which pages to offer. New sessions of both profiles carry
-  `/litrpc.Status/SubServerStatus`, `/litrpc.Autopilot/ListAutopilotSessions`
-  and `/litrpc.Autopilot/ListAutopilotFeatures` (baked with
+  `/litrpc.Status/SubServerStatus`, `/litrpc.Autopilot/ListAutopilotSessions`,
+  `/litrpc.Autopilot/ListAutopilotFeatures` and `/litrpc.Firewall/ListActions`;
+  `--profile wallet` sessions also carry `/litrpc.Autopilot/AddAutopilotSession`
+  and `/litrpc.Autopilot/RevokeAutopilotSession` (all baked with
   `allow_external_permissions`; the node never serves them). The bridge answers
-  them itself without contacting the node: SubServerStatus reports `lnd` and
-  `lit` running and `loop`, `pool`, `faraday` and `taproot-assets` disabled; the
-  two autopilot lists are empty. Every other call goes to the node.
+  them itself and never forwards a litrpc call: SubServerStatus reports `lnd`
+  and `lit` running and `loop`, `pool`, `faraday`, `taproot-assets` and
+  `accounts` disabled (litd has no separate autopilot or firewall entry); the
+  Autopilot calls are described below. Every other call goes to the node.
 
 What works, on the node's LND-compatible API: pairing and reconnect, node info
 and balances (`GetInfo`, `ChannelBalance`, `WalletBalance`), channels (open,
@@ -156,16 +160,71 @@ pending, closed), peers, payments, invoices, forwarding history, the fee report
 NL-1239), on-chain transactions, node lookups and the invoice, transaction,
 channel and HTLC subscriptions. Signet is supported by Terminal.
 
-What does not: Loop, Pool, Faraday, Taproot Assets and autopilot (reported off;
-their pages show nothing or an error; `litrpc.Firewall.ListActions`, which the
-Autopilot/AutoFees page calls, and every `taprpc`/`mintrpc` call stay
-unimplemented by owner decision), `BatchOpenChannel` (channel opening from
-Terminal) and `walletrpc.GetTransaction` (not implemented by the node), and
-channel open, close and policy changes (not in either profile).
+What does not: Loop, Pool, Faraday and Taproot Assets (reported off; their pages
+show nothing or an error; every `taprpc`/`mintrpc` call stays unimplemented),
+AutoOpen (below), `BatchOpenChannel` (channel opening from Terminal) and
+`walletrpc.GetTransaction` (not implemented by the node), and channel open,
+close and policy changes by the person's own session (not in either profile;
+an AutoFees autopilot changes fees through its own session).
 Terminal shows write buttons for a read-only session too (its macaroon holds
 `uri` permissions, which the WASM client does not count as read-only); the node
 refuses those calls. Sessions created before this change lack the litrpc
 permissions and are refused by Terminal: create a new session.
+
+### Autopilot (NL-1240)
+
+The bridge emulates litd's Autopilot for the AutoFees feature: Terminal's
+Autopilot page lists the features, enables AutoFees with its rules, lists and
+revokes autopilot sessions and shows AutoFees' fee changes from the firewall's
+action log. Research, the security model and every rule are in
+[`docs/agents/LNC_AUTOPILOT_PLAN.md`](../../docs/agents/LNC_AUTOPILOT_PLAN.md).
+
+Setup:
+
+1. Once, with the admin macaroon, bake the autopilot macaroon (the four AutoFees
+   node methods only: `ListChannels`, `FeeReport`, `ForwardingHistory`,
+   `UpdateChannelPolicy`; stored in the state directory as `autopilot.json`):
+
+   ```bash
+   ./nltg-lnc autopilot-init \
+     --state-dir "$lnc_state_dir" \
+     --backend 127.0.0.1:10009 \
+     --tls-cert "$lnc_node_dir/lnd-grpc/tls.cert" \
+     --admin-macaroon "$lnc_node_dir/lnd-grpc/admin.macaroon"
+   ```
+
+   `--rotate` replaces it, deletes the old root key and revokes every autopilot
+   session.
+2. Start `serve` with `--autopilot-server mainnet` (Lightning Labs'
+   `autopilot.lightning.finance:12010`), `testnet`
+   (`test.autopilot.lightning.finance:12010`) or a `host:port`
+   (`--autopilot-tls-cert` for a server with a private CA). Like litd, there is
+   no default for other networks: Lightning Labs runs no signet autopilot
+   server. Without the flag the Autopilot page loads with no features, the
+   action log still answers, and enabling a feature fails with
+   `FailedPrecondition`.
+3. Pair Terminal with a new `--profile wallet` session.
+
+When Terminal enables AutoFees the bridge validates the rules against the
+server's limits, registers a session with the autopilot server and serves it on
+the mailbox for the server's key. That session never reaches the node directly:
+each call must carry litd's meta caveat naming AutoFees, may only be one of the
+four methods, passes the rules (rate limit, history limit, channel policy
+bounds, channel and peer restrictions; never a global or `create_missing_edge`
+update), goes to the node with the session's own scoped macaroon, and returns
+through litd's privacy mapper (pseudonymous node keys, channel IDs and channel
+points, fuzzed amounts and timestamps, unlisted fields dropped). Every call is
+recorded (`actions.json`); pseudonyms are kept per session group
+(`privacy-<group>.json`). `revoke --id` on an autopilot session disables it
+locally only (the shared autopilot root key stays); serve then tells the server.
+`list` shows each session's `type` (`lnc` or `autopilot`).
+
+Not supported: AutoOpen (reported as requiring an upgrade: the node has no
+`BatchOpenChannel` and the bridge enforces neither `channel-constraint` nor
+`on-chain-budget`), `no_privacy_mapper`, session-wide rules and the dev mailbox.
+On signet Terminal's session badge stays "Pending": the browser asks the
+autopilot server's REST API for it, and Terminal points at localhost on networks
+other than mainnet and testnet.
 
 To see what a client calls, start `serve` with:
 

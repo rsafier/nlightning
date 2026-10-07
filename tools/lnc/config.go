@@ -14,6 +14,11 @@ type Config struct {
 	LogRPC bool
 	// LogMailbox turns on the mailbox library's debug log (serve only).
 	LogMailbox bool
+	// AutopilotServer is the autopilot server serve registers autopilot
+	// sessions with (host:port, or mainnet/testnet); empty turns it off.
+	AutopilotServer, AutopilotTLSCert string
+	// Rotate lets autopilot-init replace an existing autopilot macaroon.
+	Rotate bool
 }
 
 func parseConfig(command string, args []string) (Config, error) {
@@ -32,6 +37,9 @@ func parseConfig(command string, args []string) (Config, error) {
 	f.StringVar(&c.ID, "id", "", "session ID for revoke")
 	f.BoolVar(&c.LogRPC, "log-rpc", false, "serve: log each RPC's method, status code and duration (never payloads or credentials)")
 	f.BoolVar(&c.LogMailbox, "log-mailbox", false, "serve: log the mailbox transport and handshakes at debug level")
+	f.StringVar(&c.AutopilotServer, "autopilot-server", "", "serve: autopilot server host:port, or mainnet/testnet (empty: autopilot off)")
+	f.StringVar(&c.AutopilotTLSCert, "autopilot-tls-cert", "", "serve: trusted autopilot server TLS certificate PEM (default: system roots)")
+	f.BoolVar(&c.Rotate, "rotate", false, "autopilot-init: replace the autopilot macaroon and revoke every autopilot session")
 	if e := f.Parse(args); e != nil {
 		return c, e
 	}
@@ -41,7 +49,7 @@ func parseConfig(command string, args []string) (Config, error) {
 	if command != "list" && c.TLSCert == "" {
 		return c, errors.New("--tls-cert is required")
 	}
-	if (command == "create" || command == "revoke") && c.AdminMacaroon == "" {
+	if (command == "create" || command == "revoke" || command == "autopilot-init") && c.AdminMacaroon == "" {
 		return c, errors.New("--admin-macaroon is required")
 	}
 	if command == "create" {
@@ -60,13 +68,17 @@ func parseConfig(command string, args []string) (Config, error) {
 func profileMethods(profile string) ([]string, error) {
 	methods := strings.Fields(`/verrpc.Versioner/GetVersion /lnrpc.Lightning/GetInfo /lnrpc.Lightning/WalletBalance /lnrpc.Lightning/ChannelBalance /lnrpc.Lightning/ListChannels /lnrpc.Lightning/PendingChannels /lnrpc.Lightning/ClosedChannels /lnrpc.Lightning/ListPeers /lnrpc.Lightning/GetTransactions /lnrpc.Lightning/ListUnspent /lnrpc.Lightning/ListInvoices /lnrpc.Lightning/LookupInvoice /lnrpc.Lightning/ListPayments /lnrpc.Lightning/DecodePayReq /lnrpc.Lightning/QueryRoutes /lnrpc.Lightning/GetNodeInfo /lnrpc.Lightning/GetChanInfo /lnrpc.Lightning/DescribeGraph /lnrpc.Lightning/ForwardingHistory /lnrpc.Lightning/FeeReport /lnrpc.Lightning/SubscribeInvoices /lnrpc.Lightning/SubscribeTransactions /lnrpc.Lightning/SubscribePeerEvents /lnrpc.Lightning/SubscribeChannelEvents /lnrpc.Lightning/SubscribeChannelGraph /routerrpc.Router/TrackPaymentV2 /routerrpc.Router/TrackPayments /routerrpc.Router/SubscribeHtlcEvents /invoicesrpc.Invoices/SubscribeSingleInvoice`)
 	// Lightning Terminal refuses a session whose macaroon lacks
-	// ListAutopilotSessions and reads litrpc.Status; the bridge answers these
-	// litrpc reads itself (lit.go), so every profile carries them.
-	methods = append(methods, litSubServerStatus, litListAutopilotSessions, litListAutopilotFeatures)
+	// ListAutopilotSessions and reads litrpc.Status and the firewall's action
+	// log; the bridge answers these litrpc reads itself (lit.go), so every
+	// profile carries them.
+	methods = append(methods, litSubServerStatus, litListAutopilotSessions, litListAutopilotFeatures, litListActions)
 	switch profile {
 	case "readonly":
 		return methods, nil
 	case "wallet":
+		// Starting and stopping an autopilot (which then changes channel fees
+		// within the rules the person chose) is a write: wallet sessions only.
+		methods = append(methods, litAddAutopilotSession, litRevokeAutopilotSession)
 		return append(methods, strings.Fields(`/lnrpc.Lightning/AddInvoice /lnrpc.Lightning/NewAddress /lnrpc.Lightning/SendCoins /lnrpc.Lightning/SendMany /lnrpc.Lightning/ConnectPeer /lnrpc.Lightning/DisconnectPeer /lnrpc.Lightning/SignMessage /routerrpc.Router/SendPaymentV2 /routerrpc.Router/SendToRouteV2 /invoicesrpc.Invoices/AddHoldInvoice /invoicesrpc.Invoices/SettleInvoice /invoicesrpc.Invoices/CancelInvoice`)...), nil
 	default:
 		return nil, errors.New("--profile must be readonly or wallet")

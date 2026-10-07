@@ -148,6 +148,12 @@ type bridge struct {
 	mailboxLog btclog.Logger
 	logOut     io.Writer
 	failure    chan error
+	// autopilot is the litd emulation shared by every runner (lit.go,
+	// autopilot.go); actions and privacy are its stores.
+	autopilot *autopilotService
+	litLocal  map[string]LocalHandler
+	actions   *actionLog
+	privacy   *privacyStore
 	// mu orders binding changes (the handshake callback) against the serve
 	// loop's reconcile, so a runner's key and the stored binding move together.
 	mu sync.Mutex
@@ -183,6 +189,12 @@ func serve(ctx context.Context, c Config, store *Store, backend *grpc.ClientConn
 		// library logs no keys' private parts, auth data or RPC payloads.
 		b.mailboxLog = newMailboxLogger(os.Stderr)
 		mailbox.UseLogger(b.mailboxLog)
+	}
+	if e := b.setupAutopilot(); e != nil {
+		return e
+	}
+	if b.autopilot.server != nil {
+		go b.autopilotKeepAlive(ctx)
 	}
 	runners := map[*runner]bool{}
 	defer func() {
@@ -265,13 +277,29 @@ func (b *bridge) startRunner(spec startSpec) (*runner, error) {
 		r.setKey(hex.EncodeToString(pub.SerializeCompressed()))
 		return nil
 	}
-	connData := mailbox.NewConnData(&keychain.PrivKeyECDH{PrivKey: key}, remote, entropy, sessionAuthData(s.Macaroon), onRemote, nil)
+	connData := mailbox.NewConnData(&keychain.PrivKeyECDH{PrivKey: key}, remote, entropy, sessionAuthData(s.clientCredential()), onRemote, nil)
 	listener, e := newMailboxListener(b.ctx, b.config.Relay, connData, nil, b.mailboxLog, grpc.WithTransportCredentials(b.relayCreds.Clone()))
 	if e != nil {
 		return nil, e
 	}
 	var creds credentials.TransportCredentials = serverNoiseCredentials(connData)
-	proxy := ProxyConfig{Local: localMethodsFor(s.AllowedMethods), OnAuthenticated: func() { b.confirm(r) }}
+	proxy := ProxyConfig{Local: localMethodsFor(b.litLocal, s.AllowedMethods), OnAuthenticated: func() { b.confirm(r) }}
+	if s.isAutopilot() {
+		// An autopilot session never reaches the node directly: each granted
+		// method goes through the firewall (rules, privacy mapping, action
+		// log) and everything else is refused.
+		if s.Autopilot == nil || s.ClientMacaroon == "" {
+			_ = listener.Close()
+			return nil, fmt.Errorf("autopilot session %s is incomplete", id)
+		}
+		auth, e := autopilotAuthenticator(s.ClientMacaroon, time.Now)
+		if e != nil {
+			_ = listener.Close()
+			return nil, e
+		}
+		proxy.Local = newFirewall(s, b.backend, b.actions, b.privacy).handlers()
+		proxy.LocalOnly, proxy.Authenticate = true, auth
+	}
 	if b.config.LogRPC {
 		creds = &handshakeLogCredentials{TransportCredentials: creds, log: func(err error) {
 			if err != nil {
@@ -343,3 +371,47 @@ func (h *handshakeLogCredentials) Clone() credentials.TransportCredentials {
 }
 
 func mustDecode(s string) []byte { b, _ := hex.DecodeString(s); return b }
+
+// setupAutopilot opens the action log and privacy maps and, when configured,
+// the autopilot server client and the autopilot macaroon.
+func (b *bridge) setupAutopilot() error {
+	var err error
+	if b.actions, err = openActionLog(b.store.Dir); err != nil {
+		return err
+	}
+	b.privacy = newPrivacyStore(b.store.Dir)
+	b.autopilot = &autopilotService{store: b.store, relay: b.config.Relay, actions: b.actions, privacy: b.privacy,
+		now: time.Now, lock: func() func() { b.mu.Lock(); return b.mu.Unlock }}
+	if b.config.AutopilotServer != "" {
+		addr := resolveAutopilotServer(b.config.AutopilotServer)
+		if b.autopilot.server, err = newAutopilotServerClient(addr, b.config.AutopilotTLSCert, false); err != nil {
+			return err
+		}
+		if ceilingExists(b.store.Dir) {
+			if b.autopilot.ceiling, err = loadAutopilotCeiling(b.store.Dir); err != nil {
+				return err
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "autopilot server configured but autopilot-init has not run: AddAutopilotSession will fail")
+		}
+		fmt.Fprintf(os.Stderr, "autopilot server %s\n", addr)
+	}
+	b.litLocal = litLocalHandlers(b.autopilot)
+	return nil
+}
+
+// autopilotKeepAlive runs the activation loop shortly after start and then
+// hourly, litd's default cadence.
+func (b *bridge) autopilotKeepAlive(ctx context.Context) {
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		b.autopilot.keepAlive(ctx)
+		timer.Reset(time.Hour)
+	}
+}
