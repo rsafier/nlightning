@@ -42,6 +42,7 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
     private readonly string _path = Path.Combine(Path.GetTempPath(), $"nltg-sp-recovery-{Guid.NewGuid():N}.db");
     private readonly Dictionary<uint, Block> _blocks = [];
     private readonly Dictionary<OutPoint, (TxOut Output, uint Height)> _unspent = [];
+    private readonly HashSet<OutPoint> _mempoolSpends = [];
     private readonly Mock<IBitcoinChainService> _chain = new();
     private readonly Mock<IBlockchainMonitor> _monitor = new();
     private readonly Mock<IBlockPrevoutSource> _prevouts = new();
@@ -70,6 +71,9 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         _chain.Setup(chain => chain.GetBlockAsync(It.IsAny<uint>())).ReturnsAsync((uint height) => _blocks[height]);
         _chain.Setup(chain => chain.GetConfirmedUnspentOutputAsync(It.IsAny<OutPoint>()))
             .ReturnsAsync((OutPoint point) => _unspent.TryGetValue(point, out var value) ? value : ((TxOut, uint)?)null);
+        _chain.Setup(chain => chain.GetUnspentOutputAsync(It.IsAny<OutPoint>()))
+            .ReturnsAsync((OutPoint point) => !_mempoolSpends.Contains(point) && _unspent.TryGetValue(point, out var value)
+                ? value : ((TxOut, uint)?)null);
         _monitor.SetupGet(monitor => monitor.LastProcessedBlockHeight).Returns(5u);
         _prevouts.SetupGet(source => source.Source).Returns(SilentPaymentPrevoutSource.GetRawTransaction);
         _prevouts.Setup(source => source.ProbeAsync(It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
@@ -266,6 +270,28 @@ public sealed class SilentPaymentServiceTests : IAsyncLifetime
         var journal = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().AccountingEventDbRepository
             .GetByKeyPrefixAsync("wallet:", TestContext.Current.CancellationToken);
         Assert.Single(journal);
+    }
+
+    [Fact]
+    public async Task Given_RecoveredCoinSpentInMempool_When_Finalized_Then_ItIsNotSelectableAndRecoveryWaitsForResolution()
+    {
+        // Arrange
+        var received = AddReceipt(1, 20_000);
+        using var service = CreateService();
+        await service.GetAddressAsync(cancellationToken: TestContext.Current.CancellationToken);
+        await service.StartRescanAsync(1, cancellationToken: TestContext.Current.CancellationToken);
+        for (var i = 0; i < 4; i++)
+            await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken);
+        _mempoolSpends.Add(received);
+
+        // Act / Assert
+        Assert.False(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        Assert.Empty(await UnspentAsync());
+        Assert.True((await service.GetStatusAsync(TestContext.Current.CancellationToken)).IsRescanning);
+        _mempoolSpends.Remove(received);
+        Assert.True(await service.ProcessNextBlockAsync(TestContext.Current.CancellationToken));
+        Assert.Single(await UnspentAsync());
+        Assert.False((await service.GetStatusAsync(TestContext.Current.CancellationToken)).IsRescanning);
     }
 
     private SilentPaymentService CreateService(IServiceScopeFactory? scopes = null) => new(scopes ?? _provider.GetRequiredService<IServiceScopeFactory>(), _chain.Object,
