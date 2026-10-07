@@ -265,7 +265,8 @@ public sealed class SilentPaymentService(IServiceScopeFactory scopes, IBitcoinCh
             if (await uow.UtxoDbRepository.GetByIdAsync(output.TransactionId, output.Index) is null)
                 uow.AddUtxo(new UtxoModel(output));
         }
-        if (await chain.GetBlockHashAsync(tip).WaitAsync(cancellationToken) != tipHash)
+        if (await chain.GetCurrentBlockHeightAsync().WaitAsync(cancellationToken) != tip ||
+            await chain.GetBlockHashAsync(tip).WaitAsync(cancellationToken) != tipHash)
             throw new InvalidOperationException("Chain changed during silent payment recovery finalization.");
         await ValidateCursorAsync(state, cancellationToken);
         await uow.SilentPaymentDbRepository.SetScanStateAsync(state with
