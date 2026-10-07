@@ -38,7 +38,7 @@ and `0288fa27...`. Many nodes in mempool.space's signet graph are unreachable.
 | Static Loop In, first try (`57dc482e`) | **failed: NLightning bug NL-1233** | the server's probe HTLC (260,000,000 msat, random hash, no MPP record) was failed with `invalid_onion_payload`; LND counts only `incorrect_or_unknown_payment_details` as the destination reached, so loopd logged "Server probe error: target unreachable" and the server answered "loop in failed" |
 | Classic Loop In 250,000 | **SUCCESS** | swap `d0892d48cf9b2bd112a874b6b9b1eb82d1e9242668e6fb8351bd40c81d1a72c8`; its probe goes to a real hold invoice with a payment_secret ("Server probe successful", answered 0x400F, invoice canceled); our wallet published the HTLC `bd9e32ec0ea25b79bd03e989154f9fb3f0430cdd5b4a5d22f5e3e831ced27e47` (WalletKit SendOutputs, 144 sat fee, block 325270); the server paid our 249,482 sat invoice; server sweep `d77716af...445b` (325274); cost server 518, on-chain 144 sat. It survived a node and loopd restart in `InvoiceSettled` (20:47, the NL-1233 deploy): loopd resumed and finished |
 | Static Loop In, after the fix (`91759661`) | **SUCCEEDED** | swap `c55f5633ff3a19b30186f88185c4ff02f806515703bac9417fe00a2bb5029368`, deposit `83db4aaa...:0` `LOOPED_IN`; the server's two probes (HTLCs 3 and 4) answered `IncorrectOrUnknownPaymentDetails`; three `MuSig2Sign` sessions in our signer; the server paid our 259,932 sat invoice (HTLC 5) 1.7 s after the request; cost server 68 sat. The server swept the deposit cooperatively in `b6a5b2a089386cde9e5009a1fcaceb52463f21f47079f52e388658a0cdaec211` (block 325276) |
-| Cooperative static withdrawal | **works** | `loop static withdraw --utxo fe528e22...:0` (deposit 2, 260,000 sat, block 325269, sent by the orchestrator from our wallet): our `SignerService` ran MuSig2Sign session `A4A742E7...` and published `f193b713ab4a748c23b78eade76ea417fe1f781413ade524ade8ae6df1463549` (key path, 112 sat fee, no wallet input) to a fresh wallet address `tb1p7r4fln0r7jkp0aq5r7gv0czn75wwzeuh9j52hctskxpknevllw9qk4qzh2` from our NewAddress; confirmed at 325276 and seen by our wallet ("Deposit detected: 0.00259888"). loopd's own fee-bump attempt `64f131df...` three seconds later was refused by bitcoind (`insufficient fee, rejecting replacement`) and is harmless. At three confirmations (325278, loopd's `MinConfs` through our ChainNotifier) the deposit is `WITHDRAWN` and `loop static listwithdrawals` shows `f193b713...`, 259,888 sat withdrawn |
+| Cooperative static withdrawal | **works** | `loop static withdraw --utxo fe528e22...:0` (deposit 2, 260,000 sat, block 325269, sent by the orchestrator from our wallet): our `SignerService` ran MuSig2Sign session `A4A742E7...` and published `f193b713ab4a748c23b78eade76ea417fe1f781413ade524ade8ae6df1463549` (key path, 112 sat fee, no wallet input) to a fresh wallet address `tb1p7r4fln0r7jkp0aq5r7gv0czn75wwzeuh9j52hctskxpknevllw9qk4qzh2` from our NewAddress; confirmed at 325276 and seen by our wallet ("Deposit detected: 0.00259888"; `walletbalance` Unconfirmed 259,888 until our 4-confirmation rule, Confirmed from 325279: 1,091,765 sat, nothing unconfirmed). A second `static withdraw` of the same deposit, issued by the orchestrator three seconds later, built `64f131df...`, which bitcoind refused as a replacement (`insufficient fee, rejecting replacement`); `f193b713...` is the one that confirmed. At three confirmations (325278, loopd's `MinConfs` through our ChainNotifier) the deposit is `WITHDRAWN` and `loop static listwithdrawals` shows `f193b713...`, 259,888 sat withdrawn |
 
 The first two static attempts on the fixed build (20:54, 20:55, one per deposit) were refused at once without a probe
 HTLC; ten minutes later the same request went through. The server evidently remembered the failed probe for a while.
@@ -56,6 +56,32 @@ Loop Out (or other inbound) per Loop In of the same size on a single channel.
 `incorrect_or_unknown_payment_details`, and LND's probes (random hash, no MPP record), such as the Loop server's static
 loop-in probe, count only that error as reaching the destination. The validator now leaves the payload to
 `FinalHopProcessor`, which already refuses it with 0x400F.
+
+### Wallet observations
+
+- **P2TR sweeps "Unconfirmed" for a while: our 4-confirmation rule, not an address-type bug.** `walletbalance` counts
+  an output as Confirmed at four confirmations, for every address type: `UtxoMemoryRepository.GetConfirmedBalance` takes
+  `BlockHeight + 3 <= tip` (`src/NLightning.Infrastructure.Repositories/Memory/UtxoMemoryRepository.cs:42-54`). At
+  325277 the 559,775 sat Unconfirmed were the orchestrator's Loop Out sweep `85e7b6cc...` (299,887 sat to
+  `tb1pzmax...`, block 325275) and the withdrawal `f193b713...` (259,888 sat, block 325276), not `a70dd6df...` (block
+  325269, already Confirmed); they moved to Confirmed at 325278 and 325279. Outputs paid to addresses handed out through
+  the LND `NewAddress`/WalletKit path are tracked like any other wallet address.
+- **Finding (LND parity, low): `WalletBalance` over LND gRPC uses the same four confirmations.** `LightningService.Info.cs:93-94`
+  calls `GetConfirmedBalance`/`GetUnconfirmedBalance`, so an LND client sees an output as unconfirmed for three blocks
+  after LND (btcwallet) would call it confirmed (one confirmation). Proposed fix: compute the gRPC
+  `confirmed_balance`/`unconfirmed_balance` (and `account_balance`) with LND's one-confirmation split, leaving the
+  node's own `walletbalance` and the coin-selection/anchors-reserve depth unchanged; add a unit test with an output at
+  1 and 3 confirmations.
+- **`f193b713...` "rebroadcast" after it was mined: loopd's calls, not our node.** `WalletPsbtService.PublishTransactionAsync`
+  sends a transaction without a wallet input once and saves no `BroadcastTransactions` row
+  (`src/NLightning.Infrastructure.Bitcoin/Wallet/WalletPsbtService.cs:428-440`), so the chain monitor never rebroadcasts
+  or books it. Each broadcast at 21:17:29, 21:29:29 and 21:34:38 is loopd calling `PublishTransaction` again: its
+  withdrawal manager republishes on every block until `MinConfs = 3` (`staticaddr/withdraw/manager.go:59`; the loopd log
+  shows "Publishing deposit withdrawal with txid f193b713..." at the same instants). bitcoind's "outputs already in utxo
+  set" is mapped to success (`MapRefusal`, lines 531-535), as in LND. Cosmetic follow-up: log an already-known
+  transaction as such instead of "Published transaction ... (no wallet input)".
+- **loopd `WITHDRAWING` after the withdrawal was mined.** loopd waits for three confirmations of the withdrawal through
+  our ChainNotifier `RegisterConfirmationsNtfn`; it reported `WITHDRAWN` at 325278, as designed.
 
 ## Not covered
 
