@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -46,6 +46,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\NLightning.Application\NLightning.Application.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Daemon\NLightning.Daemon.csproj"/>
+    <ProjectReference Include="..\..\src\NLightning.Client\NLightning.Client.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Signer\NLightning.Signer.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Infrastructure.Repositories\NLightning.Infrastructure.Repositories.csproj"/>
     <ProjectReference Include="..\NLightning.Tests.Utils\NLightning.Tests.Utils.csproj"/>
@@ -65,6 +66,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\NLightning.RemoteSigning.Tests\HostedNativeSignerSupervisor.cs" Link="Cluster\HostedNativeSignerSupervisor.cs"/>
     <Compile Include="..\NLightning.RemoteSigning.Tests\SignerDaemonFixture.cs" Link="Cluster\SignerDaemonFixture.cs"/>
     <Compile Include="..\NLightning.RemoteSigning.Tests\VlsGatewayFixture.cs" Link="Cluster\VlsGatewayFixture.cs"/>
   </ItemGroup>

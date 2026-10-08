@@ -7,6 +7,8 @@ namespace NLightning.Application.Channels.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Constants;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
@@ -28,6 +30,8 @@ using Domain.Serialization.Interfaces;
 using Domain.Signing.Recovery;
 using Domain.Signing.Vls;
 using Fees;
+using Infrastructure.Bitcoin.Networks;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 using Payments.Events;
 using Quiescence;
@@ -75,6 +79,8 @@ public sealed class ChannelStateTransitionService
     private readonly IVlsChannelSigner? _vlsSigner;
     private ISigningWorkflowScope? _consumingSigningWorkflow;
     private readonly IServiceScopeFactory? _signingRecoveryScopes;
+    private readonly IBlockchainMonitor? _fundingRecoveryChain;
+    private readonly IUtxoMemoryRepository? _fundingRecoveryWallet;
 
     public ChannelStateTransitionService(IChannelMemoryRepository channelMemoryRepository,
                                          ChannelDomainEventQueue eventQueue, ICommitmentSigner commitmentSigner,
@@ -87,8 +93,12 @@ public sealed class ChannelStateTransitionService
                                          ICommitScheduler? commitScheduler = null, HtlcEventMonitor? htlcMonitor = null,
                                          IRemoteSigningWorkflowCoordinator? signingWorkflows = null,
                                          IServiceScopeFactory? signingRecoveryScopes = null,
-                                         IVlsChannelSigner? vlsSigner = null)
+                                         IVlsChannelSigner? vlsSigner = null,
+                                         IBlockchainMonitor? fundingRecoveryChain = null,
+                                         IUtxoMemoryRepository? fundingRecoveryWallet = null)
     {
+        _fundingRecoveryWallet = fundingRecoveryWallet;
+        _fundingRecoveryChain = fundingRecoveryChain;
         _signingWorkflows = signingWorkflows;
         _vlsSigner = vlsSigner;
         _signingRecoveryScopes = signingRecoveryScopes;
@@ -452,6 +462,98 @@ public sealed class ChannelStateTransitionService
         return signed;
     }
 
+    public bool HasNativeFundingRecovery => _signingWorkflows is INativeFundingSigningRecovery;
+
+    public Task<ISigningWorkflowScope?> BeginNativeFundingAsync(ChannelModel channel)
+        => _signingWorkflows is INativeFundingSigningRecovery
+            ? BeginNativeFundingCoreAsync(channel)
+            : Task.FromResult<ISigningWorkflowScope?>(null);
+
+    private async Task<ISigningWorkflowScope?> BeginNativeFundingCoreAsync(ChannelModel channel)
+        => await _signingWorkflows!.BeginAsync(
+            SigningWorkflowSnapshot.CreateOpening(channel, SigningWorkflowKind.Funding));
+
+    /// <summary>Keep funding inputs unavailable even when an uncertain signer outcome blocks channel startup.</summary>
+    public async Task PersistNativeFundingInputsAsync(ChannelModel channel, ISigningWorkflowScope workflow,
+                                                       IReadOnlyList<UtxoModel> utxos, LightningMoney fee)
+    {
+        if (_signingWorkflows is not INativeFundingSigningRecovery || _fundingRecoveryWallet is null)
+            throw new InvalidOperationException("Native funding recovery requires its durable input reservation.");
+        var existing = await _unitOfWork.FeeInputReservationDbRepository.GetByIdAsync(workflow.WorkflowId);
+        if (existing is not null) return;
+        var network = _nodeOptions.BitcoinNetwork.ToNBitcoinNetwork();
+        var inputs = utxos.Select(utxo => new WalletInput(utxo.TxId, utxo.Index, utxo.Amount, utxo.AddressType,
+            utxo.SilentPayment is { } silent
+                ? new byte[] { 0x51, 0x20 }.Concat(silent.OutputKey).ToArray()
+                : NBitcoin.BitcoinAddress.Create(utxo.WalletAddress?.Address
+                    ?? throw new InvalidOperationException("A funding input has no wallet address."), network).ScriptPubKey.ToBytes(),
+            WalletWeights.GetInputWeight(utxo.AddressType))
+        {
+            IsSilentPayment = utxo.SilentPayment is not null,
+            SilentPaymentLabel = utxo.SilentPayment?.Label
+        }).ToArray();
+        if (inputs.Length == 0) throw new InvalidOperationException("Funding has no reserved wallet inputs.");
+        var changeAmount = LightningMoney.Satoshis(inputs.Sum(input => input.Amount.Satoshi))
+                         - channel.FundingOutput!.Amount - fee;
+        BitcoinScript? changeScript = null;
+        if (channel.ChangeAddress is { } changeAddress)
+        {
+            var script = NBitcoin.BitcoinAddress.Create(changeAddress.Address, network).ScriptPubKey
+                      ?? throw new InvalidOperationException("The funding change address has no script.");
+            var scriptBytes = script.ToBytes();
+            if (scriptBytes.Length == 0)
+                throw new InvalidOperationException("The funding change address has an empty script.");
+            changeScript = new BitcoinScript(scriptBytes);
+        }
+        var reservation = new FeeInputReservation(workflow.WorkflowId, $"native-funding:{channel.ChannelId}", inputs,
+            fee, changeAmount, changeScript);
+        _unitOfWork.FeeInputReservationDbRepository.Add(reservation, DateTimeOffset.UtcNow);
+        await _unitOfWork.SaveChangesAsync();
+        _fundingRecoveryWallet.LoadFeeReservations(inputs.Select(input => (input.TxId, input.Index, workflow.WorkflowId)));
+    }
+
+    public void ReleaseNativeFundingInputs(ISigningWorkflowScope workflow)
+        => _fundingRecoveryWallet?.ReleaseFeeReservation(workflow.WorkflowId);
+
+    /// <summary>Recover the original native funding signing result and save publication intent before startup proceeds.</summary>
+    private async Task ResumeNativeFundingAsync(ChannelModel channel)
+    {
+        if (_signingWorkflows is not INativeFundingSigningRecovery native || channel.DataLossDetected
+         || channel.State != ChannelState.V1FundingCreated || channel.LastReceivedSignature is null
+         && channel.LastReceivedPartialSignature is null)
+            throw new InvalidOperationException("Native funding recovery requires the saved peer commitment zero.");
+        using var workflow = await _signingWorkflows.BeginAsync(
+            SigningWorkflowSnapshot.CreateOpening(channel, SigningWorkflowKind.Funding));
+        workflow.Activate();
+        var transaction = native.ReplayFunding(workflow);
+        if (channel.FundingOutput?.TransactionId != transaction.TxId || channel.FundingOutput.Index is not { } index)
+            throw new InvalidOperationException("Recovered funding does not match the saved channel outpoint.");
+        var watch = new Domain.Bitcoin.Transactions.Models.WatchedTransactionModel(channel.ChannelId, transaction.TxId,
+            channel.ChannelParams.MinimumDepth);
+        var outpoint = new Domain.Onchain.Models.WatchedOutpointModel(transaction.TxId, index, channel.ChannelId,
+            Domain.Onchain.Enums.WatchedOutpointPurpose.FundingOutput);
+        var broadcast = new Domain.Onchain.Models.BroadcastTransactionModel(transaction,
+            Domain.Onchain.Enums.BroadcastPurpose.Funding, channel.ChannelId,
+            _fundingRecoveryChain?.LastProcessedBlockHeight ?? 0);
+        channel.UpdateState(ChannelState.V1FundingSigned);
+        await _unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+        _unitOfWork.WatchedTransactionDbRepository.Add(watch);
+        _unitOfWork.WatchedOutpointDbRepository.Add(outpoint);
+        _unitOfWork.BroadcastTransactionDbRepository.Add(broadcast);
+        await Accounting.ChannelAccountingEvents.StagePushAmountAsync(_unitOfWork, channel.ChannelId,
+            channel.RemoteBalance, _logger);
+        await _unitOfWork.FeeInputReservationDbRepository.DeleteAsync(workflow.WorkflowId);
+        await workflow.StageConsumeAsync(_unitOfWork);
+        await _unitOfWork.SaveChangesAsync();
+        ReleaseNativeFundingInputs(workflow);
+        if (_fundingRecoveryChain is not null)
+        {
+            _fundingRecoveryChain.TrackWatchedTransaction(watch);
+            _fundingRecoveryChain.TrackWatchedOutpoint(outpoint);
+            await _fundingRecoveryChain.PublishAsync(broadcast);
+        }
+    }
+
     public async Task<ISigningWorkflowScope?> BeginOpeningAsync(ChannelModel channel)
     {
         if (_vlsSigner is null) return null;
@@ -593,6 +695,11 @@ public sealed class ChannelStateTransitionService
         if (_signingWorkflows is null) return;
         var pending = await _signingWorkflows.GetPendingAsync(channel.ChannelId);
         if (pending.Count == 0) return;
+        if (pending.Count == 1 && pending[0].Kind == SigningWorkflowKind.Funding)
+        {
+            await ResumeNativeFundingAsync(channel);
+            return;
+        }
         if (pending.Count == 1 && pending[0].Kind == SigningWorkflowKind.Activate)
         {
             await ActivateOpeningAsync(channel);

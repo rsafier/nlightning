@@ -8,6 +8,7 @@ namespace NLightning.Integration.Tests.Persistence;
 
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Crypto.KeyRing;
+using Domain.Crypto.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Infrastructure.Bitcoin.KeyRing;
@@ -30,8 +31,8 @@ public class LoopPersistenceTests
         using var services = Provider(database);
         var keys = new Mock<ISecureKeyManager>();
         var master = ExtKey.CreateFromSeed(Enumerable.Range(0, 32).Select(i => (byte)i).ToArray());
-        keys.Setup(k => k.GetKeyRingKeyAtIndex(It.IsAny<int>(), It.IsAny<int>()))
-            .Returns((int family, int index) => master.Derive(new KeyPath($"1017'/0'/{family}'/0/{index}")).ToBytes());
+        keys.Setup(k => k.GetKeyRingPublicKey(It.IsAny<int>(), It.IsAny<int>()))
+            .Returns((int family, int index) => new CompactPubKey(master.Derive(new KeyPath($"1017'/0'/{family}'/0/{index}")).Neuter().PubKey.ToBytes()));
         var scopes = services.GetRequiredService<IServiceScopeFactory>();
         KeyRingKey first;
         using (var ring = new KeyRingService(keys.Object, scopes, Options.Create(new KeyRingOptions())))

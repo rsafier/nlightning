@@ -403,9 +403,13 @@ public sealed class RequestRecoveryTests
         Assert.Equal(1U, SignerWire.Read<uint>(connection.Execute(request)[0]));
         Assert.Equal(RequestOutcome.Unsupported,
                      connection.Reconcile(RemoteSignerConnection.Prepare(SignerOperations.EncryptNodeData)).Outcome);
-        // Change only the client credentials AFTER a valid handshake to exercise the Reconcile RPC itself.
         options.AuthToken = new string('x', 40);
-        Assert.Throws<RemoteSignerTransportException>(() => connection.Reconcile(request));
+        Assert.Equal(RequestOutcome.Completed, connection.Reconcile(request).Outcome);
+        using var raw = RawChannel(daemon.SocketPath);
+        var rejected = await Assert.ThrowsAsync<RpcException>(() => new SignerRpc.SignerRpcClient(raw)
+            .ReconcileAsync(request, new Metadata { { "x-signer-token", options.AuthToken } },
+                cancellationToken: TestContext.Current.CancellationToken).ResponseAsync);
+        Assert.Equal(StatusCode.Unauthenticated, rejected.StatusCode);
     }
 
     private static GrpcChannel RawChannel(string path)

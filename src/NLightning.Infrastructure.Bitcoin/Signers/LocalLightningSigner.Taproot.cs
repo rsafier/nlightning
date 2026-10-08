@@ -37,7 +37,8 @@ using Taproot;
 /// across restarts.</para>
 /// <para><b>Signing nonces</b> (our partial signature of the peer's commitment, the closer's nonce) are just in time:
 /// fresh randomness, our funding key, the output key and the sighash, used once and never stored. Closee nonces live
-/// in memory until they sign one <c>closing_sig</c> or are forgotten.</para>
+/// in the signer-owned nonce journal when configured, and otherwise in memory, until they sign one
+/// <c>closing_sig</c> or are forgotten.</para>
 /// </remarks>
 public partial class LocalLightningSigner
 {
@@ -243,11 +244,13 @@ public partial class LocalLightningSigner
             }
         }
 
+        if (_nativeNonceStore is { } store) pair = store.Store("close", channelId, pair);
         var nonces = _closingNonces.GetOrAdd(channelId, static _ => []);
         lock (nonces)
         {
             if (nonces.Count >= MaxClosingNoncesPerChannel)
             {
+                _nativeNonceStore?.Forget("close", channelId, nonces[0].PublicNonce);
                 nonces[0].SecretNonce.Dispose();
                 nonces.RemoveAt(0);
             }
@@ -337,6 +340,7 @@ public partial class LocalLightningSigner
     /// <inheritdoc />
     public void ForgetClosingNonces(ChannelId channelId)
     {
+        _nativeNonceStore?.Forget("close", channelId);
         if (!_closingNonces.TryRemove(channelId, out var nonces))
             return;
 
@@ -597,6 +601,17 @@ public partial class LocalLightningSigner
     /// <summary>Takes (removes) the secret half of our closee nonce <paramref name="publicNonce"/>; null if unknown.</summary>
     private MusigSecretNonce? TakeClosingNonce(ChannelId channelId, MusigPublicNonce publicNonce)
     {
+        if (_nativeNonceStore is { } store)
+        {
+            var restored = store.Take("close", channelId, publicNonce);
+            if (_closingNonces.TryGetValue(channelId, out var live))
+                lock (live)
+                {
+                    var index = live.FindIndex(n => n.PublicNonce == publicNonce);
+                    if (index >= 0) { live[index].SecretNonce.Dispose(); live.RemoveAt(index); }
+                }
+            return restored;
+        }
         if (!_closingNonces.TryGetValue(channelId, out var nonces))
             return null;
 

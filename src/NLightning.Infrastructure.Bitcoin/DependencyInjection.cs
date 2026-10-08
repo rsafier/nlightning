@@ -48,7 +48,10 @@ public static class DependencyInjection
         services.AddSingleton<Domain.Bitcoin.Wallet.Interfaces.IWalletHistoryGate, Wallet.WalletHistoryGate>();
         services.AddOptions<KeyRing.KeyRingOptions>();
         services.AddSingleton<KeyRing.KeyRingService>();
-        services.AddSingleton<KeyRing.SwapSigner>();
+        services.AddSingleton<KeyRing.SwapSigner>(sp => new KeyRing.SwapSigner(
+            sp.GetRequiredService<KeyRing.KeyRingService>(), sp.GetRequiredService<IMusig2Service>(),
+            sp.GetRequiredService<ISecp256K1Math>(), sp.GetRequiredService<IOptions<KeyRing.KeyRingOptions>>()));
+        services.AddSingleton<Domain.Crypto.KeyRing.ISwapSigner>(sp => sp.GetRequiredService<KeyRing.SwapSigner>());
         services.AddSingleton<Wallet.Imports.ImportedTapscriptTracker>();
         services.AddSingleton<Domain.Crypto.KeyRing.IKeyRing>(sp => sp.GetRequiredService<KeyRing.KeyRingService>());
 

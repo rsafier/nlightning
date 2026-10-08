@@ -31,7 +31,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 "NLightning.Infrastructure.Persistence.Entities.Node.SigningWorkflowEntity",
                 typeof(SigningWorkflowEntity),
                 baseEntityType,
-                propertyCount: 13,
+                propertyCount: 14,
                 unnamedIndexCount: 2,
                 keyCount: 1);
 
@@ -473,6 +473,58 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     dbType: System.Data.DbType.String));
             network.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
+            var publicationIntent = runtimeEntityType.AddProperty(
+                "PublicationIntent",
+                typeof(byte[]),
+                propertyInfo: typeof(SigningWorkflowEntity).GetProperty("PublicationIntent", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(SigningWorkflowEntity).GetField("<PublicationIntent>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            publicationIntent.SetGetter(
+                byte[] (SigningWorkflowEntity instance) => SigningWorkflowEntityUnsafeAccessors.PublicationIntent(instance),
+                bool (SigningWorkflowEntity instance) => SigningWorkflowEntityUnsafeAccessors.PublicationIntent(instance) == null);
+            publicationIntent.SetSetter(
+                SigningWorkflowEntity (SigningWorkflowEntity instance, byte[] value) =>
+                {
+                    SigningWorkflowEntityUnsafeAccessors.PublicationIntent(instance) = value;
+                    return instance;
+                });
+            publicationIntent.SetMaterializationSetter(
+                SigningWorkflowEntity (SigningWorkflowEntity instance, byte[] value) =>
+                {
+                    SigningWorkflowEntityUnsafeAccessors.PublicationIntent(instance) = value;
+                    return instance;
+                });
+            publicationIntent.SetAccessors(
+                byte[] (IInternalEntry entry) => SigningWorkflowEntityUnsafeAccessors.PublicationIntent(((SigningWorkflowEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => SigningWorkflowEntityUnsafeAccessors.PublicationIntent(((SigningWorkflowEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(publicationIntent, 8),
+                byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(publicationIntent));
+            publicationIntent.SetPropertyIndexes(
+                index: 8,
+                originalValueIndex: 8,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            publicationIntent.TypeMapping = SqlServerByteArrayTypeMapping.Default.Clone(
+                comparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => ((object)v).GetHashCode(),
+                    byte[] (byte[] v) => v),
+                keyComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()),
+                providerValueComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()),
+                mappingInfo: new RelationalTypeMappingInfo(
+                    storeTypeName: "varbinary(max)",
+                    size: -1),
+                storeTypePostfix: StoreTypePostfix.None);
+            publicationIntent.AddAnnotation("Relational:ColumnType", "varbinary(max)");
+            publicationIntent.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
+
             var schemaVersion = runtimeEntityType.AddProperty(
                 "SchemaVersion",
                 typeof(int),
@@ -497,11 +549,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             schemaVersion.SetAccessors(
                 int (IInternalEntry entry) => SigningWorkflowEntityUnsafeAccessors.SchemaVersion(((SigningWorkflowEntity)(entry.Entity))),
                 int (IInternalEntry entry) => SigningWorkflowEntityUnsafeAccessors.SchemaVersion(((SigningWorkflowEntity)(entry.Entity))),
-                int (IInternalEntry entry) => entry.ReadOriginalValue<int>(schemaVersion, 8),
+                int (IInternalEntry entry) => entry.ReadOriginalValue<int>(schemaVersion, 9),
                 int (IInternalEntry entry) => entry.GetCurrentValue<int>(schemaVersion));
             schemaVersion.SetPropertyIndexes(
-                index: 8,
-                originalValueIndex: 8,
+                index: 9,
+                originalValueIndex: 9,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -544,11 +596,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             signerIdentity.SetAccessors(
                 byte[] (IInternalEntry entry) => SigningWorkflowEntityUnsafeAccessors.SignerIdentity(((SigningWorkflowEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => SigningWorkflowEntityUnsafeAccessors.SignerIdentity(((SigningWorkflowEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(signerIdentity, 9),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(signerIdentity, 10),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(signerIdentity));
             signerIdentity.SetPropertyIndexes(
-                index: 9,
-                originalValueIndex: 9,
+                index: 10,
+                originalValueIndex: 10,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -595,11 +647,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             snapshotFingerprint.SetAccessors(
                 byte[] (IInternalEntry entry) => SigningWorkflowEntityUnsafeAccessors.SnapshotFingerprint(((SigningWorkflowEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => SigningWorkflowEntityUnsafeAccessors.SnapshotFingerprint(((SigningWorkflowEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(snapshotFingerprint, 10),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(snapshotFingerprint, 11),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(snapshotFingerprint));
             snapshotFingerprint.SetPropertyIndexes(
-                index: 10,
-                originalValueIndex: 10,
+                index: 11,
+                originalValueIndex: 11,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -647,11 +699,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             state.SetAccessors(
                 int (IInternalEntry entry) => SigningWorkflowEntityUnsafeAccessors.State(((SigningWorkflowEntity)(entry.Entity))),
                 int (IInternalEntry entry) => SigningWorkflowEntityUnsafeAccessors.State(((SigningWorkflowEntity)(entry.Entity))),
-                int (IInternalEntry entry) => entry.ReadOriginalValue<int>(state, 11),
+                int (IInternalEntry entry) => entry.ReadOriginalValue<int>(state, 12),
                 int (IInternalEntry entry) => entry.GetCurrentValue<int>(state));
             state.SetPropertyIndexes(
-                index: 11,
-                originalValueIndex: 11,
+                index: 12,
+                originalValueIndex: 12,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -694,11 +746,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             updatedAtTicks.SetAccessors(
                 long (IInternalEntry entry) => SigningWorkflowEntityUnsafeAccessors.UpdatedAtTicks(((SigningWorkflowEntity)(entry.Entity))),
                 long (IInternalEntry entry) => SigningWorkflowEntityUnsafeAccessors.UpdatedAtTicks(((SigningWorkflowEntity)(entry.Entity))),
-                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(updatedAtTicks, 12),
+                long (IInternalEntry entry) => entry.ReadOriginalValue<long>(updatedAtTicks, 13),
                 long (IInternalEntry entry) => entry.GetCurrentValue<long>(updatedAtTicks));
             updatedAtTicks.SetPropertyIndexes(
-                index: 12,
-                originalValueIndex: 12,
+                index: 13,
+                originalValueIndex: 13,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -742,6 +794,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             var expectedRemoteCommitmentNumber = runtimeEntityType.FindProperty("ExpectedRemoteCommitmentNumber");
             var kind = runtimeEntityType.FindProperty("Kind");
             var network = runtimeEntityType.FindProperty("Network");
+            var publicationIntent = runtimeEntityType.FindProperty("PublicationIntent");
             var schemaVersion = runtimeEntityType.FindProperty("SchemaVersion");
             var signerIdentity = runtimeEntityType.FindProperty("SignerIdentity");
             var snapshotFingerprint = runtimeEntityType.FindProperty("SnapshotFingerprint");
@@ -754,7 +807,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType1 = ((SigningWorkflowEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<Guid, ChannelId?, ChannelId, long, ulong, ulong, int, string, int, byte[], byte[], int, long>(((ValueComparer<Guid>)(((IProperty)workflowId).GetValueComparer())).Snapshot(source.GetCurrentValue<Guid>(workflowId)), (source.GetCurrentValue<ChannelId?>(activeChannelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)activeChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(activeChannelId))), ((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<long>)(((IProperty)createdAtTicks).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(createdAtTicks)), ((ValueComparer<ulong>)(((IProperty)expectedLocalCommitmentNumber).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(expectedLocalCommitmentNumber)), ((ValueComparer<ulong>)(((IProperty)expectedRemoteCommitmentNumber).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(expectedRemoteCommitmentNumber)), ((ValueComparer<int>)(((IProperty)kind).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(kind)), (source.GetCurrentValue<string>(network) == null ? null : ((ValueComparer<string>)(((IProperty)network).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(network))), ((ValueComparer<int>)(((IProperty)schemaVersion).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(schemaVersion)), (source.GetCurrentValue<byte[]>(signerIdentity) == null ? null : ((ValueComparer<byte[]>)(((IProperty)signerIdentity).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(signerIdentity))), (source.GetCurrentValue<byte[]>(snapshotFingerprint) == null ? null : ((ValueComparer<byte[]>)(((IProperty)snapshotFingerprint).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(snapshotFingerprint))), ((ValueComparer<int>)(((IProperty)state).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(state)), ((ValueComparer<long>)(((IProperty)updatedAtTicks).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(updatedAtTicks)))));
+                    return ((ISnapshot)(new Snapshot<Guid, ChannelId?, ChannelId, long, ulong, ulong, int, string, byte[], int, byte[], byte[], int, long>(((ValueComparer<Guid>)(((IProperty)workflowId).GetValueComparer())).Snapshot(source.GetCurrentValue<Guid>(workflowId)), (source.GetCurrentValue<ChannelId?>(activeChannelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)activeChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(activeChannelId))), ((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<long>)(((IProperty)createdAtTicks).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(createdAtTicks)), ((ValueComparer<ulong>)(((IProperty)expectedLocalCommitmentNumber).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(expectedLocalCommitmentNumber)), ((ValueComparer<ulong>)(((IProperty)expectedRemoteCommitmentNumber).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(expectedRemoteCommitmentNumber)), ((ValueComparer<int>)(((IProperty)kind).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(kind)), (source.GetCurrentValue<string>(network) == null ? null : ((ValueComparer<string>)(((IProperty)network).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(network))), (source.GetCurrentValue<byte[]>(publicationIntent) == null ? null : ((ValueComparer<byte[]>)(((IProperty)publicationIntent).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(publicationIntent))), ((ValueComparer<int>)(((IProperty)schemaVersion).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(schemaVersion)), (source.GetCurrentValue<byte[]>(signerIdentity) == null ? null : ((ValueComparer<byte[]>)(((IProperty)signerIdentity).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(signerIdentity))), (source.GetCurrentValue<byte[]>(snapshotFingerprint) == null ? null : ((ValueComparer<byte[]>)(((IProperty)snapshotFingerprint).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(snapshotFingerprint))), ((ValueComparer<int>)(((IProperty)state).GetValueComparer())).Snapshot(source.GetCurrentValue<int>(state)), ((ValueComparer<long>)(((IProperty)updatedAtTicks).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(updatedAtTicks)))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => Snapshot.Empty);
@@ -771,11 +824,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     return ((ISnapshot)(new Snapshot<Guid>(((ValueComparer<Guid>)(((IProperty)workflowId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<Guid>(workflowId)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 13,
+                propertyCount: 14,
                 navigationCount: 0,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 13,
+                originalValueCount: 14,
                 shadowCount: 0,
                 relationshipCount: 1,
                 storeGeneratedCount: 0));

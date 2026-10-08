@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Google.Protobuf;
 using Microsoft.Data.Sqlite;
@@ -127,8 +128,7 @@ public sealed class NodeWorkflowCrashTests
         var journal = File.ReadAllBytes(Path.Combine(signer.DirectoryPath, "state"));
         var before = await ReadRequestsAsync(Path.Combine(directory, "alice.db"));
         await using var recovered = StartChild(directory, signer.SocketPath, "recover");
-        await recovered.WaitForExitAsync(TestContext.Current.CancellationToken)
-            .WaitAsync(TimeSpan.FromSeconds(90), TestContext.Current.CancellationToken);
+        await recovered.WaitForExitWithDiagnosticsAsync();
         Assert.NotEqual(0, recovered.ExitCode);
         var failure = await ReadOutputAsync(recovered);
         Assert.False(File.Exists(Path.Combine(directory, "result")));
@@ -176,29 +176,39 @@ public sealed class NodeWorkflowCrashTests
         file.Flush(flushToDisk: true);
     }
 
+    public static IEnumerable<TheoryDataRow<string>> Killpoints()
+    {
+        string[] killpoints =
+        [
+            "prepared", "reply", "completed", "consumed", "release", "revoked", "incoming-before-commit",
+            "resign-prepared", "funding-prepared", "funding-reply", "funding-completed", "funding-consumed"
+        ];
+        foreach (var killpoint in killpoints)
+            yield return new TheoryDataRow<string>(killpoint).WithTrait("killpoint", killpoint);
+    }
+
     [Theory]
-    [InlineData("prepared")]
-    [InlineData("reply")]
-    [InlineData("completed")]
-    [InlineData("consumed")]
-    [InlineData("release")]
-    [InlineData("revoked")]
-    [InlineData("incoming-before-commit")]
-    [InlineData("resign-prepared")]
+    [MemberData(nameof(Killpoints))]
     public async Task KilledNodeResumesExactSigningWorkflowFromItsDatabase(string killpoint)
     {
         await using var signer = new SignerDaemonFixture(injected: true);
         await signer.InitializeAsync();
         var directory = Path.Combine(signer.DirectoryPath, "node");
         Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "original-phase"), killpoint);
         await using (var child = StartChild(directory, signer.SocketPath, killpoint))
         {
             await WaitForGateAsync(child, Path.Combine(directory, "gate"));
             var before = await ReadRequestsAsync(Path.Combine(directory, "alice.db"));
+            if (killpoint.StartsWith("funding-", StringComparison.Ordinal))
+                Assert.Equal(killpoint == "funding-consumed" ? 0L : 1L,
+                    await CountFundingReservationsAsync(Path.Combine(directory, "alice.db")));
             using var observer = new RemoteSignerConnection(signer.Options());
-            if (killpoint == "reply")
+            if (killpoint is "reply" or "funding-reply")
             {
-                var pending = Assert.Single(before, r => r.Operation == SignerOperations.SignRemoteCommitmentPartial && r.State == 1);
+                var replyOperation = killpoint == "funding-reply" ? SignerOperations.SignFundingTransaction
+                    : SignerOperations.SignRemoteCommitmentPartial;
+                var pending = Assert.Single(before, r => r.Operation == replyOperation && r.State == 1);
                 var deadline = DateTime.UtcNow.AddSeconds(10);
                 var receipt = observer.Reconcile(WireRequest.Parser.ParseFrom(pending.Envelope));
                 while (receipt.Outcome == RequestOutcome.NotFound && DateTime.UtcNow < deadline)
@@ -209,9 +219,11 @@ public sealed class NodeWorkflowCrashTests
                 Assert.Equal(RequestOutcome.Completed, receipt.Outcome);
                 File.WriteAllBytes(Path.Combine(directory, "expected-response"), receipt.Response.Payload.ToByteArray());
             }
-            if (killpoint is "prepared" or "resign-prepared")
+            if (killpoint is "prepared" or "resign-prepared" or "funding-prepared")
             {
-                var pending = Assert.Single(before, r => r.Operation == SignerOperations.SignRemoteCommitmentPartial && r.State == 1);
+                var preparedOperation = killpoint == "funding-prepared" ? SignerOperations.SignFundingTransaction
+                    : SignerOperations.SignRemoteCommitmentPartial;
+                var pending = Assert.Single(before, r => r.Operation == preparedOperation && r.State == 1);
                 Assert.Equal(RequestOutcome.NotFound, observer.Reconcile(WireRequest.Parser.ParseFrom(pending.Envelope)).Outcome);
                 if (killpoint == "resign-prepared")
                 {
@@ -255,10 +267,11 @@ public sealed class NodeWorkflowCrashTests
             await child.WaitForExitAsync(TestContext.Current.CancellationToken);
             Assert.NotEqual(0, child.ExitCode);
             await using var recovered = StartChild(directory, signer.SocketPath, "recover");
-            await recovered.WaitForExitAsync(TestContext.Current.CancellationToken)
-                .WaitAsync(TimeSpan.FromSeconds(90), TestContext.Current.CancellationToken);
+            await recovered.WaitForExitWithDiagnosticsAsync();
             Assert.True(recovered.ExitCode == 0, await ReadOutputAsync(recovered));
             var after = await ReadRequestsAsync(Path.Combine(directory, "alice.db"));
+            if (killpoint.StartsWith("funding-", StringComparison.Ordinal))
+                Assert.Equal(0L, await CountFundingReservationsAsync(Path.Combine(directory, "alice.db")));
             Assert.NotEmpty(before);
             foreach (var request in before)
             {
@@ -271,9 +284,10 @@ public sealed class NodeWorkflowCrashTests
                 Assert.Equal(restored.Response, observer.Reconcile(WireRequest.Parser.ParseFrom(restored.Envelope))
                     .Response.Payload.ToByteArray());
             }
-            if (killpoint == "reply")
+            if (killpoint is "reply" or "funding-reply")
                 Assert.Equal(File.ReadAllBytes(Path.Combine(directory, "expected-response")),
-                    Assert.Single(after, r => r.Operation == SignerOperations.SignRemoteCommitmentPartial &&
+                    Assert.Single(after, r => r.Operation == (killpoint == "funding-reply"
+                        ? SignerOperations.SignFundingTransaction : SignerOperations.SignRemoteCommitmentPartial) &&
                         before.Any(b => b.RequestId == r.RequestId)).Response);
             if (killpoint == "resign-prepared")
             {
@@ -294,6 +308,7 @@ public sealed class NodeWorkflowCrashTests
         var directory = Environment.GetEnvironmentVariable(ChildEnvironment)
             ?? throw new InvalidOperationException("Only the owning crash proof may start this worker.");
         var phase = Environment.GetEnvironmentVariable("NLTG_REMOTE_WORKFLOW_PHASE")!;
+        ReportWorkerPhase($"starting {phase}");
         var options = new RemoteSignerOptions
         {
             SocketPath = Environment.GetEnvironmentVariable("NLTG_REMOTE_WORKFLOW_SOCKET")!,
@@ -308,6 +323,7 @@ public sealed class NodeWorkflowCrashTests
             await socket.ConnectAsync(new UnixDomainSocketEndPoint(options.SocketPath), cancellation);
             return new WithheldReplyStream(new NetworkStream(socket, ownsSocket: true), gate);
         });
+        ReportWorkerPhase("creating persistent harness");
         await using var harness = await TaprootOpenHarness.CreateAsync(new PersistentHarnessDatabase(directory),
             (node, services) =>
             {
@@ -328,12 +344,26 @@ public sealed class NodeWorkflowCrashTests
             });
         if (phase == "recover")
         {
-            foreach (var node in harness.Nodes) await node.LoadStoredChannelsAsync();
+            foreach (var node in harness.Nodes)
+            {
+                ReportWorkerPhase($"loading stored channels for {node.Name}");
+                await node.LoadStoredChannelsAsync();
+            }
+            if (File.Exists(Path.Combine(directory, "original-phase"))
+             && File.ReadAllText(Path.Combine(directory, "original-phase")).StartsWith("funding-", StringComparison.Ordinal))
+            {
+                var funded = Assert.Single(harness.Alice.Memory.FindChannels(c => c.State == ChannelState.V1FundingSigned));
+                ReportWorkerPhase("confirming recovered funding");
+                await harness.ConfirmFundingAsync(funded.ChannelId, funded.FundingOutput!.TransactionId!.Value);
+            }
             if (File.Exists(Path.Combine(directory, "expected-diff")))
                 Assert.Equal(File.ReadAllBytes(Path.Combine(directory, "expected-diff")),
                     Assert.Single(harness.Alice.Memory.FindChannels(c => c.State == ChannelState.Open)).SentCommitDiff!.Value.ToArray());
+            ReportWorkerPhase("reconnecting recovered peers");
             await harness.ReconnectAsync();
+            ReportWorkerPhase("pumping recovered peer retransmissions");
             await harness.PumpAsync();
+            ReportWorkerPhase("recovered peer retransmissions drained");
             if (File.Exists(Path.Combine(directory, "expected-revoke-response")))
             {
                 var response = SignerWire.Decode(File.ReadAllBytes(Path.Combine(directory, "expected-revoke-response")));
@@ -344,6 +374,7 @@ public sealed class NodeWorkflowCrashTests
         }
         else
         {
+            gate.Armed = phase.StartsWith("funding-", StringComparison.Ordinal);
             var (channelId, funding) = await harness.OpenAsync(LightningMoney.Satoshis(1_000_000), LightningMoney.Satoshis(300_000));
             await harness.ConfirmFundingAsync(channelId, funding.TransactionId);
             File.WriteAllText(Path.Combine(directory, "channel"), channelId.ToString());
@@ -367,10 +398,15 @@ public sealed class NodeWorkflowCrashTests
             throw new InvalidOperationException("Requested process killpoint was never reached.");
         }
         var channel = Assert.Single(harness.Alice.Memory.FindChannels(c => c.State == ChannelState.Open));
+        ReportWorkerPhase("sending subsequent Alice payment");
         await harness.Alice.PayAsync(harness.Bob, channel.ChannelId, LightningMoney.Satoshis(20_000));
+        ReportWorkerPhase("pumping subsequent Alice payment");
         await harness.PumpAsync();
+        ReportWorkerPhase("sending subsequent Bob payment");
         await harness.Bob.PayAsync(harness.Alice, channel.ChannelId, LightningMoney.Satoshis(10_000));
+        ReportWorkerPhase("pumping subsequent Bob payment");
         await harness.PumpAsync();
+        ReportWorkerPhase("checking commitment and balance convergence");
         var a = harness.Alice.Channel(channel.ChannelId).Commitments!;
         var b = harness.Bob.Channel(channel.ChannelId).Commitments!;
         Assert.True(a.Htlcs.IsEmpty && b.Htlcs.IsEmpty);
@@ -384,7 +420,11 @@ public sealed class NodeWorkflowCrashTests
             foreach (var accepted in node.Verified.GroupBy(v => v.Number))
                 Assert.Single(accepted.Select(v => v.TxId).Distinct());
         File.WriteAllText(Path.Combine(directory, "result"), "converged");
+        ReportWorkerPhase("converged; disposing harness");
     }
+
+    private static void ReportWorkerPhase(string phase) =>
+        Console.Error.WriteLine($"{DateTime.UtcNow:O} node workflow phase: {phase}");
 
     private static OwnedChild StartChild(string directory, string socketPath, string phase)
     {
@@ -397,7 +437,9 @@ public sealed class NodeWorkflowCrashTests
         start.Environment[ChildEnvironment] = directory;
         start.Environment["NLTG_REMOTE_WORKFLOW_PHASE"] = phase;
         start.Environment["NLTG_REMOTE_WORKFLOW_SOCKET"] = socketPath;
-        return new OwnedChild(Process.Start(start) ?? throw new InvalidOperationException("Failed to start node worker."));
+        return new OwnedChild(Process.Start(start) ?? throw new InvalidOperationException("Failed to start node worker."),
+            phase, File.Exists(Path.Combine(directory, "original-phase"))
+                ? File.ReadAllText(Path.Combine(directory, "original-phase")) : "negative restart");
     }
 
     private static async Task WaitForGateAsync(OwnedChild process, string path)
@@ -417,20 +459,67 @@ public sealed class NodeWorkflowCrashTests
 
     private sealed class OwnedChild : IAsyncDisposable
     {
+        private const int MaximumOutputCharacters = 32 * 1024;
         private readonly Process _process;
+        private readonly string _phase;
+        private readonly string _killpoint;
+        private readonly object _outputLock = new();
+        private readonly StringBuilder _output = new();
         public Task<string> Output { get; }
         public bool HasExited => _process.HasExited;
         public int ExitCode => _process.ExitCode;
-        public OwnedChild(Process process)
+        public OwnedChild(Process process, string phase, string killpoint)
         {
             _process = process;
+            _phase = phase;
+            _killpoint = killpoint;
             // Drain both pipes immediately, including while a process is parked at a killpoint.
-            var stdout = process.StandardOutput.ReadToEndAsync();
-            var stderr = process.StandardError.ReadToEndAsync();
+            var stdout = DrainOutputAsync(process.StandardOutput);
+            var stderr = DrainOutputAsync(process.StandardError);
             Output = JoinOutputAsync(stdout, stderr);
         }
-        private static async Task<string> JoinOutputAsync(Task<string> stdout, Task<string> stderr)
-        { await Task.WhenAll(stdout, stderr); return await stdout + await stderr; }
+        private async Task DrainOutputAsync(StreamReader reader)
+        {
+            var buffer = new char[1024];
+            int count;
+            while ((count = await reader.ReadAsync(buffer.AsMemory())) != 0)
+                lock (_outputLock)
+                {
+                    _output.Append(buffer, 0, count);
+                    if (_output.Length > MaximumOutputCharacters)
+                        _output.Remove(0, _output.Length - MaximumOutputCharacters);
+                }
+        }
+        private string OutputSnapshot()
+        {
+            lock (_outputLock) return _output.ToString();
+        }
+        private async Task<string> JoinOutputAsync(Task stdout, Task stderr)
+        { await Task.WhenAll(stdout, stderr); return OutputSnapshot(); }
+        public async Task WaitForExitWithDiagnosticsAsync()
+        {
+            try
+            {
+                await _process.WaitForExitAsync(TestContext.Current.CancellationToken)
+                    .WaitAsync(TimeSpan.FromSeconds(90), TestContext.Current.CancellationToken);
+            }
+            catch (TimeoutException)
+            {
+                var shutdown = "child killed and output drained";
+                try
+                {
+                    if (!_process.HasExited) _process.Kill(entireProcessTree: true);
+                    await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                    await Output.WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch (Exception exception)
+                {
+                    shutdown = $"child shutdown/output drain failed: {exception.Message}";
+                }
+                Assert.Fail($"Node worker timed out after 90 seconds (phase={_phase}, killpoint={_killpoint}, " +
+                    $"pid={_process.Id}; {shutdown}). Last {MaximumOutputCharacters} output characters:\n{OutputSnapshot()}");
+            }
+        }
         public void Kill(bool entireProcessTree) => _process.Kill(entireProcessTree);
         public Task WaitForExitAsync(CancellationToken cancellation) => _process.WaitForExitAsync(cancellation);
         public async ValueTask DisposeAsync()
@@ -460,6 +549,15 @@ public sealed class NodeWorkflowCrashTests
         return result;
     }
 
+    private static async Task<long> CountFundingReservationsAsync(string path)
+    {
+        await using var connection = new SqliteConnection($"Data Source={path};Pooling=False");
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM FeeInputReservations WHERE Purpose LIKE 'native-funding:%'";
+        return Convert.ToInt64(await command.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+    }
+
     private sealed class PersistentHarnessDatabase(string directory) : ITaprootHarnessDatabase
     {
         public string Provider => "sqlite";
@@ -485,6 +583,9 @@ public sealed class NodeWorkflowCrashTests
             _matches = phase switch
             {
                 "prepared" or "resign-prepared" => requests.Any(r => r.Operation == SignerOperations.SignRemoteCommitmentPartial && r.State == 1),
+                "funding-prepared" => requests.Any(r => r.Operation == SignerOperations.SignFundingTransaction && r.State == 1),
+                "funding-completed" => requests.Any(r => r.Operation == SignerOperations.SignFundingTransaction && r.State == 2),
+                "funding-consumed" => workflows.Any(w => w.Kind == (int)SigningWorkflowKind.Funding && w.State == 2),
                 "completed" => requests.Any(r => r.Operation == SignerOperations.SignRemoteCommitmentPartial && r.State == 2),
                 "consumed" => workflows.Any(w => w.Kind == 1 && w.State == 2),
                 "release" => workflows.Any(w => w.Kind == 2 && w.State == 1),
@@ -499,11 +600,13 @@ public sealed class NodeWorkflowCrashTests
         }
         public void BeforeExecute(uint operation)
         {
-            if (Armed && phase == "reply" && operation == SignerOperations.SignRemoteCommitmentPartial)
+            if (Armed && (phase == "reply" && operation == SignerOperations.SignRemoteCommitmentPartial
+                || phase == "funding-reply" && operation == SignerOperations.SignFundingTransaction))
                 BlockReply = true;
         }
         public void BlockForever()
         {
+            ReportWorkerPhase($"parked at killpoint {phase}");
             File.WriteAllText(Path.Combine(directory, "gate"), phase);
             // The parent kills this process; it cannot release the gate or flush another save.
             if (!new ManualResetEventSlim(false).Wait(TimeSpan.FromMinutes(2)))
@@ -524,12 +627,24 @@ public sealed class NodeWorkflowCrashTests
     private sealed class GatedCapture(IRemoteSigningRequestCapture inner, WorkflowGate gate) : IRemoteSigningRequestCapture
     {
         public byte[] Execute(uint operation, byte[] envelope, byte[] fingerprint,
-            Func<byte[], RemoteSigningRequestStatus> reconcile, Func<byte[], byte[]> execute) =>
-            inner.Execute(operation, envelope, fingerprint, reconcile, saved =>
+            Func<byte[], RemoteSigningRequestStatus> reconcile, Func<byte[], byte[]> execute)
+        {
+            ReportWorkerPhase($"capturing signer operation {operation}");
+            var response = inner.Execute(operation, envelope, fingerprint, saved =>
+            {
+                ReportWorkerPhase($"reconciling signer operation {operation}");
+                var status = reconcile(saved);
+                ReportWorkerPhase($"reconciled signer operation {operation}: {status.Outcome}");
+                return status;
+            }, saved =>
             {
                 gate.BeforeExecute(operation);
+                ReportWorkerPhase($"dispatching signer operation {operation}");
                 return execute(saved);
             });
+            ReportWorkerPhase($"captured signer operation {operation}");
+            return response;
+        }
     }
 
     private sealed class WorkerLoggerProvider : ILoggerProvider

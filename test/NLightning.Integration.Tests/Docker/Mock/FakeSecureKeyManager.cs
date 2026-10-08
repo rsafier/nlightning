@@ -55,6 +55,9 @@ public class FakeSecureKeyManager : ISecureKeyManager
     public ExtPrivKey GetKeyRingKeyAtIndex(int family, int index) =>
         _nodeKey.Derive(new KeyPath($"1017'/0'/{family}'/0/{index}")).ToBytes();
 
+    public CompactPubKey GetKeyRingPublicKey(int family, int index) =>
+        _nodeKey.Derive(new KeyPath($"1017'/0'/{family}'/0/{index}")).Neuter().PubKey.ToBytes();
+
     public ExtPrivKey GetChannelKeyAtIndex(uint index)
     {
         var derivedKey = _nodeKey.Derive(_channelKeyPath.Derive(index));

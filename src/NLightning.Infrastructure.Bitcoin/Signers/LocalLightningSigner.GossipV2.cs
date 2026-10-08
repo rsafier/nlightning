@@ -24,7 +24,8 @@ using Infrastructure.Crypto.Factories;
 /// with no tweak, two participants per side (our node key and our funding key). Each side sends two public nonces and
 /// then two partial signatures.</para>
 /// <para><b>Nonces</b> are fresh randomness mixed with the signing key, the aggregate key and the message
-/// (<see cref="IMusig2Service.GenerateNonce(CompactPubKey, PrivKey, byte[], byte[], byte[])"/>), held in memory only,
+/// (<see cref="IMusig2Service.GenerateNonce(CompactPubKey, PrivKey, byte[], byte[], byte[])"/>), held in the
+/// signer-owned nonce journal when configured and otherwise in memory,
 /// one pair per channel, bound to the announcement's message hash, and consumed by the one signature they make. A new
 /// pair (a new connection or a new <c>channel_reestablish</c>) disposes the previous one, and a restart forgets them:
 /// the peer then asks for a fresh session (<c>channel_reestablish</c> retransmit bit 1 and TLV 7), so a nonce never
@@ -79,6 +80,13 @@ public partial class LocalLightningSigner
             throw;
         }
 
+        if (_nativeNonceStore is { } store)
+        {
+            store.Forget("gossip-node", channelId);
+            store.Forget("gossip-bitcoin", channelId);
+            nodePair = store.Store("gossip-node", channelId, nodePair, message);
+            bitcoinPair = store.Store("gossip-bitcoin", channelId, bitcoinPair, message);
+        }
         var set = new Announcement2NonceSet(nodePair, bitcoinPair, message);
         _announcement2Nonces.AddOrUpdate(channelId, set, (_, previous) =>
         {
@@ -100,7 +108,22 @@ public partial class LocalLightningSigner
         byte[] message = unsignedAnnouncement.GetSignatureHash();
 
         // Taken out first: whatever happens next, this pair never signs again
-        if (!_announcement2Nonces.TryRemove(channelId, out var nonces))
+        Announcement2NonceSet? nonces;
+        if (_nativeNonceStore is { } store)
+        {
+            if (_announcement2Nonces.TryRemove(channelId, out var live)) live.Dispose();
+            var node = store.TakeLatest("gossip-node", channelId);
+            var bitcoin = store.TakeLatest("gossip-bitcoin", channelId);
+            if (node is null || bitcoin is null || node.Value.Context is null || bitcoin.Value.Context is null
+             || !node.Value.Context.AsSpan().SequenceEqual(bitcoin.Value.Context))
+            {
+                node?.Pair.SecretNonce.Dispose();
+                bitcoin?.Pair.SecretNonce.Dispose();
+                throw new SignerException("No live channel_announcement_2 nonce pair in the signer journal", channelId, "Internal error");
+            }
+            nonces = new Announcement2NonceSet(node.Value.Pair, bitcoin.Value.Pair, node.Value.Context);
+        }
+        else if (!_announcement2Nonces.TryRemove(channelId, out nonces))
             throw new SignerException("No live channel_announcement_2 nonces for the channel", channelId,
                                       "Internal error");
 
@@ -145,6 +168,8 @@ public partial class LocalLightningSigner
     /// <inheritdoc />
     public void DiscardChannelAnnouncement2Nonces(ChannelId channelId)
     {
+        _nativeNonceStore?.Forget("gossip-node", channelId);
+        _nativeNonceStore?.Forget("gossip-bitcoin", channelId);
         if (_announcement2Nonces.TryRemove(channelId, out var nonces))
             nonces.Dispose();
     }

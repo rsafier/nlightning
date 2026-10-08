@@ -95,8 +95,14 @@ try
     using var remoteConnection = signingOptions.IsRemoteNative
         ? new RemoteSignerConnection(new RemoteSignerOptions
         {
+            NodeId = signingOptions.NodeId,
+            OwnerId = signingOptions.OwnerId,
+            SignerId = signingOptions.SignerId,
             SocketPath = signingOptions.SocketPath,
             AuthToken = signingOptions.ReadAuthToken(),
+            WriterId = signingOptions.WriterId,
+            WriterEpoch = signingOptions.WriterEpoch,
+            WriterCredential = signingOptions.ReadWriterCredential(),
             Network = network,
             TimeoutSeconds = signingOptions.TimeoutSeconds,
             ExpectedNodePublicKey = signingOptions.ExpectedNodePublicKey
@@ -213,6 +219,7 @@ try
 
     // Run migrations if configured
     await host.MigrateDatabaseIfConfiguredAsync();
+    await host.ValidateNodeSigningEnrollmentAsync();
 
     // Run the host
     await host.RunAsync();

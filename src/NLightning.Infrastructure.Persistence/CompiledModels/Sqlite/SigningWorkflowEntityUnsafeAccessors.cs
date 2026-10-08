@@ -35,6 +35,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Network>k__BackingField")]
         public static extern ref string Network(SigningWorkflowEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<PublicationIntent>k__BackingField")]
+        public static extern ref byte[] PublicationIntent(SigningWorkflowEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<SchemaVersion>k__BackingField")]
         public static extern ref int SchemaVersion(SigningWorkflowEntity @this);
 

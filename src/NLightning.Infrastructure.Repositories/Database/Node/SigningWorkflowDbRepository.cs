@@ -26,7 +26,8 @@ public sealed class SigningWorkflowDbRepository(NLightningDbContext context) : I
     {
         var entities = await context.SigningWorkflows.AsNoTracking()
                                     .Where(e => e.ChannelId.Equals(channelId)
-                                             && e.State != (int)SigningWorkflowState.Consumed)
+                                             && e.State != (int)SigningWorkflowState.Consumed
+                                             && e.State != (int)SigningWorkflowState.Abandoned)
                                     .OrderBy(e => e.CreatedAtTicks).ToListAsync();
         // A holder-validation workflow can be consumed and its revocation intent staged in one save.
         // Overlay tracked lifecycle changes before checking the channel's pending ownership.
@@ -35,7 +36,8 @@ public sealed class SigningWorkflowDbRepository(NLightningDbContext context) : I
                              .Select(e => e.Entity).ToDictionary(e => e.WorkflowId);
         var merged = entities.Select(e => tracked.TryGetValue(e.WorkflowId, out var current) ? current : e)
                              .Concat(tracked.Values.Where(e => entities.All(saved => saved.WorkflowId != e.WorkflowId)));
-        return merged.Where(e => e.State != (int)SigningWorkflowState.Consumed).Select(Map).ToList();
+        return merged.Where(e => e.State != (int)SigningWorkflowState.Consumed
+                              && e.State != (int)SigningWorkflowState.Abandoned).Select(Map).ToList();
     }
 
     public async Task<IReadOnlyList<SigningRequest>> GetRequestsAsync(Guid workflowId)
@@ -62,6 +64,7 @@ public sealed class SigningWorkflowDbRepository(NLightningDbContext context) : I
             ExpectedLocalCommitmentNumber = workflow.ExpectedLocalCommitmentNumber,
             ExpectedRemoteCommitmentNumber = workflow.ExpectedRemoteCommitmentNumber,
             SnapshotFingerprint = workflow.SnapshotFingerprint.ToArray(),
+            PublicationIntent = workflow.PublicationIntent?.ToArray(),
             SignerIdentity = workflow.SignerIdentity.ToArray(),
             Network = workflow.Network,
             SchemaVersion = workflow.SchemaVersion,
@@ -108,12 +111,15 @@ public sealed class SigningWorkflowDbRepository(NLightningDbContext context) : I
         var entity = await RequireWorkflowAsync(workflow.WorkflowId);
         if (!SameIdentity(Map(entity), workflow))
             throw new InvalidOperationException("Signing workflow prerequisites are immutable.");
-        if (entity.State == (int)SigningWorkflowState.Consumed && workflow.State != SigningWorkflowState.Consumed
+        if (entity.State == (int)SigningWorkflowState.Abandoned && workflow.State != SigningWorkflowState.Abandoned
+         || entity.State == (int)SigningWorkflowState.Consumed && workflow.State != SigningWorkflowState.Consumed
          || entity.State == (int)SigningWorkflowState.Blocked && workflow.State != SigningWorkflowState.Blocked)
             throw new InvalidOperationException("Signing workflow state cannot move backward.");
         if (workflow.State == SigningWorkflowState.Consumed)
             throw new InvalidOperationException("Consume workflows through ConsumeWorkflowAsync.");
         entity.State = (int)workflow.State;
+        if (workflow.State == SigningWorkflowState.Abandoned)
+            entity.ActiveChannelId = null;
         entity.UpdatedAtTicks = workflow.UpdatedAtTicks;
     }
 
@@ -169,6 +175,7 @@ public sealed class SigningWorkflowDbRepository(NLightningDbContext context) : I
      && left.ExpectedLocalCommitmentNumber == right.ExpectedLocalCommitmentNumber
      && left.ExpectedRemoteCommitmentNumber == right.ExpectedRemoteCommitmentNumber
      && left.SnapshotFingerprint.AsSpan().SequenceEqual(right.SnapshotFingerprint)
+     && (left.PublicationIntent ?? []).AsSpan().SequenceEqual(right.PublicationIntent ?? [])
      && left.SignerIdentity.AsSpan().SequenceEqual(right.SignerIdentity)
      && left.Network == right.Network && left.SchemaVersion == right.SchemaVersion
      && left.CreatedAtTicks == right.CreatedAtTicks;
@@ -176,7 +183,7 @@ public sealed class SigningWorkflowDbRepository(NLightningDbContext context) : I
     private static void Validate(SigningWorkflow workflow)
     {
         ArgumentNullException.ThrowIfNull(workflow);
-        if (workflow.WorkflowId == Guid.Empty || workflow.SnapshotFingerprint.Length != 32
+        if (workflow.PublicationIntent?.Length > MaxEnvelopeBytes || workflow.WorkflowId == Guid.Empty || workflow.SnapshotFingerprint.Length != 32
          || workflow.SignerIdentity.Length != 33 || string.IsNullOrWhiteSpace(workflow.Network)
          || workflow.Network.Length > 64 || workflow.SchemaVersion < 1
          || !Enum.IsDefined(workflow.Kind) || !Enum.IsDefined(workflow.State))
@@ -195,7 +202,8 @@ public sealed class SigningWorkflowDbRepository(NLightningDbContext context) : I
     private static SigningWorkflow Map(SigningWorkflowEntity entity) => new(entity.WorkflowId, entity.ChannelId,
         (SigningWorkflowKind)entity.Kind, entity.ExpectedLocalCommitmentNumber, entity.ExpectedRemoteCommitmentNumber,
         entity.SnapshotFingerprint.ToArray(), entity.SignerIdentity.ToArray(), entity.Network, entity.SchemaVersion,
-        (SigningWorkflowState)entity.State, entity.CreatedAtTicks, entity.UpdatedAtTicks);
+        (SigningWorkflowState)entity.State, entity.CreatedAtTicks, entity.UpdatedAtTicks)
+    { PublicationIntent = entity.PublicationIntent?.ToArray() };
 
     private static SigningRequest Map(SigningRequestEntity entity) => new(entity.RequestId, entity.WorkflowId,
         entity.Ordinal, entity.Operation, entity.Envelope.ToArray(), entity.ArgumentFingerprint.ToArray(),

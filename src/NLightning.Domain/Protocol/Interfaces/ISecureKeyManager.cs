@@ -17,6 +17,10 @@ public interface ISecureKeyManager
     ExtPrivKey GetKeyRingKeyAtIndex(int family, int index) =>
         throw new NotSupportedException("This key manager has no isolated key ring.");
 
+    /// <summary>Derives only the compressed public key for an isolated key-ring locator.</summary>
+    CompactPubKey GetKeyRingPublicKey(int family, int index) =>
+        throw new NotSupportedException("This key manager has no public key ring.");
+
     /// <summary>Returns a fresh raw BIP 352 output private scalar for the local signer, without a BIP86 tweak.</summary>
     /// <remarks>The caller must zero the returned array after use. The scan private key is never returned.</remarks>
     byte[] GetSilentPaymentSpendKey(ReadOnlySpan<byte> tweak32, uint? label) =>

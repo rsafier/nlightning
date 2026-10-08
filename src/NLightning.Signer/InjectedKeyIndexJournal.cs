@@ -11,6 +11,7 @@ internal sealed class InjectedKeyIndexJournal : IDisposable
 {
     private static readonly byte[] s_magic = "NLIDX001"u8.ToArray();
     private readonly FileStream _stream;
+    private readonly object _streamLock = new();
     private readonly byte[] _identity;
     private bool _failed;
 
@@ -81,22 +82,56 @@ internal sealed class InjectedKeyIndexJournal : IDisposable
 
     public void Persist(uint index)
     {
-        if (_failed)
-            throw new IOException("Injected key index journal failed; restart after repairing durable state.");
-        if (index <= LastIndex)
-            return;
-        if (!StateInitialized)
-            throw new IOException("Injected signer state must be durable before channel key allocation.");
-        Append(index);
-        LastIndex = index;
+        lock (_streamLock)
+        {
+            if (_failed)
+                throw new IOException("Injected key index journal failed; restart after repairing durable state.");
+            if (index <= LastIndex)
+                return;
+            if (!StateInitialized)
+                throw new IOException("Injected signer state must be durable before channel key allocation.");
+            Append(index);
+            LastIndex = index;
+        }
     }
 
     public void MarkStateInitialized()
     {
-        if (StateInitialized)
-            return;
-        Append(0);
-        StateInitialized = true;
+        lock (_streamLock)
+        {
+            if (_failed)
+                throw new IOException("Injected key index journal failed; restart after repairing durable state.");
+            if (StateInitialized)
+                return;
+            Append(0);
+            StateInitialized = true;
+        }
+    }
+
+    /// <summary>Hashes the exact durable allocation history, including its identity header and state marker.</summary>
+    public byte[] GetCheckpointDigest()
+    {
+        lock (_streamLock)
+        {
+            if (_failed)
+                throw new IOException("Injected key index journal failed; restart after repairing durable state.");
+            var position = _stream.Position;
+            try
+            {
+                _stream.Flush(true);
+                _stream.Position = 0;
+                return SHA256.HashData(_stream);
+            }
+            catch
+            {
+                _failed = true;
+                throw;
+            }
+            finally
+            {
+                _stream.Position = position;
+            }
+        }
     }
 
     private void Append(uint index)
@@ -118,5 +153,9 @@ internal sealed class InjectedKeyIndexJournal : IDisposable
         }
     }
 
-    public void Dispose() => _stream.Dispose();
+    public void Dispose()
+    {
+        lock (_streamLock)
+            _stream.Dispose();
+    }
 }

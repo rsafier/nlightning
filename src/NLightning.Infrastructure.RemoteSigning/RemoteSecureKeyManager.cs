@@ -1,4 +1,5 @@
 using NLightning.Domain.Bitcoin.Enums;
+using NLightning.Domain.Bitcoin.SilentPayments.Interfaces;
 using NLightning.Domain.Bitcoin.ValueObjects;
 using NLightning.Domain.Crypto.ValueObjects;
 using NLightning.Domain.Protocol.Enums;
@@ -7,8 +8,15 @@ using NLightning.Domain.Protocol.Interfaces;
 namespace NLightning.Infrastructure.RemoteSigning;
 
 /// <summary>Remote key manager exports public information and purpose-scoped crypto only.</summary>
-public sealed class RemoteSecureKeyManager(RemoteSignerConnection connection) : ISecureKeyManager
+public sealed class RemoteSecureKeyManager(RemoteSignerConnection connection) : ISecureKeyManager, ISilentPaymentKeySource
 {
+    private readonly RemoteSilentPaymentKeySource _silentPaymentKeys = new(connection);
+    public CompactPubKey ScanPubKey => _silentPaymentKeys.ScanPubKey;
+    public CompactPubKey SpendPubKey => _silentPaymentKeys.SpendPubKey;
+    public bool RecoverableElsewhere => _silentPaymentKeys.RecoverableElsewhere;
+    public void ComputeScanSharedSecret(ReadOnlySpan<byte> input, Span<byte> point) => _silentPaymentKeys.ComputeScanSharedSecret(input, point);
+    public void GetLabelTweak(uint label, Span<byte> scalar) => _silentPaymentKeys.GetLabelTweak(label, scalar);
+    public CompactPubKey GetLabelPoint(uint label) => _silentPaymentKeys.GetLabelPoint(label);
     public BitcoinKeyPath ChannelKeyPath => connection.Identity.ChannelKeyPath;
     public uint HeightOfBirth => connection.Identity.HeightOfBirth;
     public CompactPubKey GetNodePubKey() => connection.Identity.NodePublicKey;
@@ -18,6 +26,8 @@ public sealed class RemoteSecureKeyManager(RemoteSignerConnection connection) : 
     public ExtPrivKey GetDepositP2WpkhKeyAtIndex(uint index, bool isChange) => throw PrivateKeyUnavailable();
     public ExtPrivKey GetDepositKeyAtIndex(AddressType addressType, uint accountIndex, uint index, bool isChange) => throw PrivateKeyUnavailable();
     public ExtPrivKey GetKeyRingKeyAtIndex(int family, int index) => throw PrivateKeyUnavailable();
+    public CompactPubKey GetKeyRingPublicKey(int family, int index) =>
+        Read<CompactPubKey>(SignerOperations.GetKeyRingPublicKey, family, index);
     public byte[] GetSilentPaymentSpendKey(ReadOnlySpan<byte> tweak32, uint? label) => throw PrivateKeyUnavailable();
     public DepositAccountInfo? GetDepositAccount(AddressType addressType)
     {

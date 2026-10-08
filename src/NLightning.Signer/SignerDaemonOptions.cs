@@ -1,17 +1,19 @@
 namespace NLightning.Signer;
 
 using Domain.Protocol.ValueObjects;
+using Domain.Signing;
 
 internal sealed record SignerDaemonOptions(string SocketPath, string? KeyFilePath, string AuthTokenFilePath,
                                            string? PasswordFilePath,
                                            bool PasswordStdin, bool Create, BitcoinNetwork Network,
-                                           bool SeedStdin, string StateFilePath)
+                                           bool SeedStdin, string StateFilePath,
+                                           string NodeId, string OwnerId, string SignerId)
 {
     public const string Usage = "NLightning.Signer --socket <path> --key-file <path> "
                               + "--auth-token-file <path> (--password-file <path> | --password-stdin) "
                               + "[--create] [--network regtest]\n"
                               + "NLightning.Signer --socket <path> --seed-stdin --state-file <absolute-path> "
-                              + "--auth-token-file <path> [--network regtest]";
+                              + "--auth-token-file <path> [--network regtest] [--node-id <id> --owner-id <id> --signer-id <id>]";
 
     public static SignerDaemonOptions Parse(string[] args)
     {
@@ -24,6 +26,9 @@ internal sealed record SignerDaemonOptions(string SocketPath, string? KeyFilePat
         var seedStdin = false;
         string? stateFile = null;
         var network = BitcoinNetwork.Regtest;
+        var nodeId = NodeSigningContext.DefaultNodeId;
+        var ownerId = NodeSigningContext.DefaultOwnerId;
+        var signerId = NodeSigningContext.DefaultSignerId;
         for (var i = 0; i < args.Length; i++)
         {
             var option = args[i];
@@ -52,6 +57,15 @@ internal sealed record SignerDaemonOptions(string SocketPath, string? KeyFilePat
                     break;
                 case "--state-file":
                     stateFile = Value(args, ref i);
+                    break;
+                case "--node-id":
+                    nodeId = Value(args, ref i);
+                    break;
+                case "--owner-id":
+                    ownerId = Value(args, ref i);
+                    break;
+                case "--signer-id":
+                    signerId = Value(args, ref i);
                     break;
                 case "--network":
                     network = BitcoinNetwork.Resolve(Value(args, ref i));
@@ -91,10 +105,14 @@ internal sealed record SignerDaemonOptions(string SocketPath, string? KeyFilePat
         if (storagePaths.Distinct(StringComparer.Ordinal).Count() != storagePaths.Length)
             throw new ArgumentException("Signer storage, token and password files must use separate paths.");
 
+        NodeSigningContext.ValidateIdentifier(nodeId, nameof(nodeId));
+        NodeSigningContext.ValidateIdentifier(ownerId, nameof(ownerId));
+        NodeSigningContext.ValidateIdentifier(signerId, nameof(signerId));
+
         return new SignerDaemonOptions(socketPath, keyPath,
                                        Path.GetFullPath(authTokenFile),
                                        passwordFile is null ? null : Path.GetFullPath(passwordFile), stdin, create,
-                                       network, seedStdin, statePath);
+                                       network, seedStdin, statePath, nodeId, ownerId, signerId);
     }
 
     private static string Value(string[] args, ref int index)

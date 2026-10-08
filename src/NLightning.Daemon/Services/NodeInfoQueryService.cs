@@ -9,6 +9,7 @@ using Domain.Bitcoin.SilentPayments.Interfaces;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
+using Domain.Signing;
 using Infrastructure.Transport.Interfaces;
 using Infrastructure.Transport.Tor;
 using Interfaces;
@@ -20,12 +21,14 @@ public sealed class NodeInfoQueryService : INodeInfoQueryService
     private readonly IServiceProvider _services;
     private readonly ITcpService _tcpService;
     private readonly ITorOnionService? _torOnionService;
+    private readonly NodeSigningContext? _signingContext;
 
     public NodeInfoQueryService(IOptions<NodeOptions> nodeOptions, ISecureKeyManager secureKeyManager,
                                 IServiceProvider services, ITcpService tcpService,
-                                ITorOnionService? torOnionService = null)
+                                ITorOnionService? torOnionService = null, NodeSigningContext? signingContext = null)
     {
         _torOnionService = torOnionService;
+        _signingContext = signingContext;
         _nodeOptions = nodeOptions.Value;
         _secureKeyManager = secureKeyManager;
         _services = services;
@@ -67,6 +70,9 @@ public sealed class NodeInfoQueryService : INodeInfoQueryService
         {
             SilentPaymentRecoverableElsewhere = _services.GetService<IOptions<SilentPaymentsOptions>>()?.Value.Enabled == true
                 ? (_secureKeyManager as ISilentPaymentKeySource)?.RecoverableElsewhere : null,
+            NodeId = _signingContext?.NodeId,
+            OwnerId = _signingContext?.OwnerId,
+            SignerId = _signingContext?.SignerId,
             PubKey = pubKeyString,
             ListeningTo = listeningToString,
             Network = _nodeOptions.BitcoinNetwork,

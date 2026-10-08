@@ -36,6 +36,8 @@ public sealed class SwapSignerTests : IDisposable
         var keys = new Mock<ISecureKeyManager>();
         keys.Setup(k => k.GetKeyRingKeyAtIndex(It.IsAny<int>(), It.IsAny<int>()))
             .Returns((int family, int index) => _master.Derive(new KeyPath($"1017'/0'/{family}'/0/{index}")).ToBytes());
+        keys.Setup(k => k.GetKeyRingPublicKey(It.IsAny<int>(), It.IsAny<int>()))
+            .Returns((int family, int index) => new CompactPubKey(_master.Derive(new KeyPath($"1017'/0'/{family}'/0/{index}")).Neuter().PubKey.ToBytes()));
         _uow.SetupGet(u => u.KeyRingDbRepository).Returns(_records);
         _uow.Setup(u => u.SaveChangesAsync()).Returns(Task.CompletedTask);
         var services = new ServiceCollection();
@@ -65,7 +67,7 @@ public sealed class SwapSignerTests : IDisposable
         request.AllSignerPubkeys.Add(ByteString.CopyFrom(other.PubKey.ToBytes()));
         request.Tweaks.Add(new TweakDesc { Tweak = ByteString.CopyFrom(tweak), IsXOnly = true });
         if (taproot) request.TaprootTweak = new TaprootTweakDesc { KeySpendOnly = true };
-        using var services = new ServiceCollection().AddSingleton(_signer).BuildServiceProvider();
+        using var services = new ServiceCollection().AddSingleton<ISwapSigner>(_signer).BuildServiceProvider();
         var rpc = new SignerService(services, Options.Create(new LndGrpc.LndGrpcOptions { EnableSigner = true }),
             NullLogger<SignerService>.Instance);
         // Act
@@ -221,6 +223,110 @@ public sealed class SwapSignerTests : IDisposable
         Assert.Throws<KeyNotFoundException>(() => _signer.Sign(ours.Id, digest, false));
         _signer.Cleanup(ours.Id); // idempotent
     }
+
+    [Fact]
+    public async Task Given_DurableSession_When_RestartedBeforeAndAfterSigning_Then_NonceAndExactPartialRecover()
+    {
+        // Arrange
+        var path = Path.Combine(Path.GetTempPath(), $"nltg-swap-{Guid.NewGuid():N}.journal");
+        var locator = new KeyRingLocator(42060, 17);
+        var own = await _ring.DeriveAsync(locator, Ct);
+        using var other = new Key();
+        var aggregate = _signer.CombineKeys([own.PublicKey, other.PubKey.ToBytes()], [], []);
+        var peerNonce = _musig.GenerateNonce(other.PubKey.ToBytes(), new PrivKey(other.ToBytes()), aggregate.XOnlyOutputKey);
+        using var peerSecret = peerNonce.SecretNonce;
+        var digest = SHA256.HashData("durable swap"u8);
+        try
+        {
+            SwapMusigSession allocated;
+            using (var first = DurableSigner(path))
+                allocated = await first.CreateAsync(locator, aggregate, [(byte[])peerNonce.PublicNonce], Ct);
+            byte[] partial;
+            using (var second = DurableSigner(path))
+            {
+                // Act: unsigned secret nonce survives the process boundary inside its encrypted journal.
+                partial = second.Sign(allocated.Id, digest, false);
+                Assert.Equal(partial, second.Sign(allocated.Id, digest, false));
+            }
+            using var third = DurableSigner(path);
+            Assert.Equal(partial, third.Sign(allocated.Id, digest, false));
+            Assert.Throws<InvalidOperationException>(() => third.Sign(allocated.Id, SHA256.HashData("changed swap"u8), false));
+            var signing = _musig.CreateSession(aggregate, [new MusigPublicNonce(allocated.PublicNonce), peerNonce.PublicNonce], digest);
+            var peerPartial = _musig.Sign(peerSecret, new PrivKey(other.ToBytes()), signing);
+            var final = third.Combine(allocated.Id, [(byte[])peerPartial]);
+            Assert.NotNull(final);
+            Assert.True(_musig.VerifySignature(final, aggregate.XOnlyOutputKey, digest));
+            Assert.Throws<KeyNotFoundException>(() => third.Sign(allocated.Id, digest, false));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task Given_ConsumedNonceWithoutResult_When_Restarted_Then_SigningIsBlocked()
+    {
+        // Arrange
+        var path = Path.Combine(Path.GetTempPath(), $"nltg-swap-{Guid.NewGuid():N}.journal");
+        var locator = new KeyRingLocator(42060, 18);
+        var own = await _ring.DeriveAsync(locator, Ct);
+        using var other = new Key();
+        var aggregate = _signer.CombineKeys([own.PublicKey, other.PubKey.ToBytes()], [], null);
+        var peerNonce = _musig.GenerateNonce(other.PubKey.ToBytes(), new PrivKey(other.ToBytes()), aggregate.XOnlyOutputKey);
+        using var peerSecret = peerNonce.SecretNonce;
+        var digest = SHA256.HashData("uncertain swap"u8);
+        var fault = new Mock<IMusig2Service>();
+        fault.Setup(m => m.AggregatePubKeys(It.IsAny<IReadOnlyList<CompactPubKey>>(), It.IsAny<IReadOnlyList<MusigTweak>?>()))
+            .Returns((IReadOnlyList<CompactPubKey> publicKeys, IReadOnlyList<MusigTweak>? tweaks) => _musig.AggregatePubKeys(publicKeys, tweaks));
+        fault.Setup(m => m.GenerateNonce(It.IsAny<byte[]>(), It.IsAny<CompactPubKey>(), It.IsAny<PrivKey?>(),
+                It.IsAny<byte[]?>(), It.IsAny<byte[]?>(), It.IsAny<byte[]?>()))
+            .Returns((byte[] randomness, CompactPubKey pubkey, PrivKey? privateKey, byte[]? outputKey, byte[]? message, byte[]? extra) =>
+                _musig.GenerateNonce(randomness, pubkey, privateKey, outputKey, message, extra));
+        fault.Setup(m => m.CreateSession(It.IsAny<Domain.Crypto.Models.MusigKeyAggregate>(), It.IsAny<IReadOnlyList<MusigPublicNonce>>(), It.IsAny<ReadOnlyMemory<byte>>()))
+            .Returns((Domain.Crypto.Models.MusigKeyAggregate value, IReadOnlyList<MusigPublicNonce> nonces, ReadOnlyMemory<byte> message) =>
+                _musig.CreateSession(value, nonces, message));
+        fault.Setup(m => m.Sign(It.IsAny<MusigSecretNonce>(), It.IsAny<PrivKey>(), It.IsAny<Domain.Crypto.Models.MusigSigningSession>()))
+            .Throws(new IOException("process stops after durable nonce consumption"));
+        try
+        {
+            SwapMusigSession allocated;
+            using (var first = new SwapSigner(_ring, fault.Object, _provider.GetRequiredService<ISecp256K1Math>(),
+                Options.Create(new KeyRingOptions()), sessionStatePath: path))
+            {
+                allocated = await first.CreateAsync(locator, aggregate, [(byte[])peerNonce.PublicNonce], Ct);
+                Assert.Throws<IOException>(() => first.Sign(allocated.Id, digest, false));
+            }
+            using var restarted = DurableSigner(path);
+            Assert.Throws<InvalidOperationException>(() => restarted.Sign(allocated.Id, digest, false));
+            Assert.Throws<InvalidOperationException>(() => restarted.Sign(allocated.Id, SHA256.HashData("different"u8), false));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task Given_EncryptedJournal_When_LockedOrCorrupted_Then_NoSecondSignerCanProceed()
+    {
+        // Arrange
+        var path = Path.Combine(Path.GetTempPath(), $"nltg-swap-{Guid.NewGuid():N}.journal");
+        try
+        {
+            using (var first = DurableSigner(path))
+            {
+                Assert.Throws<IOException>(() => DurableSigner(path));
+                var locator = new KeyRingLocator(42060, 19);
+                var own = await _ring.DeriveAsync(locator, Ct);
+                using var other = new Key();
+                var aggregate = first.CombineKeys([own.PublicKey, other.PubKey.ToBytes()], [], null);
+                await first.CreateAsync(locator, aggregate, [], Ct);
+            }
+            var bytes = File.ReadAllBytes(path);
+            bytes[^1] ^= 1;
+            File.WriteAllBytes(path, bytes);
+            Assert.ThrowsAny<CryptographicException>(() => DurableSigner(path));
+        }
+        finally { File.Delete(path); }
+    }
+
+    private SwapSigner DurableSigner(string path) => new(_ring, _musig, _provider.GetRequiredService<ISecp256K1Math>(),
+        Options.Create(new KeyRingOptions()), sessionStatePath: path);
 
     private sealed class MemoryKeys : IKeyRingDbRepository
     {

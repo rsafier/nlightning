@@ -46,6 +46,9 @@ internal sealed class NodeInfoIpcHandler : IIpcCommandHandler
             var channels = _channelMemoryRepository?.FindChannels(_ => true);
             var ipcResp = new NodeInfoIpcResponse
             {
+                NodeId = resp.NodeId,
+                OwnerId = resp.OwnerId,
+                SignerId = resp.SignerId,
                 PubKey = new CompactPubKey(Convert.FromHexString(resp.PubKey)),
                 ListeningTo = resp.ListeningTo.Split(',').ToList(),
                 Network = resp.Network,

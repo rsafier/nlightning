@@ -27,6 +27,7 @@ public static class SigningWorkflowEntityConfiguration
                 entity.Property(e => e.ChannelId).HasColumnType("varbinary(32)");
                 entity.Property(e => e.ActiveChannelId).HasColumnType("varbinary(32)");
                 entity.Property(e => e.SnapshotFingerprint).HasColumnType("varbinary(32)");
+                entity.Property(e => e.PublicationIntent).HasColumnType("varbinary(max)");
                 entity.Property(e => e.SignerIdentity).HasColumnType("varbinary(33)");
             }
         });

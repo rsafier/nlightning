@@ -8,6 +8,7 @@ public static class SignerOperations
     public const uint SignWalletMessage = 63;
     public const uint GetDepositAccount = 108;
     public const uint GetDepositAccount2 = 109;
+    public const uint GetKeyRingPublicKey = 110;
     // CreateNewChannel(out ChannelBasepoints basepoints, out CompactPubKey firstPerCommitmentPoint)
     public const uint CreateNewChannel = 1;
     // GetChannelBasepoints(uint channelKeyIndex)
@@ -141,10 +142,14 @@ public static class SignerOperations
     public static int ArgumentCount(uint operation) => operation switch
     {
         Identity => 0,
+        >= SwapSignerOperations.Resolve and <= SwapSignerOperations.Cleanup => SwapSignerOperations.ArgumentCount(operation),
         ComputeSilentPaymentOutputs => 4,
         SignWalletMessage => 2,
         GetDepositAccount => 1,
         GetDepositAccount2 => 2,
+        GetKeyRingPublicKey => 2,
+        NativeSilentPaymentOperations.Metadata => 0,
+        >= NativeSilentPaymentOperations.ScanSharedPoint and <= NativeSilentPaymentOperations.LabelTweak => 1,
         CreateNewChannel => 0,
         GetChannelBasepoints => 1,
         GetChannelBasepoints2 => 1,

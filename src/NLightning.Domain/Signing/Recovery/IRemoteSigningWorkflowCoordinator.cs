@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Signing.Recovery;
 
+using Bitcoin.ValueObjects;
 using Channels.ValueObjects;
 using Persistence.Interfaces;
 
@@ -26,4 +27,24 @@ public interface IRemoteSigningRequestCapture
 {
     byte[] Execute(uint operation, byte[] proposedEnvelope, byte[] argumentFingerprint,
         Func<byte[], RemoteSigningRequestStatus> reconcile, Func<byte[], byte[]> execute);
+}
+
+/// <summary>Replays saved native funding requests without reconstructing wallet inputs or replacing request identities.</summary>
+public interface INativeFundingSigningRecovery
+{
+    SignedTransaction ReplayFunding(ISigningWorkflowScope workflow);
+}
+
+/// <summary>Replays the original reserved-input wallet signing envelope and exact receipt.</summary>
+public interface INativeWalletSigningRecovery
+{
+    SignedTransaction? ReplayWithdrawal(ISigningWorkflowScope workflow);
+}
+
+/// <summary>Captures immutable sweep contexts and replays their exact native signing requests.</summary>
+public interface INativeSweepSigningRecovery
+{
+    Task StageRetireSweepAsync(SigningWorkflowDescriptor descriptor, IUnitOfWork unitOfWork);
+    byte[] EncodeSweepContexts(IReadOnlyList<Onchain.Models.SweepSigningContext> contexts);
+    IReadOnlyList<Crypto.ValueObjects.CompactSignature> SignSweepInputs(ISigningWorkflowScope workflow, Bitcoin.Interfaces.ILightningSigner signer);
 }

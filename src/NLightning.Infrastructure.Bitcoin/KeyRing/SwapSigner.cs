@@ -9,13 +9,15 @@ using Domain.Crypto.Interfaces;
 using Domain.Crypto.KeyRing;
 using Domain.Crypto.Models;
 using Domain.Crypto.ValueObjects;
+using Domain.Protocol.Interfaces;
 using Services;
 using Taproot;
 
 /// <summary>Raw swap signing with isolated ring keys. Neither private keys nor secret nonces leave this layer.</summary>
-public sealed class SwapSigner : IDisposable
+public sealed class SwapSigner : ISwapSigner, IDisposable
 {
-    private readonly KeyRingService _ring;
+    private readonly IKeyRing _ring;
+    private readonly Func<KeyRingLocator, Key> _open;
     private readonly IMusig2Service _musig;
     private readonly ISecp256K1Math _math;
     private readonly KeyRingOptions _options;
@@ -23,18 +25,51 @@ public sealed class SwapSigner : IDisposable
     private readonly object _gate = new();
     private readonly Dictionary<string, Session> _sessions = new(StringComparer.Ordinal);
     private readonly ITimer _timer;
+    private readonly SwapSessionStateStore? _store;
+    private bool _failed;
+    private bool _disposed;
 
     public SwapSigner(KeyRingService ring, IMusig2Service musig, ISecp256K1Math math,
-                        IOptions<KeyRingOptions> options, TimeProvider? clock = null)
+                        IOptions<KeyRingOptions> options, TimeProvider? clock = null, string? sessionStatePath = null)
+        : this(ring, ring.Open, musig, math, options, clock, sessionStatePath) { }
+
+    public SwapSigner(ISecureKeyManager keys, IMusig2Service musig, ISecp256K1Math math,
+                        IOptions<KeyRingOptions> options, TimeProvider? clock = null, string? sessionStatePath = null)
+        : this(new SignerSwapKeyRing(keys, options.Value), locator => SignerSwapKeyRing.Open(keys, options.Value, locator),
+            musig, math, options, clock, sessionStatePath)
+    { }
+
+    private SwapSigner(IKeyRing ring, Func<KeyRingLocator, Key> open, IMusig2Service musig, ISecp256K1Math math,
+                        IOptions<KeyRingOptions> options, TimeProvider? clock, string? sessionStatePath)
     {
         _ring = ring;
+        _open = open;
         _musig = musig;
         _math = math;
         _options = options.Value;
         _clock = clock ?? TimeProvider.System;
         if (_options.MaxSessions is < 1 or > 10_000 || _options.SessionLifetime <= TimeSpan.Zero)
             throw new ArgumentException("Invalid swap signer session limits.");
-        _timer = _clock.CreateTimer(_ => { lock (_gate) Prune(); }, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+        if (sessionStatePath is not null)
+        {
+            using var journalKey = _open(new KeyRingLocator(99, int.MaxValue));
+            var secret = journalKey.ToBytes();
+            var encryptionKey = HMACSHA256.HashData(secret, Encoding.ASCII.GetBytes("NLightning/native-swap-session-journal/v1"));
+            try { _store = new SwapSessionStateStore(sessionStatePath, encryptionKey); Restore(); }
+            catch { _store?.Dispose(); throw; }
+            finally { CryptographicOperations.ZeroMemory(secret); CryptographicOperations.ZeroMemory(encryptionKey); }
+        }
+        _timer = _clock.CreateTimer(_ =>
+        {
+            lock (_gate)
+            {
+                if (_disposed || _store is not null) return;
+                try { Prune(); }
+                catch { _failed = true; }
+            }
+            // Durable expiry is committed only by an explicit operation inside its authority fence.
+        }, null, _store is null ? TimeSpan.FromMinutes(1) : Timeout.InfiniteTimeSpan,
+            _store is null ? TimeSpan.FromMinutes(1) : Timeout.InfiniteTimeSpan);
     }
 
     public static string TransactionId(byte[] rawTransaction) => Transaction.Load(rawTransaction, Network.Main).GetHash().ToString();
@@ -59,7 +94,7 @@ public sealed class SwapSigner : IDisposable
         var resolved = await ResolveAsync(locator, publicKey, ct);
         if (resolved.Locator.Family != 21 && resolved.Locator.Family != 99)
             throw new UnauthorizedAccessException("shared key derivation is available only in families 21 and 99");
-        using var key = _ring.Open(resolved.Locator);
+        using var key = _open(resolved.Locator);
         var secret = key.ToBytes();
         try { return SHA256.HashData((byte[])_math.MultiplyPubKey(ephemeral, secret)); }
         finally { CryptographicOperations.ZeroMemory(secret); }
@@ -68,8 +103,10 @@ public sealed class SwapSigner : IDisposable
     public async Task<byte[]> SignOutputAsync(byte[] rawTransaction, SwapSignDescriptor descriptor,
                                                IReadOnlyList<SwapPrevOutput> prevOutputs, CancellationToken ct)
     {
+        if (rawTransaction.Length > 400_000 || prevOutputs.Count > 100)
+            throw new ArgumentException("invalid signing request size");
         var resolved = await ResolveAsync(descriptor.Locator, descriptor.PublicKey, ct);
-        using var baseKey = _ring.Open(resolved.Locator);
+        using var baseKey = _open(resolved.Locator);
         using var key = Tweak(baseKey, descriptor.SingleTweak, descriptor.DoubleTweak);
         var tx = Transaction.Load(rawTransaction, Network.Main);
         if (descriptor.InputIndex < 0 || descriptor.InputIndex >= tx.Inputs.Count || descriptor.Output.Value < 0)
@@ -135,6 +172,11 @@ public sealed class SwapSigner : IDisposable
     public async Task<SwapMusigSession> CreateAsync(KeyRingLocator locator, MusigKeyAggregate aggregate,
                                                     IReadOnlyList<byte[]> otherNonces, CancellationToken ct)
     {
+        if (aggregate.PubKeys.Count is < 2 or > 100 || aggregate.PubKeys.Distinct().Count() != aggregate.PubKeys.Count)
+            throw new ArgumentException("MuSig2 requires 2..100 distinct compressed keys");
+        var computed = _musig.AggregatePubKeys(aggregate.PubKeys, aggregate.Tweaks);
+        if (computed.InternalKey != aggregate.InternalKey || computed.OutputKey != aggregate.OutputKey)
+            throw new ArgumentException("MuSig2 aggregate does not match its keys and tweaks");
         var own = await _ring.DeriveAsync(locator, ct);
         if (!aggregate.PubKeys.Contains(own.PublicKey))
             throw new ArgumentException("local signing key is not in all_signer_pubkeys");
@@ -143,17 +185,19 @@ public sealed class SwapSigner : IDisposable
             Prune();
             if (_sessions.Count >= _options.MaxSessions)
                 throw new InvalidOperationException("swap signer session limit reached");
-            using var key = _ring.Open(locator);
+            using var key = _open(locator);
             var bytes = key.ToBytes();
             MusigNoncePair nonce;
-            try { nonce = _musig.GenerateNonce(own.PublicKey, new PrivKey(bytes), aggregate.XOnlyOutputKey); }
+            var randomness = RandomNumberGenerator.GetBytes(32);
+            try { nonce = _musig.GenerateNonce(randomness, own.PublicKey, new PrivKey(bytes), aggregate.XOnlyOutputKey); }
             finally { CryptographicOperations.ZeroMemory(bytes); }
             try
             {
-                var session = new Session(locator, aggregate, nonce, _clock.GetUtcNow());
+                var session = new Session(locator, aggregate, nonce, _clock.GetUtcNow(), randomness);
                 AddNonces(session, otherNonces);
                 var id = SHA256.HashData([.. aggregate.XOnlyOutputKey, .. ((byte[])nonce.PublicNonce).ToArray()]);
                 _sessions.Add(Convert.ToHexString(id), session);
+                Save();
                 return new SwapMusigSession(id, aggregate, ((byte[])nonce.PublicNonce).ToArray(),
                                               session.Nonces.Count == aggregate.PubKeys.Count);
             }
@@ -169,6 +213,7 @@ public sealed class SwapSigner : IDisposable
             if (session.Signing is not null)
                 throw new InvalidOperationException("session already signed");
             AddNonces(session, nonces);
+            Save();
             return session.Nonces.Count == session.Aggregate.PubKeys.Count;
         }
     }
@@ -180,17 +225,25 @@ public sealed class SwapSigner : IDisposable
         lock (_gate)
         {
             var session = Get(id);
-            if (session.Signing is not null || session.Nonce.SecretNonce.IsUsed)
-                throw new InvalidOperationException("session nonce was already used");
+            if (session.Consumed)
+            {
+                if (session.Partials.Count > 0 && session.Digest is not null && session.Digest.AsSpan().SequenceEqual(digest))
+                    return ((byte[])session.Partials[0]).ToArray();
+                throw new InvalidOperationException("session nonce was already consumed; an uncertain result cannot be regenerated");
+            }
             if (session.Nonces.Count != session.Aggregate.PubKeys.Count)
                 throw new InvalidOperationException("not all signer nonces are registered");
             session.Signing = _musig.CreateSession(session.Aggregate, session.Nonces, digest);
-            using var key = _ring.Open(session.Locator);
+            session.Digest = digest.ToArray();
+            session.Consumed = true;
+            Save();
+            using var key = _open(session.Locator);
             var bytes = key.ToBytes();
             try
             {
                 var signature = _musig.Sign(session.Nonce.SecretNonce, new PrivKey(bytes), session.Signing);
                 session.Partials.Add(signature);
+                Save();
                 return ((byte[])signature).ToArray();
             }
             finally
@@ -218,6 +271,7 @@ public sealed class SwapSigner : IDisposable
             {
                 session.Partials.Clear();
                 session.Partials.AddRange(all);
+                Save();
                 return null;
             }
             var signature = _musig.AggregatePartialSignatures(all, session.Signing);
@@ -233,8 +287,13 @@ public sealed class SwapSigner : IDisposable
         if (id.Length != 32) throw new ArgumentException("session_id must be 32 bytes");
         lock (_gate)
         {
+            RequireHealthy();
             if (_sessions.Remove(Convert.ToHexString(id), out var session))
+            {
                 session.Nonce.SecretNonce.Dispose();
+                CryptographicOperations.ZeroMemory(session.Randomness);
+                Save();
+            }
         }
     }
 
@@ -271,12 +330,17 @@ public sealed class SwapSigner : IDisposable
 
     private void Prune()
     {
+        RequireHealthy();
+        var changed = false;
         foreach (var id in _sessions.Where(p => _clock.GetUtcNow() - p.Value.Created >= _options.SessionLifetime)
                                     .Select(p => p.Key).ToList())
         {
             _sessions[id].Nonce.SecretNonce.Dispose();
+            CryptographicOperations.ZeroMemory(_sessions[id].Randomness);
             _sessions.Remove(id);
+            changed = true;
         }
+        if (changed) Save();
     }
 
     private static void AddNonces(Session session, IReadOnlyList<byte[]> values)
@@ -300,25 +364,93 @@ public sealed class SwapSigner : IDisposable
         _timer.Dispose();
         lock (_gate)
         {
-            foreach (var session in _sessions.Values) session.Nonce.SecretNonce.Dispose();
+            if (_disposed) return;
+            _disposed = true;
+            _store?.Dispose();
+            foreach (var session in _sessions.Values)
+            {
+                session.Nonce.SecretNonce.Dispose();
+                CryptographicOperations.ZeroMemory(session.Randomness);
+            }
             _sessions.Clear();
         }
     }
 
-    private sealed class Session(KeyRingLocator locator, MusigKeyAggregate aggregate, MusigNoncePair nonce, DateTimeOffset created)
+    public byte[] GetCheckpointDigest()
+    {
+        lock (_gate)
+        {
+            RequireHealthy();
+            return _store?.GetCheckpointDigest() ?? throw new InvalidOperationException("No durable swap journal is configured.");
+        }
+    }
+
+    private void Save()
+    {
+        RequireHealthy();
+        if (_store is null) return;
+        try
+        {
+            _store.Save(_sessions.Values.Select(s => new SwapSessionSnapshot(s.Locator.Family, s.Locator.Index,
+                s.Aggregate.PubKeys.Select(k => ((byte[])k).ToArray()).ToArray(),
+                s.Aggregate.Tweaks.Select(t => t.Value.ToArray()).ToArray(), s.Aggregate.Tweaks.Select(t => t.IsXOnly).ToArray(),
+                s.Aggregate.InternalKey, s.Aggregate.OutputKey, s.Randomness.ToArray(),
+                s.Nonces.Select(n => ((byte[])n).ToArray()).ToArray(), s.Created, s.Digest,
+                s.Partials.Select(p => ((byte[])p).ToArray()).ToArray(), s.Consumed)).ToArray());
+        }
+        catch { _failed = true; throw; }
+    }
+
+    private void RequireHealthy()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_failed) throw new InvalidOperationException("Swap session state failed; signing is blocked.");
+    }
+
+    private void Restore()
+    {
+        foreach (var saved in _store!.Sessions)
+        {
+            if (saved.Randomness.Length != 32 || saved.Keys.Length is < 2 or > 100
+             || saved.Tweaks.Length != saved.XOnlyTweaks.Length || saved.Nonces.Length < 1)
+                throw new InvalidDataException("Invalid swap session snapshot.");
+            var locator = new KeyRingLocator(saved.Family, saved.Index);
+            var aggregate = new MusigKeyAggregate(saved.Keys.Select(k => new CompactPubKey(k)).ToArray(),
+                saved.Tweaks.Select((t, i) => new MusigTweak(t, saved.XOnlyTweaks[i])).ToArray(), saved.InternalKey, saved.OutputKey);
+            using var key = _open(locator);
+            var bytes = key.ToBytes();
+            MusigNoncePair nonce;
+            try { nonce = _musig.GenerateNonce(saved.Randomness, key.PubKey.ToBytes(), new PrivKey(bytes), aggregate.XOnlyOutputKey); }
+            finally { CryptographicOperations.ZeroMemory(bytes); }
+            var session = new Session(locator, aggregate, nonce, saved.Created, saved.Randomness.ToArray())
+            { Consumed = saved.Consumed, Digest = saved.Digest };
+            if (!((byte[])nonce.PublicNonce).AsSpan().SequenceEqual(saved.Nonces[0]))
+                throw new InvalidDataException("Swap session nonce does not match signer identity.");
+            AddNonces(session, saved.Nonces.Skip(1).ToArray());
+            session.Partials.AddRange(saved.Partials.Select(p => new MusigPartialSignature(p)));
+            if (session.Consumed)
+            {
+                nonce.SecretNonce.Dispose();
+                if (session.Digest is null) throw new InvalidDataException("Consumed swap nonce has no message binding.");
+                session.Signing = _musig.CreateSession(aggregate, session.Nonces, session.Digest);
+            }
+            var id = SHA256.HashData([.. aggregate.XOnlyOutputKey, .. ((byte[])nonce.PublicNonce).ToArray()]);
+            _sessions.Add(Convert.ToHexString(id), session);
+        }
+        if (_sessions.Count > _options.MaxSessions) throw new InvalidDataException("Too many saved swap sessions.");
+    }
+
+    private sealed class Session(KeyRingLocator locator, MusigKeyAggregate aggregate, MusigNoncePair nonce, DateTimeOffset created, byte[] randomness)
     {
         public KeyRingLocator Locator { get; } = locator;
         public MusigKeyAggregate Aggregate { get; } = aggregate;
         public MusigNoncePair Nonce { get; } = nonce;
         public DateTimeOffset Created { get; } = created;
+        public byte[] Randomness { get; } = randomness;
+        public bool Consumed { get; set; }
+        public byte[]? Digest { get; set; }
         public List<MusigPublicNonce> Nonces { get; } = [nonce.PublicNonce];
         public List<MusigPartialSignature> Partials { get; } = [];
         public MusigSigningSession? Signing { get; set; }
     }
 }
-
-public sealed record SwapPrevOutput(long Value, byte[] Script);
-public sealed record SwapSignDescriptor(KeyRingLocator? Locator, byte[] PublicKey, int InputIndex, int SignMethod,
-                                         uint Sighash, SwapPrevOutput Output, byte[] WitnessScript,
-                                         byte[] SingleTweak, byte[] DoubleTweak, byte[] TapTweak);
-public sealed record SwapMusigSession(byte[] Id, MusigKeyAggregate Aggregate, byte[] PublicNonce, bool HaveAllNonces);

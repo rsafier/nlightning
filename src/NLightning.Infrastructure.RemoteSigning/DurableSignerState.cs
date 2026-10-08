@@ -31,10 +31,17 @@ public sealed class DurableSignerState : IDisposable
     private readonly Dictionary<string, RequestReceipt> _requests = [];
     private long _receiptBytes;
 
-    public static bool SupportsReconciliation(uint operation) => IsStateChange(operation)
+    public static bool SupportsReconciliation(uint operation) => operation is >= 68 and <= 72 || IsStateChange(operation)
         || operation is SignerOperations.CreateNewChannel or SignerOperations.ReserveChannelKeyIndex
                      or SignerOperations.EnsureLastUsedChannelIndexAtLeast
+                     or SignerOperations.CreateChannelAnnouncement2Nonces or SignerOperations.SignChannelAnnouncement2
+                     or SignerOperations.DiscardChannelAnnouncement2Nonces
+                     or SignerOperations.CreateClosingNonce or SignerOperations.ForgetClosingNonces
+                     or SignerOperations.CreateSpliceFundingNonce
                      or SignerOperations.SignClosingAsClosee or SignerOperations.SignSpliceSharedInputPartial
+                     or SignerOperations.SignFundingTransaction or SignerOperations.SignSweepInput
+                     or SignerOperations.SignWalletTransaction or SignerOperations.SignWalletTransaction2
+                     or SignerOperations.SignWalletTransaction3
                      or SignerOperations.SignChannelTransaction or SignerOperations.SignChannelTransaction2
                      or SignerOperations.SignRemoteHtlcTransactions or SignerOperations.SignRemoteCommitmentPartial
                      or SignerOperations.RevealPerCommitmentSecret or SignerOperations.GetPerCommitmentPoint2
@@ -72,18 +79,26 @@ public sealed class DurableSignerState : IDisposable
             if (known.Outcome is RequestOutcome.Unknown or RequestOutcome.Invalidated)
                 throw new SignerException("Request outcome is unknown or invalidated; reconcile before continuing.");
             if (!SupportsReconciliation(request.Operation))
-                return request.Operation >= 100 ? execute() : ExecuteCore(request.Operation, args);
+                return request.Operation >= 100 || SwapSignerOperations.Contains(request.Operation) ? execute() : ExecuteCore(request.Operation, args);
             // Reserve worst-case response capacity before anything can allocate or mutate safety state.
             if (_requests.Count >= MaxRequestReceipts || _receiptBytes > MaxReceiptResponseBytes - RemoteSignerOptions.MaxMessageBytes)
                 throw new SignerException("Durable request receipt capacity is exhausted; operator maintenance is required.");
             var fingerprint = Fingerprint(request);
-            var allocates = request.Operation is SignerOperations.CreateNewChannel
-                or SignerOperations.ReserveChannelKeyIndex or SignerOperations.EnsureLastUsedChannelIndexAtLeast;
-            if (allocates)
+            var allocates = request.Operation is >= 68 and <= 72 or SignerOperations.CreateNewChannel
+                or SignerOperations.ReserveChannelKeyIndex or SignerOperations.EnsureLastUsedChannelIndexAtLeast
+                or SignerOperations.CreateClosingNonce or SignerOperations.CreateSpliceFundingNonce
+                or SignerOperations.CreateChannelAnnouncement2Nonces;
+            var consumesRandomNonce = request.Operation is SignerOperations.SignClosingAsClosee
+                or SignerOperations.SignSpliceSharedInputPartial or SignerOperations.SignChannelAnnouncement2;
+            if (allocates || consumesRandomNonce)
             {
                 Persist(new JournalEntry(request.Operation, request.Payload.ToByteArray(), [], request.RequestId,
                                          fingerprint, Pending: true));
-                _requests.Add(request.RequestId, new RequestReceipt(fingerprint, RequestOutcome.Unknown, [], null));
+                _requests.Add(request.RequestId, new RequestReceipt(fingerprint, RequestOutcome.Unknown, [],
+                    request.Operation is SignerOperations.CreateClosingNonce or SignerOperations.CreateSpliceFundingNonce
+                        or SignerOperations.CreateChannelAnnouncement2Nonces or SignerOperations.SignClosingAsClosee
+                        or SignerOperations.SignSpliceSharedInputPartial or SignerOperations.SignChannelAnnouncement2
+                        ? SignerWire.Read<ChannelId>(args[0]) : (ChannelId?)null));
             }
             // ExecuteCore writes the safety mutation and the receipt in the SAME fsynced record.
             if (!allocates)
@@ -94,6 +109,22 @@ public sealed class DurableSignerState : IDisposable
             Persist(entry);
             RememberReceipt(entry);
             return result;
+        }
+    }
+
+    /// <summary>Digest of the actual committed journal, for an independent authenticated freshness authority.</summary>
+    public byte[] GetCheckpointDigest()
+    {
+        lock (_gate)
+        {
+            EnsureHealthy();
+            var position = _stream.Position;
+            try
+            {
+                _stream.Position = 0;
+                return SHA256.HashData(_stream);
+            }
+            finally { _stream.Position = position; }
         }
     }
 
@@ -148,6 +179,7 @@ public sealed class DurableSignerState : IDisposable
             if (_failed)
                 throw new IOException("Signer journal failed; restart and reconcile signer state before signing.");
             if (args.Length > 0 && args[0].ValueKind == JsonValueKind.String
+             && operation is not (>= 64 and <= 72)
              && operation is not (SignerOperations.GetChannelBasepoints or SignerOperations.GetPerCommitmentPoint
                                   or SignerOperations.SignNodeMessage or SignerOperations.SignNodeMessageBip340
                                   or SignerOperations.SignLightningMessage or SignerOperations.VerifyNodeMessage
@@ -292,7 +324,9 @@ public sealed class DurableSignerState : IDisposable
         _requests[entry.RequestId] = new RequestReceipt(entry.Fingerprint,
             entry.Pending ? RequestOutcome.Unknown : RequestOutcome.Completed, entry.Response,
             entry.Operation is SignerOperations.CreateNewChannel or SignerOperations.ReserveChannelKeyIndex
-                or SignerOperations.EnsureLastUsedChannelIndexAtLeast ? (ChannelId?)null
+                or SignerOperations.EnsureLastUsedChannelIndexAtLeast
+                or SignerOperations.SignWalletTransaction or SignerOperations.SignWalletTransaction2
+                or SignerOperations.SignWalletTransaction3 or >= 68 and <= 72 ? (ChannelId?)null
                 : SignerWire.Read<ChannelId>(SignerWire.Decode(entry.Payload)[0]));
         _receiptBytes += entry.Response.Length;
         if (_receiptBytes > MaxReceiptResponseBytes)

@@ -7,7 +7,7 @@ service SignerRpc {
   // Never executes the request. Supply its exact original envelope to bind the lookup to its payload.
   rpc Reconcile(SigningRequest) returns (ReconciliationResponse);
 }
-message SigningRequest { uint32 version = 1; string request_id = 2; uint32 operation = 3; bytes payload = 4; }
+message SigningRequest { uint32 version = 1; string request_id = 2; uint32 operation = 3; bytes payload = 4; string node_id = 5; string owner_id = 6; string signer_id = 7; string network = 8; }
 message SigningResponse { bytes payload = 1; }
 
 // UNKNOWN means an allocation may have persisted without its response. Never resend that request ID.

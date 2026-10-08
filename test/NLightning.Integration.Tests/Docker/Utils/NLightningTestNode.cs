@@ -355,6 +355,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
             {
                 var context = scope.ServiceProvider.GetRequiredService<NLightningDbContext>();
                 await context.Database.MigrateAsync(cancellationToken);
+                await NodeSigningEnrollmentExtensions.ValidateNodeSigningEnrollmentAsync(context,
+                    scope.ServiceProvider.GetRequiredService<Domain.Signing.NodeSigningContext>(), cancellationToken);
             }
 
             // A fresh database starts scanning at the current tip; a restarted node resumes from its stored state

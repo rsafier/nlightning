@@ -414,6 +414,7 @@ public partial class LocalLightningSigner : ILightningSigner
         _dataLossChannels.TryRemove(channelId, out _);
         ForgetClosingNonces(channelId);
         ForgetSpliceFundingNonces(channelId);
+        DiscardChannelAnnouncement2Nonces(channelId);
 
         if (removed && _logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Channel {ChannelId} was unregistered from the signer", channelId);

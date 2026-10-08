@@ -5,6 +5,8 @@ using Google.Protobuf;
 using Grpc.Core;
 using NLightning.Domain.Bitcoin.Enums;
 using NLightning.Domain.Bitcoin.Interfaces;
+using NLightning.Domain.Bitcoin.SilentPayments.Interfaces;
+using NLightning.Domain.Crypto.KeyRing;
 using NLightning.Domain.Exceptions;
 using NLightning.Domain.Protocol.Enums;
 using NLightning.Domain.Protocol.Interfaces;
@@ -14,7 +16,10 @@ namespace NLightning.Infrastructure.RemoteSigning;
 
 /// <summary>Fixed allowlist dispatcher. Calls are serialized, including registration guards and nonce consumption.</summary>
 public sealed class SignerRpcService(ILightningSigner signer, ISecureKeyManager keys, IUtxoMemoryRepository wallet,
-                                     RemoteSignerOptions options, DurableSignerState? durableState = null) : SignerRpc.SignerRpcBase
+                                     RemoteSignerOptions options, DurableSignerState? durableState = null,
+                                     ISwapSigner? swapSigner = null,
+                                     NativeAuthorizedSignerExecutor? authorizedExecutor = null,
+                                     INativeSignerWriterCredentialVerifier? writerCredentials = null) : SignerRpc.SignerRpcBase
 {
     private readonly RemoteSignerOptions _options = ValidateOptions(options);
     private readonly Lock _gate = new();
@@ -26,6 +31,50 @@ public sealed class SignerRpcService(ILightningSigner signer, ISecureKeyManager 
     {
         Authenticate(context);
         ValidateRequest(request);
+        ValidateContext(request);
+        lock (_gate)
+        {
+            if (authorizedExecutor is null || request.Operation == SignerOperations.Identity)
+                return ExecuteNative(request, context);
+            try
+            {
+                ValidateAuthorityEnrollment();
+                var (writer, epoch) = ReadWriter(context);
+                var result = authorizedExecutor.Execute(request, writer, epoch,
+                    () => ExecuteNative(request, context).GetAwaiter().GetResult().ToByteArray());
+                return Task.FromResult(SigningResponse.Parser.ParseFrom(result.Response));
+            }
+            catch (UnauthorizedAccessException)
+            { throw new RpcException(new Status(StatusCode.PermissionDenied, "Signer writer or owner authorization failed.")); }
+            catch (Exception ex) when (ex is InvalidOperationException or InvalidDataException or NotSupportedException)
+            { throw new RpcException(new Status(StatusCode.FailedPrecondition, "Signer authority requires reconciliation or an authorized policy.")); }
+        }
+    }
+
+    private void ValidateAuthorityEnrollment() => authorizedExecutor!.ValidateEnrollment(
+        NativeSignerBinding.FromContext(new NLightning.Domain.Signing.NodeSigningContext(
+            _options.NodeId, _options.OwnerId, _options.SignerId, _options.Network, keys.GetNodePubKey())));
+
+    private (string Writer, long Epoch) ReadWriter(ServerCallContext context)
+    {
+        var writer = context.RequestHeaders.GetValue("x-nltg-writer-id");
+        var epoch = context.RequestHeaders.GetValue("x-nltg-writer-epoch");
+        if (string.IsNullOrWhiteSpace(writer) || !long.TryParse(epoch, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var parsed) || parsed <= 0)
+            throw new UnauthorizedAccessException("Authenticated execution metadata is required.");
+        if (writerCredentials is null)
+            throw new UnauthorizedAccessException("A signer-installed writer credential verifier is required.");
+        writerCredentials.Verify(NativeSignerBinding.FromContext(new NLightning.Domain.Signing.NodeSigningContext(
+            _options.NodeId, _options.OwnerId, _options.SignerId, _options.Network, keys.GetNodePubKey())),
+            writer, parsed, context.RequestHeaders.GetValue("x-nltg-writer-token") ?? "");
+        return (writer, parsed);
+    }
+
+    private Task<SigningResponse> ExecuteNative(SigningRequest request, ServerCallContext context)
+    {
+        Authenticate(context);
+        ValidateRequest(request);
+        ValidateContext(request);
         lock (_gate)
         {
             var fingerprint = SHA256.HashData(request.ToByteArray());
@@ -52,10 +101,8 @@ public sealed class SignerRpcService(ILightningSigner signer, ISecureKeyManager 
                 object?[] values;
                 if (request.Operation == 0) values = [new SignerIdentity(_options.Network, keys.GetNodePubKey(), keys.ChannelKeyPath, keys.HeightOfBirth)];
                 else if (durableState is not null)
-                    values = durableState.ExecuteRequest(request, args, () => request.Operation >= 100
-                        ? KeyOperation(request.Operation, args) : SignerDispatcher.Execute(signer, request.Operation, args));
-                else if (request.Operation >= 100) values = KeyOperation(request.Operation, args);
-                else values = SignerDispatcher.Execute(signer, request.Operation, args);
+                    values = durableState.ExecuteRequest(request, args, () => Dispatch(request.Operation, args));
+                else values = Dispatch(request.Operation, args);
                 if (request.Operation is SignerOperations.MarkDataLoss or SignerOperations.UnregisterChannel
                  || request.Operation == SignerOperations.RegisterChannel
                  && SignerWire.Read<NLightning.Domain.Channels.ValueObjects.ChannelSigningInfo>(args[1]).DataLossDetected)
@@ -79,6 +126,8 @@ public sealed class SignerRpcService(ILightningSigner signer, ISecureKeyManager 
             }
             catch (CryptographicException) { throw new RpcException(new Status(StatusCode.DataLoss, "Signer authenticated data verification failed.")); }
             catch (SignerException ex) { throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message)); }
+            catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
+            { throw new RpcException(new Status(StatusCode.FailedPrecondition, "Signer safety state requires reconciliation or this operation is unavailable.")); }
             catch (Exception ex) when (ex is ArgumentException or JsonException or FormatException or IndexOutOfRangeException)
             { throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid signer operation arguments.")); }
         }
@@ -87,6 +136,29 @@ public sealed class SignerRpcService(ILightningSigner signer, ISecureKeyManager 
     {
         Authenticate(context);
         ValidateRequest(request);
+        ValidateContext(request);
+        lock (_gate)
+        {
+            if (authorizedExecutor is null) return ReconcileNative(request, context);
+            try
+            {
+                ValidateAuthorityEnrollment();
+                var (writer, epoch) = ReadWriter(context);
+                return Task.FromResult(authorizedExecutor.AuthorizeReconciliation(request, writer, epoch,
+                    () => ReconcileNative(request, context).GetAwaiter().GetResult()));
+            }
+            catch (UnauthorizedAccessException)
+            { throw new RpcException(new Status(StatusCode.PermissionDenied, "Signer writer authorization failed.")); }
+            catch (Exception ex) when (ex is InvalidOperationException or InvalidDataException or NotSupportedException)
+            { throw new RpcException(new Status(StatusCode.FailedPrecondition, "Signer authority requires reconciliation.")); }
+        }
+    }
+
+    private Task<ReconciliationResponse> ReconcileNative(SigningRequest request, ServerCallContext context)
+    {
+        Authenticate(context);
+        ValidateRequest(request);
+        ValidateContext(request);
         lock (_gate)
         {
             try
@@ -99,6 +171,21 @@ public sealed class SignerRpcService(ILightningSigner signer, ISecureKeyManager 
             catch (ArgumentException)
             { throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid or conflicting signer reconciliation request.")); }
         }
+    }
+
+    private object?[] Dispatch(uint operation, JsonElement[] args)
+    {
+        if (SwapSignerOperations.Contains(operation))
+            return SwapSignerDispatcher.Execute(swapSigner ?? throw new SignerException("Native swap signer is not configured."), operation, args);
+        return operation >= 100 ? KeyOperation(operation, args) : SignerDispatcher.Execute(signer, operation, args);
+    }
+
+    private void ValidateContext(SigningRequest request)
+    {
+        if (request.NodeId != _options.NodeId || request.OwnerId != _options.OwnerId
+         || request.SignerId != _options.SignerId
+         || !string.Equals(request.Network, _options.Network, StringComparison.OrdinalIgnoreCase))
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "Signer context does not match its immutable enrollment."));
     }
 
     private void Authenticate(ServerCallContext context)
@@ -116,10 +203,22 @@ public sealed class SignerRpcService(ILightningSigner signer, ISecureKeyManager 
 
     private static RemoteSignerOptions ValidateOptions(RemoteSignerOptions options)
     {
-        options.Validate(); return options;
+        options.Validate();
+        return new RemoteSignerOptions
+        {
+            SocketPath = options.SocketPath,
+            AuthToken = options.AuthToken,
+            Network = options.Network,
+            TimeoutSeconds = options.TimeoutSeconds,
+            ExpectedNodePublicKey = options.ExpectedNodePublicKey,
+            NodeId = options.NodeId,
+            OwnerId = options.OwnerId,
+            SignerId = options.SignerId
+        };
     }
     private object?[] KeyOperation(uint op, JsonElement[] a) => op switch
     {
+        >= NativeSilentPaymentOperations.Metadata and <= NativeSilentPaymentOperations.LabelTweak => NativeSilentPaymentOperations.Execute(keys as ISilentPaymentKeySource ?? throw new SignerException("Silent payment keys are not configured."), op, a),
         100 => [ComputeSharedSecret(SignerWire.Read<byte[]>(a[0]))],
         101 => [keys.SignBolt11Invoice(SignerWire.Read<string>(a[0]), SignerWire.Read<byte[]>(a[1]))],
         102 => [keys.GetWalletPublicKey(SignerWire.Read<uint>(a[0]), SignerWire.Read<bool>(a[1]), SignerWire.Read<AddressType>(a[2]))],
@@ -130,6 +229,7 @@ public sealed class SignerRpcService(ILightningSigner signer, ISecureKeyManager 
         107 => [keys.EnsureLastUsedChannelIndexAtLeast(SignerWire.Read<uint>(a[0]))],
         SignerOperations.GetDepositAccount => [keys.GetDepositAccount(SignerWire.Read<AddressType>(a[0]))],
         SignerOperations.GetDepositAccount2 => [keys.GetDepositAccount(SignerWire.Read<AddressType>(a[0]), SignerWire.Read<uint>(a[1]))],
+        SignerOperations.GetKeyRingPublicKey => [keys.GetKeyRingPublicKey(SignerWire.Read<int>(a[0]), SignerWire.Read<int>(a[1]))],
         _ => throw new ArgumentException("Unknown key operation.")
     };
     private byte[] ComputeSharedSecret(byte[] publicKey) { var result = new byte[32]; keys.ComputeNodeSharedSecret(publicKey, result); return result; }

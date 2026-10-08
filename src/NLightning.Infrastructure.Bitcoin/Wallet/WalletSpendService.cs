@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -16,12 +18,14 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Constants;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
+using Domain.Signing.Recovery;
 using Interfaces;
 using Networks;
 
@@ -64,6 +68,8 @@ public sealed class WalletSpendService : IWalletSpendService
     /// </summary>
     internal const int BaseWeight = (4 + 4 + 1 + 1) * 4 + 2;
 
+    private static readonly ChannelId s_walletWorkflowKey = new(SHA256.HashData("NLightning/native-wallet-withdrawal/v1"u8));
+    private readonly IRemoteSigningWorkflowCoordinator? _signingWorkflows;
     private readonly IWalletPsbtService? _psbt;
     private readonly IAnchorReserveService _anchorReserveService;
     private readonly IBitcoinChainService? _bitcoinChainService;
@@ -88,8 +94,10 @@ public sealed class WalletSpendService : IWalletSpendService
                               ILogger<WalletSpendService> logger, IBitcoinChainService? bitcoinChainService = null,
                               IWalletPsbtService? psbt = null, IOptions<SilentPaymentsOptions>? silentPayments = null,
                               ISilentPaymentCrypto? silentPaymentCrypto = null,
-                              ISilentPaymentKeySource? silentPaymentKeys = null)
+                              ISilentPaymentKeySource? silentPaymentKeys = null,
+                              IRemoteSigningWorkflowCoordinator? signingWorkflows = null)
     {
+        _signingWorkflows = signingWorkflows is INativeWalletSigningRecovery ? signingWorkflows : null;
         _psbt = psbt;
         _silentPayments = silentPayments?.Value ?? new SilentPaymentsOptions();
         _silentPaymentCrypto = silentPaymentCrypto ?? new SilentPaymentCrypto();
@@ -240,6 +248,8 @@ public sealed class WalletSpendService : IWalletSpendService
             var reservation = await _feeInputSelector.ReserveAsync(LightningMoney.Satoshis(total),
                 LightningMoney.Satoshis(rate), extraWeight, ReservationPurpose, policy, cancellationToken);
             var stored = false;
+            ISigningWorkflowScope? signingWorkflow = null;
+            var signingIntentStarted = false;
             try
             {
                 if (namedInputs is not null &&
@@ -272,12 +282,18 @@ public sealed class WalletSpendService : IWalletSpendService
                             silentChangeScript = new Script(script);
                     }
                 }
-                var signed = BuildAndSign(reservation, destinations.Zip(amounts, (script, amount) =>
-                    (Script: script, AmountSat: amount)).ToArray(), frozenInputs, silentChangeScript,
-                    shuffleOutputs: policy.SilentPaymentSend);
                 var fee = reservation.Total.Satoshi - total - reservation.ChangeAmount.Satoshi;
                 if (maxFee is not null && LightningMoney.Satoshis(fee) > maxFee)
                     throw new WalletSpendException(WalletSpendError.FeeAboveLimit, "The transaction fee exceeds the requested maximum.");
+                var signed = BuildAndSign(reservation, destinations.Zip(amounts, (script, amount) =>
+                    (Script: script, AmountSat: amount)).ToArray(), frozenInputs, silentChangeScript,
+                    shuffleOutputs: policy.SilentPaymentSend, beforeSign: unsigned =>
+                    {
+                        signingIntentStarted = _signingWorkflows is not null;
+                        signingWorkflow = BeginWithdrawal(reservation, unsigned, (uint)rate,
+                            reservation.Total.Satoshi - total - reservation.ChangeAmount.Satoshi,
+                            labels?.Label, labels?.CanonicalTags);
+                    });
                 labels ??= SourceLabels.None;
                 var row = new BroadcastTransactionModel(signed.Signed, BroadcastPurpose.WalletSend, null,
                     _blockchainMonitor.LastProcessedBlockHeight, (uint)rate, fee: LightningMoney.Satoshis(fee))
@@ -288,7 +304,7 @@ public sealed class WalletSpendService : IWalletSpendService
                 bool published;
                 try
                 {
-                    published = await _blockchainMonitor.SaveAndPublishAsync(row);
+                    published = await SaveWithdrawalAsync(row, signingWorkflow);
                     stored = true;
                 }
                 catch
@@ -311,10 +327,11 @@ public sealed class WalletSpendService : IWalletSpendService
             }
             catch
             {
-                if (!stored)
+                if (!stored && !signingIntentStarted)
                     await _feeInputSelector.ReleaseAsync(reservation.Id, CancellationToken.None);
                 throw;
             }
+            finally { signingWorkflow?.Dispose(); }
         }
         finally
         {
@@ -471,16 +488,25 @@ public sealed class WalletSpendService : IWalletSpendService
                                            "The wallet could not reserve exactly the chosen inputs.");
         }
         var stored = false;
+        ISigningWorkflowScope? signingWorkflow = null;
+        var signingIntentStarted = false;
         try
         {
             await EnsureReserveKeptAsync(reservation, amountSat, cancellationToken);
 
-            var signed = BuildAndSign(reservation, destination, amountSat);
             var feeSat = reservation.Total.Satoshi - amountSat - reservation.ChangeAmount.Satoshi;
             if (request.MaxFee is { } maxFee && LightningMoney.Satoshis(feeSat) > maxFee)
                 throw new WalletSpendException(WalletSpendError.FeeAboveLimit,
                                                $"The fee would be {feeSat} sat, above the limit of "
                                              + $"{maxFee.MilliSatoshi / 1_000.0:0.###} sat.");
+            var signed = BuildAndSign(reservation, [(destination, amountSat)],
+                reservation.Inputs.Select(i => (i.TxId, i.Index)).ToArray(), beforeSign: unsigned =>
+                {
+                    signingIntentStarted = _signingWorkflows is not null;
+                    signingWorkflow = BeginWithdrawal(reservation, unsigned, (uint)feeRatePerKw,
+                        reservation.Total.Satoshi - amountSat - reservation.ChangeAmount.Satoshi,
+                        request.Labels.Label, request.Labels.CanonicalTags);
+                });
             var weight = GetWeight(signed.Transaction);
 
             // The absolute fee rides on the row (NL-604): the accounting feed records it when the spend confirms
@@ -495,7 +521,7 @@ public sealed class WalletSpendService : IWalletSpendService
             bool published;
             try
             {
-                published = await _blockchainMonitor.SaveAndPublishAsync(row);
+                published = await SaveWithdrawalAsync(row, signingWorkflow);
                 stored = true;
             }
             catch
@@ -522,10 +548,11 @@ public sealed class WalletSpendService : IWalletSpendService
         }
         catch
         {
-            if (!stored)
+            if (!stored && !signingIntentStarted)
                 await _feeInputSelector.ReleaseAsync(reservation.Id, CancellationToken.None);
             throw;
         }
+        finally { signingWorkflow?.Dispose(); }
     }
 
     /// <summary>
@@ -764,14 +791,9 @@ public sealed class WalletSpendService : IWalletSpendService
     }
 
     private (SignedTransaction Signed, Transaction Transaction) BuildAndSign(FeeInputReservation reservation,
-                                                                           Script destination, long amountSat)
-    {
-        return BuildAndSign(reservation, [(destination, amountSat)], reservation.Inputs.Select(i => (i.TxId, i.Index)).ToArray());
-    }
-
-    private (SignedTransaction Signed, Transaction Transaction) BuildAndSign(FeeInputReservation reservation,
         IReadOnlyList<(Script Script, long AmountSat)> outputs, IReadOnlyList<(TxId TxId, uint Index)> frozenInputs,
-        Script? silentChangeScript = null, bool shuffleOutputs = false)
+        Script? silentChangeScript = null, bool shuffleOutputs = false,
+        Action<SignedTransaction>? beforeSign = null)
     {
         if (!reservation.Inputs.Select(i => (i.TxId, i.Index)).SequenceEqual(frozenInputs))
             throw new InvalidOperationException("Wallet inputs changed after silent payment derivation; derive again before signing.");
@@ -799,9 +821,17 @@ public sealed class WalletSpendService : IWalletSpendService
             }
 
         var signed = new SignedTransaction(new TxId(tx.GetHash().ToBytes()), tx.ToBytes());
+        beforeSign?.Invoke(signed);
         if (!_lightningSigner.SignWalletTransaction(signed, reservation.Id, []))
             throw new InvalidOperationException($"The signer signed no input of withdrawal {tx.GetHash()}");
 
+        return ValidateSignedWithdrawal(reservation, tx, signed);
+    }
+
+    private (SignedTransaction Signed, Transaction Transaction) ValidateSignedWithdrawal(
+        FeeInputReservation reservation, Transaction tx, SignedTransaction signed)
+    {
+        var frozenInputs = reservation.Inputs.Select(i => (i.TxId, i.Index)).ToArray();
         // Check every input with the script interpreter, independently of the signer's own check
         var result = Transaction.Load(signed.RawTxBytes, _network);
         if (!result.Inputs.Select(i => (new TxId(i.PrevOut.Hash.ToBytes()), i.PrevOut.N)).SequenceEqual(frozenInputs))
@@ -819,7 +849,7 @@ public sealed class WalletSpendService : IWalletSpendService
                     $"Input {i} of withdrawal {result.GetHash()} does not verify: {check.Error}");
         }
 
-        if (result.GetHash() != tx.GetHash())
+        if (result.GetHash() != tx.GetHash() || signed.TxId != new TxId(result.GetHash().ToBytes()))
             throw new InvalidOperationException("The signer changed the withdrawal's txid");
 
         return (signed, result);
@@ -834,6 +864,7 @@ public sealed class WalletSpendService : IWalletSpendService
     /// <returns>How many reservations were released.</returns>
     private async Task<int> EndStaleReservationsLockedAsync(CancellationToken cancellationToken)
     {
+        await RecoverWithdrawalsLockedAsync(cancellationToken);
         List<FeeInputReservation> reservations;
         try
         {
@@ -884,6 +915,83 @@ public sealed class WalletSpendService : IWalletSpendService
         }
 
         return released;
+    }
+
+    private sealed record WithdrawalPublicationIntent(Guid ReservationId, byte[] UnsignedTransaction,
+        uint FeeRatePerKw, long FeeSat, uint Height, string? Label, string? Tags);
+
+    private ISigningWorkflowScope? BeginWithdrawal(FeeInputReservation reservation, SignedTransaction unsigned,
+        uint rate, long feeSat, string? label, string? tags)
+    {
+        if (_signingWorkflows is null) return null;
+        var intent = JsonSerializer.SerializeToUtf8Bytes(new WithdrawalPublicationIntent(reservation.Id,
+            unsigned.RawTxBytes.ToArray(), rate, feeSat, _blockchainMonitor.LastProcessedBlockHeight, label, tags));
+        var workflow = _signingWorkflows.BeginAsync(new SigningWorkflowDescriptor(s_walletWorkflowKey,
+            SigningWorkflowKind.WalletWithdrawal, 0, 0, SHA256.HashData(intent))
+        { PublicationIntent = intent })
+            .GetAwaiter().GetResult();
+        try { workflow.Activate(); return workflow; }
+        catch { workflow.Dispose(); throw; }
+    }
+
+    private async Task<bool> SaveWithdrawalAsync(BroadcastTransactionModel row, ISigningWorkflowScope? workflow)
+    {
+        if (workflow is null) return await _blockchainMonitor.SaveAndPublishAsync(row);
+        using (var scope = _scopeFactory.CreateScope())
+        {
+            var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var saved = await uow.SigningWorkflowDbRepository.GetAsync(workflow.WorkflowId)
+                ?? throw new InvalidOperationException("Withdrawal publication intent is missing.");
+            var intent = JsonSerializer.Deserialize<WithdrawalPublicationIntent>(saved.PublicationIntent
+                ?? throw new InvalidOperationException("Withdrawal publication intent is missing."))
+                ?? throw new InvalidOperationException("Withdrawal publication intent is invalid.");
+            row = new BroadcastTransactionModel(new SignedTransaction(row.TransactionId, row.RawTransaction),
+                BroadcastPurpose.WalletSend, null, intent.Height, intent.FeeRatePerKw,
+                fee: LightningMoney.Satoshis(intent.FeeSat))
+            { Label = intent.Label, Tags = intent.Tags };
+            var existing = await uow.BroadcastTransactionDbRepository.GetByTransactionIdAsync(row.TransactionId);
+            if (existing is null) uow.BroadcastTransactionDbRepository.Add(row);
+            else if (!existing.RawTransaction.AsSpan().SequenceEqual(row.RawTransaction))
+                throw new InvalidOperationException("Withdrawal broadcast bytes conflict with the recovered receipt.");
+            await workflow.StageConsumeAsync(uow);
+            await uow.SaveChangesAsync();
+        }
+        return await _blockchainMonitor.PublishAsync(row);
+    }
+
+    private async Task RecoverWithdrawalsLockedAsync(CancellationToken cancellationToken)
+    {
+        if (_signingWorkflows is not INativeWalletSigningRecovery native) return;
+        var pending = await _signingWorkflows.GetPendingAsync(s_walletWorkflowKey);
+        if (pending.Count == 0) return;
+        if (pending.Count != 1 || pending[0].Kind != SigningWorkflowKind.WalletWithdrawal
+         || pending[0].PublicationIntent is null)
+            throw new InvalidOperationException("Wallet withdrawal recovery requires attention.");
+        var saved = pending[0];
+        var intent = JsonSerializer.Deserialize<WithdrawalPublicationIntent>(saved.PublicationIntent!)
+                     ?? throw new InvalidOperationException("Withdrawal publication intent is invalid.");
+        var reservation = (await _feeInputSelector.GetAllAsync(cancellationToken))
+            .SingleOrDefault(r => r.Id == intent.ReservationId && r.Purpose == ReservationPurpose)
+            ?? throw new InvalidOperationException("Withdrawal recovery lost its input reservation.");
+        using var workflow = await _signingWorkflows.BeginAsync(new SigningWorkflowDescriptor(s_walletWorkflowKey,
+            saved.Kind, 0, 0, saved.SnapshotFingerprint)
+        { PublicationIntent = saved.PublicationIntent });
+        workflow.Activate();
+        var unsigned = Transaction.Load(intent.UnsignedTransaction, _network);
+        var signed = native.ReplayWithdrawal(workflow);
+        if (signed is null)
+        {
+            signed = new SignedTransaction(new TxId(unsigned.GetHash().ToBytes()), intent.UnsignedTransaction.ToArray());
+            if (!_lightningSigner.SignWalletTransaction(signed, reservation.Id, []))
+                throw new InvalidOperationException("Recovered withdrawal signed no inputs.");
+        }
+        var verified = ValidateSignedWithdrawal(reservation, unsigned, signed);
+        if (reservation.Total.Satoshi - verified.Transaction.Outputs.Sum(output => output.Value.Satoshi) != intent.FeeSat)
+            throw new InvalidOperationException("Recovered withdrawal fee differs from the saved intent.");
+        var row = new BroadcastTransactionModel(signed, BroadcastPurpose.WalletSend, null, intent.Height,
+            intent.FeeRatePerKw, fee: LightningMoney.Satoshis(intent.FeeSat))
+        { Label = intent.Label, Tags = intent.Tags };
+        await SaveWithdrawalAsync(row, workflow);
     }
 
     private async Task<bool> IsStoredAsync(TxId txId)

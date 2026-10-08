@@ -6,13 +6,19 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Signer;
 
 using Domain.Bitcoin.Interfaces;
+using Domain.Crypto.Interfaces;
+using Domain.Crypto.KeyRing;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
+using Domain.Signing;
+using Infrastructure.Bitcoin;
 using Infrastructure.Bitcoin.Builders;
+using Infrastructure.Bitcoin.KeyRing;
 using Infrastructure.Bitcoin.Managers;
 using Infrastructure.Bitcoin.Services;
 using Infrastructure.Bitcoin.Signers;
@@ -53,6 +59,9 @@ internal static class Program
 
             using var provisioned = await ProvisionKeysAsync(options);
             var keys = provisioned.Keys;
+            var enrolledContext = new NodeSigningContext(options.NodeId, options.OwnerId, options.SignerId,
+                                                        options.Network.Name, keys.GetNodePubKey());
+            SignerEnrollment.Bind(options.StateFilePath, enrolledContext);
 
             var builder = WebApplication.CreateSlimBuilder();
             // This executable has one explicitly configured IPC endpoint. Ambient appsettings/environment
@@ -63,18 +72,38 @@ internal static class Program
             builder.Logging.SetMinimumLevel(LogLevel.Warning);
             builder.WebHost.ConfigureKestrel(server =>
                 server.ListenUnixSocket(options.SocketPath, endpoint => endpoint.Protocols = HttpProtocols.Http2));
+            builder.Services.AddBitcoinInfrastructure();
             var wallet = new UtxoMemoryRepository();
             builder.Services.AddSingleton<IUtxoMemoryRepository>(wallet);
             builder.Services.AddSingleton<ISecureKeyManager>(keys);
+            builder.Services.AddSingleton(enrolledContext);
+            var swapStatePath = options.StateFilePath + ".swap-sessions";
+            if (File.Exists(options.StateFilePath) && !File.Exists(swapStatePath))
+                throw new IOException("Signer swap history is missing beside existing safety state.");
+            builder.Services.AddSingleton<ISwapSigner>(services =>
+                new SwapSigner(keys, services.GetRequiredService<IMusig2Service>(),
+                    services.GetRequiredService<ISecp256K1Math>(), services.GetRequiredService<IOptions<KeyRingOptions>>(),
+                    sessionStatePath: swapStatePath));
+            var nonceStatePath = options.StateFilePath + ".nonces";
+            if (File.Exists(options.StateFilePath) && !File.Exists(nonceStatePath))
+                throw new IOException("Signer nonce history is missing beside existing safety state.");
+            builder.Services.AddSingleton(_ => NativeNonceStateStore.ForSigner(nonceStatePath, keys));
             builder.Services.AddSingleton<ILightningSigner>(services =>
-                new LocalLightningSigner(new FundingOutputBuilder(), new KeyDerivationService(),
-                                         services.GetRequiredService<ILogger<LocalLightningSigner>>(),
-                                         new NodeOptions { BitcoinNetwork = options.Network }, keys, wallet));
+            {
+                var signer = new LocalLightningSigner(new FundingOutputBuilder(), new KeyDerivationService(),
+                    services.GetRequiredService<ILogger<LocalLightningSigner>>(),
+                    new NodeOptions { BitcoinNetwork = options.Network }, keys, wallet);
+                signer.AttachNonceStateStore(services.GetRequiredService<NativeNonceStateStore>());
+                return signer;
+            });
             builder.Services.AddSingleton(services =>
                 new DurableSignerState(services.GetRequiredService<ILightningSigner>(),
                                        options.StateFilePath, options.Network.ToString()));
             builder.Services.AddSingleton(new RemoteSignerOptions
             {
+                NodeId = options.NodeId,
+                OwnerId = options.OwnerId,
+                SignerId = options.SignerId,
                 SocketPath = options.SocketPath,
                 AuthToken = token,
                 Network = options.Network.ToString()
@@ -89,6 +118,7 @@ internal static class Program
 
             await using var app = builder.Build();
             // Replay and validate the durable signer journal before accepting requests or reporting readiness.
+            _ = app.Services.GetRequiredService<ISwapSigner>();
             _ = app.Services.GetRequiredService<DurableSignerState>();
             SignerFiles.SyncParentDirectory(options.StateFilePath);
             provisioned.MarkStateInitialized();

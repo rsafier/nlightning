@@ -223,6 +223,10 @@ public sealed class RemoteSignerProcessTests(SignerDaemonFixture daemon) : IClas
         var headers = new Metadata { { "x-signer-token", SignerDaemonFixture.Token } };
         var request = new SigningRequest
         {
+            NodeId = NLightning.Domain.Signing.NodeSigningContext.DefaultNodeId,
+            OwnerId = NLightning.Domain.Signing.NodeSigningContext.DefaultOwnerId,
+            SignerId = NLightning.Domain.Signing.NodeSigningContext.DefaultSignerId,
+            Network = "regtest",
             Version = 999,
             RequestId = Guid.NewGuid().ToString("N"),
             Operation = 0,
@@ -269,13 +273,16 @@ public sealed class RemoteSignerProcessTests(SignerDaemonFixture daemon) : IClas
         var services = new ServiceCollection();
         services.AddNltgNodeServices(configuration, keys, connection);
         using var provider = services.BuildServiceProvider();
+        var silentOptions = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<NLightning.Domain.Bitcoin.SilentPayments.SilentPaymentsOptions>>().Value;
+        Assert.Equal(enableSilentPayments, silentOptions.Enabled);
+        Assert.Same(keys, provider.GetRequiredService<NLightning.Domain.Bitcoin.SilentPayments.Interfaces.ISilentPaymentKeySource>());
         if (enableSilentPayments)
         {
-            var failure = Assert.Throws<Microsoft.Extensions.Options.OptionsValidationException>(() =>
-                provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<NLightning.Domain.Bitcoin.SilentPayments.SilentPaymentsOptions>>().Value);
-            Assert.Contains("Silent-payment scanning and receiving are not supported by the remote signer.", failure.Failures);
-            return;
+            Assert.Equal(daemon.LocalKeys.ScanPubKey, keys.ScanPubKey);
+            Assert.Equal(daemon.LocalKeys.SpendPubKey, keys.SpendPubKey);
+            Assert.Throws<NotSupportedException>(() => keys.GetSilentPaymentSpendKey(new byte[32], null));
         }
+        Assert.IsType<RemoteSwapSigner>(provider.GetRequiredService<NLightning.Domain.Crypto.KeyRing.ISwapSigner>());
         var registeredKeys = provider.GetRequiredService<ISecureKeyManager>();
         Assert.Same(keys, registeredKeys);
         Assert.Same(provider.GetRequiredService<RemoteSigningWorkflowCoordinator>(),

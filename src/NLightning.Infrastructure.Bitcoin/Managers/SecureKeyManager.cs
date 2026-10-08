@@ -297,11 +297,17 @@ public partial class SecureKeyManager : ISecureKeyManager, IDisposable
     }
 
     /// <inheritdoc />
-    public ExtPrivKey GetKeyRingKeyAtIndex(int family, int index)
+    public ExtPrivKey GetKeyRingKeyAtIndex(int family, int index) =>
+        GetMasterKey().Derive(GetKeyRingPath(family, index)).ToBytes();
+
+    public CompactPubKey GetKeyRingPublicKey(int family, int index) =>
+        GetMasterKey().Derive(GetKeyRingPath(family, index)).Neuter().PubKey.ToBytes();
+
+    private static KeyPath GetKeyRingPath(int family, int index)
     {
         if (family < 10 || index < 0)
             throw new ArgumentOutOfRangeException(nameof(family), "Reserved family or negative index.");
-        return GetMasterKey().Derive(new KeyPath($"1017'/0'/{family}'/0/{index}")).ToBytes();
+        return new KeyPath($"1017'/0'/{family}'/0/{index}");
     }
 
     public ExtPrivKey GetChannelKeyAtIndex(uint index)
@@ -399,6 +405,22 @@ public partial class SecureKeyManager : ISecureKeyManager, IDisposable
         }
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Hashes the exact persisted encrypted key file under the channel allocation lock. Injected seed managers
+    /// must use their allocation journal instead; no private key material is returned.
+    /// </summary>
+    public byte[] GetAllocationCheckpointDigest()
+    {
+        lock (_lastUsedIndexLock)
+        {
+            if (_filePath is null)
+                throw new InvalidOperationException("Injected seed managers require an allocation journal checkpoint.");
+            using var stream = new FileStream(ResolveFinalPath(_filePath), FileMode.Open, FileAccess.Read,
+                                              FileShare.Read);
+            return SHA256.HashData(stream);
+        }
     }
 
     /// <summary>

@@ -10785,3 +10785,36 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix:** Amount and send-all silent-payment withdrawals spend exactly the named confirmed eligible wallet outpoints, including received silent-payment outputs, preserving anchor reserve backing in other coins and refusing unavailable/duplicate/ineligible inputs. Send-all emits no change; amount withdrawals retain the normal deterministic BIP352 change/signature path. Operator instructions document input linkage, reserves, status and logs.
 - **Validation:** 75 initial selected-input/signing checks passed, including actual named-account signing. Final wallet/selector regressions passed 477 cases plus three corrected monitor reorg cases. Combined normal Core/upstream-LND exact-input receipt proof passed in `dangling-proof12-1`; the chosen 40k coin was spent and the 800k coin left untouched. See DANGLING_PLAN.md.
 - **Blocks/Blocked-by:** follow-up of NL-1296; silent payments D-SP13.
+
+
+### NL-1310 Native remote signer lacks complete auxiliary subsystem coverage
+- **Status:** in-progress
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `ISecureKeyManager`, `KeyRingService`, `SwapSigner`, silent-payment receiving; `docs/agents/NATIVE_SIGNER_COVERAGE.md`
+- **Initial evidence:** keyring metadata allocation called the private `GetKeyRingKeyAtIndex` API, swap signing opened private ring keys locally, and remote silent-payment receiving was refused. Forwarding the Lightning signer interface did not cover these consumers.
+- **Progress:** typed public keyring, remote swap and silent-payment receiver operations are implemented and their actual RPC/process-restart checks pass. Native withdrawal request/receipt recovery and durable publication intent are implemented; 71 wallet checks pass. Remaining subsystem lifecycle and independent authorization gates stay open in the coverage inventory.
+- **Fix sketch:** public-only keyring derivation and persistence are the first increment. Complete typed remote swap/nonce and silent-payment scan/receive operations without exporting private material, then prove lifecycle recovery and independent authorization for the full inventory.
+- **Blocks/Blocked-by:** NL-1304; milestone 1 of `NATIVE_SIGNER_HOSTED_NODES_GOAL.md`
+
+
+### NL-1311 Native signer needs independent financial authority and writer fencing
+- **Status:** in-progress
+- **Severity:** high
+- **Kind:** gap
+- **Location:** `NativeSignerAuthority`, `NativeAuthorizedSignerExecutor`, native wallet/channel validation and RPC integration
+- **Evidence:** node-provided wallet snapshots and registered channel counters are not independent financial authorization. Local journals protect ordinary restarts but cannot establish freshness against a host restoring local state. Cached replies and reconciliation also need current-writer checks.
+- **Progress:** transactional authority, exact owner approvals, writer compare-and-swap, aggregate journal checkpoints, independent wallet/channel validation primitives and writer-bound RPC credentials have passing regression coverage. The executable still uses prototype authority composition.
+- **Fix sketch:** trusted transactional owner enrollment and exact intent approvals, writer compare-and-swap, aggregate signer journal checkpoints and fail-closed coordination. Independent wallet evidence and exact commitment reconstruction are foundation increments. Finish protocol transition policies, historical-state retirement, authenticated evidence adapters and application publication fencing before marking complete.
+- **Blocks/Blocked-by:** NL-1304; milestone 2 of `NATIVE_SIGNER_HOSTED_NODES_GOAL.md`
+
+
+### NL-1312 Native swap journal expiry and shutdown bypass session serialization
+- **Status:** fixed
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `SwapSigner` timer callback and `Dispose`; `NativeSwapJournalLifecycleTests`
+- **Evidence:** background expiry persisted session pruning outside the independent authority fence, changing the aggregate checkpoint between authorized operations. Shutdown closed the journal before taking the session gate, allowing an active write to leave an incomplete record.
+- **Fix:** durable sessions expire during explicit operations; background callbacks do not mutate their journal. Shutdown closes the store under the session gate and queued callbacks reject disposed state.
+- **Validation:** all three lifecycle cases pass in the 219-case sequential native RPC regression: idle expiry preserves committed history, shutdown serializes with an active session creation/write, and queued callbacks cannot touch a disposed journal.
+- **Blocks/Blocked-by:** NL-1311; native signer lifecycle recovery.

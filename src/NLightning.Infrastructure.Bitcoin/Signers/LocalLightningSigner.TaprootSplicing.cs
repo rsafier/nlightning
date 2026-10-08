@@ -73,11 +73,13 @@ public partial class LocalLightningSigner
             }
         }
 
+        if (_nativeNonceStore is { } store) pair = store.Store("splice", channelId, pair);
         var nonces = _spliceFundingNonces.GetOrAdd(channelId, static _ => []);
         lock (nonces)
         {
             if (nonces.Count >= MaxSpliceFundingNoncesPerChannel)
             {
+                _nativeNonceStore?.Forget("splice", channelId, nonces[0].PublicNonce);
                 nonces[0].SecretNonce.Dispose();
                 nonces.RemoveAt(0);
             }
@@ -220,6 +222,17 @@ public partial class LocalLightningSigner
     /// <summary>Takes (removes) the secret half of our shared-input nonce <paramref name="publicNonce"/>; null if unknown.</summary>
     private MusigSecretNonce? TakeSpliceFundingNonce(ChannelId channelId, MusigPublicNonce publicNonce)
     {
+        if (_nativeNonceStore is { } store)
+        {
+            var restored = store.Take("splice", channelId, publicNonce);
+            if (_spliceFundingNonces.TryGetValue(channelId, out var live))
+                lock (live)
+                {
+                    var index = live.FindIndex(n => n.PublicNonce == publicNonce);
+                    if (index >= 0) { live[index].SecretNonce.Dispose(); live.RemoveAt(index); }
+                }
+            return restored;
+        }
         if (!_spliceFundingNonces.TryGetValue(channelId, out var nonces))
             return null;
 
@@ -238,6 +251,7 @@ public partial class LocalLightningSigner
     /// <summary>Drops (and zeroes) the channel's live shared-input nonces (the channel is unregistered).</summary>
     private void ForgetSpliceFundingNonces(ChannelId channelId)
     {
+        _nativeNonceStore?.Forget("splice", channelId);
         if (!_spliceFundingNonces.TryRemove(channelId, out var nonces))
             return;
 

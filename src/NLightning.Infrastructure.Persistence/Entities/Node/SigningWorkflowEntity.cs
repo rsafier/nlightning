@@ -12,6 +12,7 @@ public sealed class SigningWorkflowEntity
     public required ulong ExpectedLocalCommitmentNumber { get; set; }
     public required ulong ExpectedRemoteCommitmentNumber { get; set; }
     public required byte[] SnapshotFingerprint { get; set; }
+    public byte[]? PublicationIntent { get; set; }
     public required byte[] SignerIdentity { get; set; }
     public required string Network { get; set; }
     public required int SchemaVersion { get; set; }

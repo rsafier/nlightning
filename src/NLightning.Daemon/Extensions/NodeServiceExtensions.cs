@@ -169,6 +169,26 @@ public static class NodeServiceExtensions
         if (signingOptions.IsVls)
             configuration = VlsCapabilityProfile.Apply(configuration);
 
+        services.AddSingleton(_ =>
+        {
+            var enrolledContext = new NLightning.Domain.Signing.NodeSigningContext(
+                signingOptions.NodeId, signingOptions.OwnerId, signingOptions.SignerId,
+                Domain.Protocol.ValueObjects.BitcoinNetwork.Resolve(configuration["Node:Network"] ?? "regtest").Name,
+                secureKeyManager.GetNodePubKey());
+            enrolledContext.Validate();
+            if (remoteConnection is not null && remoteConnection.Context != enrolledContext)
+                throw new ArgumentException("The configured node context does not match its authenticated signer enrollment.");
+            return enrolledContext;
+        });
+        if (remoteConnection is not null
+         && (remoteConnection.Context.NodeId != signingOptions.NodeId
+          || remoteConnection.Context.OwnerId != signingOptions.OwnerId
+          || remoteConnection.Context.SignerId != signingOptions.SignerId))
+            throw new ArgumentException("The configured node context does not match its authenticated signer enrollment.");
+
+        services.AddSingleton<Domain.Payments.Interfaces.INodePaymentEventSource,
+            Application.Payments.Events.NodePaymentEventSource>();
+
         // Register configuration and the node key
         services.AddSingleton(configuration);
         services.AddSingleton(secureKeyManager);
@@ -398,6 +418,8 @@ public static class NodeServiceExtensions
         if (remoteConnection is not null)
         {
             services.AddSingleton(remoteConnection);
+            services.Replace(ServiceDescriptor.Singleton<Domain.Crypto.KeyRing.ISwapSigner>(sp =>
+                new RemoteSwapSigner(remoteConnection, sp.GetRequiredService<Domain.Crypto.KeyRing.IKeyRing>())));
             services.AddSingleton<RemoteSigningWorkflowCoordinator>();
             services.AddSingleton<IRemoteSigningWorkflowCoordinator>(sp =>
                 sp.GetRequiredService<RemoteSigningWorkflowCoordinator>());
@@ -458,9 +480,9 @@ public static class NodeServiceExtensions
                  {
                      var network = resolvedNodeOptions.Value.BitcoinNetwork.Name;
                      var errors = options.GetValidationErrors(string.Equals(network, "mainnet", StringComparison.OrdinalIgnoreCase));
-                     if (signingOptions.IsRemote && options.Enabled)
+                     if (signingOptions.IsVls && options.Enabled)
                          throw new OptionsValidationException(SilentPaymentsOptions.SectionName, typeof(SilentPaymentsOptions),
-                             ["Silent-payment scanning and receiving are not supported by the remote signer."]);
+                             ["Silent-payment scanning and receiving are not supported by the VLS signer."]);
                      if (errors.Count > 0)
                          throw new OptionsValidationException(SilentPaymentsOptions.SectionName, typeof(SilentPaymentsOptions), errors);
                      return true;

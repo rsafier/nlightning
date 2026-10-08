@@ -73,8 +73,8 @@ public sealed class KeyRingService : IKeyRing, IDisposable
 
     private async Task<KeyRingKey> Record(IUnitOfWork uow, KeyRingLocator locator, CancellationToken ct)
     {
-        using var key = Open(locator);
-        var record = new KeyRingKey(locator, key.PubKey.ToBytes(), DateTimeOffset.UtcNow);
+        var record = new KeyRingKey(locator, _keys.GetKeyRingPublicKey(locator.Family, locator.Index),
+                                    DateTimeOffset.UtcNow);
         uow.KeyRingDbRepository.Add(record);
         ct.ThrowIfCancellationRequested();
         await uow.SaveChangesAsync();

@@ -27,10 +27,15 @@ public static class SigningWorkflowSnapshot
         writer.Write(descriptor.SnapshotFingerprint);
         writer.Write(channel.LocalUpfrontShutdownScript?.ToString() ?? "");
         writer.Write(channel.RemoteUpfrontShutdownScript?.ToString() ?? "");
-        if (kind == SigningWorkflowKind.Activate)
+        if (kind is SigningWorkflowKind.Activate or SigningWorkflowKind.Funding)
         {
             writer.Write(channel.LastReceivedSignature is { } received ? Convert.ToHexString(received.Value) : "");
             writer.Write(channel.LastSentSignature is { } sent ? Convert.ToHexString(sent.Value) : "");
+            if (kind == SigningWorkflowKind.Funding)
+            {
+                writer.Write(channel.LastReceivedPartialSignature is { } receivedPartial
+                    ? Convert.ToHexString(receivedPartial.ToBytes()) : "");
+            }
         }
         writer.Flush();
         return descriptor with { SnapshotFingerprint = SHA256.HashData(stream.ToArray()) };

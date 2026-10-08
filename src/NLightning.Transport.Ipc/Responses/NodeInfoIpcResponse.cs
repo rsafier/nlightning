@@ -39,4 +39,7 @@ public sealed class NodeInfoIpcResponse
     /// <summary>Our onion service, <c>pubkey@&lt;56 chars&gt;.onion:port</c>, once Tor accepted it.</summary>
     [Key(13)] public string? OnionAddress { get; init; }
     [Key(14)] public bool? SilentPaymentRecoverableElsewhere { get; init; }
+    [Key(15)] public string? NodeId { get; init; }
+    [Key(16)] public string? OwnerId { get; init; }
+    [Key(17)] public string? SignerId { get; init; }
 }

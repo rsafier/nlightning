@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Infrastructure.Repositories;
 
 using Database.Channel;
+using Database.Node;
 using Database.Payment;
 using Domain.Accounting.Services;
 using Domain.Bitcoin.Interfaces;
@@ -29,6 +30,8 @@ public static class DependencyInjection
     /// <returns>The same service collection so that multiple calls can be chained.</returns>
     public static IServiceCollection AddRepositoriesInfrastructureServices(this IServiceCollection services)
     {
+        services.TryAddScoped<NodeSigningEnrollmentStore>();
+
         // The accounting feed's gate (NL-619): one per process, held by the backfill when the cutover fails
         services.TryAddSingleton<AccountingFeedGate>();
 

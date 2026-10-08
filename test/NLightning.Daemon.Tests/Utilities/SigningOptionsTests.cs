@@ -82,4 +82,26 @@ public class SigningOptionsTests
         // Assert
         Assert.Empty(failures);
     }
+
+    [Theory]
+    [InlineData("RemoteNative", "writer-a", 1L, "/tmp/writer.token", true)]
+    [InlineData("RemoteNative", "writer-a", 0L, "/tmp/writer.token", false)]
+    [InlineData("RemoteNative", null, 1L, "/tmp/writer.token", false)]
+    [InlineData("RemoteNative", "writer-a", 1L, "relative.token", false)]
+    [InlineData("Local", "writer-a", 1L, "/tmp/writer.token", false)]
+    [InlineData("Vls", "writer-a", 1L, "/tmp/writer.token", false)]
+    public void Given_InstalledWriterAssignment_When_ConfigurationIsChecked_Then_AllFieldsMustBeBoundToNativeMode(
+        string mode, string? writer, long epoch, string path, bool valid)
+    {
+        var options = new SigningOptions
+        {
+            Mode = mode,
+            SocketPath = "/tmp/signer.sock",
+            AuthTokenFile = "/tmp/signer.token",
+            WriterId = writer,
+            WriterEpoch = epoch,
+            WriterCredentialFile = path
+        };
+        Assert.Equal(valid, options.GetValidationErrors().Count == 0);
+    }
 }

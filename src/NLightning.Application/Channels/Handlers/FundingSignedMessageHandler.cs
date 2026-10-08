@@ -20,6 +20,7 @@ using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Signing.Recovery;
 using Domain.Signing.Vls;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -86,122 +87,144 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
                    .BeginOpeningAsync(channel)
             : null;
         openingWorkflow?.Activate();
-        SignedTransaction unsignedFundingTransaction;
-        uint fundingOutputIndex;
-        LightningMoney fundingFee;
+        ISigningWorkflowScope? fundingWorkflow = null;
         try
         {
-            // Generate the base commitment transactions
-            var localCommitmentTransaction =
-                _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
-                                                                                    channel.LocalCommitmentNumber);
-
-            // Build the output and the transactions
-            var localUnsignedCommitmentTransaction = _commitmentTransactionBuilder.Build(localCommitmentTransaction);
-
-            if (channel.ChannelParams.OptionSimpleTaproot)
+            SignedTransaction unsignedFundingTransaction;
+            uint fundingOutputIndex;
+            LightningMoney fundingFee;
+            try
             {
-                // Simple taproot channels (bolt-simple-taproot.md §funding_signed, NL-877 T5): the accepter's MuSig2
-                // partial signature of our commitment 0 (required), checked against our open_channel verification
-                // nonce; kept to sign our commitment 0 for broadcast
-                var partial = message.PartialSignatureWithNonceTlv?.PartialSignatureWithNonce
-                           ?? throw new ChannelErrorException(
-                                  "funding_signed of a simple taproot channel without partial_signature_with_nonce",
-                                  channel.ChannelId, "funding_signed without partial_signature_with_nonce");
-                _lightningSigner.ValidateLocalCommitmentPartialSignature(channel.ChannelId, null,
-                                                                         channel.LocalCommitmentNumber, partial,
-                                                                         localUnsignedCommitmentTransaction);
-                channel.UpdateLastReceivedPartialSignature(partial);
-            }
-            else
-            {
-                // Validate remote signature for our local commitment transaction
-                if (_lightningSigner is IVlsChannelSigner vls)
-                    vls.ValidateHolderCommitment(channel, localCommitmentTransaction, payload.Signature, []);
+                // Generate the base commitment transactions
+                var localCommitmentTransaction =
+                    _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                                        channel.LocalCommitmentNumber);
+
+                // Build the output and the transactions
+                var localUnsignedCommitmentTransaction = _commitmentTransactionBuilder.Build(localCommitmentTransaction);
+
+                if (channel.ChannelParams.OptionSimpleTaproot)
+                {
+                    // Simple taproot channels (bolt-simple-taproot.md §funding_signed, NL-877 T5): the accepter's MuSig2
+                    // partial signature of our commitment 0 (required), checked against our open_channel verification
+                    // nonce; kept to sign our commitment 0 for broadcast
+                    var partial = message.PartialSignatureWithNonceTlv?.PartialSignatureWithNonce
+                               ?? throw new ChannelErrorException(
+                                      "funding_signed of a simple taproot channel without partial_signature_with_nonce",
+                                      channel.ChannelId, "funding_signed without partial_signature_with_nonce");
+                    _lightningSigner.ValidateLocalCommitmentPartialSignature(channel.ChannelId, null,
+                                                                             channel.LocalCommitmentNumber, partial,
+                                                                             localUnsignedCommitmentTransaction);
+                    channel.UpdateLastReceivedPartialSignature(partial);
+                }
                 else
-                    _lightningSigner.ValidateSignature(channel.ChannelId, payload.Signature,
-                                                       localUnsignedCommitmentTransaction);
+                {
+                    // Validate remote signature for our local commitment transaction
+                    if (_lightningSigner is IVlsChannelSigner vls)
+                        vls.ValidateHolderCommitment(channel, localCommitmentTransaction, payload.Signature, []);
+                    else
+                        _lightningSigner.ValidateSignature(channel.ChannelId, payload.Signature,
+                                                           localUnsignedCommitmentTransaction);
 
-                // Update the channel with the new signature
-                channel.UpdateLastReceivedSignature(payload.Signature);
+                    // Update the channel with the new signature
+                    channel.UpdateLastReceivedSignature(payload.Signature);
+                }
+
+                // Get the locked utxos to create the funding transaction
+                var utxos = _utxoMemoryRepository.GetLockedUtxosForChannel(channel.ChannelId);
+
+                // Get a change address in case we need one
+                var fundingTransactionModel = _fundingTransactionModelFactory.Create(channel, utxos, channel.ChangeAddress);
+                var fundingTransaction = _fundingTransactionBuilder.Build(fundingTransactionModel);
+                unsignedFundingTransaction = fundingTransaction.Transaction;
+                fundingOutputIndex = fundingTransaction.FundingOutputIndex;
+                fundingFee = fundingTransactionModel.Fee;
+
+                // The rebuilt funding transaction must be the one the peer signed a commitment for
+                if (channel.FundingOutput?.TransactionId != unsignedFundingTransaction.TxId
+                 || channel.FundingOutput?.Index != fundingTransaction.FundingOutputIndex)
+                    throw new ChannelErrorException("Rebuilt funding transaction does not match the channel funding outpoint",
+                                                    channel.ChannelId, "Sorry, we had an internal error");
+
+                if (openingWorkflow is not null)
+                {
+                    // VLS requires an active, durably held commitment before signing its funding transaction.
+                    await PersistChannelAsync(channel, uow =>
+                        _transitions!.StageOpeningCompletionAsync(channel, openingWorkflow, uow, true));
+                    openingWorkflow.Dispose();
+                    await _transitions!.ActivateOpeningAsync(channel);
+                }
+
+                // Keep the peer's commitment zero and original funding inputs before the first native signing dispatch.
+                if (_transitions?.HasNativeFundingRecovery == true)
+                {
+                    await PersistChannelAsync(channel, _ => Task.CompletedTask);
+                    fundingWorkflow = await _transitions.BeginNativeFundingAsync(channel);
+                    fundingWorkflow?.Activate();
+                    if (fundingWorkflow is not null)
+                        await _transitions.PersistNativeFundingInputsAsync(channel, fundingWorkflow, utxos, fundingFee);
+                }
+
+                // Sign the transaction
+                var allSigned = _lightningSigner.SignFundingTransaction(channel.ChannelId, unsignedFundingTransaction);
+                if (!allSigned)
+                    throw new ChannelErrorException("Unable to sign all inputs for the funding transaction");
             }
-
-            // Get the locked utxos to create the funding transaction
-            var utxos = _utxoMemoryRepository.GetLockedUtxosForChannel(channel.ChannelId);
-
-            // Get a change address in case we need one
-            var fundingTransactionModel = _fundingTransactionModelFactory.Create(channel, utxos, channel.ChangeAddress);
-            var fundingTransaction = _fundingTransactionBuilder.Build(fundingTransactionModel);
-            unsignedFundingTransaction = fundingTransaction.Transaction;
-            fundingOutputIndex = fundingTransaction.FundingOutputIndex;
-            fundingFee = fundingTransactionModel.Fee;
-
-            // The rebuilt funding transaction must be the one the peer signed a commitment for
-            if (channel.FundingOutput?.TransactionId != unsignedFundingTransaction.TxId
-             || channel.FundingOutput?.Index != fundingTransaction.FundingOutputIndex)
-                throw new ChannelErrorException("Rebuilt funding transaction does not match the channel funding outpoint",
-                                                channel.ChannelId, "Sorry, we had an internal error");
-
-            if (openingWorkflow is not null)
+            catch (Exception e) when (e is not OperationCanceledException)
             {
-                // VLS requires an active, durably held commitment before signing its funding transaction.
-                await PersistChannelAsync(channel, uow =>
-                    _transitions!.StageOpeningCompletionAsync(channel, openingWorkflow, uow, true));
-                openingWorkflow.Dispose();
-                await _transitions!.ActivateOpeningAsync(channel);
+                // An uncertain remote signing result retains its channel inputs for original-request recovery.
+                var releasedCount = fundingWorkflow is null
+                    ? _utxoMemoryRepository.ReturnUtxosNotSpentOnChannel(channel.ChannelId).Count
+                    : 0;
+                _logger.LogWarning("funding_signed of channel {ChannelId} failed; released {Count} wallet output(s) locked "
+                                 + "to it", channel.ChannelId, releasedCount);
+                throw;
             }
 
-            // Sign the transaction
-            var allSigned = _lightningSigner.SignFundingTransaction(channel.ChannelId, unsignedFundingTransaction);
-            if (!allSigned)
-                throw new ChannelErrorException("Unable to sign all inputs for the funding transaction");
+            // One save (BOLT 5 plan O0-T1/T2, NL-258): the channel as V1FundingSigned, the funding watch, the signed funding
+            // transaction (sent again after every block until a block holds it, so a crash or a refused send before or
+            // during the publish loses nothing) and the watch of the funding output (any spend of it closes the channel)
+            channel.UpdateState(ChannelState.V1FundingSigned);
+            var fundingWatch = new WatchedTransactionModel(channel.ChannelId, unsignedFundingTransaction.TxId,
+                                                           channel.ChannelParams.MinimumDepth);
+            // The funding fee is known exactly here (every input is one of our wallet outputs; NL-604), and the push is the
+            // peer's balance at the open (ChannelFactory.CreateChannelV1AsInitiatorAsync), 0 for none (NL-605)
+            var fundingBroadcast = new BroadcastTransactionModel(unsignedFundingTransaction, BroadcastPurpose.Funding,
+                                                                 channel.ChannelId,
+                                                                 _blockchainMonitor.LastProcessedBlockHeight,
+                                                                 fee: fundingFee);
+            var fundingOutputWatch = new WatchedOutpointModel(unsignedFundingTransaction.TxId,
+                                                              fundingOutputIndex, channel.ChannelId,
+                                                              WatchedOutpointPurpose.FundingOutput);
+            var push = channel.RemoteBalance;
+            await PersistChannelAsync(channel, async uow =>
+            {
+                uow.WatchedTransactionDbRepository.Add(fundingWatch);
+                uow.BroadcastTransactionDbRepository.Add(fundingBroadcast);
+                uow.WatchedOutpointDbRepository.Add(fundingOutputWatch);
+                await ChannelAccountingEvents.StagePushAmountAsync(uow, channel.ChannelId, push, _logger);
+                if (fundingWorkflow is not null)
+                {
+                    await uow.FeeInputReservationDbRepository.DeleteAsync(fundingWorkflow.WorkflowId);
+                    await fundingWorkflow.StageConsumeAsync(uow);
+                }
+            });
+
+            if (fundingWorkflow is not null) _transitions!.ReleaseNativeFundingInputs(fundingWorkflow);
+            _blockchainMonitor.TrackWatchedTransaction(fundingWatch);
+            _blockchainMonitor.TrackWatchedOutpoint(fundingOutputWatch);
+
+            // A refused publish is logged by the broadcaster and retried after the next block
+            if (!await _blockchainMonitor.PublishAsync(fundingBroadcast))
+                _logger.LogWarning("The funding transaction {TxId} of channel {ChannelId} was not accepted yet; it is sent "
+                                 + "again after every block", unsignedFundingTransaction.TxId, channel.ChannelId);
+
+            // Announce V1FundingSigned (the open subscription) only once the funding transaction was sent
+            _channelMemoryRepository.UpdateChannel(channel);
+
+            return [];
         }
-        catch (Exception e) when (e is not OperationCanceledException)
-        {
-            // NL-259: the funding transaction will never be published, so the channel is forgotten (at the next start
-            // it is persisted Stale): its wallet outputs go back to the wallet now
-            var released = _utxoMemoryRepository.ReturnUtxosNotSpentOnChannel(channel.ChannelId);
-            _logger.LogWarning("funding_signed of channel {ChannelId} failed; released {Count} wallet output(s) locked "
-                             + "to it", channel.ChannelId, released.Count);
-            throw;
-        }
-
-        // One save (BOLT 5 plan O0-T1/T2, NL-258): the channel as V1FundingSigned, the funding watch, the signed funding
-        // transaction (sent again after every block until a block holds it, so a crash or a refused send before or
-        // during the publish loses nothing) and the watch of the funding output (any spend of it closes the channel)
-        channel.UpdateState(ChannelState.V1FundingSigned);
-        var fundingWatch = new WatchedTransactionModel(channel.ChannelId, unsignedFundingTransaction.TxId,
-                                                       channel.ChannelParams.MinimumDepth);
-        // The funding fee is known exactly here (every input is one of our wallet outputs; NL-604), and the push is the
-        // peer's balance at the open (ChannelFactory.CreateChannelV1AsInitiatorAsync), 0 for none (NL-605)
-        var fundingBroadcast = new BroadcastTransactionModel(unsignedFundingTransaction, BroadcastPurpose.Funding,
-                                                             channel.ChannelId,
-                                                             _blockchainMonitor.LastProcessedBlockHeight,
-                                                             fee: fundingFee);
-        var fundingOutputWatch = new WatchedOutpointModel(unsignedFundingTransaction.TxId,
-                                                          fundingOutputIndex, channel.ChannelId,
-                                                          WatchedOutpointPurpose.FundingOutput);
-        var push = channel.RemoteBalance;
-        await PersistChannelAsync(channel, async uow =>
-        {
-            uow.WatchedTransactionDbRepository.Add(fundingWatch);
-            uow.BroadcastTransactionDbRepository.Add(fundingBroadcast);
-            uow.WatchedOutpointDbRepository.Add(fundingOutputWatch);
-            await ChannelAccountingEvents.StagePushAmountAsync(uow, channel.ChannelId, push, _logger);
-        });
-
-        _blockchainMonitor.TrackWatchedTransaction(fundingWatch);
-        _blockchainMonitor.TrackWatchedOutpoint(fundingOutputWatch);
-
-        // A refused publish is logged by the broadcaster and retried after the next block
-        if (!await _blockchainMonitor.PublishAsync(fundingBroadcast))
-            _logger.LogWarning("The funding transaction {TxId} of channel {ChannelId} was not accepted yet; it is sent "
-                             + "again after every block", unsignedFundingTransaction.TxId, channel.ChannelId);
-
-        // Announce V1FundingSigned (the open subscription) only once the funding transaction was sent
-        _channelMemoryRepository.UpdateChannel(channel);
-
-        return [];
+        finally { fundingWorkflow?.Dispose(); }
     }
 
     /// <summary>

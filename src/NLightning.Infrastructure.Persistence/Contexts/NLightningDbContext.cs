@@ -76,6 +76,7 @@ public class NLightningDbContext : DbContext
 
     // Node DbSets
     public DbSet<VlsChannelMappingEntity> VlsChannelMappings { get; set; }
+    public DbSet<NodeSigningEnrollmentEntity> NodeSigningEnrollments { get; set; }
     public DbSet<SigningWorkflowEntity> SigningWorkflows { get; set; }
     public DbSet<SigningRequestEntity> SigningRequests { get; set; }
     public DbSet<PeerEntity> Peers { get; set; }
@@ -165,6 +166,7 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureOnchainHtlcObservationEntity(_databaseType);
 
         // Node entities
+        modelBuilder.ConfigureNodeSigningEnrollmentEntity(_databaseType);
         modelBuilder.ConfigureSigningWorkflowEntities(_databaseType);
         modelBuilder.ConfigureVlsChannelMappingEntity(_databaseType);
         modelBuilder.ConfigurePeerEntity(_databaseType);

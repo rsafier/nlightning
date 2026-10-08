@@ -16,12 +16,12 @@ using Signrpc;
 public sealed class SignerService(IServiceProvider services, IOptions<LndGrpcOptions> options,
                                     ILogger<SignerService> logger) : Signer.SignerBase
 {
-    private SwapSigner Backend
+    private ISwapSigner Backend
     {
         get
         {
             CheckEnabled(options.Value);
-            return services.GetRequiredService<SwapSigner>();
+            return services.GetRequiredService<ISwapSigner>();
         }
     }
 

@@ -6,6 +6,7 @@ using Google.Protobuf;
 using Grpc.Core;
 using Grpc.Net.Client;
 using NLightning.Domain.Exceptions;
+using NLightning.Domain.Signing;
 using NLightning.Domain.Signing.Recovery;
 using NLightning.Signing.Contracts;
 using SigningRequest = NLightning.Signing.Contracts.SigningRequest;
@@ -20,13 +21,28 @@ public sealed class RemoteSignerConnection : IDisposable
     private readonly RemoteSignerOptions _options;
     private IRemoteSigningRequestCapture? _workflowCapture;
     public SignerIdentity Identity { get; }
+    public NodeSigningContext Context { get; }
 
     public RemoteSignerConnection(RemoteSignerOptions options)
-        : this(options, cancellation => ConnectSocket(options.SocketPath, cancellation)) { }
+        : this(options, SocketConnector(options.SocketPath)) { }
 
     public RemoteSignerConnection(RemoteSignerOptions options, Func<CancellationToken, ValueTask<Stream>> connector)
     {
-        options.Validate(); _options = options;
+        options.Validate();
+        _options = new RemoteSignerOptions
+        {
+            SocketPath = options.SocketPath,
+            AuthToken = options.AuthToken,
+            Network = options.Network,
+            TimeoutSeconds = options.TimeoutSeconds,
+            ExpectedNodePublicKey = options.ExpectedNodePublicKey,
+            NodeId = options.NodeId,
+            OwnerId = options.OwnerId,
+            SignerId = options.SignerId,
+            WriterId = options.WriterId,
+            WriterEpoch = options.WriterEpoch,
+            WriterCredential = options.WriterCredential
+        };
         var handler = new SocketsHttpHandler
         {
             ConnectCallback = (_, cancellation) => connector(cancellation),
@@ -42,9 +58,14 @@ public sealed class RemoteSignerConnection : IDisposable
         try
         {
             Identity = SignerWire.Read<SignerIdentity>(Invoke(0)[0]);
-            if (!string.Equals(Identity.Network, options.Network, StringComparison.OrdinalIgnoreCase))
+            _ = new NBitcoin.PubKey((byte[])Identity.NodePublicKey);
+            Context = new NodeSigningContext(_options.NodeId, _options.OwnerId, _options.SignerId,
+                                            NLightning.Domain.Protocol.ValueObjects.BitcoinNetwork.Resolve(Identity.Network).Name,
+                                            Identity.NodePublicKey);
+            Context.Validate();
+            if (!string.Equals(Identity.Network, _options.Network, StringComparison.OrdinalIgnoreCase))
                 throw new RemoteSignerTransportException("Remote signer Bitcoin network does not match the node.");
-            if (options.ExpectedNodePublicKey is { Length: > 0 } expected &&
+            if (_options.ExpectedNodePublicKey is { Length: > 0 } expected &&
                 !string.Equals(expected, Identity.NodePublicKey.ToString(), StringComparison.OrdinalIgnoreCase))
                 throw new RemoteSignerTransportException("Remote signer identity does not match ExpectedNodePublicKey.");
         }
@@ -54,7 +75,7 @@ public sealed class RemoteSignerConnection : IDisposable
     /// <summary>No automatic retries: a timed out signing operation can have executed. Secret nonce results are never regenerated here.</summary>
     public JsonElement[] Invoke(uint operation, params object?[] arguments)
     {
-        var request = Prepare(operation, arguments);
+        var request = PrepareForContext(operation, arguments);
         var capture = Volatile.Read(ref _workflowCapture);
         if (capture is null) return Execute(request);
         var material = new byte[sizeof(uint) + request.Payload.Length];
@@ -78,7 +99,7 @@ public sealed class RemoteSignerConnection : IDisposable
         ArgumentNullException.ThrowIfNull(capture);
         Interlocked.CompareExchange(ref _workflowCapture, null, capture);
     }
-    private static RemoteSigningRequestStatus ToWorkflowStatus(ReconciliationResponse response) => new(
+    internal static RemoteSigningRequestStatus ToWorkflowStatus(ReconciliationResponse response) => new(
         response.Outcome switch
         {
             RequestOutcome.Completed => RemoteSigningRequestOutcome.Completed,
@@ -97,6 +118,10 @@ public sealed class RemoteSignerConnection : IDisposable
 
         return new SigningRequest
         {
+            NodeId = NodeSigningContext.DefaultNodeId,
+            OwnerId = NodeSigningContext.DefaultOwnerId,
+            SignerId = NodeSigningContext.DefaultSignerId,
+            Network = "regtest",
             Version = 1,
             RequestId = Guid.NewGuid().ToString("N"),
             Operation = operation,
@@ -104,16 +129,35 @@ public sealed class RemoteSignerConnection : IDisposable
         };
     }
 
+    public SigningRequest PrepareForContext(uint operation, params object?[] arguments)
+    {
+        var request = Prepare(operation, arguments);
+        request.NodeId = _options.NodeId;
+        request.OwnerId = _options.OwnerId;
+        request.SignerId = _options.SignerId;
+        request.Network = NLightning.Domain.Protocol.ValueObjects.BitcoinNetwork.Resolve(_options.Network).Name;
+        return request;
+    }
+
+    private void ValidateContext(SigningRequest request)
+    {
+        if (request.NodeId != _options.NodeId || request.OwnerId != _options.OwnerId
+         || request.SignerId != _options.SignerId
+         || !string.Equals(request.Network, _options.Network, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("The request belongs to another enrolled signing context.");
+    }
+
     /// <summary>Dispatch once. Retrying a saved envelope is explicit; no transport retry is configured.</summary>
     public JsonElement[] Execute(SigningRequest request) => SignerWire.Decode(ExecutePayload(request));
 
-    private byte[] ExecutePayload(SigningRequest request)
+    internal byte[] ExecutePayload(SigningRequest request)
     {
         // Snapshot the caller's mutable protobuf envelope so diagnostics bind to what was actually sent.
         request = request.Clone();
+        ValidateContext(request);
         try
         {
-            var response = _client.ExecuteAsync(request, new Metadata { { "x-signer-token", _options.AuthToken } },
+            var response = _client.ExecuteAsync(request, Headers(),
                 deadline: DateTime.UtcNow.AddSeconds(_options.TimeoutSeconds)).ResponseAsync.GetAwaiter().GetResult();
             return response.Payload.ToByteArray();
         }
@@ -130,9 +174,10 @@ public sealed class RemoteSignerConnection : IDisposable
     public ReconciliationResponse Reconcile(SigningRequest request)
     {
         request = request.Clone();
+        ValidateContext(request);
         try
         {
-            return _client.ReconcileAsync(request, new Metadata { { "x-signer-token", _options.AuthToken } },
+            return _client.ReconcileAsync(request, Headers(),
                 deadline: DateTime.UtcNow.AddSeconds(_options.TimeoutSeconds)).ResponseAsync.GetAwaiter().GetResult();
         }
         catch (RpcException ex) when (ex.StatusCode == StatusCode.InvalidArgument)
@@ -140,6 +185,21 @@ public sealed class RemoteSignerConnection : IDisposable
         catch (RpcException ex)
         { throw new RemoteSignerTransportException($"Remote signer reconciliation for {request.RequestId} failed ({ex.StatusCode}).", ex, request); }
     }
+
+    private Metadata Headers()
+    {
+        var headers = new Metadata { { "x-signer-token", _options.AuthToken } };
+        if (_options.WriterId is not null)
+        {
+            headers.Add("x-nltg-writer-id", _options.WriterId);
+            headers.Add("x-nltg-writer-epoch", _options.WriterEpoch!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            headers.Add("x-nltg-writer-token", _options.WriterCredential!);
+        }
+        return headers;
+    }
+
+    private static Func<CancellationToken, ValueTask<Stream>> SocketConnector(string path) =>
+        cancellation => ConnectSocket(path, cancellation);
 
     private static async ValueTask<Stream> ConnectSocket(string path, CancellationToken cancellation)
     {

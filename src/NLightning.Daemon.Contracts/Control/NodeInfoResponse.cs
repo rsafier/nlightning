@@ -5,6 +5,9 @@ namespace NLightning.Daemon.Contracts.Control;
 /// </summary>
 public sealed class NodeInfoResponse
 {
+    public string? NodeId { get; init; }
+    public string? OwnerId { get; init; }
+    public string? SignerId { get; init; }
     public bool? SilentPaymentRecoverableElsewhere { get; init; }
 
     public required string PubKey { get; init; }
