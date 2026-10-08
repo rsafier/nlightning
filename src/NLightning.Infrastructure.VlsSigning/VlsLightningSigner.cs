@@ -247,8 +247,8 @@ public sealed class VlsLightningSigner(VlsSignerConnection connection, VlsChanne
         // Wallet address indexes are public metadata. A bounded prototype lookup supports fresh-node funding/close.
         var keys = new VlsSecureKeyManager(connection);
         for (uint index = 0; index < 1024; index++) foreach (var change in new[] { false, true })
-            if (new PubKey(keys.GetWalletPublicKey(index, change, NLightning.Domain.Bitcoin.Enums.AddressType.P2Wpkh)).WitHash.ScriptPubKey == script)
-                return "m/" + VlsSecureKeyManager.WalletIndex(index, change);
+                if (new PubKey(keys.GetWalletPublicKey(index, change, NLightning.Domain.Bitcoin.Enums.AddressType.P2Wpkh)).WitHash.ScriptPubKey == script)
+                    return "m/" + VlsSecureKeyManager.WalletIndex(index, change);
         return null;
     }
     private static JsonArray Bytes(byte[] bytes) => new(bytes.Select(b => JsonValue.Create(b)).Cast<JsonNode?>().ToArray());
