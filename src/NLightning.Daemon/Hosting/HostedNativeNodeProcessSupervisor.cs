@@ -39,6 +39,7 @@ public sealed class HostedNativeNodeProcessSupervisor : IAsyncDisposable
                 throw new ArgumentException("A launch does not belong to this hosted enrollment.");
             ValidateConfiguration(specification);
         }
+        HostedAdministrativeApiIsolation.Validate(specifications);
         HostedNodeIsolationManifest.ValidateCredentialFiles(_manifest.Nodes.Select(node => node.Signer.CredentialPath));
         try
         {

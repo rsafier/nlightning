@@ -106,6 +106,7 @@ public sealed class NativeChannelTransactionValidator(ILightningSigner signerKey
          || (ulong)proof.AmountSatoshis != enrollment.FundingSatoshis
          || !proof.ScriptPubKey.AsSpan().SequenceEqual((byte[])expectedScript))
             throw new UnauthorizedAccessException("Funding does not match independently verified enrolled channel output.");
+        chain.RequireUnchanged(binding);
     }
 
     private static FundingOutputInfo Funding(NativeChannelEnrollment enrollment) => new(

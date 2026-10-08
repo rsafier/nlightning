@@ -28,8 +28,8 @@ using Domain.Node.Options;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Persistence.Interfaces;
-using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Enums;
+using Fixtures;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Persistence.Contexts;
 using Transport.Ipc;
@@ -340,7 +340,7 @@ public class ChannelPolicyIpcHandlerTests : IDisposable
             ["Node:Network"] = "regtest",
             ["Database:Provider"] = "Sqlite",
             ["Database:ConnectionString"] = $"Data Source={databasePath};Pooling=False"
-        }).Build(), new Mock<ISecureKeyManager>().Object);
+        }).Build(), NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         services.AddChannelPolicyIpcServices();

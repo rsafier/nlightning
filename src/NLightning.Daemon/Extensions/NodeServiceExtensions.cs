@@ -161,7 +161,7 @@ public static class NodeServiceExtensions
         if (signingOptions.IsRemoteNative != (remoteConnection is not null)
          || signingOptions.IsVls != (vlsConnection is not null))
             throw new ArgumentException("RemoteNative signing requires a remote connection; Local signing requires a local key manager.");
-        if (signingOptions.IsRemoteNative && secureKeyManager is not RemoteSecureKeyManager)
+        if (signingOptions.IsRemoteNative != (secureKeyManager is RemoteSecureKeyManager))
             throw new ArgumentException("RemoteNative signing requires a remote key manager.");
 
         if (signingOptions.IsVls && secureKeyManager is not VlsSecureKeyManager)
@@ -169,22 +169,16 @@ public static class NodeServiceExtensions
         if (signingOptions.IsVls)
             configuration = VlsCapabilityProfile.Apply(configuration);
 
-        services.AddSingleton(_ =>
-        {
-            var enrolledContext = new NLightning.Domain.Signing.NodeSigningContext(
-                signingOptions.NodeId, signingOptions.OwnerId, signingOptions.SignerId,
-                Domain.Protocol.ValueObjects.BitcoinNetwork.Resolve(configuration["Node:Network"] ?? "regtest").Name,
-                secureKeyManager.GetNodePubKey());
-            enrolledContext.Validate();
-            if (remoteConnection is not null && remoteConnection.Context != enrolledContext)
-                throw new ArgumentException("The configured node context does not match its authenticated signer enrollment.");
-            return enrolledContext;
-        });
+        var enrolledContext = new NLightning.Domain.Signing.NodeSigningContext(
+            signingOptions.NodeId, signingOptions.OwnerId, signingOptions.SignerId,
+            Domain.Protocol.ValueObjects.BitcoinNetwork.Resolve(configuration["Node:Network"] ?? "regtest").Name,
+            secureKeyManager.GetNodePubKey());
+        enrolledContext.Validate();
         if (remoteConnection is not null
-         && (remoteConnection.Context.NodeId != signingOptions.NodeId
-          || remoteConnection.Context.OwnerId != signingOptions.OwnerId
-          || remoteConnection.Context.SignerId != signingOptions.SignerId))
+         && (remoteConnection.Context != enrolledContext
+          || ((RemoteSecureKeyManager)secureKeyManager).Context != remoteConnection.Context))
             throw new ArgumentException("The configured node context does not match its authenticated signer enrollment.");
+        services.AddSingleton(enrolledContext);
 
         services.AddSingleton<Domain.Payments.Interfaces.INodePaymentEventSource,
             Application.Payments.Events.NodePaymentEventSource>();
@@ -423,6 +417,7 @@ public static class NodeServiceExtensions
             services.AddSingleton<RemoteSigningWorkflowCoordinator>();
             services.AddSingleton<IRemoteSigningWorkflowCoordinator>(sp =>
                 sp.GetRequiredService<RemoteSigningWorkflowCoordinator>());
+            services.AddSingleton<NLightning.Application.Channels.Services.NativeV1ChannelOpening>();
             services.Replace(ServiceDescriptor.Singleton<ILightningSigner>(sp =>
                 new RemoteLightningSigner(remoteConnection, sp.GetRequiredService<IChannelSigningInfoSource>(),
                                            sp.GetRequiredService<IUtxoMemoryRepository>())));

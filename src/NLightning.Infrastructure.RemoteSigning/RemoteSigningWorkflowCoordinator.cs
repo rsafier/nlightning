@@ -12,7 +12,7 @@ using WireRequest = NLightning.Signing.Contracts.SigningRequest;
 namespace NLightning.Infrastructure.RemoteSigning;
 
 /// <summary>Captures requests only inside validated application transitions; recovery never guesses a new request ID.</summary>
-public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordinator, IRemoteSigningRequestCapture, INativeFundingSigningRecovery, INativeWalletSigningRecovery, INativeSweepSigningRecovery, IDisposable
+public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordinator, IRemoteSigningRequestCapture, INativeFundingSigningRecovery, INativeWalletSigningRecovery, INativeInitialSweepSigningRecovery, INativeChannelKeyAllocationRecovery, IDisposable
 {
     public const int SchemaVersion = 1;
     public const int MaximumEnvelopeBytes = 1024 * 1024;
@@ -129,6 +129,30 @@ public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoo
         return SignerWire.Read<Domain.Bitcoin.ValueObjects.SignedTransaction>(result[1]);
     }
 
+    public ChannelKeyAllocation AllocateChannelKeys(ISigningWorkflowScope workflow, Domain.Bitcoin.Interfaces.ILightningSigner signer)
+    {
+        if (workflow is not WorkflowScope active || !ReferenceEquals(_active.Value, active)
+         || active.Kind != SigningWorkflowKind.ChannelKeyAllocation)
+            throw Blocked("Channel key allocation requires its activated workflow scope.");
+        var requests = active.SavedRequests;
+        if (requests.Count == 0)
+        {
+            var index = signer.CreateNewChannel(out var basepoints, out var point);
+            return new ChannelKeyAllocation(index, basepoints, point);
+        }
+        if (requests.Count != 1 || requests[0].Operation != SignerOperations.CreateNewChannel)
+            throw Blocked("Channel key allocation contains an unexpected request sequence.");
+        var request = requests[0];
+        var response = Execute(request.Operation, request.Envelope, request.ArgumentFingerprint,
+            envelope => RemoteSignerConnection.ToWorkflowStatus(_connection.Reconcile(WireRequest.Parser.ParseFrom(envelope))),
+            envelope => _connection.ExecutePayload(WireRequest.Parser.ParseFrom(envelope)));
+        var result = SignerWire.Decode(response);
+        if (result.Length != 3)
+            throw Blocked("Channel key allocation receipt has an invalid public result.");
+        return new ChannelKeyAllocation(SignerWire.Read<uint>(result[0]), SignerWire.Read<Domain.Channels.ValueObjects.ChannelBasepoints>(result[1]),
+            SignerWire.Read<Domain.Crypto.ValueObjects.CompactPubKey>(result[2]));
+    }
+
     public Task StageRetireSweepAsync(SigningWorkflowDescriptor descriptor, IUnitOfWork unitOfWork)
         => StageRetireSweepAsync(descriptor, unitOfWork, envelope => RemoteSignerConnection.ToWorkflowStatus(
             _connection.Reconcile(WireRequest.Parser.ParseFrom(envelope))));
@@ -137,11 +161,60 @@ public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoo
         Func<byte[], RemoteSigningRequestStatus> reconcile)
     {
         ArgumentNullException.ThrowIfNull(unitOfWork);
-        if (descriptor.Kind != SigningWorkflowKind.OnchainSweep)
+        if (descriptor.Kind is not (SigningWorkflowKind.OnchainSweep or SigningWorkflowKind.OnchainInitialSweep))
             throw Blocked("Only an obsolete sweep intent may be retired without publication.");
         using var scope = await BeginAsync(descriptor);
         scope.Activate();
         await ((WorkflowScope)scope).StageRetireAsync(unitOfWork, reconcile);
+    }
+
+    public byte[] EncodeInitialSweepIntent(InitialDelayedSweepIntent intent)
+    {
+        ValidateInitialSweepIntent(intent);
+        return JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            Sweep = intent,
+            Contexts = EncodeSweepContexts(Enumerable.Range(0, intent.Transaction.Inputs.Count)
+                .Select(intent.Transaction.GetSigningContext).ToArray())
+        }, SignerWire.Options);
+    }
+
+    public InitialDelayedSweepIntent DecodeInitialSweepIntent(byte[] encoded)
+    {
+        using var document = JsonDocument.Parse(encoded);
+        var intent = SignerWire.Read<InitialDelayedSweepIntent>(document.RootElement.GetProperty("Sweep"));
+        ValidateInitialSweepIntent(intent);
+        var expected = EncodeSweepContexts(Enumerable.Range(0, intent.Transaction.Inputs.Count)
+            .Select(intent.Transaction.GetSigningContext).ToArray());
+        if (!expected.AsSpan().SequenceEqual(document.RootElement.GetProperty("Contexts").GetBytesFromBase64()))
+            throw Blocked("Initial sweep contexts differ from their saved unsigned transaction.");
+        return intent;
+    }
+
+    private static void ValidateInitialSweepIntent(InitialDelayedSweepIntent intent)
+    {
+        if (intent.Close.Kind != Domain.Onchain.Enums.ChannelCloseKind.LocalCommitment
+         || intent.Transaction.Inputs.Count != 1
+         || intent.Transaction.Inputs[0].SpendKind != Domain.Onchain.Enums.SweepSpendKind.DelayedOutput
+         || intent.Output.Descriptor != Domain.Onchain.Enums.OutputDescriptorKind.DelayedToLocal
+         || intent.Output.ChannelId != intent.Close.ChannelId
+         || intent.Transaction.Inputs[0].TxId != intent.Output.TransactionId
+         || intent.Transaction.Inputs[0].Vout != intent.Output.OutputIndex
+         || intent.Output.ResolvingTransactionId is not null
+         || intent.Output.State is not (Domain.Onchain.Enums.OutputResolutionState.Pending or Domain.Onchain.Enums.OutputResolutionState.Waiting))
+            throw Blocked("Initial sweep intent is outside the supported delayed-output recovery scope.");
+        if (intent.Output.TransactionId == intent.Close.CommitmentTransactionId)
+        {
+            if (intent.Parent is not null)
+                throw Blocked("A commitment delayed sweep cannot name an HTLC parent.");
+        }
+        else if (intent.Parent is not { } parent || parent.Output.TransactionId != intent.Close.CommitmentTransactionId
+              || parent.Output.ChannelId != intent.Close.ChannelId
+              || parent.Output.Descriptor is not (Domain.Onchain.Enums.OutputDescriptorKind.LocalOfferedHtlc
+                                                  or Domain.Onchain.Enums.OutputDescriptorKind.LocalReceivedHtlc)
+              || parent.Output.ResolvingTransactionId != intent.Output.TransactionId
+              || parent.Output.HtlcId != intent.Output.HtlcId || parent.Output.HtlcDirection != intent.Output.HtlcDirection)
+            throw Blocked("A second-level sweep requires its original confirmed HTLC parent output.");
     }
 
     public byte[] EncodeSweepContexts(IReadOnlyList<Domain.Onchain.Models.SweepSigningContext> contexts)
@@ -150,7 +223,7 @@ public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoo
     public IReadOnlyList<Domain.Crypto.ValueObjects.CompactSignature> SignSweepInputs(ISigningWorkflowScope workflow, Domain.Bitcoin.Interfaces.ILightningSigner signer)
     {
         if (workflow is not WorkflowScope active || !ReferenceEquals(_active.Value, active)
-         || active.Kind != SigningWorkflowKind.OnchainSweep)
+         || active.Kind is not (SigningWorkflowKind.OnchainSweep or SigningWorkflowKind.OnchainInitialSweep))
             throw Blocked("Sweep recovery requires its activated workflow scope.");
         using var intent = JsonDocument.Parse(active.PublicationIntent
             ?? throw Blocked("Sweep recovery lost its publication intent."));
@@ -159,8 +232,12 @@ public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoo
             ?? throw Blocked("Sweep recovery lost its input contexts.");
         if (contexts.Length is <= 0 or > MaximumRequestsPerWorkflow)
             throw Blocked("Sweep recovery has an invalid input count.");
+        var initial = active.Kind == SigningWorkflowKind.OnchainInitialSweep
+            ? DecodeInitialSweepIntent(active.PublicationIntent!) : null;
         var signatures = new List<Domain.Crypto.ValueObjects.CompactSignature>();
         var requests = active.SavedRequests;
+        if (requests.Count == 0 && initial is not null)
+            _connection.Invoke(SignerOperations.RegisterChannel, active.ChannelId, initial.SigningInfo);
         foreach (var request in requests)
         {
             if (request.Operation == SignerOperations.SignSweepInput)
@@ -179,7 +256,7 @@ public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoo
         {
             if (contexts[i].InputIndex != i)
                 throw Blocked("Saved sweep contexts do not follow input order.");
-            if (requests.Count == 0 && i == 0)
+            if (requests.Count == 0 && initial is null && i == 0)
                 signatures.Add(signer.SignSweepInput(active.ChannelId, contexts[i]));
             else
                 signatures.Add(SignerWire.Read<Domain.Crypto.ValueObjects.CompactSignature>(
@@ -224,9 +301,9 @@ public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoo
         ArgumentNullException.ThrowIfNull(descriptor);
         if (descriptor.SnapshotFingerprint is not { Length: 32 }
          || descriptor.PublicationIntent?.Length > MaximumEnvelopeBytes
-         || descriptor.Kind is (SigningWorkflowKind.WalletWithdrawal or SigningWorkflowKind.OnchainSweep) && (descriptor.PublicationIntent is null
+         || descriptor.Kind is (SigningWorkflowKind.WalletWithdrawal or SigningWorkflowKind.OnchainSweep or SigningWorkflowKind.OnchainInitialSweep or SigningWorkflowKind.ChannelKeyAllocation or SigningWorkflowKind.Opening) && (descriptor.PublicationIntent is null
              || !SHA256.HashData(descriptor.PublicationIntent).AsSpan().SequenceEqual(descriptor.SnapshotFingerprint))
-         || descriptor.Kind is not (SigningWorkflowKind.SendCommit or SigningWorkflowKind.ReleaseRevoke or SigningWorkflowKind.Funding or SigningWorkflowKind.WalletWithdrawal or SigningWorkflowKind.OnchainSweep))
+         || descriptor.Kind is not (SigningWorkflowKind.SendCommit or SigningWorkflowKind.ReleaseRevoke or SigningWorkflowKind.Funding or SigningWorkflowKind.WalletWithdrawal or SigningWorkflowKind.OnchainSweep or SigningWorkflowKind.OnchainInitialSweep or SigningWorkflowKind.ChannelKeyAllocation or SigningWorkflowKind.Opening))
             throw new ArgumentException("A signing workflow requires a supported kind and a 32-byte snapshot fingerprint.");
     }
     private static void ValidateRequests(SigningWorkflow workflow, IReadOnlyList<StoredRequest> requests)
@@ -246,12 +323,15 @@ public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoo
                 workflow.ChannelId, workflow.Kind, workflow.PublicationIntent);
         }
     }
-    private static bool Allowed(SigningWorkflowKind kind, uint operation) => kind != SigningWorkflowKind.WalletWithdrawal && operation == SignerOperations.RegisterChannel
+    private static bool Allowed(SigningWorkflowKind kind, uint operation) => kind is not (SigningWorkflowKind.WalletWithdrawal or SigningWorkflowKind.ChannelKeyAllocation) && operation == SignerOperations.RegisterChannel
         || kind == SigningWorkflowKind.SendCommit && operation is SignerOperations.SignChannelTransaction
             or SignerOperations.SignChannelTransaction2 or SignerOperations.SignRemoteHtlcTransactions
             or SignerOperations.SignRemoteCommitmentPartial
+        || kind == SigningWorkflowKind.Opening && operation is SignerOperations.SignChannelTransaction
+            or SignerOperations.SignChannelTransaction2 or SignerOperations.SignRemoteCommitmentPartial
         || kind == SigningWorkflowKind.WalletWithdrawal && operation == SignerOperations.SignWalletTransaction3
-        || kind == SigningWorkflowKind.OnchainSweep && operation == SignerOperations.SignSweepInput
+        || kind is (SigningWorkflowKind.OnchainSweep or SigningWorkflowKind.OnchainInitialSweep) && operation == SignerOperations.SignSweepInput
+        || kind == SigningWorkflowKind.ChannelKeyAllocation && operation == SignerOperations.CreateNewChannel
         || kind == SigningWorkflowKind.Funding && operation == SignerOperations.SignFundingTransaction
         || kind == SigningWorkflowKind.ReleaseRevoke && operation is SignerOperations.AdvanceLocalCommitment
             or SignerOperations.RevealPerCommitmentSecret or SignerOperations.GetPerCommitmentPoint2
@@ -270,10 +350,32 @@ public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoo
         if (!CryptographicOperations.FixedTimeEquals(fingerprint, SHA256.HashData(material)))
             throw Blocked("Saved signing request arguments do not match their fingerprint.");
         var args = SignerWire.Decode(parsed.Payload.ToByteArray());
-        if (args.Length != SignerOperations.ArgumentCount(operation) || kind != SigningWorkflowKind.WalletWithdrawal && SignerWire.Read<ChannelId>(args[0]) != channel)
+        if (args.Length != SignerOperations.ArgumentCount(operation) || kind is not (SigningWorkflowKind.WalletWithdrawal or SigningWorkflowKind.ChannelKeyAllocation) && SignerWire.Read<ChannelId>(args[0]) != channel)
             throw Blocked("Saved signing request belongs to another channel or has invalid arguments.");
-        if (kind == SigningWorkflowKind.OnchainSweep && operation == SignerOperations.SignSweepInput)
+        if (kind == SigningWorkflowKind.OnchainInitialSweep && operation == SignerOperations.RegisterChannel)
         {
+            using var initialDocument = JsonDocument.Parse(publicationIntent
+                ?? throw Blocked("Initial sweep registration lost its publication intent."));
+            var initial = SignerWire.Read<InitialDelayedSweepIntent>(initialDocument.RootElement.GetProperty("Sweep"));
+            ValidateInitialSweepIntent(initial);
+            if (initial.Close.ChannelId != channel || !SignerWire.Encode([initial.SigningInfo]).AsSpan()
+                .SequenceEqual(SignerWire.Encode([SignerWire.Read<Domain.Channels.ValueObjects.ChannelSigningInfo>(args[1])])))
+                throw Blocked("Initial sweep registration differs from its saved channel prerequisites.");
+        }
+        if (kind is (SigningWorkflowKind.OnchainSweep or SigningWorkflowKind.OnchainInitialSweep) && operation == SignerOperations.SignSweepInput)
+        {
+            if (kind == SigningWorkflowKind.OnchainInitialSweep)
+            {
+                using var initialDocument = JsonDocument.Parse(publicationIntent
+                    ?? throw Blocked("Initial sweep signing request lost its publication intent."));
+                var initial = SignerWire.Read<InitialDelayedSweepIntent>(initialDocument.RootElement.GetProperty("Sweep"));
+                ValidateInitialSweepIntent(initial);
+                if (initial.Close.ChannelId != channel)
+                    throw Blocked("Initial sweep intent belongs to another channel.");
+                var expectedContexts = JsonSerializer.SerializeToUtf8Bytes(new[] { initial.Transaction.GetSigningContext(0) }, SignerWire.Options);
+                if (!expectedContexts.AsSpan().SequenceEqual(initialDocument.RootElement.GetProperty("Contexts").GetBytesFromBase64()))
+                    throw Blocked("Initial sweep context differs from the saved unsigned transaction.");
+            }
             using var intent = JsonDocument.Parse(publicationIntent
                 ?? throw Blocked("Sweep signing request lost its publication intent."));
             var contexts = JsonSerializer.Deserialize<Domain.Onchain.Models.SweepSigningContext[]>(
@@ -341,7 +443,11 @@ public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoo
                 // Commitment construction reads immutable public basepoints by key index. This lookup
                 // creates no signing outcome or safety state, so it does not occupy a recovery ordinal.
                 // The workflow binds the signer identity/snapshot and captures the resulting sign payload.
-                if (operation == SignerOperations.GetChannelBasepoints)
+                if (operation == SignerOperations.GetChannelBasepoints
+                 || workflow.Kind == SigningWorkflowKind.Opening
+                 && operation is SignerOperations.GetPerCommitmentPoint
+                     or SignerOperations.ValidateSignature or SignerOperations.ValidateSignature2
+                     or SignerOperations.ValidateLocalCommitmentPartialSignature)
                     return execute(proposedEnvelope.ToArray());
                 if (!Allowed(workflow.Kind, operation) || fingerprint.Length != 32
                  || proposedEnvelope.Length is <= 0 or > MaximumEnvelopeBytes || _ordinal >= MaximumRequestsPerWorkflow)
@@ -418,7 +524,7 @@ public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoo
         public async Task StageRetireAsync(IUnitOfWork unitOfWork, Func<byte[], RemoteSigningRequestStatus> reconcile)
         {
             if (_disposed || _activated == 0 || !ReferenceEquals(owner._active.Value, this)
-             || _consumeStaged || Volatile.Read(ref _executing) != 0 || workflow.Kind != SigningWorkflowKind.OnchainSweep)
+             || _consumeStaged || Volatile.Read(ref _executing) != 0 || workflow.Kind is not (SigningWorkflowKind.OnchainSweep or SigningWorkflowKind.OnchainInitialSweep))
                 throw Blocked("Sweep retirement requires its activated pending workflow scope.");
             foreach (var request in requests)
             {

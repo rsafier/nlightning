@@ -6,7 +6,7 @@ namespace NLightning.Daemon.Tests.Extensions;
 
 using Daemon.Extensions;
 using Domain.Bitcoin.SilentPayments;
-using Domain.Protocol.Interfaces;
+using Fixtures;
 
 public class SilentPaymentsStartupOptionsTests
 {
@@ -15,8 +15,6 @@ public class SilentPaymentsStartupOptionsTests
     [InlineData("mainnet")]
     [InlineData("MAINNET")]
     [InlineData(" mainnet ")]
-    [InlineData("")]
-    [InlineData("  ")]
     public void Given_EnabledMainnetConfiguration_When_RealNodeOptionsBind_Then_MainnetGateFailsClosed(string? network)
     {
         // Arrange
@@ -25,6 +23,15 @@ public class SilentPaymentsStartupOptionsTests
         var error = Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<SilentPaymentsOptions>>().Value);
         // Assert
         Assert.Contains("AllowMainnet", error.Message);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("  ")]
+    public void Given_EmptyNetwork_When_ComposingNode_Then_EnrollmentRejectsBeforeOptionsResolution(string network)
+    {
+        Assert.Throws<ArgumentException>(() => Build(network,
+            new Dictionary<string, string?> { ["SilentPayments:Enabled"] = "true" }));
     }
 
     [Theory]
@@ -82,7 +89,7 @@ public class SilentPaymentsStartupOptionsTests
             values["Node:Network"] = network;
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(configuration, Mock.Of<ISecureKeyManager>());
+        services.AddNltgNodeServices(configuration, NodeSigningIdentityFixture.CreateSecureKeyManager());
         return services.BuildServiceProvider();
     }
 }

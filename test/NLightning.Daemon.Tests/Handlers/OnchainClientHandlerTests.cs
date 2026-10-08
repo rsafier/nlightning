@@ -31,7 +31,7 @@ using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
-using Domain.Protocol.Interfaces;
+using Fixtures;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Transport.Ipc.MessagePack;
 using Transport.Ipc.Requests;
@@ -303,7 +303,7 @@ public class OnchainClientHandlerTests
                            })
                            .Build();
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(configuration, NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -355,7 +355,7 @@ public class OnchainClientHandlerTests
                            })
                            .Build();
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(configuration, NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -388,7 +388,7 @@ public class OnchainClientHandlerTests
                            })
                            .Build();
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(configuration, NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

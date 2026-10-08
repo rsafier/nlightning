@@ -67,15 +67,18 @@ public sealed class LndGrpcHost : IHostedService, IAsyncDisposable
         foreach (var error in _options.GetValidationErrors())
             throw new InvalidOperationException(error);
 
+        var context = _serviceProvider.GetService<NLightning.Domain.Signing.NodeSigningContext>();
+        if (context is not null) LndCredentialEnrollment.Bind(DataDirectory, context);
         _certificate = LndTlsFiles.EnsureCreated(DataDirectory, _options, _timeProvider, _logger);
         MacaroonVerifier? verifier = null;
         if (!_options.AllowNoMacaroons)
         {
-            LndMacaroonFiles.EnsureCreated(DataDirectory, _logger);
+            LndMacaroonFiles.EnsureCreated(DataDirectory, _logger, context);
             var rootKeys = _serviceProvider.GetService<LndRootKeyStore>() is { } registered
                         && registered.DataDirectory == DataDirectory
+                        && registered.Context == context
                                ? registered
-                               : new LndRootKeyStore(DataDirectory);
+                               : new LndRootKeyStore(DataDirectory, context);
             verifier = new MacaroonVerifier(rootKeys, _timeProvider);
         }
 

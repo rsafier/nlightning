@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Daemon.Handlers;
 
 using Application.Channels.Close;
+using Application.Channels.Services;
 using Domain.Accounting.Labels;
 using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.Interfaces;
@@ -52,6 +53,7 @@ public sealed class OpenChannelClientHandler
     private readonly UpfrontShutdownScriptSource? _upfrontShutdownScriptSource;
     private readonly IDualFundedOpenService? _dualFundedOpenService;
     private readonly ILightningSigner? _lightningSigner;
+    private readonly NativeV1ChannelOpening? _nativeOpening;
 
     private ChannelId _channelId = ChannelId.Zero;
     private ChannelId? _upgradedChannelId;
@@ -80,8 +82,10 @@ public sealed class OpenChannelClientHandler
                                     IChannelLockProvider? channelLockProvider = null,
                                     UpfrontShutdownScriptSource? upfrontShutdownScriptSource = null,
                                     IDualFundedOpenService? dualFundedOpenService = null,
-                                    ILightningSigner? lightningSigner = null)
+                                    ILightningSigner? lightningSigner = null,
+                                    NativeV1ChannelOpening? nativeOpening = null)
     {
+        _nativeOpening = nativeOpening;
         _lightningSigner = lightningSigner;
         _dualFundedOpenService = dualFundedOpenService;
         _upfrontShutdownScriptSource = upfrontShutdownScriptSource;
@@ -172,8 +176,9 @@ public sealed class OpenChannelClientHandler
         _v1OpenWithDualFundNegotiated = peer.NegotiatedFeatures.DualFund != FeatureSupport.No;
 
         // Since we're connected, let's open the channel
-        var channel =
-            await _channelFactory.CreateChannelV1AsInitiatorAsync(request, peer.NegotiatedFeatures, peerId);
+        var channel = _nativeOpening is { Enabled: true }
+            ? await _nativeOpening.CreateOutboundAsync(request, peer.NegotiatedFeatures, peerId)
+            : await _channelFactory.CreateChannelV1AsInitiatorAsync(request, peer.NegotiatedFeatures, peerId);
         channel.Label = labels.Label;
         channel.Tags = labels.CanonicalTags;
 

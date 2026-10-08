@@ -47,6 +47,15 @@ public sealed class SigningWorkflowDbRepository(NLightningDbContext context) : I
         return entities.Select(Map).ToList();
     }
 
+    public async Task<IReadOnlyList<SigningWorkflow>> GetUnconsumedAsync(SigningWorkflowKind kind)
+    {
+        var entities = await context.SigningWorkflows.AsNoTracking()
+            .Where(e => e.Kind == (int)kind && e.State != (int)SigningWorkflowState.Consumed
+                     && e.State != (int)SigningWorkflowState.Abandoned)
+            .OrderBy(e => e.CreatedAtTicks).ToListAsync();
+        return entities.Select(Map).ToArray();
+    }
+
     public async Task AddWorkflowAsync(SigningWorkflow workflow)
     {
         Validate(workflow);

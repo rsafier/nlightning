@@ -699,7 +699,8 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                       await resolver.ResolveAsync(close, outputs.Values.ToList(), height, cancellationToken));
 
             // O6-T1: our unconfirmed sweeps, claims and penalties are replaced with a higher fee on schedule
-            if (spent is null && scope.ServiceProvider.GetService<ISweepScheduler>() is { } sweepScheduler)
+            if (spent is null && !actions.OfType<SigningWorkflowRoundAction>().Any()
+             && scope.ServiceProvider.GetService<ISweepScheduler>() is { } sweepScheduler)
             {
                 try
                 {

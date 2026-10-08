@@ -4,6 +4,31 @@ This increment supplies transactional authority and wallet-validation foundation
 for milestone 2. It does not complete independent channel validation or the goal's
 live hosted-node acceptance gates.
 
+## Authoritative persistence and publication integration
+
+Signer transaction fencing does not fence node database writes or network
+publication. The remaining strong deployment path requires database-enforced
+writer authority in the same PostgreSQL database as each node's private state.
+Authenticated worker principals must be bound to an installed writer epoch;
+caller-selected session variables cannot confer authority. Database enforcement
+must cover all mutable tables, including bulk repository and accounting writes,
+and hold the ownership lock through the actual state transaction commit.
+
+A trusted publication daemon must own peer sockets and Bitcoin submission
+credentials. Workers must be unable to bypass that network boundary. Publication
+requests identify exact durable intents committed with the associated node
+transition; the daemon reads those intents itself. All transaction, package and
+raw-package submissions require this boundary. Peer-send refusals must propagate
+as failed outcomes rather than being swallowed by connection-error handling.
+
+Ownership transfer must stop admission, classify in-flight submissions and close
+old peer sessions before installing the next epoch and reopening admission.
+Unknown transfer or publication outcomes stop admission until reconciled.
+Initially one trusted publication instance avoids an unfenced predecessor holding
+live sockets. Submitted bytes can arrive later, and previously released Bitcoin
+signatures cannot be revoked. These are integration requirements, not implemented
+guarantees of the current prototype.
+
 ## Trusted administration and storage
 
 `NativeSignerAuthority` accepts a signer-installed connection factory. Node
@@ -51,7 +76,8 @@ changes before a failed authority transaction. Reconstruction still requires
 explicit reconciliation of the original operation; the primitive does not reset
 history or implement publication fencing. Those integration gates remain open.
 
-Receipt replay checks current execution authority and local invalidation before
+Receipt replay checks current execution authority, local invalidation and exact
+local/authority response bytes before committing the replay transaction or
 returning a cached result. Retirement or data loss cannot be bypassed by a second
 receipt cache. Reconciliation reads run under the same writer fence without
 creating spending permission. Transaction commit ordering does not prevent a
@@ -71,6 +97,51 @@ Exact request approval does not substitute for this validation. A deployment
 must supply the authenticated evidence adapter and verify its freshness against
 the expected Bitcoin network. The initial tests use a controlled evidence source
 to exercise rejection paths; they do not constitute a live Bitcoin proof.
+
+### Typed reserved-wallet authorization
+
+`ApproveWalletIntent` installs the exact operation-29 request, its independently
+approved reservation, input derivations, destinations and fee limit. Typed
+metadata, unique input claims and the exact approval commit in one authority
+transaction. A generic exact-payload approval alone cannot authorize this wallet
+purpose. Claims remain retained after completion; no claim-reset API exists.
+
+`NativeWalletSignerRequestValidator` rejects other operations. It validates the
+complete unsigned transaction and snapshot before wallet mutation or key use:
+input and reservation sets, account-zero P2WPKH/P2TR metadata, signer-derived
+scripts, independently verified amounts, outputs and fees. Snapshot-supplied
+derivation overrides, silent-payment keys, channel locks, prior spending and
+external inputs are rejected by this initial purpose validator. The node cannot
+install its own ownership scripts or replace the evidence source. Approval expiry
+is checked both before and after independent evidence validation, before key use.
+
+Completed replay rechecks immutable approval and snapshot metadata, then matches
+the local and authority receipts byte for byte. It returns the original response
+without another private-key operation. Spent inputs or approval expiry do not
+invalidate an already completed response. An invalidated, missing or different
+local receipt blocks replay. During fenced execution, immutable approval reads
+reuse the active authority connection and transaction, including SQLite shared
+cache. Synchronous read scopes unwind after success or failure; external approval
+reads use their own connection.
+
+### Authenticated Bitcoin Core evidence
+
+`AuthenticatedNativeCoreChainEvidence` fixes enrollment, network/genesis,
+endpoint, authentication and freshness limits through signer administration.
+HTTPS uses certificate validation and disables redirects. Plain HTTP is limited
+to loopback or an explicitly trusted administrative transport. Requests and
+responses are bounded; RPC errors do not expose credentials.
+
+The adapter rejects wrong network/genesis, initial synchronization, header lag,
+old/future tips, malformed output evidence and immature coinbase inputs.
+`gettxout` includes mempool spending, and amounts must be exact integer satoshis.
+A validation batch captures one tip and rejects changes or expiry before key use.
+Ownership labels come from the installed signer-derived script registry.
+
+This boundary trusts the independently administered Core instance, authenticated
+transport and signer clock. It is not a separate consensus verifier or a durable
+chain rollback watermark. The adapter and typed wallet validator are library
+foundations; production executable composition remains an open gate.
 
 ## Remaining milestone 2 gates
 

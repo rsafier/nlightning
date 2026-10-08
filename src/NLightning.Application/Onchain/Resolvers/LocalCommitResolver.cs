@@ -30,6 +30,7 @@ using Domain.Onchain.Parsers;
 using Domain.Onchain.Planners;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
+using Domain.Signing.Recovery;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Onchain;
 using Infrastructure.Bitcoin.Onchain.Interfaces;
@@ -91,6 +92,7 @@ public sealed class LocalCommitResolver : IOutputResolver
     /// the longest wallet script).</summary>
     private const int EstimatedChangeScriptLength = 34;
 
+    private readonly InitialDelayedSweepWorkflow? _initialSweepWorkflow;
     private readonly IChannelMemoryRepository? _channelMemoryRepository;
     private readonly IAnchorFeeInputProvider? _feeInputProvider;
     private readonly IBitcoinChainService? _chainService;
@@ -117,8 +119,12 @@ public sealed class LocalCommitResolver : IOutputResolver
                                IChannelMemoryRepository? channelMemoryRepository = null,
                                IBitcoinChainService? chainService = null,
                                IAnchorFeeInputProvider? feeInputProvider = null,
-                               ICommitmentTransactionModelFactory? modelFactory = null)
+                               ICommitmentTransactionModelFactory? modelFactory = null,
+                               IRemoteSigningWorkflowCoordinator? signingWorkflows = null)
     {
+        if (signingWorkflows is INativeInitialSweepSigningRecovery recovery)
+            _initialSweepWorkflow = new InitialDelayedSweepWorkflow(signingWorkflows, recovery, sweepTransactionBuilder,
+                lightningSigner);
         _modelFactory = modelFactory;
         _chainService = chainService;
         _feeInputProvider = feeInputProvider;
@@ -151,14 +157,25 @@ public sealed class LocalCommitResolver : IOutputResolver
 
         using var scope = _serviceScopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        if (_initialSweepWorkflow is not null)
+        {
+            var recovered = await _initialSweepWorkflow.ResumeAsync(close, outputs, height, unitOfWork);
+            if (recovered is not null)
+                return recovered;
+        }
         var context = await LoadAsync(unitOfWork, close, outputs, height);
         if (context is null)
             return [];
 
         var actions = new List<OutputResolverAction>();
         AddMissingRows(context, actions);
+        context.PersistedOutputs = outputs.Select(row => (row.TransactionId, row.OutputIndex)).ToHashSet();
         foreach (var descriptor in context.Map.Outputs.Where(IsResolvedHere))
+        {
             await ResolveOutputAsync(context, descriptor, actions, cancellationToken);
+            if (context.SigningWorkflowOwned)
+                break;
+        }
 
         ResolveHtlcsWithoutOutput(context, actions);
         return actions;
@@ -1062,9 +1079,35 @@ public sealed class LocalCommitResolver : IOutputResolver
         try
         {
             var unsigned = _sweepTransactionBuilder.BuildWithFee([input], destination, feeSat);
+            if (_initialSweepWorkflow is not null)
+            {
+                var feerate = feeSat == decision.FeeSat ? decision.FeeratePerKw : SweepFeePolicy.FeeratePerKw(feeSat, weight);
+                var intent = new InitialDelayedSweepIntent(unsigned, row, context.Close, context.Height, feerate,
+                    context.Channel.GetSigningInfo(), context.PersistedOutputs.Contains((row.TransactionId, row.OutputIndex)));
+                if (row.TransactionId != context.CommitmentTxId)
+                {
+                    var parent = context.Rows.SingleOrDefault(candidate => candidate.TransactionId == context.CommitmentTxId
+                        && candidate.ResolvingTransactionId == row.TransactionId
+                        && candidate.Descriptor is OutputDescriptorKind.LocalOfferedHtlc or OutputDescriptorKind.LocalReceivedHtlc)
+                        ?? throw new InvalidOperationException("Second-level sweep lost its original HTLC output.");
+                    var parentWatch = await context.UnitOfWork.WatchedOutpointDbRepository.GetAsync(parent.TransactionId, parent.OutputIndex);
+                    var parentBroadcast = await context.UnitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(row.TransactionId);
+                    if (parentWatch is null || parentWatch.SpentByTransactionId != row.TransactionId || parentWatch.SpentAtHeight is not { } confirmed
+                     || parentBroadcast is null || parentBroadcast.ChannelId != context.Channel.ChannelId
+                     || parentBroadcast.Purpose != BroadcastPurpose.HtlcTransaction)
+                        throw new InvalidOperationException("Second-level sweep lost its confirmed HTLC parent transaction.");
+                    intent = intent with { Parent = new InitialDelayedSweepParent(parent, confirmed, parentWatch.SpentBlockHash ?? Hash.Empty) };
+                }
+                var captured = await _initialSweepWorkflow.StartAsync(intent);
+                context.SigningWorkflowOwned = true;
+                actions.AddRange(captured);
+                var capturedRow = captured.OfType<UpsertOutputAction>().Single().Output;
+                ReplaceRow(context, capturedRow, []);
+                return capturedRow;
+            }
             signed = _sweepTransactionBuilder.Sign(unsigned, _lightningSigner, context.Channel.ChannelId);
         }
-        catch (ArgumentException e)
+        catch (ArgumentException e) when (_initialSweepWorkflow is null)
         {
             // Not a property of the output (checked above): leave the row as it is, so the next block tries again
             _logger.LogError(e, "Cannot build the sweep of {TxId}:{Vout} ({AmountSat} sat, fee {FeeSat} sat) of "
@@ -1381,6 +1424,8 @@ public sealed class LocalCommitResolver : IOutputResolver
         List<OutputResolutionModel> Rows,
         uint Height)
     {
+        public bool SigningWorkflowOwned { get; set; }
+        public HashSet<(TxId, uint)> PersistedOutputs { get; set; } = [];
         public TxId CommitmentTxId => Close.CommitmentTransactionId;
 
         /// <summary>

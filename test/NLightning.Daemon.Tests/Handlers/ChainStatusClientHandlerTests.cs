@@ -26,6 +26,7 @@ using Domain.Node.Options;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Protocol.Interfaces;
+using Fixtures;
 using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using NLightning.Client;
@@ -186,7 +187,7 @@ public class ChainStatusClientHandlerTests
                            })
                            .Build();
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(configuration, NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(_chain.Object);
         services.AddSingleton(_monitor.Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

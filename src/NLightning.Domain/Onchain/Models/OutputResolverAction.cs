@@ -58,3 +58,6 @@ public sealed record StageWriteAction(string Description, Func<IUnitOfWork, Canc
 /// <param name="Emitted">Called once the alert is logged, after the round's save succeeded (a resolver that alerts once
 /// records it here, so an alert whose round failed to save is raised again next round, NL-315).</param>
 public sealed record AlertAction(string RequirementId, string Message, Action? Emitted = null) : OutputResolverAction;
+
+/// <summary>A captured signing lifecycle owns this round until its stage action commits with the broadcast decision.</summary>
+public sealed record SigningWorkflowRoundAction(Guid WorkflowId) : OutputResolverAction;

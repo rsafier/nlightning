@@ -46,6 +46,7 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
     private readonly ICommitmentTransactionModelFactory _commitmentTransactionModelFactory;
     private readonly ILightningSigner _lightningSigner;
     private readonly ChannelStateTransitionService? _transitions;
+    private readonly NativeV1ChannelOpening? _nativeOpening;
     private readonly ILogger<FundingCreatedMessageHandler> _logger;
     private readonly IMessageFactory _messageFactory;
     private readonly IUnitOfWork _unitOfWork;
@@ -56,8 +57,10 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
                                         ICommitmentTransactionModelFactory commitmentTransactionModelFactory,
                                         ILightningSigner lightningSigner, ILogger<FundingCreatedMessageHandler> logger,
                                         IMessageFactory messageFactory, IUnitOfWork unitOfWork,
-                                        ChannelStateTransitionService? transitions = null)
+                                        ChannelStateTransitionService? transitions = null,
+                                        NativeV1ChannelOpening? nativeOpening = null)
     {
+        _nativeOpening = nativeOpening;
         _blockchainMonitor = blockchainMonitor;
         _channelIdFactory = channelIdFactory;
         _channelMemoryRepository = channelMemoryRepository;
@@ -107,6 +110,9 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
             throw new ChannelErrorException("A channel with this funding outpoint already exists", channel.ChannelId,
                                             "This channel is already in our database");
 
+        using var nativeInitial = _nativeOpening is { Enabled: true }
+            ? await _nativeOpening.BeginInitialCommitAsync(channel, oldChannelId) : null;
+        nativeInitial?.Activate();
         // Register the channel with the signer
         _lightningSigner.RegisterChannel(channel.ChannelId, channel.GetSigningInfo());
         using var openingWorkflow = _lightningSigner is IVlsChannelSigner
@@ -191,6 +197,12 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         // Save to the database, with the opener's push (NL-605): as fundee our balance at the open is exactly what the
         // opener pushed to us (ChannelFactory.CreateChannelV1AsNonInitiatorAsync), 0 for none
         await _unitOfWork.ChannelDbRepository.AddAsync(channel);
+        if (_nativeOpening is { Enabled: true })
+        {
+            await nativeInitial!.StageConsumeAsync(_unitOfWork);
+            nativeInitial.Dispose();
+            await _nativeOpening.StageConsumeAsync(channel, oldChannelId, _unitOfWork);
+        }
         await ChannelAccountingEvents.StagePushAmountAsync(_unitOfWork, channel.ChannelId, channel.LocalBalance,
                                                            _logger);
         if (openingWorkflow is not null)

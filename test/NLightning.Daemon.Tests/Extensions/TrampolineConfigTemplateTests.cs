@@ -8,7 +8,7 @@ namespace NLightning.Daemon.Tests.Extensions;
 using Application.Payments.Switch;
 using Application.Payments.Trampoline;
 using Daemon.Extensions;
-using Domain.Protocol.Interfaces;
+using Fixtures;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 /// <summary>
@@ -106,7 +106,7 @@ public class TrampolineConfigTemplateTests
                            .AddInMemoryCollection(values.Select(v => new KeyValuePair<string, string?>(v.Key, v.Value)))
                            .Build();
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(configuration, NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

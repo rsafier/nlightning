@@ -50,6 +50,7 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
     private readonly IFundingTransactionModelFactory _fundingTransactionModelFactory;
     private readonly ILightningSigner _lightningSigner;
     private readonly ChannelStateTransitionService? _transitions;
+    private readonly NativeV1ChannelOpening? _nativeOpening;
     private readonly ILogger<OpenChannel1MessageHandler> _logger;
     private readonly IMessageFactory _messageFactory;
     private readonly IMusig2Service? _musig2;
@@ -67,8 +68,10 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
                                         ILightningSigner lightningSigner, ILogger<OpenChannel1MessageHandler> logger,
                                         IMessageFactory messageFactory, ISha256 sha256, IUnitOfWork unitOfWork,
                                         IUtxoMemoryRepository utxoMemoryRepository, IMusig2Service? musig2 = null,
-                                        ChannelStateTransitionService? transitions = null)
+                                        ChannelStateTransitionService? transitions = null,
+                                        NativeV1ChannelOpening? nativeOpening = null)
     {
+        _nativeOpening = nativeOpening;
         _musig2 = musig2;
         _bitcoinWalletService = bitcoinWalletService;
         _channelIdFactory = channelIdFactory;
@@ -236,6 +239,9 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
                 throw new ChannelErrorException("Channel already exists in the database", tempChannel.ChannelId,
                                                 "Sorry, we had an internal error");
 
+            using var nativeInitial = _nativeOpening is { Enabled: true }
+                ? await _nativeOpening.BeginInitialCommitAsync(tempChannel, oldChannelId) : null;
+            nativeInitial?.Activate();
             // Register the channel with the signer
             _lightningSigner.RegisterChannel(tempChannel.ChannelId, tempChannel.GetSigningInfo());
             registeredWithSigner = true;
@@ -291,6 +297,15 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
                 await _transitions!.StageOpeningCompletionAsync(tempChannel, openingWorkflow, _unitOfWork, false);
                 await _unitOfWork.SaveChangesAsync();
                 openingWorkflow.Dispose();
+            }
+
+            if (_nativeOpening is { Enabled: true })
+            {
+                await _unitOfWork.ChannelDbRepository.AddAsync(tempChannel);
+                await nativeInitial!.StageConsumeAsync(_unitOfWork);
+                nativeInitial.Dispose();
+                await _nativeOpening.StageConsumeAsync(tempChannel, oldChannelId, _unitOfWork);
+                await _unitOfWork.SaveChangesAsync();
             }
 
             // Move the locked utxos to the real channel id first: UpgradeChannel raises OnChannelUpgraded, and the

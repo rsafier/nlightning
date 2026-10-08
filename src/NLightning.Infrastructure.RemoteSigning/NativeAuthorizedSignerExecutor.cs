@@ -1,3 +1,4 @@
+using Google.Protobuf;
 using NLightning.Signing.Contracts;
 
 namespace NLightning.Infrastructure.RemoteSigning;
@@ -67,6 +68,13 @@ public sealed class NativeAuthorizedSignerExecutor
                     if (DurableSignerState.SupportsReconciliation(request.Operation)
                      && _journal.Reconcile(request).Outcome != RequestOutcome.Completed)
                         throw new InvalidOperationException("Signer receipt is invalidated, unknown or missing; no cached result may be returned.");
+                }, response =>
+                {
+                    if (!DurableSignerState.SupportsReconciliation(request.Operation)) return;
+                    var local = _journal.Reconcile(request);
+                    if (local.Outcome != RequestOutcome.Completed || local.Response is null
+                     || !local.Response.ToByteArray().AsSpan().SequenceEqual(response))
+                        throw new InvalidDataException("Independent and local signer receipts do not match.");
                 });
                 _execution = _execution with { Checkpoint = result.Checkpoint, SignerCheckpoint = result.SignerCheckpoint };
                 return result;

@@ -10,7 +10,7 @@ using Daemon.Extensions;
 using Domain.Accounting.Financial;
 using Domain.Accounting.Financial.Lots;
 using Domain.Accounting.Prices;
-using Domain.Protocol.Interfaces;
+using Fixtures;
 
 /// <summary>
 /// The <c>Accounting</c> section of the default <c>appsettings.json</c> (NL-602 A3-T7): the books' switch, the sealer
@@ -92,7 +92,7 @@ public class AccountingConfigTemplateTests
         // Arrange
         var configuration = BuildTemplateConfiguration("mainnet");
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(configuration, NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act

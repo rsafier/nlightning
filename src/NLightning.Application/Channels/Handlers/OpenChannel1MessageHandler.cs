@@ -22,6 +22,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Tlv;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Services;
 using Taproot;
 
 public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Message>
@@ -39,6 +40,7 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
     private readonly NodeOptions _nodeOptions;
     private readonly UpfrontShutdownScriptSource? _upfrontShutdownScriptSource;
     private readonly IChannelOpenDecisionGate? _openDecisionGate;
+    private readonly NativeV1ChannelOpening? _nativeOpening;
 
     /// <param name="gossipOptions">Whether public channels are accepted (<see cref="GossipOptions.AcceptPublicChannels"/>,
     /// default yes, and on mainnet only with <see cref="GossipOptions.AllowPublicChannelsOnMainnet"/>).</param>
@@ -63,8 +65,10 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
                                       UpfrontShutdownScriptSource? upfrontShutdownScriptSource = null,
                                       INodeDrainState? nodeDrainState = null, ILightningSigner? lightningSigner = null,
                                       IMusig2Service? musig2 = null,
-                                      IChannelOpenDecisionGate? openDecisionGate = null)
+                                      IChannelOpenDecisionGate? openDecisionGate = null,
+                                      NativeV1ChannelOpening? nativeOpening = null)
     {
+        _nativeOpening = nativeOpening;
         _openDecisionGate = openDecisionGate;
         _lightningSigner = lightningSigner;
         _musig2 = musig2;
@@ -130,8 +134,11 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
         // NL-1180: external deciders (LND's ChannelAcceptor) answer before anything is created for the open; the wait
         // holds only this peer's channel messages (IChannelOpenDecisionGate)
         ChannelOpenRequest? openRequest = null;
-        ChannelOpenDecision? decision = null;
-        if (_openDecisionGate is { HasDeciders: true })
+        var inboundReplay = _nativeOpening is { Enabled: true }
+            ? await _nativeOpening.TryRestoreInboundAsync(message, peerPubKey) : null;
+        if (inboundReplay is not null) negotiatedFeatures = inboundReplay.Features;
+        var decision = inboundReplay?.Decision;
+        if (inboundReplay is null && _openDecisionGate is { HasDeciders: true })
         {
             openRequest = ToOpenRequest(message, peerPubKey);
             decision = await _openDecisionGate.DecideAsync(openRequest);
@@ -145,11 +152,13 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
         }
 
         // Create the channel
-        var channel = await _channelFactory.CreateChannelV1AsNonInitiatorAsync(message, negotiatedFeatures, peerPubKey);
+        var channel = _nativeOpening is { Enabled: true }
+            ? await _nativeOpening.CreateInboundAsync(message, negotiatedFeatures, peerPubKey, decision)
+            : await _channelFactory.CreateChannelV1AsNonInitiatorAsync(message, negotiatedFeatures, peerPubKey);
 
         // The acceptor's values replace the ones we would announce (a value that cannot apply refuses the open). Also
         // without values: an acceptance must allow the opener's zero-conf channel_type (LND, NL-1181)
-        if (decision is not null)
+        if (decision is not null && _nativeOpening is not { Enabled: true })
             ApplyOpenDecision(channel, decision, openRequest!, negotiatedFeatures);
 
         _logger.LogTrace("Created Channel with fundingPubKey: {fundingPubKey}",

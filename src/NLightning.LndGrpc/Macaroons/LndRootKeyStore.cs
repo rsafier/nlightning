@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using NLightning.Domain.Signing;
 
 namespace NLightning.LndGrpc.Macaroons;
 
@@ -18,14 +19,17 @@ public sealed class LndRootKeyStore
     private readonly Lock _lock = new();
     private readonly string _directory;
 
-    public LndRootKeyStore(string dataDirectory)
+    public LndRootKeyStore(string dataDirectory, NodeSigningContext? context = null)
     {
         DataDirectory = dataDirectory;
+        Context = context;
+        if (context is not null) LndCredentialEnrollment.Bind(dataDirectory, context);
         _directory = Path.Combine(dataDirectory, DirectoryName);
     }
 
     /// <summary>The data directory (<c>LndGrpc:DataDirectory</c>).</summary>
     public string DataDirectory { get; }
+    public NodeSigningContext? Context { get; }
 
     /// <summary>The key of a macaroon's storage id, or null when the id is not one of ours or has no key.</summary>
     public byte[]? TryGet(ReadOnlySpan<byte> storageId) =>
@@ -42,7 +46,7 @@ public sealed class LndRootKeyStore
             return null;
 
         var key = File.ReadAllBytes(path);
-        return key.Length == 32 ? _keys.GetOrAdd(id, key) : null;
+        return key.Length == 32 ? _keys.GetOrAdd(id, LndCredentialEnrollment.EffectiveRootKey(key, Context)) : null;
     }
 
     /// <summary>The key of <paramref name="id"/>, made now when it has none (id 0 must exist already).</summary>
@@ -58,7 +62,7 @@ public sealed class LndRootKeyStore
             Directory.CreateDirectory(_directory);
             key = MacaroonVerifier.NewRootKey();
             LndMacaroonFiles.WriteExclusive(PathOf(id), key);
-            return _keys.GetOrAdd(id, key);
+            return _keys.GetOrAdd(id, LndCredentialEnrollment.EffectiveRootKey(key, Context));
         }
     }
 

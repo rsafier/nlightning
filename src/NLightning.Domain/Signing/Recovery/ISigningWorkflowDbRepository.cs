@@ -7,6 +7,8 @@ public interface ISigningWorkflowDbRepository
 {
     Task<SigningWorkflow?> GetAsync(Guid workflowId);
     Task<IReadOnlyList<SigningWorkflow>> GetPendingForChannelAsync(ChannelId channelId);
+    Task<IReadOnlyList<SigningWorkflow>> GetUnconsumedAsync(SigningWorkflowKind kind) =>
+        throw new NotSupportedException("This repository cannot discover unconsumed signing intents.");
     Task<IReadOnlyList<SigningRequest>> GetRequestsAsync(Guid workflowId);
     Task AddWorkflowAsync(SigningWorkflow workflow);
     Task AddRequestAsync(SigningRequest request);

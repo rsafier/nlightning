@@ -10,6 +10,7 @@ using Domain.Bitcoin.SilentPayments;
 using Domain.Bitcoin.SilentPayments.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Node.Options;
+using Domain.Signing.Recovery;
 using Interfaces;
 
 public static class WalletSpendServiceCollectionExtensions
@@ -35,7 +36,8 @@ public static class WalletSpendServiceCollectionExtensions
                                                           sp.GetRequiredService<IWalletPsbtService>(),
                                                           sp.GetService<IOptions<SilentPaymentsOptions>>(),
                                                           sp.GetService<ISilentPaymentCrypto>(),
-                                                          sp.GetService<ISilentPaymentKeySource>()));
+                                                          sp.GetService<ISilentPaymentKeySource>(),
+                                                          sp.GetService<IRemoteSigningWorkflowCoordinator>()));
         // The walletrpc PSBT and lease surface (LND gRPC wave 3, NL-1184) goes with withdraw
         services.TryAddSingleton<IWalletPsbtService>(sp => new WalletPsbtService(
                                                          sp.GetRequiredService<IFeeInputSelector>(),

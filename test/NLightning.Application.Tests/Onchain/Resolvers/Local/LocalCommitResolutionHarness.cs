@@ -127,12 +127,13 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
     /// when null).</param>
     /// <param name="resolverLogger">The resolver's logger (a null logger when null).</param>
     /// <param name="simpleTaproot">A simple taproot channel (NL-877 T4: P2TR outputs, script-path sweeps).</param>
+    /// <param name="aliceKeyManager">Optional keys shared with a real remote signer process.</param>
     public LocalCommitResolutionHarness(Action<RealSigningCommitmentPair>? setup = null, bool hasAnchors = false,
                                         IAnchorFeeInputProvider? feeInputProvider = null,
                                         ILogger<LocalCommitResolver>? resolverLogger = null,
-                                        bool simpleTaproot = false)
+                                        bool simpleTaproot = false, ISecureKeyManager? aliceKeyManager = null)
     {
-        Pair = new RealSigningCommitmentPair(hasAnchors || simpleTaproot, simpleTaproot);
+        Pair = new RealSigningCommitmentPair(hasAnchors || simpleTaproot, simpleTaproot, aliceKeyManager);
         setup?.Invoke(Pair);
         Channel.UpdateCommitments(Pair.Alice.State);
 

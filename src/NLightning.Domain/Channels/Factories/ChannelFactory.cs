@@ -24,11 +24,13 @@ using Protocol.Interfaces;
 using Protocol.Messages;
 using Protocol.Models;
 using Protocol.Payloads;
+using Signing.Recovery;
 using Signing.Vls;
+using Validators;
 using Validators.Parameters;
 using ValueObjects;
 
-public class ChannelFactory : IChannelFactory
+public class ChannelFactory : IAllocatedV1ChannelFactory
 {
     private readonly IChannelIdFactory _channelIdFactory;
     private readonly IChannelOpenValidator _channelOpenValidator;
@@ -49,9 +51,22 @@ public class ChannelFactory : IChannelFactory
         _sha256 = sha256;
     }
 
-    public async Task<ChannelModel> CreateChannelV1AsNonInitiatorAsync(OpenChannel1Message message,
+    public Task<ChannelModel> CreateChannelV1AsNonInitiatorAsync(OpenChannel1Message message,
                                                                        FeatureOptions negotiatedFeatures,
-                                                                       CompactPubKey remoteNodeId)
+                                                                       CompactPubKey remoteNodeId) =>
+        CreateNonInitiatorAsync(message, negotiatedFeatures, remoteNodeId, null);
+
+    public Task<ChannelModel> CreateAllocatedV1AsNonInitiatorAsync(OpenChannel1Message message,
+        FeatureOptions negotiatedFeatures, CompactPubKey remoteNodeId, ChannelKeyAllocation allocation,
+        V1OpeningContext? context = null) =>
+        (context is null ? this : WithContext(context)).CreateNonInitiatorAsync(message, negotiatedFeatures, remoteNodeId, allocation);
+
+    public Task<V1OpeningPreparation> PrepareV1AsNonInitiatorAsync(OpenChannel1Message message,
+        FeatureOptions negotiatedFeatures, V1OpeningContext context) =>
+        WithContext(context).PrepareNonInitiatorAsync(message, negotiatedFeatures);
+
+    private async Task<V1OpeningPreparation> PrepareNonInitiatorAsync(OpenChannel1Message message,
+        FeatureOptions negotiatedFeatures)
     {
         var payload = message.Payload;
         if (_lightningSigner is IVlsChannelSigner
@@ -98,17 +113,6 @@ public class ChannelFactory : IChannelFactory
         var toLocalAmount = payload.PushAmount;
         var toRemoteAmount = payload.FundingAmount - payload.PushAmount;
 
-        // Generate local keys through the signer
-        var localKeyIndex = _lightningSigner is IVlsChannelSigner vls
-                                ? vls.CreateNewChannel(remoteNodeId, out var localBasepoints, out var firstPerCommitmentPoint)
-                                : _lightningSigner.CreateNewChannel(out localBasepoints, out firstPerCommitmentPoint);
-
-        // Create the local key set
-        var localKeySet = new ChannelKeySetModel(localKeyIndex, localBasepoints.FundingPubKey,
-                                                 localBasepoints.RevocationBasepoint, localBasepoints.PaymentBasepoint,
-                                                 localBasepoints.DelayedPaymentBasepoint, localBasepoints.HtlcBasepoint,
-                                                 firstPerCommitmentPoint);
-
         // Create the remote key set from the message
         var remoteKeySet = ChannelKeySetModel.CreateForRemote(message.Payload.FundingPubKey,
                                                               message.Payload.RevocationBasepoint,
@@ -153,29 +157,61 @@ public class ChannelFactory : IChannelFactory
             OptionSimpleTaproot = isSimpleTaproot
         };
 
+        return new V1OpeningPreparation(channelParams, toLocalAmount, toRemoteAmount, remoteKeySet);
+    }
+
+    private async Task<ChannelModel> CreateNonInitiatorAsync(OpenChannel1Message message,
+        FeatureOptions negotiatedFeatures, CompactPubKey remoteNodeId, ChannelKeyAllocation? allocation)
+    {
+        var prepared = await PrepareNonInitiatorAsync(message, negotiatedFeatures);
+        // Generate local keys through the signer
+        var material = allocation ?? Allocate(remoteNodeId);
+        var localKeyIndex = material.KeyIndex;
+        var localBasepoints = material.Basepoints;
+        var firstPerCommitmentPoint = material.FirstPerCommitmentPoint;
+
+        // Create the local key set
+        var localKeySet = new ChannelKeySetModel(localKeyIndex, localBasepoints.FundingPubKey,
+                                                 localBasepoints.RevocationBasepoint, localBasepoints.PaymentBasepoint,
+                                                 localBasepoints.DelayedPaymentBasepoint, localBasepoints.HtlcBasepoint,
+                                                 firstPerCommitmentPoint);
+
         // Generate the commitment number (the remote is the opener: opener basepoint first)
-        var commitmentNumber = new CommitmentNumber(remoteKeySet.PaymentCompactBasepoint,
+        var commitmentNumber = new CommitmentNumber(prepared.RemoteKeys!.PaymentCompactBasepoint,
                                                     localKeySet.PaymentCompactBasepoint, _sha256);
 
         try
         {
-            var fundingOutput = new FundingOutputInfo(payload.FundingAmount, localKeySet.FundingCompactPubKey,
-                                                      remoteKeySet.FundingCompactPubKey);
+            var fundingOutput = new FundingOutputInfo(message.Payload.FundingAmount, localKeySet.FundingCompactPubKey,
+                                                      prepared.RemoteKeys!.FundingCompactPubKey);
 
             // Create the channel
-            return new ChannelModel(channelParams, payload.ChannelId, commitmentNumber, fundingOutput, false, null,
-                                    null, toLocalAmount, localKeySet, 0, 0, toRemoteAmount, remoteKeySet, 0,
+            return new ChannelModel(prepared.Parameters, message.Payload.ChannelId, commitmentNumber, fundingOutput, false, null,
+                                    null, prepared.LocalBalance, localKeySet, 0, 0, prepared.RemoteBalance, prepared.RemoteKeys, 0,
                                     remoteNodeId, 0, ChannelState.V1Opening, ChannelVersion.V1);
         }
         catch (Exception e)
         {
-            throw new ChannelErrorException("Error creating commitment transaction", payload.ChannelId, e);
+            throw new ChannelErrorException("Error creating commitment transaction", message.Payload.ChannelId, e);
         }
     }
 
-    public async Task<ChannelModel> CreateChannelV1AsInitiatorAsync(OpenChannelClientRequest request,
+    public Task<ChannelModel> CreateChannelV1AsInitiatorAsync(OpenChannelClientRequest request,
                                                                     FeatureOptions negotiatedFeatures,
-                                                                    CompactPubKey remoteNodeId)
+                                                                    CompactPubKey remoteNodeId) =>
+        CreateInitiatorAsync(request, negotiatedFeatures, remoteNodeId, null, null);
+
+    public Task<ChannelModel> CreateAllocatedV1AsInitiatorAsync(OpenChannelClientRequest request,
+        FeatureOptions negotiatedFeatures, CompactPubKey remoteNodeId, ChannelId temporaryId,
+        ChannelKeyAllocation allocation, V1OpeningContext? context = null) =>
+        (context is null ? this : WithContext(context)).CreateInitiatorAsync(request, negotiatedFeatures, remoteNodeId, temporaryId, allocation);
+
+    public Task<V1OpeningPreparation> PrepareV1AsInitiatorAsync(OpenChannelClientRequest request,
+        FeatureOptions negotiatedFeatures, V1OpeningContext context) =>
+        WithContext(context).PrepareInitiatorAsync(request, negotiatedFeatures);
+
+    private async Task<V1OpeningPreparation> PrepareInitiatorAsync(OpenChannelClientRequest request,
+        FeatureOptions negotiatedFeatures)
     {
         if (_lightningSigner is IVlsChannelSigner && request.FundingAmount.MilliSatoshi % 1_000 != 0)
             throw new ChannelErrorException("VLS requires opening balances in whole satoshis");
@@ -282,17 +318,6 @@ public class ChannelFactory : IChannelFactory
                                        _nodeOptions, request.FundingAmount,
                                        negotiatedFeatures.OptionSplice > FeatureSupport.No);
 
-        // Generate local keys through the signer
-        var localKeyIndex = _lightningSigner is IVlsChannelSigner vls
-                                ? vls.CreateNewChannel(remoteNodeId, out var localBasepoints, out var firstPerCommitmentPoint)
-                                : _lightningSigner.CreateNewChannel(out localBasepoints, out firstPerCommitmentPoint);
-
-        // Create the local key set
-        var localKeySet = new ChannelKeySetModel(localKeyIndex, localBasepoints.FundingPubKey,
-                                                 localBasepoints.RevocationBasepoint, localBasepoints.PaymentBasepoint,
-                                                 localBasepoints.DelayedPaymentBasepoint, localBasepoints.HtlcBasepoint,
-                                                 firstPerCommitmentPoint);
-
         // Our upfront shutdown script is a reserved wallet address, set by the caller before open_channel is sent
         // (ChannelModel.SetLocalUpfrontShutdownScript, NL-045). BOLT 2 allows a zero-length one even when the feature
         // is negotiated, so a compulsory peer is no reason to refuse the open
@@ -321,11 +346,31 @@ public class ChannelFactory : IChannelFactory
             OptionSimpleTaproot = request.IsSimpleTaproot
         };
 
+        return new V1OpeningPreparation(channelParams, toLocalAmount, toRemoteAmount, null);
+    }
+
+    private async Task<ChannelModel> CreateInitiatorAsync(OpenChannelClientRequest request,
+        FeatureOptions negotiatedFeatures, CompactPubKey remoteNodeId, ChannelId? temporaryId,
+        ChannelKeyAllocation? allocation)
+    {
+        var prepared = await PrepareInitiatorAsync(request, negotiatedFeatures);
+        // Generate local keys through the signer
+        var material = allocation ?? Allocate(remoteNodeId);
+        var localKeyIndex = material.KeyIndex;
+        var localBasepoints = material.Basepoints;
+        var firstPerCommitmentPoint = material.FirstPerCommitmentPoint;
+
+        // Create the local key set
+        var localKeySet = new ChannelKeySetModel(localKeyIndex, localBasepoints.FundingPubKey,
+                                                 localBasepoints.RevocationBasepoint, localBasepoints.PaymentBasepoint,
+                                                 localBasepoints.DelayedPaymentBasepoint, localBasepoints.HtlcBasepoint,
+                                                 firstPerCommitmentPoint);
+
         try
         {
             // Create the channel using only our data
-            return new ChannelModel(channelParams, _channelIdFactory.CreateTemporaryChannelId(), null,
-                                    null, true, null, null, toLocalAmount, localKeySet, 0, 0, toRemoteAmount,
+            return new ChannelModel(prepared.Parameters, temporaryId ?? _channelIdFactory.CreateTemporaryChannelId(), null,
+                                    null, true, null, null, prepared.LocalBalance, localKeySet, 0, 0, prepared.RemoteBalance,
                                     null, 0, remoteNodeId, 0, ChannelState.V1Opening, ChannelVersion.V1);
         }
         catch (Exception e)
@@ -385,6 +430,27 @@ public class ChannelFactory : IChannelFactory
         return new ChannelParty(dustLimitAmount, channelReserveAmount, _nodeOptions.HtlcMinimumAmount,
                                 _nodeOptions.MaxAcceptedHtlcs, maxHtlcValueInFlight, _nodeOptions.ToSelfDelay,
                                 localUpfrontShutdownScript);
+    }
+
+    private ChannelKeyAllocation Allocate(CompactPubKey remoteNodeId)
+    {
+        var index = _lightningSigner is IVlsChannelSigner vls
+            ? vls.CreateNewChannel(remoteNodeId, out var basepoints, out var firstPoint)
+            : _lightningSigner.CreateNewChannel(out basepoints, out firstPoint);
+        return new ChannelKeyAllocation(index, basepoints, firstPoint);
+    }
+
+    private ChannelFactory WithContext(V1OpeningContext context) => new(_channelIdFactory,
+        new ChannelOpenValidator(context.Options), new FrozenFeeService(context.FeeQuote), _lightningSigner,
+        context.Options, _sha256);
+
+    private sealed class FrozenFeeService(LightningMoney quote) : IFeeService
+    {
+        public Task<LightningMoney> GetFeeRatePerKwAsync(CancellationToken cancellationToken = default) => Task.FromResult(quote);
+        public LightningMoney GetCachedFeeRatePerKw() => quote;
+        public Task RefreshFeeRateAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task StartAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task StopAsync() => Task.CompletedTask;
     }
 
     private LightningMoney GetOurChannelReserveFromFundingAmount(LightningMoney fundingAmount)

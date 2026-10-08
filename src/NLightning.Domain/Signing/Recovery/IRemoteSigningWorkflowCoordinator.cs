@@ -48,3 +48,29 @@ public interface INativeSweepSigningRecovery
     byte[] EncodeSweepContexts(IReadOnlyList<Onchain.Models.SweepSigningContext> contexts);
     IReadOnlyList<Crypto.ValueObjects.CompactSignature> SignSweepInputs(ISigningWorkflowScope workflow, Bitcoin.Interfaces.ILightningSigner signer);
 }
+
+/// <summary>Initial delayed-sweep data includes the exact unsigned transaction and witness prerequisites.</summary>
+public sealed record InitialDelayedSweepIntent(Onchain.Models.UnsignedSweepTransaction Transaction,
+    Onchain.Models.OutputResolutionModel Output, Onchain.Models.ChannelCloseModel Close,
+    uint Height, uint FeeratePerKw, Channels.ValueObjects.ChannelSigningInfo SigningInfo, bool OutputWasPersisted)
+{
+    public InitialDelayedSweepParent? Parent { get; init; }
+}
+
+/// <summary>The confirmed HTLC transaction and original commitment output that created a delayed sweep input.</summary>
+public sealed record InitialDelayedSweepParent(Onchain.Models.OutputResolutionModel Output,
+    uint ConfirmedHeight, Crypto.ValueObjects.Hash ConfirmedBlockHash);
+
+public interface INativeInitialSweepSigningRecovery : INativeSweepSigningRecovery
+{
+    byte[] EncodeInitialSweepIntent(InitialDelayedSweepIntent intent);
+    InitialDelayedSweepIntent DecodeInitialSweepIntent(byte[] encoded);
+}
+
+public sealed record ChannelKeyAllocation(uint KeyIndex, Channels.ValueObjects.ChannelBasepoints Basepoints,
+    Crypto.ValueObjects.CompactPubKey FirstPerCommitmentPoint);
+
+public interface INativeChannelKeyAllocationRecovery
+{
+    ChannelKeyAllocation AllocateChannelKeys(ISigningWorkflowScope workflow, Bitcoin.Interfaces.ILightningSigner signer);
+}

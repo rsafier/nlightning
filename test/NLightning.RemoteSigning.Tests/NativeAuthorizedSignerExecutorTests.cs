@@ -202,7 +202,7 @@ public sealed class NativeAuthorizedSignerExecutorTests
         {
             var result = Journal.ExecuteRequest(request, SignerWire.Decode(request.Payload.ToByteArray()),
                 () => throw new Exception("State change uses journal-owned dispatch."));
-            return SignerWire.Encode(result);
+            return new SigningResponse { Payload = ByteString.CopyFrom(SignerWire.Encode(result)) }.ToByteArray();
         }
         public void Dispose()
         {

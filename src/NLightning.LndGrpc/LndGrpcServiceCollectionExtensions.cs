@@ -60,7 +60,8 @@ public static class LndGrpcServiceCollectionExtensions
     {
         // The macaroon root keys (BakeMacaroon, NL-1169), shared by the host's verifier and LightningService
         services.AddSingleton(sp => new LndRootKeyStore(sp.GetRequiredService<IOptions<LndGrpcOptions>>().Value
-                                                          .ResolveDataDirectory(configPath)));
+                                                          .ResolveDataDirectory(configPath),
+            sp.GetService<NLightning.Domain.Signing.NodeSigningContext>()));
         services.AddHostedService(sp =>
         {
             var options = sp.GetRequiredService<IOptions<LndGrpcOptions>>();

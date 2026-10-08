@@ -68,6 +68,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.ValueObjects;
+using Fixtures;
 using Infrastructure.Bitcoin.Accounting.Prices;
 using Infrastructure.Bitcoin.Gossip;
 using Infrastructure.Bitcoin.InteractiveTx;
@@ -83,7 +84,7 @@ public class NodeServiceExtensionsTests
     {
         // Arrange
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(BuildConfiguration(), NodeSigningIdentityFixture.CreateSecureKeyManager());
 
         // BitcoinChainService connects to bitcoind in its constructor; keep the test hermetic
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
@@ -173,7 +174,7 @@ public class NodeServiceExtensionsTests
         // Arrange: wave qit registers quiescence (Q-B) and the interactive-tx driver (IT-D) over the Domain session
         // (IT-A), the Bitcoin builder and prevtx inspector (IT-B) and the wallet contributor (IT-B)
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(BuildConfiguration(), NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -199,7 +200,7 @@ public class NodeServiceExtensionsTests
     {
         // Arrange: AddApplicationServices registers the W1-E gossip services, so the daemon needs nothing else
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(BuildConfiguration(), NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -219,7 +220,7 @@ public class NodeServiceExtensionsTests
     {
         // Arrange: AddApplicationServices registers the W1-B payment core; the repositories come from the unit of work
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(BuildConfiguration(), NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -246,7 +247,7 @@ public class NodeServiceExtensionsTests
         // Arrange: AddApplicationServices registers the W2-A reestablish, W2-B switch and W2-C send services
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Node:Payments:MaxFeeFloorMsat", "7000")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions
@@ -283,7 +284,7 @@ public class NodeServiceExtensionsTests
     {
         // Arrange: mocks stand in for the Application invoice and payment services
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(BuildConfiguration(), NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         services.AddSingleton(new Mock<IInvoiceService>().Object);
@@ -319,7 +320,7 @@ public class NodeServiceExtensionsTests
     {
         // Arrange
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(BuildConfiguration(), NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -346,7 +347,7 @@ public class NodeServiceExtensionsTests
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Accounting:SealBatchSize", "7"),
                                                         ("Accounting:SealInterval", "00:00:02")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -395,7 +396,7 @@ public class NodeServiceExtensionsTests
         // Arrange
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Accounting:SealInterval", "00:00:03")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -417,7 +418,7 @@ public class NodeServiceExtensionsTests
         services.AddNltgNodeServices(BuildConfiguration(("Accounting:Prices:Source", "Csv"),
                                                         ("Accounting:Prices:Currency", "eur"),
                                                         ("Accounting:Prices:FetchInterval", "00:05:00")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -444,7 +445,7 @@ public class NodeServiceExtensionsTests
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Accounting:Profile", "Financial"),
                                                         ("Accounting:CostBasis", "Hifo")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -468,7 +469,7 @@ public class NodeServiceExtensionsTests
         // Arrange
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Accounting:Enabled", "false")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -488,7 +489,7 @@ public class NodeServiceExtensionsTests
         services.AddNltgNodeServices(BuildConfiguration(("OnionMessages:MaxOutboxPerPeer", "7"),
                                                         ("OnionMessages:PeerMessagesPerSecond", "3"),
                                                         ("OnionMessages:PeerBurstMessages", "4")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -516,7 +517,7 @@ public class NodeServiceExtensionsTests
         // Arrange
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Offers:MaxOfferPaths", "5")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -546,7 +547,7 @@ public class NodeServiceExtensionsTests
     {
         // Arrange: a Development host validates every registration at build
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(BuildConfiguration(), NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
 
@@ -578,7 +579,7 @@ public class NodeServiceExtensionsTests
                                                         ("Node:Routing:InvoiceExpirySeconds", "600"),
                                                         ("Node:Routing:HtlcMinimumMsat", "1"),
                                                         ("Node:Routing:HtlcMaximumMsat", "990000000")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -603,7 +604,7 @@ public class NodeServiceExtensionsTests
         // Arrange: IOptions<RoutingOptions> is the validated NodeOptions.Routing, never an unchecked copy
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Node:Routing:InvoiceExpirySeconds", "0")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act / Assert
@@ -632,7 +633,7 @@ public class NodeServiceExtensionsTests
         if (allowPublicOnMainnet is not null)
             extra.Add(("Gossip:AllowPublicChannelsOnMainnet", allowPublicOnMainnet));
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(BuildConfiguration(extra.ToArray()), new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(BuildConfiguration(extra.ToArray()), NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -670,7 +671,7 @@ public class NodeServiceExtensionsTests
         if (throughTor is not null)
             extra.Add(("Accounting:Prices:ThroughTor", throughTor));
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(BuildConfiguration(extra.ToArray()), new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(BuildConfiguration(extra.ToArray()), NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -692,7 +693,7 @@ public class NodeServiceExtensionsTests
     {
         // Arrange
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet")), new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet")), NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -718,7 +719,7 @@ public class NodeServiceExtensionsTests
                                        ? [("Node:Network", network)]
                                        : [("Node:Network", network), ("Node:EnableHtlcs", enableHtlcs)];
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(BuildConfiguration(extra), new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(BuildConfiguration(extra), NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -744,7 +745,7 @@ public class NodeServiceExtensionsTests
                            .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
                            .Build();
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(configuration, NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
         var defaults = new RoutingOptions();
 
@@ -789,7 +790,7 @@ public class NodeServiceExtensionsTests
                            .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
                            .Build();
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(configuration, NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -816,7 +817,7 @@ public class NodeServiceExtensionsTests
                            .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
                            .Build();
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(configuration, NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -873,7 +874,7 @@ public class NodeServiceExtensionsTests
                            })
                            .Build();
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(configuration, NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -898,7 +899,7 @@ public class NodeServiceExtensionsTests
                            .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
                            .Build();
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(configuration, NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -939,7 +940,7 @@ public class NodeServiceExtensionsTests
                            .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
                            .Build();
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(configuration, NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -1006,7 +1007,7 @@ public class NodeServiceExtensionsTests
         var services = new ServiceCollection();
         var configuration = BuildConfiguration();
         services.AddSingleton<IConfiguration>(configuration);
-        services.AddSingleton(new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IFeeService>().Object);
         services.AddLogging();
         services.AddOptions<NodeOptions>().BindConfiguration("Node");
@@ -1030,7 +1031,7 @@ public class NodeServiceExtensionsTests
     public void Given_NodeServices_When_Composed_Then_TheSecureKeyManagerGivenIsUsed()
     {
         // Arrange
-        var secureKeyManager = new Mock<ISecureKeyManager>().Object;
+        var secureKeyManager = NodeSigningIdentityFixture.CreateSecureKeyManager();
         var services = new ServiceCollection();
 
         // Act
@@ -1047,7 +1048,7 @@ public class NodeServiceExtensionsTests
         // Arrange: BOLT 7 recommends cltv_expiry_delta >= 34
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Node:Routing:CltvExpiryDelta", "33")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -1067,7 +1068,7 @@ public class NodeServiceExtensionsTests
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Node:ReconnectInitialDelay", "00:00:01"),
                                                         ("Node:ReconnectMaxDelay", "00:00:30")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -1085,7 +1086,7 @@ public class NodeServiceExtensionsTests
         // W6-D attribution service)
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Node:Switch:MppTimeout", "00:01:30")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -1105,7 +1106,7 @@ public class NodeServiceExtensionsTests
     {
         // Arrange (BOLT 7 plan G1-T4..T7: registered by AddApplicationServices, nothing to add in the daemon)
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(BuildConfiguration(), NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -1128,7 +1129,7 @@ public class NodeServiceExtensionsTests
         services.AddNltgNodeServices(BuildConfiguration(("Gossip:SyncPeers", "5"),
                                                         ("Gossip:SyncReplyTimeout", "00:00:30"),
                                                         ("Gossip:SyncEnabled", "false")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -1154,7 +1155,7 @@ public class NodeServiceExtensionsTests
                                                         ("Gossip:EsploraUrl", "http://esplora.test/api"),
                                                         ("Gossip:EsploraAllowPlainHttp", "true"),
                                                         ("Gossip:EsploraMaxInlineWait", "00:00:03")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -1181,7 +1182,7 @@ public class NodeServiceExtensionsTests
     {
         // Arrange
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(BuildConfiguration(), NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -1206,7 +1207,7 @@ public class NodeServiceExtensionsTests
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Gossip:RelayFlushInterval", "00:00:30"),
                                                         ("Gossip:BacklogMessagesPerSecond", "500")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -1233,7 +1234,7 @@ public class NodeServiceExtensionsTests
         // Arrange
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Gossip:BacklogMessagesPerSecond", "0")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -1252,7 +1253,7 @@ public class NodeServiceExtensionsTests
         // Arrange
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Gossip:MaxScidsPerReply", "0")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -1273,7 +1274,7 @@ public class NodeServiceExtensionsTests
         services.AddNltgNodeServices(BuildConfiguration(("Gossip:AnnounceAddresses:0", "203.0.113.5:9735"),
                                                         ("Gossip:OwnGossipFlushInterval", "00:00:05"),
                                                         ("Node:Alias", "nltg"), ("Node:Color", "#00ff00")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -1295,7 +1296,7 @@ public class NodeServiceExtensionsTests
     {
         // Arrange
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(BuildConfiguration((key, value)), new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(BuildConfiguration((key, value)), NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -1325,7 +1326,7 @@ public class NodeServiceExtensionsTests
                            .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
                            .Build();
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(configuration, NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -1373,7 +1374,7 @@ public class NodeServiceExtensionsTests
                                                         ("Node:Bootstrap:Seeds:0", "seed.example.org"),
                                                         ("Node:Bootstrap:NameServers:0", "1.1.1.1"),
                                                         ("Node:Bootstrap:NameServers:1", "8.8.8.8:53")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -1393,7 +1394,7 @@ public class NodeServiceExtensionsTests
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet"),
                                                         ("Node:Bootstrap:FallbackNameServers:0", "9.9.9.9")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -1412,7 +1413,7 @@ public class NodeServiceExtensionsTests
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet"),
                                                         ("Node:Bootstrap:FallbackToPublicResolvers", "false")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -1435,7 +1436,7 @@ public class NodeServiceExtensionsTests
                                                         ("Node:DnsSeedServers:0", "lseed.bitcoinstats.com"),
                                                         ("Node:DnsSeedServers:1", "nlseed.nlightn.ing"),
                                                         ("Node:DnsSeedServers:2", "Nodes.Lightning.Directory")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -1455,7 +1456,7 @@ public class NodeServiceExtensionsTests
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet"),
                                                         ("Node:DnsSeedServers:0", "my.seed.example:53")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -1476,7 +1477,7 @@ public class NodeServiceExtensionsTests
         services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet"),
                                                         ("Node:DnsSeedServers:0", "old.example.org"),
                                                         ("Node:Bootstrap:Seeds:0", "new.example.org")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         using var provider = services.BuildServiceProvider();
 
         // Act
@@ -1501,7 +1502,7 @@ public class NodeServiceExtensionsTests
         var extra = new List<(string, string)> { ("Node:Bootstrap:StartupDelay", "00:00:00") };
         if (enabled is not null)
             extra.Add(("Node:Bootstrap:Enabled", enabled));
-        services.AddNltgNodeServices(BuildConfiguration([.. extra]), new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(BuildConfiguration([.. extra]), NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider();
@@ -1532,7 +1533,7 @@ public class NodeServiceExtensionsTests
         services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet"),
                                                         ("Node:Bootstrap:StartupDelay", "00:00:00"),
                                                         ("Node:Bootstrap:MaxRuns", "1")),
-                                     new Mock<ISecureKeyManager>().Object);
+                                     NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         var unitOfWork = new Mock<IUnitOfWork>();

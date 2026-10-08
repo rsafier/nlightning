@@ -17,6 +17,8 @@ public interface IAuthenticatedNativeChainEvidence
 {
     void RequireFresh(NativeSignerBinding binding);
     NativeWalletInputEvidence GetOutput(NativeSignerBinding binding, string transactionId, uint outputIndex);
+    // Existing controlled evidence adapters may have no batch state; production sources enforce this check.
+    void RequireUnchanged(NativeSignerBinding binding) { }
 }
 
 /// <summary>Validates wallet spending against independent evidence and signer-derived change scripts before key use.</summary>
@@ -63,6 +65,7 @@ public sealed class NativeWalletTransactionValidator(IAuthenticatedNativeChainEv
         var fee = checked(inputValue - outputValue);
         if (fee < 0 || fee > intent.MaximumFeeSatoshis)
             throw new UnauthorizedAccessException("Transaction fee exceeds independently verified owner intent.");
+        evidence.RequireUnchanged(binding);
     }
 
 }

@@ -95,6 +95,8 @@ public sealed class SweepScheduler : ISweepScheduler
             var pending = await _signingWorkflows.GetPendingAsync(close.ChannelId);
             if (pending.Count != 0)
             {
+                if (pending.Count == 1 && pending[0].Kind == SigningWorkflowKind.OnchainInitialSweep)
+                    return []; // Initial sweeps are resumed and committed by their resolver's round.
                 if (pending.Count != 1 || pending[0].Kind != SigningWorkflowKind.OnchainSweep
                  || pending[0].State != SigningWorkflowState.Pending || pending[0].PublicationIntent is null)
                     throw new InvalidOperationException("Pending signing workflow blocks a new sweep replacement.");

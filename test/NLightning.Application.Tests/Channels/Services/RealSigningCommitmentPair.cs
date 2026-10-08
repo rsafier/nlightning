@@ -61,7 +61,7 @@ internal sealed class RealSigningNode : IDisposable
         State = result.Next;
     }
 
-    public RealSigningNode(string name, byte seedTag)
+    public RealSigningNode(string name, byte seedTag, ISecureKeyManager? keyManager = null)
     {
         Name = name;
         KeyIndex = seedTag;
@@ -84,7 +84,7 @@ internal sealed class RealSigningNode : IDisposable
         var services = new ServiceCollection();
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
         services.AddSingleton(Options.Create(nodeOptions));
-        services.AddSingleton(secureKeyManager.Object);
+        services.AddSingleton(keyManager ?? secureKeyManager.Object);
         services.AddSingleton(new Mock<IUtxoMemoryRepository>().Object);
         services.AddSingleton(channelMemoryRepository.Object);
         services.AddBitcoinInfrastructure();
@@ -137,10 +137,11 @@ internal sealed class RealSigningCommitmentPair : IDisposable
     /// <summary>True for a simple taproot channel (MuSig2 commitment signatures with verification nonces).</summary>
     public bool IsSimpleTaproot { get; }
 
-    public RealSigningCommitmentPair(bool hasAnchors, bool simpleTaproot = false)
+    public RealSigningCommitmentPair(bool hasAnchors, bool simpleTaproot = false,
+                                     ISecureKeyManager? aliceKeyManager = null)
     {
         IsSimpleTaproot = simpleTaproot;
-        Alice = new RealSigningNode("Alice", 0xA1);
+        Alice = new RealSigningNode("Alice", 0xA1, aliceKeyManager);
         Bob = new RealSigningNode("Bob", 0xB0);
 
         // Per-side values differ on purpose (dust limit, to_self_delay) so a direction mix-up changes the txid

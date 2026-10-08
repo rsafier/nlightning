@@ -7,7 +7,7 @@ namespace NLightning.Daemon.Tests.Extensions;
 using Daemon.Extensions;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
-using Domain.Protocol.Interfaces;
+using Fixtures;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Transport.Tor;
 
@@ -59,7 +59,7 @@ public class TorConfigTemplateTests
                            })
                            .Build();
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddNltgNodeServices(configuration, NodeSigningIdentityFixture.CreateSecureKeyManager());
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

@@ -11,6 +11,7 @@ namespace NLightning.Infrastructure.RemoteSigning;
 public sealed class RemoteSecureKeyManager(RemoteSignerConnection connection) : ISecureKeyManager, ISilentPaymentKeySource
 {
     private readonly RemoteSilentPaymentKeySource _silentPaymentKeys = new(connection);
+    public NLightning.Domain.Signing.NodeSigningContext Context => connection.Context;
     public CompactPubKey ScanPubKey => _silentPaymentKeys.ScanPubKey;
     public CompactPubKey SpendPubKey => _silentPaymentKeys.SpendPubKey;
     public bool RecoverableElsewhere => _silentPaymentKeys.RecoverableElsewhere;

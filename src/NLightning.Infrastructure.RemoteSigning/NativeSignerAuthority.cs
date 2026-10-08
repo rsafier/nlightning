@@ -33,9 +33,11 @@ public sealed record NativeSignerAuthorityResult(byte[] Response, string Checkpo
 /// Trusted transactional authority. The database and owner administration credentials must be independent of
 /// node credentials and unavailable to node rollback. A local database alone does not provide that guarantee.
 /// </summary>
-public sealed class NativeSignerAuthority(Func<DbConnection> connectionFactory, TimeProvider? clock = null)
+public sealed partial class NativeSignerAuthority(Func<DbConnection> connectionFactory, TimeProvider? clock = null)
+    : INativeWalletApprovalStore
 {
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    [ThreadStatic] private static ExecutionReadScope? s_executionReadScope;
     public const string InitialCheckpoint = "initial";
 
     public void Initialize()
@@ -44,6 +46,7 @@ public sealed class NativeSignerAuthority(Func<DbConnection> connectionFactory, 
         Run(connection, null, "CREATE TABLE IF NOT EXISTS NativeSignerAuthorities (NodeId TEXT PRIMARY KEY, Binding TEXT NOT NULL, Epoch BIGINT NOT NULL, WriterId TEXT NOT NULL, Checkpoint TEXT NOT NULL, SignerCheckpoint TEXT NOT NULL)");
         Run(connection, null, "CREATE TABLE IF NOT EXISTS NativeSignerApprovals (NodeId TEXT NOT NULL, RequestId TEXT NOT NULL, Fingerprint TEXT NOT NULL, Expires BIGINT NOT NULL, PRIMARY KEY (NodeId, RequestId))");
         Run(connection, null, "CREATE TABLE IF NOT EXISTS NativeSignerReceipts (NodeId TEXT NOT NULL, RequestId TEXT NOT NULL, Fingerprint TEXT NOT NULL, Response TEXT NOT NULL, Checkpoint TEXT NOT NULL, PRIMARY KEY (NodeId, RequestId))");
+        InitializeWalletApprovals(connection);
     }
 
     /// <summary>Owner-only provisioning. Re-enrollment cannot replace an existing identity or its safety history.</summary>
@@ -113,12 +116,14 @@ public sealed class NativeSignerAuthority(Func<DbConnection> connectionFactory, 
     /// </summary>
     public NativeSignerAuthorityResult Execute(NativeSignerBinding binding, NativeSignerExecution execution,
                                                NativeSignerIntent intent, Func<byte[]> validateAndExecute,
-                                               Func<string>? signerCheckpoint = null, Action? validateReplay = null)
+                                               Func<string>? signerCheckpoint = null, Action? validateReplay = null,
+                                               Action<byte[]>? validateReplayResponse = null)
     {
         ValidateIntent(intent);
         using var connection = Open();
         using var transaction = connection.BeginTransaction(IsolationLevel.Serializable);
         var state = FenceWriter(connection, transaction, binding, execution, signerCheckpoint);
+        using var readScope = new ExecutionReadScope(this, connection, transaction);
         var fingerprint = Fingerprint(binding, intent);
         using (var receipt = Command(connection, transaction,
                    "SELECT Fingerprint, Response, Checkpoint FROM NativeSignerReceipts WHERE NodeId = @node AND RequestId = @request",
@@ -128,9 +133,10 @@ public sealed class NativeSignerAuthority(Func<DbConnection> connectionFactory, 
             if (reader.Read())
             {
                 if (reader.GetString(0) != fingerprint) throw new InvalidOperationException("Request identity was reused.");
-                validateReplay?.Invoke();
                 var result = new NativeSignerAuthorityResult(Convert.FromBase64String(reader.GetString(1)), state.Checkpoint, true, state.SignerCheckpoint);
                 reader.Close();
+                validateReplay?.Invoke();
+                validateReplayResponse?.Invoke(result.Response.ToArray());
                 transaction.Commit();
                 return result;
             }
@@ -189,7 +195,7 @@ public sealed class NativeSignerAuthority(Func<DbConnection> connectionFactory, 
         return state;
     }
 
-    private static string Fingerprint(NativeSignerBinding binding, NativeSignerIntent intent) =>
+    internal static string Fingerprint(NativeSignerBinding binding, NativeSignerIntent intent) =>
         Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new { binding, intent })));
 
     private static void ValidateIntent(NativeSignerIntent intent)
@@ -207,7 +213,7 @@ public sealed class NativeSignerAuthority(Func<DbConnection> connectionFactory, 
         _ = new Domain.Crypto.ValueObjects.CompactPubKey(Convert.FromHexString(binding.PublicKey));
     }
 
-    private static AuthorityState ReadState(DbConnection connection, DbTransaction transaction, NativeSignerBinding binding)
+    private static AuthorityState ReadState(DbConnection connection, DbTransaction? transaction, NativeSignerBinding binding)
     {
         ValidateBinding(binding);
         using var command = Command(connection, transaction,
@@ -246,6 +252,33 @@ public sealed class NativeSignerAuthority(Func<DbConnection> connectionFactory, 
             command.Parameters.Add(parameter);
         }
         return command;
+    }
+
+    private ExecutionReadScope? FindExecutionReadScope()
+    {
+        for (var scope = s_executionReadScope; scope is not null; scope = scope.Previous)
+            if (ReferenceEquals(scope.Authority, this)) return scope;
+        return null;
+    }
+
+    // Callbacks execute synchronously. Do not flow a live database transaction into asynchronous child work.
+    private sealed class ExecutionReadScope : IDisposable
+    {
+        public NativeSignerAuthority Authority { get; }
+        public DbConnection Connection { get; }
+        public DbTransaction Transaction { get; }
+        public ExecutionReadScope? Previous { get; }
+
+        public ExecutionReadScope(NativeSignerAuthority authority, DbConnection connection, DbTransaction transaction)
+        {
+            Authority = authority;
+            Connection = connection;
+            Transaction = transaction;
+            Previous = s_executionReadScope;
+            s_executionReadScope = this;
+        }
+
+        public void Dispose() => s_executionReadScope = Previous;
     }
 
     private sealed record AuthorityState(long Epoch, string WriterId, string Checkpoint, string SignerCheckpoint);

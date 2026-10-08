@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
+using NLightning.Domain.Signing;
 
 namespace NLightning.LndGrpc.Macaroons;
 
@@ -20,8 +21,9 @@ public static class LndMacaroonFiles
     /// Loads the root key, creating it (and re-baking the three macaroons) when missing; bakes any missing macaroon.
     /// Returns the root key.
     /// </summary>
-    public static byte[] EnsureCreated(string directory, ILogger? logger = null)
+    public static byte[] EnsureCreated(string directory, ILogger? logger = null, NodeSigningContext? context = null)
     {
+        if (context is not null) LndCredentialEnrollment.Bind(directory, context);
         Directory.CreateDirectory(directory);
         var rootKeyPath = Path.Combine(directory, RootKeyFileName);
         var rotated = false;
@@ -41,6 +43,7 @@ public static class LndMacaroonFiles
             logger?.LogInformation("Created a new LND gRPC macaroon root key in {Path}", rootKeyPath);
         }
 
+        rootKey = LndCredentialEnrollment.EffectiveRootKey(rootKey, context);
         Bake(directory, AdminFileName, rootKey, LndPermissions.Admin, rotated, logger);
         Bake(directory, ReadOnlyFileName, rootKey, LndPermissions.Read, rotated, logger);
         Bake(directory, InvoiceFileName, rootKey, LndPermissions.Invoice, rotated, logger);
