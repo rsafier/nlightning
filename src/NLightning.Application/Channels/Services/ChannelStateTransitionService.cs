@@ -82,6 +82,7 @@ public sealed class ChannelStateTransitionService
     private readonly IBlockchainMonitor? _fundingRecoveryChain;
     private readonly IUtxoMemoryRepository? _fundingRecoveryWallet;
     private readonly NativeV1FundedInboundOpening? _nativeFundedOpening;
+    private readonly VlsCloseSigningWorkflows? _vlsCloses;
 
     public ChannelStateTransitionService(IChannelMemoryRepository channelMemoryRepository,
                                          ChannelDomainEventQueue eventQueue, ICommitmentSigner commitmentSigner,
@@ -97,8 +98,10 @@ public sealed class ChannelStateTransitionService
                                          IVlsChannelSigner? vlsSigner = null,
                                          IBlockchainMonitor? fundingRecoveryChain = null,
                                          IUtxoMemoryRepository? fundingRecoveryWallet = null,
-                                         NativeV1FundedInboundOpening? nativeFundedOpening = null)
+                                         NativeV1FundedInboundOpening? nativeFundedOpening = null,
+                                         VlsCloseSigningWorkflows? vlsCloses = null)
     {
+        _vlsCloses = vlsCloses;
         _nativeFundedOpening = nativeFundedOpening;
         _fundingRecoveryWallet = fundingRecoveryWallet;
         _fundingRecoveryChain = fundingRecoveryChain;
@@ -693,6 +696,13 @@ public sealed class ChannelStateTransitionService
         if (_signingWorkflows is null) return;
         var pending = await _signingWorkflows.GetPendingAsync(channel.ChannelId);
         if (pending.Count == 0) return;
+        if (pending.Count == 1 && pending[0].Kind is SigningWorkflowKind.MutualClose or SigningWorkflowKind.ForceClose)
+        {
+            // VLS close signatures (NL-1330): the original request is replayed, never a new one
+            await (_vlsCloses ?? throw new InvalidOperationException("A VLS close workflow needs its recovery."))
+                 .ResumeAsync(channel, pending[0], _unitOfWork);
+            return;
+        }
         if (pending.Count == 1 && pending[0].Kind == SigningWorkflowKind.Funding)
         {
             await ResumeNativeFundingAsync(channel);

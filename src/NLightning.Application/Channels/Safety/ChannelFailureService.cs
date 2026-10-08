@@ -83,6 +83,7 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
 
     private CancellationTokenSource _stopping = new();
     private Task _resumeTask = Task.CompletedTask;
+    private readonly VlsCloseSigningWorkflows? _vlsCloses;
     private int _retryRunning;
     private int _spliceCheckRunning;
     private int _started;
@@ -94,8 +95,10 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
                                  ILogger<ChannelFailureService> logger, IServiceScopeFactory serviceScopeFactory,
                                  IAnchorCpfpService? anchorCpfpService = null,
                                  ICommitmentTransactionModelFactory? commitmentTransactionModelFactory = null,
-                                 ICommitmentTransactionBuilder? commitmentTransactionBuilder = null)
+                                 ICommitmentTransactionBuilder? commitmentTransactionBuilder = null,
+                                 VlsCloseSigningWorkflows? vlsCloses = null)
     {
+        _vlsCloses = vlsCloses;
         _anchorCpfpService = anchorCpfpService;
         _commitmentTransactionModelFactory = commitmentTransactionModelFactory;
         _commitmentTransactionBuilder = commitmentTransactionBuilder;
@@ -366,10 +369,32 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
             {
                 // Built under the lock, from the snapshot the Failed save below freezes (Failed refuses every
                 // update), so the commitment and the recorded intent to broadcast it can't diverge
-                commitment = _commitmentBuilder.Build(channel);
+                if (_vlsCloses is { Enabled: true } vlsCloses)
+                {
+                    // VLS (NL-1330): the exact bytes saved before, else the original request of a saved intent, else a
+                    // new intent saved with its envelope; the workflow is consumed in the Failed save below
+                    using var lookup = _serviceScopeFactory.CreateScope();
+                    commitment = await vlsCloses.FindSavedForceCloseAsync(
+                                     lookup.ServiceProvider.GetRequiredService<IUnitOfWork>(), channel,
+                                     _commitmentBuilder);
+                    if (commitment is null)
+                    {
+                        var (number, unsignedTxId, _) = _commitmentBuilder.Describe(channel);
+                        prepared.SigningWorkflow = await vlsCloses.BeginForceCloseAsync(channel, number, unsignedTxId);
+                        prepared.SigningWorkflow.Activate();
+                        commitment = _commitmentBuilder.Build(channel);
+                    }
+                }
+                else
+                {
+                    commitment = _commitmentBuilder.Build(channel);
+                }
             }
             catch (Exception e) when (e is InvalidOperationException or SignerException)
             {
+                // A refused VLS request is blocked durably by the coordinator; nothing is left to consume
+                prepared.SigningWorkflow?.Dispose();
+                prepared.SigningWorkflow = null;
                 _logger.LogCritical(e, "Cannot build a broadcastable commitment for failed channel {ChannelId}",
                                     channelId);
                 prepared.DecidedOutcome =
@@ -380,7 +405,16 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
         // NL-271: Failed, the error and the commitment's broadcast row go in one save, so a crash before the publish
         // leaves the intent recorded and the chain monitor sends it at startup
         using var scope = _serviceScopeFactory.CreateScope();
-        await PersistFailedAsync(scope, prepared, commitment);
+        try
+        {
+            await PersistFailedAsync(scope, prepared, commitment);
+        }
+        finally
+        {
+            prepared.SigningWorkflow?.Dispose();
+            prepared.SigningWorkflow = null;
+        }
+
         return prepared;
     }
 
@@ -438,8 +472,17 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
         }
 
         prepared.Error = error;
-        if (!persistChannel && !prepared.BroadcastStaged)
+        if (!persistChannel && !prepared.BroadcastStaged && prepared.SigningWorkflow is null)
             return;
+
+        // VLS (NL-1330): the force close signature is consumed with the commitment's broadcast row and Failed
+        if (prepared.SigningWorkflow is { } workflow)
+        {
+            if (!prepared.BroadcastStaged)
+                throw new InvalidOperationException(
+                    $"The VLS force close of channel {channel.ChannelId} has no new broadcast row to save it with");
+            await workflow.StageConsumeAsync(unitOfWork);
+        }
 
         if (persistChannel)
             await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
