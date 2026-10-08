@@ -158,6 +158,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLightning.Signing.Contract
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLightning.Infrastructure.RemoteSigning", "src\NLightning.Infrastructure.RemoteSigning\NLightning.Infrastructure.RemoteSigning.csproj", "{C681DC68-C904-4920-9C06-22CD2C887627}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLightning.Infrastructure.VlsSigning", "src\NLightning.Infrastructure.VlsSigning\NLightning.Infrastructure.VlsSigning.csproj", "{76A6D33E-338A-4E60-8B48-930A938AACD5}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLightning.Signer", "src\NLightning.Signer\NLightning.Signer.csproj", "{56CEAC3A-21DE-43B2-837E-82D1F2F66C1F}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLightning.RemoteSigning.Tests", "test\NLightning.RemoteSigning.Tests\NLightning.RemoteSigning.Tests.csproj", "{9B89E36D-B7D4-422C-9C83-8FF84B689FCA}"
@@ -184,6 +186,36 @@ Global
 		Debug.Wasm|x86 = Debug.Wasm|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Release|x64.ActiveCfg = Release|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Release|x64.Build.0 = Release|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Release|x86.ActiveCfg = Release|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Release|x86.Build.0 = Release|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Release.Native|Any CPU.ActiveCfg = Release.Native|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Release.Native|Any CPU.Build.0 = Release.Native|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Release.Native|x64.ActiveCfg = Release.Native|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Release.Native|x64.Build.0 = Release.Native|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Release.Native|x86.ActiveCfg = Release.Native|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Release.Native|x86.Build.0 = Release.Native|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Release.Wasm|Any CPU.ActiveCfg = Release|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Release.Wasm|x64.ActiveCfg = Release|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Release.Wasm|x86.ActiveCfg = Release|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Debug|x64.Build.0 = Debug|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Debug|x86.Build.0 = Debug|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Debug.Native|Any CPU.ActiveCfg = Debug.Native|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Debug.Native|Any CPU.Build.0 = Debug.Native|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Debug.Native|x64.ActiveCfg = Debug.Native|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Debug.Native|x64.Build.0 = Debug.Native|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Debug.Native|x86.ActiveCfg = Debug.Native|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Debug.Native|x86.Build.0 = Debug.Native|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Debug.Wasm|Any CPU.ActiveCfg = Debug|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Debug.Wasm|x64.ActiveCfg = Debug|Any CPU
+		{76A6D33E-338A-4E60-8B48-930A938AACD5}.Debug.Wasm|x86.ActiveCfg = Debug|Any CPU
 		{9B89E36D-B7D4-422C-9C83-8FF84B689FCA}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{9B89E36D-B7D4-422C-9C83-8FF84B689FCA}.Release|Any CPU.Build.0 = Release|Any CPU
 		{9B89E36D-B7D4-422C-9C83-8FF84B689FCA}.Release|x64.ActiveCfg = Release|Any CPU
@@ -1633,6 +1665,7 @@ Global
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
+		{76A6D33E-338A-4E60-8B48-930A938AACD5} = {123D0631-533C-447F-B7DA-D1D37E5E64BF}
 		{9B89E36D-B7D4-422C-9C83-8FF84B689FCA} = {AF4411D4-8EE9-423E-8213-1C9D35E47882}
 		{56CEAC3A-21DE-43B2-837E-82D1F2F66C1F} = {123D0631-533C-447F-B7DA-D1D37E5E64BF}
 		{C681DC68-C904-4920-9C06-22CD2C887627} = {123D0631-533C-447F-B7DA-D1D37E5E64BF}

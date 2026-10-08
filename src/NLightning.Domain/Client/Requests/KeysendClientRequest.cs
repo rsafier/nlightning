@@ -5,7 +5,7 @@ using Money;
 using Payments.Keysend;
 
 /// <summary>
-/// Sends a spontaneous (keysend) payment (<c>ClientCommand.Keysend</c>): no invoice, the daemon picks the preimage.
+/// Sends a spontaneous (keysend) payment (<c>ClientCommand.Keysend</c>): no invoice, an operator supplies the preimage or the daemon generates one.
 /// </summary>
 public sealed class KeysendClientRequest
 {
@@ -20,6 +20,9 @@ public sealed class KeysendClientRequest
 
     /// <summary>What the payee receives.</summary>
     public LightningMoney Amount { get; }
+
+    /// <summary>Operator-selected preimage for externally approved payments; null generates a fresh one.</summary>
+    public Secret? Preimage { get; init; }
 
     /// <summary>
     /// Application records for the payee (types of 65536 or more, never 5482373484, the keysend preimage).

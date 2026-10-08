@@ -25,6 +25,7 @@ using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.ValueObjects;
 using Domain.Protocol.Tlv;
+using Domain.Signing.Vls;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Crypto.Hashes;
 using Interfaces;
@@ -80,6 +81,7 @@ public sealed class ChannelOperationsService : IChannelOperations
     private const string FeeOperation = "update_fee";
 
     private readonly IBlockchainMonitor? _blockchainMonitor;
+    private readonly IVlsChannelSigner? _vlsSigner;
     private readonly IChannelLockProvider _channelLockProvider;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly IChannelMessagePublisher _channelMessagePublisher;
@@ -100,9 +102,11 @@ public sealed class ChannelOperationsService : IChannelOperations
                                     IPeerLivenessProbe peerLivenessProbe, IServiceScopeFactory serviceScopeFactory,
                                     IBlockchainMonitor? blockchainMonitor = null, TimeProvider? timeProvider = null,
                                     IQuiescenceService? quiescenceService = null,
-                                    INodeDrainState? nodeDrainState = null, Payments.Events.HtlcEventMonitor? htlcMonitor = null)
+                                    INodeDrainState? nodeDrainState = null, Payments.Events.HtlcEventMonitor? htlcMonitor = null,
+                                    IVlsChannelSigner? vlsSigner = null)
     {
         _htlcMonitor = htlcMonitor;
+        _vlsSigner = vlsSigner;
         _nodeDrainState = nodeDrainState;
         _quiescenceService = quiescenceService;
         _timeProvider = timeProvider ?? TimeProvider.System;
@@ -135,6 +139,9 @@ public sealed class ChannelOperationsService : IChannelOperations
         // for its retransmissions
         var encodedRecords = WireCustomRecordCodec.EncodeForUpdateAddHtlc(wireCustomRecords, pathKey is not null);
         ArgumentNullException.ThrowIfNull(amount);
+        if (_vlsSigner is not null && amount.MilliSatoshi % 1_000 != 0)
+            throw new CommitmentRefusedException("VLS-AMOUNT-PRECISION",
+                                                 "VLS requires HTLC amounts in whole satoshis");
         if (!origin.IsValid)
             throw new ArgumentException("The HTLC origin routes nowhere", nameof(origin));
         if (onion.Length == 0)

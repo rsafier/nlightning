@@ -1,14 +1,17 @@
 # Experimental VLS gateway
 
-A runnable **local regtest signer prototype**, separate from the NLightning node.
+A runnable **local regtest signer prototype** used by the NLightning VLS adapter.
 It uses pinned VLS `cb8a64c71d3b214951e752281f05b9090e77f074`, stock Native
 (CLN) derivation, real `SimpleValidatorFactory` with balance enforcement, and
 durable transactional Redb persistence. FAFO starts with fresh wallets and
 channels; importing prior NLightning keys/channels is out of scope.
 
-This is newline-delimited JSON over private Unix sockets, **not gRPC, a vlsd wire
-proxy, or `Signing:Mode=Vls`**. The NLightning semantic adapter remains to be built.
-No Nitro/vsock implementation is included.
+The `NLightning.Infrastructure.VlsSigning` adapter uses newline-delimited JSON over
+private Unix sockets. This gateway is not a vlsd wire proxy. No Nitro/vsock
+implementation is included. `Signing:Mode=Vls` selects the fresh-key regtest
+prototype; unsupported cryptographic and channel operations fail explicitly.
+See [the node MVP runbook](../../docs/agents/VLS_NODE_MVP.md) for configuration
+and the separately recorded node/peer acceptance scope.
 
 ## Build and prove recovery
 
@@ -50,6 +53,9 @@ The process test starts actual daemon children and exercises:
   HTLC signature.
 - Independently verified holder force-close funding signature and refusal of a
   different injected seed against the existing store.
+- Durable broadcast/data-loss invalidation before receipt replay and reconciliation,
+  mixed-case channel-ID alias rejection, data-loss persistence across process restart,
+  and malformed upstream setup-txid rejection without terminating the owner.
 
 Tests use deterministic fixture seeds/peer keys and an artificial funding
 outpoint. No live Bitcoin chain, peer or NLightning node is involved.
@@ -108,8 +114,8 @@ The allowlisted commands and fields are defined by `Command` in `main.rs`:
 
 | Socket | Commands |
 | --- | --- |
-| Node | `identity`, `allocate`, `setup`, `point`, `sign_remote`, `validate_holder`, `activate`, `revoke_holder`, `validate_revocation`, `force_close`, `mutual_close`, `reconcile` for these commands |
-| Approval | `authorize_keysend`, `reconcile` for keysend approval |
+| Node | `identity`, `ecdh`, `sign_invoice`, `public_account`, `wallet_public_key`, `wallet_sign`, `allocate`, `basepoints`, `setup`, `point`, `sign_remote`, `validate_holder`, `activate`, `revoke_holder`, `validate_revocation`, `payment_preimages`, `sign_channel_update`, `sign_node_announcement`, `force_close`, `mutual_close`, `mark_data_loss`, `broadcast_status`, `verify_broadcast_mark`, `reconcile` for these commands |
+| Approval | `authorize_keysend`, `authorize_invoice`, `reconcile` for approval |
 
 Channel IDs are 41 decoded bytes: compressed peer key plus little-endian dbid,
 represented as hex. Positive dbids are allocated/managed by the caller and must
@@ -123,9 +129,12 @@ and per-channel-type HTLC sighash bytes/DER conversion.
 
 `validate_holder` and `revoke_holder` are separate. The node must durably save
 its commitment transition **before** asking to release a revocation secret.
-No permissive approver or arbitrary-message tunnel exists. Only explicit
-keysend admission authorization is provided here; invoice authorization,
-payee validation and trusted user-facing approval flows are still required.
+No permissive approver or arbitrary-hash signing tunnel exists. The separate
+approval socket accepts signed positive-amount regtest BOLT11 invoices through
+VLS `add_invoice`, or explicit keysend authorization. The node credential cannot
+authorize payments. The operator can use `tools/vls-approve/approve.py`; the node
+never receives its approval credential. `payment_preimages` records channel-bound
+settlement information and persists NodeState in the receipt transaction.
 
 ## Durable receipts and boundaries
 
@@ -144,7 +153,11 @@ For read-only reconciliation:
 {"token":"YOUR_NODE_TOKEN","id":"probe-1","command":{"op":"reconcile","id":"sign-1","command":{"op":"sign_remote","channel":"...","point":"...","number":1,"feerate":253,"holder_sat":2999000,"peer_sat":0,"offered":[],"received":[]}}}
 ```
 
-A matching committed receipt returns `status=completed` plus its result. An
+A matching committed receipt returns `status=completed` plus its result. Sticky
+data-loss or channel-close policy invalidates unsafe normal-operation receipts
+before replay/reconciliation and returns `status=invalidated`. The same selected
+force-close result can be replayed until data loss is marked. Hex identifiers are
+canonicalized before every custom safety-metadata lookup. An
 absent receipt returns `status=not_found`; the transaction containing both policy
 state and receipt did not commit. Reconciliation does not execute the operation
 or allocate a receipt. Receipt IDs are immutable and never evicted. Limits are
@@ -153,8 +166,17 @@ capacity exhaustion fails closed. No safe compaction/maintenance is implemented.
 
 This prototype establishes local crash persistence, not rollback protection,
 cloned-store fencing or an adversarial operating-system boundary. No chain
-monitoring, SPV/oracle proof or mainnet behavior is established. Ordinary invoices,
-ECDH/node message signing, wallet funding, HTLC claims/sweeps/penalties, forwarding,
-cooperative-close validation vectors and holder-revocation transport vectors are
-remaining integration work. Some allowlisted operations are not yet exercised
-by the process test. No native-signer fallback should be used for VLS channels.
+monitoring, SPV/oracle proof or mainnet behavior is established by the gateway
+process proof. The adapter now supports VLS-owned node ECDH, BOLT11 invoice
+signing/tracking, typed gossip signing, stock Native wallet public derivation,
+and policy-checked P2WPKH funding witnesses. Native wallet children interleave
+receive/change indexes as `2*index + change`, beneath the stock account `m/0/0`.
+Shutdown and cooperative-close destinations must match a VLS wallet path.
+The node VLS profile refuses dust HTLC exposure before commitment acceptance.
+Pinned VLS phase2 consumes nondust outputs; supplying logical trimmed HTLCs
+would violate its transaction policy, while omitting settled dust payments
+causes a balance-policy shortfall. Balance enforcement stays enabled.
+HTLC claims/sweeps/penalties, anchors, taproot, splicing, dual funding, auxiliary
+node encryption and BOLT12 remain outside this adapter slice. Some allowlisted
+operations are not exercised by the standalone process test; node/peer acceptance
+results are documented separately. There is no native-signer fallback.

@@ -28,7 +28,14 @@ public sealed class SigningWorkflowDbRepository(NLightningDbContext context) : I
                                     .Where(e => e.ChannelId.Equals(channelId)
                                              && e.State != (int)SigningWorkflowState.Consumed)
                                     .OrderBy(e => e.CreatedAtTicks).ToListAsync();
-        return entities.Select(Map).ToList();
+        // A holder-validation workflow can be consumed and its revocation intent staged in one save.
+        // Overlay tracked lifecycle changes before checking the channel's pending ownership.
+        var tracked = context.ChangeTracker.Entries<SigningWorkflowEntity>()
+                             .Where(e => e.State != EntityState.Deleted && e.Entity.ChannelId == channelId)
+                             .Select(e => e.Entity).ToDictionary(e => e.WorkflowId);
+        var merged = entities.Select(e => tracked.TryGetValue(e.WorkflowId, out var current) ? current : e)
+                             .Concat(tracked.Values.Where(e => entities.All(saved => saved.WorkflowId != e.WorkflowId)));
+        return merged.Where(e => e.State != (int)SigningWorkflowState.Consumed).Select(Map).ToList();
     }
 
     public async Task<IReadOnlyList<SigningRequest>> GetRequestsAsync(Guid workflowId)

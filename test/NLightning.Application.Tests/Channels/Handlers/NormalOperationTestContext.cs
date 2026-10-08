@@ -27,6 +27,8 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Models;
 using Domain.Serialization.Interfaces;
+using Domain.Signing.Recovery;
+using Domain.Signing.Vls;
 using Infrastructure.Crypto.Hashes;
 
 /// <summary>
@@ -127,7 +129,9 @@ internal sealed class NormalOperationTestContext
 
     private delegate bool TryGetChannelDelegate(ChannelId channelId, out ChannelModel channel);
 
-    public ChannelStateTransitionService CreateTransitions(Application.Payments.Events.HtlcEventMonitor? htlcMonitor = null)
+    public ChannelStateTransitionService CreateTransitions(Application.Payments.Events.HtlcEventMonitor? htlcMonitor = null,
+                                                           IRemoteSigningWorkflowCoordinator? signingWorkflows = null,
+                                                           IVlsChannelSigner? vlsSigner = null)
     {
         var secretStorageFactory = new Mock<ISecretStorageServiceFactory>();
         secretStorageFactory.Setup(f => f.CreatePerCommitmentStorage()).Returns(Shachain.Object);
@@ -135,7 +139,8 @@ internal sealed class NormalOperationTestContext
         return new ChannelStateTransitionService(ChannelMemoryRepository.Object, Events, Ports, LightningSigner.Object,
                                                  NullLogger<ChannelStateTransitionService>.Instance, MessageFactory,
                                                  MessageSerializer.Object, Options.Create(NodeOptions),
-                                                 secretStorageFactory.Object, UnitOfWork.Object, htlcMonitor: htlcMonitor);
+                                                 secretStorageFactory.Object, UnitOfWork.Object, htlcMonitor: htlcMonitor,
+                                                 signingWorkflows: signingWorkflows, vlsSigner: vlsSigner);
     }
 
     /// <summary>Replaces the channel's snapshot, as a persisted transition would.</summary>

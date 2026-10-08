@@ -44,11 +44,20 @@ internal class GetAddressIpcHandler : IIpcCommandHandler
                                        throw new NullReferenceException(
                                            $"Error activating service {nameof(IBitcoinWalletService)}");
 
+            var supported = walletAddressService.SupportedWalletAddressTypes;
+            var selected = request.UseDefaultAddressType
+                ? (supported & AddressType.P2Tr) != 0 ? AddressType.P2Tr : AddressType.P2Wpkh
+                : request.AddressType;
+            selected &= supported;
+            if (selected == 0)
+                return IpcErrorFactory.CreateErrorEnvelope(envelope, ErrorCodes.InvalidOperation,
+                    "The requested wallet address type is unsupported by the active signing backend.");
+
             // Get unused addresses by type
-            if (request.AddressType.HasFlag(AddressType.P2Tr))
+            if (selected.HasFlag(AddressType.P2Tr))
                 p2Tr = (await walletAddressService.GetUnusedAddressAsync(AddressType.P2Tr, false)).Address;
 
-            if (request.AddressType.HasFlag(AddressType.P2Wpkh))
+            if (selected.HasFlag(AddressType.P2Wpkh))
                 p2Wpkh = (await walletAddressService.GetUnusedAddressAsync(AddressType.P2Wpkh, false)).Address;
 
             // Create a success response

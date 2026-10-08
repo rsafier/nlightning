@@ -9805,13 +9805,13 @@ P3 (105b1f7a) migrated the gossip family: channel_announcement/node_announcement
 - **Fix sketch:** design authenticated retention/checkpointing with durable operation identity and nonce/session history; prove delayed retries, interrupted compaction and quota recovery fail safely.
 - **Blocks/Blocked-by:** NL-1304; external state freshness/fencing for enclave use
 
-### NL-1307 Production VLS semantic adapter remains unimplemented
+### NL-1307 VLS prototype needs complete on-chain and deployment acceptance
 - **Status:** open
 - **Severity:** medium
 - **Kind:** gap
-- **Location:** `tools/vls-compat-spike/`, `tools/vls-gateway/`, `docs/agents/VLS_COMPATIBILITY_SPIKE.md`, application commitment/revocation hooks
-- **Evidence:** pinned VLS core signing/validation, authorization refusals and derivation differences are executable research. The core spike uses artificial fixtures and DummyPersister. The subsequent `tools/vls-gateway` prototype has authenticated Unix semantic commands, separately credentialed keysend approval, injected seed and atomic transactional Redb policy-state/receipts, plus actual-process restart and policy/signature checks. It still has no NLightning C# adapter, live payment settlement, invoice authorization or signer-capability negotiation. Stock splice/taproot support is insufficient for the current node feature set.
-- **Fix sketch:** FAFO owner decision (2026-10-07): only user, no prior-version compatibility requirement; use stock VLS derivation with fresh identities/wallets/channels and exclude legacy key/state migration. Implement a fresh-node ECDSA semantic adapter with explicit authorization and durable VLS persistence; suppress unsupported features before negotiation and prove live payments and all on-chain recovery paths without native fallback.
+- **Location:** `src/NLightning.Infrastructure.VlsSigning/`, `tools/vls-gateway/`, `docs/agents/VLS_NODE_MVP.md`, application commitment/revocation hooks
+- **Evidence:** pinned VLS core signing/validation, authorization refusals and derivation differences are executable research. The core spike uses artificial fixtures and DummyPersister. The subsequent `tools/vls-gateway` prototype has authenticated Unix semantic commands, separately credentialed keysend approval, injected seed and atomic transactional Redb policy-state/receipts, plus actual-process restart and policy/signature checks. The fresh-node sprint adds a C# semantic adapter, signed-invoice approval and a conservative regtest private-channel profile, with durable allocation/opening/commitment/activation/revocation workflows. Current acceptance execution is recorded in `docs/agents/VLS_NODE_MVP.md`. Full on-chain claims/penalties/sweeps, independent chain tracking, broader close recovery, external state freshness/fencing and enclave deployment remain unproven. Stock splice/taproot support is insufficient for the current node feature set.
+- **Fix sketch:** FAFO owner decision (2026-10-07): only user, no prior-version compatibility requirement; use stock VLS derivation with fresh identities/wallets/channels and exclude legacy key/state migration. Extend the fresh-node ECDSA adapter beyond its bounded regtest proof: add complete on-chain claims and sweeps, independent chain tracking, application recovery for uncertain funding/close outcomes, and externally fenced signer state without native fallback.
 - **Blocks/Blocked-by:** NL-1304; scope and acceptance gates in the VLS assessment
 
 ### NL-1308 Nitro signer deployment needs attested provisioning and trustworthy external state

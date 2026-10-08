@@ -2417,6 +2417,66 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.ToTable("SigningWorkflows");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.VlsChannelMappingEntity", b =>
+                {
+                    b.Property<uint>("KeyIndex")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("AllocationEnvelope")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<Guid>("AllocationRequestId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<byte[]>("AllocationResponse")
+                        .IsConcurrencyToken()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<long>("CreatedAtTicks")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ulong>("DbId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Network")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<byte[]>("PeerId")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("SignerIdentity")
+                        .IsRequired()
+                        .HasMaxLength(33)
+                        .HasColumnType("BLOB");
+
+                    b.Property<long>("UpdatedAtTicks")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("VlsChannelId")
+                        .HasMaxLength(41)
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("KeyIndex");
+
+                    b.HasIndex("AllocationRequestId")
+                        .IsUnique();
+
+                    b.HasIndex("ChannelId")
+                        .IsUnique();
+
+                    b.HasIndex("DbId")
+                        .IsUnique();
+
+                    b.ToTable("VlsChannelMappings");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.ChannelCloseEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")

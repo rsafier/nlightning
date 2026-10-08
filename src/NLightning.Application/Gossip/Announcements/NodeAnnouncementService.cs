@@ -15,6 +15,7 @@ using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Payloads;
+using Domain.Signing.Vls;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 
@@ -232,7 +233,10 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
         var unsigned = new NodeAnnouncementPayload(NodeAnnouncementPayload.EmptySignature, fields.Features, timestamp,
                                                    nodeId, fields.Color, fields.Alias, fields.Addresses,
                                                    fields.ExtraData);
-        var announcement = unsigned.WithSignature(_lightningSigner.SignNodeMessage(unsigned.GetSignatureHash()));
+        var signature = _lightningSigner is IVlsGossipSigner vls
+                            ? vls.SignNodeAnnouncement(unsigned.GetSignedData())
+                            : _lightningSigner.SignNodeMessage(unsigned.GetSignatureHash());
+        var announcement = unsigned.WithSignature(signature);
 
         cancellationToken.ThrowIfCancellationRequested();
         // Our row has one writer per protocol here; the v2 columns of the stored row are kept (NL-1142)

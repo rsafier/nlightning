@@ -119,10 +119,12 @@ Do not equate VLS policy enforcement with full recovery autonomy. Its current RE
 ## Implementation sequence and acceptance gates
 
 Current sprint: [node recovery](REMOTE_SIGNING_RECOVERY.md) covers normal commitment
-signing, taproot reconnect signing and post-save revocation release. The separate
-[VLS gateway](../../tools/vls-gateway/README.md) exercises authenticated semantic
-commands and transactional policy-state/receipt persistence. Neither closes the
-broader on-chain, deployment fencing or live VLS adapter acceptance gates below.
+signing, taproot reconnect signing and post-save revocation release. The [VLS node prototype](VLS_NODE_MVP.md) integrates the authenticated semantic
+Rust gateway, separate operator approval, transactional policy-state/receipt
+persistence and durable node workflows for fresh private ECDSA channels. Its
+validation record distinguishes process fixtures, node kills and actual LND
+interop. Broader on-chain recovery and deployment fencing remain acceptance
+gates below.
 The branch incorporates FAFO `dd598216` (PR #32); no legacy compatibility is required.
 
 1. **Contracts and capability spike.** Inventory every secret consumer; introduce public identity/wallet metadata, invoice signing and scoped auxiliary operations; define operation IDs/error categories and capability negotiation. Implement a small VLS regtest spike for setup, payment and revocation to validate the protocol mapping before committing to its service architecture.

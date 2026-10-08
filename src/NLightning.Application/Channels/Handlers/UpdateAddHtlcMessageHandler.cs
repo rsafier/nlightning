@@ -48,6 +48,28 @@ public class UpdateAddHtlcMessageHandler : IChannelMessageHandler<UpdateAddHtlcM
                 CloseConnection = true
             };
 
+        // A node crash can leave an incoming signing workflow with its original updates already on disk.
+        // The peer retransmits the whole diff. Only those exact, still-uncommitted inputs may be ignored.
+        if (await _transitions.HasPendingVlsHolderValidationAsync(channel)
+         && channel.Commitments!.GetHtlc(HtlcDirection.Incoming, payload.Id) is { } saved)
+        {
+            if (saved.State != HtlcState.RcvdAddHtlc || saved.Removal is not null
+             || saved.AmountMsat != payload.Amount.MilliSatoshi
+             || !((byte[])saved.PaymentHash).AsSpan().SequenceEqual(payload.PaymentHash.Span)
+             || saved.CltvExpiry != payload.CltvExpiry
+             || !saved.OnionRoutingPacket.Span.SequenceEqual(payload.OnionRoutingPacket.Span)
+             || saved.PathKey != message.BlindedPathTlv?.PathKey
+             || !saved.WireCustomRecords.Span.SequenceEqual(WireCustomRecordCodec.Encode(message.CustomRecords))
+             || !HasCanonicalExtension(message))
+                throw new ChannelWarningException(
+                    "Replayed update_add_htlc does not match the durable VLS holder-validation input",
+                    payload.ChannelId, "Replayed update_add_htlc differs from the pending signing input")
+                {
+                    CloseConnection = true
+                };
+            return [];
+        }
+
         CommitmentsResult result;
         try
         {
@@ -61,6 +83,7 @@ public class UpdateAddHtlcMessageHandler : IChannelMessageHandler<UpdateAddHtlcM
             throw ChannelStateTransitionService.ToPeerException(e, payload.ChannelId);
         }
 
+        _transitions.ValidateVlsIncomingDust(channel, result.Next);
         await _transitions.CommitAsync(channel, result);
 
         if (_logger.IsEnabled(LogLevel.Debug))
@@ -69,4 +92,25 @@ public class UpdateAddHtlcMessageHandler : IChannelMessageHandler<UpdateAddHtlcM
 
         return [];
     }
+    private static bool HasCanonicalExtension(UpdateAddHtlcMessage message)
+    {
+        var tlvs = message.Extension?.GetTlvs().ToArray() ?? [];
+        var withPath = message.BlindedPathTlv is not null;
+        if (tlvs.Length != message.CustomRecords.Count + (withPath ? 1 : 0)) return false;
+        var index = 0;
+        if (message.BlindedPathTlv is { } path)
+        {
+            if (tlvs[index].Type.Value != 0
+             || !tlvs[index].Value.AsSpan().SequenceEqual((byte[])path.PathKey)) return false;
+            index++;
+        }
+        foreach (var record in message.CustomRecords)
+        {
+            if (tlvs[index].Type.Value != record.Type
+             || !tlvs[index].Value.AsSpan().SequenceEqual(record.Value.Span)) return false;
+            index++;
+        }
+        return true;
+    }
+
 }

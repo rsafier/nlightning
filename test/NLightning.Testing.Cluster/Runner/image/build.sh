@@ -34,6 +34,15 @@ cp -R "$out"/. "$stage"/
 # The host's apphost (a macOS or Windows executable) is useless in the Linux image; the Job runs `dotnet <dll>`.
 rm -f "$stage/$assembly" "$stage/$assembly.exe"
 cp "$here/Dockerfile" "$stage/Dockerfile"
+# Optional, already built pinned VLS gateway for actual process interoperability proofs.
+# No Rust build or downloads occur inside the runner image.
+if [[ -n "${NLTG_VLS_GATEWAY_BINARY:-}" ]]; then
+  if [[ ! -f "$NLTG_VLS_GATEWAY_BINARY" || ! -x "$NLTG_VLS_GATEWAY_BINARY" ]]; then
+    echo 'NLTG_VLS_GATEWAY_BINARY must name an executable built by tools/vls-gateway/run.sh build' >&2
+    exit 2
+  fi
+  cp -- "$NLTG_VLS_GATEWAY_BINARY" "$stage/nlightning-vls-gateway"
+fi
 
 docker build --label "nltg.spike=true" --label "app.kubernetes.io/managed-by=nltg-test-harness" \
   -t "$image" "$stage"

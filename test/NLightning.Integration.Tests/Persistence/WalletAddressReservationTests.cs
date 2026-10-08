@@ -229,6 +229,8 @@ public class WalletAddressReservationTests
     private static BitcoinWalletService CreateWallet(UnitOfWork uow)
     {
         var keyManager = new Mock<ISecureKeyManager>();
+        keyManager.SetupGet(keys => keys.SupportedWalletAddressTypes)
+                  .Returns(AddressType.P2Wpkh | AddressType.P2Tr);
         keyManager.Setup(k => k.GetWalletPublicKey(It.IsAny<uint>(), It.IsAny<bool>(), It.IsAny<AddressType>()))
                   .Returns((uint index, bool isChange, AddressType _) =>
                                (Domain.Crypto.ValueObjects.CompactPubKey)s_masterKey.Derive(isChange ? 1u : 0u)

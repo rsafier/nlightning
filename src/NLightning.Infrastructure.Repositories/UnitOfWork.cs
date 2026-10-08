@@ -80,6 +80,7 @@ public class UnitOfWork : IUnitOfWork
 
     // Node repositories
     private SigningWorkflowDbRepository? _signingWorkflowDbRepository;
+    private VlsChannelMappingDbRepository? _vlsChannelMappingDbRepository;
     private PeerDbRepository? _peerDbRepository;
     private PeerStorageDbRepository? _peerStorageDbRepository;
     private PeerStorageRetrievalDbRepository? _peerStorageRetrievalDbRepository;
@@ -170,6 +171,9 @@ public class UnitOfWork : IUnitOfWork
         _channelSigningInfoDbRepository ??= new ChannelSigningInfoDbRepository(_context);
 
     public IGraphDbRepository GraphDbRepository => _graphDbRepository ??= new GraphDbRepository(_context);
+
+    public Domain.Signing.Vls.IVlsChannelMappingDbRepository VlsChannelMappingDbRepository =>
+        _vlsChannelMappingDbRepository ??= new VlsChannelMappingDbRepository(_context);
 
     public Domain.Signing.Recovery.ISigningWorkflowDbRepository SigningWorkflowDbRepository =>
         _signingWorkflowDbRepository ??= new SigningWorkflowDbRepository(_context);

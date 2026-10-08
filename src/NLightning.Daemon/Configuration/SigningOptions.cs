@@ -13,20 +13,22 @@ public sealed class SigningOptions
     public int TimeoutSeconds { get; set; } = 15;
     public string? ExpectedNodePublicKey { get; set; }
 
-    public bool IsRemote => string.Equals(Mode, "RemoteNative", StringComparison.OrdinalIgnoreCase);
+    public bool IsRemoteNative => string.Equals(Mode, "RemoteNative", StringComparison.OrdinalIgnoreCase);
+    public bool IsVls => string.Equals(Mode, "Vls", StringComparison.OrdinalIgnoreCase);
+    public bool IsRemote => IsRemoteNative || IsVls;
 
     public IReadOnlyList<string> GetValidationErrors()
     {
         var errors = new List<string>();
         if (!IsRemote && !string.Equals(Mode, "Local", StringComparison.OrdinalIgnoreCase))
-            errors.Add("Signing:Mode must be Local or RemoteNative.");
+            errors.Add("Signing:Mode must be Local, RemoteNative or Vls.");
         if (!IsRemote)
             return errors;
 
         if (!Path.IsPathFullyQualified(SocketPath))
-            errors.Add("Signing:SocketPath must be an absolute Unix socket path in RemoteNative mode.");
+            errors.Add("Signing:SocketPath must be an absolute Unix socket path in remote signing mode.");
         if (!Path.IsPathFullyQualified(AuthTokenFile))
-            errors.Add("Signing:AuthTokenFile must be an absolute path in RemoteNative mode.");
+            errors.Add("Signing:AuthTokenFile must be an absolute path in remote signing mode.");
         if (TimeoutSeconds is < 1 or > 300)
             errors.Add("Signing:TimeoutSeconds must be between 1 and 300.");
         if (ExpectedNodePublicKey is { } publicKey

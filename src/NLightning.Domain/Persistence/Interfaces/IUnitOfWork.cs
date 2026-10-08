@@ -166,6 +166,9 @@ public interface IUnitOfWork : IDisposable
     Domain.Signing.Recovery.ISigningWorkflowDbRepository SigningWorkflowDbRepository =>
         throw new NotSupportedException("This unit of work does not store signing workflows.");
 
+    Domain.Signing.Vls.IVlsChannelMappingDbRepository VlsChannelMappingDbRepository =>
+        throw new NotSupportedException("This unit of work does not store VLS channel mappings.");
+
     Task<ICollection<PeerModel>> GetPeersForStartupAsync();
     void AddUtxo(UtxoModel utxoModel);
     void TrySpendUtxo(TxId transactionId, uint index);

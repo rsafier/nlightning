@@ -20,9 +20,11 @@ using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Signing.Vls;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Services;
 
 public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedMessage>
 {
@@ -33,6 +35,7 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
     private readonly IFundingTransactionBuilder _fundingTransactionBuilder;
     private readonly IFundingTransactionModelFactory _fundingTransactionModelFactory;
     private readonly ILightningSigner _lightningSigner;
+    private readonly ChannelStateTransitionService? _transitions;
     private readonly ILogger<FundingSignedMessageHandler> _logger;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
@@ -44,7 +47,8 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
                                        IFundingTransactionBuilder fundingTransactionBuilder,
                                        IFundingTransactionModelFactory fundingTransactionModelFactory,
                                        ILightningSigner lightningSigner, ILogger<FundingSignedMessageHandler> logger,
-                                       IUnitOfWork unitOfWork, IUtxoMemoryRepository utxoMemoryRepository)
+                                       IUnitOfWork unitOfWork, IUtxoMemoryRepository utxoMemoryRepository,
+                                       ChannelStateTransitionService? transitions = null)
     {
         _blockchainMonitor = blockchainMonitor;
         _channelMemoryRepository = channelMemoryRepository;
@@ -53,6 +57,7 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
         _fundingTransactionBuilder = fundingTransactionBuilder;
         _fundingTransactionModelFactory = fundingTransactionModelFactory;
         _lightningSigner = lightningSigner;
+        _transitions = transitions;
         _logger = logger;
         _unitOfWork = unitOfWork;
         _utxoMemoryRepository = utxoMemoryRepository;
@@ -76,6 +81,11 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
         if (!_channelMemoryRepository.TryGetChannel(payload.ChannelId, out var channel))
             throw new ChannelErrorException("This channel has never been negotiated", payload.ChannelId);
 
+        using var openingWorkflow = _lightningSigner is IVlsChannelSigner
+            ? await (_transitions ?? throw new InvalidOperationException("VLS opening requires transitions."))
+                   .BeginOpeningAsync(channel)
+            : null;
+        openingWorkflow?.Activate();
         SignedTransaction unsignedFundingTransaction;
         uint fundingOutputIndex;
         LightningMoney fundingFee;
@@ -106,8 +116,11 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
             else
             {
                 // Validate remote signature for our local commitment transaction
-                _lightningSigner.ValidateSignature(channel.ChannelId, payload.Signature,
-                                                   localUnsignedCommitmentTransaction);
+                if (_lightningSigner is IVlsChannelSigner vls)
+                    vls.ValidateHolderCommitment(channel, localCommitmentTransaction, payload.Signature, []);
+                else
+                    _lightningSigner.ValidateSignature(channel.ChannelId, payload.Signature,
+                                                       localUnsignedCommitmentTransaction);
 
                 // Update the channel with the new signature
                 channel.UpdateLastReceivedSignature(payload.Signature);
@@ -128,6 +141,15 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
              || channel.FundingOutput?.Index != fundingTransaction.FundingOutputIndex)
                 throw new ChannelErrorException("Rebuilt funding transaction does not match the channel funding outpoint",
                                                 channel.ChannelId, "Sorry, we had an internal error");
+
+            if (openingWorkflow is not null)
+            {
+                // VLS requires an active, durably held commitment before signing its funding transaction.
+                await PersistChannelAsync(channel, uow =>
+                    _transitions!.StageOpeningCompletionAsync(channel, openingWorkflow, uow, true));
+                openingWorkflow.Dispose();
+                await _transitions!.ActivateOpeningAsync(channel);
+            }
 
             // Sign the transaction
             var allSigned = _lightningSigner.SignFundingTransaction(channel.ChannelId, unsignedFundingTransaction);

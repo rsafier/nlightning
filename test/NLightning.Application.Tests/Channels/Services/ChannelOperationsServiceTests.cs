@@ -23,6 +23,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.ValueObjects;
 using Domain.Protocol.Tlv;
+using Domain.Signing.Vls;
 using Handlers;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using static Handlers.NormalOperationTestContext;
@@ -61,6 +62,40 @@ public class ChannelOperationsServiceTests
         _probe.Setup(p => p.IsAliveAsync(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>(),
                                           It.IsAny<CancellationToken>()))
               .ReturnsAsync(true);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FractionalSatoshiOffersAreRefusedOnlyByVlsBeforePersistenceOrPublication(bool vls)
+    {
+        var signer = new Mock<IVlsChannelSigner>(MockBehavior.Strict);
+        var service = CreateService(vlsSigner: vls ? signer.Object : null);
+        var before = _context.State;
+        var hash = HashOf(SecretOf(1));
+        var offer = service.OfferHtlcAsync(TestChannelId, LightningMoney.MilliSatoshis(10_000_001UL),
+                                         hash, 600, s_onion, null, HtlcOrigin.Local(hash),
+                                         TestContext.Current.CancellationToken);
+        if (vls)
+        {
+            var refused = await Assert.ThrowsAsync<CommitmentRefusedException>(() => offer);
+            Assert.Equal("VLS-AMOUNT-PRECISION", refused.RequirementId);
+            Assert.Same(before, _context.State);
+            Assert.Empty(_context.Calls);
+            Assert.Empty(_context.Applied);
+            Assert.Empty(_published);
+            _scheduler.Verify(s => s.Schedule(It.IsAny<ChannelId>()), Times.Never);
+            _probe.Verify(p => p.IsAliveAsync(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>(),
+                                              It.IsAny<CancellationToken>()), Times.Never);
+        }
+        else
+        {
+            Assert.Equal(0UL, await offer);
+            Assert.Equal(["apply", "save", "publish", "schedule"], _context.Calls);
+            Assert.Equal(10_000_001UL, Assert.IsType<UpdateAddHtlcMessage>(Assert.Single(_published))
+                                           .Payload.Amount.MilliSatoshi);
+        }
+        signer.VerifyNoOtherCalls();
     }
 
     [Fact]
@@ -502,7 +537,8 @@ public class ChannelOperationsServiceTests
     }
 
     private ChannelOperationsService CreateService(IBlockchainMonitor? blockchainMonitor = null,
-                                                   INodeDrainState? nodeDrainState = null)
+                                                   INodeDrainState? nodeDrainState = null,
+                                                   IVlsChannelSigner? vlsSigner = null)
     {
         var services = new ServiceCollection();
         services.AddScoped(_ => _context.UnitOfWork.Object);
@@ -515,6 +551,6 @@ public class ChannelOperationsServiceTests
                                             NullLogger<ChannelOperationsService>.Instance,
                                             Options.Create(_context.NodeOptions), _probe.Object,
                                             provider.GetRequiredService<IServiceScopeFactory>(),
-                                            blockchainMonitor, nodeDrainState: nodeDrainState);
+                                            blockchainMonitor, nodeDrainState: nodeDrainState, vlsSigner: vlsSigner);
     }
 }

@@ -54,6 +54,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Domain.Signing.Recovery;
+using Domain.Signing.Vls;
 using Handlers;
 using Infrastructure;
 using Infrastructure.Bitcoin;
@@ -67,6 +68,7 @@ using Infrastructure.Persistence;
 using Infrastructure.RemoteSigning;
 using Infrastructure.Repositories;
 using Infrastructure.Serialization;
+using Infrastructure.VlsSigning;
 using Interfaces;
 using Services;
 using Services.Ipc;
@@ -78,12 +80,13 @@ public static class NodeServiceExtensions
     /// Registers all NLTG application services for dependency injection
     /// </summary>
     public static IHostBuilder ConfigureNltgServices(this IHostBuilder hostBuilder, ISecureKeyManager secureKeyManager,
-                                                     string configPath, RemoteSignerConnection? remoteConnection = null)
+                                                     string configPath, RemoteSignerConnection? remoteConnection = null,
+                                                         VlsSignerConnection? vlsConnection = null)
     {
         return hostBuilder.ConfigureServices((hostContext, services) =>
         {
             // The whole node graph, shared with the Docker integration tests
-            services.AddNltgNodeServices(hostContext.Configuration, secureKeyManager, remoteConnection);
+            services.AddNltgNodeServices(hostContext.Configuration, secureKeyManager, remoteConnection, vlsConnection);
 
             // The gossip graph (ingress + pruner, BOLT 7 G2-T4/G2-T5) is registered first: it starts before the daemon
             // service (the pruner follows the chain monitor's first block) and stops after it (the graph is written
@@ -95,10 +98,12 @@ public static class NodeServiceExtensions
 
             // Static channel backups (wave rf1 R1): <configPath>/channel.backup and its monitor, started after the
             // daemon service loaded the channels and stopped before it
-            services.AddChannelBackupFile(configPath);
+            if (vlsConnection is null)
+                services.AddChannelBackupFile(configPath);
 
             // Expired unpaid BOLT 12 invoice rows pruned on a timer (NL-448)
-            services.AddExpiredBolt12InvoicePruning();
+            if (vlsConnection is null)
+                services.AddExpiredBolt12InvoicePruning();
 
             // Cashu plan C1 (NL-992): the CDK payment processor's gRPC server, after the node started (off unless
             // Cashu:PaymentProcessor:Enabled)
@@ -149,13 +154,20 @@ public static class NodeServiceExtensions
     public static IServiceCollection AddNltgNodeServices(this IServiceCollection services,
                                                          IConfiguration configuration,
                                                          ISecureKeyManager secureKeyManager,
-                                                         RemoteSignerConnection? remoteConnection = null)
+                                                         RemoteSignerConnection? remoteConnection = null,
+                                                         VlsSignerConnection? vlsConnection = null)
     {
         var signingOptions = SigningOptions.Read(configuration);
-        if (signingOptions.IsRemote != (remoteConnection is not null))
+        if (signingOptions.IsRemoteNative != (remoteConnection is not null)
+         || signingOptions.IsVls != (vlsConnection is not null))
             throw new ArgumentException("RemoteNative signing requires a remote connection; Local signing requires a local key manager.");
-        if (signingOptions.IsRemote && secureKeyManager is not RemoteSecureKeyManager)
+        if (signingOptions.IsRemoteNative && secureKeyManager is not RemoteSecureKeyManager)
             throw new ArgumentException("RemoteNative signing requires a remote key manager.");
+
+        if (signingOptions.IsVls && secureKeyManager is not VlsSecureKeyManager)
+            throw new ArgumentException("Vls signing requires a VLS key manager.");
+        if (signingOptions.IsVls)
+            configuration = VlsCapabilityProfile.Apply(configuration);
 
         // Register configuration and the node key
         services.AddSingleton(configuration);
@@ -290,7 +302,8 @@ public static class NodeServiceExtensions
 
         // Static channel backups and restore (wave rf1 R1, ClientCommand 21-23) and the operator commands (wave rf1
         // R4, disconnect = ClientCommand 24); each registers its client and IPC handlers once
-        services.AddChannelBackupNodeServices(configuration);
+        if (!signingOptions.IsVls)
+            services.AddChannelBackupNodeServices(configuration);
         services.AddOperatorIpcServices();
         // On-chain withdraw (wave m6 W1, ClientCommand 25)
         services.AddWithdrawIpcServices();
@@ -303,8 +316,11 @@ public static class NodeServiceExtensions
         services.AddSingleton<INodeCommandDispatcher, ClientCommandDispatcher>();
         // BOLT 12 offers (wave B12): createoffer/listoffers/disableoffer (ClientCommand 26-28) and payoffer/
         // fetchinvoice (29-30); the Application registers the offer services themselves (AddApplicationServices)
-        services.AddOfferIpcServices();
-        services.AddOfferSendIpcServices();
+        if (!signingOptions.IsVls)
+        {
+            services.AddOfferIpcServices();
+            services.AddOfferSendIpcServices();
+        }
         // Keysend (wave lh1 L3, ClientCommand 31)
         services.AddKeysendIpcServices();
         services.Configure<OfferOptions>(configuration.GetSection(OfferOptions.SectionName));
@@ -315,7 +331,8 @@ public static class NodeServiceExtensions
         // BOLT 1 peer storage (wave rf1 R2, NL-010): after the backup services, so a static-channel-backup blob
         // provider registered there would win over the default channel list (TryAdd keeps the first)
         services.Configure<PeerStorageOptions>(configuration.GetSection(PeerStorageOptions.SectionName));
-        services.AddPeerStorageServices();
+        if (!signingOptions.IsVls)
+            services.AddPeerStorageServices();
         // listpeerstorage (wave lh1 L4, ClientCommand 32, NL-432)
         services.AddPeerStorageIpcServices();
 
@@ -387,6 +404,21 @@ public static class NodeServiceExtensions
             services.Replace(ServiceDescriptor.Singleton<ILightningSigner>(sp =>
                 new RemoteLightningSigner(remoteConnection, sp.GetRequiredService<IChannelSigningInfoSource>(),
                                            sp.GetRequiredService<IUtxoMemoryRepository>())));
+        }
+
+        if (vlsConnection is not null)
+        {
+            services.AddSingleton(vlsConnection);
+            services.AddSingleton<VlsChannelMappingRegistry>();
+            services.AddSingleton<VlsSigningWorkflowCoordinator>();
+            services.AddSingleton<IRemoteSigningWorkflowCoordinator>(sp =>
+                sp.GetRequiredService<VlsSigningWorkflowCoordinator>());
+            services.AddSingleton<VlsLightningSigner>(sp =>
+                new VlsLightningSigner(vlsConnection, sp.GetRequiredService<VlsChannelMappingRegistry>(),
+                    sp.GetRequiredService<IChannelSigningInfoSource>(), sp.GetRequiredService<IUtxoMemoryRepository>()));
+            services.Replace(ServiceDescriptor.Singleton<ILightningSigner>(sp => sp.GetRequiredService<VlsLightningSigner>()));
+            services.AddSingleton<IVlsChannelSigner>(sp => sp.GetRequiredService<VlsLightningSigner>());
+            services.AddSingleton<IVlsGossipSigner>(sp => sp.GetRequiredService<VlsLightningSigner>());
         }
 
         // BOLT 5 on-chain building blocks (output mapper, sweep and penalty builders); they need the commitment model
@@ -485,12 +517,16 @@ public static class NodeServiceExtensions
                      }
 
                      options.Features.ChainHashes = [options.BitcoinNetwork.ChainHash];
+                     if (signingOptions.IsVls)
+                         VlsCapabilityProfile.Apply(options);
                  })
                 .Validate(options =>
                  {
                      // BOLT 9: every advertised feature must have its dependencies set; BOLT 7 routing policy and
                      // reconnect delays must be sane (e.g. cltv_expiry_delta >= 34)
                      var errors = options.Features.GetValidationErrors().Concat(options.GetValidationErrors()).ToList();
+                     if (signingOptions.IsVls)
+                         errors.AddRange(VlsCapabilityProfile.GetValidationErrors(options));
                      errors.AddRange(NodeOptions.UnboundMoneyKeys
                                                 .Where(key => configuration.GetSection($"Node:{key}").Exists())
                                                 .Select(key => $"Node:{key} cannot be set in the configuration "

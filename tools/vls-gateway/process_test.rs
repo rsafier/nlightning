@@ -342,6 +342,46 @@ fn process_restart_atomic_receipts_policy_and_auth() {
         &funding_key,
     )
     .unwrap();
+    // A durable force-close guard invalidates normal-operation receipts, including hex aliases.
+    let closed_retry = d.call(
+        "force-close",
+        json!({"op":"force_close","channel":ch,"number":0}),
+    );
+    assert_eq!(closed_retry, closed);
+    let old = d.call(
+        "closed-reconcile",
+        json!({"op":"reconcile","id":"sign-0","command":remote(ch,0)}),
+    );
+    assert_eq!(old["status"], "invalidated");
+    let mut alias = remote(ch, 0);
+    alias["channel"] = json!(ch.to_uppercase());
+    assert_eq!(d.raw("uppercase-closed", alias, false, TOKEN)["ok"], false);
+    // Malformed upstream setup txid serde is rejected before it can panic.
+    let bad_setup = d.raw(
+        "bad-setup",
+        json!({"op":"setup","channel":ch,"setup":{"funding_outpoint":{"txid":"zz","vout":0}}}),
+        false,
+        TOKEN,
+    );
+    assert_eq!(bad_setup["ok"], false);
+    d.call(
+        "mark-loss",
+        json!({"op":"mark_data_loss","channel":ch.to_uppercase()}),
+    );
+    d.kill();
+    d.start(42);
+    // Data-loss persistence also invalidates previously completed force-close signatures.
+    assert_eq!(
+        d.raw(
+            "force-close",
+            json!({"op":"force_close","channel":ch,"number":0}),
+            false,
+            TOKEN
+        )["ok"],
+        false
+    );
+    let lost=d.call("lost-reconcile",json!({"op":"reconcile","id":"force-close","command":{"op":"force_close","channel":ch,"number":0}}));
+    assert_eq!(lost["status"], "invalidated");
     // Corrupt/malformed requests cannot terminate the owner.
     let mut malformed = UnixStream::connect(d.dir.join("node.sock")).unwrap();
     malformed.write_all(b"not-json\n").unwrap();

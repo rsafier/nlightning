@@ -21,6 +21,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Domain.Protocol.ValueObjects;
+using Domain.Signing.Vls;
 
 public class ChannelFactoryTests
 {
@@ -36,6 +37,91 @@ public class ChannelFactoryTests
         new(new Mock<IChannelIdFactory>().Object, new Mock<IChannelOpenValidator>().Object,
             new Mock<IFeeService>().Object, new Mock<ILightningSigner>().Object,
             new NodeOptions { MinimumChannelSize = LightningMoney.Satoshis(1_000) }, new Mock<ISha256>().Object);
+
+    [Fact]
+    public async Task FractionalInboundPushIsRejectedByVlsBeforeKeyAllocation()
+    {
+        var signer = new Mock<ILightningSigner>(MockBehavior.Strict);
+        signer.As<IVlsChannelSigner>();
+        var factory = CreateVlsRejectionFactory(signer.Object);
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()),
+                                               pushAmount: LightningMoney.MilliSatoshis(10_001UL));
+
+        var error = await Assert.ThrowsAsync<ChannelErrorException>(() =>
+            factory.CreateChannelV1AsNonInitiatorAsync(message, s_noSplice, s_remoteNodeId));
+
+        Assert.Contains("whole satoshis", error.Message);
+        Assert.Equal(s_temporaryChannelId, error.ChannelId);
+        Assert.Empty(signer.Invocations);
+    }
+
+    [Fact]
+    public async Task NativeInboundPushRetainsMillisatoshiPrecision()
+    {
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()),
+                                               pushAmount: LightningMoney.MilliSatoshis(10_001UL));
+
+        var channel = await CreateNonInitiatorChannelFactory().CreateChannelV1AsNonInitiatorAsync(
+            message, s_noSplice, s_remoteNodeId);
+
+        Assert.Equal(10_001UL, channel.LocalBalance.MilliSatoshi);
+        Assert.Equal(99_989_999UL, channel.RemoteBalance.MilliSatoshi);
+    }
+
+    [Theory]
+    [InlineData("public", "private channels only")]
+    [InlineData("push", "push amounts")]
+    [InlineData("taproot", "ECDSA channels only")]
+    [InlineData("funding", "whole satoshis")]
+    public async Task UnsupportedVlsOutboundOpenIsRejectedBeforeKeyAllocation(string kind, string reason)
+    {
+        var signer = new Mock<ILightningSigner>(MockBehavior.Strict);
+        var vls = signer.As<IVlsChannelSigner>();
+        var factory = CreateVlsRejectionFactory(signer.Object);
+        var request = CreateRequest(LightningMoney.Satoshis(100_000));
+        request.IsPublic = kind == "public";
+        request.IsSimpleTaproot = kind == "taproot";
+        if (kind == "push") request.PushAmount = LightningMoney.MilliSatoshis(1UL);
+        if (kind == "funding") request.FundingAmount = LightningMoney.MilliSatoshis(100_000_001UL);
+
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(() =>
+            factory.CreateChannelV1AsInitiatorAsync(request, s_noSplice, s_remoteNodeId));
+
+        Assert.Contains(reason, exception.Message);
+        ChannelBasepoints basepoints = default;
+        CompactPubKey point = default;
+        vls.Verify(s => s.CreateNewChannel(It.IsAny<CompactPubKey>(), out basepoints, out point), Times.Never);
+        signer.Verify(s => s.CreateNewChannel(out basepoints, out point), Times.Never);
+        Assert.Empty(signer.Invocations);
+    }
+
+    [Fact]
+    public async Task PublicVlsInboundOpenIsRejectedBeforeKeyAllocation()
+    {
+        var signer = new Mock<ILightningSigner>(MockBehavior.Strict);
+        var vls = signer.As<IVlsChannelSigner>();
+        var factory = CreateVlsRejectionFactory(signer.Object);
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()),
+                                               channelFlags: ChannelFlag.AnnounceChannel);
+
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(() =>
+            factory.CreateChannelV1AsNonInitiatorAsync(message, s_noSplice, s_remoteNodeId));
+
+        Assert.Contains("private channels only", exception.Message);
+        Assert.Equal(s_temporaryChannelId, exception.ChannelId);
+        ChannelBasepoints basepoints = default;
+        CompactPubKey point = default;
+        vls.Verify(s => s.CreateNewChannel(It.IsAny<CompactPubKey>(), out basepoints, out point), Times.Never);
+        signer.Verify(s => s.CreateNewChannel(out basepoints, out point), Times.Never);
+        Assert.Empty(signer.Invocations);
+    }
+
+    private static ChannelFactory CreateVlsRejectionFactory(ILightningSigner signer) =>
+        new(new Mock<IChannelIdFactory>(MockBehavior.Strict).Object,
+            new Mock<IChannelOpenValidator>(MockBehavior.Strict).Object,
+            new Mock<IFeeService>(MockBehavior.Strict).Object, signer,
+            new NodeOptions { MinimumChannelSize = LightningMoney.Satoshis(1_000) },
+            new Mock<ISha256>(MockBehavior.Strict).Object);
 
     [Fact]
     public async Task Given_AnchorsAndFundingBelowAnchorFeePlusReserve_When_CreatingChannelAsInitiator_Then_Throws()
@@ -655,7 +741,8 @@ public class ChannelFactoryTests
                                                                  LightningMoney? openerReserve = null,
                                                                  ChannelFlag channelFlags = ChannelFlag.None,
                                                                  UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv =
-                                                                     null)
+                                                                     null,
+                                                                 LightningMoney? pushAmount = null)
     {
         var payload = new OpenChannel1Payload(BitcoinNetwork.Mainnet.ChainHash, new ChannelFlags(channelFlags),
                                               s_temporaryChannelId, openerReserve ?? LightningMoney.Satoshis(1_000),
@@ -663,7 +750,7 @@ public class ChannelFactoryTests
                                               LightningMoney.Satoshis(1_000),
                                               s_remoteNodeId, LightningMoney.Satoshis(100_000), s_remoteNodeId,
                                               s_remoteNodeId, LightningMoney.Satoshis(1), 30,
-                                              LightningMoney.Satoshis(100_000), s_remoteNodeId, LightningMoney.Zero,
+                                              LightningMoney.Satoshis(100_000), s_remoteNodeId, pushAmount ?? LightningMoney.Zero,
                                               s_remoteNodeId, 144);
 
         return new OpenChannel1Message(payload, channelTypeTlv, upfrontShutdownScriptTlv);

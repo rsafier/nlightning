@@ -77,6 +77,7 @@ public sealed class KeysendClientHandler : IClientCommandHandler<KeysendClientRe
             var result = await _paymentService.PayKeysendAsync(
                              new PayKeysendRequest(request.Destination, request.Amount)
                              {
+                                 Preimage = request.Preimage,
                                  CustomRecords = customRecords
                              }, options, ct);
             return new PayInvoiceClientResponse(PaymentInfoClientResponse.FromModel(result.Payment))

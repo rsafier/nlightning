@@ -129,7 +129,11 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
 
     public async Task<GetAddressIpcResponse> GetAddressAsync(string? addressTypeString, CancellationToken ct = default)
     {
-        var req = new GetAddressIpcRequest { AddressType = ParseAddressType(addressTypeString) };
+        var req = new GetAddressIpcRequest
+        {
+            AddressType = ParseAddressType(addressTypeString),
+            UseDefaultAddressType = string.IsNullOrWhiteSpace(addressTypeString)
+        };
         var payload = MessagePackSerializer.Serialize(req, cancellationToken: ct);
         var env = new IpcEnvelope
         {
@@ -645,6 +649,7 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
         var req = new KeysendIpcRequest
         {
             Destination = arguments.Destination,
+            Preimage = arguments.Preimage,
             Amount = LightningMoney.Satoshis(arguments.AmountSat),
             CustomRecords = arguments.CustomRecords.Count == 0
                                 ? null

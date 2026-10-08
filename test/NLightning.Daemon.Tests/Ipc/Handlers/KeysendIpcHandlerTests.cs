@@ -25,6 +25,22 @@ using Transport.Ipc.Responses;
 /// </summary>
 public class KeysendIpcHandlerTests
 {
+    [Fact]
+    public async Task Given_AnOperatorSelectedPreimage_When_SentOverIpc_Then_ThePaymentUsesThatPreimage()
+    {
+        var preimage = new Secret(Enumerable.Range(0, 32).Select(value => (byte)value).ToArray());
+        var response = await GetHandler().HandleAsync(CreateEnvelope(new KeysendIpcRequest
+        {
+            Destination = s_node,
+            Amount = LightningMoney.Satoshis(100),
+            Preimage = preimage
+        }), TestContext.Current.CancellationToken);
+
+        Assert.Equal(IpcEnvelopeKind.Response, response.Kind);
+        Assert.NotNull(_request);
+        Assert.Equal(preimage, _request.Preimage);
+    }
+
     private static readonly MessagePackSerializerOptions s_options = NLightningMessagePackOptions.Options;
     private static readonly Hash s_hash = new(Enumerable.Repeat((byte)0x77, 32).ToArray());
     private static readonly CompactPubKey s_node =

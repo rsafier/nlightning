@@ -11,6 +11,31 @@ using Domain.Signing.Recovery;
 /// <summary>Versioned, length-delimited application state identity, independent of wire encodings.</summary>
 public static class SigningWorkflowSnapshot
 {
+    /// <summary>Opening inputs are bound before an engine snapshot or received signature exists.</summary>
+    public static SigningWorkflowDescriptor CreateOpening(ChannelModel channel, SigningWorkflowKind kind)
+    {
+        if (channel.RemoteKeySet is not { } remote || channel.FundingOutput?.TransactionId is null
+         || channel.FundingOutput.Index is null || channel.LocalCommitmentNumber != 0 || channel.RemoteCommitmentNumber != 0)
+            throw new InvalidOperationException("VLS opening requires complete commitment-zero funding inputs.");
+        var inputs = ChannelCommitments.Create(channel.ChannelId, CommitmentParams.FromChannel(channel),
+            channel.LocalBalance.MilliSatoshi, channel.RemoteBalance.MilliSatoshi,
+            checked((uint)channel.ChannelParams.FeeRateAmountPerKw.Satoshi),
+            remote.CurrentPerCommitmentCompactPoint, remote.CurrentPerCommitmentCompactPoint);
+        var descriptor = Create(channel, inputs, kind);
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream, Encoding.UTF8, true);
+        writer.Write(descriptor.SnapshotFingerprint);
+        writer.Write(channel.LocalUpfrontShutdownScript?.ToString() ?? "");
+        writer.Write(channel.RemoteUpfrontShutdownScript?.ToString() ?? "");
+        if (kind == SigningWorkflowKind.Activate)
+        {
+            writer.Write(channel.LastReceivedSignature is { } received ? Convert.ToHexString(received.Value) : "");
+            writer.Write(channel.LastSentSignature is { } sent ? Convert.ToHexString(sent.Value) : "");
+        }
+        writer.Flush();
+        return descriptor with { SnapshotFingerprint = SHA256.HashData(stream.ToArray()) };
+    }
+
     public static SigningWorkflowDescriptor Create(ChannelModel channel, ChannelCommitments commitments,
                                                     SigningWorkflowKind kind)
     {

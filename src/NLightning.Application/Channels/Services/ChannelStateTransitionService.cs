@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Channels.Services;
 
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Interfaces;
@@ -25,6 +26,8 @@ using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Domain.Serialization.Interfaces;
 using Domain.Signing.Recovery;
+using Domain.Signing.Vls;
+using Fees;
 using Interfaces;
 using Payments.Events;
 using Quiescence;
@@ -69,6 +72,7 @@ public sealed class ChannelStateTransitionService
     private readonly IUnitOfWork _unitOfWork;
     private readonly HtlcEventMonitor? _htlcMonitor;
     private readonly IRemoteSigningWorkflowCoordinator? _signingWorkflows;
+    private readonly IVlsChannelSigner? _vlsSigner;
     private ISigningWorkflowScope? _consumingSigningWorkflow;
     private readonly IServiceScopeFactory? _signingRecoveryScopes;
 
@@ -82,9 +86,11 @@ public sealed class ChannelStateTransitionService
                                          ICommitmentVerifier? commitmentVerifier = null,
                                          ICommitScheduler? commitScheduler = null, HtlcEventMonitor? htlcMonitor = null,
                                          IRemoteSigningWorkflowCoordinator? signingWorkflows = null,
-                                         IServiceScopeFactory? signingRecoveryScopes = null)
+                                         IServiceScopeFactory? signingRecoveryScopes = null,
+                                         IVlsChannelSigner? vlsSigner = null)
     {
         _signingWorkflows = signingWorkflows;
+        _vlsSigner = vlsSigner;
         _signingRecoveryScopes = signingRecoveryScopes;
         _htlcMonitor = htlcMonitor;
         _stfuReleaseScheduler = stfuReleaseScheduler;
@@ -213,13 +219,13 @@ public sealed class ChannelStateTransitionService
             throw new InvalidOperationException("Channel has an unfinished signing workflow; recover it before changing its state.");
 
         await _unitOfWork.ChannelStateDbRepository.ApplyAsync(result.Next, result.Transition, extras);
-        if (_signingWorkflows is not null && extras?.LastSent == LastSentCommitmentMessage.RevokeAndAck)
-            await _signingWorkflows.StageAsync(
-                SigningWorkflowSnapshot.Create(channel, result.Next, SigningWorkflowKind.ReleaseRevoke), _unitOfWork);
         if (stageWithTransition is not null)
             await stageWithTransition(_unitOfWork);
         if (_consumingSigningWorkflow is not null)
             await _consumingSigningWorkflow.StageConsumeAsync(_unitOfWork);
+        if (_signingWorkflows is not null && extras?.LastSent == LastSentCommitmentMessage.RevokeAndAck)
+            await _signingWorkflows.StageAsync(
+                SigningWorkflowSnapshot.Create(channel, result.Next, SigningWorkflowKind.ReleaseRevoke), _unitOfWork);
         await _unitOfWork.SaveChangesAsync();
 
         channel.UpdateCommitments(result.Next, extras);
@@ -269,9 +275,15 @@ public sealed class ChannelStateTransitionService
         ArgumentNullException.ThrowIfNull(revokeAndAck);
 
         var newLocalNumber = checked(revokeAndAck.NextCommitmentNumber - 1);
-        _lightningSigner.AdvanceLocalCommitment(channel.ChannelId, newLocalNumber);
-        var secret = _lightningSigner.RevealPerCommitmentSecret(channel.ChannelId,
-                                                                revokeAndAck.RevokedCommitmentNumber);
+        Secret secret;
+        if (_vlsSigner is not null)
+            secret = _vlsSigner.RevokeHolderCommitment(channel.ChannelId, revokeAndAck.RevokedCommitmentNumber);
+        else
+        {
+            _lightningSigner.AdvanceLocalCommitment(channel.ChannelId, newLocalNumber);
+            secret = _lightningSigner.RevealPerCommitmentSecret(channel.ChannelId,
+                                                               revokeAndAck.RevokedCommitmentNumber);
+        }
         var nextPoint = _lightningSigner.GetPerCommitmentPoint(channel.ChannelId, revokeAndAck.NextCommitmentNumber);
         if (!channel.ChannelParams.OptionSimpleTaproot)
             return _messageFactory.CreateRevokeAndAckMessage(channel.ChannelId, secret, nextPoint);
@@ -440,12 +452,154 @@ public sealed class ChannelStateTransitionService
         return signed;
     }
 
+    public async Task<ISigningWorkflowScope?> BeginOpeningAsync(ChannelModel channel)
+    {
+        if (_vlsSigner is null) return null;
+        if (_signingWorkflows is null)
+            throw new InvalidOperationException("VLS opening requires durable signing workflows.");
+        return await _signingWorkflows.BeginAsync(
+            SigningWorkflowSnapshot.CreateOpening(channel, SigningWorkflowKind.Opening));
+    }
+
+    /// <summary>Consume opening signatures and stage activation in the channel's own database transaction.</summary>
+    public async Task StageOpeningCompletionAsync(ChannelModel channel, ISigningWorkflowScope? workflow,
+                                                   IUnitOfWork unitOfWork, bool activate)
+    {
+        if (_vlsSigner is null) return;
+        if (workflow is null || _signingWorkflows is null)
+            throw new InvalidOperationException("VLS opening cannot save without its captured workflow.");
+        await workflow.StageConsumeAsync(unitOfWork);
+        if (activate)
+            await _signingWorkflows.StageAsync(
+                SigningWorkflowSnapshot.CreateOpening(channel, SigningWorkflowKind.Activate), unitOfWork);
+    }
+
+    public async Task ActivateOpeningAsync(ChannelModel channel)
+    {
+        if (_vlsSigner is null) return;
+        if (_signingWorkflows is null || _signingRecoveryScopes is null)
+            throw new InvalidOperationException("VLS activation requires durable signing workflows.");
+        using (var scope = _signingRecoveryScopes.CreateScope())
+        {
+            var saved = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>()
+                                   .ChannelDbRepository.GetByIdAsync(channel.ChannelId);
+            if (saved is null || saved.DataLossDetected || saved.LastReceivedSignature is null
+             || !SigningWorkflowSnapshot.CreateOpening(saved, SigningWorkflowKind.Activate).SnapshotFingerprint.AsSpan()
+                    .SequenceEqual(SigningWorkflowSnapshot.CreateOpening(channel, SigningWorkflowKind.Activate).SnapshotFingerprint))
+                throw new InvalidOperationException("VLS activation requires the durably saved holder commitment zero.");
+        }
+        using var workflow = await _signingWorkflows.BeginAsync(
+            SigningWorkflowSnapshot.CreateOpening(channel, SigningWorkflowKind.Activate));
+        workflow.Activate();
+        _vlsSigner.ActivateChannel(channel);
+        await workflow.StageConsumeAsync(_unitOfWork);
+        await _unitOfWork.SaveChangesAsync();
+    }
+
+    /// <summary>VLS phase-two policy cannot account for trimmed HTLC settlement; reject before any save.</summary>
+    public void ValidateVlsIncomingDust(ChannelModel channel, ChannelCommitments candidate)
+    {
+        if (_vlsSigner is null) return;
+        if (candidate.Htlcs.Values.Any(htlc => htlc.AmountMsat % 1_000 != 0))
+            throw new ChannelWarningException("VLS requires HTLC amounts in whole satoshis", channel.ChannelId)
+            {
+                CloseConnection = true
+            };
+        if (candidate.Params.MaxDustHtlcExposureMsat != 0)
+            throw new ChannelWarningException("VLS requires zero dust exposure on incoming updates", channel.ChannelId)
+            {
+                CloseConnection = true
+            };
+        foreach (var side in (CommitmentSide[])[CommitmentSide.Local, CommitmentSide.Remote])
+        {
+            var feerate = Math.Max(candidate.LatestFeeratePerKw, candidate.FeeratePerKw(side));
+            if (DustExposurePolicy.ProspectiveExposureMsat(candidate, side, feerate) == 0) continue;
+            throw new ChannelWarningException(
+                $"VLS does not support incoming updates that trim HTLCs on the {side} commitment",
+                channel.ChannelId, "VLS requires non-dust HTLCs on both commitments")
+            {
+                CloseConnection = true
+            };
+        }
+    }
+
+    /// <summary>Only exact retransmitted inputs of a pending VLS holder validation may be acknowledged without applying them again.</summary>
+    public async Task<bool> HasPendingVlsHolderValidationAsync(ChannelModel channel)
+    {
+        if (_vlsSigner is null || _signingWorkflows is null) return false;
+        var pending = await _signingWorkflows.GetPendingAsync(channel.ChannelId);
+        if (pending.Count != 1 || pending[0].State != SigningWorkflowState.Pending
+         || pending[0].Kind != SigningWorkflowKind.ValidateHolder) return false;
+        if (channel.DataLossDetected || !CarriesUpdates(channel.State) || channel.Commitments is not { } commitments)
+            throw new InvalidOperationException("Pending VLS holder validation cannot forgive updates in this channel state.");
+        var expected = SigningWorkflowSnapshot.Create(channel, commitments, SigningWorkflowKind.ValidateHolder);
+        var workflow = pending[0];
+        if (workflow.ExpectedLocalCommitmentNumber != expected.ExpectedLocalCommitmentNumber
+         || workflow.ExpectedRemoteCommitmentNumber != expected.ExpectedRemoteCommitmentNumber
+         || !workflow.SnapshotFingerprint.AsSpan().SequenceEqual(expected.SnapshotFingerprint))
+            throw new InvalidOperationException("Pending VLS holder validation belongs to a different channel snapshot.");
+        return true;
+    }
+
+    /// <summary>Capture policy validation before the incoming holder commitment is saved.</summary>
+    public async Task<ISigningWorkflowScope?> BeginHolderValidationAsync(ChannelModel channel)
+    {
+        if (_vlsSigner is null) return null;
+        if (_signingWorkflows is null)
+            throw new InvalidOperationException("VLS validation requires durable signing workflows.");
+        var commitments = channel.Commitments
+                       ?? throw new InvalidOperationException("VLS validation requires a channel snapshot.");
+        await ValidatePersistedSigningSnapshotAsync(channel, commitments, SigningWorkflowKind.ValidateHolder);
+        return await _signingWorkflows.BeginAsync(
+            SigningWorkflowSnapshot.Create(channel, commitments, SigningWorkflowKind.ValidateHolder));
+    }
+
+    public async Task CommitValidatedHolderAsync(ChannelModel channel, CommitmentsResult result,
+                                                  ChannelStateExtras extras, ISigningWorkflowScope? workflow)
+    {
+        if (_vlsSigner is not null && workflow is null)
+            throw new InvalidOperationException("VLS holder validation cannot commit without its captured workflow.");
+        _consumingSigningWorkflow = workflow;
+        try { await CommitAsync(channel, result, extras); }
+        finally { _consumingSigningWorkflow = null; }
+    }
+
+    /// <summary>The public engine/shachain checks precede signer validation; both receipts and rotation save atomically.</summary>
+    public async Task CommitPeerRevocationAsync(ChannelModel channel, CommitmentsResult result,
+                                                 ChannelStateExtras extras, ulong revokedNumber, Secret secret)
+    {
+        if (_vlsSigner is null)
+        {
+            await CommitAsync(channel, result, extras);
+            return;
+        }
+        if (_signingWorkflows is null || channel.Commitments is not { } commitments)
+            throw new InvalidOperationException("VLS revocation validation requires durable signing workflows.");
+        await ValidatePersistedSigningSnapshotAsync(channel, commitments, SigningWorkflowKind.ValidatePeerRevoke);
+        using var workflow = await _signingWorkflows.BeginAsync(
+            SigningWorkflowSnapshot.Create(channel, commitments, SigningWorkflowKind.ValidatePeerRevoke));
+        workflow.Activate();
+        _vlsSigner.ValidatePeerRevocation(channel.ChannelId, revokedNumber, secret,
+            result.Next.RemoteNextPerCommitmentPoint
+            ?? throw new InvalidOperationException("Peer revocation is missing its next commitment point."));
+        _consumingSigningWorkflow = workflow;
+        try { await CommitAsync(channel, result, extras); }
+        finally { _consumingSigningWorkflow = null; }
+    }
+
     /// <summary>Called under the channel lock before startup rollback or any subsequent transition.</summary>
     public async Task ResumeSigningWorkflowsAsync(ChannelModel channel)
     {
         if (_signingWorkflows is null) return;
         var pending = await _signingWorkflows.GetPendingAsync(channel.ChannelId);
         if (pending.Count == 0) return;
+        if (pending.Count == 1 && pending[0].Kind == SigningWorkflowKind.Activate)
+        {
+            await ActivateOpeningAsync(channel);
+            return;
+        }
+        if (pending.Count == 1 && pending[0].Kind == SigningWorkflowKind.Opening)
+            throw new InvalidOperationException("An interrupted VLS opening requires its original negotiation inputs; channel registration is blocked.");
         if (pending.Count != 1 || channel.DataLossDetected || !CarriesUpdates(channel.State)
          || channel.Commitments is not { } commitments)
             throw new InvalidOperationException("Cannot resume signing workflow for this channel state.");
@@ -471,6 +625,11 @@ public sealed class ChannelStateTransitionService
                     throw new InvalidOperationException("Initial commitment cannot release a revoked secret.");
                 await CreateRevokeAndAckAsync(channel,
                     new OutboundRevokeAndAck(commitments.LocalCommit.Number - 1, checked(commitments.LocalCommit.Number + 1)));
+                break;
+            case SigningWorkflowKind.ValidateHolder:
+            case SigningWorkflowKind.ValidatePeerRevoke:
+                // These incoming transitions also require the original peer message (including the next point).
+                // Retain the exact receipt and uncommitted inputs until the peer retransmits; never invent them.
                 break;
             default: throw new InvalidOperationException("Unknown signing workflow kind.");
         }
@@ -521,6 +680,8 @@ public sealed class ChannelStateTransitionService
         if (_commitmentVerifier is null)
             throw new InvalidOperationException("No commitment verifier is registered");
 
+        using var validationWorkflow = await BeginHolderValidationAsync(channel);
+        validationWorkflow?.Activate();
         CommitmentsResult result;
         try
         {
@@ -538,7 +699,9 @@ public sealed class ChannelStateTransitionService
         var revokeAndAck = result.Outbound.OfType<OutboundRevokeAndAck>().Single();
 
         // Persist the new local commitment before the secret exists (B2-CS-R06, I3; per-funding rows: SP1-C, SP-I3)
-        await CommitAsync(channel, result, new ChannelStateExtras { LastSent = LastSentCommitmentMessage.RevokeAndAck });
+        await CommitValidatedHolderAsync(channel, result,
+            new ChannelStateExtras { LastSent = LastSentCommitmentMessage.RevokeAndAck }, validationWorkflow);
+        validationWorkflow?.Dispose();
         var revokeAndAckMessage = await CreateRevokeAndAckAsync(channel, revokeAndAck);
 
         if (_logger.IsEnabled(LogLevel.Debug))

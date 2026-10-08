@@ -2,7 +2,10 @@ namespace NLightning.Domain.Signing.Recovery;
 
 using Channels.ValueObjects;
 
-public enum SigningWorkflowKind { SendCommit = 1, ReleaseRevoke = 2 }
+public enum SigningWorkflowKind
+{
+    SendCommit = 1, ReleaseRevoke = 2, ValidateHolder = 3, ValidatePeerRevoke = 4, Opening = 5, Activate = 6
+}
 public enum SigningWorkflowState { Pending = 1, Consumed = 2, Blocked = 3 }
 public enum SigningRequestState { Prepared = 1, Completed = 2, Consumed = 3, Blocked = 4 }
 

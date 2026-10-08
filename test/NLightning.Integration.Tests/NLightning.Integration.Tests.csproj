@@ -66,6 +66,7 @@
 
   <ItemGroup>
     <Compile Include="..\NLightning.RemoteSigning.Tests\SignerDaemonFixture.cs" Link="Cluster\SignerDaemonFixture.cs"/>
+    <Compile Include="..\NLightning.RemoteSigning.Tests\VlsGatewayFixture.cs" Link="Cluster\VlsGatewayFixture.cs"/>
   </ItemGroup>
 
   <!-- The taproot two-node harness and its D-T4 crash proof, run on Postgres by Docker/TaprootPostgresCrashTests in the

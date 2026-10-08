@@ -12,6 +12,23 @@ using Domain.Protocol.ValueObjects;
 public partial class BitcoinWalletServiceTests
 {
     [Fact]
+    public async Task Given_AP2WpkhOnlySigner_When_RecoveryCatalogueIsStaged_Then_TaprootIsNeverDerived()
+    {
+        _secureKeyManager.SetupGet(keys => keys.SupportedWalletAddressTypes).Returns(AddressType.P2Wpkh);
+
+        var catalogue = await RecoverySource().StageAddressesAsync(_unitOfWork.Object,
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(60, catalogue.Count);
+        Assert.All(catalogue, address => Assert.Equal(AddressType.P2Wpkh, address.AddressType));
+        _secureKeyManager.Verify(keys => keys.GetWalletPublicKey(It.IsAny<uint>(), It.IsAny<bool>(), AddressType.P2Tr),
+            Times.Never);
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            CreateService(BitcoinNetwork.Regtest).GetUnusedAddressAsync(AddressType.P2Tr, false));
+        _unitOfWork.Verify(unit => unit.SaveChangesAsync(), Times.Never);
+    }
+
+    [Fact]
     public async Task Given_FreshSeed_When_RecoveryCatalogueIsStagedTwice_Then_AllFourChainsAreDerivedWithoutReservations()
     {
         // Arrange

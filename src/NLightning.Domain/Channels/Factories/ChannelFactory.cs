@@ -24,6 +24,7 @@ using Protocol.Interfaces;
 using Protocol.Messages;
 using Protocol.Models;
 using Protocol.Payloads;
+using Signing.Vls;
 using Validators.Parameters;
 using ValueObjects;
 
@@ -53,6 +54,14 @@ public class ChannelFactory : IChannelFactory
                                                                        CompactPubKey remoteNodeId)
     {
         var payload = message.Payload;
+        if (_lightningSigner is IVlsChannelSigner
+         && (payload.PushAmount.MilliSatoshi % 1_000 != 0 || payload.FundingAmount.MilliSatoshi % 1_000 != 0))
+            throw new ChannelErrorException("VLS requires opening balances in whole satoshis", payload.ChannelId);
+        if (_lightningSigner is IVlsChannelSigner && payload.ChannelFlags.AnnounceChannel)
+            throw new ChannelErrorException("The VLS prototype supports private channels only", payload.ChannelId);
+        if (_lightningSigner is IVlsChannelSigner
+         && TaprootChannelType.IsTaprootChannelType(message.ChannelTypeTlv?.Features))
+            throw new ChannelErrorException("VLS supports single-funded ECDSA channels only", payload.ChannelId);
 
         // If dual fund is negotiated fail the channel
         if (negotiatedFeatures.DualFund == FeatureSupport.Compulsory)
@@ -90,7 +99,9 @@ public class ChannelFactory : IChannelFactory
         var toRemoteAmount = payload.FundingAmount - payload.PushAmount;
 
         // Generate local keys through the signer
-        var localKeyIndex = _lightningSigner.CreateNewChannel(out var localBasepoints, out var firstPerCommitmentPoint);
+        var localKeyIndex = _lightningSigner is IVlsChannelSigner vls
+                                ? vls.CreateNewChannel(remoteNodeId, out var localBasepoints, out var firstPerCommitmentPoint)
+                                : _lightningSigner.CreateNewChannel(out localBasepoints, out firstPerCommitmentPoint);
 
         // Create the local key set
         var localKeySet = new ChannelKeySetModel(localKeyIndex, localBasepoints.FundingPubKey,
@@ -166,6 +177,15 @@ public class ChannelFactory : IChannelFactory
                                                                     FeatureOptions negotiatedFeatures,
                                                                     CompactPubKey remoteNodeId)
     {
+        if (_lightningSigner is IVlsChannelSigner && request.FundingAmount.MilliSatoshi % 1_000 != 0)
+            throw new ChannelErrorException("VLS requires opening balances in whole satoshis");
+        if (_lightningSigner is IVlsChannelSigner && request.IsPublic)
+            throw new ChannelErrorException("The VLS prototype supports private channels only");
+        if (_lightningSigner is IVlsChannelSigner && request.IsSimpleTaproot)
+            throw new ChannelErrorException("VLS supports single-funded ECDSA channels only");
+        if (_lightningSigner is IVlsChannelSigner && request.PushAmount is { } push && push > LightningMoney.Zero)
+            throw new ChannelErrorException("VLS does not support outbound channel push amounts");
+
         // If dual fund is negotiated fail the channel
         if (negotiatedFeatures.DualFund == FeatureSupport.Compulsory)
             throw new ChannelErrorException("We can only open dual fund channels to this peer");
@@ -263,7 +283,9 @@ public class ChannelFactory : IChannelFactory
                                        negotiatedFeatures.OptionSplice > FeatureSupport.No);
 
         // Generate local keys through the signer
-        var localKeyIndex = _lightningSigner.CreateNewChannel(out var localBasepoints, out var firstPerCommitmentPoint);
+        var localKeyIndex = _lightningSigner is IVlsChannelSigner vls
+                                ? vls.CreateNewChannel(remoteNodeId, out var localBasepoints, out var firstPerCommitmentPoint)
+                                : _lightningSigner.CreateNewChannel(out localBasepoints, out firstPerCommitmentPoint);
 
         // Create the local key set
         var localKeySet = new ChannelKeySetModel(localKeyIndex, localBasepoints.FundingPubKey,

@@ -1,0 +1,190 @@
+# Fresh-node VLS prototype
+
+Branch: `wip/remotesigner`. Canonical VLS revision:
+`cb8a64c71d3b214951e752281f05b9090e77f074`.
+
+The FAFO edition has one user and no prior-version compatibility requirement.
+Use a fresh VLS identity, wallet and database. Existing native channels and keys
+are not imported. Once channels exist, preserve both node and signer state and
+inject the same seed on every signer restart.
+Reinjecting the seed restores keys, but does not restore VLS policy history;
+the durable signer database is also required.
+
+## Start the signer and node
+
+Build and provision the [Rust gateway](../../tools/vls-gateway/README.md).
+Its seed is exactly 32 raw bytes delivered on stdin; credentials are separate,
+owner-only files. The node receives only the node credential. Keep the approval
+credential with the operator tool.
+
+```json
+{
+  "Signing": {
+    "Mode": "Vls",
+    "SocketPath": "/private/vls-gateway/node.sock",
+    "AuthTokenFile": "/private/vls-gateway/node-token",
+    "TimeoutSeconds": 15,
+    "ExpectedNodePublicKey": "REPLACE_WITH_COMPRESSED_VLS_PUBLIC_KEY"
+  },
+  "Node": { "Network": "regtest" }
+}
+```
+
+Replace the public-key placeholder with the gateway identity before checking the
+configuration. `nltg --check-config` validates offline; starting the node requires
+a live authenticated gateway. VLS mode never creates or unlocks a local signing
+key and never falls back to the native signer.
+
+This gateway uses newline-delimited JSON over Unix sockets. The C# native remote
+signer continues to use gRPC over Unix sockets. VLS's semantic adapter is a
+separate backend; neither transport is a Nitro/vsock implementation.
+
+## Supported prototype profile
+
+The host suppresses unsupported features before negotiation and validates the
+profile after options configuration. The initial profile is regtest, private,
+single-funded static-remotekey ECDSA channels. Regtest is this adapter
+prototype's acceptance boundary, not a restriction imposed by VLS upstream. It supports node ECDH, BOLT 11,
+typed v1 gossip payloads, P2WPKH wallet funding, semantic commitments and peer
+revocations, and channel close signing. Public channels, outbound push amounts,
+anchors, taproot, dual funding, splicing, zero-conf, simple close, gossip v2,
+BOLT 12, blinded/onion-message features, peer storage and native backups are
+outside this profile. Dust HTLCs are unsupported by this pinned VLS phase-two
+accounting path. The host advertises a 1,000-satoshi minimum HTLC and sets zero
+allowed dust exposure. Only whole-satoshi HTLC amounts and balances are supported;
+fractional-satoshi inputs are refused before applying updates. Forwarding uses a
+fixed whole-satoshi base fee and zero proportional fee in this prototype.
+These precision restrictions are temporary guards, not the intended final API.
+Pre-offer, incoming-add and fee-update checks refuse
+trimmed HTLCs before applying updates without weakening VLS balance enforcement.
+Wallet withdrawals, named-account/watch-only imports and
+`signmessage` are unsupported. Private-key export and arbitrary node-message signing
+throw; financial accounting period signatures have no generic signing escape
+hatch. Ordinary accounting event hash chains remain supported.
+
+VLS Native wallet derivation uses the public account and a single child index
+`2 * addressIndex + (change ? 1 : 0)`. The node defaults to a supported P2WPKH
+address in VLS mode; explicit unsupported address requests fail. Wallet signing
+validates the input path and script before calling VLS.
+
+## Payment approval
+
+Use the separate [approval tool](../../tools/vls-approve/README.md) to approve a
+signed BOLT 11 invoice or a keysend hash/payee/amount before paying normally.
+The node credential cannot grant approval. Separate OS identities and access
+controls are needed to isolate approval credentials from a compromised node;
+owner-only sockets under one UID do not provide that boundary. The gateway checks invoice signature, currency,
+expiry and amount, and persists authorization with policy state and its exact
+receipt. Reuse the same request ID when recovering an uncertain approval.
+
+For keysend, use the same operator-controlled 32-byte preimage for approval and
+the CLI's `--preimage-file`; never place a preimage in a shell argument. Forwarded
+HTLCs are evaluated under VLS's balance policy. Fulfilled preimages are persisted
+with the resulting policy state so restart preserves the admission history.
+
+## Durable ordering and recovery
+
+The node saves peer-bound channel allocation identity and the original request
+envelope before dispatch. Allocation receipts and the BOLT channel mapping are
+immutable. Startup checks persisted channels against the same VLS identity,
+network, allocation and exact receipt.
+
+Opening saves holder commitment zero before activation; VLS then permits wallet
+funding signing. The signed funding transaction and watch state are saved before
+publication. Normal signing, holder validation, activation and revocation use
+durable workflow IDs. Receiving a peer revocation binds its secret, number and
+next point. Revocation release occurs after the corresponding channel save.
+
+Recovery reconciles the original envelope. An absent receipt is distinct from
+an unknown or invalidated outcome; the latter fail closed. A completed operation
+must return the identical saved bytes. Partial opening that lost its negotiation
+context is refused rather than allocating new request IDs. Sticky data-loss and
+broadcast guards apply before receipt replay and use canonical channel IDs.
+An exact incoming HTLC-add retransmission during pending holder validation is
+acknowledged without applying it twice. Changed payloads close the connection;
+other duplicate adds retain normal protocol rejection.
+
+## Remaining deployment gates
+
+The local Redb transaction commits VLS policy state and immutable receipts before
+replying. This does not establish external rollback protection or cloned-writer
+fencing. The regtest policy does not independently track/validate the chain.
+Force-close broadcast acceptance is distinct from complete output recovery:
+HTLC claims, penalties, delayed sweeps and anchors need a separate adapter proof.
+Wallet funding and close calls have gateway receipts, but their original request
+IDs are not yet persisted as complete node application workflows. Unknown
+funding/close outcomes therefore remain a deployment gate. Mutual-close and
+force-close application recovery beyond the tested cases,
+receipt compaction, deadline monitoring, transport performance, vsock and attested
+seed provisioning remain deployment work. Keep `NL-1307` open for these gates.
+
+## Next engineering step: preserve millisatoshi accounting
+
+Keep the precision guards until signer-side reconciliation is proven. The node's
+commitment engine retains exact millisatoshi balances and HTLC amounts; Bitcoin
+outputs floor each amount to whole satoshis. The gateway currently transmits only
+those rounded values. At the pinned VLS revision, `HTLCInfo2.value_sat`,
+`CommitmentInfo2`, `RoutedPayment` and claimable-balance summaries use satoshis;
+`claimable_balance` also credits residual output value to the funder. Switching
+from phase two to phase one does not restore the lost precision.
+
+For example, a non-funder with 100,000 satoshis offering a 10,000,001-msat HTLC
+has a 89,999-satoshi main output and a 10,000-satoshi HTLC output. That legitimate
+one-satoshi rounding residual appears to VLS as an unexplained balance loss.
+Rounding payments to whole satoshis or adding a policy epsilon would hide the
+problem rather than preserve the authorization invariant.
+
+The next isolated proof should carry the exact commitment specification alongside
+unchanged Bitcoin outputs, independently reconstruct outputs and fee residuals
+inside the signer, and persist exact-msat policy balances with the original
+request and receipt. Changed msat values sharing the same rounded output must
+still be rejected on retry. Prefer a VLS-core accounting change with a thin
+gateway transport extension; a gateway-only conversion is insufficient. Keep
+zero-dust restrictions for this first proof. Cover both funding roles, both
+commitment holders, bidirectional fractional HTLCs, fulfillment/failure,
+accumulated remainders, forwarding, peer signature verification and crash replay.
+Also replace the existing floating-point `LightningMoney.Satoshi` conversion
+with an integer quotient, with focused large-value boundary checks.
+
+## Validation record
+
+- Full Release solution build passes for .NET 10 and .NET 11 with zero warnings
+  and errors; solution configuration checks cover all 45 projects.
+- The exact pinned Rust gateway process proof passes (1 case).
+- Four C#-to-Rust gateway cases, the real mixed-HTLC harness, and nine actual
+  node/signer crash-recovery cases pass, with no skipped cases. The mixed harness
+  checks both-direction equal-value HTLCs, signature ordering, converged balances
+  and refusal before mutation. Recovery checks original request IDs and exact
+  receipt bytes through prepared, completed, consumed and revocation boundaries.
+- Final focused checks pass: daemon 1,802; channel factory 48; incoming and
+  outbound operations 52; startup profile and receipt policy 13. Three SQLite
+  mapping persistence cases also pass.
+- Native Bitcoin/wallet regression: 2,467 pass, three skip, two explicit cases
+  not run. Native/default remote regression: 70 executed cases pass; explicit
+  VLS proofs run separately.
+- The broad Application run executes 4,575 cases: 4,574 pass and one accounting
+  classification case fails. That exact case passes alone. Classification's
+  100-ms regex timeout is suspected load sensitivity (see NL-729); the cause was
+  not established by the failure output, and accounting code was not changed.
+- Earlier live LND runs confirm cooperative and force closes after payments in
+  both directions, node/signer restart and further payments. Bitcoin Core checks
+  six confirmations and the exact original funding input. The final three-case
+  run, including forwarded settlement, is pending. Explicit skips are not proof.
+
+Reproduce the local process proofs after building the solution and pinned gateway:
+
+```bash
+tools/vls-gateway/run.sh test
+export NLTG_VLS_GATEWAY_BINARY="$HOME/.cache/nlightning/vls-gateway-cb8a64c71d3b214951e752281f05b9090e77f074/run/target/debug/nlightning-vls-gateway"
+dotnet test/NLightning.RemoteSigning.Tests/bin/Release/net10.0/NLightning.RemoteSigning.Tests.dll -explicit only -class NLightning.RemoteSigning.Tests.VlsGatewayProcessTests
+dotnet test/NLightning.RemoteSigning.Tests/bin/Release/net10.0/NLightning.RemoteSigning.Tests.dll -explicit only -class NLightning.RemoteSigning.Tests.VlsChannelHarnessTests
+dotnet test/NLightning.RemoteSigning.Tests/bin/Release/net10.0/NLightning.RemoteSigning.Tests.dll -explicit only -method NLightning.RemoteSigning.Tests.VlsNodeWorkflowCrashTests.Given_DurableVlsWorkflow_When_NodeIsKilled_Then_OriginalRequestsRecoverAndPeersConverge
+```
+
+For live acceptance, stage the freshly built integration assembly and that same
+Rust binary with `NLTG_RUNNER_PROJECT=integration` and a unique `NLTG_RUNNER_TAG`,
+import the runner into the selected cluster, then use:
+
+```bash
+NLTG_RUNNER_IMAGE=nltg-spike-runner:YOUR_TAG scripts/run-cluster.sh --no-build -n 1 -p integration --class NLightning.Integration.Tests.Cluster.Live.VlsSignerInClusterRunnerTests --context YOUR_CONTEXT --timeout 1500
+```

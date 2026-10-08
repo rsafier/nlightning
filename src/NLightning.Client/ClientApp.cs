@@ -1204,7 +1204,7 @@ internal static class ClientApp
 
     /// <summary>The arguments of keysend.</summary>
     internal const string KeysendUsage =
-        "<node_id> <amount_sat> [--tlv <type>=<hex>]... [--max-fee-msat <msat>] [--timeout <seconds>]";
+        "<node_id> <amount_sat> [--tlv <type>=<hex>]... [--max-fee-msat <msat>] [--timeout <seconds>] [--preimage-file <path>]";
 
     /// <summary>
     /// The largest keysend amount, in sats: the 21M BTC supply.
@@ -1222,6 +1222,7 @@ internal static class ClientApp
     {
         var positional = new List<string>();
         var records = new Dictionary<ulong, byte[]>();
+        Secret? preimage = null;
         ulong? maxFeeMsat = null;
         uint? timeout = null;
         for (var i = 0; i < commandArgs.Length; i++)
@@ -1252,6 +1253,41 @@ internal static class ClientApp
 
             switch (name.ToLowerInvariant())
             {
+                case "--preimage-file":
+                    if (preimage is not null)
+                    {
+                        error = "The preimage file is given twice.";
+                        return null;
+                    }
+
+                    try
+                    {
+                        using var stream = File.OpenRead(value);
+                        var buffer = new byte[33];
+                        var read = 0;
+                        while (read < buffer.Length)
+                        {
+                            var count = stream.Read(buffer, read, buffer.Length - read);
+                            if (count == 0) break;
+                            read += count;
+                        }
+
+                        if (read != 32)
+                        {
+                            error = "The preimage file must contain exactly 32 raw bytes.";
+                            return null;
+                        }
+
+                        preimage = new Secret(buffer[..32]);
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                                                    or ArgumentException or NotSupportedException)
+                    {
+                        error = "Cannot read the preimage file.";
+                        return null;
+                    }
+
+                    break;
                 case "--tlv":
                     if (!TryParseCustomRecord(value, out var type, out var bytes, out var recordError))
                     {
@@ -1286,7 +1322,7 @@ internal static class ClientApp
                     timeout = seconds;
                     break;
                 default:
-                    error = $"Unknown option '{name}': expected --tlv, --max-fee-msat or --timeout.";
+                    error = $"Unknown option '{name}': expected --tlv, --max-fee-msat, --timeout or --preimage-file.";
                     return null;
             }
         }
@@ -1313,7 +1349,7 @@ internal static class ClientApp
         }
 
         error = null;
-        return new KeysendArguments(nodeId, amountSat, records, timeout, maxFeeMsat);
+        return new KeysendArguments(nodeId, amountSat, records, timeout, maxFeeMsat) { Preimage = preimage };
     }
 
     /// <summary>
@@ -2153,7 +2189,11 @@ public sealed record KeysendArguments(
     ulong AmountSat,
     IReadOnlyDictionary<ulong, byte[]> CustomRecords,
     uint? TimeoutSeconds,
-    ulong? MaxFeeMsat);
+    ulong? MaxFeeMsat)
+{
+    /// <summary>Operator-selected preimage loaded from a file, without exposing it in process arguments.</summary>
+    public Secret? Preimage { get; init; }
+}
 
 /// <summary>
 /// The parsed arguments of payoffer and fetchinvoice (fetchinvoice leaves the payment limits null).

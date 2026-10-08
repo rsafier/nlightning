@@ -47,6 +47,9 @@ public sealed class KeysendIpcRequest
     /// </summary>
     [Key(6)] public List<string>? Tags { get; init; }
 
+    /// <summary>Operator-selected 32-byte preimage; null generates a fresh preimage in the node.</summary>
+    [Key(7)] public Secret? Preimage { get; init; }
+
     public KeysendClientRequest ToClientRequest()
     {
         return new KeysendClientRequest(Destination, Amount)
@@ -54,6 +57,7 @@ public sealed class KeysendIpcRequest
             CustomRecords = CustomRecordsIpc.ToRecords(CustomRecords),
             TimeoutSeconds = TimeoutSeconds,
             MaxFee = MaxFee,
+            Preimage = Preimage,
             Label = Label,
             Tags = Tags ?? []
         };

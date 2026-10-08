@@ -59,6 +59,7 @@ using Infrastructure.RemoteSigning;
 using Infrastructure.Transport.Interfaces;
 using Infrastructure.Transport.Services;
 using Infrastructure.Transport.Tor;
+using Infrastructure.VlsSigning;
 using Mock;
 
 /// <summary>
@@ -138,6 +139,9 @@ public sealed class NLightningTestNode : IAsyncDisposable
 
     /// <summary>Remote signer transport reused across node service-graph restarts; owned by the caller.</summary>
     public RemoteSignerConnection? RemoteSignerConnection { get; set; }
+
+    /// <summary>Externally owned VLS transport retained across node service-graph restarts.</summary>
+    public VlsSignerConnection? VlsSignerConnection { get; set; }
     public int Port { get; }
 
     /// <summary>
@@ -885,7 +889,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
                                               .SetMinimumLevel(LogLevel.Debug));
 
         // The daemon's composition
-        services.AddNltgNodeServices(configuration, SecureKeyManager, RemoteSignerConnection);
+        services.AddNltgNodeServices(configuration, SecureKeyManager, RemoteSignerConnection, VlsSignerConnection);
 
         // Test-only overrides: a fixed fee estimate, our own port and network, and a TCP service CrashAsync can reset
         services.AddFeeServices(_ => CreateFixedFeeHandler());

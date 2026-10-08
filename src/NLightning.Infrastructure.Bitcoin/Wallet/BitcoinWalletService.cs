@@ -14,6 +14,9 @@ using Networks;
 
 public class BitcoinWalletService : IBitcoinWalletService
 {
+    /// <inheritdoc />
+    public AddressType SupportedWalletAddressTypes => _secureKeyManager.SupportedWalletAddressTypes;
+
     /// <summary>
     /// Serializes address lookup and batch generation across scopes (NL-283): two scopes that both find no unused
     /// address would otherwise compute the same first index and the second save would hit the
@@ -62,6 +65,9 @@ public class BitcoinWalletService : IBitcoinWalletService
         if (addressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
             throw new InvalidOperationException(
                 "You cannot use flags for this method. Please select only one address type.");
+
+        if ((SupportedWalletAddressTypes & addressType) == 0)
+            throw new NotSupportedException($"The active signing backend does not support {addressType} wallet addresses.");
 
         // Under the same lock as the lookup: no other caller can get this address between the lookup and the save
         await s_addressGenerationLock.WaitAsync();

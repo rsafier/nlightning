@@ -24,7 +24,7 @@ public class SigningOptionsTests
     }
 
     [Theory]
-    [InlineData("Signing:Mode", "VLS")]
+    [InlineData("Signing:Mode", "UnknownSigner")]
     [InlineData("Signing:SocketPath", "signer.sock")]
     [InlineData("Signing:AuthTokenFile", "token")]
     [InlineData("Signing:TimeoutSeconds", "0")]

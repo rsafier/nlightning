@@ -22,6 +22,7 @@ using Domain.Protocol.GossipV2;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Signing.Vls;
 using Events;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
@@ -212,7 +213,9 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
             throw new InvalidOperationException($"No channel_update for channel {channel.ChannelId}: {reason}");
 
         var unsigned = BuildUnsignedUpdate(channel, policy, disabled, NextTimestamp(channel.ChannelId));
-        var signature = _lightningSigner.SignNodeMessage(unsigned.GetSignatureHash());
+        var signature = _lightningSigner is IVlsGossipSigner vls
+                            ? vls.SignChannelUpdate(unsigned.GetSignedData())
+                            : _lightningSigner.SignNodeMessage(unsigned.GetSignatureHash());
         var message = new ChannelUpdateMessage(unsigned.WithSignature(signature));
 
         _localUpdates[channel.ChannelId] = message;
@@ -297,7 +300,9 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
             return null;
 
         var unsigned = BuildUnsignedUpdate(channel, policy, disabled: false, NextTimestamp(channel.ChannelId));
-        var signature = _lightningSigner.SignNodeMessage(unsigned.GetSignatureHash());
+        var signature = _lightningSigner is IVlsGossipSigner vls
+                            ? vls.SignChannelUpdate(unsigned.GetSignedData())
+                            : _lightningSigner.SignNodeMessage(unsigned.GetSignatureHash());
         return new ChannelUpdateMessage(unsigned.WithSignature(signature));
     }
 

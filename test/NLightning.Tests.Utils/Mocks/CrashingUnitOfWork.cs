@@ -69,6 +69,9 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IChannelSigningInfoDbRepository ChannelSigningInfoDbRepository => inner.ChannelSigningInfoDbRepository;
     public IGraphDbRepository GraphDbRepository => inner.GraphDbRepository;
     public IPeerDbRepository PeerDbRepository => inner.PeerDbRepository;
+    public Domain.Signing.Vls.IVlsChannelMappingDbRepository VlsChannelMappingDbRepository =>
+        inner.VlsChannelMappingDbRepository;
+
     public Domain.Signing.Recovery.ISigningWorkflowDbRepository SigningWorkflowDbRepository =>
         inner.SigningWorkflowDbRepository;
     public Domain.Crypto.KeyRing.IKeyRingDbRepository KeyRingDbRepository => inner.KeyRingDbRepository;

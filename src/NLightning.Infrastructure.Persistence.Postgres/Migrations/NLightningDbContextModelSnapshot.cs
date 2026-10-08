@@ -3127,6 +3127,82 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.ToTable("signing_workflows", (string)null);
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.VlsChannelMappingEntity", b =>
+                {
+                    b.Property<long>("KeyIndex")
+                        .HasColumnType("bigint")
+                        .HasColumnName("key_index");
+
+                    b.Property<byte[]>("AllocationEnvelope")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("allocation_envelope");
+
+                    b.Property<Guid>("AllocationRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("allocation_request_id");
+
+                    b.Property<byte[]>("AllocationResponse")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bytea")
+                        .HasColumnName("allocation_response");
+
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("bytea")
+                        .HasColumnName("channel_id");
+
+                    b.Property<long>("CreatedAtTicks")
+                        .HasColumnType("bigint")
+                        .HasColumnName("created_at_ticks");
+
+                    b.Property<decimal>("DbId")
+                        .HasColumnType("numeric(20,0)")
+                        .HasColumnName("db_id");
+
+                    b.Property<string>("Network")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("network");
+
+                    b.Property<byte[]>("PeerId")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("peer_id");
+
+                    b.Property<byte[]>("SignerIdentity")
+                        .IsRequired()
+                        .HasMaxLength(33)
+                        .HasColumnType("bytea")
+                        .HasColumnName("signer_identity");
+
+                    b.Property<long>("UpdatedAtTicks")
+                        .HasColumnType("bigint")
+                        .HasColumnName("updated_at_ticks");
+
+                    b.Property<byte[]>("VlsChannelId")
+                        .HasMaxLength(41)
+                        .HasColumnType("bytea")
+                        .HasColumnName("vls_channel_id");
+
+                    b.HasKey("KeyIndex")
+                        .HasName("pk_vls_channel_mappings");
+
+                    b.HasIndex("AllocationRequestId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_vls_channel_mappings_allocation_request_id");
+
+                    b.HasIndex("ChannelId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_vls_channel_mappings_channel_id");
+
+                    b.HasIndex("DbId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_vls_channel_mappings_db_id");
+
+                    b.ToTable("vls_channel_mappings", (string)null);
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.ChannelCloseEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")

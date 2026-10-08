@@ -15,9 +15,11 @@ using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Signing.Vls;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Services;
 
 /// <summary>
 /// Handles the funder's <c>funding_created</c> (BOLT 2): the fundee derives the real channel id from the funding
@@ -43,6 +45,7 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
     private readonly ICommitmentTransactionBuilder _commitmentTransactionBuilder;
     private readonly ICommitmentTransactionModelFactory _commitmentTransactionModelFactory;
     private readonly ILightningSigner _lightningSigner;
+    private readonly ChannelStateTransitionService? _transitions;
     private readonly ILogger<FundingCreatedMessageHandler> _logger;
     private readonly IMessageFactory _messageFactory;
     private readonly IUnitOfWork _unitOfWork;
@@ -52,7 +55,8 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
                                         ICommitmentTransactionBuilder commitmentTransactionBuilder,
                                         ICommitmentTransactionModelFactory commitmentTransactionModelFactory,
                                         ILightningSigner lightningSigner, ILogger<FundingCreatedMessageHandler> logger,
-                                        IMessageFactory messageFactory, IUnitOfWork unitOfWork)
+                                        IMessageFactory messageFactory, IUnitOfWork unitOfWork,
+                                        ChannelStateTransitionService? transitions = null)
     {
         _blockchainMonitor = blockchainMonitor;
         _channelIdFactory = channelIdFactory;
@@ -60,6 +64,7 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         _commitmentTransactionBuilder = commitmentTransactionBuilder;
         _commitmentTransactionModelFactory = commitmentTransactionModelFactory;
         _lightningSigner = lightningSigner;
+        _transitions = transitions;
         _logger = logger;
         _messageFactory = messageFactory;
         _unitOfWork = unitOfWork;
@@ -104,6 +109,12 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
 
         // Register the channel with the signer
         _lightningSigner.RegisterChannel(channel.ChannelId, channel.GetSigningInfo());
+        using var openingWorkflow = _lightningSigner is IVlsChannelSigner
+            ? await (_transitions ?? throw new InvalidOperationException("VLS opening requires transitions."))
+                   .BeginOpeningAsync(channel)
+            : null;
+        openingWorkflow?.Activate();
+        if (_lightningSigner is IVlsChannelSigner setupSigner) setupSigner.EnsureChannelSetup(channel);
 
         // Generate the base commitment transactions
         var localCommitmentTransaction =
@@ -153,12 +164,17 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         else
         {
             // Validate remote signature for our local commitment transaction
-            _lightningSigner.ValidateSignature(channel.ChannelId, payload.Signature,
-                                               localUnsignedCommitmentTransaction);
+            if (_lightningSigner is IVlsChannelSigner vls)
+                vls.ValidateHolderCommitment(channel, localCommitmentTransaction, payload.Signature, []);
+            else
+                _lightningSigner.ValidateSignature(channel.ChannelId, payload.Signature,
+                                                   localUnsignedCommitmentTransaction);
 
             // Sign our remote commitment transaction
             var ourSignature =
-                _lightningSigner.SignChannelTransaction(channel.ChannelId, remoteUnsignedCommitmentTransaction);
+                _lightningSigner is IVlsChannelSigner remoteSigner
+                    ? remoteSigner.SignCounterpartyCommitment(channel, remoteCommitmentTransaction).Signature
+                    : _lightningSigner.SignChannelTransaction(channel.ChannelId, remoteUnsignedCommitmentTransaction);
 
             // Update the channel with the new signatures
             channel.UpdateLastReceivedSignature(payload.Signature);
@@ -177,7 +193,11 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         await _unitOfWork.ChannelDbRepository.AddAsync(channel);
         await ChannelAccountingEvents.StagePushAmountAsync(_unitOfWork, channel.ChannelId, channel.LocalBalance,
                                                            _logger);
+        if (openingWorkflow is not null)
+            await _transitions!.StageOpeningCompletionAsync(channel, openingWorkflow, _unitOfWork, true);
         await _unitOfWork.SaveChangesAsync();
+        openingWorkflow?.Dispose();
+        if (_lightningSigner is IVlsChannelSigner) await _transitions!.ActivateOpeningAsync(channel);
 
         // Add the channel to the dictionary
         _channelMemoryRepository.AddChannel(channel);

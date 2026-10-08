@@ -75,6 +75,7 @@ public class NLightningDbContext : DbContext
     public DbSet<KeyRingKeyEntity> KeyRingKeys { get; set; }
 
     // Node DbSets
+    public DbSet<VlsChannelMappingEntity> VlsChannelMappings { get; set; }
     public DbSet<SigningWorkflowEntity> SigningWorkflows { get; set; }
     public DbSet<SigningRequestEntity> SigningRequests { get; set; }
     public DbSet<PeerEntity> Peers { get; set; }
@@ -165,6 +166,7 @@ public class NLightningDbContext : DbContext
 
         // Node entities
         modelBuilder.ConfigureSigningWorkflowEntities(_databaseType);
+        modelBuilder.ConfigureVlsChannelMappingEntity(_databaseType);
         modelBuilder.ConfigurePeerEntity(_databaseType);
         modelBuilder.ConfigureImportedTapscriptEntity(_databaseType);
         modelBuilder.ConfigureKeyRingKeyEntity(_databaseType);

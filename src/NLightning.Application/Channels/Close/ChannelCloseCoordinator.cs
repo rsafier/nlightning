@@ -25,6 +25,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Signing.Vls;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Services;
@@ -582,7 +583,7 @@ public sealed class ChannelCloseCoordinator
                                                                      CompactSignature peerSignature,
                                                                      ClosingDecision decision)
     {
-        var ourSignature = _lightningSigner.SignChannelTransaction(channel.ChannelId, signed.Transaction);
+        var ourSignature = SignClosingModel(channel, signed.Model, signed.Transaction);
         var closingTransaction = _closingTransactionBuilder.AddWitness(signed.Transaction, context.Funding,
                                                                        ourSignature, peerSignature);
 
@@ -798,8 +799,18 @@ public sealed class ChannelCloseCoordinator
                                                            context.LocalScript, context.RemoteScript,
                                                            context.LocalDustLimitSat);
         var unsigned = _closingTransactionBuilder.Build(model);
-        var signature = _lightningSigner.SignChannelTransaction(channel.ChannelId, unsigned);
+        var signature = SignClosingModel(channel, model, unsigned);
         return CreateClosingSigned(channel.ChannelId, feeSat, feeRange, signature);
+    }
+
+    private CompactSignature SignClosingModel(ChannelModel channel, ClosingTransactionModel model,
+                                              SignedTransaction unsigned)
+    {
+        if (_lightningSigner is not IVlsChannelSigner vls)
+            return _lightningSigner.SignChannelTransaction(channel.ChannelId, unsigned);
+        return vls.SignMutualClose(channel, checked((ulong)(model.LocalOutput?.Amount.Satoshi ?? 0)),
+                                  checked((ulong)(model.RemoteOutput?.Amount.Satoshi ?? 0)),
+                                  model.LocalOutput?.ScriptPubKey, model.RemoteOutput?.ScriptPubKey);
     }
 
     private static ClosingSignedMessage CreateClosingSigned(Domain.Channels.ValueObjects.ChannelId channelId,
@@ -906,12 +917,12 @@ public sealed class ChannelCloseCoordinator
             return null;
 
         var context = BuildContext(channel, entry);
-        foreach (var (_, unsigned) in BuildVariants(context, feeSat))
+        foreach (var (model, unsigned) in BuildVariants(context, feeSat))
         {
             if (unsigned.TxId != stored.TxId)
                 continue;
 
-            var signature = _lightningSigner.SignChannelTransaction(channel.ChannelId, unsigned);
+            var signature = SignClosingModel(channel, model, unsigned);
             if (receivedFeeSat is null || feeSat == receivedFeeSat)
                 entry.AgreedClosingSignedSentOnConnection = true;
             var range = receivedFeeSat is null && context.InitialState.SendFeeRange

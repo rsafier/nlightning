@@ -5,6 +5,9 @@ using Domain.Bitcoin.Wallet.Models;
 
 public interface IBitcoinWalletService
 {
+    /// <summary>The wallet address types supported by the active signing backend.</summary>
+    AddressType SupportedWalletAddressTypes => AddressType.P2Wpkh | AddressType.P2Tr;
+
     /// <summary>
     /// Hands out a fresh address: the lowest-index address above every handed-out or funded one (a new batch when
     /// there is none), reserved and saved before it is returned, so no later call gets it again, also after its funds

@@ -25,9 +25,11 @@ using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
+using Domain.Signing.Vls;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Services;
 using Taproot;
 
 public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel1Message>
@@ -47,6 +49,7 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
     private readonly IFundingTransactionBuilder _fundingTransactionBuilder;
     private readonly IFundingTransactionModelFactory _fundingTransactionModelFactory;
     private readonly ILightningSigner _lightningSigner;
+    private readonly ChannelStateTransitionService? _transitions;
     private readonly ILogger<OpenChannel1MessageHandler> _logger;
     private readonly IMessageFactory _messageFactory;
     private readonly IMusig2Service? _musig2;
@@ -63,7 +66,8 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
                                         IFundingTransactionModelFactory fundingTransactionModelFactory,
                                         ILightningSigner lightningSigner, ILogger<OpenChannel1MessageHandler> logger,
                                         IMessageFactory messageFactory, ISha256 sha256, IUnitOfWork unitOfWork,
-                                        IUtxoMemoryRepository utxoMemoryRepository, IMusig2Service? musig2 = null)
+                                        IUtxoMemoryRepository utxoMemoryRepository, IMusig2Service? musig2 = null,
+                                        ChannelStateTransitionService? transitions = null)
     {
         _musig2 = musig2;
         _bitcoinWalletService = bitcoinWalletService;
@@ -75,6 +79,7 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
         _fundingTransactionBuilder = fundingTransactionBuilder;
         _fundingTransactionModelFactory = fundingTransactionModelFactory;
         _lightningSigner = lightningSigner;
+        _transitions = transitions;
         _logger = logger;
         _messageFactory = messageFactory;
         _sha256 = sha256;
@@ -234,6 +239,12 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
             // Register the channel with the signer
             _lightningSigner.RegisterChannel(tempChannel.ChannelId, tempChannel.GetSigningInfo());
             registeredWithSigner = true;
+            using var openingWorkflow = _lightningSigner is IVlsChannelSigner
+                ? await (_transitions ?? throw new InvalidOperationException("VLS opening requires transitions."))
+                       .BeginOpeningAsync(tempChannel)
+                : null;
+            openingWorkflow?.Activate();
+            if (_lightningSigner is IVlsChannelSigner setupSigner) setupSigner.EnsureChannelSetup(tempChannel);
 
             // Generate the base commitment transactions
             var remoteCommitmentTransaction =
@@ -259,8 +270,10 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
             else
             {
                 var ourSignature =
-                    _lightningSigner.SignChannelTransaction(tempChannel.ChannelId,
-                                                            remoteUnsignedCommitmentTransaction);
+                    _lightningSigner is IVlsChannelSigner vls
+                        ? vls.SignCounterpartyCommitment(tempChannel, remoteCommitmentTransaction).Signature
+                        : _lightningSigner.SignChannelTransaction(tempChannel.ChannelId,
+                                                                 remoteUnsignedCommitmentTransaction);
 
                 // Update the channel with the new signature and the new state
                 tempChannel.UpdateLastSentSignature(ourSignature);
@@ -270,6 +283,14 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
                 fundingCreatedMessage =
                     _messageFactory.CreateFundingCreatedMessage(oldChannelId, fundingOutput.TransactionId.Value,
                                                                 fundingOutput.Index.Value, ourSignature);
+            }
+
+            if (openingWorkflow is not null)
+            {
+                await _unitOfWork.ChannelDbRepository.AddAsync(tempChannel);
+                await _transitions!.StageOpeningCompletionAsync(tempChannel, openingWorkflow, _unitOfWork, false);
+                await _unitOfWork.SaveChangesAsync();
+                openingWorkflow.Dispose();
             }
 
             // Move the locked utxos to the real channel id first: UpgradeChannel raises OnChannelUpgraded, and the

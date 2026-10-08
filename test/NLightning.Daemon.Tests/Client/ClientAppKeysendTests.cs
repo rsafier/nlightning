@@ -10,6 +10,50 @@ public class ClientAppKeysendTests
 {
     private const string NodeId = "0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c";
 
+    [Theory]
+    [InlineData(31)]
+    [InlineData(32)]
+    [InlineData(33)]
+    public void Given_AnOperatorPreimageFile_When_Parsed_Then_OnlyExactly32BytesAreAccepted(int length)
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            var bytes = Enumerable.Range(0, length).Select(value => (byte)value).ToArray();
+            File.WriteAllBytes(path, bytes);
+
+            var parsed = ClientApp.ParseKeysendOptions([NodeId, "100", "--preimage-file", path], out var error);
+
+            if (length == 32)
+            {
+                Assert.Null(error);
+                Assert.NotNull(parsed);
+                Assert.Equal(bytes, (byte[])parsed.Preimage!.Value);
+            }
+            else
+            {
+                Assert.Null(parsed);
+                Assert.Contains("exactly 32 raw bytes", error);
+            }
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void Given_ADuplicatePreimageFile_When_Parsed_Then_ItIsRejected()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(path, new byte[32]);
+            var parsed = ClientApp.ParseKeysendOptions(
+                [NodeId, "100", "--preimage-file", path, "--preimage-file", path], out var error);
+            Assert.Null(parsed);
+            Assert.Contains("twice", error);
+        }
+        finally { File.Delete(path); }
+    }
+
     [Fact]
     public void Given_KeysendWithOptions_When_Parsed_Then_EveryValueIsRead()
     {

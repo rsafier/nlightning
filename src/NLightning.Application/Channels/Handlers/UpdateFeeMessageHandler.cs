@@ -49,6 +49,7 @@ public class UpdateFeeMessageHandler : IChannelMessageHandler<UpdateFeeMessage>
             throw ChannelStateTransitionService.ToPeerException(e, payload.ChannelId);
         }
 
+        _transitions.ValidateVlsIncomingDust(channel, result.Next);
         await _transitions.CommitAsync(channel, result);
 
         if (_logger.IsEnabled(LogLevel.Debug))

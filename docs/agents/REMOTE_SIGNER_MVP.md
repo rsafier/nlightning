@@ -233,5 +233,6 @@ provisioning for each user. This is a same-machine prototype, with a replaceable
 connector for eventual vsock transport. Nitro
 attestation, external rollback protection and provisioning are subsequent work. A
 separate [VLS gateway prototype](../../tools/vls-gateway/README.md) exercises durable
-policy state; the NLightning VLS adapter remains unimplemented;
+policy state and now has a fresh-node C# semantic adapter;
+see [the VLS runbook](VLS_NODE_MVP.md);
 see [the deployment research plan](REMOTE_SIGNING_PLAN.md).

@@ -13,6 +13,7 @@ using Domain.Channels.Splicing;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
+using Domain.Signing.Vls;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 
 /// <summary>
@@ -92,6 +93,17 @@ public sealed class CommitmentSigningService
             model = WithFunding(model, otherFunding, CommitmentSide.Remote);
         var built = _commitmentTransactionBuilder.BuildWithOutputMap(model);
 
+        if (_lightningSigner is IVlsChannelSigner vls)
+        {
+            if (isTaproot || otherFunding is not null)
+                throw new NotSupportedException("VLS supports single-funded ECDSA commitments only.");
+            var signatures = vls.SignCounterpartyCommitment(channel, model);
+            if (signatures.HtlcSignatures.Count != built.HtlcOutputsInTxOrder.Count)
+                throw new SignerException("VLS returned an incorrect HTLC signature count", channel.ChannelId);
+            return new CommitmentTxSignatures(built.Transaction.TxId, signatures.Signature,
+                                              signatures.HtlcSignatures);
+        }
+
         if (isTaproot)
         {
             // MuSig2 (bolt-simple-taproot.md): our partial signature with a fresh signing nonce, against the peer's
@@ -167,6 +179,16 @@ public sealed class CommitmentSigningService
         if (otherFunding is not null)
             model = WithFunding(model, otherFunding, CommitmentSide.Local);
         var built = _commitmentTransactionBuilder.BuildWithOutputMap(model);
+
+        if (_lightningSigner is IVlsChannelSigner vls)
+        {
+            if (isTaproot || otherFunding is not null)
+                throw new NotSupportedException("VLS supports single-funded ECDSA commitments only.");
+            if (htlcSignatures.Count != built.HtlcOutputsInTxOrder.Count)
+                throw new SignerException("Incorrect peer HTLC signature count", channel.ChannelId);
+            vls.ValidateHolderCommitment(channel, model, signature, htlcSignatures);
+            return new CommitmentTxSignatures(built.Transaction.TxId, signature, htlcSignatures.ToList());
+        }
 
         if (isTaproot)
             _lightningSigner.ValidateLocalCommitmentPartialSignature(channel.ChannelId, otherFunding?.FundingTxId,

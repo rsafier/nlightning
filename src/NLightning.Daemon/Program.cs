@@ -16,6 +16,7 @@ using NLightning.Infrastructure.Bitcoin.Managers;
 using NLightning.Infrastructure.Bitcoin.Options;
 using NLightning.Infrastructure.Bitcoin.Wallet;
 using NLightning.Infrastructure.RemoteSigning;
+using NLightning.Infrastructure.VlsSigning;
 using NLightning.Transport.Ipc.MessagePack;
 using Serilog;
 
@@ -91,7 +92,7 @@ try
     var signingOptions = SigningOptions.Read(initialConfig);
     ISecureKeyManager keyManager;
     var password = string.Empty;
-    using var remoteConnection = signingOptions.IsRemote
+    using var remoteConnection = signingOptions.IsRemoteNative
         ? new RemoteSignerConnection(new RemoteSignerOptions
         {
             SocketPath = signingOptions.SocketPath,
@@ -101,7 +102,23 @@ try
             ExpectedNodePublicKey = signingOptions.ExpectedNodePublicKey
         })
         : null;
-    if (remoteConnection is not null)
+    var vlsConnection = signingOptions.IsVls
+        ? new VlsSignerConnection(new VlsSignerOptions
+        {
+            SocketPath = signingOptions.SocketPath,
+            TokenFile = signingOptions.AuthTokenFile,
+            Network = network,
+            TimeoutSeconds = signingOptions.TimeoutSeconds,
+            ExpectedNodePublicKey = signingOptions.ExpectedNodePublicKey
+        })
+        : null;
+    if (vlsConnection is not null)
+    {
+        keyManager = new VlsSecureKeyManager(vlsConnection);
+        Environment.SetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable, null);
+        Log.Information("Connected to VLS signer: {NodePublicKey}", keyManager.GetNodePubKey().ToString());
+    }
+    else if (remoteConnection is not null)
     {
         keyManager = new RemoteSecureKeyManager(remoteConnection);
         Environment.SetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable, null);
@@ -191,7 +208,7 @@ try
     // Create and run host
     var host = Host.CreateDefaultBuilder(DaemonUtils.NormalizeArgs(args))
                    .ConfigureNltg(initialConfig)
-                   .ConfigureNltgServices(keyManager, configPath, remoteConnection)
+                   .ConfigureNltgServices(keyManager, configPath, remoteConnection, vlsConnection)
                    .Build();
 
     // Run migrations if configured

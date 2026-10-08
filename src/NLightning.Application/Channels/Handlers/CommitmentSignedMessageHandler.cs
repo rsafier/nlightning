@@ -50,6 +50,8 @@ public class CommitmentSignedMessageHandler : IChannelMessageHandler<CommitmentS
         var payload = message.Payload;
         var channel = _transitions.GetUpdatableChannel(payload.ChannelId, currentState, "commitment_signed");
 
+        using var workflow = await _transitions.BeginHolderValidationAsync(channel);
+        workflow?.Activate();
         CommitmentsResult result;
         try
         {
@@ -65,8 +67,12 @@ public class CommitmentSignedMessageHandler : IChannelMessageHandler<CommitmentS
         var revokeAndAck = result.Outbound.OfType<OutboundRevokeAndAck>().Single();
 
         // Persist the new local commitment with the peer's signatures before the secret exists (B2-CS-R06, I3)
-        await _transitions.CommitAsync(channel, result,
-                                       new ChannelStateExtras { LastSent = LastSentCommitmentMessage.RevokeAndAck });
+        await _transitions.CommitValidatedHolderAsync(channel, result,
+                                                      new ChannelStateExtras
+                                                      {
+                                                          LastSent = LastSentCommitmentMessage.RevokeAndAck
+                                                      }, workflow);
+        workflow?.Dispose();
         var revokeAndAckMessage = await _transitions.CreateRevokeAndAckAsync(channel, revokeAndAck);
 
         if (_logger.IsEnabled(LogLevel.Debug))

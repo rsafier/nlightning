@@ -35,6 +35,8 @@ public sealed class SilentPaymentRecoveryAddressSource(ISecureKeyManager keys, I
         var missing = new List<WalletAddressModel>();
         var catalogue = new List<WalletAddressModel>();
         foreach (var type in new[] { AddressType.P2Wpkh, AddressType.P2Tr })
+        {
+            if ((keys.SupportedWalletAddressTypes & type) == 0) continue;
             foreach (var isChange in new[] { false, true })
                 for (uint index = 0; index < addressCount; index++)
                 {
@@ -56,6 +58,7 @@ public sealed class SilentPaymentRecoveryAddressSource(ISecureKeyManager keys, I
                         catalogue.Add(model);
                     }
                 }
+        }
         if (missing.Count != 0)
         {
             uow.WalletAddressesDbRepository.AddRange(missing);

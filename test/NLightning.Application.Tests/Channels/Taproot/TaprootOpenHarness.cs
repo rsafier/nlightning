@@ -46,6 +46,7 @@ using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Onchain.Models;
 using Domain.Payments.Interfaces;
+using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
@@ -131,13 +132,17 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
     /// <summary>Two nodes, each on a database of <paramref name="database"/> (SQLite files when null).</summary>
     /// <param name="database">The provider; the harness disposes it.</param>
     public static async Task<TaprootOpenHarness> CreateAsync(ITaprootHarnessDatabase? database = null,
-        Action<TaprootOpenNode, IServiceCollection>? configureServices = null)
+        Action<TaprootOpenNode, IServiceCollection>? configureServices = null, bool simpleTaproot = true)
     {
         database ??= new SqliteTaprootHarnessDatabase();
         var harness = new TaprootOpenHarness(database, await database.CreateAsync("alice"),
                                              await database.CreateAsync("bob"));
+        if (!simpleTaproot)
+            harness.NegotiatedFeatures = EcdsaFeatures();
         foreach (var node in harness.Nodes)
         {
+            if (!simpleTaproot)
+                node.Options.Features = EcdsaFeatures();
             node.ConfigureServices = configureServices;
             await node.StartAsync(migrate: !database.CreatesMigrated);
         }
@@ -153,6 +158,20 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
             });
         return harness;
     }
+
+    private static FeatureOptions EcdsaFeatures() => new()
+    {
+        OptionSimpleTaproot = FeatureSupport.No,
+        OptionAnchors = FeatureSupport.No,
+        OptionSimpleClose = FeatureSupport.No,
+        DualFund = FeatureSupport.No,
+        OptionQuiesce = FeatureSupport.No,
+        OptionSplice = FeatureSupport.No,
+        OptionRouteBlinding = FeatureSupport.No,
+        OptionOnionMessages = FeatureSupport.No,
+        OptionProvideStorage = FeatureSupport.No,
+        BeyondSegwitShutdown = FeatureSupport.No
+    };
 
     public TaprootOpenNode Other(TaprootOpenNode node) => node == Alice ? Bob : Alice;
 
@@ -198,7 +217,7 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
         var request = new OpenChannelClientRequest(Bob.NodeId.ToString(), fundingAmount)
         {
             PushAmount = pushAmount,
-            IsSimpleTaproot = true,
+            IsSimpleTaproot = NegotiatedFeatures.OptionSimpleTaproot != FeatureSupport.No,
             ForceV1 = true
         };
         var factory = Alice.Services.GetRequiredService<IChannelFactory>();
@@ -214,8 +233,10 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
             channel.LocalKeySet.RevocationCompactBasepoint, channel.LocalKeySet.PaymentCompactBasepoint,
             channel.LocalKeySet.DelayedPaymentCompactBasepoint, channel.LocalKeySet.HtlcCompactBasepoint,
             channel.LocalKeySet.CurrentPerCommitmentCompactPoint, new ChannelFlags(ChannelFlag.None),
-            new ChannelTypeTlv(channel.ChannelParams.ToChannelType()), new UpfrontShutdownScriptTlv(Array.Empty<byte>()),
-            signer.GetLocalVerificationNonce(channel.LocalKeySet.KeyIndex, null, 0));
+            new ChannelTypeTlv(channel.ChannelParams.ToChannelType()), new UpfrontShutdownScriptTlv(Array.Empty<byte>()));
+        if (channel.ChannelParams.OptionSimpleTaproot)
+            open = new OpenChannel1Message(open.Payload, open.ChannelTypeTlv, open.UpfrontShutdownScriptTlv,
+                new NextLocalNonceTlv(signer.GetLocalVerificationNonce(channel.LocalKeySet.KeyIndex, null, 0)));
         await Alice.ChannelManager.StartOpeningChannelAsync(Bob.NodeId, channel, open);
         await PumpAsync();
 
@@ -478,9 +499,10 @@ internal sealed class TaprootOpenNode
 
     /// <summary>A payment of <paramref name="amount"/> from this node to <paramref name="payee"/> over the channel.</summary>
     public async Task<(Hash PaymentHash, Secret Preimage)> PayAsync(TaprootOpenNode payee, ChannelId channelId,
-                                                                    LightningMoney amount)
+                                                                    LightningMoney amount, Action<InvoiceModel>? approveInvoice = null)
     {
         var invoice = await payee.Invoices.CreateInvoiceAsync(amount, "taproot", null, CancellationToken.None);
+        approveInvoice?.Invoke(invoice);
         var finalCltv = TaprootOpenHarness.BlockHeight + 43;
         var route = new PaymentRoute([new RouteHop(payee.NodeId, amount, finalCltv, null)], amount, finalCltv,
                                      invoice.PaymentHash, invoice.PaymentSecret);

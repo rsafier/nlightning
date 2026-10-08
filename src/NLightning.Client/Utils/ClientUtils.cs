@@ -96,7 +96,7 @@ public static class ClientUtils
         Console.WriteLine("                               offers without one (or in another currency); exit code 1");
         Console.WriteLine("                               if nothing was paid or the payment failed; the limits are");
         Console.WriteLine("                               those of payinvoice");
-        Console.WriteLine("  keysend <node_id> <sats> [--tlv <type>=<hex>]... [--max-fee-msat <msat>]");
+        Console.WriteLine("  keysend <node_id> <sats> [--tlv <type>=<hex>]... [--max-fee-msat <msat>] [--preimage-file <path>]");
         Console.WriteLine("          [--timeout <seconds>]");
         Console.WriteLine("                               Send a spontaneous payment (no invoice) with our own");
         Console.WriteLine("                               preimage; --tlv adds a custom record for the payee (type");

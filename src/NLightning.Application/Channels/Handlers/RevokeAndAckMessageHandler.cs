@@ -78,7 +78,9 @@ public class RevokeAndAckMessageHandler : IChannelMessageHandler<RevokeAndAckMes
                 CloseConnection = true
             };
 
-        await _transitions.CommitAsync(channel, result, new ChannelStateExtras { RemoteShachain = shachain.Export() });
+        await _transitions.CommitPeerRevocationAsync(channel, result,
+                                                     new ChannelStateExtras { RemoteShachain = shachain.Export() },
+                                                     revokedNumber, secret);
 
         if (_logger.IsEnabled(LogLevel.Debug))
             _logger.LogDebug("Peer revoked commitment {Number} of channel {ChannelId}", revokedNumber,

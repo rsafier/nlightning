@@ -28,6 +28,15 @@ internal static class ConfigurationCheck
         try
         {
             var signingOptions = SigningOptions.Read(configuration);
+            if (signingOptions.IsVls)
+            {
+                var configuredNetwork = configuration.GetValue<string>("Node:Network");
+                if (!string.Equals(network, "regtest", StringComparison.OrdinalIgnoreCase)
+                 || (!string.IsNullOrWhiteSpace(configuredNetwork)
+                  && !string.Equals(configuredNetwork, "regtest", StringComparison.OrdinalIgnoreCase)))
+                    return ["The VLS prototype supports regtest only."];
+                configuration = VlsCapabilityProfile.Apply(configuration);
+            }
             // The offline graph uses a throwaway local key below; validate remote restrictions first.
             if (signingOptions.IsRemote && configuration.GetValue<bool>("SilentPayments:Enabled"))
                 return ["Silent-payment scanning and receiving are not supported by the remote signer."];

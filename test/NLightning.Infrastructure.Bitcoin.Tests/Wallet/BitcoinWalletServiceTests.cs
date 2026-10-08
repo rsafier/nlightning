@@ -29,6 +29,8 @@ public partial class BitcoinWalletServiceTests
 
     public BitcoinWalletServiceTests()
     {
+        _secureKeyManager.SetupGet(keys => keys.SupportedWalletAddressTypes)
+                         .Returns(AddressType.P2Wpkh | AddressType.P2Tr);
         _secureKeyManager.Setup(k => k.GetWalletPublicKey(It.IsAny<uint>(), It.IsAny<bool>(), It.IsAny<AddressType>()))
                          .Returns((uint index, bool isChange, AddressType type) =>
                                       (Domain.Crypto.ValueObjects.CompactPubKey)s_masterKey

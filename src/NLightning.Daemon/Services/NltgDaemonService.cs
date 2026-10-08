@@ -35,6 +35,7 @@ using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Transport.Tor;
+using Infrastructure.VlsSigning;
 
 public class NltgDaemonService : BackgroundService
 {
@@ -402,6 +403,13 @@ public class NltgDaemonService : BackgroundService
 
         using var scope = _scopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        if (_secureKeyManager is VlsSecureKeyManager)
+        {
+            var mappings = scope.ServiceProvider.GetRequiredService<VlsChannelMappingRegistry>();
+            foreach (var channel in await unitOfWork.ChannelDbRepository.GetAllAsync())
+                mappings.ValidateChannel(channel);
+            return;
+        }
         var highest = await unitOfWork.ChannelDbRepository.GetHighestLocalKeyIndexAsync();
         if (_secureKeyManager.EnsureLastUsedChannelIndexAtLeast(highest))
             _logger.LogWarning("The signer's last used channel key index was below the database's highest ({Index}); "
