@@ -5,13 +5,11 @@ using NLightning.Domain.Bitcoin.Interfaces;
 using NLightning.Domain.Bitcoin.Transactions.Models;
 using NLightning.Domain.Bitcoin.Transactions.Outputs;
 using NLightning.Domain.Bitcoin.ValueObjects;
-using NLightning.Domain.Bitcoin.Wallet.Models;
 using NLightning.Domain.Channels.Commitments;
 using NLightning.Domain.Channels.Models;
 using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Domain.Crypto.ValueObjects;
 using NLightning.Domain.Exceptions;
-using NLightning.Domain.Onchain.Models;
 using NLightning.Domain.Signing.Vls;
 using CompactSignature = NLightning.Domain.Crypto.ValueObjects.CompactSignature;
 using Hash = NLightning.Domain.Crypto.ValueObjects.Hash;
@@ -117,7 +115,6 @@ public sealed partial class VlsLightningSigner(VlsSignerConnection connection, V
     }
     public IReadOnlyList<CompactSignature> SignRemoteHtlcTransactions(ChannelId channelId, IReadOnlyList<HtlcSigningContext> htlcTransactions) => throw Unsupported();
     public void ValidateLocalHtlcSignatures(ChannelId channelId, IReadOnlyList<HtlcSigningContext> htlcTransactions, IReadOnlyList<CompactSignature> signatures) => throw Unsupported();
-    public CompactSignature SignLocalHtlcTransaction(ChannelId channelId, HtlcSigningContext htlcTransaction) => throw Unsupported();
     public SignedTransaction SignLocalCommitmentForBroadcast(ChannelId channelId, ulong commitmentNumber, SignedTransaction unsignedCommitment, CompactSignature remoteSignature)
     {
         var info = Info(channelId);
@@ -150,11 +147,6 @@ public sealed partial class VlsLightningSigner(VlsSignerConnection connection, V
         var result = connection.Invoke(VlsOperations.BroadcastStatus, Command("broadcast_status", Channel(channelId))).GetProperty("number");
         commitmentNumber = result.ValueKind == JsonValueKind.Null ? 0 : result.GetUInt64(); return result.ValueKind != JsonValueKind.Null;
     }
-    public CompactSignature SignAnchorInput(ChannelId channelId, SignedTransaction unsignedTransaction, int inputIndex, NLightning.Domain.Money.LightningMoney amount) => throw Unsupported();
-    public CompactSignature SignSweepInput(ChannelId channelId, SweepSigningContext context) => throw Unsupported();
-    public bool SignWalletTransaction(SignedTransaction unsignedTransaction) => throw new NotSupportedException("VLS prototype only permits policy-checked channel funding transactions.");
-    public bool SignWalletTransaction(SignedTransaction unsignedTransaction, IReadOnlyList<SpentOutput> otherSpentOutputs) => throw Unsupported();
-    public bool SignWalletTransaction(SignedTransaction unsignedTransaction, Guid reservationId, IReadOnlyList<SpentOutput> otherSpentOutputs) => throw Unsupported();
     public bool SignFundingTransaction(ChannelId channelId, SignedTransaction unsignedTransaction)
     {
         if (wallet is null) throw new SignerException("VLS wallet context unavailable.");

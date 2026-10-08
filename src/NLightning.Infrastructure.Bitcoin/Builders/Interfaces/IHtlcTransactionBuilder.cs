@@ -23,7 +23,8 @@ public interface IHtlcTransactionBuilder
     /// <c>0 &lt;remotehtlcsig&gt; &lt;localhtlcsig&gt; &lt;payment_preimage&gt;</c> (HTLC-success) or
     /// <c>0 &lt;remotehtlcsig&gt; &lt;localhtlcsig&gt; &lt;&gt;</c> (HTLC-timeout), followed by the witness script.
     /// The remote signature carries <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> with option_anchors, else
-    /// <c>SIGHASH_ALL</c>; the local signature always carries <c>SIGHASH_ALL</c>. For simple taproot the signatures are
+    /// <c>SIGHASH_ALL</c>; the local signature carries <c>SIGHASH_ALL</c>, or with option_anchors
+    /// <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> when <paramref name="localSingleAnyoneCanPay"/>. For simple taproot the signatures are
     /// 64-byte BIP 340 ones and the witness is <c>&lt;remotehtlcsig||0x83&gt; &lt;localhtlcsig&gt;
     /// [&lt;payment_preimage&gt;] &lt;leaf script&gt; &lt;control block&gt;</c> (ours with <c>SIGHASH_DEFAULT</c>).
     /// </summary>
@@ -32,10 +33,12 @@ public interface IHtlcTransactionBuilder
     /// <param name="remoteHtlcSignature">The counterparty's HTLC signature (from <c>commitment_signed</c>).</param>
     /// <param name="localHtlcSignature">Our HTLC signature.</param>
     /// <param name="paymentPreimage">The 32-byte preimage; required for HTLC-success, must be null for HTLC-timeout.</param>
+    /// <param name="localSingleAnyoneCanPay">Our signature is <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c>
+    /// (<c>ILightningSigner.SignsAnchorHtlcWithSingleAnyoneCanPay</c>); option_anchors only.</param>
     /// <returns>The signed transaction.</returns>
     SignedTransaction AddWitness(HtlcTransactionModel transaction, HtlcTransactionBuildResult buildResult,
                                  CompactSignature remoteHtlcSignature, CompactSignature localHtlcSignature,
-                                 byte[]? paymentPreimage = null);
+                                 byte[]? paymentPreimage = null, bool localSingleAnyoneCanPay = false);
 
     /// <summary>
     /// The signed weight of an anchors HTLC transaction with a change output of <paramref name="changeScriptLength"/>

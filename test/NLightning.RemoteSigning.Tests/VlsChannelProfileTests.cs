@@ -110,11 +110,43 @@ public sealed class VlsChannelProfileTests
         Assert.Equal(remote, channel.RemoteBalance.MilliSatoshi);
     }
 
-    private static ChannelModel Channel(uint feerate)
+    [Fact]
+    public void Given_AZeroFeeHtlcAnchorsChannel_When_ValidatedAtStartup_Then_ItIsInTheProfile()
+    {
+        // Arrange
+        var channel = Channel(2_500, anchors: true);
+        var state = channel.Commitments!.SendAdd(10_000_001, Hash(), 500, new byte[1366]).Next;
+        SetZeroBudget(channel, state);
+
+        // Act
+        VlsChannelMappingRegistry.ValidateChannelProfile(channel);
+
+        // Assert
+        Assert.True(channel.ChannelParams.OptionAnchorOutputs);
+        Assert.True(channel.Commitments!.Params.OptionAnchors);
+    }
+
+    [Fact]
+    public void Given_AnAnchorsChannelWithAOneThousandSatHtlc_When_ValidatedAtStartup_Then_ZeroFeeHtlcTransactionsKeepItUntrimmed()
+    {
+        // Arrange: the 1,000-sat add that a static-remotekey commitment trims at 2,500 sat/kw (the HTLC transaction's
+        // fee) stays above the dust limit with anchors' zero-fee HTLC transactions
+        var channel = Channel(2_500, anchors: true);
+        var state = channel.Commitments!.ReceiveAdd(0, 1_000_000, Hash(), 500, new byte[1366]).Next;
+        SetZeroBudget(channel, state);
+
+        // Act
+        VlsChannelMappingRegistry.ValidateChannelProfile(channel);
+
+        // Assert
+        Assert.Single(channel.Commitments!.Htlcs);
+    }
+
+    private static ChannelModel Channel(uint feerate, bool anchors = false)
     {
         var party = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(10_000),
             LightningMoney.Satoshis(1_000), 30, LightningMoney.Satoshis(1_000_000), 144);
-        var parameters = new ChannelParams(party, party, LightningMoney.Satoshis((ulong)feerate), 3, false, FeatureSupport.No);
+        var parameters = new ChannelParams(party, party, LightningMoney.Satoshis((ulong)feerate), 3, anchors, FeatureSupport.No);
         var funding = new FundingOutputInfo(LightningMoney.Satoshis(1_000_000), Point(1), Point(2))
         {
             TransactionId = new TxId(Enumerable.Repeat((byte)0x77, 32).ToArray()),

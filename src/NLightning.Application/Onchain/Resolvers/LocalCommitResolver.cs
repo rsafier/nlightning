@@ -951,8 +951,9 @@ public sealed class LocalCommitResolver : IOutputResolver
 
                 var localSignature = _lightningSigner.SignLocalHtlcTransaction(
                     channelId, new HtlcSigningContext(combined.BuildResult, context.Map.PerCommitmentPoint, true));
-                var withHtlcWitness = _htlcTransactionBuilder.AddWitness(model, combined.BuildResult, remoteSignature,
-                                                                         localSignature, preimage);
+                var withHtlcWitness = _htlcTransactionBuilder.AddWitness(
+                    model, combined.BuildResult, remoteSignature, localSignature, preimage,
+                    _lightningSigner.SignsAnchorHtlcWithSingleAnyoneCanPay);
                 // A simple taproot HTLC output is P2TR: a P2TR fee input's signature commits to its scriptPubKey
                 var htlcInput = new SpentOutput(
                     context.CommitmentTxId, descriptor.Vout, built.SpentAmount,

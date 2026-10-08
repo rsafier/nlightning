@@ -267,9 +267,18 @@ public interface ILightningSigner
 
     /// <summary>
     /// Sign one HTLC transaction of our own (local) commitment, for broadcast together with the peer's signature: our
-    /// local HTLC key for that commitment, always <c>SIGHASH_ALL</c>.
+    /// local HTLC key for that commitment, <c>SIGHASH_ALL</c> unless
+    /// <see cref="SignsAnchorHtlcWithSingleAnyoneCanPay"/>.
     /// </summary>
     CompactSignature SignLocalHtlcTransaction(ChannelId channelId, HtlcSigningContext htlcTransaction);
+
+    /// <summary>
+    /// Whether our signature of an option_anchors HTLC transaction (<see cref="SignLocalHtlcTransaction"/>) is
+    /// <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c>, like the peer's, instead of <c>SIGHASH_ALL</c>: VLS's validating
+    /// HTLC signer signs that way (it checks the HTLC input and output pair it covers, the wallet fee inputs are signed
+    /// separately). Both are valid BOLT 3 witnesses.
+    /// </summary>
+    bool SignsAnchorHtlcWithSingleAnyoneCanPay => false;
 
     /// <summary>
     /// Fully sign our latest local commitment transaction for broadcast (fail the channel, BOLT2 plan N9-T4): checks

@@ -102,6 +102,29 @@ public class VlsSigningConfigurationTests
         Assert.Equal("Optional", configuration["Node:Features:OptionSimpleTaproot"]);
     }
 
+    [Theory]
+    [InlineData(null, FeatureSupport.Optional)]
+    [InlineData("Optional", FeatureSupport.Optional)]
+    [InlineData("No", FeatureSupport.No)]
+    public void Given_VlsProfile_When_Applied_Then_AnchorsStayAsConfiguredAndValidate(string? configured,
+                                                                                       FeatureSupport expected)
+    {
+        // Arrange: zero-fee-HTLC anchors channels are in the VLS profile (VLS AnchorsZeroFeeHtlc)
+        var configuration = configured is null
+            ? Configuration("regtest")
+            : Configuration("regtest", ("Node:Features:OptionAnchors", configured));
+
+        // Act
+        var options = VlsCapabilityProfile.Apply(configuration).GetSection("Node").Get<NodeOptions>()!;
+        options.BitcoinNetwork = BitcoinNetwork.Regtest;
+        VlsCapabilityProfile.Apply(options);
+
+        // Assert
+        Assert.Equal(expected, options.Features.OptionAnchors);
+        Assert.Empty(VlsCapabilityProfile.GetValidationErrors(options));
+        Assert.Empty(ConfigurationCheck.Run(configuration, "regtest"));
+    }
+
     [Fact]
     public void CapabilityValidationRejectsFeaturesReenabledAfterTheProfile()
     {
