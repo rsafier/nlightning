@@ -114,8 +114,8 @@ The allowlisted commands and fields are defined by `Command` in `main.rs`:
 
 | Socket | Commands |
 | --- | --- |
-| Node | `identity`, `ecdh`, `sign_invoice`, `public_account`, `wallet_public_key`, `wallet_sign`, `allocate`, `basepoints`, `setup`, `point`, `sign_remote`, `validate_holder`, `activate`, `revoke_holder`, `validate_revocation`, `payment_preimages`, `sign_channel_update`, `sign_node_announcement`, `force_close`, `mutual_close`, `mark_data_loss`, `broadcast_status`, `verify_broadcast_mark`, `reconcile` for these commands |
-| Approval | `authorize_keysend`, `authorize_invoice`, `reconcile` for approval |
+| Node | `identity`, `ecdh`, `sign_invoice`, `public_account`, `wallet_public_key`, `wallet_sign`, `allocate`, `basepoints`, `setup`, `point`, `sign_remote`, `validate_holder`, `activate`, `revoke_holder`, `validate_revocation`, `payment_preimages`, `sign_channel_update`, `sign_node_announcement`, `sign_channel_announcement`, `sign_message`, `force_close`, `mutual_close`, `mark_data_loss`, `broadcast_status`, `verify_broadcast_mark`, `reconcile` for these commands |
+| Approval | `authorize_keysend`, `authorize_invoice`, `allowlist_address`, `reconcile` for approval |
 
 Channel IDs are 41 decoded bytes: compressed peer key plus little-endian dbid,
 represented as hex. Positive dbids are allocated/managed by the caller and must
@@ -135,6 +135,23 @@ VLS `add_invoice`, or explicit keysend authorization. The node credential cannot
 authorize payments. The operator can use `tools/vls-approve/approve.py`; the node
 never receives its approval credential. `payment_preimages` records channel-bound
 settlement information and persists NodeState in the receipt transaction.
+
+Public channels, withdrawals and `signmessage` (NL-1335) use VLS's own
+purpose-specific APIs. `sign_channel_announcement` parses the unsigned BOLT 7
+announcement (from `features`, after the four signatures and the type), requires
+the regtest chain, ascending node ids, our node id, the channel's peer (the VLS
+channel ID's first 33 bytes), both funding keys of the channel and the funding
+output index in the short channel id, refuses a data-loss-marked or closed channel,
+and returns `node_signature` (node key, VLS `sign_channel_update`, as VLS's own
+SignChannelAnnouncement handler does) and `bitcoin_signature`
+(`sign_channel_announcement_with_funding_key`). `sign_message` is VLS
+`sign_message`: SHA256d of `"Lightning Signed Message:" || message`, returned as
+`r || s || recovery id`; VLS has no single-SHA256 form. A withdrawal is an
+ordinary `wallet_sign`: VLS's `check_onchain_tx` accepts outputs to its wallet
+(change, with a wallet path) or to an allowlisted destination, so the operator
+adds the destination first with `allowlist_address` on the approval socket (a
+regtest address; VLS persists it with its node state). The node credential cannot
+allowlist.
 
 ## Durable receipts and boundaries
 

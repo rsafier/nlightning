@@ -164,6 +164,17 @@ enum Command {
         id: String,
         command: Box<Command>,
     },
+    // Public channels, withdrawal destinations and signmessage (NL-1335): see `dispatch_public`
+    SignChannelAnnouncement {
+        channel: String,
+        payload: String,
+    },
+    SignMessage {
+        message: String,
+    },
+    AllowlistAddress {
+        address: String,
+    },
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -365,7 +376,9 @@ impl Gateway {
             if admin
                 != matches!(
                     **command,
-                    Command::AuthorizeKeysend { .. } | Command::AuthorizeInvoice { .. }
+                    Command::AuthorizeKeysend { .. }
+                        | Command::AuthorizeInvoice { .. }
+                        | Command::AllowlistAddress { .. }
                 )
             {
                 return Err("operation forbidden on this socket".into());
@@ -385,7 +398,9 @@ impl Gateway {
         if admin
             != matches!(
                 req.command,
-                Command::AuthorizeKeysend { .. } | Command::AuthorizeInvoice { .. }
+                Command::AuthorizeKeysend { .. }
+                    | Command::AuthorizeInvoice { .. }
+                    | Command::AllowlistAddress { .. }
             )
         {
             return Err("operation forbidden on this socket".into());
@@ -479,6 +494,7 @@ impl Gateway {
             }
         }
         match command {
+            command @ (Command::SignChannelAnnouncement { .. } | Command::SignMessage { .. } | Command::AllowlistAddress { .. }) => self.dispatch_public(command),
             Command::MarkDataLoss { channel:ch } => {
                 self.node.with_channel_base(&channel(&ch)?, |_|Ok(())).map_err(|e|e.to_string())?;
                 self.store.put(&format!("nltg-gateway/data-loss/{}",canonical_channel(&ch)?),vec![1]).map_err(|e|format!("{e:?}"))?;Ok(json!({}))
@@ -616,6 +632,132 @@ impl Gateway {
         }
     }
 }
+// ---------------------------------------------------------------------------------------------------------------------
+// Public channels, withdrawal destinations and signmessage (lane vls-public, NL-1335). Each goes through the
+// purpose-specific VLS API: `Channel::sign_channel_announcement_with_funding_key` plus the node-key gossip signer
+// (as VLS's own SignChannelAnnouncement handler), the node allowlist that `check_onchain_tx` consults for withdrawal
+// destinations (approval socket only), and `Node::sign_message` ("Lightning Signed Message:" prefix). The gateway
+// parses and binds every announcement to the channel before signing: no generic digest signing.
+// ---------------------------------------------------------------------------------------------------------------------
+impl Gateway {
+    fn dispatch_public(&self, command: Command) -> Result<Value, String> {
+        use lightning_signer::channel::ChannelBase;
+        use lightning_signer::lightning::routing::gossip::NodeId;
+        use lightning_signer::lightning::util::ser::LengthReadable;
+        match command {
+            Command::SignChannelAnnouncement {
+                channel: ch,
+                payload,
+            } => {
+                let id = channel(&ch)?;
+                if self
+                    .store
+                    .get(&format!(
+                        "nltg-gateway/data-loss/{}",
+                        canonical_channel(&ch)?
+                    ))
+                    .map_err(|e| format!("{e:?}"))?
+                    .is_some()
+                {
+                    return Err("channel data loss detected".into());
+                }
+                let bytes = hex::decode(payload).map_err(|_| "invalid gossip hex")?;
+                let mut input = bytes.as_slice();
+                let announcement: lightning_signer::lightning::ln::msgs::UnsignedChannelAnnouncement =
+                    LengthReadable::read_from_fixed_length_buffer(&mut input)
+                        .map_err(|_| "invalid channel announcement")?;
+                if !input.is_empty() {
+                    return Err("trailing channel announcement bytes".into());
+                }
+                if announcement.chain_hash
+                    != lightning_signer::bitcoin::constants::ChainHash::using_genesis_block(
+                        Network::Regtest,
+                    )
+                {
+                    return Err("channel announcement chain mismatch".into());
+                }
+                // BOLT 7: node_id_1 is the lesser node id and bitcoin_key_N belongs to node_id_N
+                if announcement.node_id_1.as_slice() >= announcement.node_id_2.as_slice() {
+                    return Err("channel announcement node ids out of order".into());
+                }
+                let ours = NodeId::from_pubkey(&self.node.get_id());
+                let peer = NodeId::from_pubkey(
+                    &PublicKey::from_slice(&id.as_slice()[..33])
+                        .map_err(|_| "invalid channel peer")?,
+                );
+                let (their_node, our_key, their_key) = if announcement.node_id_1 == ours {
+                    (
+                        announcement.node_id_2,
+                        announcement.bitcoin_key_1,
+                        announcement.bitcoin_key_2,
+                    )
+                } else if announcement.node_id_2 == ours {
+                    (
+                        announcement.node_id_1,
+                        announcement.bitcoin_key_2,
+                        announcement.bitcoin_key_1,
+                    )
+                } else {
+                    return Err("channel announcement does not name this node".into());
+                };
+                let (funding, peer_funding, vout, closed) = self
+                    .node
+                    .with_channel(&id, |c| {
+                        Ok((
+                            c.get_channel_basepoints().funding_pubkey,
+                            c.counterparty_pubkeys().funding_pubkey,
+                            c.setup.funding_outpoint.vout,
+                            c.enforcement_state.channel_closed,
+                        ))
+                    })
+                    .map_err(|e| e.to_string())?;
+                if closed {
+                    return Err("channel is closed".into());
+                }
+                if their_node != peer
+                    || our_key != NodeId::from_pubkey(&funding)
+                    || their_key != NodeId::from_pubkey(&peer_funding)
+                {
+                    return Err("channel announcement does not match the channel".into());
+                }
+                if announcement.short_channel_id & 0xffff != u64::from(vout) {
+                    return Err("short channel id does not name the funding output".into());
+                }
+                let bitcoin = self
+                    .node
+                    .with_channel(&id, |c| {
+                        Ok(c.sign_channel_announcement_with_funding_key(&bytes))
+                    })
+                    .map_err(|e| e.to_string())?;
+                let node = self
+                    .node
+                    .sign_channel_update(&bytes)
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({
+                    "node_signature": hex::encode(node.serialize_compact()),
+                    "bitcoin_signature": hex::encode(bitcoin.serialize_compact())
+                }))
+            }
+            Command::SignMessage { message } => {
+                let bytes = hex::decode(message).map_err(|_| "invalid message hex")?;
+                let signature = self.node.sign_message(&bytes).map_err(|e| e.to_string())?;
+                Ok(json!({ "signature": hex::encode(signature) }))
+            }
+            Command::AllowlistAddress { address } => {
+                lightning_signer::bitcoin::Address::from_str(&address)
+                    .map_err(|_| "invalid address")?
+                    .require_network(Network::Regtest)
+                    .map_err(|_| "address network must be regtest")?;
+                self.node
+                    .add_allowlist(&[format!("address:{address}")])
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({ "added": true }))
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+// --- end of lane vls-public block ---
 fn handle(stream: UnixStream, gateway: &Gateway, admin: bool) -> std::io::Result<()> {
     stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;

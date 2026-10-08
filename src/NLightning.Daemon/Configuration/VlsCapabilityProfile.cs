@@ -52,7 +52,6 @@ internal static class VlsCapabilityProfile
         .AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Node:MaxDustHtlcExposureMsat"] = "0",
-            ["Gossip:AcceptPublicChannels"] = "false",
             ["Gossip:AllowPublicChannelsOnMainnet"] = "false",
             ["Node:Features:OptionAnchors"] = "No",
             ["Node:Features:DualFund"] = "No",

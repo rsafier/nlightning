@@ -46,7 +46,8 @@ profile after options configuration. The initial profile is regtest, private,
 single-funded static-remotekey ECDSA channels. Regtest is this adapter
 prototype's acceptance boundary, not a restriction imposed by VLS upstream. It supports node ECDH, BOLT 11,
 typed v1 gossip payloads, P2WPKH wallet funding, semantic commitments and peer
-revocations, and channel close signing. Public channels, outbound push amounts,
+revocations, channel close signing, and (NL-1335) public channels, withdrawals to
+operator-allowlisted addresses and LND-style `signmessage`. Outbound push amounts,
 anchors, taproot, dual funding, splicing, zero-conf, simple close, gossip v2,
 BOLT 12, blinded/onion-message features, peer storage and native backups are
 outside this profile. Dust HTLCs are unsupported by this pinned VLS phase-two
@@ -61,9 +62,9 @@ outputs are. Making `enforce_balance` work with sub-satoshi values would need an
 upstream VLS core change and is not planned.
 Pre-offer, incoming-add and fee-update checks refuse
 trimmed HTLCs before applying updates without weakening VLS balance enforcement.
-Wallet withdrawals, named-account/watch-only imports and
-`signmessage` are unsupported. Private-key export and arbitrary node-message signing
-throw; financial accounting period signatures have no generic signing escape
+Named-account/watch-only imports, PSBT wallet signing and single-SHA256
+`signmessage` are unsupported. Private-key
+export and arbitrary node-message signing throw; financial accounting period signatures have no generic signing escape
 hatch. Ordinary accounting event hash chains remain supported.
 
 VLS Native wallet derivation uses the public account and a single child index
@@ -85,6 +86,43 @@ For keysend, use the same operator-controlled 32-byte preimage for approval and
 the CLI's `--preimage-file`; never place a preimage in a shell argument. Forwarded
 HTLCs are evaluated under VLS's balance policy. Fulfilled preimages are persisted
 with the resulting policy state so restart preserves the admission history.
+
+## Public channels, withdrawals and signmessage (NL-1335)
+
+Each path uses VLS's purpose-specific API at the pinned revision; nothing falls
+back to a local key.
+
+- **Public channels.** `openchannel --public` and a peer's announced open pass the
+  VLS gate, and the profile no longer forces `Gossip:AcceptPublicChannels` off
+  (`AllowPublicChannelsOnMainnet` stays off; the prototype is regtest only).
+  `channel_announcement` goes to the gateway's `sign_channel_announcement`: VLS's
+  `Channel::sign_channel_announcement_with_funding_key` for the bitcoin signature
+  and its node-key gossip signer for the node signature, as VLS's own
+  SignChannelAnnouncement handler does. Both the node adapter (announce flag, data
+  loss, confirmed short channel id, our node id, the peer and both funding keys)
+  and the gateway (chain, node order, our node and the VLS channel's peer, funding
+  keys and output index, data loss, closed channel) bind the announcement to the
+  channel; the adapter verifies both returned signatures. `channel_update` and
+  `node_announcement` were already typed VLS operations. Gossip v2 (taproot)
+  stays off.
+- **Withdrawals.** VLS has no withdrawal-specific API beyond its on-chain check:
+  vlsd's `SignWithdrawal` is a PSBT wrapper over the same `check_onchain_tx` +
+  `unchecked_sign_onchain_tx`. `withdraw` is therefore signed by the reserved-input
+  wallet signing of the anchors lane (`VlsLightningSigner.Anchors.cs`,
+  `wallet_sign_fee_inputs`, NL-1325), which passes the destination as a non-wallet
+  output path. VLS accepts only outputs to its wallet (the change, by wallet path)
+  or to an allowlisted destination, so the operator first allowlists the address
+  on the approval socket (`approve.py allowlist --address ...`,
+  `VlsWalletApprovalClient`); the node credential cannot. VLS keeps the allowlist
+  in its node state across restarts. Its fee policy (`max_feerate_per_kw`, fee
+  velocity) applies.
+- **signmessage.** `ILightningSigner.SignLightningMessage` (LND's `SignMessage`)
+  calls VLS `sign_message` (SHA256d of `"Lightning Signed Message:" || message`)
+  and returns LND's header form; the adapter checks the signature recovers the
+  node key. `single_hash` is refused: VLS has no single-SHA256 variant.
+
+Withdrawal signing has a gateway receipt but, like funding, no node-owned
+request-ID workflow yet (NL-1336).
 
 ## Durable ordering and recovery
 
@@ -204,6 +242,23 @@ listener's `O_NONBLOCK`, which dropped requests still in flight.
   200,000,000-msat payment; the persisted fulfilled circuit binds distinct input
   and output channels and the actual forwarded amounts. Together with local
   proofs, 17 actual C# VLS cases pass. Force-close output sweeps remain unproved.
+
+- NL-1335 (2026-10-08, `wip/vls-public`; the withdrawal results below were taken
+  with this lane's own `wallet_sign`-based signer, since replaced by the anchors
+  lane's identical VLS path, so re-run both proofs after merging NL-1325):
+  `VlsPublicSigningTests` 3/3 against the pinned gateway (message signature recovered to the node key, single hash refused;
+  withdrawal refused for an unknown destination, another reservation, a non-wallet
+  input and a node-credential allowlist, then signed for the allowlisted address,
+  accepted by NBitcoin's script interpreter and again after a gateway restart; a
+  public harness channel's announcement refused while private, then both
+  signatures verified by the gossip verifier, a wrong short channel id refused, and
+  swapped funding keys refused by the gateway itself). Live:
+  `VlsSignerPublicLndClusterTests` 1/1 (batch `rc-20261008173423`): LND learned our
+  public channel with both policies and our `node_announcement` by gossip, LND's
+  `VerifyMessage` accepted our VLS signature (valid, our pubkey), a withdrawal to a
+  non-allowlisted address was refused, and after the operator's allowlist Bitcoin
+  Core accepted and confirmed the VLS-signed withdrawal 6 deep (250,000 sat out,
+  change back to a VLS change address).
 
 Final live runner: `nltg-spike-runner:vls-signer-20261008-d`, config SHA
 `f3f621252ff3cf7af5d98e6700360ea10383fc845dde109d6221a90536adee70`.
