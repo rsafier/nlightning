@@ -47,6 +47,7 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
     private readonly ILightningSigner _lightningSigner;
     private readonly ChannelStateTransitionService? _transitions;
     private readonly NativeV1ChannelOpening? _nativeOpening;
+    private readonly NativeV1FundedInboundOpening? _nativeFundedOpening;
     private readonly ILogger<FundingCreatedMessageHandler> _logger;
     private readonly IMessageFactory _messageFactory;
     private readonly IUnitOfWork _unitOfWork;
@@ -58,8 +59,10 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
                                         ILightningSigner lightningSigner, ILogger<FundingCreatedMessageHandler> logger,
                                         IMessageFactory messageFactory, IUnitOfWork unitOfWork,
                                         ChannelStateTransitionService? transitions = null,
-                                        NativeV1ChannelOpening? nativeOpening = null)
+                                        NativeV1ChannelOpening? nativeOpening = null,
+                                        NativeV1FundedInboundOpening? nativeFundedOpening = null)
     {
+        _nativeFundedOpening = nativeFundedOpening;
         _nativeOpening = nativeOpening;
         _blockchainMonitor = blockchainMonitor;
         _channelIdFactory = channelIdFactory;
@@ -81,6 +84,10 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
                          message.Payload.ChannelId, peerPubKey);
 
         var payload = message.Payload;
+
+        if (_nativeFundedOpening is { Enabled: true }
+         && await _nativeFundedOpening.TryHandleRetainedAsync(message, peerPubKey, _unitOfWork) is { } retained)
+            return [retained];
 
         if (currentState != ChannelState.None)
             throw new ChannelErrorException("A channel with this id already exists", payload.ChannelId);
@@ -109,6 +116,15 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         if (await _unitOfWork.ChannelDbRepository.GetByIdAsync(channel.ChannelId) is not null)
             throw new ChannelErrorException("A channel with this funding outpoint already exists", channel.ChannelId,
                                             "This channel is already in our database");
+
+        if (_nativeFundedOpening is { Enabled: true })
+        {
+            var reply = await _nativeFundedOpening.StartAsync(channel, oldChannelId, message,
+                negotiatedFeatures, _unitOfWork);
+            _channelMemoryRepository.AddChannel(channel);
+            _channelMemoryRepository.TryRemoveTemporaryChannel(peerPubKey, oldChannelId);
+            return [reply];
+        }
 
         using var nativeInitial = _nativeOpening is { Enabled: true }
             ? await _nativeOpening.BeginInitialCommitAsync(channel, oldChannelId) : null;

@@ -1,5 +1,6 @@
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
+using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -41,6 +42,9 @@ internal static class Program
                 throw new PlatformNotSupportedException("The prototype signer daemon requires Unix domain sockets.");
 
             var options = SignerDaemonOptions.Parse(args);
+            var manifestHistories = options.AuthorityManifest ? RequireManifestHistory(options) : null;
+            SignerWalletAuthorityProfile.RequireInstalled(options.StateFilePath, null, options.AuthorityManifest
+                || options.AuthorityConfigPath is not null);
             SignerFiles.PrepareDirectoryFor(options.KeyFilePath ?? options.StateFilePath);
             SignerFiles.PrepareDirectoryFor(options.StateFilePath);
             SignerFiles.PrepareDirectoryFor(options.SocketPath);
@@ -62,6 +66,10 @@ internal static class Program
             var enrolledContext = new NodeSigningContext(options.NodeId, options.OwnerId, options.SignerId,
                                                         options.Network.Name, keys.GetNodePubKey());
             SignerEnrollment.Bind(options.StateFilePath, enrolledContext);
+            var authorityProfile = options.AuthorityConfigPath is null ? null
+                : SignerWalletAuthorityProfile.Load(options.AuthorityConfigPath, options,
+                    NativeSignerBinding.FromContext(enrolledContext));
+            SignerWalletAuthorityProfile.RequireInstalled(options.StateFilePath, authorityProfile, options.AuthorityManifest);
 
             var builder = WebApplication.CreateSlimBuilder();
             // This executable has one explicitly configured IPC endpoint. Ambient appsettings/environment
@@ -99,6 +107,30 @@ internal static class Program
             builder.Services.AddSingleton(services =>
                 new DurableSignerState(services.GetRequiredService<ILightningSigner>(),
                                        options.StateFilePath, options.Network.ToString()));
+            builder.Services.AddSingleton(services =>
+            {
+                if (OperatingSystem.IsWindows())
+                    throw new PlatformNotSupportedException("Native signer checkpoint composition requires Unix.");
+                return CreateCheckpoints(NativeSignerBinding.FromContext(enrolledContext),
+                    services.GetRequiredService<DurableSignerState>(), services.GetRequiredService<NativeNonceStateStore>(),
+                    (SwapSigner)services.GetRequiredService<ISwapSigner>(), provisioned.GetAllocationCheckpointDigest);
+            });
+            if (authorityProfile is not null)
+            {
+                builder.Services.AddSingleton(services =>
+                {
+                    if (OperatingSystem.IsWindows())
+                        throw new PlatformNotSupportedException("Native wallet authority composition requires Unix.");
+                    return authorityProfile.CreateRuntime(keys,
+                        services.GetRequiredService<DurableSignerState>(),
+                        services.GetRequiredService<NativeSignerSafetyCheckpointSet>());
+                });
+                builder.Services.AddSingleton(services => services.GetRequiredService<SignerWalletAuthorityRuntime>().Executor);
+                builder.Services.AddSingleton<INativeSignerWriterCredentialVerifier>(services =>
+                    services.GetRequiredService<SignerWalletAuthorityRuntime>().WriterCredentials);
+                builder.Services.AddSingleton<IAuthenticatedNativeChainEvidence>(services =>
+                    services.GetRequiredService<SignerWalletAuthorityRuntime>().Evidence);
+            }
             builder.Services.AddSingleton(new RemoteSignerOptions
             {
                 NodeId = options.NodeId,
@@ -121,7 +153,28 @@ internal static class Program
             _ = app.Services.GetRequiredService<ISwapSigner>();
             _ = app.Services.GetRequiredService<DurableSignerState>();
             SignerFiles.SyncParentDirectory(options.StateFilePath);
+            if (options.AuthorityManifest)
+            {
+                var checkpoint = app.Services.GetRequiredService<NativeSignerSafetyCheckpointSet>().GetCheckpoint();
+                await app.DisposeAsync();
+                provisioned.Dispose();
+                foreach (var (path, digest) in manifestHistories!)
+                    if (!SHA256.HashData(File.ReadAllBytes(path)).AsSpan().SequenceEqual(digest))
+                        throw new InvalidOperationException("Manifest preparation changed persisted safety history.");
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    Binding = NativeSignerBinding.FromContext(enrolledContext),
+                    SignerCheckpoint = checkpoint
+                }));
+                return 0;
+            }
             provisioned.MarkStateInitialized();
+            if (authorityProfile is not null)
+            {
+                _ = app.Services.GetRequiredService<SignerWalletAuthorityRuntime>();
+                _ = app.Services.GetRequiredService<IAuthenticatedNativeChainEvidence>();
+                authorityProfile.InstallMarker(options.StateFilePath);
+            }
             app.MapGrpcService<SignerRpcService>();
             var started = false;
             try
@@ -151,6 +204,29 @@ internal static class Program
                                   + "Check paths, owner-only permissions, password, network and exclusive key ownership.");
             return 1;
         }
+    }
+
+    internal static NativeSignerSafetyCheckpointSet CreateCheckpoints(NativeSignerBinding binding,
+        DurableSignerState journal, NativeNonceStateStore nonces, SwapSigner swaps, Func<byte[]> allocation) =>
+        new(binding, journal, new NativeSignerCheckpointSource("native-nonces", nonces.GetCheckpointDigest),
+            new NativeSignerCheckpointSource("swap-sessions", swaps.GetCheckpointDigest),
+            new NativeSignerCheckpointSource("key-allocation", allocation));
+
+    [UnsupportedOSPlatform("windows")]
+    private static Dictionary<string, byte[]> RequireManifestHistory(SignerDaemonOptions options)
+    {
+        // The existing lock must be present, but cannot be reopened while this process owns its exclusive handle.
+        SignerFiles.RequirePrivate((options.KeyFilePath ?? options.StateFilePath) + ".lock");
+        var paths = new[] { options.StateFilePath, options.StateFilePath + ".enrollment",
+            options.StateFilePath + ".nonces", options.StateFilePath + ".swap-sessions",
+            options.KeyFilePath ?? options.StateFilePath + ".key-index" };
+        var histories = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        foreach (var path in paths)
+        {
+            SignerFiles.RequirePrivate(path);
+            histories.Add(path, SHA256.HashData(File.ReadAllBytes(path)));
+        }
+        return histories;
     }
 
     [UnsupportedOSPlatform("windows")]
@@ -222,12 +298,18 @@ internal static class Program
     [UnsupportedOSPlatform("windows")]
     private sealed class ProvisionedKeys(SecureKeyManager keys, InjectedKeyIndexJournal? journal) : IDisposable
     {
+        private bool _disposed;
         public SecureKeyManager Keys { get; } = keys;
+
+        public byte[] GetAllocationCheckpointDigest() => journal?.GetCheckpointDigest()
+            ?? Keys.GetAllocationCheckpointDigest();
 
         public void MarkStateInitialized() => journal?.MarkStateInitialized();
 
         public void Dispose()
         {
+            if (_disposed) return;
+            _disposed = true;
             Keys.Dispose();
             journal?.Dispose();
         }

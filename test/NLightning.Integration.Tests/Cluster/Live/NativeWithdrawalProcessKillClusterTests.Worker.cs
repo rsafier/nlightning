@@ -39,7 +39,7 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
         var configuration = JsonSerializer.Deserialize<WorkerConfiguration>(
             await File.ReadAllTextAsync(Path.Combine(directory, "worker.json"), ct))
             ?? throw new InvalidOperationException("Withdrawal worker configuration is missing.");
-        var gate = new WithdrawalGate(directory, phase);
+        var gate = new WithdrawalGate(directory, phase, configuration.PsbtPublication);
         var options = new RemoteSignerOptions
         {
             SocketPath = configuration.SocketPath,
@@ -126,10 +126,18 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
         }
 
         ReportPhase("funding real wallet through Core");
-        await node.FundWalletAsync(LightningMoney.Satoshis(200_000), NLightning.Domain.Bitcoin.Enums.AddressType.P2Wpkh, ct);
+        await node.FundWalletAsync(LightningMoney.Satoshis(200_000), configuration.Taproot ? NLightning.Domain.Bitcoin.Enums.AddressType.P2Tr : NLightning.Domain.Bitcoin.Enums.AddressType.P2Wpkh, ct);
         var destination = await rpc.GetNewAddressAsync(ct);
         gate.Armed = true;
         ReportPhase($"withdrawing at {phase}");
+        if (configuration.PsbtPublication)
+        {
+            await node.Services.GetRequiredService<IWalletSpendService>().SendOutputsAsync(
+                [(new BitcoinScript(destination.ScriptPubKey.ToBytes()), LightningMoney.Satoshis(40_000)),
+                 (new BitcoinScript((await rpc.GetNewAddressAsync(ct)).ScriptPubKey.ToBytes()), LightningMoney.Satoshis(5_123))],
+                1_000, 1, "killed PSBT publication", ct);
+            throw new InvalidOperationException("The requested PSBT publication killpoint was never reached.");
+        }
         await node.Services.GetRequiredService<IWalletSpendService>().WithdrawAsync(
             new WalletWithdrawRequest(destination.ToString(), LightningMoney.Satoshis(40_000), LightningMoney.Satoshis(2_500))
             { Labels = SourceLabels.Create("killed withdrawal", ["proof=native-withdrawal"]) }, ct);
@@ -211,7 +219,7 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
         }
     }
 
-    private sealed class WithdrawalGate(string directory, string phase) : SaveChangesInterceptor
+    private sealed class WithdrawalGate(string directory, string phase, bool psbtPublication = false) : SaveChangesInterceptor
     {
         private readonly ConcurrentDictionary<Guid, bool> _matches = new();
         public bool Armed { get; set; }
@@ -225,10 +233,10 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
                 .Where(e => e.State is EntityState.Added or EntityState.Modified).Select(e => e.Entity);
             var matches = phase switch
             {
-                "intent" => workflows.Any(w => w.Kind == (int)SigningWorkflowKind.WalletWithdrawal && w.State == 1),
-                "prepared" => requests.Any(r => r.Operation == SignerOperations.SignWalletTransaction3 && r.State == 1),
-                "completed" => requests.Any(r => r.Operation == SignerOperations.SignWalletTransaction3 && r.State == 2),
-                "consumed" => workflows.Any(w => w.Kind == (int)SigningWorkflowKind.WalletWithdrawal && w.State == 2),
+                "intent" => workflows.Any(w => w.Kind == ((int)(psbtPublication ? SigningWorkflowKind.WalletPsbtPublication : SigningWorkflowKind.WalletWithdrawal)) && w.State == 1),
+                "prepared" => requests.Any(r => r.Operation == (psbtPublication ? SignerOperations.SignWalletTransaction2 : SignerOperations.SignWalletTransaction3) && r.State == 1),
+                "completed" => requests.Any(r => r.Operation == (psbtPublication ? SignerOperations.SignWalletTransaction2 : SignerOperations.SignWalletTransaction3) && r.State == 2),
+                "consumed" => workflows.Any(w => w.Kind == ((int)(psbtPublication ? SigningWorkflowKind.WalletPsbtPublication : SigningWorkflowKind.WalletWithdrawal)) && w.State == 2),
                 _ => false
             };
             if (matches) _matches[context.ContextId.InstanceId] = true;
@@ -239,7 +247,7 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
         }
         public void BeforeExecute(uint operation)
         {
-            if (Armed && phase == "reply" && operation == SignerOperations.SignWalletTransaction3) BlockReply = true;
+            if (Armed && phase == "reply" && operation == (psbtPublication ? SignerOperations.SignWalletTransaction2 : SignerOperations.SignWalletTransaction3)) BlockReply = true;
         }
         public void BlockForever()
         {
@@ -270,12 +278,14 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
 
     /// <summary>Explicit synthetic reconciliation outcome; this is not claimed as a natural wallet signing crash result.</summary>
     private sealed class SyntheticUnknownWithdrawalRecovery(RemoteSigningWorkflowCoordinator inner,
-        IServiceScopeFactory scopes) : IRemoteSigningWorkflowCoordinator, INativeWalletSigningRecovery, IDisposable
+        IServiceScopeFactory scopes) : IRemoteSigningWorkflowCoordinator, INativeWalletSigningRecovery, INativeWalletPsbtSigningRecovery, IDisposable
     {
         public Task<ISigningWorkflowScope> BeginAsync(SigningWorkflowDescriptor descriptor) => inner.BeginAsync(descriptor);
         public Task StageAsync(SigningWorkflowDescriptor descriptor, IUnitOfWork unitOfWork) => inner.StageAsync(descriptor, unitOfWork);
         public Task<IReadOnlyList<SigningWorkflow>> GetPendingAsync(ChannelId channelId) => inner.GetPendingAsync(channelId);
-        public SignedTransaction? ReplayWithdrawal(ISigningWorkflowScope workflow)
+        public SignedTransaction? ReplayWithdrawal(ISigningWorkflowScope workflow) => ReplayUnknown(workflow);
+        public SignedTransaction? ReplayPsbtPublication(ISigningWorkflowScope workflow) => ReplayUnknown(workflow);
+        private SignedTransaction? ReplayUnknown(ISigningWorkflowScope workflow)
         {
             using var scope = scopes.CreateScope();
             var unit = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();

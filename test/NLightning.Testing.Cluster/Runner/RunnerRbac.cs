@@ -31,6 +31,8 @@ public static class RunnerRbac
             ApiGroups = ["apps"], Resources = ["statefulsets"],
             Verbs = ["create", "delete", "get", "list", "watch", "patch"]
         },
+        // Stopped maintenance windows scale only workloads in this run's namespace.
+        new() { ApiGroups = ["apps"], Resources = ["statefulsets/scale"], Verbs = ["get", "patch"] },
         new()
         {
             ApiGroups = [""],

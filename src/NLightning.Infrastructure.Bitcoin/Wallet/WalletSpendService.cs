@@ -124,6 +124,8 @@ public sealed class WalletSpendService : IWalletSpendService
         if (outputs.Count is 0 or > 100 || minConfirmations < 1 || label.Length > 500)
             throw new ArgumentException("Invalid output count, confirmations or label.");
         var rate = await GetFeeRatePerKwAsync(LightningMoney.Satoshis(feeRatePerKw), cancellationToken);
+        if (psbt is INativeWalletPsbtPublicationService { HasNativePublicationRecovery: true } native)
+            return await native.SendOutputsCapturedAsync(outputs, rate, minConfirmations, label, cancellationToken);
         var lockId = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
         var funded = await psbt.FundPsbtAsync(new PsbtFundRequest(outputs, [], rate, minConfirmations, lockId,
             TimeSpan.FromMinutes(10)), cancellationToken);
@@ -864,6 +866,8 @@ public sealed class WalletSpendService : IWalletSpendService
     /// <returns>How many reservations were released.</returns>
     private async Task<int> EndStaleReservationsLockedAsync(CancellationToken cancellationToken)
     {
+        if (_psbt is INativeWalletPsbtPublicationService { HasNativePublicationRecovery: true } native)
+            await native.RecoverPublicationsAsync(cancellationToken);
         await RecoverWithdrawalsLockedAsync(cancellationToken);
         List<FeeInputReservation> reservations;
         try

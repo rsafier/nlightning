@@ -40,6 +40,14 @@ public sealed class SigningWorkflowDbRepository(NLightningDbContext context) : I
                               && e.State != (int)SigningWorkflowState.Abandoned).Select(Map).ToList();
     }
 
+    public async Task<SigningWorkflow?> GetLatestForChannelAsync(ChannelId channelId, SigningWorkflowKind kind)
+    {
+        var entity = await context.SigningWorkflows.AsNoTracking()
+            .Where(e => e.ChannelId.Equals(channelId) && e.Kind == (int)kind)
+            .OrderByDescending(e => e.CreatedAtTicks).ThenByDescending(e => e.WorkflowId).FirstOrDefaultAsync();
+        return entity is null ? null : Map(entity);
+    }
+
     public async Task<IReadOnlyList<SigningRequest>> GetRequestsAsync(Guid workflowId)
     {
         var entities = await context.SigningRequests.AsNoTracking().Where(e => e.WorkflowId == workflowId)

@@ -51,7 +51,8 @@ public static class WalletSpendServiceCollectionExtensions
                                                          sp.GetService<IBitcoinChainService>(),
                                                          sp.GetService<TimeProvider>(),
                                                          sp.GetService<Domain.Protocol.Interfaces.ISecureKeyManager>(),
-                                                         sp.GetService<IWalletMempoolCatalog>()));
+                                                         sp.GetService<IWalletMempoolCatalog>(),
+                                                         sp.GetService<IRemoteSigningWorkflowCoordinator>()));
         return services;
     }
 }

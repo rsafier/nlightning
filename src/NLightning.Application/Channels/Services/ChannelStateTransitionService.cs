@@ -81,6 +81,7 @@ public sealed class ChannelStateTransitionService
     private readonly IServiceScopeFactory? _signingRecoveryScopes;
     private readonly IBlockchainMonitor? _fundingRecoveryChain;
     private readonly IUtxoMemoryRepository? _fundingRecoveryWallet;
+    private readonly NativeV1FundedInboundOpening? _nativeFundedOpening;
 
     public ChannelStateTransitionService(IChannelMemoryRepository channelMemoryRepository,
                                          ChannelDomainEventQueue eventQueue, ICommitmentSigner commitmentSigner,
@@ -95,8 +96,10 @@ public sealed class ChannelStateTransitionService
                                          IServiceScopeFactory? signingRecoveryScopes = null,
                                          IVlsChannelSigner? vlsSigner = null,
                                          IBlockchainMonitor? fundingRecoveryChain = null,
-                                         IUtxoMemoryRepository? fundingRecoveryWallet = null)
+                                         IUtxoMemoryRepository? fundingRecoveryWallet = null,
+                                         NativeV1FundedInboundOpening? nativeFundedOpening = null)
     {
+        _nativeFundedOpening = nativeFundedOpening;
         _fundingRecoveryWallet = fundingRecoveryWallet;
         _fundingRecoveryChain = fundingRecoveryChain;
         _signingWorkflows = signingWorkflows;
@@ -706,7 +709,12 @@ public sealed class ChannelStateTransitionService
             return;
         }
         if (pending.Count == 1 && pending[0].Kind == SigningWorkflowKind.Opening)
+        {
+            if (_nativeFundedOpening is { Enabled: true }
+             && await _nativeFundedOpening.ResumeAsync(channel, _unitOfWork))
+                return;
             throw new InvalidOperationException("An interrupted VLS opening requires its original negotiation inputs; channel registration is blocked.");
+        }
         if (pending.Count != 1 || channel.DataLossDetected || !CarriesUpdates(channel.State)
          || channel.Commitments is not { } commitments)
             throw new InvalidOperationException("Cannot resume signing workflow for this channel state.");

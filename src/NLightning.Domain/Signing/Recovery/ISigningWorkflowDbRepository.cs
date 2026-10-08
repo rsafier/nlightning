@@ -6,6 +6,8 @@ using Channels.ValueObjects;
 public interface ISigningWorkflowDbRepository
 {
     Task<SigningWorkflow?> GetAsync(Guid workflowId);
+    Task<SigningWorkflow?> GetLatestForChannelAsync(ChannelId channelId, SigningWorkflowKind kind) =>
+        throw new NotSupportedException("This repository cannot read retained signing lifecycles.");
     Task<IReadOnlyList<SigningWorkflow>> GetPendingForChannelAsync(ChannelId channelId);
     Task<IReadOnlyList<SigningWorkflow>> GetUnconsumedAsync(SigningWorkflowKind kind) =>
         throw new NotSupportedException("This repository cannot discover unconsumed signing intents.");

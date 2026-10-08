@@ -11,12 +11,12 @@ validator, or an application lifecycle recovery proof. Keep these claims separat
 | --- | --- | --- | --- |
 | Node ECDH and transport/onion use | `ComputeNodeSharedSecret`; node private key export refused | Actual signer process ECDH and identity tests | Bind caller, identity and permitted purpose; full subsystem regression |
 | Normal channel commitments and revocations | Typed native signer dispatch | Node workflows, exact requests/receipts, signer journal; actual node crash tests | Independent exact commitment/balance validation and writer fencing |
-| Opening and funding | Channel allocation, registration and funding RPCs | Original key-allocation intent/receipt and frozen inbound acceptance context; native SegWit/taproot opening proof; funded-initial-signing guard; exact funding request recovery | Four funding process-kill boundaries pass; complete funded-opening restart/retransmission and remaining negotiation workflows |
+| Opening and funding | Channel allocation, registration and funding RPCs | Original key-allocation intent/receipt and frozen acceptance context; funded inbound intent/channel capture, startup recovery and exact retained replies are implemented; exact funding request recovery | Prior four funding process-kill cases pass; new inbound source checks pass; current live acceptance and outbound durable reservations/retransmission and remaining negotiations stay open |
 | Reconnect and taproot commitments | Verification nonce and partial-signature RPCs | Captured reconnect workflows and durable consumed-nonce outcomes | Complete creation/restart lifecycle and independent transition validation |
 | Cooperative and force close | Close nonce/signature and broadcast RPCs | Consumed-nonce/broadcast guards; native live peer proof exists | Complete node close workflows and crash/retransmission proofs |
 | Dual funding and splicing | Funding registration, shared-input signing, funding-lock RPCs | Native signing guards | Complete application request recovery for all negotiation/RBF/funding boundaries |
 | On-chain claims and sweeps | Sweep, anchor and wallet-input RPCs | Initial delayed and replacement sweeps capture exact prerequisites/receipts; restored child watches and reorg retirement; native restart and script verification | Other claim/anchor lifecycles; initial-sweep node-crash proofs, independent evidence and fee/destination authorization |
-| Wallet accounts and withdrawals | Public account metadata, wallet signing and wallet messages | Named-account reserved-spend checks; native withdrawal intent/request/receipt recovery and atomic broadcast persistence; seven live process-kill/rejection cases and 71 wallet tests pass | PSBT and bump/reorg recovery; production input/destination authorization |
+| Wallet accounts and withdrawals | Public account metadata, wallet signing and wallet messages | Named-account checks; withdrawal recovery has prior seven live cases and 71 wallet checks; captured send-outputs PSBT publication/recovery is implemented | PSBT source checks pass; validate current live cases; standalone finalization/publication, bump/reorg lifecycles and wider input/destination authorization remain open |
 | Silent payments | Output construction/spend operations plus typed public receiver metadata, label and scan ECDH operations | Real-process remote receive and restart tests pass | Complete scan persistence/reorg and spend recovery |
 | Swap/keyring metadata | `GetKeyRingPublicKey` (operation 110); public records saved before issuance | `RemoteKeyRingPublicTests`: actual RPC, invalid locators, restart and save failure; `LoopPersistenceTests`: durable public records | Signer-side family/owner authorization and independent key-purpose enrollment |
 | Swap signing and MuSig sessions | Typed remote `ISwapSigner`; private ring keys stay inside the daemon | Encrypted persistent MuSig sessions; actual-process restart, consumed-nonce and exact receipt tests pass | Independently authorize swap destinations and purposes; complete application lifecycle proof |
@@ -50,14 +50,14 @@ payment-event cases, 57 native close/splice/gossip/silent-payment crypto cases,
 and 20 local swap-signing cases including the new journal recovery checks.
 These do not replace the remote process, crash, live-chain or hosted-node gates.
 
-## Current acceptance evidence
+## Historical acceptance evidence before the current increment
 
-The combined net10 Release solution builds with zero warnings and errors.
+Before the PSBT, funded inbound and restricted authority changes below, the combined net10 Release solution built with zero warnings and errors.
 The full solution formatting verification and 45-project configuration check pass.
 Six replacement-sweep scheduler recovery and retirement cases also pass.
-Current focused checks pass: 71 wallet cases, 54 daemon enrollment/context/hosting
+Those focused checks passed: 71 wallet cases, 54 daemon enrollment/context/hosting
 cases and 22 compiled-model cases across the three generated providers.
-The expanded native RPC regression passes all 325 cases without skips in a
+That verified native RPC regression passed all 325 cases without skips in a
 sequential run without competing acceptance jobs. This includes allocation
 checkpoint rollback, authority restart loading, writer credentials, receiver and
 swap RPCs, obsolete-sweep retirement and swap timer/shutdown checks. The current
@@ -82,9 +82,9 @@ with B continuing to sign, and both daemon identities retained after restart.
 All four live proofs execute without skips. These are prototype-native proofs;
 independent authority composition and hosted writer failover remain open.
 
-These proofs do not establish production independent authorization or stale
-writer publication fencing. The executable still uses prototype signing
-authority until the independent authority is fully composed and validated.
+These historical proofs used prototype authority. They do not validate the new
+restricted executable profile or establish full-node independent authorization
+and stale-writer publication fencing.
 
 ## Native lifecycle and context increment
 
@@ -93,9 +93,17 @@ receipt across restart. Invalid requests fail before allocation. Inbound retries
 reuse the saved decision, negotiated features, opening defaults and fee quote;
 changed live policy does not silently produce a different acceptance. Native
 SegWit and taproot production-handler exchanges both consume allocation and
-initial-signing receipts with the first channel save. An interrupted funded
-opening still blocks safely rather than rebuilding funding; automatic recovery
-and exact reply retransmission remain open.
+initial-signing receipts with the channel save. The current funded inbound
+increment saves the complete negotiated channel and immutable funding-created
+message before registration/signing, including original key index, features,
+effective parameters, creation height and peer verification nonce. Startup
+replays the original requests, then consumes allocation and signing receipts
+with the final channel and funding watch before returning funding-signed.
+Duplicates read and reconcile consumed receipts; changed input/peer, missing
+receipts and channels beyond the funding-negotiation state are refused. New
+SegWit/taproot save-failure and signer-restart source checks pass below; current
+live funded-opening acceptance remains pending. Funded outbound recovery, durable pre-sign input reservations and
+reconnect retransmission until the peer acknowledgment remain open.
 
 Initial delayed sweeps retain the unsigned transaction, witness prerequisites,
 output/close snapshot and confirmed HTLC-parent identity. Recovery restores the
@@ -131,13 +139,14 @@ it does not launch the daemon executable for these withdrawal cases.
 
 The typed wallet-purpose validator and authenticated Core evidence adapter are
 independent authorization foundations described in
-[the authority boundary](NATIVE_SIGNER_AUTHORITY.md). They are not wired as a
-production signing mode. The remaining inventory and writer-failover gates stay
-open.
+[the authority boundary](NATIVE_SIGNER_AUTHORITY.md). The current executable
+increment composes them in the restricted profile described below; this is not
+full-node independent authorization. Wider purpose coverage and writer-failover
+and publication-fencing gates remain open.
 
-## Verified increment record
+## Historical verified increment record
 
-The final net10 Release solution build passes with zero warnings and errors.
+The prior increment's final net10 Release solution build passed with zero warnings and errors.
 Full solution formatting passes with the normal Blazor-project exclusion; the
 final test-only allocation deadline adjustment also passes its whitespace check.
 The clean native regression runs 325 cases, the node workflow suite runs 21,
@@ -148,6 +157,80 @@ confirmed delayed sweeps through the new initial-sweep workflow.
 Runner image: `nltg-spike-runner:native-hosted`, configuration digest
 `b95b8673e6f95f92252a3ef39ab80d15282c065cf7aad198f4494521235d2b09`.
 It was staged from the verified Release binaries without rebuilding inside the
-image. These results retain the prototype authority limitation above. Funded
-opening replay, PSBT/remaining claim lifecycles, production purpose coverage and
-independent writer/publication enforcement remain delivery gates.
+image. This image and its 325-case native run precede the current implementation
+increment; they do not certify its new source or acceptance tests. Wider opening,
+wallet/claim lifecycles, purpose coverage and independent writer/publication
+enforcement remain delivery gates.
+
+
+## Current implementation and acceptance scope
+
+Captured native send-outputs now saves a PSBT publication intent before wallet
+signing: funded PSBT, exact unsigned transaction, reservation IDs, fee/rate,
+height and label. Recovery reuses original signing envelopes and receipts and
+validates the exact inputs, outputs, fee and signed transaction before saving
+the consumed workflow with its broadcast row. Publication occurs after that
+save. Startup recovery precedes withdrawal reservation cleanup; lease/release
+and competing-publication checks preserve inputs held by an unfinished or
+persisted publication decision. Indeterminate or missing receipts block recovery
+rather than select new inputs or issue replacement signing requests. This
+boundary covers captured send-outputs publication, not every separately exposed
+PSBT finalization/publication operation. Regression checks and the 12-case
+real PSBT process-kill/receipt-rejection proof pass as recorded below.
+
+The executable accepts an explicit administrator-installed
+`--authority-config` profile with mode `NativeWalletAuthorityV1`. It binds node,
+owner, signer, network and node key to a pre-enrolled PostgreSQL authority,
+installed writer credential, bounded wallet derivations and authenticated Core
+evidence. PostgreSQL requires verified TLS and bounded connection/command
+timeouts; secrets and the installed profile use separate private files.
+Runtime authority/evidence activation occurs before the listener, and a
+persistent profile marker prevents omission or replacement on restart.
+
+This profile authorizes only reserved account-zero wallet withdrawal operation 29
+(`SignWalletTransaction3`) through its installed validator. It does not enroll
+owner authority, approve its own withdrawals, authorize PSBT operation 28 or
+provide a usable independently authorized whole-node signer. Other financial
+and protocol signing purposes remain rejected or outside this profile. The executable
+PostgreSQL/Core proof below establishes restricted withdrawal authorization
+and signer writer rotation. Whole-node authority and fencing of node writes
+and publication remain open.
+The earlier prototype-native proofs remain separate evidence.
+
+## Verified current source checks
+
+The integrated net10 Release solution build passes with zero warnings and
+errors. The net11 daemon and native signer builds also pass with zero warnings
+and errors. The focused wallet suite passes all 150 cases, the node workflow
+suite passes 21, PSBT recovery passes 13, funded inbound recovery passes ten,
+and corrected authority composition checks pass 13. The broad native RPC
+regression passes all 361 cases (`native-psbt-full-rpc-tests.log`). All these
+suites pass without failures or skips.
+
+The real PSBT SIGKILL/process-restart and receipt-rejection proof passes all
+12 cases without failures or skips (`native-psbt-live-kill-tests.log`). This
+adds live acceptance evidence for captured PSBT publication alongside the
+source checks for saved funded-opening inputs and exact native reply recovery.
+
+The actual restricted signer executable passes both P2WPKH and P2TR cases
+against verified-TLS PostgreSQL and authenticated Bitcoin Core
+(`native-psbt-live-authority-tests6.log`): node-only credentials, altered intent,
+unsupported purpose, Core outage and stale writers leave safety history unchanged.
+Externally authorized writer rotation survives signer restart; exact replay
+retains history, and Core confirms the exact signed transaction bytes.
+The restored Core endpoint must pass the same independent freshness checks and
+retain the original chain tip and UTXO before rotation proceeds.
+
+The seven existing withdrawal killpoint/receipt-rejection cases also pass on
+the final runner image (`native-psbt-final-withdrawal-live.log`). The hosted
+channel/payment/restart/cooperative-close proof and the separate daemon-process
+IPC/wallet/signer-isolation proof pass without failures or skips
+(`native-psbt-final-hosted-nodes-live.log`,
+`native-psbt-final-hosted-daemons-live.log`). The two-node force-close and
+confirmed delayed-sweep proof also passes without failures or skips
+(`native-psbt-final-hosted-onchain-live.log`). At the owner's request this
+checkpoint is committed for transfer to a faster machine. The final hosted
+forwarding rerun and full solution formatting verification remain pending;
+resume with [the checkpoint handoff](NATIVE_SIGNER_HANDOFF_2026_10_08.md). These
+checks do not establish the complete independent authority deployment. Funded outbound recovery, other
+signing lifecycles and independent writer/publication enforcement remain open.

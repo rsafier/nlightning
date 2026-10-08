@@ -9,14 +9,20 @@ internal sealed record SignerDaemonOptions(string SocketPath, string? KeyFilePat
                                            bool SeedStdin, string StateFilePath,
                                            string NodeId, string OwnerId, string SignerId)
 {
+    public string? AuthorityConfigPath { get; init; }
+    public bool AuthorityManifest { get; init; }
+
     public const string Usage = "NLightning.Signer --socket <path> --key-file <path> "
                               + "--auth-token-file <path> (--password-file <path> | --password-stdin) "
                               + "[--create] [--network regtest]\n"
                               + "NLightning.Signer --socket <path> --seed-stdin --state-file <absolute-path> "
-                              + "--auth-token-file <path> [--network regtest] [--node-id <id> --owner-id <id> --signer-id <id>]";
+                              + "--auth-token-file <path> [--network regtest] [--node-id <id> --owner-id <id> --signer-id <id>]\n"
+                              + "[--authority-config <absolute-private-json> | --authority-manifest]";
 
     public static SignerDaemonOptions Parse(string[] args)
     {
+        string? authorityConfig = null;
+        var authorityManifest = false;
         string? socket = null;
         string? key = null;
         string? passwordFile = null;
@@ -34,6 +40,12 @@ internal sealed record SignerDaemonOptions(string SocketPath, string? KeyFilePat
             var option = args[i];
             switch (option)
             {
+                case "--authority-config":
+                    authorityConfig = Value(args, ref i);
+                    break;
+                case "--authority-manifest":
+                    authorityManifest = true;
+                    break;
                 case "--socket":
                     socket = Value(args, ref i);
                     break;
@@ -94,6 +106,11 @@ internal sealed record SignerDaemonOptions(string SocketPath, string? KeyFilePat
         if (string.IsNullOrWhiteSpace(authTokenFile))
             throw new ArgumentException("--auth-token-file is required.");
 
+        if (authorityConfig is not null && !Path.IsPathFullyQualified(authorityConfig))
+            throw new ArgumentException("Authority configuration requires an absolute administrator-installed path.");
+        if (authorityManifest && (authorityConfig is not null || create))
+            throw new ArgumentException("Authority manifest reads existing history without installing a profile or creating keys.");
+
         var socketPath = Path.GetFullPath(socket);
         var keyPath = key is null ? null : Path.GetFullPath(key);
         var statePath = Path.GetFullPath(stateFile ?? key + ".signer-state");
@@ -112,7 +129,8 @@ internal sealed record SignerDaemonOptions(string SocketPath, string? KeyFilePat
         return new SignerDaemonOptions(socketPath, keyPath,
                                        Path.GetFullPath(authTokenFile),
                                        passwordFile is null ? null : Path.GetFullPath(passwordFile), stdin, create,
-                                       network, seedStdin, statePath, nodeId, ownerId, signerId);
+                                       network, seedStdin, statePath, nodeId, ownerId, signerId)
+        { AuthorityConfigPath = authorityConfig, AuthorityManifest = authorityManifest };
     }
 
     private static string Value(string[] args, ref int index)

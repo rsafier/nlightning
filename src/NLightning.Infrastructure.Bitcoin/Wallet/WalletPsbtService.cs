@@ -41,7 +41,7 @@ using Networks;
 /// that also spends others' outputs as a <see cref="BroadcastPurpose.WalletCollaborative"/> row (both rebroadcast until
 /// they confirm), and sends a transaction that spends no wallet output once.</para>
 /// </remarks>
-public sealed partial class WalletPsbtService : IWalletPsbtService, IDisposable
+public sealed partial class WalletPsbtService : IWalletPsbtService, INativeWalletPsbtPublicationService, IDisposable
 {
     /// <summary>The purpose prefix of a lease reservation.</summary>
     public const string LeasePurposePrefix = "lnd-lease:";
@@ -73,8 +73,10 @@ public sealed partial class WalletPsbtService : IWalletPsbtService, IDisposable
                              IBlockchainMonitor blockchainMonitor, IServiceScopeFactory scopeFactory,
                              IOptions<NodeOptions> nodeOptions, ILogger<WalletPsbtService> logger,
                              IBitcoinChainService? bitcoinChainService = null, TimeProvider? timeProvider = null,
-                             ISecureKeyManager? secureKeyManager = null, IWalletMempoolCatalog? mempoolCatalog = null)
+                             ISecureKeyManager? secureKeyManager = null, IWalletMempoolCatalog? mempoolCatalog = null,
+                             Domain.Signing.Recovery.IRemoteSigningWorkflowCoordinator? signingWorkflows = null)
     {
+        _signingWorkflows = signingWorkflows is Domain.Signing.Recovery.INativeWalletPsbtSigningRecovery ? signingWorkflows : null;
         _secureKeyManager = secureKeyManager;
         _mempoolCatalog = mempoolCatalog;
         _feeInputSelector = feeInputSelector;
@@ -156,6 +158,10 @@ public sealed partial class WalletPsbtService : IWalletPsbtService, IDisposable
                                         || !heldId.AsSpan().SequenceEqual(lockId))
                     throw new WalletPsbtException(WalletPsbtError.FailedPrecondition, "output already locked");
 
+                if (await IsPublicationHeldAsync(reservation, cancellationToken))
+                    throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
+                                                  "output is held by a durable publication intent");
+
                 await SplitOffAsync(reservation, txId, index, cancellationToken);
             }
             else
@@ -194,6 +200,10 @@ public sealed partial class WalletPsbtService : IWalletPsbtService, IDisposable
             if (!heldId.AsSpan().SequenceEqual(lockId))
                 throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
                                               "output is leased with a different id");
+
+            if (await IsPublicationHeldAsync(reservation, cancellationToken))
+                throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
+                                              "output is held by a durable publication intent");
 
             await SplitOffAsync(reservation, txId, index, cancellationToken);
             _logger.LogInformation("Released the lease of wallet output {TxId}:{Index}", txId, index);
@@ -420,12 +430,20 @@ public sealed partial class WalletPsbtService : IWalletPsbtService, IDisposable
     /// <inheritdoc />
     public async Task<PsbtFinalizeResult> FinalizePsbtAsync(byte[] psbt, CancellationToken cancellationToken = default)
     {
+        await _gate.WaitAsync(cancellationToken);
+        try { return await FinalizePsbtCoreAsync(psbt, cancellationToken); }
+        finally { _gate.Release(); }
+    }
+
+    private async Task<PsbtFinalizeResult> FinalizePsbtCoreAsync(byte[] psbt, CancellationToken cancellationToken,
+        Domain.Signing.Recovery.NativeWalletPsbtPublicationIntent? publication = null, Guid? owningWorkflowId = null)
+    {
         var parsed = LoadPsbt(psbt);
         var tx = parsed.GetGlobalTransaction();
         if (tx.Inputs.Count == 0)
             throw new WalletPsbtException(WalletPsbtError.InvalidArgument, "the PSBT has no input");
 
-        var inputs = await ClassifyInputsAsync(tx, parsed, cancellationToken);
+        var inputs = await ClassifyInputsAsync(tx, parsed, cancellationToken, publication, owningWorkflowId);
         for (var i = 0; i < tx.Inputs.Count; i++)
         {
             if (inputs.Ours[i])
@@ -486,6 +504,13 @@ public sealed partial class WalletPsbtService : IWalletPsbtService, IDisposable
 
     /// <inheritdoc />
     public async Task<PsbtSignResult> SignPsbtAsync(byte[] psbt, CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try { return await SignPsbtCoreAsync(psbt, cancellationToken); }
+        finally { _gate.Release(); }
+    }
+
+    private async Task<PsbtSignResult> SignPsbtCoreAsync(byte[] psbt, CancellationToken cancellationToken)
     {
         var parsed = LoadPsbt(psbt);
         var tx = parsed.GetGlobalTransaction();
@@ -565,40 +590,56 @@ public sealed partial class WalletPsbtService : IWalletPsbtService, IDisposable
             return true;
         }
 
-        var inputs = await ClassifyInputsAsync(tx, null, cancellationToken);
-        var collaborative = inputs.Ours.Any(o => !o);
-        long? feeSat = null;
-        if (!collaborative)
+        if (HasNativePublicationRecovery) await _gate.WaitAsync(cancellationToken);
+        try
         {
-            feeSat = inputs.Spent.Sum(o => o!.Value.Satoshi) - tx.Outputs.Sum(o => o.Value.Satoshi);
-            if (feeSat < 0)
-                throw new WalletPsbtException(WalletPsbtError.InvalidArgument, "the outputs exceed the inputs");
+            var inputs = await ClassifyInputsAsync(tx, null, cancellationToken, allowStoredPublication: true);
+            var collaborative = inputs.Ours.Any(o => !o);
+            long? feeSat = null;
+            if (!collaborative)
+            {
+                feeSat = inputs.Spent.Sum(o => o!.Value.Satoshi) - tx.Outputs.Sum(o => o.Value.Satoshi);
+                if (feeSat < 0)
+                    throw new WalletPsbtException(WalletPsbtError.InvalidArgument, "the outputs exceed the inputs");
+            }
+
+            // The local PSBT publisher follows LND's refusal behavior. Native publication persists the signed
+            // decision before submission and retains it through uncertain or refused submissions.
+            if (_bitcoinChainService is not null && !HasNativePublicationRecovery)
+                await SendOrRefuseAsync(tx);
+
+            // A collaborative transaction (others' inputs too, NL-1186): its fee and what it pays away are not ours alone, so
+            // it is no withdrawal; the chain monitor books its wallet movements only
+            var weight = WalletSpendService.GetWeight(tx);
+            var row = new BroadcastTransactionModel(new SignedTransaction(new TxId(tx.GetHash().ToBytes()), tx.ToBytes()),
+                                                    collaborative
+                                                        ? BroadcastPurpose.WalletCollaborative
+                                                        : BroadcastPurpose.WalletSend, null,
+                                                    _blockchainMonitor.LastProcessedBlockHeight,
+                                                    feeSat is { } fee ? (uint)(fee * 1000 / Math.Max(1, weight)) : 0,
+                                                    fee: feeSat is { } known ? LightningMoney.Satoshis(known) : null)
+            {
+                Label = string.IsNullOrWhiteSpace(label) ? null : label
+            };
+            bool published;
+            if (HasNativePublicationRecovery)
+            {
+                row = await SavePublicationRowAsync(row, null);
+                if (_bitcoinChainService is not null)
+                {
+                    await SendOrRefuseAsync(tx);
+                    published = true;
+                }
+                else published = await _blockchainMonitor.PublishAsync(row);
+            }
+            else published = await _blockchainMonitor.SaveAndPublishAsync(row);
+            _logger.LogInformation("Published {Kind} {TxId} (fee {Fee}): {Outcome}",
+                                   collaborative ? "collaborative wallet transaction" : "wallet spend", tx.GetHash(),
+                                   feeSat is { } paid ? $"{paid} sat" : "shared",
+                                   published ? "accepted" : "refused now, resent after every block");
+            return published;
         }
-
-        // LND (btcwallet PublishTransaction): a transaction bitcoind refuses is an error and nothing is kept. So it is sent
-        // first; only an accepted (or already known) one gets the row that rebroadcasts it until it confirms
-        if (_bitcoinChainService is not null)
-            await SendOrRefuseAsync(tx);
-
-        // A collaborative transaction (others' inputs too, NL-1186): its fee and what it pays away are not ours alone, so
-        // it is no withdrawal; the chain monitor books its wallet movements only
-        var weight = WalletSpendService.GetWeight(tx);
-        var row = new BroadcastTransactionModel(new SignedTransaction(new TxId(tx.GetHash().ToBytes()), tx.ToBytes()),
-                                                collaborative
-                                                    ? BroadcastPurpose.WalletCollaborative
-                                                    : BroadcastPurpose.WalletSend, null,
-                                                _blockchainMonitor.LastProcessedBlockHeight,
-                                                feeSat is { } fee ? (uint)(fee * 1000 / Math.Max(1, weight)) : 0,
-                                                fee: feeSat is { } known ? LightningMoney.Satoshis(known) : null)
-        {
-            Label = string.IsNullOrWhiteSpace(label) ? null : label
-        };
-        var published = await _blockchainMonitor.SaveAndPublishAsync(row);
-        _logger.LogInformation("Published {Kind} {TxId} (fee {Fee}): {Outcome}",
-                               collaborative ? "collaborative wallet transaction" : "wallet spend", tx.GetHash(),
-                               feeSat is { } paid ? $"{paid} sat" : "shared",
-                               published ? "accepted" : "refused now, resent after every block");
-        return published;
+        finally { if (HasNativePublicationRecovery) _gate.Release(); }
     }
 
     /// <inheritdoc />
@@ -606,6 +647,7 @@ public sealed partial class WalletPsbtService : IWalletPsbtService, IDisposable
     {
         _sweepTimer.Dispose();
         _gate.Dispose();
+        _publicationGate.Dispose();
     }
 
     /// <summary>The lease purpose of <paramref name="lockId"/> until <paramref name="expiration"/>.</summary>
@@ -758,7 +800,8 @@ public sealed partial class WalletPsbtService : IWalletPsbtService, IDisposable
     /// fields when there is a PSBT.
     /// </summary>
     private async Task<ClassifiedInputs> ClassifyInputsAsync(Transaction tx, PSBT? psbt,
-                                                             CancellationToken cancellationToken)
+        CancellationToken cancellationToken, Domain.Signing.Recovery.NativeWalletPsbtPublicationIntent? publication = null,
+        Guid? owningWorkflowId = null, bool allowStoredPublication = false)
     {
         if (_mempoolCatalog is not null && tx.Inputs.Any(input =>
             _utxoMemoryRepository.TryGetFeeReservation(new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N, out _) &&
@@ -797,6 +840,13 @@ public sealed partial class WalletPsbtService : IWalletPsbtService, IDisposable
             if (purpose is null || !purpose.StartsWith(LeasePurposePrefix, StringComparison.Ordinal))
                 throw new WalletPsbtException(WalletPsbtError.FailedPrecondition,
                                               $"input {prevOut} is reserved for another spend of this node");
+
+            if (HasNativePublicationRecovery)
+            {
+                var reservation = await _feeInputSelector.GetAsync(reservationId, cancellationToken)
+                    ?? throw new WalletPsbtException(WalletPsbtError.FailedPrecondition, "input reservation is missing");
+                await RequirePublicationAdmissionAsync(tx, reservation, publication, owningWorkflowId, allowStoredPublication, cancellationToken);
+            }
 
             spent[i] = new TxOut(Money.Satoshis(utxo.Amount.Satoshi), WalletUtxoScript(utxo));
             ours[i] = true;
@@ -1038,6 +1088,9 @@ public sealed partial class WalletPsbtService : IWalletPsbtService, IDisposable
         foreach (var reservation in await _feeInputSelector.GetAllAsync(cancellationToken))
         {
             if (!TryParseLease(reservation.Purpose, out _, out var expiration))
+                continue;
+
+            if (await IsPublicationHeldAsync(reservation, cancellationToken))
                 continue;
 
             if (reservation.Inputs.All(i => !_utxoMemoryRepository.TryGetUtxo(i.TxId, i.Index, out _)) &&

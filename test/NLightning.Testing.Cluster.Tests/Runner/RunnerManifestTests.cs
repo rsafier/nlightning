@@ -25,6 +25,7 @@ public class RunnerManifestTests
                        Assert.Equal("nltg-spike-r1", m.NamespaceProperty);
                        Assert.Equal("r1", m.Labels[RunLabels.Run]);
                    });
+        Assert.Equal("Role", rbac.Role.Kind);
         Assert.Equal("Role", rbac.RoleBinding.RoleRef.Kind);
         var subject = Assert.Single(rbac.RoleBinding.Subjects);
         Assert.Equal("ServiceAccount", subject.Kind);
@@ -43,6 +44,11 @@ public class RunnerManifestTests
             rules.Any(r => r.ApiGroups.Contains(group) && r.Resources.Contains(resource) && r.Verbs.Contains(verb));
 
         Assert.True(Allows("apps", "statefulsets", "create"));
+        Assert.True(Allows("apps", "statefulsets/scale", "get"));
+        Assert.True(Allows("apps", "statefulsets/scale", "patch"));
+        Assert.False(Allows("apps", "statefulsets/scale", "create"));
+        Assert.False(Allows("apps", "statefulsets/scale", "delete"));
+        Assert.False(Allows("apps", "statefulsets/scale", "update"));
         Assert.True(Allows("", "pods/exec", "create"));
         Assert.True(Allows("", "pods/log", "get"));
         Assert.True(Allows("", "persistentvolumeclaims", "delete"));
@@ -52,7 +58,10 @@ public class RunnerManifestTests
         Assert.False(Allows("", "namespaces", "list"));
         Assert.False(Allows("", "resourcequotas", "delete"));
         Assert.False(Allows("rbac.authorization.k8s.io", "roles", "create"));
-        Assert.DoesNotContain(rules, r => r.Verbs.Contains("*") || r.Resources.Contains("*"));
+        Assert.False(Allows("rbac.authorization.k8s.io", "clusterroles", "create"));
+        Assert.False(Allows("rbac.authorization.k8s.io", "clusterrolebindings", "create"));
+        Assert.DoesNotContain(rules, r => r.Resources.Contains("secrets"));
+        Assert.DoesNotContain(rules, r => r.Verbs.Contains("*") || r.Resources.Contains("*") || r.ApiGroups.Contains("*"));
     }
 
     [Fact]

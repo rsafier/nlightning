@@ -140,8 +140,8 @@ Ownership labels come from the installed signer-derived script registry.
 
 This boundary trusts the independently administered Core instance, authenticated
 transport and signer clock. It is not a separate consensus verifier or a durable
-chain rollback watermark. The adapter and typed wallet validator are library
-foundations; production executable composition remains an open gate.
+chain rollback watermark. The adapter and typed wallet validator are installed by the restricted executable
+profile below. Full-node purpose composition remains an open gate.
 
 ## Remaining milestone 2 gates
 
@@ -158,15 +158,14 @@ must remain visible until implemented and tested through the actual signer RPC.
 requires preinstalled enrollment, writer history, independent evidence and a
 validator before creating an executor. It cannot enroll, approve spending or
 transfer writers through node RPC credentials. Tests cover missing authority,
-mismatched owner/history, stale writer and unavailable evidence. Production
-executable composition and divergent-history reconciliation remain open; this primitive
-alone is not an enabled deployment mode.
+mismatched owner/history, stale writer and unavailable evidence. Full-node purpose composition and divergent-history reconciliation remain open;
+this primitive alone does not provide those guarantees.
 
 Normal bootstrap now loads the independent authority's current checkpoints under
 the installed writer fence and requires the local aggregate digest to match.
 An old configuration snapshot cannot reset receipt history. Allocation journals
-and encrypted key files now expose committed digest sources; production must
-include the appropriate source in its aggregate checkpoint composition.
+and encrypted key files now expose committed digest sources; the restricted executable profile includes main, nonce, swap-session and channel
+allocation journals in its aggregate checkpoint composition.
 
 ## Persistence and publication integration still required
 
@@ -186,3 +185,48 @@ former writer before transfer completes. Already submitted bytes can arrive
 later. Writer epochs cannot revoke a valid Bitcoin signature already released
 to a host; independent signing validation must establish that the signature was
 safe when issued. These boundaries remain open acceptance gates.
+
+
+## Restricted executable wallet authority profile
+
+`--authority-config <absolute path>` enables the administrator-installed
+`NativeWalletAuthorityV1` profile. The executable installs both the independent
+executor and writer-credential verifier before starting its Unix listener.
+This profile authorizes only typed operation-29 withdrawals; other financial
+purposes fail closed. It is a proof and deployment boundary for that purpose,
+not full-node financial authorization.
+
+The private configuration binds the immutable node/owner/signer/network/public
+key, current writer execution, installed wallet derivations, authenticated Core
+options and separate private files for PostgreSQL, Core and writer credentials.
+PostgreSQL requires certificate and hostname verification with bounded
+connection/command timeouts. Profiles and credential files require absolute,
+private paths distinct from worker-facing tokens and signer history files.
+The node cannot choose another evidence source or install its own approvals.
+
+Owner administration must provision enrollment, current writer authority and
+exact typed spending approvals in the independent database beforehand. Startup
+never initializes that database, enrolls an owner, approves spending or acquires
+a writer epoch. All four local safety journals must match the authority's
+aggregate checkpoint. Missing authority, unavailable evidence, stale execution
+or mismatched history blocks signing.
+
+For an already provisioned signer, `--authority-manifest` emits only its public
+enrollment and aggregate checkpoint and exits before opening a listener.
+It requires existing history and verifies that the command did not change it;
+it does not create keys or owner authority. This enables independent owner
+administration to enroll the existing checkpoint. An administrative provisioning
+CLI remains to be implemented.
+
+Installing the profile records an immutable enrollment marker. Later omission
+cannot silently restore unrestricted prototype signing. Current writer epochs
+and credential passwords can rotate through administrator-installed
+configuration, with the new execution verified against independent authority.
+Changing the enrolled authority endpoint, evidence identity or installed wallet
+derivation policy requires a separate trusted reinstallation design.
+
+The profile trusts independently administered PostgreSQL and Core, their
+verified/configured transports, private administrative configuration and the
+signer clock. It does not enforce node database writes or peer/Bitcoin egress,
+provide a durable chain rollback watermark, or implement the other financial
+purpose validators. Those milestone 2 gates remain open.

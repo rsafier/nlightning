@@ -12,7 +12,7 @@ using WireRequest = NLightning.Signing.Contracts.SigningRequest;
 namespace NLightning.Infrastructure.RemoteSigning;
 
 /// <summary>Captures requests only inside validated application transitions; recovery never guesses a new request ID.</summary>
-public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordinator, IRemoteSigningRequestCapture, INativeFundingSigningRecovery, INativeWalletSigningRecovery, INativeInitialSweepSigningRecovery, INativeChannelKeyAllocationRecovery, IDisposable
+public sealed partial class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoordinator, IRemoteSigningRequestCapture, INativeFundingSigningRecovery, INativeWalletSigningRecovery, INativeWalletPsbtSigningRecovery, INativeInitialSweepSigningRecovery, INativeChannelKeyAllocationRecovery, IDisposable
 {
     public const int SchemaVersion = 1;
     public const int MaximumEnvelopeBytes = 1024 * 1024;
@@ -64,14 +64,14 @@ public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoo
         catch { gate.Release(); throw; }
     }
 
-    /// <summary>ReleaseRevoke intent is committed in the same node transaction as the incoming local commitment.</summary>
+    /// <summary>Initial opening and revocation intents commit with their associated channel transition.</summary>
     public async Task StageAsync(SigningWorkflowDescriptor descriptor, IUnitOfWork unitOfWork)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ValidateDescriptor(descriptor);
         ArgumentNullException.ThrowIfNull(unitOfWork);
-        if (descriptor.Kind != SigningWorkflowKind.ReleaseRevoke)
-            throw Blocked("Only a post-save revocation release can be staged with a channel transition.");
+        if (descriptor.Kind is not (SigningWorkflowKind.ReleaseRevoke or SigningWorkflowKind.Opening))
+            throw Blocked("Only a revocation release or initial opening can be staged with a channel transition.");
         var pending = await unitOfWork.SigningWorkflowDbRepository.GetPendingForChannelAsync(descriptor.ChannelId);
         if (pending.Count > 1) throw Blocked("The channel has multiple pending signing workflows.");
         if (pending.Count == 1) ValidateWorkflow(pending[0], descriptor);
@@ -301,9 +301,9 @@ public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoo
         ArgumentNullException.ThrowIfNull(descriptor);
         if (descriptor.SnapshotFingerprint is not { Length: 32 }
          || descriptor.PublicationIntent?.Length > MaximumEnvelopeBytes
-         || descriptor.Kind is (SigningWorkflowKind.WalletWithdrawal or SigningWorkflowKind.OnchainSweep or SigningWorkflowKind.OnchainInitialSweep or SigningWorkflowKind.ChannelKeyAllocation or SigningWorkflowKind.Opening) && (descriptor.PublicationIntent is null
+         || descriptor.Kind is (SigningWorkflowKind.WalletWithdrawal or SigningWorkflowKind.WalletPsbtPublication or SigningWorkflowKind.OnchainSweep or SigningWorkflowKind.OnchainInitialSweep or SigningWorkflowKind.ChannelKeyAllocation or SigningWorkflowKind.Opening) && (descriptor.PublicationIntent is null
              || !SHA256.HashData(descriptor.PublicationIntent).AsSpan().SequenceEqual(descriptor.SnapshotFingerprint))
-         || descriptor.Kind is not (SigningWorkflowKind.SendCommit or SigningWorkflowKind.ReleaseRevoke or SigningWorkflowKind.Funding or SigningWorkflowKind.WalletWithdrawal or SigningWorkflowKind.OnchainSweep or SigningWorkflowKind.OnchainInitialSweep or SigningWorkflowKind.ChannelKeyAllocation or SigningWorkflowKind.Opening))
+         || descriptor.Kind is not (SigningWorkflowKind.SendCommit or SigningWorkflowKind.ReleaseRevoke or SigningWorkflowKind.Funding or SigningWorkflowKind.WalletWithdrawal or SigningWorkflowKind.WalletPsbtPublication or SigningWorkflowKind.OnchainSweep or SigningWorkflowKind.OnchainInitialSweep or SigningWorkflowKind.ChannelKeyAllocation or SigningWorkflowKind.Opening))
             throw new ArgumentException("A signing workflow requires a supported kind and a 32-byte snapshot fingerprint.");
     }
     private static void ValidateRequests(SigningWorkflow workflow, IReadOnlyList<StoredRequest> requests)
@@ -323,13 +323,14 @@ public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoo
                 workflow.ChannelId, workflow.Kind, workflow.PublicationIntent);
         }
     }
-    private static bool Allowed(SigningWorkflowKind kind, uint operation) => kind is not (SigningWorkflowKind.WalletWithdrawal or SigningWorkflowKind.ChannelKeyAllocation) && operation == SignerOperations.RegisterChannel
+    private static bool Allowed(SigningWorkflowKind kind, uint operation) => kind is not (SigningWorkflowKind.WalletWithdrawal or SigningWorkflowKind.WalletPsbtPublication or SigningWorkflowKind.ChannelKeyAllocation) && operation == SignerOperations.RegisterChannel
         || kind == SigningWorkflowKind.SendCommit && operation is SignerOperations.SignChannelTransaction
             or SignerOperations.SignChannelTransaction2 or SignerOperations.SignRemoteHtlcTransactions
             or SignerOperations.SignRemoteCommitmentPartial
         || kind == SigningWorkflowKind.Opening && operation is SignerOperations.SignChannelTransaction
             or SignerOperations.SignChannelTransaction2 or SignerOperations.SignRemoteCommitmentPartial
         || kind == SigningWorkflowKind.WalletWithdrawal && operation == SignerOperations.SignWalletTransaction3
+        || kind == SigningWorkflowKind.WalletPsbtPublication && operation == SignerOperations.SignWalletTransaction2
         || kind is (SigningWorkflowKind.OnchainSweep or SigningWorkflowKind.OnchainInitialSweep) && operation == SignerOperations.SignSweepInput
         || kind == SigningWorkflowKind.ChannelKeyAllocation && operation == SignerOperations.CreateNewChannel
         || kind == SigningWorkflowKind.Funding && operation == SignerOperations.SignFundingTransaction
@@ -350,7 +351,7 @@ public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoo
         if (!CryptographicOperations.FixedTimeEquals(fingerprint, SHA256.HashData(material)))
             throw Blocked("Saved signing request arguments do not match their fingerprint.");
         var args = SignerWire.Decode(parsed.Payload.ToByteArray());
-        if (args.Length != SignerOperations.ArgumentCount(operation) || kind is not (SigningWorkflowKind.WalletWithdrawal or SigningWorkflowKind.ChannelKeyAllocation) && SignerWire.Read<ChannelId>(args[0]) != channel)
+        if (args.Length != SignerOperations.ArgumentCount(operation) || kind is not (SigningWorkflowKind.WalletWithdrawal or SigningWorkflowKind.WalletPsbtPublication or SigningWorkflowKind.ChannelKeyAllocation) && SignerWire.Read<ChannelId>(args[0]) != channel)
             throw Blocked("Saved signing request belongs to another channel or has invalid arguments.");
         if (kind == SigningWorkflowKind.OnchainInitialSweep && operation == SignerOperations.RegisterChannel)
         {
@@ -386,6 +387,8 @@ public sealed class RemoteSigningWorkflowCoordinator : IRemoteSigningWorkflowCoo
              || !SignerWire.Encode([context]).AsSpan().SequenceEqual(SignerWire.Encode([contexts[context.InputIndex]])))
                 throw Blocked("Sweep signing request differs from the saved publication intent.");
         }
+        if (kind == SigningWorkflowKind.WalletPsbtPublication)
+            ValidatePsbtPublicationEnvelope(args, publicationIntent, parsed.Network);
         if (kind == SigningWorkflowKind.WalletWithdrawal)
         {
             using var intent = JsonDocument.Parse(publicationIntent

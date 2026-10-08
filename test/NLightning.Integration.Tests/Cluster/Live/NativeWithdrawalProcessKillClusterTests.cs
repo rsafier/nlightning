@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 using NBitcoin;
 using NLightning.Domain.Bitcoin.ValueObjects;
 using NLightning.Domain.Onchain.Enums;
+using NLightning.Domain.Signing.Recovery;
 using NLightning.Infrastructure.RemoteSigning;
 using NLightning.RemoteSigning.Tests;
 using NLightning.Signing.Contracts;
@@ -38,7 +39,27 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
     public Task KilledWithdrawalRetainsReservationWhenRecoveryCannotProveItsReceipt(string rejection) =>
         RunProofAsync(rejection == "lost-receipt" ? "completed" : "prepared", rejection);
 
-    private static async Task RunProofAsync(string killpoint, string? rejection)
+    [Theory(Explicit = true)]
+    [InlineData("intent", false)]
+    [InlineData("prepared", false)]
+    [InlineData("reply", false)]
+    [InlineData("completed", false)]
+    [InlineData("consumed", false)]
+    [InlineData("intent", true)]
+    [InlineData("prepared", true)]
+    [InlineData("reply", true)]
+    [InlineData("completed", true)]
+    [InlineData("consumed", true)]
+    public Task KilledPsbtPublicationReplaysOriginalIntentAndCoreAcceptsIdenticalBytes(string killpoint, bool taproot) =>
+        RunProofAsync(killpoint, rejection: null, psbtPublication: true, taproot: taproot);
+
+    [Theory(Explicit = true)]
+    [InlineData("synthetic-unknown")]
+    [InlineData("lost-receipt")]
+    public Task KilledPsbtPublicationRetainsReservationWhenRecoveryCannotProveItsReceipt(string rejection) =>
+        RunProofAsync(rejection == "lost-receipt" ? "completed" : "prepared", rejection, psbtPublication: true);
+
+    private static async Task RunProofAsync(string killpoint, string? rejection, bool psbtPublication = false, bool taproot = false)
     {
         var ct = TestContext.Current.CancellationToken;
         await using var run = await TestRun.StartAsync(TestRunOptions.FromEnvironment("native-withdrawal-kill")
@@ -55,7 +76,7 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
         Directory.CreateDirectory(directory);
         var configuration = new WorkerConfiguration(signer.SocketPath, endpoint.Rpc.Address.ToString(),
             topology.Chain.RpcUser, topology.Chain.RpcPassword, endpoint.ZmqHost,
-            endpoint.ZmqBlockPort, endpoint.ZmqTxPort);
+            endpoint.ZmqBlockPort, endpoint.ZmqTxPort, psbtPublication, taproot);
         await File.WriteAllTextAsync(Path.Combine(directory, "worker.json"), JsonSerializer.Serialize(configuration), ct);
         var database = Path.Combine(directory, "node.db");
         await using var original = StartWorker(directory, killpoint);
@@ -65,7 +86,10 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
         Assert.NotEmpty(before.Inputs);
         Assert.Equal(SHA256.HashData(before.Intent), before.Fingerprint);
         using var intent = JsonDocument.Parse(before.Intent);
-        Assert.Equal(before.ReservationId, intent.RootElement.GetProperty("ReservationId").GetGuid());
+        if (psbtPublication)
+            Assert.Equal(before.ReservationId, Assert.Single(intent.RootElement.GetProperty("ReservationIds").EnumerateArray()).GetGuid());
+        else
+            Assert.Equal(before.ReservationId, intent.RootElement.GetProperty("ReservationId").GetGuid());
         Assert.Equal(killpoint == "intent" ? 0 : 1, before.Requests.Count);
         Assert.Equal(killpoint == "consumed" ? 1 : 0, before.Broadcasts.Count);
         using var observer = new RemoteSignerConnection(signer.Options());
@@ -73,7 +97,7 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
         if (killpoint != "intent")
         {
             var request = Assert.Single(before.Requests);
-            Assert.Equal(SignerOperations.SignWalletTransaction3, request.Operation);
+            Assert.Equal((psbtPublication ? SignerOperations.SignWalletTransaction2 : SignerOperations.SignWalletTransaction3), request.Operation);
             var receipt = observer.Reconcile(WireRequest.Parser.ParseFrom(request.Envelope));
             if (killpoint == "reply")
                 receipt = await ClusterPoll.ForAsync(_ => Task.FromResult(
@@ -98,7 +122,8 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
         if (rejection == "lost-receipt")
         {
             await signer.StopAsync();
-            RemoveWalletReceipt(Path.Combine(signer.DirectoryPath, "state"), Assert.Single(before.Requests).RequestId);
+            RemoveWalletReceipt(Path.Combine(signer.DirectoryPath, "state"), Assert.Single(before.Requests).RequestId,
+                psbtPublication ? SignerOperations.SignWalletTransaction2 : SignerOperations.SignWalletTransaction3);
             await signer.RestartAsync();
         }
         var historyBeforeRecovery = await File.ReadAllBytesAsync(Path.Combine(signer.DirectoryPath, "state"), ct);
@@ -146,8 +171,9 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
         var signed = SignerWire.Read<SignedTransaction>(SignerWire.Decode(resumed.Response!)[1]);
         Assert.Equal(signed.RawTxBytes, broadcast.Raw);
         Assert.Equal(unsigned.GetHash(), Transaction.Load(broadcast.Raw, Network.RegTest).GetHash());
-        Assert.Equal("killed withdrawal", broadcast.Label);
-        Assert.Equal("proof=native-withdrawal", broadcast.Tags);
+        Assert.Equal(psbtPublication ? "killed PSBT publication" : "killed withdrawal", broadcast.Label);
+        if (psbtPublication) Assert.Null(broadcast.Tags);
+        else Assert.Equal("proof=native-withdrawal", broadcast.Tags);
         Assert.Equal(resumed.Response, observer.Reconcile(WireRequest.Parser.ParseFrom(resumed.Envelope)).Response.Payload.ToByteArray());
         await chain.Chain.WaitForMempoolAsync(txid, ct, s_timeout);
         var raw = await chain.Chain.Rpc.CallAsync("getrawtransaction", new Dictionary<string, object?>
@@ -172,7 +198,7 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
     }
 
     private sealed record WorkerConfiguration(string SocketPath, string RpcUrl, string RpcUser, string RpcPassword,
-        string ZmqHost, int ZmqBlockPort, int ZmqTxPort);
+        string ZmqHost, int ZmqBlockPort, int ZmqTxPort, bool PsbtPublication = false, bool Taproot = false);
     private sealed record SavedRequest(Guid RequestId, uint Operation, byte[] Envelope, int State, byte[]? Response);
     private sealed record SavedBroadcast(byte[] Raw, int State, string? Label, string? Tags);
     private sealed record Snapshot(Guid WorkflowId, int WorkflowState, byte[] Intent, byte[] Fingerprint,
@@ -180,6 +206,8 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
 
     private static async Task<Snapshot> ReadSnapshotAsync(string path)
     {
+        var configuration = JsonSerializer.Deserialize<WorkerConfiguration>(await File.ReadAllTextAsync(
+            Path.Combine(Path.GetDirectoryName(path)!, "worker.json"), TestContext.Current.CancellationToken))!;
         await using var connection = new SqliteConnection($"Data Source={path};Pooling=False");
         await connection.OpenAsync(TestContext.Current.CancellationToken);
         var workflowId = Guid.Empty;
@@ -187,7 +215,8 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
         byte[] intent = [], fingerprint = [];
         await using (var query = connection.CreateCommand())
         {
-            query.CommandText = "SELECT WorkflowId,State,PublicationIntent,SnapshotFingerprint FROM SigningWorkflows WHERE Kind=8";
+            query.CommandText = "SELECT WorkflowId,State,PublicationIntent,SnapshotFingerprint FROM SigningWorkflows WHERE Kind=$kind";
+            query.Parameters.AddWithValue("$kind", (int)(configuration.PsbtPublication ? SigningWorkflowKind.WalletPsbtPublication : SigningWorkflowKind.WalletWithdrawal));
             await using var reader = await query.ExecuteReaderAsync(TestContext.Current.CancellationToken);
             Assert.True(await reader.ReadAsync(TestContext.Current.CancellationToken));
             workflowId = Guid.Parse(reader.GetString(0)); state = reader.GetInt32(1);
@@ -206,7 +235,8 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
         Guid? reservation = null;
         await using (var query = connection.CreateCommand())
         {
-            query.CommandText = "SELECT Id FROM FeeInputReservations WHERE Purpose='withdraw'";
+            query.CommandText = "SELECT Id FROM FeeInputReservations WHERE Purpose LIKE $purpose";
+            query.Parameters.AddWithValue("$purpose", configuration.PsbtPublication ? "lnd-lease:%" : "withdraw");
             await using var reader = await query.ExecuteReaderAsync(TestContext.Current.CancellationToken);
             if (await reader.ReadAsync(TestContext.Current.CancellationToken)) reservation = Guid.Parse(reader.GetString(0));
             Assert.False(await reader.ReadAsync(TestContext.Current.CancellationToken));
@@ -230,7 +260,7 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
         return new Snapshot(workflowId, state, intent, fingerprint, reservation, inputs.ToArray(), requests, broadcasts);
     }
 
-    private static void RemoveWalletReceipt(string path, Guid requestId)
+    private static void RemoveWalletReceipt(string path, Guid requestId, uint operation = SignerOperations.SignWalletTransaction3)
     {
         var journal = File.ReadAllBytes(path);
         const int headerLength = 8 + 33 + 32;
@@ -243,7 +273,7 @@ public sealed partial class NativeWithdrawalProcessKillClusterTests
             Assert.True(size > 0 && position + sizeof(int) + size <= journal.Length);
             using var record = JsonDocument.Parse(journal.AsMemory(position + sizeof(int), size));
             var root = record.RootElement;
-            if (root.GetProperty("Operation").GetUInt32() == SignerOperations.SignWalletTransaction3
+            if (root.GetProperty("Operation").GetUInt32() == operation
                 && root.GetProperty("RequestId").GetString() == requestId.ToString("N")) removed++;
             else remaining.Write(journal.AsSpan(position, sizeof(int) + size));
             position += sizeof(int) + size;

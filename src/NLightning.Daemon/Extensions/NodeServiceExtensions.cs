@@ -418,6 +418,7 @@ public static class NodeServiceExtensions
             services.AddSingleton<IRemoteSigningWorkflowCoordinator>(sp =>
                 sp.GetRequiredService<RemoteSigningWorkflowCoordinator>());
             services.AddSingleton<NLightning.Application.Channels.Services.NativeV1ChannelOpening>();
+            services.AddSingleton<NLightning.Application.Channels.Services.NativeV1FundedInboundOpening>();
             services.Replace(ServiceDescriptor.Singleton<ILightningSigner>(sp =>
                 new RemoteLightningSigner(remoteConnection, sp.GetRequiredService<IChannelSigningInfoSource>(),
                                            sp.GetRequiredService<IUtxoMemoryRepository>())));
