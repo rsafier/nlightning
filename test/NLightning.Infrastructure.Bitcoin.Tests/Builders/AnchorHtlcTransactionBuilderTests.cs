@@ -3,6 +3,7 @@ using NBitcoin;
 using NBitcoin.Crypto;
 using NLightning.Integration.Tests.BOLT3;
 using NLightning.Integration.Tests.BOLT3.Vectors;
+using NLightning.Tests.Utils.Vectors;
 
 namespace NLightning.Infrastructure.Bitcoin.Tests.Builders;
 
@@ -92,6 +93,38 @@ public class AnchorHtlcTransactionBuilderTests
             Assert.InRange(combined.EstimatedWeight - weight, 0, 8);
             Assert.True(combined.FeeSat >= SweepWeights.FeeSat(FeeratePerKw, weight));
         }
+    }
+
+    [Fact]
+    public void Given_OurSingleAnyoneCanPaySignature_When_CombinedWithFeeInputs_Then_TheHtlcInputSpends()
+    {
+        // Arrange: VLS signs our anchors HTLC input SIGHASH_SINGLE|ANYONECANPAY over the HTLC pair alone
+        var (model, built, commitTx, vector) = FirstAppendixFHtlc();
+        var feeInput = WalletInput(6, 40_000);
+        var combined = _builder.AddFeeInputs(model, built, [feeInput], s_changeScript, FeeratePerKw);
+        var remoteSignature = new ECDSASignature(Convert.FromHexString(vector.RemoteSigHex)).ToCompact();
+        var preimage = model.Type == HtlcTransactionType.Success
+                           ? Bolt3VectorHarness.Preimages[model.SpentOutput.Htlc.Id]
+                           : null;
+        const SigHash singleAnyoneCanPay = SigHash.Single | SigHash.AnyoneCanPay;
+        var localSignature = Bolt3AppendixCVectors.NodeAPrivkey
+                                                  .Sign(Bolt3VectorHarness.HtlcSigHash(combined.BuildResult,
+                                                            singleAnyoneCanPay),
+                                                        new SigningOptions(singleAnyoneCanPay, false))
+                                                  .Signature.MakeCanonical().ToCompact();
+
+        // Act
+        var signed = SignWalletInputs(_builder.AddWitness(model, combined.BuildResult, remoteSignature, localSignature,
+                                                          preimage, localSingleAnyoneCanPay: true),
+                                      combined.FeeInputs);
+
+        // Assert: both HTLC signatures carry 0x83 and every input spends
+        var tx = Transaction.Load(signed.RawTxBytes, Network.Main);
+        Assert.Equal(0x83, tx.Inputs[0].WitScript[1][^1]);
+        Assert.Equal(0x83, tx.Inputs[0].WitScript[2][^1]);
+        AssertVerifies(tx, 0, commitTx.Outputs[vector.OutputIndex], "SINGLE|ANYONECANPAY");
+        AssertVerifies(tx, 1, new TxOut(Money.Satoshis(feeInput.AmountSat), new Script(s_walletScript)),
+                       "SINGLE|ANYONECANPAY");
     }
 
     [Fact]

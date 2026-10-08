@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
 using NBitcoin;
 using NLightning.Domain.Bitcoin.Transactions.Models;
@@ -13,24 +14,61 @@ namespace NLightning.Infrastructure.VlsSigning;
 /// BOLT 5 on-chain resolution through VLS's semantic signers (static_remotekey channels): our HTLC transactions
 /// (<c>sign_holder_htlc_tx</c>), delayed sweeps (<c>sign_delayed_sweep</c>), claims on the peer's commitment
 /// (<c>sign_counterparty_htlc_sweep</c>), penalties (<c>sign_justice_sweep</c>) and our <c>to_remote</c> (VLS's
-/// unilateral-close key and on-chain signer). The gateway signs HTLC transactions and delayed sweeps only for the
-/// commitment it signed for broadcast, and VLS's sweep policy only pays this node's VLS wallet; there is no local-key
-/// fallback.
+/// unilateral-close key and on-chain signer), on static_remotekey and zero-fee-HTLC anchors channels. The gateway
+/// signs HTLC transactions and delayed sweeps only for the commitment it signed for broadcast, and VLS's sweep policy
+/// only pays this node's VLS wallet; there is no local-key fallback.
+/// <para>With anchors VLS signs our HTLC input <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> over the HTLC pair it
+/// validated (<see cref="SignsAnchorHtlcWithSingleAnyoneCanPay"/>), and the wallet fee inputs of that transaction go
+/// through <c>sign_holder_htlc_fee_inputs</c>, which validates the pair again: the HTLC transactions signed here are
+/// remembered by txid until their fee inputs are signed.</para>
 /// </summary>
 public sealed partial class VlsLightningSigner
 {
+    private readonly ConcurrentDictionary<uint256, (ChannelId ChannelId, JsonObject Htlc)> _anchorHtlcTransactions = new();
+
+    public bool SignsAnchorHtlcWithSingleAnyoneCanPay => true;
+
     public CompactSignature SignLocalHtlcTransaction(ChannelId channelId, HtlcSigningContext htlcTransaction)
     {
         ArgumentNullException.ThrowIfNull(htlcTransaction);
         var built = htlcTransaction.HtlcTransaction;
-        if (htlcTransaction.HasAnchors || built.IsTaproot || built.FeeInputSpentOutputs is not null)
+        if (built.IsTaproot || built.FeeInputSpentOutputs is not null)
             throw Unsupported();
+        var tx = Transaction.Load(built.Transaction.RawTxBytes, Network.RegTest);
+        if (!htlcTransaction.HasAnchors && (tx.Inputs.Count != 1 || tx.Outputs.Count != 1))
+            throw new SignerException("A pre-signed HTLC transaction has one input and one output.");
         var command = Command("sign_holder_htlc", Channel(channelId));
         command["transaction"] = Hex(built.Transaction.RawTxBytes);
         command["point"] = htlcTransaction.PerCommitmentPoint.ToString();
         command["redeemscript"] = Hex((byte[])built.SpentWitnessScript);
         command["amount_sat"] = built.SpentAmount.Satoshi;
-        return Signature(connection.Invoke(VlsOnchainOperations.SignHolderHtlc, command).GetProperty("signature"));
+        var result = connection.Invoke(VlsOnchainOperations.SignHolderHtlc, command);
+        var expected = htlcTransaction.HasAnchors ? (byte)(SigHash.Single | SigHash.AnyoneCanPay) : (byte)SigHash.All;
+        if (result.GetProperty("sighash").GetByte() != expected)
+            throw new SignerException("VLS signed the HTLC transaction with another sighash type.");
+        if (htlcTransaction.HasAnchors && tx.Inputs.Count > 1)
+        {
+            var htlc = new JsonObject
+            {
+                ["point"] = command["point"]!.DeepClone(),
+                ["redeemscript"] = command["redeemscript"]!.DeepClone(),
+                ["amount_sat"] = built.SpentAmount.Satoshi
+            };
+            _anchorHtlcTransactions[tx.GetHash()] = (channelId, htlc);
+        }
+        return Signature(result.GetProperty("signature"));
+    }
+
+    /// <summary>
+    /// The fee-input command of an anchors HTLC transaction signed by <see cref="SignLocalHtlcTransaction"/>, or null
+    /// for any other transaction: it names the HTLC pair for VLS to validate again.
+    /// </summary>
+    private JsonObject? AnchorHtlcFeeInputsCommand(Transaction tx)
+    {
+        if (!_anchorHtlcTransactions.TryRemove(tx.GetHash(), out var signed)) return null;
+        var command = Command("sign_holder_htlc_fee_inputs", Channel(signed.ChannelId));
+        foreach (var (name, value) in signed.Htlc) command[name] = value!.DeepClone();
+        return command;
     }
 
     public CompactSignature SignSweepInput(ChannelId channelId, SweepSigningContext context)
@@ -74,11 +112,11 @@ public sealed partial class VlsLightningSigner
                 command["redeemscript"] = Hex(RequireScript(context));
                 break;
             case SweepKeyKind.Payment:
-                // A P2WSH to_remote is the anchors one (1-block CSV): outside this adapter
-                if (context.WitnessScript is not null)
-                    throw Unsupported();
+                // P2WPKH with static_remotekey; with anchors the 1-CSV P2WSH, whose script the gateway checks
                 operation = VlsOnchainOperations.SignToRemoteSweep;
                 command = Command("sign_to_remote_sweep", Channel(channelId));
+                if (context.WitnessScript is { } toRemoteScript)
+                    command["redeemscript"] = Hex(toRemoteScript);
                 break;
             default:
                 throw Unsupported();
@@ -102,5 +140,5 @@ public sealed partial class VlsLightningSigner
 public static class VlsOnchainOperations
 {
     public const uint SignHolderHtlc = 2100, SignDelayedSweep = 2101, SignCounterpartyHtlcSweep = 2102,
-        SignJusticeSweep = 2103, SignToRemoteSweep = 2104;
+        SignJusticeSweep = 2103, SignToRemoteSweep = 2104, SignHolderHtlcFeeInputs = 2105;
 }

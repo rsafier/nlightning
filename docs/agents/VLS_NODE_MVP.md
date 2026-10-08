@@ -114,8 +114,8 @@ other duplicate adds retain normal protocol rejection.
 The local Redb transaction commits VLS policy state and immutable receipts before
 replying. This does not establish external rollback protection or cloned-writer
 fencing. The regtest policy does not independently track/validate the chain.
-On-chain resolution of static_remotekey channels is proven (see "On-chain
-resolution" below); anchors channels remain refused by the gateway.
+On-chain resolution of static_remotekey and zero-fee-HTLC anchors channels is
+proven (see "On-chain resolution" below).
 Wallet funding and close calls have gateway receipts, but their original request
 IDs are not yet persisted as complete node application workflows. Unknown
 funding/close outcomes therefore remain a deployment gate. Mutual-close and
@@ -131,11 +131,12 @@ signer and no local-key fallback:
 
 | Output | ILightningSigner call | Gateway command | VLS API and policy |
 |---|---|---|---|
-| Our HTLC-success/-timeout on our commitment | `SignLocalHtlcTransaction` | `sign_holder_htlc` | `Channel::sign_holder_htlc_tx` (phase 1): rebuilds the HTLC tx from VLS's keys, checks sighash, locktime and feerate |
+| Our HTLC-success/-timeout on our commitment | `SignLocalHtlcTransaction` | `sign_holder_htlc` | `Channel::sign_holder_htlc_tx` (phase 1): rebuilds the HTLC tx from VLS's keys, checks sighash, locktime and feerate; with anchors it signs `SIGHASH_SINGLE|ANYONECANPAY` over the zero-fee HTLC pair |
+| Wallet fee inputs of our anchors HTLC tx | `SignWalletTransaction` (reserved) | `sign_holder_htlc_fee_inputs` | the HTLC pair validated again by `sign_holder_htlc_tx`, zero-fee checked, the wallet part under `check_onchain_tx` |
 | Our `to_local` and the second-level outputs | `SignSweepInput` `DelayedPayment` | `sign_delayed_sweep` | `sign_delayed_sweep`: wallet destination, sequence = contest delay, locktime, fee range |
 | HTLC claims on the peer's commitment | `SignSweepInput` `HtlcRemotePoint` | `sign_counterparty_htlc_sweep` | `sign_counterparty_htlc_sweep`: script parsed, locktime against the expiry |
 | Penalties (to_local, HTLC, second-level) | `SignSweepInput` `Revocation` | `sign_justice_sweep` | `sign_justice_sweep` with the peer's revealed secret |
-| Our static `to_remote` | `SignSweepInput` `Payment` | `sign_to_remote_sweep` | `get_unilateral_close_key` + `check_onchain_tx` (one input) + `unchecked_sign_onchain_tx` |
+| Our `to_remote` (P2WPKH, or the anchors 1-CSV P2WSH) | `SignSweepInput` `Payment` | `sign_to_remote_sweep` | `get_unilateral_close_key` + `check_onchain_tx` (one input) + `unchecked_sign_onchain_tx` |
 
 HTLC transactions and delayed sweeps are signed only for the commitment the
 gateway signed for broadcast: the per-commitment point must be VLS's own point
@@ -143,7 +144,17 @@ of the number in its broadcast mark. Every sweep pays exactly one VLS wallet
 child path, which VLS's sweep policy checks; in a penalty batch the `to_remote`
 input has no amounts for the other inputs, so the gateway checks version 2 and
 the wallet destination itself and the justice inputs carry VLS's checks. The
-adapter refuses taproot contexts, the gateway refuses anchors channels.
+adapter refuses taproot contexts.
+
+Anchors (NL-1323): VLS's validating HTLC signer signs our input
+`SIGHASH_SINGLE|ANYONECANPAY`, so `ILightningSigner.SignsAnchorHtlcWithSingleAnyoneCanPay`
+tells `HtlcTransactionBuilder.AddWitness` to put `0x83` on our signature (valid
+BOLT 3; the peer's signature binds the same pair). The anchors lane's
+`wallet_sign_fee_inputs` cannot sign an HTLC transaction's fee inputs (VLS's
+on-chain policy refuses the second-level output as an unknown destination), so
+the adapter routes the fee inputs of an HTLC transaction it just signed to
+`sign_holder_htlc_fee_inputs`, which re-validates the pair and runs VLS's
+on-chain policy over the wallet part only.
 
 Known limits: the gateway feeds VLS no blocks, so VLS checks sweep locktimes
 against a stale height; our sweeps use locktime 0 (timeout claims their
@@ -165,6 +176,12 @@ the preimage, HTLC-timeout at the expiry, both second-level outputs and
 force-closing with the revoked commitment: one penalty takes its `to_local`, the
 HTLC and our `to_remote`. Each ends with every output Irrevocable, the channel
 Closed and Bitcoin Core holding every transaction.
+
+Anchors runs (2026-10-08): process tests 8/8; live batch `rc-20261008175645`
+6/6 green (331 s): every case on static_remotekey and anchors. The anchors
+HTLC-success and HTLC-timeout each had a wallet fee input; the anchors penalty
+took 986,380 sat (capacity less the 12,960 sat commitment fee and the two
+330 sat anchors).
 
 Runs (2026-10-08, OrbStack, from the host): process tests 6/6; live batch
 `rc-20261008173617` 3/3 green (218 s; gateway binary SHA256 `fbe320186399422d3f36c1794c0a91c62e69fbfd68acb77acd0abeeb7f9337c4`).

@@ -71,7 +71,7 @@ public class HtlcTransactionBuilder : IHtlcTransactionBuilder
     /// <inheritdoc />
     public SignedTransaction AddWitness(HtlcTransactionModel transaction, HtlcTransactionBuildResult buildResult,
                                         CompactSignature remoteHtlcSignature, CompactSignature localHtlcSignature,
-                                        byte[]? paymentPreimage = null)
+                                        byte[]? paymentPreimage = null, bool localSingleAnyoneCanPay = false)
     {
         ArgumentNullException.ThrowIfNull(transaction);
         ArgumentNullException.ThrowIfNull(buildResult);
@@ -99,7 +99,11 @@ public class HtlcTransactionBuilder : IHtlcTransactionBuilder
         // BOLT 3 / BOLT 5: with option_anchors the remote HTLC signature is SIGHASH_SINGLE|SIGHASH_ANYONECANPAY
         var remoteSigHash = transaction.HasAnchors ? SigHash.Single | SigHash.AnyoneCanPay : SigHash.All;
         var remoteSignature = ToTransactionSignature(remoteHtlcSignature, remoteSigHash, nameof(remoteHtlcSignature));
-        var localSignature = ToTransactionSignature(localHtlcSignature, SigHash.All, nameof(localHtlcSignature));
+        if (localSingleAnyoneCanPay && !transaction.HasAnchors)
+            throw new ArgumentException("Only an option_anchors HTLC signature may be SIGHASH_SINGLE|ANYONECANPAY",
+                                        nameof(localSingleAnyoneCanPay));
+        var localSigHash = localSingleAnyoneCanPay ? SigHash.Single | SigHash.AnyoneCanPay : SigHash.All;
+        var localSignature = ToTransactionSignature(localHtlcSignature, localSigHash, nameof(localHtlcSignature));
 
         var tx = Transaction.Load(buildResult.Transaction.RawTxBytes, _network);
         tx.Inputs[0].WitScript = new WitScript(new[]

@@ -114,15 +114,16 @@ public sealed partial class VlsLightningSigner
 
         if (!walletInputs.Any(w => w)) return false;
         foreach (var output in tx.Outputs) outputs.Add(FindWalletPath(output.ScriptPubKey) ?? "m");
-        var command = new JsonObject
-        {
-            ["op"] = "wallet_sign_fee_inputs",
-            ["transaction"] = tx.ToHex(),
-            ["input_paths"] = paths,
-            ["prev_outputs"] = prev,
-            ["output_paths"] = outputs
-        };
-        var witnesses = connection.Invoke(WalletSignFeeInputsOperation, command).GetProperty("witnesses").EnumerateArray().ToArray();
+        // An anchors HTLC transaction's fee inputs: the gateway validates its HTLC pair (lane vls-onchain)
+        var htlcCommand = AnchorHtlcFeeInputsCommand(tx);
+        var command = htlcCommand ?? new JsonObject { ["op"] = "wallet_sign_fee_inputs" };
+        command["transaction"] = tx.ToHex();
+        command["input_paths"] = paths;
+        command["prev_outputs"] = prev;
+        command["output_paths"] = outputs;
+        var witnesses = connection.Invoke(htlcCommand is null ? WalletSignFeeInputsOperation
+                                                              : VlsOnchainOperations.SignHolderHtlcFeeInputs, command)
+                                  .GetProperty("witnesses").EnumerateArray().ToArray();
         if (witnesses.Length != tx.Inputs.Count) throw new SignerException("VLS wallet witness count mismatch.");
         for (var i = 0; i < witnesses.Length; i++)
         {

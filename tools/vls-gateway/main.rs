@@ -199,13 +199,28 @@ enum Command {
         amount_sat: u64,
         wallet_path: String,
     },
-    /// Our static_remotekey to_remote on a peer commitment (`get_unilateral_close_key` + VLS's on-chain signer).
+    /// Our to_remote on a peer commitment (`get_unilateral_close_key` + VLS's on-chain signer): P2WPKH with
+    /// static_remotekey, the 1-CSV P2WSH with anchors (its script, when given, must be VLS's).
     SignToRemoteSweep {
         channel: String,
         transaction: String,
         input: u32,
         amount_sat: u64,
         wallet_path: String,
+        #[serde(default)]
+        redeemscript: Option<String>,
+    },
+    /// The wallet fee inputs of our zero-fee anchors HTLC transaction (input 0 and output 0 the HTLC pair VLS
+    /// validates with `sign_holder_htlc_tx`; the rest under VLS's on-chain policy).
+    SignHolderHtlcFeeInputs {
+        channel: String,
+        transaction: String,
+        point: String,
+        redeemscript: String,
+        amount_sat: u64,
+        input_paths: Vec<String>,
+        prev_outputs: Vec<TxOut>,
+        output_paths: Vec<String>,
     },
     // --- end of the on-chain resolution commands ---
     Reconcile {
@@ -677,7 +692,8 @@ impl Gateway {
             | Command::SignDelayedSweep { .. }
             | Command::SignCounterpartyHtlcSweep { .. }
             | Command::SignJusticeSweep { .. }
-            | Command::SignToRemoteSweep { .. }) => self.dispatch_onchain(command),
+            | Command::SignToRemoteSweep { .. }
+            | Command::SignHolderHtlcFeeInputs { .. }) => self.dispatch_onchain(command),
             Command::SignHolderAnchor { channel: ch, transaction, input } => self.sign_holder_anchor(&ch, &transaction, input),
             Command::WalletSignFeeInputs { transaction, input_paths, prev_outputs, output_paths } => self.wallet_sign_fee_inputs(&transaction, input_paths, prev_outputs, output_paths),
             Command::Reconcile {..} => unreachable!()
@@ -688,7 +704,8 @@ impl Gateway {
 // Every output our node resolves after a force close is signed by VLS's semantic API and its policy, never by a generic
 // transaction signer: HTLC transactions and delayed sweeps only for the commitment this gateway signed for broadcast,
 // sweeps only to this node's VLS wallet (VLS's validate_*_sweep: destination, version, sequence, locktime, fee range).
-// Anchors channels are refused here (their HTLC transactions and to_remote differ; another lane).
+// Anchors (zero-fee HTLC) channels: our HTLC transactions are signed SIGHASH_SINGLE|ANYONECANPAY by VLS's phase 1
+// signer and get their fee inputs through `sign_holder_htlc_fee_inputs`; to_remote is the 1-CSV P2WSH.
 impl Gateway {
     /// The number of the holder commitment signed for broadcast (`force_close`), which `point` must belong to.
     fn broadcast_commitment(&self, ch: &str, point: &PublicKey) -> Result<u64, String> {
@@ -712,15 +729,10 @@ impl Gateway {
         }
         Ok(number)
     }
-    fn refuse_anchors(&self, ch: &str) -> Result<(), String> {
-        if self
-            .node
+    fn is_anchors(&self, ch: &str) -> Result<bool, String> {
+        self.node
             .with_channel(&channel(ch)?, |c| Ok(c.setup.is_anchors()))
-            .map_err(|e| e.to_string())?
-        {
-            return Err("on-chain resolution of anchors channels is outside this gateway".into());
-        }
-        Ok(())
+            .map_err(|e| e.to_string())
     }
     fn dispatch_onchain(&self, command: Command) -> Result<Value, String> {
         use lightning_signer::bitcoin::{
@@ -757,9 +769,11 @@ impl Gateway {
                 redeemscript,
                 amount_sat,
             } => {
-                self.refuse_anchors(&ch)?;
+                let anchors = self.is_anchors(&ch)?;
                 let tx = parse_tx(&transaction, 0)?;
-                if tx.input.len() != 1 || tx.output.len() != 1 {
+                // Without anchors the pre-signed transaction is the whole transaction; with anchors the peer's and
+                // our SIGHASH_SINGLE|ANYONECANPAY signatures cover input 0 and output 0 only, wallet fee inputs follow
+                if !anchors && (tx.input.len() != 1 || tx.output.len() != 1) {
                     return Err("an HTLC transaction has one input and one output".into());
                 }
                 let number = self.broadcast_commitment(&ch, &key(&point)?)?;
@@ -778,10 +792,18 @@ impl Gateway {
                         )
                     })
                     .map_err(|e| e.to_string())?;
-                if typed.typ != EcdsaSighashType::All {
+                let expected = if anchors {
+                    EcdsaSighashType::SinglePlusAnyoneCanPay
+                } else {
+                    EcdsaSighashType::All
+                };
+                if typed.typ != expected {
                     return Err("unexpected HTLC transaction sighash type".into());
                 }
-                signed(typed.sig)
+                Ok(
+                    json!({"signature":hex::encode(typed.sig.serialize_compact()),
+                    "sighash":typed.typ as u8}),
+                )
             }
             Command::SignDelayedSweep {
                 channel: ch,
@@ -792,7 +814,6 @@ impl Gateway {
                 amount_sat,
                 wallet_path,
             } => {
-                self.refuse_anchors(&ch)?;
                 let tx = parse_tx(&transaction, input)?;
                 let number = self.broadcast_commitment(&ch, &key(&point)?)?;
                 let (redeemscript, path) = (script(&redeemscript)?, wallet(&wallet_path)?);
@@ -820,7 +841,6 @@ impl Gateway {
                 amount_sat,
                 wallet_path,
             } => {
-                self.refuse_anchors(&ch)?;
                 let tx = parse_tx(&transaction, input)?;
                 let (point, redeemscript, path) =
                     (key(&point)?, script(&redeemscript)?, wallet(&wallet_path)?);
@@ -848,7 +868,6 @@ impl Gateway {
                 amount_sat,
                 wallet_path,
             } => {
-                self.refuse_anchors(&ch)?;
                 let tx = parse_tx(&transaction, input)?;
                 let secret = SecretKey::from_str(&secret).map_err(|_| "invalid secret")?;
                 let (redeemscript, path) = (script(&redeemscript)?, wallet(&wallet_path)?);
@@ -873,8 +892,8 @@ impl Gateway {
                 input,
                 amount_sat,
                 wallet_path,
+                redeemscript,
             } => {
-                self.refuse_anchors(&ch)?;
                 let tx = parse_tx(&transaction, input)?;
                 let path = wallet(&wallet_path)?;
                 // VLS's sweep rules (validate_sweep): version 2 and every output to the VLS wallet
@@ -895,8 +914,21 @@ impl Gateway {
                     .with_channel(&channel(&ch)?, |c| c.get_unilateral_close_key(&None, &None))
                     .map_err(|e| e.to_string())?;
                 let public = PublicKey::from_secret_key(&Secp256k1::new(), &secret);
-                let spent =
-                    Address::p2wpkh(&CompressedPublicKey(public), Network::Regtest).script_pubkey();
+                // With anchors the stack is the 1-CSV witness script, without them the P2WPKH key
+                let spent = if self.is_anchors(&ch)? {
+                    let witness_script = ScriptBuf::from_bytes(stack[0].clone());
+                    if let Some(given) = redeemscript {
+                        if script(&given)? != witness_script {
+                            return Err("to_remote script is not VLS's".into());
+                        }
+                    }
+                    ScriptBuf::new_p2wsh(&witness_script.wscript_hash())
+                } else {
+                    if redeemscript.is_some() {
+                        return Err("a static_remotekey to_remote has no witness script".into());
+                    }
+                    Address::p2wpkh(&CompressedPublicKey(public), Network::Regtest).script_pubkey()
+                };
                 let n = tx.input.len();
                 let mut prev = vec![
                     TxOut {
@@ -939,6 +971,98 @@ impl Gateway {
                     Signature::from_der(&der[..der.len() - 1])
                         .map_err(|_| "invalid VLS to_remote signature")?,
                 )
+            }
+            Command::SignHolderHtlcFeeInputs {
+                channel: ch,
+                transaction,
+                point,
+                redeemscript,
+                amount_sat,
+                input_paths,
+                prev_outputs,
+                output_paths,
+            } => {
+                if !self.is_anchors(&ch)? {
+                    return Err("only an anchors HTLC transaction takes fee inputs".into());
+                }
+                let tx = parse_tx(&transaction, 0)?;
+                let n = tx.input.len();
+                if n < 2
+                    || input_paths.len() != n
+                    || prev_outputs.len() != n
+                    || output_paths.len() != tx.output.len()
+                    || !input_paths[0].is_empty() && input_paths[0] != "m"
+                    || !output_paths[0].is_empty() && output_paths[0] != "m"
+                {
+                    return Err("fee inputs follow the HTLC input and output at index 0".into());
+                }
+                // Input 0 / output 0: the zero-fee HTLC pair of the commitment signed for broadcast, rebuilt and
+                // checked by VLS (sighash over that pair, locktime, sequence, no fee)
+                let number = self.broadcast_commitment(&ch, &key(&point)?)?;
+                let redeemscript = script(&redeemscript)?;
+                self.node
+                    .with_channel(&channel(&ch)?, |c| {
+                        c.sign_holder_htlc_tx(
+                            &tx,
+                            number,
+                            None,
+                            &redeemscript,
+                            amount_sat,
+                            &ScriptBuf::new(),
+                        )
+                    })
+                    .map_err(|e| e.to_string())?;
+                if prev_outputs[0].value != Amount::from_sat(amount_sat)
+                    || prev_outputs[0].script_pubkey
+                        != ScriptBuf::new_p2wsh(&redeemscript.wscript_hash())
+                    || tx.output[0].value != Amount::from_sat(amount_sat)
+                {
+                    return Err("the HTLC pair is not zero-fee".into());
+                }
+                let parse =
+                    |p: &String| DerivationPath::from_str(p).map_err(|_| "invalid wallet path");
+                let ip = input_paths
+                    .iter()
+                    .map(parse)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let op = output_paths
+                    .iter()
+                    .map(parse)
+                    .collect::<Result<Vec<_>, _>>()?;
+                for (path, prev) in ip.iter().zip(&prev_outputs).skip(1) {
+                    if path.len() != 1 || !prev.script_pubkey.is_p2wpkh() {
+                        return Err("fee inputs are native P2WPKH wallet inputs".into());
+                    }
+                    let pubkey = self
+                        .node
+                        .get_account_extended_pubkey()
+                        .derive_pub(&Secp256k1::verification_only(), path)
+                        .map_err(|_| "invalid wallet derivation")?
+                        .public_key;
+                    if prev.script_pubkey
+                        != Address::p2wpkh(&CompressedPublicKey(pubkey), Network::Regtest)
+                            .script_pubkey()
+                    {
+                        return Err("wallet input script mismatch".into());
+                    }
+                }
+                // The wallet part (fee inputs, change) under VLS's on-chain policy: every output ours, fee range
+                // and fee velocity; the HTLC pair carries the same value in and out
+                let mut part = tx.clone();
+                part.input.remove(0);
+                part.output.remove(0);
+                let uc = vec![None; n - 1];
+                self.node
+                    .check_onchain_tx(&part, &vec![true; n - 1], &prev_outputs[1..], &uc, &op[1..])
+                    .map_err(|e| e.to_string())?;
+                let witnesses = self
+                    .node
+                    .unchecked_sign_onchain_tx(&tx, &ip, &prev_outputs, vec![None; n])
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({"witnesses": witnesses
+                    .into_iter()
+                    .map(|w| w.into_iter().map(hex::encode).collect::<Vec<_>>())
+                    .collect::<Vec<_>>()}))
             }
             _ => unreachable!(),
         }

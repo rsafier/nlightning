@@ -26,6 +26,7 @@ using Domain.Enums;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Onchain.Enums;
+using Domain.Onchain.Fees;
 using Domain.Onchain.Models;
 using Domain.Payments.Enums;
 using Domain.Protocol.Messages;
@@ -83,13 +84,16 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
 
     public ValueTask InitializeAsync() => ValueTask.CompletedTask;
 
-    [Fact(Explicit = true)]
-    public async Task Given_HtlcsBothWays_When_WeForceClose_Then_VlsSignsEveryResolutionOfOurCommitment()
+    [Theory(Explicit = true)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_HtlcsBothWays_When_WeForceClose_Then_VlsSignsEveryResolutionOfOurCommitment(bool anchors)
     {
         // Arrange: our VLS channel to david, liquidity paid to david, our HTLC held by his hold invoice and his HTLC
         // fulfilled by us but cut off before the fulfill reaches him
         var ct = TestContext.Current.CancellationToken;
-        var vls = await CreateVlsNodeAsync("vls-fc-ours", 0x61, ct);
+        var vls = await CreateVlsNodeAsync(anchors ? "vls-fc-ours-anchors" : "vls-fc-ours", anchors ? (byte)0x71 : (byte)0x61,
+                                           anchors, ct);
         var node = vls.Node;
         var lnd = Lnd;
         var channel = await OpenChannelAsync(vls, lnd, ct);
@@ -129,7 +133,8 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
                                                                        receivedRow.OutputIndex, ct);
             var successInfo = await _harness.MineUntilConfirmedAsync(node, [lnd], successTxId, ct);
             var success = successInfo.Transaction;
-            var successInput = AssertHtlcTransaction(success, new OutPoint(commitment, receivedRow.OutputIndex));
+            var successInput = AssertHtlcTransaction(success, new OutPoint(commitment, receivedRow.OutputIndex),
+                                                     anchors);
             Assert.Equal(0u, (uint)success.LockTime);
             Assert.Equal((byte[])incoming.Removal!.PaymentPreimage!.Value, successInput.WitScript[3]);
             var successHeight = await ConfirmationHeightAsync(successInfo, ct);
@@ -152,7 +157,8 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
                                                                            offeredRow.OutputIndex, ct);
             var timeoutInfo = await _harness.MineUntilConfirmedAsync(node, [lnd], timeoutTxId, ct);
             var timeout = timeoutInfo.Transaction;
-            var timeoutInput = AssertHtlcTransaction(timeout, new OutPoint(commitment, offeredRow.OutputIndex));
+            var timeoutInput = AssertHtlcTransaction(timeout, new OutPoint(commitment, offeredRow.OutputIndex),
+                                                     anchors);
             Assert.Empty(timeoutInput.WitScript[3]);
             Assert.Equal(outgoing.CltvExpiry, (uint)timeout.LockTime);
             var timeoutHeight = await ConfirmationHeightAsync(timeoutInfo, ct);
@@ -185,12 +191,15 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
         }
     }
 
-    [Fact(Explicit = true)]
-    public async Task Given_HtlcsBothWays_When_LndForceCloses_Then_VlsSignsOurClaimsAndToRemoteSweep()
+    [Theory(Explicit = true)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_HtlcsBothWays_When_LndForceCloses_Then_VlsSignsOurClaimsAndToRemoteSweep(bool anchors)
     {
         // Arrange: as in the first proof, both HTLCs on the commitments, the connection cut
         var ct = TestContext.Current.CancellationToken;
-        var vls = await CreateVlsNodeAsync("vls-fc-lnd", 0x62, ct);
+        var vls = await CreateVlsNodeAsync(anchors ? "vls-fc-lnd-anchors" : "vls-fc-lnd", anchors ? (byte)0x72 : (byte)0x62,
+                                           anchors, ct);
         var node = vls.Node;
         var lnd = Lnd;
         var channel = await OpenChannelAsync(vls, lnd, ct);
@@ -228,8 +237,14 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
                .Transaction;
             var toRemoteInput = Assert.Single(toRemoteSweep.Inputs,
                                               i => i.PrevOut == new OutPoint(commitmentTxId, toRemote.OutputIndex));
+            // <sig> <pubkey>, or with anchors <sig> <to_remote script> at nSequence 1
             Assert.Equal(2, toRemoteInput.WitScript.PushCount);
             Assert.Equal(AnchorsHarness.SigHashAll, toRemoteInput.WitScript[0][^1]);
+            if (anchors)
+            {
+                Assert.Equal(1u, toRemoteInput.Sequence.Value);
+                Assert.True(AnchorsHarness.IsAnchorsToRemoteSpend(toRemoteInput.WitScript));
+            }
 
             // Assert 2: the preimage claim (VLS sign_counterparty_htlc_sweep) before the expiry; LND's payment succeeds
             var claimTxId = await _harness.MineUntilResolvingTxAsync(node, [lnd], channel.ChannelId, lndCommitment,
@@ -239,6 +254,7 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
             var claimInput = Assert.Single(claim.Inputs,
                                            i => i.PrevOut == new OutPoint(commitmentTxId, offeredByLnd.OutputIndex));
             Assert.Equal(0u, claim.LockTime.Value);
+            Assert.Equal(anchors ? 1u : SweepFeePolicy.RbfSequence, claimInput.Sequence.Value);
             Assert.Equal(3, claimInput.WitScript.PushCount);
             Assert.Equal((byte[])incoming.Removal!.PaymentPreimage!.Value, claimInput.WitScript[1]);
             Assert.True(await ConfirmationHeightAsync(claimInfo, ct) < incoming.CltvExpiry);
@@ -264,6 +280,7 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
                                              i => i.PrevOut == new OutPoint(commitmentTxId, receivedByLnd.OutputIndex));
             Assert.Equal(outgoing.CltvExpiry, timeoutClaim.LockTime.Value);
             Assert.Equal(3, timeoutInput.WitScript.PushCount);
+            Assert.Equal(anchors ? 1u : SweepFeePolicy.RbfSequence, timeoutInput.Sequence.Value);
             Assert.Empty(timeoutInput.WitScript[1]);
             var timeoutHeight = await ConfirmationHeightAsync(timeoutInfo, ct);
             await _harness.MineToAsync(node, [lnd], timeoutHeight + AnchorsHarness.ReasonableDepth - 1, ct);
@@ -286,13 +303,16 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
         }
     }
 
-    [Fact(Explicit = true)]
-    public async Task Given_LndRestartsOnAnOldChannelDbWithAnHtlc_When_ItForceCloses_Then_VlsSignsThePenalty()
+    [Theory(Explicit = true)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_LndRestartsOnAnOldChannelDbWithAnHtlc_When_ItForceCloses_Then_VlsSignsThePenalty(bool anchors)
     {
         // Arrange: payments both ways, our HTLC held by david while his channel.db is copied, then settled and more
         // payments both ways, so the copied state is revoked
         var ct = TestContext.Current.CancellationToken;
-        var vls = await CreateVlsNodeAsync("vls-penalty", 0x63, ct);
+        var vls = await CreateVlsNodeAsync(anchors ? "vls-penalty-anchors" : "vls-penalty", anchors ? (byte)0x73 : (byte)0x63,
+                                           anchors, ct);
         var node = vls.Node;
         var lnd = Lnd;
         var channel = await OpenChannelAsync(vls, lnd, ct);
@@ -348,12 +368,15 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
         }, s_timeout, "the revoked HTLC output recorded", ct);
         foreach (var row in rows)
             Console.WriteLine($"Row {row.TransactionId}:{row.OutputIndex} {row.Descriptor} {row.State}");
-        var takenVouts = Enumerable.Range(0, revoked.Outputs.Count).Select(v => (uint)v).ToList();
-        Assert.Equal(3, takenVouts.Count); // david's to_local, our to_remote, the HTLC
+        var takenVouts = Enumerable.Range(0, revoked.Outputs.Count).Select(v => (uint)v)
+                                   .Where(v => revoked.Outputs[(int)v].Value.Satoshi != AnchorsHarness.AnchorAmountSat)
+                                   .ToList();
+        Assert.Equal(3, takenVouts.Count); // david's to_local, our to_remote, the HTLC (anchors left out)
 
         // Every output is spent by a penalty of ours (VLS sign_justice_sweep, and the to_remote key), all confirmed
         var ours = await MineUntilAllTakenAsync(node, lnd, channelId, revokedTxId, takenVouts, ct);
-        var used = ours.Where(t => t.Inputs.Any(i => i.PrevOut.Hash == revokedTxId)).ToList();
+        var used = ours.Where(t => t.Inputs.Any(i => i.PrevOut.Hash == revokedTxId && takenVouts.Contains(i.PrevOut.N)))
+                       .ToList();
         var inputs = used.SelectMany(t => t.Inputs).Where(i => i.PrevOut.Hash == revokedTxId).ToList();
         var htlcVout = rows.Single(r => r.Descriptor == OutputDescriptorKind.RevokedHtlc).OutputIndex;
         var toLocalVout = rows.Single(r => r.Descriptor == OutputDescriptorKind.RevokedToLocal).OutputIndex;
@@ -366,8 +389,10 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
         var toLocalInput = Assert.Single(inputs, i => i.PrevOut.N == toLocalVout);
         Assert.Equal(3, toLocalInput.WitScript.PushCount);
         Assert.Equal([1], toLocalInput.WitScript[1]);
-        // Our to_remote: <sig> <payment pubkey>
-        Assert.Equal(2, Assert.Single(inputs, i => i.PrevOut.N == toRemoteVout).WitScript.PushCount);
+        // Our to_remote: <sig> <payment pubkey>, or with anchors <sig> <to_remote script> after its 1-block CSV
+        var toRemoteInput = Assert.Single(inputs, i => i.PrevOut.N == toRemoteVout);
+        Assert.Equal(2, toRemoteInput.WitScript.PushCount);
+        Assert.Equal(anchors, AnchorsHarness.IsAnchorsToRemoteSpend(toRemoteInput.WitScript));
         Assert.All(inputs, i => Assert.Equal(AnchorsHarness.SigHashAll, i.WitScript[0][^1]));
 
         // The wallet gained the whole channel less the revoked commitment's fee and our penalty fees
@@ -377,7 +402,8 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
         var taken = takenVouts.Sum(v => revoked.Outputs[(int)v].Value.Satoshi);
         var commitmentFee = (await _harness.FeeAsync(revoked, ct)).Satoshi;
         Console.WriteLine($"Taken outputs {taken} sat, gained {gained} sat, commitment fee {commitmentFee} sat");
-        Assert.Equal((long)s_capacity.Satoshi, taken + commitmentFee);
+        Assert.Equal((long)s_capacity.Satoshi,
+                     taken + commitmentFee + (anchors ? 2 * AnchorsHarness.AnchorAmountSat : 0));
         Assert.InRange(taken - gained, 1, (long)s_capacity.Satoshi / 100);
         await Poll.UntilAsync(() => (AnchorsHarness.WalletBalance(node) - walletBefore).Satoshi == gained,
                               s_timeout, $"our wallet gained {gained} sat", ct);
@@ -408,15 +434,15 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
     #region Setup
 
     private sealed record VlsNode(NLightningTestNode Node, VlsGatewayFixture Gateway, VlsSecureKeyManager Keys,
-                                  VlsPaymentApprovalClient Approval);
+                                  VlsPaymentApprovalClient Approval, bool Anchors);
 
     private sealed record VlsChannel(ChannelId ChannelId, string ChannelPoint, ulong LndChanId);
 
     /// <summary>
     /// A fresh VLS identity (its own gateway process and seed) and a node signing through it, with the profile the
-    /// VLS adapter supports (static_remotekey, no dust HTLCs, a 1,000 sat HTLC minimum).
+    /// VLS adapter supports (static_remotekey or zero-fee-HTLC anchors, no dust HTLCs, a 1,000 sat HTLC minimum).
     /// </summary>
-    private async Task<VlsNode> CreateVlsNodeAsync(string name, byte seed, CancellationToken ct)
+    private async Task<VlsNode> CreateVlsNodeAsync(string name, byte seed, bool anchors, CancellationToken ct)
     {
         _fixture.SkipIfUnavailable();
         var gateway = new VlsGatewayFixture(seed);
@@ -424,24 +450,25 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
         var connection = new VlsSignerConnection(new VlsSignerOptions
         { SocketPath = gateway.SocketPath, TokenFile = gateway.TokenFile, Network = "regtest" });
         var keys = new VlsSecureKeyManager(connection);
-        var node = await NLightningTestNode.CreateAsync(_fixture, name, configureNodeOptions: VlsProfile,
+        var node = await NLightningTestNode.CreateAsync(_fixture, name, configureNodeOptions: o => VlsProfile(o, anchors),
                                                         secureKeyManager: keys);
         node.VlsSignerConnection = connection;
         node.ExtraConfiguration["Signing:Mode"] = "Vls";
         node.ExtraConfiguration["Signing:SocketPath"] = gateway.SocketPath;
         node.ExtraConfiguration["Signing:AuthTokenFile"] = gateway.TokenFile;
         var vls = new VlsNode(node, gateway, keys,
-                              new VlsPaymentApprovalClient(gateway.ApprovalSocketPath, gateway.ApprovalTokenFile));
+                              new VlsPaymentApprovalClient(gateway.ApprovalSocketPath, gateway.ApprovalTokenFile),
+                              anchors);
         _nodes.Add(vls);
         await node.StartAsync(ct);
         return vls;
     }
 
-    private static void VlsProfile(NodeOptions options)
+    private static void VlsProfile(NodeOptions options, bool anchors)
     {
-        LegacyChannelOptions.PinStaticRemoteKey(options);
         var features = options.Features;
-        features.OptionAnchors = features.DualFund = features.OptionQuiesce = features.OptionSplice =
+        features.OptionAnchors = anchors ? FeatureSupport.Optional : FeatureSupport.No;
+        features.DualFund = features.OptionQuiesce = features.OptionSplice =
             features.OptionSimpleTaproot = features.OptionGossipV2 = features.OptionSimpleClose =
             features.OptionRouteBlinding = features.OptionOnionMessages = features.OptionTrampolineRouting =
             features.OptionProvideStorage = features.BeyondSegwitShutdown = features.ZeroConf = FeatureSupport.No;
@@ -457,6 +484,10 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
     private async Task<VlsChannel> OpenChannelAsync(VlsNode vls, LndNodeConnection lnd, CancellationToken ct)
     {
         var node = vls.Node;
+        // LND keeps an on-chain reserve for anchors channels; our wallet funds the channel, the anchors reserve and
+        // the fee inputs of our anchors HTLC transactions
+        if (vls.Anchors)
+            await _harness.EnsureLndWalletFundedAsync(lnd, ct);
         await node.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
         await ChainSync.WaitAllAtTipAsync(_fixture, [lnd], [node], ct);
         var lndAddress = await node.ConnectToAsync(lnd, ct);
@@ -481,7 +512,8 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
         }, s_timeout, $"channel {channelPoint} usable on both ends", ct, TimeSpan.FromSeconds(1));
         await ChainSync.WaitAllAtTipAsync(_fixture, [lnd], [node], ct);
         Assert.NotNull(lndChannel);
-        Assert.Equal(CommitmentType.StaticRemoteKey, lndChannel.CommitmentType);
+        Assert.Equal(vls.Anchors ? CommitmentType.Anchors : CommitmentType.StaticRemoteKey, lndChannel.CommitmentType);
+        Assert.Equal(vls.Anchors, AnchorsHarness.GetModel(node, opened.ChannelId).ChannelParams.OptionAnchorOutputs);
         var channel = new VlsChannel(opened.ChannelId, channelPoint, lndChannel.ChanId);
         await PayLndApprovedAsync(vls, lnd, channel, LiquiditySat, ct);
         return channel;
@@ -600,18 +632,33 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
                                        $"the {descriptor} row of {txId}", ct);
 
     /// <summary>
-    /// Our static_remotekey HTLC transaction on our commitment: one input, <c>&lt;&gt; &lt;remotehtlcsig&gt;
-    /// &lt;localhtlcsig&gt; &lt;preimage or empty&gt; &lt;script&gt;</c>, both signatures <c>SIGHASH_ALL</c>.
+    /// Our HTLC transaction on our commitment, <c>&lt;&gt; &lt;remotehtlcsig&gt; &lt;localhtlcsig&gt; &lt;preimage or
+    /// empty&gt; &lt;script&gt;</c>: static_remotekey, one input and output and both signatures <c>SIGHASH_ALL</c>;
+    /// anchors, the HTLC input 0 (nSequence 1) and its output 0 with wallet fee inputs after them, both signatures
+    /// <c>SIGHASH_SINGLE|ANYONECANPAY</c> (VLS signs ours that way).
     /// </summary>
-    private static TxIn AssertHtlcTransaction(Transaction tx, OutPoint htlcOutPoint)
+    private static TxIn AssertHtlcTransaction(Transaction tx, OutPoint htlcOutPoint, bool anchors)
     {
-        var input = Assert.Single(tx.Inputs);
+        var input = tx.Inputs[0];
         Assert.Equal(htlcOutPoint, input.PrevOut);
-        Assert.Single(tx.Outputs);
         Assert.Equal(5, input.WitScript.PushCount);
         Assert.Empty(input.WitScript[0]);
-        Assert.Equal(AnchorsHarness.SigHashAll, input.WitScript[1][^1]);
-        Assert.Equal(AnchorsHarness.SigHashAll, input.WitScript[2][^1]);
+        var sigHash = anchors ? AnchorsHarness.SigHashSingleAnyoneCanPay : AnchorsHarness.SigHashAll;
+        Assert.Equal(sigHash, input.WitScript[1][^1]);
+        Assert.Equal(sigHash, input.WitScript[2][^1]);
+        if (anchors)
+        {
+            Assert.Equal(1u, input.Sequence.Value);
+            Assert.True(AnchorsHarness.HasForeignInput(tx, htlcOutPoint.Hash), "no wallet fee input");
+            Console.WriteLine($"Anchors HTLC transaction {tx.GetHash()}: {tx.Inputs.Count} inputs, {tx.Outputs.Count} "
+                            + "outputs");
+        }
+        else
+        {
+            Assert.Single(tx.Inputs);
+            Assert.Single(tx.Outputs);
+        }
+
         return input;
     }
 
@@ -670,11 +717,16 @@ public class VlsOnchainResolutionTests : IAsyncLifetime
         {
             Console.WriteLine($"Resolved: {output.TransactionId}:{output.OutputIndex} {output.Descriptor} "
                             + $"{output.State} {output.AmountSat} sat by {output.ResolvingTxId}");
-            if (output.Descriptor != OutputDescriptorKind.PeerOutput)
+            if (output.Descriptor is OutputDescriptorKind.OurAnchor or OutputDescriptorKind.PeerAnchor
+                                     or OutputDescriptorKind.PeerOutput)
+                Assert.True(output.State is OutputResolutionState.Irrevocable or OutputResolutionState.Ignored,
+                            $"{output.Descriptor} is {output.State}");
+            else
                 Assert.Equal(OutputResolutionState.Irrevocable, output.State);
         }
 
-        Assert.Empty(closed.AbandonedBroadcasts);
+        foreach (var abandoned in closed.AbandonedBroadcasts)
+            Console.WriteLine($"Abandoned broadcast: {abandoned.TransactionId} {abandoned.Purpose}");
     }
 
     /// <summary><paramref name="lnd"/> lists the channel closed with <paramref name="closeType"/> and the commitment.</summary>

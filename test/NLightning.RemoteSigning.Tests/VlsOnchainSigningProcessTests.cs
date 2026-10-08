@@ -188,28 +188,122 @@ public sealed class VlsOnchainSigningProcessTests
     }
 
     [Fact(Explicit = true)]
-    public async Task Given_AnAnchorsChannel_When_AnOnchainResolutionIsAsked_Then_TheGatewayRefusesIt()
+    public async Task Given_AnAnchorsToRemote_When_VlsSignsItsSweep_Then_ThePaymentKeySignsTheOneCsvScriptOnly()
     {
-        // Arrange
+        // Arrange: with anchors our to_remote is P2WSH <payment_basepoint> OP_CHECKSIGVERIFY 1 OP_CSV, spent at nSequence 1
         var ct = TestContext.Current.CancellationToken;
         await using var gateway = new VlsGatewayFixture();
         await gateway.InitializeAsync(ct);
         var channel = await SetupChannelAsync(gateway, 1, "AnchorsZeroFeeHtlc", ct);
+        var payment = new PubKey(channel.Payment);
+        var toRemote = new Script(Op.GetPushOp(payment.ToBytes()), OpcodeType.OP_CHECKSIGVERIFY, OpcodeType.OP_1,
+                                  OpcodeType.OP_CHECKSEQUENCEVERIFY);
+        var sweep = Sweep(await WalletScriptAsync(gateway, 0, ct), 1);
 
         // Act
-        var toRemote = await ExchangeAsync(gateway, new
+        var signed = await ExchangeAsync(gateway, new
         {
             op = "sign_to_remote_sweep",
             channel = channel.Id,
-            transaction = Sweep(await WalletScriptAsync(gateway, 0, ct), 1).ToHex(),
+            transaction = sweep.ToHex(),
             input = 0,
             amount_sat = AmountSat,
-            wallet_path = "m/0"
+            wallet_path = "m/0",
+            redeemscript = toRemote.ToHex()
+        }, ct);
+        var otherScript = await ExchangeAsync(gateway, new
+        {
+            op = "sign_to_remote_sweep",
+            channel = channel.Id,
+            transaction = sweep.ToHex(),
+            input = 0,
+            amount_sat = AmountSat,
+            wallet_path = "m/0",
+            redeemscript = new Script(Op.GetPushOp(new Key().PubKey.ToBytes()), OpcodeType.OP_CHECKSIGVERIFY,
+                                      OpcodeType.OP_1, OpcodeType.OP_CHECKSEQUENCEVERIFY).ToHex()
         }, ct);
 
         // Assert
-        Assert.False(toRemote.GetProperty("ok").GetBoolean());
-        Assert.Contains("anchors", toRemote.GetProperty("error").GetString());
+        Assert.True(Verifies(payment, sweep, toRemote, signed), signed.ToString());
+        Assert.False(otherScript.GetProperty("ok").GetBoolean());
+        Assert.Contains("not VLS's", otherScript.GetProperty("error").GetString());
+    }
+
+    [Fact(Explicit = true)]
+    public async Task Given_AnAnchorsPeerCommitmentHtlc_When_VlsSignsItsClaim_Then_OnlyTheOneCsvSequenceIsAccepted()
+    {
+        // Arrange: an anchors HTLC the peer offered, claimed by preimage at nSequence 1 (the CSV of anchors HTLC scripts)
+        var ct = TestContext.Current.CancellationToken;
+        await using var gateway = new VlsGatewayFixture();
+        await gateway.InitializeAsync(ct);
+        var channel = await SetupChannelAsync(gateway, 1, "AnchorsZeroFeeHtlc", ct);
+        using var peerPointKey = new Key();
+        var point = new CompactPubKey(peerPointKey.PubKey.ToBytes());
+        var ourHtlc = new PubKey(s_keys.DerivePublicKey(channel.Htlc, point));
+        var htlc = new OfferedHtlcOutput(LightningMoney.Satoshis(AmountSat), 500, true, new Key().PubKey,
+                                         RandomUtils.GetBytes(32), ourHtlc,
+                                         new PubKey(s_keys.DeriveRevocationPubKey(channel.Revocation, point)));
+        var redeem = new Script((byte[])htlc.RedeemBitcoinScript);
+        var wallet = await WalletScriptAsync(gateway, 0, ct);
+        object Claim(Transaction tx) => new
+        {
+            op = "sign_counterparty_htlc_sweep",
+            channel = channel.Id,
+            transaction = tx.ToHex(),
+            input = 0,
+            point = point.ToString(),
+            redeemscript = redeem.ToHex(),
+            amount_sat = AmountSat,
+            wallet_path = "m/0"
+        };
+        var claim = Sweep(wallet, 1);
+
+        // Act
+        var signed = await ExchangeAsync(gateway, Claim(claim), ct);
+        var rbfSequence = await ExchangeAsync(gateway, Claim(Sweep(wallet, 0xFFFFFFFD)), ct);
+
+        // Assert
+        Assert.True(Verifies(ourHtlc, claim, redeem, signed), signed.ToString());
+        Assert.False(rbfSequence.GetProperty("ok").GetBoolean());
+        Assert.Contains("sequence", rbfSequence.GetProperty("error").GetString());
+    }
+
+    [Fact(Explicit = true)]
+    public async Task Given_AnAnchorsChannelWithoutBroadcast_When_HolderHtlcFeeInputsAreAsked_Then_VlsRefuses()
+    {
+        // Arrange: the fee inputs of our anchors HTLC transaction need the commitment signed for broadcast
+        var ct = TestContext.Current.CancellationToken;
+        await using var gateway = new VlsGatewayFixture();
+        await gateway.InitializeAsync(ct);
+        var anchors = await SetupChannelAsync(gateway, 1, "AnchorsZeroFeeHtlc", ct);
+        var legacy = await SetupChannelAsync(gateway, 2, "StaticRemoteKey", ct);
+        var tx = Sweep(await WalletScriptAsync(gateway, 0, ct), 1);
+        tx.Inputs.Add(new OutPoint(new uint256(RandomUtils.GetBytes(32)), 1), null, null, Sequence.Final);
+        tx.Outputs.Add(Money.Satoshis(10_000), await WalletScriptAsync(gateway, 1, ct));
+        object FeeInputs(string channel) => new
+        {
+            op = "sign_holder_htlc_fee_inputs",
+            channel,
+            transaction = tx.ToHex(),
+            point = new Key().PubKey.ToHex(),
+            redeemscript = "00",
+            amount_sat = AmountSat,
+            input_paths = new[] { "m", "m/2" },
+            prev_outputs = new[]
+            {
+                new { value = AmountSat, script_pubkey = "0020" + new string('0', 64) },
+                new { value = 20_000L, script_pubkey = "0014" + new string('0', 40) }
+            },
+            output_paths = new[] { "m", "m/1" }
+        };
+
+        // Act
+        var withoutBroadcast = await ExchangeAsync(gateway, FeeInputs(anchors.Id), ct);
+        var notAnchors = await ExchangeAsync(gateway, FeeInputs(legacy.Id), ct);
+
+        // Assert
+        Assert.Contains("signed for broadcast", withoutBroadcast.GetProperty("error").GetString());
+        Assert.Contains("only an anchors HTLC transaction", notAnchors.GetProperty("error").GetString());
     }
 
     [Fact(Explicit = true)]
@@ -225,8 +319,11 @@ public sealed class VlsOnchainSigningProcessTests
         var channelId = new ChannelId(new byte[32]);
         var foreign = Sweep(new Key().PubKey.WitHash.ScriptPubKey, 0xFFFFFFFD).ToBytes();
         var point = new CompactPubKey(new Key().PubKey.ToBytes());
-        var htlcTransaction = new HtlcTransactionBuildResult(new SignedTransaction(new TxId(new byte[32]), foreign),
-                                                             new BitcoinScript([0x51]), LightningMoney.Satoshis(AmountSat));
+        var withFeeInput = Transaction.Load(foreign, Network.RegTest);
+        withFeeInput.Inputs.Add(new OutPoint(new uint256(RandomUtils.GetBytes(32)), 0));
+        var twoInputs = new HtlcTransactionBuildResult(
+            new SignedTransaction(new TxId(new byte[32]), withFeeInput.ToBytes()), new BitcoinScript([0x51]),
+            LightningMoney.Satoshis(AmountSat));
 
         // Act and assert
         Assert.Throws<SignerException>(() => signer.SignSweepInput(channelId,
@@ -234,8 +331,9 @@ public sealed class VlsOnchainSigningProcessTests
         Assert.Throws<NotSupportedException>(() => signer.SignSweepInput(channelId,
             new SweepSigningContext(foreign, 0, [0x51], AmountSat, SweepKeyKind.HtlcRemotePoint, point,
                                     TaprootSpentOutputs: [])));
-        Assert.Throws<NotSupportedException>(() => signer.SignLocalHtlcTransaction(channelId,
-            new HtlcSigningContext(htlcTransaction, point, HasAnchors: true)));
+        // Without anchors an HTLC transaction is the pre-signed one input, one output pair: nothing else is signed
+        Assert.Throws<SignerException>(() => signer.SignLocalHtlcTransaction(channelId,
+            new HtlcSigningContext(twoInputs, point, HasAnchors: false)));
     }
 
     private sealed record VlsChannel(string Id, CompactPubKey Revocation, CompactPubKey Payment, CompactPubKey Htlc);
