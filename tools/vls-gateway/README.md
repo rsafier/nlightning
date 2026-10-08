@@ -115,6 +115,7 @@ The allowlisted commands and fields are defined by `Command` in `main.rs`:
 | Socket | Commands |
 | --- | --- |
 | Node | `identity`, `ecdh`, `sign_invoice`, `public_account`, `wallet_public_key`, `wallet_sign`, `allocate`, `basepoints`, `setup`, `point`, `sign_remote`, `validate_holder`, `activate`, `revoke_holder`, `validate_revocation`, `payment_preimages`, `sign_channel_update`, `sign_node_announcement`, `force_close`, `mutual_close`, `mark_data_loss`, `broadcast_status`, `verify_broadcast_mark`, `reconcile` for these commands |
+| Anchors | `sign_holder_anchor` (our anchor input), `wallet_sign_fee_inputs` (P2WPKH wallet inputs beside foreign inputs with path `m`) |
 | Approval | `authorize_keysend`, `authorize_invoice`, `reconcile` for approval |
 
 Channel IDs are 41 decoded bytes: compressed peer key plus little-endian dbid,
@@ -176,7 +177,7 @@ The node VLS profile refuses dust HTLC exposure before commitment acceptance.
 Pinned VLS phase2 consumes nondust outputs; supplying logical trimmed HTLCs
 would violate its transaction policy, while omitting settled dust payments
 causes a balance-policy shortfall. Balance enforcement stays enabled.
-HTLC claims/sweeps/penalties, anchors, taproot, splicing, dual funding, auxiliary
+HTLC claims/sweeps/penalties, taproot, splicing, dual funding, auxiliary
 node encryption and BOLT12 remain outside this adapter slice. Some allowlisted
 operations are not exercised by the standalone process test; node/peer acceptance
 results are documented separately. There is no native-signer fallback.
